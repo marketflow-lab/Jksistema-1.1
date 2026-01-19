@@ -1,0 +1,13 @@
+streamlit==1.53.0
+streamlit-authenticator==0.4.2
+pandas==2.1.2
+requests==2.31.0
+gspread==5.7.1
+google-auth==2.20.0
+plotly==5.15.0
+bcrypt==4.0.1
+urllib3==1.26.16
+python-dotenv==1.1.0
+numpy==1.26.4
+beautifulsoup4==4.12.3
+lxml==5.2.2
