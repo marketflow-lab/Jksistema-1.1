@@ -1,0 +1,52 @@
+{
+	"info": {
+		"_postman_id": "16b8d940-ad8c-4951-911b-9b8316355105",
+		"name": "GF - Autenticação",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "17661205"
+	},
+	"item": [
+		{
+			"name": "Autenticação",
+			"item": [
+				{
+					"name": "Autenticação",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "x-api-key",
+								"value": "inserir_codigo_x_api_key"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"login\":\"inserir_login\",\n\"senha\":\"inserir.senha\"\n}"
+						},
+						"url": {
+							"raw": "https://identity-svc-app.iob.com.br/api/v1/Usuario/gestorfiscal-token",
+							"protocol": "https",
+							"host": [
+								"identity-svc-app",
+								"iob",
+								"com",
+								"br"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Usuario",
+								"gestorfiscal-token"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

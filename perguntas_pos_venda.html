@@ -1,0 +1,3804 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perguntas e pós venda - JK Sistema</title>
+    <script src="/auth.js?v=20260417f"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+
+        :root {
+            --bg-a: #04070f;
+            --bg-b: #0a1322;
+            --bg-c: #0d1d34;
+            --panel: rgba(13, 24, 43, 0.88);
+            --panel-strong: rgba(13, 24, 43, 0.96);
+            --border: rgba(104, 168, 255, 0.34);
+            --text: #eaf3ff;
+            --muted: #9cb7d7;
+            --accent: #38d4ff;
+            --accent-strong: #1ca2ff;
+            --surface: rgba(255, 255, 255, 0.06);
+            --danger: #ff7676;
+            --ok: #48e0a4;
+            --warn: #ffd36b;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: 'Outfit', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 8% -4%, rgba(56, 212, 255, 0.24), transparent 34%),
+                radial-gradient(circle at 95% 12%, rgba(72, 224, 164, 0.12), transparent 28%),
+                linear-gradient(120deg, var(--bg-a), var(--bg-b) 48%, var(--bg-c));
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(99, 187, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99, 187, 255, 0.03) 1px, transparent 1px);
+            background-size: 26px 26px;
+            mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 84%);
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 26px;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 22px;
+        }
+
+        .title-block h1 {
+            margin: 0;
+            font-size: clamp(2rem, 3.4vw, 2.8rem);
+            line-height: 1;
+            color: #9de7ff;
+            text-shadow: 0 8px 30px rgba(56, 212, 255, 0.3);
+        }
+
+        .title-block p {
+            margin: 10px 0 0;
+            color: var(--muted);
+            font-size: 1rem;
+        }
+
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-btn,
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            padding: 0 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            color: #fff;
+            text-decoration: none;
+            font: inherit;
+            font-weight: 800;
+            cursor: pointer;
+            background: linear-gradient(105deg, rgba(28, 162, 255, 0.92), rgba(56, 212, 255, 0.78));
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.22);
+            transition: transform 0.18s ease, filter 0.18s ease;
+        }
+
+        .nav-btn.secondary,
+        .action-btn.secondary {
+            background: rgba(13, 24, 43, 0.9);
+        }
+
+        .nav-btn:hover,
+        .action-btn:hover {
+            color: #fff;
+            filter: brightness(1.05);
+            transform: translateY(-1px);
+        }
+
+        .action-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.58;
+            transform: none;
+        }
+
+        .panel {
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: linear-gradient(180deg, var(--panel), rgba(10, 19, 35, 0.94));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.1), 0 18px 38px rgba(0, 0, 0, 0.34);
+            overflow: hidden;
+        }
+
+        .module-store-header {
+            padding: 18px 24px 8px;
+        }
+
+        .tab-control-row {
+            display: flex;
+            align-items: stretch;
+            justify-content: space-between;
+            gap: 14px;
+            border-top: 1px solid rgba(104, 168, 255, 0.14);
+            border-bottom: 1px solid rgba(104, 168, 255, 0.22);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .tabs {
+            display: flex;
+            min-width: 0;
+        }
+
+        .tab-button {
+            appearance: none;
+            border: 0;
+            border-bottom: 3px solid transparent;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            font: inherit;
+            font-weight: 700;
+            min-height: 54px;
+            padding: 0 24px;
+            transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+        }
+
+        .tab-button:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: #dff6ff;
+        }
+
+        .tab-button.active {
+            color: #fff;
+            border-bottom-color: var(--accent);
+            background: rgba(56, 212, 255, 0.08);
+        }
+
+        .automation-controls {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            min-width: min(520px, 48%);
+            padding: 8px 16px 8px 0;
+        }
+
+        .automation-interval-control {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+            gap: 8px;
+            color: #dbeeff;
+            font-size: 0.84rem;
+            font-weight: 800;
+        }
+
+        .automation-interval-control input {
+            width: 78px;
+            height: 34px;
+            border: 1px solid rgba(104, 168, 255, 0.32);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.74);
+            color: var(--text);
+            padding: 0 10px;
+            font: inherit;
+            font-weight: 800;
+        }
+
+        .automation-next-check {
+            width: auto;
+            min-width: 210px;
+            text-align: right;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 24px;
+        }
+
+        .tab-content.active { display: block; }
+
+        .section-head {
+            display: flex;
+            align-items: end;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .section-head h2 {
+            margin: 0;
+            color: #dff6ff;
+            font-size: 1.35rem;
+        }
+
+        .section-head p {
+            margin: 6px 0 0;
+            color: var(--muted);
+        }
+
+        .store-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+            margin-bottom: 0;
+        }
+
+        .store-card {
+            min-height: 104px;
+            border: 1px solid rgba(104, 168, 255, 0.28);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.055);
+            color: var(--text);
+            cursor: pointer;
+            padding: 14px;
+            text-align: left;
+            transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+        }
+
+        .store-card:hover {
+            border-color: rgba(56, 212, 255, 0.78);
+            transform: translateY(-1px);
+        }
+
+        .store-card:focus-visible {
+            border-color: var(--accent);
+            outline: 3px solid rgba(56, 212, 255, 0.18);
+        }
+
+        .store-card.active {
+            border-color: var(--accent);
+            background: rgba(56, 212, 255, 0.13);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 14px 26px rgba(0, 0, 0, 0.22);
+        }
+
+        .store-card.disabled {
+            cursor: not-allowed;
+            opacity: 0.58;
+            transform: none;
+        }
+
+        .store-name {
+            display: block;
+            font-size: 1.05rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            overflow-wrap: anywhere;
+        }
+
+        .store-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            color: var(--muted);
+            font-size: 0.86rem;
+        }
+
+        .store-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 14px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(157, 231, 255, 0.14);
+        }
+
+        .store-option {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: #dbeeff;
+            cursor: pointer;
+            font-size: 0.86rem;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+
+        .store-option input {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+        }
+
+        .store-option.interval-option {
+            flex-basis: 100%;
+            flex-wrap: wrap;
+        }
+
+        .store-option.interval-option input {
+            width: 84px;
+            height: 32px;
+            border: 1px solid rgba(104, 168, 255, 0.32);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.74);
+            color: var(--text);
+            padding: 0 10px;
+            font: inherit;
+            font-weight: 800;
+        }
+
+        .store-config-save {
+            min-height: 32px;
+            border: 1px solid rgba(56, 212, 255, 0.42);
+            border-radius: 8px;
+            background: rgba(56, 212, 255, 0.14);
+            color: #dff6ff;
+            cursor: pointer;
+            font: inherit;
+            font-size: 0.78rem;
+            font-weight: 900;
+            padding: 0 10px;
+        }
+
+        .store-config-save:hover {
+            background: rgba(56, 212, 255, 0.24);
+            border-color: rgba(56, 212, 255, 0.72);
+        }
+
+        .store-next-check {
+            width: 100%;
+            color: #9de7ff;
+            font-size: 0.78rem;
+            font-weight: 800;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 26px;
+            padding: 0 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(255, 255, 255, 0.07);
+            color: #dbeeff;
+            font-size: 0.78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+
+        .badge.ok { color: #caffea; border-color: rgba(72, 224, 164, 0.35); background: rgba(72, 224, 164, 0.13); }
+        .badge.warn { color: #fff0bc; border-color: rgba(255, 211, 107, 0.35); background: rgba(255, 211, 107, 0.13); }
+        .badge.danger { color: #ffd7d7; border-color: rgba(255, 118, 118, 0.35); background: rgba(255, 118, 118, 0.13); }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 5px 12px;
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.045);
+            margin-bottom: 10px;
+        }
+
+        .filters {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .toolbar select {
+            min-height: 30px;
+            padding: 0 10px;
+        }
+
+        .toolbar input[type="search"] {
+            min-height: 30px;
+            min-width: min(360px, 100%);
+            border: 1px solid rgba(104, 168, 255, 0.32);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.74);
+            color: var(--text);
+            padding: 0 11px;
+            font: inherit;
+            font-weight: 700;
+            outline: none;
+        }
+
+        .toolbar input[type="search"]:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(56, 212, 255, 0.12);
+        }
+
+        .toolbar .action-btn {
+            min-height: 30px;
+            padding: 0 13px;
+        }
+
+        select {
+            min-height: 40px;
+            border: 1px solid rgba(104, 168, 255, 0.32);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.74);
+            color: var(--text);
+            padding: 0 12px;
+            font: inherit;
+            font-weight: 700;
+        }
+
+        .status-line {
+            color: var(--muted);
+            font-weight: 700;
+        }
+
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .metric {
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.045);
+            min-height: 76px;
+            padding: 9px 10px;
+        }
+
+        .metric strong {
+            display: block;
+            font-size: 1.16rem;
+            line-height: 1.05;
+            color: #fff;
+        }
+
+        .metric span {
+            color: var(--muted);
+            display: block;
+            font-size: 0.76rem;
+            font-weight: 700;
+            line-height: 1.28;
+            margin-top: 6px;
+        }
+
+        .question-list {
+            display: grid;
+            gap: 12px;
+        }
+
+        .question-card {
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.052);
+            padding: 16px;
+        }
+
+        .question-body {
+            display: grid;
+            grid-template-columns: 92px minmax(0, 1fr);
+            gap: 14px;
+            align-items: start;
+        }
+
+        .question-thumb {
+            width: 92px;
+            aspect-ratio: 1;
+            border: 1px solid rgba(157, 231, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-align: center;
+        }
+
+        .question-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .question-top {
+            display: flex;
+            align-items: start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .question-title {
+            margin: 0;
+            color: #dff6ff;
+            font-size: 1.02rem;
+            overflow-wrap: anywhere;
+        }
+
+        .question-title a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .question-title a:hover { text-decoration: underline; }
+
+        .question-date {
+            color: var(--muted);
+            font-size: 0.84rem;
+            white-space: nowrap;
+        }
+
+        .question-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 0.84rem;
+            font-weight: 800;
+        }
+
+        .question-text {
+            margin: 0 0 12px;
+            color: #f3f8ff;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+        }
+
+        .sale-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 0.86rem;
+            font-weight: 700;
+        }
+
+        .sale-items {
+            margin: 10px 0 12px;
+            color: #dbeeff;
+            line-height: 1.45;
+        }
+
+        .sale-value {
+            color: #fff;
+            font-weight: 800;
+        }
+
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 12px 0;
+            color: var(--muted);
+            font-weight: 800;
+        }
+
+        .pagination-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .pagination-btn {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #0b1324;
+            color: #f7fbff;
+            cursor: pointer;
+            font-weight: 900;
+            padding: 10px 14px;
+        }
+
+        .pagination-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.48;
+        }
+
+        .answer-box {
+            border-left: 3px solid rgba(72, 224, 164, 0.7);
+            background: rgba(72, 224, 164, 0.08);
+            padding: 10px 12px;
+            color: #dfffee;
+            line-height: 1.45;
+        }
+
+        .last-message-sender {
+            display: block;
+            color: var(--muted);
+            font-size: 0.76rem;
+            font-weight: 900;
+            line-height: 1.2;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+
+        .answer-box.empty {
+            border-left-color: rgba(255, 211, 107, 0.72);
+            background: rgba(255, 211, 107, 0.08);
+            color: #fff0bc;
+        }
+
+        .question-chat {
+            display: grid;
+            gap: 5px;
+            margin-top: 8px;
+        }
+
+        .question-chat-title {
+            color: var(--muted);
+            font-size: 0.7rem;
+            font-weight: 900;
+            text-transform: uppercase;
+        }
+
+        .question-chat-bubble {
+            max-width: min(84%, 760px);
+            border: 1px solid rgba(157, 231, 255, 0.18);
+            border-radius: 8px;
+            padding: 6px 8px;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
+            font-size: 0.86rem;
+        }
+
+        .question-chat-bubble.buyer {
+            justify-self: start;
+            background: rgba(255, 255, 255, 0.06);
+            color: #f3f8ff;
+        }
+
+        .question-chat-bubble.seller {
+            justify-self: end;
+            background: rgba(72, 224, 164, 0.1);
+            border-color: rgba(72, 224, 164, 0.3);
+            color: #dfffee;
+        }
+
+        .question-chat-bubble .training-message-role {
+            display: block;
+            font-size: 0.69rem;
+            line-height: 1.15;
+            margin-bottom: 3px;
+            white-space: normal;
+        }
+
+        .question-answer-composer {
+            margin-top: 12px;
+            border: 1px solid rgba(104, 168, 255, 0.24);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.3);
+            padding: 12px;
+        }
+
+        .question-answer-composer textarea {
+            width: 100%;
+            min-height: 84px;
+            resize: vertical;
+            border: 1px solid rgba(104, 168, 255, 0.3);
+            border-radius: 8px;
+            background: rgba(5, 11, 22, 0.92);
+            color: #f7fbff;
+            padding: 10px 12px;
+            font: inherit;
+            line-height: 1.42;
+            outline: none;
+        }
+
+        .question-answer-composer textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(56, 212, 255, 0.12);
+        }
+
+        .question-answer-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .question-answer-status {
+            color: var(--muted);
+            font-size: 0.82rem;
+            font-weight: 800;
+            margin-left: auto;
+        }
+
+        .question-answer-status.error {
+            color: #ffb4b4;
+        }
+
+        .question-answer-status.ok {
+            color: #86efac;
+        }
+
+        .conversation-card {
+            cursor: pointer;
+            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+        }
+
+        .conversation-card:hover,
+        .conversation-card.active {
+            border-color: rgba(56, 212, 255, 0.72);
+            background: rgba(56, 212, 255, 0.08);
+            transform: translateY(-1px);
+        }
+
+        .pos-sale-detail {
+            margin-top: 16px;
+            border: 1px solid rgba(104, 168, 255, 0.28);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.42);
+            padding: 14px;
+        }
+
+        .pos-sale-detail.full-page {
+            margin-top: 14px;
+            padding: 18px;
+        }
+
+        .pos-sale-detail-head {
+            display: flex;
+            align-items: start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .pos-sale-detail-head h3 {
+            margin: 0;
+            color: #dff6ff;
+            font-size: 1.02rem;
+        }
+
+        .pos-sale-detail-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .pos-sale-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin: 12px 0;
+        }
+
+        .pos-sale-info-card,
+        .pos-sale-product {
+            border: 1px solid rgba(104, 168, 255, 0.2);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.045);
+            padding: 10px 12px;
+        }
+
+        .pos-sale-info-card strong {
+            display: block;
+            color: #dff6ff;
+            margin-top: 2px;
+        }
+
+        .pos-sale-products {
+            display: grid;
+            gap: 10px;
+            margin: 12px 0;
+        }
+
+        .pos-sale-product {
+            display: grid;
+            grid-template-columns: 74px minmax(0, 1fr);
+            gap: 12px;
+            align-items: center;
+        }
+
+        .pos-sale-product img {
+            width: 74px;
+            height: 74px;
+            object-fit: cover;
+            border-radius: 8px;
+            background: #fff;
+        }
+
+        .pos-sale-product h4 {
+            margin: 0 0 6px;
+            color: #f7fbff;
+            font-size: 0.95rem;
+        }
+
+        .pos-sale-messages {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 360px;
+            overflow-y: auto;
+            padding: 2px 4px;
+        }
+
+        .pos-sale-message {
+            width: fit-content;
+            max-width: min(88%, 720px);
+            border: 1px solid rgba(157, 231, 255, 0.18);
+            border-radius: 8px;
+            padding: 7px 9px;
+            line-height: 1.32;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
+        .pos-sale-message .training-message-role {
+            margin-bottom: 3px;
+            font-size: 0.72rem;
+            line-height: 1.2;
+        }
+
+        .pos-sale-message-text {
+            display: block;
+            white-space: pre-wrap;
+        }
+
+        .pos-sale-message.buyer {
+            align-self: flex-start;
+            background: rgba(255, 255, 255, 0.06);
+            color: #f3f8ff;
+        }
+
+        .pos-sale-message.seller {
+            align-self: flex-end;
+            background: rgba(72, 224, 164, 0.1);
+            border-color: rgba(72, 224, 164, 0.3);
+            color: #dfffee;
+        }
+
+        .pos-sale-reply {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: end;
+            margin-top: 10px;
+            border-top: 1px solid rgba(104, 168, 255, 0.18);
+            padding-top: 10px;
+        }
+
+        .pos-sale-reply textarea {
+            min-height: 56px;
+            max-height: 120px;
+            resize: vertical;
+            border: 1px solid rgba(104, 168, 255, 0.28);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.66);
+            color: var(--text);
+            font: inherit;
+            line-height: 1.35;
+            padding: 9px 11px;
+            outline: none;
+        }
+
+        .pos-sale-reply-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .pos-sale-reply .action-btn {
+            min-height: 36px;
+            padding: 0 14px;
+        }
+
+        .pos-sale-reply textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(56, 212, 255, 0.12);
+        }
+
+        .training-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 0.95fr) minmax(360px, 1.05fr);
+            gap: 14px;
+            align-items: start;
+        }
+
+        .training-column {
+            display: grid;
+            gap: 14px;
+            align-content: start;
+        }
+
+        .training-type-tabs {
+            display: inline-flex;
+            gap: 8px;
+            margin: 0 0 16px;
+            padding: 6px;
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.32);
+        }
+
+        .training-type-tab {
+            min-height: 36px;
+            padding: 0 14px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            font: inherit;
+            font-weight: 800;
+        }
+
+        .training-type-tab:hover,
+        .training-type-tab.active {
+            border-color: rgba(56, 212, 255, 0.38);
+            background: rgba(56, 212, 255, 0.12);
+            color: #fff;
+        }
+
+        .training-field {
+            display: grid;
+            gap: 8px;
+        }
+
+        .training-field span {
+            color: #dff6ff;
+            font-weight: 800;
+        }
+
+        .training-field small {
+            color: var(--muted);
+            font-weight: 700;
+            line-height: 1.4;
+        }
+
+        .training-field select {
+            width: 100%;
+        }
+
+        .training-field textarea {
+            width: 100%;
+            min-height: 120px;
+            resize: vertical;
+            border: 1px solid rgba(104, 168, 255, 0.28);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.66);
+            color: var(--text);
+            font: inherit;
+            line-height: 1.45;
+            padding: 12px;
+            outline: none;
+        }
+
+        .training-field textarea:focus,
+        .training-field select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(56, 212, 255, 0.12);
+        }
+
+        .training-card {
+            display: grid;
+            gap: 12px;
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.045);
+            padding: 14px;
+        }
+
+        .training-card.chat-card {
+            align-content: start;
+        }
+
+        .training-card-title {
+            display: grid;
+            gap: 4px;
+        }
+
+        .training-card-title h3 {
+            margin: 0;
+            color: #f4fbff;
+            font-size: 1rem;
+        }
+
+        .training-card-title p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.86rem;
+            line-height: 1.45;
+        }
+
+        .training-inline-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+            gap: 10px;
+            align-items: end;
+        }
+
+        .training-actions-main {
+            margin-top: 14px;
+        }
+
+        .training-stack {
+            align-content: start;
+        }
+
+        .training-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .training-sku-info {
+            display: grid;
+            grid-template-columns: 58px minmax(0, 1fr);
+            gap: 10px;
+            align-items: center;
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.04);
+            padding: 10px;
+        }
+
+        .training-sku-thumb {
+            width: 58px;
+            aspect-ratio: 1;
+            border: 1px solid rgba(157, 231, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            color: var(--muted);
+            font-size: 0.68rem;
+            font-weight: 800;
+            text-align: center;
+        }
+
+        .training-sku-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .training-sku-name {
+            color: #f3f8ff;
+            font-weight: 800;
+            overflow-wrap: anywhere;
+        }
+
+        .training-sku-meta {
+            color: var(--muted);
+            font-size: 0.82rem;
+            font-weight: 700;
+            margin-top: 4px;
+            overflow-wrap: anywhere;
+        }
+
+        .training-examples {
+            display: grid;
+            gap: 10px;
+            border: 1px solid rgba(104, 168, 255, 0.18);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.24);
+            padding: 12px;
+        }
+
+        .training-examples-form {
+            display: grid;
+            gap: 10px;
+        }
+
+        .training-examples-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            color: #dff6ff;
+            font-weight: 800;
+        }
+
+        .mini-btn {
+            min-height: 32px;
+            padding: 0 10px;
+            border: 1px solid rgba(56, 212, 255, 0.38);
+            border-radius: 8px;
+            background: rgba(56, 212, 255, 0.12);
+            color: #f4fbff;
+            cursor: pointer;
+            font: inherit;
+            font-size: 0.82rem;
+            font-weight: 800;
+        }
+
+        .mini-btn:hover {
+            background: rgba(56, 212, 255, 0.2);
+        }
+
+        .training-examples-list {
+            display: grid;
+            gap: 8px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .training-example-item {
+            display: grid;
+            gap: 6px;
+            border: 1px solid rgba(157, 231, 255, 0.16);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.04);
+            padding: 10px;
+        }
+
+        .training-example-item strong {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            color: #f4fbff;
+            font-size: 0.86rem;
+        }
+
+        .training-example-badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 0 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(72, 224, 164, 0.34);
+            background: rgba(72, 224, 164, 0.12);
+            color: #9fffe4;
+            font-size: 0.72rem;
+            font-weight: 900;
+        }
+
+        .training-example-badge.sku {
+            border-color: rgba(56, 212, 255, 0.4);
+            background: rgba(56, 212, 255, 0.12);
+            color: #bfefff;
+        }
+
+        .training-example-item p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.86rem;
+            line-height: 1.4;
+            overflow-wrap: anywhere;
+        }
+
+        .training-example-item button {
+            justify-self: end;
+        }
+
+        .training-chat-shell {
+            display: grid;
+            grid-template-rows: auto minmax(240px, 1fr) auto;
+            gap: 10px;
+            min-height: 330px;
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.42);
+            padding: 12px;
+        }
+
+        .training-chat-head {
+            color: #dff6ff;
+            font-weight: 800;
+        }
+
+        .training-chat {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 240px;
+            max-height: 420px;
+            overflow-y: auto;
+            padding: 4px;
+        }
+
+        .training-chat-empty {
+            margin: auto;
+            max-width: 300px;
+            color: var(--muted);
+            text-align: center;
+            line-height: 1.45;
+            font-weight: 700;
+        }
+
+        .training-message {
+            width: fit-content;
+            max-width: min(86%, 620px);
+            border: 1px solid rgba(157, 231, 255, 0.18);
+            border-radius: 8px;
+            padding: 10px 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .training-message.user {
+            align-self: flex-end;
+            background: rgba(28, 162, 255, 0.22);
+            border-color: rgba(56, 212, 255, 0.36);
+            color: #f4fbff;
+        }
+
+        .training-message.assistant {
+            align-self: flex-start;
+            background: rgba(72, 224, 164, 0.1);
+            border-color: rgba(72, 224, 164, 0.32);
+            color: #dfffee;
+        }
+
+        .training-message.error {
+            background: rgba(255, 118, 118, 0.12);
+            border-color: rgba(255, 118, 118, 0.34);
+            color: #ffd9d9;
+        }
+
+        .training-message-role {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--muted);
+            font-size: 0.78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+
+        .training-composer {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 10px;
+            align-items: end;
+            border-top: 1px solid rgba(104, 168, 255, 0.18);
+            padding-top: 10px;
+        }
+
+        .training-composer textarea {
+            min-height: 46px;
+            max-height: 130px;
+            resize: vertical;
+        }
+
+        .training-output {
+            margin-top: 14px;
+            border: 1px solid rgba(72, 224, 164, 0.26);
+            border-left: 3px solid rgba(72, 224, 164, 0.74);
+            border-radius: 8px;
+            background: rgba(72, 224, 164, 0.08);
+            color: #dfffee;
+            line-height: 1.55;
+            padding: 14px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .empty-state {
+            display: grid;
+            place-items: center;
+            min-height: 260px;
+            border: 1px dashed rgba(157, 231, 255, 0.34);
+            border-radius: 8px;
+            background: var(--surface);
+            text-align: center;
+            padding: 30px;
+        }
+
+        .empty-state h2 {
+            margin: 0 0 10px;
+            color: #dff6ff;
+            font-size: 1.5rem;
+        }
+
+        .empty-state p {
+            max-width: 560px;
+            margin: 0;
+            color: var(--muted);
+            line-height: 1.55;
+        }
+
+        .hidden { display: none !important; }
+
+        @media (max-width: 720px) {
+            .container { padding: 18px; }
+            .topbar { align-items: stretch; flex-direction: column; }
+            .top-actions { display: grid; grid-template-columns: 1fr 1fr; }
+            .tab-control-row {
+                align-items: stretch;
+                flex-direction: column;
+                gap: 0;
+            }
+            .tab-button { flex: 1; padding: 0 12px; }
+            .automation-controls {
+                justify-content: stretch;
+                min-width: 0;
+                padding: 10px 12px;
+            }
+            .automation-interval-control,
+            .automation-next-check {
+                justify-content: flex-start;
+                text-align: left;
+            }
+            .section-head,
+            .toolbar,
+            .training-actions,
+            .training-composer,
+            .question-top {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .training-grid {
+                grid-template-columns: 1fr;
+            }
+            .training-type-tabs {
+                display: grid;
+                grid-template-columns: 1fr;
+            }
+            .training-composer {
+                grid-template-columns: 1fr;
+            }
+            .question-body {
+                grid-template-columns: 1fr;
+            }
+            .question-thumb {
+                width: 100%;
+                max-width: 160px;
+            }
+            .pagination {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .pos-sale-detail-head {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .pos-sale-reply {
+                grid-template-columns: 1fr;
+            }
+            .question-date { white-space: normal; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="topbar">
+            <div class="title-block">
+                <h1>Perguntas e pós venda</h1>
+                <p>Central para acompanhar perguntas dos clientes e atendimentos depois da compra.</p>
+            </div>
+            <nav class="top-actions" aria-label="Navegação">
+                <a class="nav-btn secondary" href="dashboard.html">Home</a>
+                <a class="nav-btn" href="dashboard.html">Voltar</a>
+            </nav>
+        </header>
+
+        <main class="panel">
+            <div class="module-store-header">
+                <span id="lojas-status" class="status-line hidden">Carregando lojas...</span>
+                <div id="lojas-grid" class="store-grid"></div>
+            </div>
+
+            <div class="tab-control-row">
+            <div class="tabs" role="tablist" aria-label="Perguntas e pós venda">
+                <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas</button>
+                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda</button>
+                <button id="tab-mediacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-mediacao" data-tab="mediacao">Mediação</button>
+                <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar AI</button>
+            </div>
+
+                <div id="perguntas-automation-controls" class="automation-controls"></div>
+            </div>
+
+            <section id="aba-perguntas" class="tab-content active" role="tabpanel" aria-labelledby="tab-perguntas">
+                <div class="toolbar">
+                    <div class="filters">
+                        <label for="status-filtro">Status</label>
+                        <select id="status-filtro">
+                            <option value="">Todos</option>
+                            <option value="UNANSWERED">Não respondidas</option>
+                            <option value="ANSWERED">Respondidas</option>
+                            <option value="CLOSED_UNANSWERED">Fechadas sem resposta</option>
+                            <option value="UNDER_REVIEW">Em revisão</option>
+                        </select>
+                    </div>
+                    <button id="btn-recarregar" class="action-btn secondary" type="button">Atualizar</button>
+                </div>
+
+                <div id="perguntas-status" class="status-line">Escolha uma loja conectada ao Mercado Livre.</div>
+                <div id="perguntas-summary" class="summary hidden"></div>
+                <div id="perguntas-list" class="question-list"></div>
+                <div id="perguntas-pagination" class="pagination hidden"></div>
+            </section>
+
+            <section id="aba-pos-venda" class="tab-content" role="tabpanel" aria-labelledby="tab-pos-venda">
+                <div class="section-head">
+                    <div>
+                        <h2>Vendas com conversa iniciada</h2>
+                        <p>Lista vendas do Mercado Livre que já possuem mensagens pós-venda no histórico.</p>
+                    </div>
+                    <span id="pos-venda-loja-status" class="status-line">Escolha uma loja conectada.</span>
+                </div>
+
+                <div id="pos-venda-lojas-grid" class="store-grid hidden"></div>
+
+                <div class="toolbar">
+                    <div class="filters">
+                        <label for="pos-venda-dias">Período</label>
+                        <select id="pos-venda-dias">
+                            <option value="30">Últimos 30 dias</option>
+                            <option value="90">Últimos 90 dias</option>
+                            <option value="180">Últimos 180 dias</option>
+                            <option value="365" selected>Últimos 12 meses</option>
+                        </select>
+                        <label for="pos-venda-busca">Buscar</label>
+                        <input id="pos-venda-busca" type="search" placeholder="Venda, pedido, pack, SKU ou MLB">
+                        <button id="btn-pos-venda-buscar" class="action-btn secondary" type="button">Buscar</button>
+                        <button id="btn-pos-venda-limpar-busca" class="action-btn secondary" type="button">Limpar</button>
+                    </div>
+                    <button id="btn-pos-venda-recarregar" class="action-btn secondary" type="button">Atualizar pós venda</button>
+                </div>
+
+                <div id="pos-venda-status" class="status-line">Aguardando loja selecionada.</div>
+                <div id="pos-venda-summary" class="summary hidden"></div>
+                <div id="pos-venda-list" class="question-list"></div>
+                <div id="pos-venda-pagination" class="pagination hidden"></div>
+                <div id="pos-venda-detail" class="pos-sale-detail hidden"></div>
+            </section>
+
+            <section id="aba-mediacao" class="tab-content" role="tabpanel" aria-labelledby="tab-mediacao">
+                <div class="section-head">
+                    <div>
+                        <h2>Vendas em mediação ou devolução</h2>
+                        <p>Lista vendas com mediação aberta ou processo de devolução em andamento no Mercado Livre.</p>
+                    </div>
+                    <span id="mediacao-loja-status" class="status-line">Escolha uma loja conectada.</span>
+                </div>
+
+                <div class="toolbar">
+                    <div class="filters">
+                        <label for="mediacao-dias">Período</label>
+                        <select id="mediacao-dias">
+                            <option value="30">Últimos 30 dias</option>
+                            <option value="90">Últimos 90 dias</option>
+                            <option value="180">Últimos 180 dias</option>
+                            <option value="365" selected>Últimos 12 meses</option>
+                        </select>
+                        <label for="mediacao-busca">Buscar</label>
+                        <input id="mediacao-busca" type="search" placeholder="Venda, pedido, pack, SKU ou MLB">
+                        <button id="btn-mediacao-buscar" class="action-btn secondary" type="button">Buscar</button>
+                        <button id="btn-mediacao-limpar-busca" class="action-btn secondary" type="button">Limpar</button>
+                    </div>
+                    <button id="btn-mediacao-recarregar" class="action-btn secondary" type="button">Atualizar casos</button>
+                </div>
+
+                <div id="mediacao-status" class="status-line">Aguardando loja selecionada.</div>
+                <div id="mediacao-summary" class="summary hidden"></div>
+                <div id="mediacao-list" class="question-list"></div>
+            </section>
+
+            <section id="aba-treinar-ai" class="tab-content" role="tabpanel" aria-labelledby="tab-treinar-ai">
+                <div class="section-head">
+                    <div>
+                        <h2>Treinar AI</h2>
+                        <p>Organize regras gerais, notas por SKU e modelos de pergunta e resposta para a IA usar nas próximas respostas.</p>
+                    </div>
+                    <span id="ai-training-status" class="status-line">Carregando orientações...</span>
+                </div>
+
+                <div class="training-type-tabs" role="tablist" aria-label="Tipo de treinamento da IA">
+                    <button class="training-type-tab active" type="button" data-training-type="perguntas_anuncio" aria-selected="true">Perguntas de anúncio</button>
+                    <button class="training-type-tab" type="button" data-training-type="pos_venda" aria-selected="false">Pós venda</button>
+                </div>
+
+                <div class="training-grid">
+                    <div class="training-card training-stack">
+                        <div class="training-card-title">
+                            <h3>1. Regras gerais</h3>
+                            <p>Valem para o tipo selecionado acima: perguntas de anúncio ou pós-venda.</p>
+                        </div>
+                        <label class="training-field">
+                            <span id="ai-training-orientacoes-label">Orientações para perguntas de anúncio</span>
+                            <textarea id="ai-training-orientacoes" rows="5" placeholder="Ex.: responder sempre com tom cordial, não prometer prazo sem confirmação, pedir modelo/ano quando a aplicação do produto for incerta..."></textarea>
+                        </label>
+                        <label class="training-field">
+                            <span>Base de conhecimento da loja</span>
+                            <textarea id="ai-training-contexto-loja" rows="4" placeholder="Ex.: política de garantia, prazo de postagem, como falar sobre compatibilidade, estoque, troca, emissão de nota e atendimento."></textarea>
+                        </label>
+                        <label class="training-field">
+                            <span>Compatibilidade e autopeças</span>
+                            <textarea id="ai-training-compatibilidade" rows="4" placeholder="Ex.: sempre comparar peça, lado, dianteiro/traseiro, marca, modelo, motor e ano. Se faltar informação, pedir chassi, código ou foto."></textarea>
+                        </label>
+                        <label class="training-field">
+                            <span>O que a IA nunca deve afirmar</span>
+                            <textarea id="ai-training-proibicoes" rows="3" placeholder="Ex.: não garantir compatibilidade sem dados suficientes, não prometer prazo fora do Mercado Livre, não inventar código OEM."></textarea>
+                        </label>
+                    </div>
+
+                    <div class="training-card chat-card">
+                        <div class="training-card-title">
+                            <h3>2. SKU, modelos e simulação</h3>
+                            <p>Escolha um SKU para notas próprias ou salve modelos gerais que servem para todos os produtos.</p>
+                        </div>
+                        <label class="training-field">
+                            <span>SKU para notas específicas e modelos</span>
+                            <select id="ai-training-sku">
+                                <option value="">Carregando SKUs...</option>
+                            </select>
+                            <small>Deixe sem SKU para cadastrar modelos gerais.</small>
+                        </label>
+                        <div id="ai-training-sku-info" class="training-sku-info hidden"></div>
+                        <label class="training-field">
+                            <span>Notas específicas deste SKU</span>
+                            <textarea id="ai-training-notas-sku" rows="3" placeholder="Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU."></textarea>
+                        </label>
+                        <div class="training-examples">
+                            <div class="training-examples-head">
+                                <span>Modelos de pergunta e resposta</span>
+                                <button id="btn-ai-training-adicionar-exemplo" class="mini-btn" type="button">Adicionar modelo</button>
+                            </div>
+                            <label class="training-field">
+                                <span>Onde este modelo será usado</span>
+                                <select id="ai-training-exemplo-escopo">
+                                    <option value="geral">Geral, para todos os SKUs</option>
+                                    <option value="sku">Apenas para o SKU selecionado</option>
+                                </select>
+                            </label>
+                            <label class="training-field">
+                                <span>Pergunta modelo</span>
+                                <textarea id="ai-training-exemplo-pergunta" rows="2" placeholder="Pergunta real ou parecida feita por comprador"></textarea>
+                            </label>
+                            <label class="training-field">
+                                <span>Resposta modelo</span>
+                                <textarea id="ai-training-exemplo-resposta" rows="3" placeholder="Resposta aprovada que a IA deve usar como referência"></textarea>
+                            </label>
+                            <div id="ai-training-examples-list" class="training-examples-list"></div>
+                        </div>
+                        <label class="training-field">
+                            <span>Contexto temporário da simulação</span>
+                            <textarea id="ai-training-contexto" rows="2" placeholder="Produto, SKU, detalhes do anúncio ou observações internas somente para este teste."></textarea>
+                        </label>
+                        <div class="training-chat-shell">
+                            <div id="ai-training-chat-head" class="training-chat-head">Simulação em chat</div>
+                            <div id="ai-training-chat" class="training-chat" aria-live="polite">
+                                <div class="training-chat-empty">Digite a pergunta do comprador para testar como a IA responderia.</div>
+                            </div>
+                            <div class="training-composer">
+                                <textarea id="ai-training-pergunta" rows="2" placeholder="Digite a pergunta do comprador"></textarea>
+                                <button id="btn-ai-training-simular" class="action-btn" type="button">Enviar</button>
+                            </div>
+                        </div>
+                        <div class="training-actions">
+                            <button id="btn-ai-training-salvar" class="action-btn secondary" type="button">Salvar treinamento da IA</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        function safeJsonParse(value, fallback) {
+            try {
+                return JSON.parse(value);
+            } catch (_err) {
+                return fallback;
+            }
+        }
+
+        if (!verificarSessao()) {
+            // verificarSessao redireciona quando não há token.
+        }
+
+        const permissions = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
+        if (!(permissions.full === true || permissions.perguntas_pos_venda === true)) {
+            alert('Você não tem permissão para acessar este módulo.');
+            window.location.href = 'dashboard.html';
+        }
+
+        const state = {
+            lojas: [],
+            lojaSelecionada: '',
+            perguntas: [],
+            paginaPerguntas: 1,
+            totalPerguntas: 0,
+            tamanhoPaginaPerguntas: 20,
+            carregandoPerguntas: false,
+            carregandoPosVenda: false,
+            posVendaPagina: 1,
+            posVendaOffset: 0,
+            posVendaNextOffset: null,
+            posVendaOffsets: [0],
+            posVendaCarregadoPara: '',
+            posVendaConversas: [],
+            posVendaConversaSelecionada: null,
+            posVendaDetalheCarregando: false,
+            posVendaModoDetalhe: false,
+            carregandoMediacoes: false,
+            mediacaoCarregadoPara: '',
+            mediacaoConversas: [],
+            treinamentoCarregado: false,
+            treinamentoTipo: 'perguntas_anuncio',
+            treinamentoDados: {
+                perguntas_anuncio: { orientacoes: '', updated_at: null, exemplos: [] },
+                pos_venda: { orientacoes: '', updated_at: null, exemplos: [] }
+            },
+            treinamentoContexto: {
+                contexto_loja: '',
+                compatibilidade_autopecas: '',
+                proibicoes: '',
+                notas_sku: {}
+            },
+            treinamentoSkuNotasAtual: '',
+            produtosTreinamento: [],
+            produtosTreinamentoCarregados: false,
+            automacaoPerguntasTimer: null,
+            automacaoPerguntasTimers: [],
+            automacaoPerguntasCountdownTimer: null,
+            automacaoPerguntasNextChecks: {},
+            automacaoPerguntasRodando: false,
+            automacaoPosVendaRodando: false,
+            aprovacoesNotificadas: new Set()
+        };
+
+        const lojasGrid = document.getElementById('lojas-grid');
+        const lojasStatus = document.getElementById('lojas-status');
+        const perguntasAutomationControls = document.getElementById('perguntas-automation-controls');
+        const perguntasStatus = document.getElementById('perguntas-status');
+        const perguntasSummary = document.getElementById('perguntas-summary');
+        const perguntasList = document.getElementById('perguntas-list');
+        const perguntasPagination = document.getElementById('perguntas-pagination');
+        const statusFiltro = document.getElementById('status-filtro');
+        const btnRecarregar = document.getElementById('btn-recarregar');
+        const posVendaLojaStatus = document.getElementById('pos-venda-loja-status');
+        const posVendaDias = document.getElementById('pos-venda-dias');
+        const posVendaBusca = document.getElementById('pos-venda-busca');
+        const btnPosVendaBuscar = document.getElementById('btn-pos-venda-buscar');
+        const btnPosVendaLimparBusca = document.getElementById('btn-pos-venda-limpar-busca');
+        const btnPosVendaRecarregar = document.getElementById('btn-pos-venda-recarregar');
+        const posVendaLojasGrid = document.getElementById('pos-venda-lojas-grid');
+        const posVendaStatus = document.getElementById('pos-venda-status');
+        const posVendaSummary = document.getElementById('pos-venda-summary');
+        const posVendaList = document.getElementById('pos-venda-list');
+        const posVendaPagination = document.getElementById('pos-venda-pagination');
+        const posVendaDetail = document.getElementById('pos-venda-detail');
+        const mediacaoLojaStatus = document.getElementById('mediacao-loja-status');
+        const mediacaoDias = document.getElementById('mediacao-dias');
+        const mediacaoBusca = document.getElementById('mediacao-busca');
+        const btnMediacaoBuscar = document.getElementById('btn-mediacao-buscar');
+        const btnMediacaoLimparBusca = document.getElementById('btn-mediacao-limpar-busca');
+        const btnMediacaoRecarregar = document.getElementById('btn-mediacao-recarregar');
+        const mediacaoStatus = document.getElementById('mediacao-status');
+        const mediacaoSummary = document.getElementById('mediacao-summary');
+        const mediacaoList = document.getElementById('mediacao-list');
+        const aiTrainingStatus = document.getElementById('ai-training-status');
+        const aiTrainingTypeTabs = Array.from(document.querySelectorAll('.training-type-tab'));
+        const aiTrainingOrientacoesLabel = document.getElementById('ai-training-orientacoes-label');
+        const aiTrainingOrientacoes = document.getElementById('ai-training-orientacoes');
+        const aiTrainingContextoLoja = document.getElementById('ai-training-contexto-loja');
+        const aiTrainingCompatibilidade = document.getElementById('ai-training-compatibilidade');
+        const aiTrainingProibicoes = document.getElementById('ai-training-proibicoes');
+        const aiTrainingSku = document.getElementById('ai-training-sku');
+        const aiTrainingSkuInfo = document.getElementById('ai-training-sku-info');
+        const aiTrainingNotasSku = document.getElementById('ai-training-notas-sku');
+        const aiTrainingExemploPergunta = document.getElementById('ai-training-exemplo-pergunta');
+        const aiTrainingExemploResposta = document.getElementById('ai-training-exemplo-resposta');
+        const aiTrainingExemploEscopo = document.getElementById('ai-training-exemplo-escopo');
+        const btnAiTrainingAdicionarExemplo = document.getElementById('btn-ai-training-adicionar-exemplo');
+        const aiTrainingExamplesList = document.getElementById('ai-training-examples-list');
+        const aiTrainingPergunta = document.getElementById('ai-training-pergunta');
+        const aiTrainingContexto = document.getElementById('ai-training-contexto');
+        const aiTrainingChat = document.getElementById('ai-training-chat');
+        const aiTrainingChatHead = document.getElementById('ai-training-chat-head');
+        const btnAiTrainingSalvar = document.getElementById('btn-ai-training-salvar');
+        const btnAiTrainingSimular = document.getElementById('btn-ai-training-simular');
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[char]));
+        }
+
+        function corrigirTextoQuebrado(value) {
+            const texto = String(value ?? '');
+            if (!/[ÃÂ]/.test(texto)) return texto;
+            try {
+                return decodeURIComponent(escape(texto));
+            } catch (_error) {
+                return texto;
+            }
+        }
+
+        function normalizarMensagemErroValor(value) {
+            if (value === null || value === undefined || value === '') return '';
+            if (typeof value === 'string') return value;
+            if (Array.isArray(value)) {
+                return value.map(normalizarMensagemErroValor).filter(Boolean).join(' | ');
+            }
+            if (typeof value === 'object') {
+                const direto = value.message || value.error || value.detail || value.msg || value.reason;
+                if (direto) return normalizarMensagemErroValor(direto);
+                try {
+                    return JSON.stringify(value);
+                } catch (_error) {
+                    return String(value);
+                }
+            }
+            return String(value);
+        }
+
+        function mensagemErroApi(data, fallback) {
+            return corrigirTextoQuebrado(normalizarMensagemErroValor(data && data.detail ? data.detail : data) || fallback || 'Erro inesperado.');
+        }
+
+        function mensagemErro(error) {
+            return corrigirTextoQuebrado(normalizarMensagemErroValor(error && error.message ? error.message : error) || 'Erro inesperado.');
+        }
+
+        function formatarData(value) {
+            if (!value) return '-';
+            const data = new Date(value);
+            if (Number.isNaN(data.getTime())) return value;
+            return data.toLocaleString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function rotuloStatus(status) {
+            const mapa = {
+                ANSWERED: 'Respondida',
+                UNANSWERED: 'Não respondida',
+                CLOSED_UNANSWERED: 'Fechada sem resposta',
+                UNDER_REVIEW: 'Em revisão',
+                BANNED: 'Bloqueada'
+            };
+            return mapa[String(status || '').toUpperCase()] || (status || '-');
+        }
+
+        function classeStatus(status) {
+            const valor = String(status || '').toUpperCase();
+            if (valor === 'ANSWERED') return 'ok';
+            if (valor === 'UNANSWERED' || valor === 'UNDER_REVIEW') return 'warn';
+            return 'danger';
+        }
+
+        function ordenarPerguntasRecentes(perguntas) {
+            return [...perguntas].sort((a, b) => {
+                const dataA = new Date(a.date_created || a.last_updated || 0).getTime() || 0;
+                const dataB = new Date(b.date_created || b.last_updated || 0).getTime() || 0;
+                return dataB - dataA;
+            });
+        }
+
+        function formatarTempoRespostaML(minutos) {
+            const totalMinutos = Number(minutos);
+            if (!Number.isFinite(totalMinutos) || totalMinutos < 0) return 'Sem dados';
+            const arredondado = Math.round(totalMinutos);
+            if (arredondado < 60) return `${arredondado} min`;
+            const horas = Math.floor(arredondado / 60);
+            const mins = arredondado % 60;
+            if (horas < 24) return mins ? `${horas}h ${mins}min` : `${horas}h`;
+            const dias = Math.floor(horas / 24);
+            const horasRestantes = horas % 24;
+            return horasRestantes ? `${dias}d ${horasRestantes}h` : `${dias}d`;
+        }
+
+        function textoGanhoVendasML(segmento) {
+            if (!segmento || segmento.sales_percent_increase === null || segmento.sales_percent_increase === undefined) {
+                return 'Sem projeção de aumento';
+            }
+            const valor = Number(segmento.sales_percent_increase);
+            if (!Number.isFinite(valor)) return 'Sem projeção de aumento';
+            return `Potencial de +${valor}% em vendas`;
+        }
+
+        function metricTempoRespostaML(titulo, segmento, subtituloPadrao) {
+            const tempo = segmento && segmento.response_time !== undefined ? segmento.response_time : null;
+            const subtitulo = segmento && segmento.sales_percent_increase !== undefined
+                ? textoGanhoVendasML(segmento)
+                : subtituloPadrao;
+            return `<div class="metric"><strong>${escapeHtml(formatarTempoRespostaML(tempo))}</strong><span>${escapeHtml(titulo)} · ${escapeHtml(subtitulo)}</span></div>`;
+        }
+
+        function formatarCronometroPerguntas(ms) {
+            const totalSegundos = Math.max(0, Math.ceil(Number(ms || 0) / 1000));
+            const horas = Math.floor(totalSegundos / 3600);
+            const minutos = Math.floor((totalSegundos % 3600) / 60);
+            const segundos = totalSegundos % 60;
+            const doisDigitos = (valor) => String(valor).padStart(2, '0');
+            if (horas > 0) return `${horas}h ${doisDigitos(minutos)}min ${doisDigitos(segundos)}s`;
+            return `${minutos}min ${doisDigitos(segundos)}s`;
+        }
+
+        function chaveLojaCronometro(nome) {
+            return String(nome || '').trim();
+        }
+
+        function textoProximaChecagemLoja(nome, loja) {
+            const config = loja && loja.config_perguntas ? loja.config_perguntas : {};
+            if (!loja || loja.mercadolivre_conectado !== true) return 'Proxima checagem: Mercado Livre desconectado.';
+            if (config.responder_automaticamente !== true) return 'Proxima checagem: automacao desligada.';
+            const proxima = Number(state.automacaoPerguntasNextChecks[chaveLojaCronometro(nome)] || 0);
+            if (!Number.isFinite(proxima) || proxima <= 0) return 'Proxima checagem: aguardando agendamento...';
+            const restante = proxima - Date.now();
+            if (restante <= 1000) return 'Proxima checagem: agora.';
+            return `Proxima checagem em ${formatarCronometroPerguntas(restante)}.`;
+        }
+
+        function atualizarCronometrosAutomacao() {
+            document.querySelectorAll('[data-next-check-loja]').forEach((elemento) => {
+                const nome = elemento.dataset.nextCheckLoja || '';
+                const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(nome));
+                elemento.textContent = textoProximaChecagemLoja(nome, loja);
+            });
+        }
+
+        function registrarProximaChecagemLoja(nome, timestamp) {
+            const chave = chaveLojaCronometro(nome);
+            if (!chave) return;
+            state.automacaoPerguntasNextChecks[chave] = timestamp;
+            atualizarCronometrosAutomacao();
+        }
+
+        function iniciarCronometroAutomacao() {
+            if (state.automacaoPerguntasCountdownTimer) {
+                clearInterval(state.automacaoPerguntasCountdownTimer);
+                state.automacaoPerguntasCountdownTimer = null;
+            }
+            atualizarCronometrosAutomacao();
+            state.automacaoPerguntasCountdownTimer = setInterval(atualizarCronometrosAutomacao, 1000);
+        }
+
+        function renderizarControlesAutomacaoSelecionada() {
+            if (!perguntasAutomationControls) return;
+            const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(state.lojaSelecionada));
+            if (!loja || loja.mercadolivre_conectado !== true) {
+                perguntasAutomationControls.innerHTML = '<span class="store-next-check automation-next-check">Escolha uma loja para configurar a checagem.</span>';
+                return;
+            }
+            const nome = String(loja.nome || '').trim();
+            const config = loja.config_perguntas || {};
+            const intervaloMinutos = Math.max(1, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+            perguntasAutomationControls.innerHTML = `
+                <label class="automation-interval-control">
+                    <span>Verificar a cada</span>
+                    <input id="perguntas-intervalo-global" type="number" min="1" max="1440" step="1" value="${intervaloMinutos}" aria-label="Intervalo de checagem em minutos">
+                    <span>minuto(s)</span>
+                    <button class="store-config-save" type="button" id="btn-salvar-intervalo-perguntas">Aplicar</button>
+                    <span class="store-next-check automation-next-check" data-next-check-loja="${escapeHtml(nome)}">${escapeHtml(textoProximaChecagemLoja(nome, loja))}</span>
+                </label>
+            `;
+            const input = document.getElementById('perguntas-intervalo-global');
+            const button = document.getElementById('btn-salvar-intervalo-perguntas');
+            const salvar = () => salvarIntervaloLojaSelecionada();
+            if (button) button.addEventListener('click', salvar);
+            if (input) {
+                input.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        salvar();
+                        input.blur();
+                    }
+                });
+                input.addEventListener('change', salvar);
+            }
+            atualizarCronometrosAutomacao();
+        }
+
+        function ativarAba(nome) {
+            document.querySelectorAll('.tab-button').forEach((button) => {
+                const ativa = button.dataset.tab === nome;
+                button.classList.toggle('active', ativa);
+                button.setAttribute('aria-selected', ativa ? 'true' : 'false');
+            });
+            document.querySelectorAll('.tab-content').forEach((section) => {
+                section.classList.toggle('active', section.id === 'aba-' + nome);
+            });
+            if (nome === 'pos-venda' && state.lojaSelecionada) {
+                carregarPosVenda();
+            }
+            if (nome === 'mediacao' && state.lojaSelecionada) {
+                carregarMediacoes();
+            }
+            if (nome === 'treinar-ai') {
+                carregarTreinamentoAI();
+                carregarSkusTreinamentoAI();
+            }
+        }
+
+        function renderizarLojas() {
+            if (!state.lojas.length) {
+                const vazio = '<div class="empty-state"><div><h2>Nenhuma loja encontrada</h2><p>Cadastre uma loja em Integrações para começar.</p></div></div>';
+                lojasGrid.innerHTML = vazio;
+                posVendaLojasGrid.innerHTML = vazio;
+                perguntasStatus.textContent = 'Nenhuma loja cadastrada em Integrações.';
+                perguntasPagination.classList.add('hidden');
+                perguntasPagination.innerHTML = '';
+                renderizarControlesAutomacaoSelecionada();
+                return;
+            }
+
+            const lojasHtml = state.lojas.map((loja) => {
+                const nome = String(loja.nome || '').trim();
+                const conectado = loja.mercadolivre_conectado === true;
+                const mlStatus = String(loja.mercadolivre_status || '').trim();
+                const precisaReconectar = !conectado && mlStatus === 'reautenticar';
+                const mlMotivo = String(loja.mercadolivre_motivo || '').trim();
+                const badgeClasse = conectado ? 'ok' : (precisaReconectar ? 'danger' : 'warn');
+                const badgeTexto = conectado ? 'ML conectado' : (precisaReconectar ? 'Reconectar ML' : 'Conectar ML');
+                const active = nome === state.lojaSelecionada;
+                const seller = loja.seller_id ? `Conta ${escapeHtml(loja.seller_id)}` : (precisaReconectar ? 'OAuth incompleto' : 'Mercado Livre pendente');
+                const config = loja.config_perguntas || {};
+                const intervaloMinutos = Math.max(1, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+                return `
+                    <div class="store-card ${active ? 'active' : ''} ${conectado ? '' : 'disabled'}" data-loja="${escapeHtml(nome)}" tabindex="${conectado ? '0' : '-1'}" aria-disabled="${conectado ? 'false' : 'true'}">
+                        <span class="store-name">${escapeHtml(nome)}</span>
+                        <span class="store-meta">
+                            <span class="badge ${badgeClasse}" title="${escapeHtml(mlMotivo)}">${badgeTexto}</span>
+                            <span>${seller}</span>
+                        </span>
+                        <span class="store-options">
+                            <label class="store-option">
+                                <input class="store-config-checkbox" type="checkbox" data-config="responder_automaticamente" ${config.responder_automaticamente ? 'checked' : ''}>
+                                <span>Responder automaticamente</span>
+                            </label>
+                            <label class="store-option">
+                                <input class="store-config-checkbox" type="checkbox" data-config="solicitar_aprovacao" ${config.solicitar_aprovacao ? 'checked' : ''}>
+                                <span>Solicitar aprovação antes de mandar para o usuário</span>
+                            </label>
+                            <label class="store-option">
+                                <input class="store-config-checkbox" type="checkbox" data-config="habilitar_pos_venda_automatico" ${config.habilitar_pos_venda_automatico ? 'checked' : ''}>
+                                <span>Usar estas configurações também no pós-venda</span>
+                            </label>
+                        </span>
+                    </div>
+                `;
+            }).join('');
+
+            lojasGrid.innerHTML = lojasHtml;
+            posVendaLojasGrid.innerHTML = lojasHtml;
+            vincularEventosLojas(lojasGrid);
+            vincularEventosLojas(posVendaLojasGrid);
+            renderizarControlesAutomacaoSelecionada();
+        }
+
+        function vincularEventosLojas(container) {
+            container.querySelectorAll('.store-card').forEach((card) => {
+                card.addEventListener('click', (event) => {
+                    if (event.target.closest('.store-option')) return;
+                    if (card.classList.contains('disabled')) return;
+                    selecionarLoja(card.dataset.loja || '');
+                });
+                card.addEventListener('keydown', (event) => {
+                    if (!['Enter', ' '].includes(event.key)) return;
+                    if (event.target.closest('.store-option')) return;
+                    if (card.classList.contains('disabled')) return;
+                    event.preventDefault();
+                    selecionarLoja(card.dataset.loja || '');
+                });
+                card.querySelectorAll('.store-config-checkbox').forEach((input) => {
+                    input.addEventListener('click', (event) => event.stopPropagation());
+                    input.addEventListener('change', () => salvarConfigLoja(card));
+                });
+                card.querySelectorAll('.store-config-interval').forEach((input) => {
+                    input.addEventListener('click', (event) => event.stopPropagation());
+                    input.addEventListener('keydown', (event) => {
+                        event.stopPropagation();
+                        if (event.key === 'Enter') {
+                            event.preventDefault();
+                            salvarConfigLoja(card);
+                            input.blur();
+                        }
+                    });
+                    input.addEventListener('change', () => salvarConfigLoja(card));
+                    input.addEventListener('blur', () => salvarConfigLoja(card));
+                });
+                card.querySelectorAll('[data-config-action="salvar_intervalo"]').forEach((button) => {
+                    button.addEventListener('mousedown', (event) => event.preventDefault());
+                    button.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        salvarConfigLoja(card);
+                    });
+                });
+            });
+        }
+
+        async function salvarConfigLoja(card) {
+            const nome = card.dataset.loja || '';
+            if (!nome) return;
+            const responderAutomaticamente = !!card.querySelector('[data-config="responder_automaticamente"]')?.checked;
+            const solicitarAprovacao = !!card.querySelector('[data-config="solicitar_aprovacao"]')?.checked;
+            const habilitarPosVendaAutomatico = !!card.querySelector('[data-config="habilitar_pos_venda_automatico"]')?.checked;
+            const lojaAtual = state.lojas.find((item) => String(item.nome || '') === nome);
+            const configAtual = lojaAtual && lojaAtual.config_perguntas ? lojaAtual.config_perguntas : {};
+            const intervaloInput = card.querySelector('[data-config="intervalo_minutos"]');
+            const intervaloMinutos = Math.max(1, Math.min(1440, Number((intervaloInput && intervaloInput.value) || configAtual.intervalo_minutos || 10) || 10));
+            if (intervaloInput) intervaloInput.value = String(intervaloMinutos);
+            try {
+                const response = await fetch('/api/mercadolivre/perguntas/lojas/config', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        loja: nome,
+                        responder_automaticamente: responderAutomaticamente,
+                        solicitar_aprovacao: solicitarAprovacao,
+                        habilitar_pos_venda_automatico: habilitarPosVendaAutomatico,
+                        intervalo_minutos: intervaloMinutos
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao salvar configuração.');
+                const loja = state.lojas.find((item) => String(item.nome || '') === nome);
+                if (loja) loja.config_perguntas = data.config_perguntas || {};
+                lojasStatus.textContent = 'Configuração da loja salva.';
+                renderizarLojas();
+                iniciarAutomacaoPerguntas();
+            } catch (error) {
+                alert(`Erro ao salvar configuração da loja: ${mensagemErro(error)}`);
+                renderizarLojas();
+            }
+        }
+
+        async function salvarIntervaloLojaSelecionada() {
+            const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(state.lojaSelecionada));
+            if (!loja) return;
+            const input = document.getElementById('perguntas-intervalo-global');
+            const config = loja.config_perguntas || {};
+            const intervaloMinutos = Math.max(1, Math.min(1440, Number(input?.value || config.intervalo_minutos || 10) || 10));
+            if (input) input.value = String(intervaloMinutos);
+            try {
+                const response = await fetch('/api/mercadolivre/perguntas/lojas/config', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        loja: loja.nome || '',
+                        responder_automaticamente: config.responder_automaticamente === true,
+                        solicitar_aprovacao: config.solicitar_aprovacao === true,
+                        habilitar_pos_venda_automatico: config.habilitar_pos_venda_automatico === true,
+                        intervalo_minutos: intervaloMinutos
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao salvar intervalo.');
+                loja.config_perguntas = data.config_perguntas || {};
+                lojasStatus.textContent = 'Intervalo de checagem salvo.';
+                renderizarLojas();
+                iniciarAutomacaoPerguntas();
+            } catch (error) {
+                alert(`Erro ao salvar intervalo: ${mensagemErro(error)}`);
+                renderizarControlesAutomacaoSelecionada();
+            }
+        }
+
+        function notificarAprovacaoSidebar(aprovacao) {
+            const id = String((aprovacao && aprovacao.id) || '').trim();
+            if (!id || state.aprovacoesNotificadas.has(id)) return;
+            state.aprovacoesNotificadas.add(id);
+
+            if (typeof window.JKIASidebarNotifyApproval === 'function') {
+                window.JKIASidebarNotifyApproval(aprovacao);
+                return;
+            }
+
+            window.__JK_PENDING_IA_APPROVALS__ = window.__JK_PENDING_IA_APPROVALS__ || [];
+            window.__JK_PENDING_IA_APPROVALS__.push(aprovacao);
+        }
+
+        async function carregarAprovacoesPendentes() {
+            try {
+                const response = await fetch('/api/mercadolivre/perguntas/aprovacoes', {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar aprovações pendentes.');
+                const pendentes = Array.isArray(data.pendentes) ? data.pendentes : [];
+                const idsPendentes = new Set(pendentes.map((item) => String((item && item.id) || '').trim()).filter(Boolean));
+                Array.from(state.aprovacoesNotificadas).forEach((id) => {
+                    if (idsPendentes.has(id)) return;
+                    state.aprovacoesNotificadas.delete(id);
+                    if (typeof window.JKIASidebarResolveApproval === 'function') {
+                        window.JKIASidebarResolveApproval(id, 'Respondida fora da aprovacao.');
+                    } else {
+                        window.dispatchEvent(new CustomEvent('jk-ia-approval-resolved', {
+                            detail: { id, mensagem: 'Respondida fora da aprovacao.' }
+                        }));
+                    }
+                });
+                pendentes.forEach(notificarAprovacaoSidebar);
+            } catch (error) {
+                console.warn('[Perguntas IA] Não foi possível carregar aprovações pendentes:', error);
+            }
+        }
+
+        function existeLojaComAutomacaoAtiva() {
+            return state.lojas.some((loja) => {
+                const config = loja.config_perguntas || {};
+                return loja.mercadolivre_conectado === true && config.responder_automaticamente === true;
+            });
+        }
+
+        function existeLojaComAutomacaoPosVendaAtiva(lojaNome = '') {
+            const filtro = String(lojaNome || '').trim();
+            return state.lojas.some((loja) => {
+                const config = loja.config_perguntas || {};
+                const nome = String(loja.nome || '').trim();
+                if (filtro && nome !== filtro) return false;
+                return loja.mercadolivre_conectado === true
+                    && config.responder_automaticamente === true
+                    && config.habilitar_pos_venda_automatico === true;
+            });
+        }
+
+        function lojasComAutomacaoAtiva() {
+            return state.lojas.filter((loja) => {
+                const config = loja.config_perguntas || {};
+                return loja.mercadolivre_conectado === true && config.responder_automaticamente === true;
+            });
+        }
+
+        function intervaloAutomacaoLojaMs(loja) {
+            const config = loja && loja.config_perguntas ? loja.config_perguntas : {};
+            const minutos = Math.max(1, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+            return minutos * 60 * 1000;
+        }
+
+        async function executarAutomacaoPerguntas(lojaNome = '') {
+            if (state.automacaoPerguntasRodando || !existeLojaComAutomacaoAtiva()) return;
+            state.automacaoPerguntasRodando = true;
+            try {
+                const params = new URLSearchParams({ max_per_store: '3' });
+                if (lojaNome) params.set('loja', lojaNome);
+                const response = await fetch(`/api/mercadolivre/perguntas/automacao/poll?${params.toString()}`, {
+                    method: 'POST',
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro na automação de perguntas.');
+
+                const pendentes = [
+                    ...(Array.isArray(data.novas_pendentes) ? data.novas_pendentes : []),
+                    ...(Array.isArray(data.pendentes) ? data.pendentes : [])
+                ];
+                pendentes.forEach(notificarAprovacaoSidebar);
+
+                if (
+                    Array.isArray(data.enviadas) &&
+                    data.enviadas.length &&
+                    !state.carregandoPerguntas &&
+                    document.getElementById('aba-perguntas').classList.contains('active')
+                ) {
+                    carregarPerguntas(state.paginaPerguntas || 1);
+                }
+            } catch (error) {
+                console.warn('[Perguntas IA] Falha ao executar automação:', error);
+            } finally {
+                state.automacaoPerguntasRodando = false;
+            }
+        }
+
+        async function executarAutomacaoPosVenda(lojaNome = '') {
+            if (state.automacaoPosVendaRodando || !existeLojaComAutomacaoPosVendaAtiva(lojaNome || state.lojaSelecionada || '')) return;
+            state.automacaoPosVendaRodando = true;
+            try {
+                const params = new URLSearchParams({ max_per_store: '2' });
+                if (lojaNome || state.lojaSelecionada) params.set('loja', lojaNome || state.lojaSelecionada);
+                const response = await fetch(`/api/mercadolivre/pos-venda/automacao/poll?${params.toString()}`, {
+                    method: 'POST',
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro na automação de pós venda.');
+
+                const pendentes = [
+                    ...(Array.isArray(data.novas_pendentes) ? data.novas_pendentes : []),
+                    ...(Array.isArray(data.pendentes) ? data.pendentes : [])
+                ];
+                pendentes.forEach(notificarAprovacaoSidebar);
+
+                if (
+                    Array.isArray(data.enviadas) &&
+                    data.enviadas.length &&
+                    !state.carregandoPosVenda &&
+                    document.getElementById('aba-pos-venda').classList.contains('active')
+                ) {
+                    carregarPosVenda(true);
+                }
+            } catch (error) {
+                console.warn('[Pós venda IA] Falha ao executar automação:', error);
+            } finally {
+                state.automacaoPosVendaRodando = false;
+            }
+        }
+
+        function iniciarAutomacaoPerguntas() {
+            if (state.automacaoPerguntasTimer) {
+                clearInterval(state.automacaoPerguntasTimer);
+                state.automacaoPerguntasTimer = null;
+            }
+            (state.automacaoPerguntasTimers || []).forEach((timerId) => clearInterval(timerId));
+            state.automacaoPerguntasTimers = [];
+            if (state.automacaoPerguntasCountdownTimer) {
+                clearInterval(state.automacaoPerguntasCountdownTimer);
+                state.automacaoPerguntasCountdownTimer = null;
+            }
+            state.automacaoPerguntasNextChecks = {};
+
+            carregarAprovacoesPendentes();
+            const lojasAtivas = lojasComAutomacaoAtiva();
+            if (!lojasAtivas.length) {
+                atualizarCronometrosAutomacao();
+                return;
+            }
+            iniciarCronometroAutomacao();
+
+            lojasAtivas.forEach((loja, index) => {
+                const nomeLoja = String(loja.nome || '').trim();
+                const intervaloMs = intervaloAutomacaoLojaMs(loja);
+                const delayPerguntas = 1500 + (index * 600);
+                const delayPosVenda = 2500 + (index * 600);
+                registrarProximaChecagemLoja(nomeLoja, Date.now() + Math.min(delayPerguntas, delayPosVenda));
+                setTimeout(() => {
+                    executarAutomacaoPerguntas(nomeLoja);
+                    registrarProximaChecagemLoja(nomeLoja, Date.now() + intervaloMs);
+                }, delayPerguntas);
+                setTimeout(() => {
+                    executarAutomacaoPosVenda(nomeLoja);
+                    registrarProximaChecagemLoja(nomeLoja, Date.now() + intervaloMs);
+                }, delayPosVenda);
+                const timerId = setInterval(() => {
+                    registrarProximaChecagemLoja(nomeLoja, Date.now() + intervaloMs);
+                    executarAutomacaoPerguntas(nomeLoja);
+                    executarAutomacaoPosVenda(nomeLoja);
+                }, intervaloMs);
+                state.automacaoPerguntasTimers.push(timerId);
+            });
+        }
+
+        function renderizarResumo(data) {
+            const resumo = data.status_resumo || {};
+            const total = Number(data.total || 0);
+            const retornadas = Number(data.retornadas || 0);
+            const respondidas = Number(resumo.ANSWERED || 0);
+            const pendentes = Number(resumo.UNANSWERED || 0);
+            const tempoML = data.tempo_resposta_ml || {};
+            const metricasTempo = tempoML.available ? [
+                metricTempoRespostaML('Tempo médio ML', tempoML.total || {}, 'Últimos 14 dias'),
+                metricTempoRespostaML('Horário comercial', tempoML.weekdays_working_hours || {}, 'Seg. a sex. 9h-18h'),
+                metricTempoRespostaML('Fora do horário', tempoML.weekdays_extra_hours || {}, 'Seg. a sex. 18h-00h'),
+                metricTempoRespostaML('Fim de semana', tempoML.weekend || {}, 'Sáb. e dom.')
+            ].join('') : `
+                <div class="metric"><strong>Sem dados</strong><span>Tempo de resposta ML · ${escapeHtml(tempoML.erro || 'Métrica indisponível')}</span></div>
+            `;
+            perguntasSummary.classList.remove('hidden');
+            perguntasSummary.innerHTML = `
+                <div class="metric"><strong>${retornadas}</strong><span>Perguntas carregadas</span></div>
+                <div class="metric"><strong>${total}</strong><span>Total na conta</span></div>
+                <div class="metric"><strong>${pendentes}</strong><span>Não respondidas</span></div>
+                <div class="metric"><strong>${respondidas}</strong><span>Respondidas</span></div>
+                ${metricasTempo}
+            `;
+        }
+
+        function renderizarChatPerguntas(pergunta) {
+            const chat = Array.isArray(pergunta.buyer_question_chat) ? pergunta.buyer_question_chat : [];
+            const historicoCount = Number(pergunta.buyer_question_history_count || 0);
+            if (historicoCount <= 1 || chat.length <= 2) return '';
+            const comprador = escapeHtml(pergunta.buyer_name || pergunta.buyer_nickname || pergunta.from_id || 'Comprador');
+            const linhas = chat.map((msg) => {
+                const role = String(msg.role || '').toLowerCase() === 'seller' ? 'seller' : 'buyer';
+                const label = role === 'seller' ? 'Loja' : comprador;
+                return `
+                    <div class="question-chat-bubble ${role}">
+                        <span class="training-message-role">${escapeHtml(label)}${msg.date ? ` · ${escapeHtml(formatarData(msg.date))}` : ''}</span>
+                        ${escapeHtml(msg.text || '-')}
+                    </div>
+                `;
+            }).join('');
+            return `
+                <div class="question-chat">
+                    <span class="question-chat-title">Histórico deste comprador no anúncio</span>
+                    ${linhas}
+                </div>
+            `;
+        }
+
+        function renderizarPaginacaoPerguntas(total) {
+            const totalPaginas = Math.max(1, Math.ceil(total / state.tamanhoPaginaPerguntas));
+            if (total <= state.tamanhoPaginaPerguntas) {
+                perguntasPagination.classList.add('hidden');
+                perguntasPagination.innerHTML = '';
+                return;
+            }
+
+            const inicio = ((state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas) + 1;
+            const fim = Math.min(total, state.paginaPerguntas * state.tamanhoPaginaPerguntas);
+            perguntasPagination.classList.remove('hidden');
+            perguntasPagination.innerHTML = `
+                <span>Mostrando ${inicio}-${fim} de ${total} perguntas</span>
+                <div class="pagination-actions">
+                    <button class="pagination-btn" type="button" data-page="${state.paginaPerguntas - 1}" ${state.paginaPerguntas <= 1 ? 'disabled' : ''}>Anterior</button>
+                    <span>Página ${state.paginaPerguntas} de ${totalPaginas}</span>
+                    <button class="pagination-btn" type="button" data-page="${state.paginaPerguntas + 1}" ${state.paginaPerguntas >= totalPaginas ? 'disabled' : ''}>Próxima</button>
+                </div>
+            `;
+
+            perguntasPagination.querySelectorAll('.pagination-btn').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const pagina = Number(button.dataset.page || 1);
+                    if (pagina < 1 || pagina > totalPaginas || pagina === state.paginaPerguntas) return;
+                    carregarPerguntas(pagina);
+                });
+            });
+        }
+
+        function renderizarPerguntas() {
+            const perguntas = state.perguntas;
+            if (!perguntas.length) {
+                perguntasList.innerHTML = '<div class="empty-state"><div><h2>Nenhuma pergunta encontrada</h2><p>Não há perguntas para o filtro selecionado nesta loja.</p></div></div>';
+                perguntasPagination.classList.add('hidden');
+                perguntasPagination.innerHTML = '';
+                return;
+            }
+
+            const total = state.totalPerguntas || perguntas.length;
+            const totalPaginas = Math.max(1, Math.ceil(total / state.tamanhoPaginaPerguntas));
+            state.paginaPerguntas = Math.min(Math.max(1, state.paginaPerguntas), totalPaginas);
+            const pagina = perguntas;
+
+            perguntasList.innerHTML = pagina.map((pergunta) => {
+                const titulo = pergunta.item_title || pergunta.item_id || 'Anúncio';
+                const tituloHtml = pergunta.item_permalink
+                    ? `<a href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">${escapeHtml(titulo)}</a>`
+                    : escapeHtml(titulo);
+                const foto = pergunta.item_thumbnail
+                    ? `<img src="${escapeHtml(pergunta.item_thumbnail)}" alt="${escapeHtml(titulo)}" loading="lazy" referrerpolicy="no-referrer">`
+                    : '<span>Sem foto</span>';
+                const sku = pergunta.item_sku || '-';
+                const comprador = pergunta.buyer_name || pergunta.buyer_nickname || pergunta.from_id || '-';
+                const answer = pergunta.answer && pergunta.answer.text
+                    ? `<div class="answer-box">${escapeHtml(pergunta.answer.text)}</div>`
+                    : '<div class="answer-box empty">Sem resposta registrada.</div>';
+                const chatPerguntas = renderizarChatPerguntas(pergunta);
+                const podeResponder = !(pergunta.answer && pergunta.answer.text) && String(pergunta.status || '').toUpperCase() === 'UNANSWERED';
+                const composer = podeResponder ? `
+                    <div class="question-answer-composer">
+                        <textarea class="question-answer-text" maxlength="2000" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
+                        <div class="question-answer-actions">
+                            <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia">Gerar resposta com IA</button>
+                            <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Enviar resposta</button>
+                            <span class="question-answer-status">Limite do Mercado Livre: 2000 caracteres.</span>
+                        </div>
+                    </div>
+                ` : '';
+                return `
+                    <article class="question-card" data-question-card data-question-id="${escapeHtml(pergunta.id || '')}">
+                        <div class="question-body">
+                            <div class="question-thumb">${foto}</div>
+                            <div>
+                                <div class="question-top">
+                                    <div>
+                                        <h3 class="question-title">${tituloHtml}</h3>
+                                        <span class="badge ${classeStatus(pergunta.status)}">${escapeHtml(rotuloStatus(pergunta.status))}</span>
+                                        <div class="question-meta">
+                                            <span>Anúncio ${escapeHtml(pergunta.item_id || '-')}</span>
+                                            <span>SKU ${escapeHtml(sku)}</span>
+                                            <span>Comprador ${escapeHtml(comprador)}</span>
+                                            <span>Pergunta ${escapeHtml(pergunta.id || '-')}</span>
+                                        </div>
+                                    </div>
+                                    <span class="question-date">${escapeHtml(formatarData(pergunta.date_created))}</span>
+                                </div>
+                                <p class="question-text">${escapeHtml(pergunta.text || '-')}</p>
+                                ${chatPerguntas || answer}
+                                ${composer}
+                            </div>
+                        </div>
+                    </article>
+                `;
+            }).join('');
+            configurarAcoesRespostaPerguntas();
+            renderizarPaginacaoPerguntas(state.totalPerguntas || perguntas.length);
+        }
+
+        function obterPerguntaPorId(questionId) {
+            const id = String(questionId || '').trim();
+            return state.perguntas.find((pergunta) => String(pergunta.id || '').trim() === id) || null;
+        }
+
+        function setStatusRespostaPergunta(statusEl, texto, tipo = '') {
+            if (!statusEl) return;
+            statusEl.textContent = texto || '';
+            statusEl.classList.toggle('error', tipo === 'error');
+            statusEl.classList.toggle('ok', tipo === 'ok');
+        }
+
+        function configurarAcoesRespostaPerguntas() {
+            perguntasList.querySelectorAll('[data-question-card]').forEach((card) => {
+                const questionId = card.dataset.questionId || '';
+                const textarea = card.querySelector('.question-answer-text');
+                const btnGerar = card.querySelector('.question-ai-answer-btn');
+                const btnEnviar = card.querySelector('.question-send-answer-btn');
+                const status = card.querySelector('.question-answer-status');
+                if (!textarea || !btnEnviar) return;
+
+                const atualizarBotaoEnviar = () => {
+                    btnEnviar.disabled = !textarea.value.trim();
+                };
+                textarea.addEventListener('input', atualizarBotaoEnviar);
+                btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, textarea, btnEnviar, btnGerar, status));
+                if (btnGerar) {
+                    btnGerar.addEventListener('click', () => gerarRespostaPerguntaIa(questionId, textarea, btnEnviar, btnGerar, status));
+                }
+                atualizarBotaoEnviar();
+            });
+        }
+
+        async function gerarRespostaPerguntaIa(questionId, textarea, btnEnviar, btnGerar, status) {
+            const pergunta = obterPerguntaPorId(questionId);
+            if (!pergunta || !state.lojaSelecionada) return;
+            btnGerar.disabled = true;
+            btnEnviar.disabled = true;
+            setStatusRespostaPergunta(status, 'Gerando sugestao com IA...');
+            try {
+                const response = await fetch('/api/mercadolivre/perguntas/resposta/gerar', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        loja: state.lojaSelecionada,
+                        pergunta
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao gerar resposta com IA.');
+                textarea.value = data.resposta || '';
+                textarea.dispatchEvent(new Event('input'));
+                setStatusRespostaPergunta(status, 'Sugestao gerada. Revise e edite antes de enviar.', 'ok');
+                textarea.focus();
+            } catch (error) {
+                setStatusRespostaPergunta(status, `Erro ao gerar IA: ${mensagemErro(error)}`, 'error');
+            } finally {
+                btnGerar.disabled = false;
+                btnEnviar.disabled = !textarea.value.trim();
+            }
+        }
+
+        async function enviarRespostaPerguntaManual(questionId, textarea, btnEnviar, btnGerar, status) {
+            const pergunta = obterPerguntaPorId(questionId);
+            const texto = String(textarea.value || '').trim();
+            if (!pergunta || !state.lojaSelecionada || !texto) return;
+            btnEnviar.disabled = true;
+            if (btnGerar) btnGerar.disabled = true;
+            setStatusRespostaPergunta(status, 'Enviando resposta ao Mercado Livre...');
+            try {
+                const response = await fetch('/api/mercadolivre/perguntas/responder', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        loja: state.lojaSelecionada,
+                        question_id: questionId,
+                        resposta: texto
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
+                pergunta.answer = {
+                    text: data.resposta || texto,
+                    status: 'ANSWERED',
+                    date_created: new Date().toISOString()
+                };
+                pergunta.status = 'ANSWERED';
+                perguntasStatus.textContent = 'Resposta enviada ao Mercado Livre.';
+                renderizarPerguntas();
+            } catch (error) {
+                setStatusRespostaPergunta(status, `Erro ao enviar: ${mensagemErro(error)}`, 'error');
+                btnEnviar.disabled = !textarea.value.trim();
+                if (btnGerar) btnGerar.disabled = false;
+            }
+        }
+
+        async function carregarLojas() {
+            lojasStatus.textContent = 'Carregando lojas...';
+            try {
+                const response = await fetch('/api/mercadolivre/perguntas/lojas', {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar lojas.');
+                state.lojas = Array.isArray(data.lojas) ? data.lojas : [];
+                const primeiraConectada = state.lojas.find((loja) => loja.mercadolivre_conectado);
+                const lojaSelecionadaAtual = state.lojas.find((loja) => String(loja.nome || '') === String(state.lojaSelecionada || ''));
+                if (!lojaSelecionadaAtual || lojaSelecionadaAtual.mercadolivre_conectado !== true) {
+                    state.lojaSelecionada = primeiraConectada ? (primeiraConectada.nome || '') : '';
+                } else if (!state.lojaSelecionada && primeiraConectada) {
+                    state.lojaSelecionada = primeiraConectada.nome || '';
+                }
+                lojasStatus.textContent = state.lojas.length
+                    ? `${state.lojas.length} loja(s) cadastrada(s)`
+                    : 'Nenhuma loja cadastrada';
+                renderizarLojas();
+                atualizarCabecalhoPosVenda();
+                atualizarCabecalhoMediacao();
+                iniciarAutomacaoPerguntas();
+                if (state.lojaSelecionada) await carregarPerguntas();
+            } catch (error) {
+                lojasStatus.textContent = 'Erro ao carregar lojas.';
+                lojasGrid.innerHTML = `<div class="empty-state"><div><h2>Falha ao carregar lojas</h2><p>${escapeHtml(mensagemErro(error))}</p></div></div>`;
+            }
+        }
+
+        async function selecionarLoja(nome) {
+            if (!nome || state.carregandoPerguntas) return;
+            state.lojaSelecionada = nome;
+            resetarPaginacaoPosVenda();
+            resetarMediacoes();
+            renderizarLojas();
+            atualizarCabecalhoPosVenda();
+            atualizarCabecalhoMediacao();
+            if (document.getElementById('aba-pos-venda').classList.contains('active')) {
+                await carregarPosVenda();
+            } else if (document.getElementById('aba-mediacao').classList.contains('active')) {
+                await carregarMediacoes(true);
+            } else {
+                await carregarPerguntas();
+            }
+        }
+
+        async function carregarPerguntas(pagina = 1) {
+            if (!state.lojaSelecionada) return;
+            state.carregandoPerguntas = true;
+            btnRecarregar.disabled = true;
+            perguntasSummary.classList.add('hidden');
+            perguntasList.innerHTML = '';
+            perguntasPagination.classList.add('hidden');
+            perguntasPagination.innerHTML = '';
+            state.perguntas = [];
+            state.totalPerguntas = 0;
+            state.paginaPerguntas = Math.max(1, Number(pagina) || 1);
+            perguntasStatus.textContent = `Carregando perguntas de ${state.lojaSelecionada}...`;
+
+            try {
+                const offset = (state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas;
+                const params = new URLSearchParams({
+                    loja: state.lojaSelecionada,
+                    carregar_todas: 'false',
+                    offset: String(offset),
+                    limit: String(state.tamanhoPaginaPerguntas)
+                });
+                if (statusFiltro.value) params.set('status', statusFiltro.value);
+                const response = await fetch(`/api/mercadolivre/perguntas?${params.toString()}`, {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar perguntas.');
+                const perguntas = ordenarPerguntasRecentes(Array.isArray(data.questions) ? data.questions : []);
+                state.perguntas = perguntas;
+                state.totalPerguntas = Number(data.total || perguntas.length || 0);
+                perguntasStatus.textContent = data.interrompido
+                    ? `${perguntas.length} pergunta(s) carregada(s). Mostrando 20 por página, das mais recentes para as mais antigas. O Mercado Livre limitou esta busca aos registros mais recentes.`
+                    : `${perguntas.length} pergunta(s) carregada(s) da loja ${state.lojaSelecionada}. Mostrando 20 por página, das mais recentes para as mais antigas.`;
+                renderizarResumo(data);
+                renderizarPerguntas();
+            } catch (error) {
+                perguntasStatus.textContent = `Erro ao carregar perguntas: ${mensagemErro(error)}`;
+                perguntasList.innerHTML = '';
+                perguntasPagination.classList.add('hidden');
+                perguntasPagination.innerHTML = '';
+            } finally {
+                state.carregandoPerguntas = false;
+                btnRecarregar.disabled = false;
+            }
+        }
+
+        function atualizarCabecalhoPosVenda() {
+            posVendaLojaStatus.textContent = state.lojaSelecionada
+                ? `Loja selecionada: ${state.lojaSelecionada}`
+                : 'Escolha uma loja conectada.';
+        }
+
+        function resetarPaginacaoPosVenda() {
+            state.posVendaPagina = 1;
+            state.posVendaOffset = 0;
+            state.posVendaNextOffset = null;
+            state.posVendaOffsets = [0];
+            state.posVendaCarregadoPara = '';
+            state.posVendaConversaSelecionada = null;
+            posVendaDetail.classList.add('hidden');
+            posVendaDetail.innerHTML = '';
+        }
+
+        function obterBuscaPosVenda() {
+            return String(posVendaBusca?.value || '').trim();
+        }
+
+        function atualizarCabecalhoMediacao() {
+            mediacaoLojaStatus.textContent = state.lojaSelecionada
+                ? `Loja selecionada: ${state.lojaSelecionada}`
+                : 'Escolha uma loja conectada.';
+        }
+
+        function resetarMediacoes() {
+            state.mediacaoCarregadoPara = '';
+            state.mediacaoConversas = [];
+            mediacaoSummary.classList.add('hidden');
+            mediacaoSummary.innerHTML = '';
+            mediacaoList.innerHTML = '';
+        }
+
+        function obterBuscaMediacao() {
+            return String(mediacaoBusca?.value || '').trim();
+        }
+
+        function formatarMoeda(value) {
+            const numero = Number(value || 0);
+            return numero.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        }
+
+        function rotuloUltimaMensagem(venda) {
+            const explicito = String(venda?.last_message_sender_label || '').trim();
+            if (explicito) return explicito;
+            const papel = String(venda?.last_message_role || '').trim().toLowerCase();
+            if (papel === 'loja' || papel === 'seller' || papel === 'vendedor') return 'Loja';
+            if (papel === 'comprador' || papel === 'buyer') return 'Comprador';
+            const origem = String(venda?.last_message_from || '').trim();
+            const vendedor = String(venda?.seller_id || '').trim();
+            if (origem && vendedor && origem === vendedor) return 'Loja';
+            return origem ? 'Comprador' : '';
+        }
+
+        function chaveCachePosVenda() {
+            return `jk_pos_venda_cache:${state.lojaSelecionada || 'sem-loja'}:${posVendaDias.value}:${state.posVendaOffset}:${obterBuscaPosVenda().toLowerCase()}`;
+        }
+
+        function salvarCachePosVenda(data) {
+            try {
+                localStorage.setItem(chaveCachePosVenda(), JSON.stringify({
+                    saved_at: new Date().toISOString(),
+                    data
+                }));
+            } catch (error) {
+                console.warn('[Pós venda] Não foi possível salvar cache:', error);
+            }
+        }
+
+        function carregarCachePosVenda() {
+            try {
+                const bruto = localStorage.getItem(chaveCachePosVenda());
+                if (!bruto) return null;
+                const payload = JSON.parse(bruto);
+                return payload && typeof payload === 'object' ? payload : null;
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        function renderizarResumoPosVenda(data) {
+            posVendaSummary.classList.remove('hidden');
+            posVendaSummary.innerHTML = `
+                <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>Vendas com conversa</span></div>
+                <div class="metric"><strong>${Number(data.orders_avaliadas || 0)}</strong><span>Vendas avaliadas</span></div>
+                <div class="metric"><strong>${Number(data.orders_total || 0)}</strong><span>Vendas no período</span></div>
+                <div class="metric"><strong>${Number(data.dias || 0)}</strong><span>Dias consultados</span></div>
+            `;
+        }
+
+        function renderizarResumoMediacao(data) {
+            mediacaoSummary.classList.remove('hidden');
+            mediacaoSummary.innerHTML = `
+                <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>Casos em aberto</span></div>
+                <div class="metric"><strong>${Number(data.mediacoes_total || 0)}</strong><span>Mediações abertas</span></div>
+                <div class="metric"><strong>${Number(data.devolucoes_total || 0)}</strong><span>Devoluções em andamento</span></div>
+                <div class="metric"><strong>${Number(data.orders_avaliadas || 0)}</strong><span>Vendas avaliadas</span></div>
+                <div class="metric"><strong>${Number(data.dias || 0)}</strong><span>Dias consultados</span></div>
+            `;
+        }
+
+        function renderizarMediacoes(mediacoes) {
+            if (!mediacoes.length) {
+                const busca = obterBuscaMediacao();
+                state.mediacaoConversas = [];
+                mediacaoList.innerHTML = busca
+                    ? `<div class="empty-state"><div><h2>Nenhum caso encontrado</h2><p>Nenhuma venda em mediação ou devolução foi encontrada para "${escapeHtml(busca)}".</p></div></div>`
+                    : '<div class="empty-state"><div><h2>Nenhum caso aberto</h2><p>Não há mediações abertas ou devoluções em andamento no período selecionado.</p></div></div>';
+                return;
+            }
+
+            state.mediacaoConversas = mediacoes;
+            mediacaoList.innerHTML = mediacoes.map((venda) => {
+                const itens = Array.isArray(venda.items) ? venda.items : [];
+                const itemComFoto = itens.find((item) => item.thumbnail) || itens[0] || {};
+                const foto = itemComFoto.thumbnail
+                    ? `<img src="${escapeHtml(itemComFoto.thumbnail)}" alt="${escapeHtml(itemComFoto.title || 'Produto')}" loading="lazy" referrerpolicy="no-referrer">`
+                    : '<span>Sem foto</span>';
+                const itensTexto = itens.length
+                    ? itens.map((item) => {
+                        const qtd = item.quantity ? `${escapeHtml(item.quantity)}x ` : '';
+                        const sku = item.sku ? ` · SKU ${escapeHtml(item.sku)}` : '';
+                        const mlb = item.id ? ` · MLB ${escapeHtml(item.id)}` : '';
+                        return `${qtd}${escapeHtml(item.title || 'Produto')}${sku}${mlb}`;
+                    }).join('<br>')
+                    : escapeHtml(venda.item_title || 'Produtos da venda');
+                const atualizada = venda.claim_last_updated || venda.claim_date_created || venda.date_created;
+                const motivoTexto = venda.claim_reason_detail || venda.claim_reason_name || '';
+                const tipoClaim = String(venda.claim_kind || venda.claim_type || '').toLowerCase();
+                const ehDevolucao = tipoClaim === 'devolucao' || tipoClaim === 'return' || tipoClaim === 'returns';
+                const rotuloTipo = ehDevolucao ? 'Devolução' : 'Mediação';
+                const classeTipo = ehDevolucao ? 'danger' : 'warn';
+                const motivo = motivoTexto
+                    ? `Motivo: ${escapeHtml(motivoTexto)}`
+                    : (ehDevolucao ? 'Devolução em andamento no Mercado Livre.' : 'Mediação aberta no Mercado Livre.');
+                return `
+                    <article class="question-card">
+                        <div class="question-body">
+                            <div class="question-thumb">${foto}</div>
+                            <div>
+                                <div class="question-top">
+                                    <div>
+                                        <h3 class="question-title">Venda ${escapeHtml(venda.order_id || '-')}</h3>
+                                        <div class="sale-meta">
+                                            <span>Claim ${escapeHtml(venda.claim_id || '-')}</span>
+                                            <span>Pack ${escapeHtml(venda.pack_id || '-')}</span>
+                                            <span>Comprador ${escapeHtml(venda.buyer_nickname || venda.buyer_id || '-')}</span>
+                                            <span class="sale-value">${escapeHtml(formatarMoeda(venda.total_amount))}</span>
+                                        </div>
+                                    </div>
+                                    <span class="question-date">${escapeHtml(formatarData(atualizada))}</span>
+                                </div>
+                                <div class="sale-items">${itensTexto}</div>
+                                <div class="sale-meta">
+                                    <span class="badge ${classeTipo}">${rotuloTipo}</span>
+                                    <span>Status: ${escapeHtml(venda.claim_status || '-')}</span>
+                                    <span>Etapa: ${escapeHtml(venda.claim_stage || '-')}</span>
+                                    <span>Venda: ${escapeHtml(formatarData(venda.date_created))}</span>
+                                </div>
+                                <div class="answer-box">${motivo}</div>
+                            </div>
+                        </div>
+                    </article>
+                `;
+            }).join('');
+        }
+
+        async function carregarMediacoes(forcar = false) {
+            if (!state.lojaSelecionada || state.carregandoMediacoes) return;
+            const busca = obterBuscaMediacao();
+            const chave = `${state.lojaSelecionada}:${mediacaoDias.value}:${busca.toLowerCase()}`;
+            if (!forcar && state.mediacaoCarregadoPara === chave) return;
+
+            state.carregandoMediacoes = true;
+            btnMediacaoRecarregar.disabled = true;
+            mediacaoSummary.classList.add('hidden');
+            mediacaoList.innerHTML = '';
+            mediacaoStatus.textContent = busca
+                ? `Buscando "${busca}" nas vendas em mediação ou devolução de ${state.lojaSelecionada}...`
+                : `Carregando vendas em mediação ou devolução de ${state.lojaSelecionada}...`;
+
+            try {
+                const params = new URLSearchParams({
+                    loja: state.lojaSelecionada,
+                    dias: mediacaoDias.value,
+                    limit: '20',
+                    max_claims: '300'
+                });
+                if (busca) params.set('busca', busca);
+                const response = await fetch(`/api/mercadolivre/pos-venda/mediacoes?${params.toString()}`, {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar mediações.');
+                const mediacoes = Array.isArray(data.conversas) ? data.conversas : [];
+                mediacaoStatus.textContent = busca
+                    ? `${Number(data.conversas_total || mediacoes.length || 0)} caso(s) para "${busca}" em ${state.lojaSelecionada}.`
+                    : `${Number(data.conversas_total || mediacoes.length || 0)} venda(s) em mediação ou devolução em ${state.lojaSelecionada}.`;
+                renderizarResumoMediacao(data);
+                renderizarMediacoes(mediacoes);
+                state.mediacaoCarregadoPara = chave;
+            } catch (error) {
+                mediacaoStatus.textContent = `Erro ao carregar casos: ${mensagemErro(error)}`;
+                mediacaoList.innerHTML = '';
+            } finally {
+                state.carregandoMediacoes = false;
+                btnMediacaoRecarregar.disabled = false;
+            }
+        }
+
+        function renderizarPaginacaoPosVenda(data, conversas) {
+            const temAnterior = state.posVendaPagina > 1;
+            const proximo = data && data.next_offset !== null && data.next_offset !== undefined ? Number(data.next_offset) : null;
+            const temProxima = proximo !== null && !Number.isNaN(proximo);
+            state.posVendaNextOffset = temProxima ? proximo : null;
+
+            if (!temAnterior && !temProxima) {
+                posVendaPagination.classList.add('hidden');
+                posVendaPagination.innerHTML = '';
+                return;
+            }
+
+            posVendaPagination.classList.remove('hidden');
+            posVendaPagination.innerHTML = `
+                <span>Página ${state.posVendaPagina} · ${conversas.length} venda(s) com conversa</span>
+                <div class="pagination-actions">
+                    <button class="pagination-btn" type="button" data-action="prev" ${temAnterior ? '' : 'disabled'}>Anterior</button>
+                    <button class="pagination-btn" type="button" data-action="next" ${temProxima ? '' : 'disabled'}>Próxima</button>
+                </div>
+            `;
+
+            posVendaPagination.querySelectorAll('.pagination-btn').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const action = button.dataset.action;
+                    if (action === 'prev' && temAnterior) {
+                        state.posVendaPagina -= 1;
+                        state.posVendaOffset = state.posVendaOffsets[state.posVendaPagina - 1] || 0;
+                        carregarPosVenda(true);
+                    }
+                    if (action === 'next' && temProxima) {
+                        if (state.posVendaOffsets.length <= state.posVendaPagina) {
+                            state.posVendaOffsets.push(proximo);
+                        }
+                        state.posVendaPagina += 1;
+                        state.posVendaOffset = proximo;
+                        carregarPosVenda(true);
+                    }
+                });
+            });
+        }
+
+        function renderizarPosVenda(conversas) {
+            if (!conversas.length) {
+                const busca = obterBuscaPosVenda();
+                state.posVendaConversas = [];
+                state.posVendaConversaSelecionada = null;
+                state.posVendaModoDetalhe = false;
+                posVendaDetail.classList.add('hidden');
+                posVendaDetail.innerHTML = '';
+                posVendaList.classList.remove('hidden');
+                posVendaList.innerHTML = busca
+                    ? `<div class="empty-state"><div><h2>Nenhuma venda encontrada</h2><p>Nenhuma conversa foi encontrada para "${escapeHtml(busca)}".</p></div></div>`
+                    : '<div class="empty-state"><div><h2>Nenhuma conversa encontrada</h2><p>Não há vendas com conversa iniciada no período selecionado.</p></div></div>';
+                return;
+            }
+
+            state.posVendaConversas = conversas;
+            posVendaList.innerHTML = conversas.map((venda, index) => {
+                const itens = Array.isArray(venda.items) ? venda.items : [];
+                const itemComFoto = itens.find((item) => item.thumbnail) || itens[0] || {};
+                const foto = itemComFoto.thumbnail
+                    ? `<img src="${escapeHtml(itemComFoto.thumbnail)}" alt="${escapeHtml(itemComFoto.title || 'Produto')}" loading="lazy" referrerpolicy="no-referrer">`
+                    : '<span>Sem foto</span>';
+                const itensTexto = itens.length
+                    ? itens.map((item) => {
+                        const qtd = item.quantity ? `${escapeHtml(item.quantity)}x ` : '';
+                        const sku = item.sku ? ` · SKU ${escapeHtml(item.sku)}` : '';
+                        return `${qtd}${escapeHtml(item.title || 'Produto')}${sku}`;
+                    }).join('<br>')
+                    : escapeHtml(venda.item_title || 'Produtos da venda');
+                const conversa = venda.conversation_status || {};
+                const conversaBadge = conversa.status === 'active' ? 'ok' : (conversa.status ? 'warn' : 'danger');
+                const active = state.posVendaConversaSelecionada && String(state.posVendaConversaSelecionada.pack_id || '') === String(venda.pack_id || '');
+                const ultimaMensagem = escapeHtml(venda.last_message_text || 'Conversa iniciada sem prévia disponível.');
+                const ultimaMensagemRotulo = venda.last_message_text ? rotuloUltimaMensagem(venda) : '';
+                const ultimaMensagemCabecalho = ultimaMensagemRotulo ? `<span class="last-message-sender">Última mensagem: ${escapeHtml(ultimaMensagemRotulo)}</span>` : '';
+                return `
+                    <article class="question-card conversation-card ${active ? 'active' : ''}" data-index="${index}">
+                        <div class="question-body">
+                            <div class="question-thumb">${foto}</div>
+                            <div>
+                        <div class="question-top">
+                            <div>
+                                <h3 class="question-title">Venda ${escapeHtml(venda.order_id || '-')}</h3>
+                                <div class="sale-meta">
+                                    <span>Pack ${escapeHtml(venda.pack_id || '-')}</span>
+                                    <span>Comprador ${escapeHtml(venda.buyer_nickname || venda.buyer_id || '-')}</span>
+                                    <span class="sale-value">${escapeHtml(formatarMoeda(venda.total_amount))}</span>
+                                </div>
+                            </div>
+                            <span class="question-date">${escapeHtml(formatarData(venda.last_message_date || venda.date_created))}</span>
+                        </div>
+                        <div class="sale-items">${itensTexto}</div>
+                        <div class="sale-meta">
+                            <span class="badge ${conversaBadge}">${escapeHtml(conversa.status || 'com conversa')}</span>
+                            <span>${Number(venda.messages_count || 0)} mensagem(ns)</span>
+                            <span>Venda: ${escapeHtml(formatarData(venda.date_created))}</span>
+                        </div>
+                        <div class="answer-box ${venda.last_message_text ? '' : 'empty'}">${ultimaMensagemCabecalho}${ultimaMensagem}</div>
+                            </div>
+                        </div>
+                    </article>
+                `;
+            }).join('');
+            posVendaList.querySelectorAll('.conversation-card').forEach((card) => {
+                card.addEventListener('click', () => {
+                    const index = Number(card.dataset.index || -1);
+                    const venda = state.posVendaConversas[index];
+                    if (venda) abrirConversaPosVenda(venda);
+                });
+            });
+            posVendaList.classList.toggle('hidden', !!state.posVendaModoDetalhe);
+        }
+
+        function abrirPaginaDetalhePosVenda(mensagem = '') {
+            state.posVendaModoDetalhe = true;
+            posVendaSummary.classList.add('hidden');
+            posVendaList.classList.add('hidden');
+            posVendaPagination.classList.add('hidden');
+            posVendaDetail.classList.remove('hidden');
+            posVendaDetail.classList.add('full-page');
+            if (mensagem) posVendaStatus.textContent = mensagem;
+        }
+
+        function voltarParaListaPosVenda() {
+            state.posVendaModoDetalhe = false;
+            state.posVendaConversaSelecionada = null;
+            posVendaDetail.classList.add('hidden');
+            posVendaDetail.classList.remove('full-page');
+            posVendaDetail.innerHTML = '';
+            posVendaList.classList.remove('hidden');
+            if (state.posVendaConversas.length) {
+                posVendaSummary.classList.remove('hidden');
+                if (posVendaPagination.innerHTML.trim()) posVendaPagination.classList.remove('hidden');
+                posVendaStatus.textContent = `${state.posVendaConversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`;
+                renderizarPosVenda(state.posVendaConversas);
+            }
+        }
+
+        function renderizarDetalhePosVenda(conversa, mensagemStatus = '') {
+            const mensagens = Array.isArray(conversa.messages) ? conversa.messages : [];
+            const itens = Array.isArray(conversa.items) ? conversa.items : [];
+            const item = itens[0] || {};
+            const titulo = item.title || conversa.item_title || 'Produto';
+            const nomeComprador = conversa.buyer_name || conversa.buyer_nickname || conversa.buyer_id || '-';
+            const limite = Math.max(1, Number(conversa.seller_max_message_length || 350) || 350);
+            const produtosHtml = itens.length
+                ? itens.map((produto) => {
+                    const foto = produto.thumbnail
+                        ? `<img src="${escapeHtml(produto.thumbnail)}" alt="${escapeHtml(produto.title || 'Produto')}" loading="lazy" referrerpolicy="no-referrer">`
+                        : '<div class="question-thumb"><span>Sem foto</span></div>';
+                    return `
+                        <div class="pos-sale-product">
+                            ${foto}
+                            <div>
+                                <h4>${escapeHtml(produto.title || 'Produto')}</h4>
+                                <div class="sale-meta">
+                                    <span>SKU ${escapeHtml(produto.sku || '-')}</span>
+                                    <span>MLB ${escapeHtml(produto.id || '-')}</span>
+                                    <span>${escapeHtml(produto.quantity || 1)} unidade(s)</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')
+                : '<div class="answer-box empty">Nenhum produto foi encontrado nos dados da venda.</div>';
+            const mensagensHtml = mensagens.length
+                ? mensagens.map((msg) => `
+                    <div class="pos-sale-message ${msg.from_role === 'seller' ? 'seller' : 'buyer'}">
+                        <span class="training-message-role">${msg.from_role === 'seller' ? 'Vendedor' : `Comprador ${escapeHtml(nomeComprador)}`} · ${escapeHtml(formatarData(msg.date))}</span>
+                        <span class="pos-sale-message-text">${escapeHtml(String(msg.text || '-').trim())}</span>
+                    </div>
+                `).join('')
+                : '<div class="answer-box empty">Nenhuma mensagem anterior foi encontrada para esta conversa.</div>';
+
+            abrirPaginaDetalhePosVenda(`Conversa da venda ${conversa.order_id || conversa.pack_id || '-'} aberta.`);
+            posVendaDetail.classList.remove('hidden');
+            posVendaDetail.innerHTML = `
+                <div class="pos-sale-detail-head">
+                    <div>
+                        <h3>${escapeHtml(titulo)}</h3>
+                        <div class="sale-meta">
+                            <span>Pack ${escapeHtml(conversa.pack_id || '-')}</span>
+                            <span>Pedido ${escapeHtml(conversa.order_id || '-')}</span>
+                            <span>SKU ${escapeHtml(item.sku || '-')}</span>
+                            <span>Comprador ${escapeHtml(nomeComprador)}</span>
+                        </div>
+                    </div>
+                    <div class="pos-sale-detail-actions">
+                        <button id="btn-pos-venda-voltar-lista" class="action-btn secondary" type="button">Voltar para lista</button>
+                        <span class="badge ok">Conversa aberta</span>
+                    </div>
+                </div>
+                <div class="pos-sale-info-grid">
+                    <div class="pos-sale-info-card"><span>Valor da venda</span><strong>${escapeHtml(formatarMoeda(conversa.total_amount))}</strong></div>
+                    <div class="pos-sale-info-card"><span>Status</span><strong>${escapeHtml(conversa.status || conversa.conversation_status?.status || '-')}</strong></div>
+                    <div class="pos-sale-info-card"><span>Data da venda</span><strong>${escapeHtml(formatarData(conversa.date_created || conversa.date_closed))}</strong></div>
+                    <div class="pos-sale-info-card"><span>Comprador</span><strong>${escapeHtml(nomeComprador)}</strong></div>
+                    <div class="pos-sale-info-card"><span>Mensagens</span><strong>${Number(conversa.messages_count || mensagens.length || 0)}</strong></div>
+                </div>
+                <div class="pos-sale-products">${produtosHtml}</div>
+                <div class="pos-sale-messages">${mensagensHtml}</div>
+                <div class="pos-sale-reply">
+                    <textarea id="pos-venda-resposta-texto" maxlength="${limite}" placeholder="Digite a resposta para enviar ao comprador"></textarea>
+                    <div class="pos-sale-reply-actions">
+                        <button id="btn-pos-venda-gerar-ia" class="action-btn secondary" type="button">Gerar resposta com IA</button>
+                        <button id="btn-pos-venda-enviar-resposta" class="action-btn" type="button" disabled>Enviar resposta</button>
+                    </div>
+                </div>
+                <div id="pos-venda-resposta-status" class="status-line">${escapeHtml(mensagemStatus || `Limite do Mercado Livre: ${limite} caracteres.`)}</div>
+            `;
+
+            const textarea = document.getElementById('pos-venda-resposta-texto');
+            const botao = document.getElementById('btn-pos-venda-enviar-resposta');
+            const botaoIa = document.getElementById('btn-pos-venda-gerar-ia');
+            const botaoVoltar = document.getElementById('btn-pos-venda-voltar-lista');
+            const status = document.getElementById('pos-venda-resposta-status');
+            const atualizarEstado = () => {
+                const texto = textarea.value.trim();
+                botao.disabled = !texto || state.posVendaDetalheCarregando;
+                status.textContent = texto
+                    ? `${texto.length}/${limite} caracteres.`
+                    : `Limite do Mercado Livre: ${limite} caracteres.`;
+            };
+            textarea.addEventListener('input', atualizarEstado);
+            botao.addEventListener('click', () => enviarRespostaPosVenda(conversa, textarea, botao, status));
+            botaoIa.addEventListener('click', () => gerarRespostaIaPosVenda(conversa, textarea, botaoIa, botao, status));
+            botaoVoltar.addEventListener('click', voltarParaListaPosVenda);
+            atualizarEstado();
+            posVendaDetail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        async function abrirConversaPosVenda(venda) {
+            if (!venda || state.posVendaDetalheCarregando) return;
+            state.posVendaConversaSelecionada = venda;
+            abrirPaginaDetalhePosVenda('Carregando histórico completo da conversa...');
+            renderizarPosVenda(state.posVendaConversas);
+            posVendaDetail.innerHTML = '<div class="status-line">Carregando histórico completo da conversa...</div>';
+            state.posVendaDetalheCarregando = true;
+            try {
+                const params = new URLSearchParams({
+                    loja: state.lojaSelecionada,
+                    pack_id: String(venda.pack_id || '')
+                });
+                if (venda.order_id) params.set('order_id', String(venda.order_id));
+                const response = await fetch(`/api/mercadolivre/pos-venda/conversas/detalhe?${params.toString()}`, {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar conversa.');
+                const conversa = data.conversa || {};
+                state.posVendaConversaSelecionada = conversa;
+                state.posVendaDetalheCarregando = false;
+                renderizarPosVenda(state.posVendaConversas);
+                renderizarDetalhePosVenda(conversa);
+            } catch (error) {
+                posVendaDetail.innerHTML = `<div class="answer-box empty">Erro ao carregar conversa: ${escapeHtml(mensagemErro(error))}</div>`;
+            } finally {
+                state.posVendaDetalheCarregando = false;
+            }
+        }
+
+        async function gerarRespostaIaPosVenda(conversa, textarea, botaoIa, botaoEnviar, status) {
+            if (!conversa || !textarea || !botaoIa) return;
+            botaoIa.disabled = true;
+            if (botaoEnviar) botaoEnviar.disabled = true;
+            status.textContent = 'Gerando resposta com IA...';
+            try {
+                const response = await fetch('/api/mercadolivre/pos-venda/conversas/gerar-resposta', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        loja: String(state.lojaSelecionada || ''),
+                        pack_id: String(conversa.pack_id || ''),
+                        order_id: String(conversa.order_id || ''),
+                        buyer_id: String(conversa.buyer_id || ''),
+                        max_chars: Number(conversa.seller_max_message_length || 350)
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao gerar resposta com IA.'));
+                textarea.value = String(data.resposta || '').trim();
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                status.textContent = `Resposta gerada com IA${data.model ? ` (${data.model})` : ''}. Revise e edite antes de enviar.`;
+            } catch (error) {
+                status.textContent = `Erro ao gerar resposta com IA: ${mensagemErro(error)}`;
+            } finally {
+                botaoIa.disabled = false;
+                if (botaoEnviar) botaoEnviar.disabled = !String(textarea.value || '').trim();
+            }
+        }
+
+        async function enviarRespostaPosVenda(conversa, textarea, botao, status) {
+            const texto = String(textarea.value || '').trim();
+            if (!texto) return;
+            botao.disabled = true;
+            status.textContent = 'Enviando resposta ao Mercado Livre...';
+            try {
+                const response = await fetch('/api/mercadolivre/pos-venda/conversas/responder', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        loja: String(state.lojaSelecionada || ''),
+                        pack_id: String(conversa.pack_id || ''),
+                        order_id: String(conversa.order_id || ''),
+                        buyer_id: String(conversa.buyer_id || ''),
+                        texto,
+                        max_chars: Number(conversa.seller_max_message_length || 350)
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
+                textarea.value = '';
+                status.textContent = 'Resposta enviada. Atualizando conversa...';
+                await abrirConversaPosVenda(conversa);
+                carregarPosVenda(true);
+            } catch (error) {
+                status.textContent = `Erro ao enviar resposta: ${mensagemErro(error)}`;
+                botao.disabled = false;
+            }
+        }
+
+        function renderizarDadosPosVenda(data, origemCache = false) {
+            const conversas = Array.isArray(data.conversas) ? data.conversas : [];
+            const busca = obterBuscaPosVenda();
+            posVendaStatus.textContent = origemCache
+                ? `Exibindo informações salvas de ${state.lojaSelecionada}. Atualizando pela API...`
+                : (busca
+                    ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em ${state.lojaSelecionada}.`
+                    : data.interrompido
+                    ? `${conversas.length} venda(s) com conversa. A consulta foi limitada às vendas mais recentes.`
+                    : `${conversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`);
+            renderizarResumoPosVenda(data);
+            renderizarPosVenda(conversas);
+            renderizarPaginacaoPosVenda(data, conversas);
+            if (state.posVendaModoDetalhe) {
+                abrirPaginaDetalhePosVenda(`Conversa da venda ${state.posVendaConversaSelecionada?.order_id || state.posVendaConversaSelecionada?.pack_id || '-'} aberta.`);
+            }
+        }
+
+        async function carregarPosVenda(forcar = false) {
+            if (!state.lojaSelecionada || state.carregandoPosVenda) return;
+            const busca = obterBuscaPosVenda();
+            const chave = `${state.lojaSelecionada}:${posVendaDias.value}:${state.posVendaOffset}:${busca.toLowerCase()}`;
+            const cacheLocal = carregarCachePosVenda();
+            if (!forcar && state.posVendaCarregadoPara === chave && !cacheLocal) return;
+
+            state.carregandoPosVenda = true;
+            btnPosVendaRecarregar.disabled = true;
+            if (cacheLocal && cacheLocal.data) {
+                renderizarDadosPosVenda(cacheLocal.data, true);
+            } else {
+                posVendaSummary.classList.add('hidden');
+                posVendaList.innerHTML = '';
+                posVendaPagination.classList.add('hidden');
+                posVendaPagination.innerHTML = '';
+                posVendaStatus.textContent = busca
+                    ? `Buscando "${busca}" nas vendas com conversa de ${state.lojaSelecionada}...`
+                    : `Carregando página ${state.posVendaPagina} de vendas com conversa de ${state.lojaSelecionada}...`;
+            }
+
+            try {
+                const params = new URLSearchParams({
+                    loja: state.lojaSelecionada,
+                    dias: posVendaDias.value,
+                    offset: String(state.posVendaOffset),
+                    limit: '20',
+                    max_orders: '10000'
+                });
+                if (busca) params.set('busca', busca);
+                const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar pós venda.');
+                salvarCachePosVenda(data);
+                renderizarDadosPosVenda(data, false);
+                state.posVendaCarregadoPara = chave;
+            } catch (error) {
+                posVendaStatus.textContent = cacheLocal && cacheLocal.data
+                    ? `Erro ao atualizar pela API: ${mensagemErro(error)}. Mantendo as informações salvas.`
+                    : `Erro ao carregar pós venda: ${mensagemErro(error)}`;
+                if (!cacheLocal || !cacheLocal.data) posVendaList.innerHTML = '';
+            } finally {
+                state.carregandoPosVenda = false;
+                btnPosVendaRecarregar.disabled = false;
+            }
+        }
+
+        function formatarSkuExibicao(valor) {
+            const sku = String(valor || '').trim();
+            if (/^0\d{2}$/.test(sku)) {
+                const numero = parseInt(sku, 10);
+                if (numero >= 10 && numero <= 99) return String(numero);
+            }
+            return sku;
+        }
+
+        function obterNomeProdutoCadastro(item) {
+            for (const campo of ['nome', 'produto', 'produto_bling', 'nome_bling']) {
+                const valor = String((item || {})[campo] || '').trim();
+                if (valor) return valor;
+            }
+            return 'Produto sem nome';
+        }
+
+        function obterFotoProdutoCadastro(item) {
+            const foto = String((item || {}).foto || (item || {}).imagem || '').trim();
+            if (!foto) return '';
+            if (/^(https?:\/\/|\/api\/|\/img\/)/i.test(foto)) return foto;
+            const nomeArquivo = foto.split(/[\\/]/).pop();
+            return nomeArquivo ? `/api/cadastro/foto-arquivo/${encodeURIComponent(nomeArquivo)}` : '';
+        }
+
+        function produtoTreinamentoSelecionado() {
+            const sku = String(aiTrainingSku.value || '').trim();
+            if (!sku) return null;
+            return state.produtosTreinamento.find((item) => String(item.sku || '') === sku) || null;
+        }
+
+        function renderizarSkuTreinamentoInfo() {
+            const produto = produtoTreinamentoSelecionado();
+            if (!produto) {
+                aiTrainingSkuInfo.classList.add('hidden');
+                aiTrainingSkuInfo.innerHTML = '';
+                return;
+            }
+
+            const nome = obterNomeProdutoCadastro(produto);
+            const sku = formatarSkuExibicao(produto.sku);
+            const foto = obterFotoProdutoCadastro(produto);
+            const fotoHtml = foto
+                ? `<img src="${escapeHtml(foto)}" alt="${escapeHtml(nome)}" loading="lazy">`
+                : '<span>Sem foto</span>';
+            const meta = [
+                produto.categoria ? `Categoria ${produto.categoria}` : '',
+                produto.marca ? `Marca ${produto.marca}` : '',
+                produto.mlb_ids ? `MLB ${produto.mlb_ids}` : ''
+            ].filter(Boolean).join(' · ');
+
+            aiTrainingSkuInfo.classList.remove('hidden');
+            aiTrainingSkuInfo.innerHTML = `
+                <div class="training-sku-thumb">${fotoHtml}</div>
+                <div>
+                    <div class="training-sku-name">SKU ${escapeHtml(sku)} · ${escapeHtml(nome)}</div>
+                    <div class="training-sku-meta">${escapeHtml(meta || 'Dados do cadastro serão enviados junto com a pergunta.')}</div>
+                </div>
+            `;
+        }
+
+        function normalizarNotasTreinamento(notas) {
+            const origem = notas && typeof notas === 'object' ? notas : {};
+            const normalizadas = {};
+            Object.entries(origem).forEach(([sku, item]) => {
+                const chave = String(sku || '').trim();
+                if (!chave) return;
+                const texto = typeof item === 'object'
+                    ? String((item || {}).notas || (item || {}).texto || '').trim()
+                    : String(item || '').trim();
+                if (texto) normalizadas[chave] = texto;
+            });
+            return normalizadas;
+        }
+
+        function salvarNotasSkuTreinamentoAtual() {
+            if (!aiTrainingNotasSku) return;
+            const sku = String(state.treinamentoSkuNotasAtual || '').trim();
+            if (!sku) return;
+            const texto = aiTrainingNotasSku.value || '';
+            if (texto.trim()) {
+                state.treinamentoContexto.notas_sku[sku] = texto;
+            } else {
+                delete state.treinamentoContexto.notas_sku[sku];
+            }
+        }
+
+        function renderizarNotasSkuTreinamento() {
+            if (!aiTrainingNotasSku) return;
+            const sku = String(aiTrainingSku.value || '').trim();
+            state.treinamentoSkuNotasAtual = sku;
+            aiTrainingNotasSku.disabled = !sku;
+            aiTrainingNotasSku.value = sku ? (state.treinamentoContexto.notas_sku[sku] || '') : '';
+            aiTrainingNotasSku.placeholder = sku
+                ? 'Aplicações confirmadas, códigos, variações, exceções e cuidados para este SKU.'
+                : 'Selecione um SKU para salvar notas específicas.';
+        }
+
+        function normalizarExemplosTreinamento(exemplos) {
+            return (Array.isArray(exemplos) ? exemplos : [])
+                .map((item) => ({
+                    pergunta: String((item || {}).pergunta || '').trim(),
+                    resposta: String((item || {}).resposta || '').trim(),
+                    sku: String((item || {}).sku || '').trim(),
+                    observacao: String((item || {}).observacao || '').trim(),
+                    updated_at: (item || {}).updated_at || null
+                }))
+                .filter((item) => item.pergunta && item.resposta)
+                .slice(0, 60);
+        }
+
+        function renderizarExemplosTreinamento() {
+            if (!aiTrainingExamplesList) return;
+            const tipo = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            const exemplos = normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || []);
+            state.treinamentoDados[tipo] = {
+                ...(state.treinamentoDados[tipo] || {}),
+                exemplos
+            };
+
+            if (!exemplos.length) {
+                aiTrainingExamplesList.innerHTML = '<div class="training-chat-empty">Nenhum exemplo salvo para este tipo ainda.</div>';
+                return;
+            }
+
+            aiTrainingExamplesList.innerHTML = exemplos.map((item, index) => {
+                const skuModelo = String(item.sku || '').trim();
+                const escopoClasse = skuModelo ? 'sku' : 'geral';
+                const escopoTexto = skuModelo ? `SKU ${formatarSkuExibicao(skuModelo)}` : 'Geral';
+                return `
+                <div class="training-example-item">
+                    <strong><span class="training-example-badge ${escopoClasse}">${escapeHtml(escopoTexto)}</span> Modelo ${index + 1}</strong>
+                    <p><b>Pergunta:</b> ${escapeHtml(item.pergunta)}</p>
+                    <p><b>Resposta:</b> ${escapeHtml(item.resposta)}</p>
+                    <button class="mini-btn" type="button" data-remove-training-example="${index}">Remover</button>
+                </div>
+            `;
+            }).join('');
+
+            aiTrainingExamplesList.querySelectorAll('[data-remove-training-example]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const idx = Number(button.dataset.removeTrainingExample);
+                    const listaAtual = normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || []);
+                    listaAtual.splice(idx, 1);
+                    state.treinamentoDados[tipo] = {
+                        ...(state.treinamentoDados[tipo] || {}),
+                        exemplos: listaAtual
+                    };
+                    renderizarExemplosTreinamento();
+                });
+            });
+        }
+
+        function adicionarExemploTreinamento() {
+            const pergunta = String(aiTrainingExemploPergunta?.value || '').trim();
+            const resposta = String(aiTrainingExemploResposta?.value || '').trim();
+            if (!pergunta || !resposta) {
+                aiTrainingStatus.textContent = 'Informe pergunta e resposta para adicionar um modelo.';
+                return;
+            }
+            const escopo = String(aiTrainingExemploEscopo?.value || 'geral');
+            const skuModelo = escopo === 'sku' ? String(aiTrainingSku.value || '').trim() : '';
+            if (escopo === 'sku' && !skuModelo) {
+                aiTrainingStatus.textContent = 'Escolha um SKU antes de adicionar um modelo específico.';
+                aiTrainingSku?.focus();
+                return;
+            }
+            const tipo = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            const exemplos = normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || []);
+            exemplos.unshift({
+                pergunta,
+                resposta,
+                sku: skuModelo,
+                observacao: skuModelo ? `Modelo específico do SKU ${formatarSkuExibicao(skuModelo)}` : 'Modelo geral para todos os SKUs',
+                updated_at: new Date().toISOString()
+            });
+            state.treinamentoDados[tipo] = {
+                ...(state.treinamentoDados[tipo] || {}),
+                exemplos: exemplos.slice(0, 60)
+            };
+            aiTrainingExemploPergunta.value = '';
+            aiTrainingExemploResposta.value = '';
+            renderizarExemplosTreinamento();
+            aiTrainingStatus.textContent = skuModelo
+                ? `Modelo do SKU ${formatarSkuExibicao(skuModelo)} adicionado. Clique em salvar para manter no servidor.`
+                : 'Modelo geral adicionado. Clique em salvar para manter no servidor.';
+        }
+
+        function montarSeletorSkusTreinamento() {
+            aiTrainingSku.innerHTML = '';
+            const optDefault = document.createElement('option');
+            optDefault.value = '';
+            optDefault.textContent = state.produtosTreinamento.length
+                ? 'Sem SKU selecionado'
+                : 'Nenhum SKU cadastrado';
+            aiTrainingSku.appendChild(optDefault);
+
+            const ordenados = [...state.produtosTreinamento].sort((a, b) => (
+                String(a.sku || '').localeCompare(String(b.sku || ''), undefined, { numeric: true, sensitivity: 'base' })
+            ));
+            ordenados.forEach((item) => {
+                const sku = String(item.sku || '').trim();
+                if (!sku) return;
+                const option = document.createElement('option');
+                option.value = sku;
+                option.textContent = `${formatarSkuExibicao(sku)} - ${obterNomeProdutoCadastro(item)}`;
+                aiTrainingSku.appendChild(option);
+            });
+            aiTrainingSku.disabled = !state.produtosTreinamento.length;
+            renderizarSkuTreinamentoInfo();
+            renderizarNotasSkuTreinamento();
+        }
+
+        async function carregarSkusTreinamentoAI() {
+            if (state.produtosTreinamentoCarregados) return;
+            aiTrainingSku.disabled = true;
+            aiTrainingSku.innerHTML = '<option value="">Carregando SKUs...</option>';
+            try {
+                const response = await fetch('/api/mercadolivre/ia-treinamento/skus', {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar SKUs.');
+                const produtos = Array.isArray(data.produtos) ? data.produtos : [];
+                state.produtosTreinamento = produtos.filter((item) => String((item || {}).sku || '').trim());
+                state.produtosTreinamentoCarregados = true;
+                montarSeletorSkusTreinamento();
+            } catch (error) {
+                aiTrainingSku.innerHTML = '<option value="">Erro ao carregar SKUs</option>';
+                aiTrainingSku.disabled = true;
+                aiTrainingSkuInfo.classList.add('hidden');
+                aiTrainingSkuInfo.innerHTML = '';
+                aiTrainingStatus.textContent = `Erro ao carregar SKUs: ${mensagemErro(error)}`;
+            }
+        }
+
+        function rotuloTipoTreinamento(tipo = state.treinamentoTipo) {
+            return tipo === 'pos_venda' ? 'pós-venda' : 'perguntas de anúncio';
+        }
+
+        function sincronizarOrientacoesTreinamentoAtual() {
+            const tipo = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            state.treinamentoDados[tipo] = {
+                ...(state.treinamentoDados[tipo] || {}),
+                orientacoes: aiTrainingOrientacoes.value || '',
+                exemplos: normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || [])
+            };
+            state.treinamentoContexto.contexto_loja = aiTrainingContextoLoja.value || '';
+            state.treinamentoContexto.compatibilidade_autopecas = aiTrainingCompatibilidade.value || '';
+            state.treinamentoContexto.proibicoes = aiTrainingProibicoes.value || '';
+            salvarNotasSkuTreinamentoAtual();
+        }
+
+        function limparChatTreinamento() {
+            if (!aiTrainingChat) return;
+            aiTrainingChat.innerHTML = '<div class="training-chat-empty">Digite a pergunta do comprador para testar como a IA responderia.</div>';
+            aiTrainingPergunta.value = '';
+        }
+
+        function atualizarStatusTreinamentoTipo() {
+            const dados = state.treinamentoDados[state.treinamentoTipo] || {};
+            const rotulo = rotuloTipoTreinamento();
+            if (dados.updated_at) {
+                aiTrainingStatus.textContent = `Orientações de ${rotulo} salvas em ${formatarData(dados.updated_at)}`;
+            } else if (dados.orientacoes) {
+                aiTrainingStatus.textContent = `Orientações de ${rotulo} carregadas.`;
+            } else {
+                aiTrainingStatus.textContent = `Nenhuma orientação de ${rotulo} salva ainda.`;
+            }
+        }
+
+        function renderizarTipoTreinamento(limparChat = false) {
+            const tipo = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            const dados = state.treinamentoDados[tipo] || { orientacoes: '', updated_at: null };
+
+            aiTrainingTypeTabs.forEach((button) => {
+                const ativo = button.dataset.trainingType === tipo;
+                button.classList.toggle('active', ativo);
+                button.setAttribute('aria-selected', ativo ? 'true' : 'false');
+            });
+
+            aiTrainingOrientacoesLabel.textContent = tipo === 'pos_venda'
+                ? 'Orientações para pós-venda'
+                : 'Orientações para perguntas de anúncio';
+            aiTrainingOrientacoes.placeholder = tipo === 'pos_venda'
+                ? 'Ex.: agradecer a compra, pedir fotos ou vídeo quando necessário, orientar garantia e troca sem prometer aprovação...'
+                : 'Ex.: responder sem Markdown, não prometer prazo sem confirmação, pedir modelo/ano quando a aplicação do produto for incerta...';
+            if (aiTrainingChatHead) {
+                aiTrainingChatHead.textContent = tipo === 'pos_venda'
+                    ? 'Simulação de pós-venda'
+                    : 'Simulação de pergunta de anúncio';
+            }
+            aiTrainingOrientacoes.value = dados.orientacoes || '';
+            renderizarExemplosTreinamento();
+            atualizarStatusTreinamentoTipo();
+            if (limparChat) limparChatTreinamento();
+        }
+
+        function trocarTipoTreinamento(tipo) {
+            const novoTipo = tipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            if (novoTipo === state.treinamentoTipo) return;
+            sincronizarOrientacoesTreinamentoAtual();
+            state.treinamentoTipo = novoTipo;
+            renderizarTipoTreinamento(true);
+        }
+
+        async function carregarTreinamentoAI() {
+            if (state.treinamentoCarregado) return;
+            aiTrainingStatus.textContent = 'Carregando orientações...';
+            try {
+                const response = await fetch('/api/mercadolivre/ia-treinamento', {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao carregar orientações.');
+
+                state.treinamentoDados.perguntas_anuncio = {
+                    orientacoes: data.orientacoes_perguntas || data.orientacoes || '',
+                    updated_at: data.updated_at_perguntas || data.updated_at || null,
+                    exemplos: normalizarExemplosTreinamento(((data.exemplos || {}).perguntas_anuncio) || [])
+                };
+                state.treinamentoDados.pos_venda = {
+                    orientacoes: data.orientacoes_pos_venda || '',
+                    updated_at: data.updated_at_pos_venda || null,
+                    exemplos: normalizarExemplosTreinamento(((data.exemplos || {}).pos_venda) || [])
+                };
+                state.treinamentoContexto = {
+                    contexto_loja: data.contexto_loja || '',
+                    compatibilidade_autopecas: data.compatibilidade_autopecas || '',
+                    proibicoes: data.proibicoes || '',
+                    notas_sku: normalizarNotasTreinamento(data.notas_sku)
+                };
+                aiTrainingContextoLoja.value = state.treinamentoContexto.contexto_loja;
+                aiTrainingCompatibilidade.value = state.treinamentoContexto.compatibilidade_autopecas;
+                aiTrainingProibicoes.value = state.treinamentoContexto.proibicoes;
+                state.treinamentoCarregado = true;
+                renderizarNotasSkuTreinamento();
+                renderizarTipoTreinamento(false);
+            } catch (error) {
+                aiTrainingStatus.textContent = `Erro ao carregar orientações: ${mensagemErro(error)}`;
+            }
+        }
+
+        async function salvarTreinamentoAI() {
+            sincronizarOrientacoesTreinamentoAtual();
+            const tipoAtual = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            btnAiTrainingSalvar.disabled = true;
+            btnAiTrainingSimular.disabled = true;
+            aiTrainingStatus.textContent = 'Salvando orientações...';
+            try {
+                const response = await fetch('/api/mercadolivre/ia-treinamento', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tipo: tipoAtual,
+                        orientacoes: aiTrainingOrientacoes.value || '',
+                        contexto_loja: state.treinamentoContexto.contexto_loja || '',
+                        compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
+                        proibicoes: state.treinamentoContexto.proibicoes || '',
+                        sku: aiTrainingSku.value || '',
+                        notas_sku: aiTrainingNotasSku.value || '',
+                        exemplos: normalizarExemplosTreinamento((state.treinamentoDados[tipoAtual] || {}).exemplos || [])
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao salvar orientações.');
+
+                state.treinamentoCarregado = true;
+                state.treinamentoDados[tipoAtual] = {
+                    orientacoes: aiTrainingOrientacoes.value || '',
+                    updated_at: data.updated_at || new Date().toISOString(),
+                    exemplos: normalizarExemplosTreinamento(((data.exemplos || {})[tipoAtual]) || (state.treinamentoDados[tipoAtual] || {}).exemplos || [])
+                };
+                state.treinamentoContexto = {
+                    contexto_loja: typeof data.contexto_loja === 'string' ? data.contexto_loja : (state.treinamentoContexto.contexto_loja || ''),
+                    compatibilidade_autopecas: typeof data.compatibilidade_autopecas === 'string' ? data.compatibilidade_autopecas : (state.treinamentoContexto.compatibilidade_autopecas || ''),
+                    proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : (state.treinamentoContexto.proibicoes || ''),
+                    notas_sku: normalizarNotasTreinamento(data.notas_sku || state.treinamentoContexto.notas_sku)
+                };
+                renderizarNotasSkuTreinamento();
+                renderizarExemplosTreinamento();
+                atualizarStatusTreinamentoTipo();
+                return data;
+            } catch (error) {
+                aiTrainingStatus.textContent = `Erro ao salvar orientações: ${mensagemErro(error)}`;
+                throw error;
+            } finally {
+                btnAiTrainingSalvar.disabled = false;
+                btnAiTrainingSimular.disabled = false;
+            }
+        }
+
+        function adicionarMensagemTreinamentoChat(tipo, texto, opcoes = {}) {
+            if (!aiTrainingChat) {
+                return {
+                    setText() {},
+                    setError() {}
+                };
+            }
+
+            const vazio = aiTrainingChat.querySelector('.training-chat-empty');
+            if (vazio) vazio.remove();
+
+            const mensagem = document.createElement('div');
+            mensagem.className = `training-message ${tipo === 'user' ? 'user' : 'assistant'}${opcoes.error ? ' error' : ''}`;
+
+            const papel = document.createElement('span');
+            papel.className = 'training-message-role';
+            papel.textContent = tipo === 'user' ? 'Comprador' : 'IA';
+
+            const corpo = document.createElement('div');
+            corpo.className = 'training-message-body';
+            corpo.textContent = texto || '';
+
+            mensagem.appendChild(papel);
+            mensagem.appendChild(corpo);
+            aiTrainingChat.appendChild(mensagem);
+            aiTrainingChat.scrollTop = aiTrainingChat.scrollHeight;
+
+            return {
+                setText(novoTexto) {
+                    corpo.textContent = novoTexto || '';
+                    aiTrainingChat.scrollTop = aiTrainingChat.scrollHeight;
+                },
+                setError(novoTexto) {
+                    mensagem.classList.add('error');
+                    corpo.textContent = novoTexto || '';
+                    aiTrainingChat.scrollTop = aiTrainingChat.scrollHeight;
+                }
+            };
+        }
+
+        async function simularTreinamentoAI() {
+            const pergunta = (aiTrainingPergunta.value || '').trim();
+            if (!pergunta) {
+                aiTrainingStatus.textContent = 'Digite uma pergunta para simular.';
+                aiTrainingPergunta.focus();
+                return;
+            }
+
+            adicionarMensagemTreinamentoChat('user', pergunta);
+            aiTrainingPergunta.value = '';
+            const respostaChat = adicionarMensagemTreinamentoChat('assistant', 'Gerando resposta...');
+            try {
+                await salvarTreinamentoAI();
+                btnAiTrainingSalvar.disabled = true;
+                btnAiTrainingSimular.disabled = true;
+                aiTrainingStatus.textContent = 'Gerando resposta de simulação...';
+
+                const response = await fetch('/api/mercadolivre/ia-treinamento/simular', {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        pergunta,
+                        tipo: state.treinamentoTipo,
+                        sku: aiTrainingSku.value || '',
+                        contexto: aiTrainingContexto.value || ''
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Erro ao simular resposta.');
+
+                respostaChat.setText(data.resposta || 'A IA nao retornou uma resposta para esta simulacao.');
+                aiTrainingStatus.textContent = 'Simulação gerada com as orientações salvas.';
+            } catch (error) {
+                respostaChat.setError(`Erro na simulação: ${mensagemErro(error)}`);
+                aiTrainingStatus.textContent = `Erro na simulação: ${mensagemErro(error)}`;
+            } finally {
+                btnAiTrainingSalvar.disabled = false;
+                btnAiTrainingSimular.disabled = false;
+            }
+        }
+
+        document.querySelectorAll('.tab-button').forEach((button) => {
+            button.addEventListener('click', () => ativarAba(button.dataset.tab));
+        });
+        statusFiltro.addEventListener('change', carregarPerguntas);
+        btnRecarregar.addEventListener('click', carregarPerguntas);
+        posVendaDias.addEventListener('change', () => {
+            resetarPaginacaoPosVenda();
+            carregarPosVenda(true);
+        });
+        btnPosVendaBuscar.addEventListener('click', () => {
+            resetarPaginacaoPosVenda();
+            carregarPosVenda(true);
+        });
+        btnPosVendaLimparBusca.addEventListener('click', () => {
+            if (posVendaBusca) posVendaBusca.value = '';
+            resetarPaginacaoPosVenda();
+            carregarPosVenda(true);
+        });
+        posVendaBusca.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                resetarPaginacaoPosVenda();
+                carregarPosVenda(true);
+            }
+        });
+        btnPosVendaRecarregar.addEventListener('click', () => {
+            resetarPaginacaoPosVenda();
+            carregarPosVenda(true);
+        });
+        mediacaoDias.addEventListener('change', () => {
+            resetarMediacoes();
+            carregarMediacoes(true);
+        });
+        btnMediacaoBuscar.addEventListener('click', () => {
+            resetarMediacoes();
+            carregarMediacoes(true);
+        });
+        btnMediacaoLimparBusca.addEventListener('click', () => {
+            if (mediacaoBusca) mediacaoBusca.value = '';
+            resetarMediacoes();
+            carregarMediacoes(true);
+        });
+        mediacaoBusca.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                resetarMediacoes();
+                carregarMediacoes(true);
+            }
+        });
+        btnMediacaoRecarregar.addEventListener('click', () => {
+            resetarMediacoes();
+            carregarMediacoes(true);
+        });
+        aiTrainingSku.addEventListener('change', () => {
+            salvarNotasSkuTreinamentoAtual();
+            renderizarSkuTreinamentoInfo();
+            renderizarNotasSkuTreinamento();
+        });
+        aiTrainingTypeTabs.forEach((button) => {
+            button.addEventListener('click', () => trocarTipoTreinamento(button.dataset.trainingType));
+        });
+        btnAiTrainingAdicionarExemplo.addEventListener('click', adicionarExemploTreinamento);
+        btnAiTrainingSalvar.addEventListener('click', salvarTreinamentoAI);
+        btnAiTrainingSimular.addEventListener('click', simularTreinamentoAI);
+        aiTrainingPergunta.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                simularTreinamentoAI();
+            }
+        });
+
+        carregarLojas();
+    </script>
+    <script src="/ia-sidebar.js?v=20260521-aprovacao-card-fix"></script>
+</body>
+</html>

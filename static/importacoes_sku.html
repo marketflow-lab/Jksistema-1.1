@@ -1,0 +1,2160 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Importações - Detalhe SKU</title>
+    <script src="/auth.js?v=20260417e"></script>
+    <style>
+        :root {
+            --bg: #0b0f1a;
+            --panel: #121a2a;
+            --panel-soft: #17233a;
+            --line: #2f4369;
+            --text: #eef5ff;
+            --muted: #9eb2d3;
+            --c1: #ffd028;
+            --c2: #11d1ff;
+            --c3: #31c96a;
+            --c4: #ff6f61;
+            --c5: #b56dff;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background: radial-gradient(1200px 600px at 10% -20%, #1a2e52 0%, transparent 60%), var(--bg);
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 1560px;
+            margin: 0 auto;
+            padding: 78px 18px 18px;
+        }
+
+        .topbar {
+            display: grid;
+            grid-template-columns: auto 1fr 1fr 1fr auto;
+            gap: 12px;
+            margin-bottom: 14px;
+            align-items: center;
+        }
+        .fx-box, .clock-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-height: 68px;
+            padding: 10px 14px;
+            border-radius: 13px;
+            border: 1px solid #2a3f5c;
+            background: linear-gradient(180deg, rgba(13,24,43,0.9), rgba(10,19,35,0.95));
+            box-shadow: inset 0 1px 0 rgba(185,226,255,0.1), 0 14px 28px rgba(0,0,0,0.3);
+        }
+        .fx-box {
+            border-color: rgba(99,187,255,0.55);
+            background: linear-gradient(180deg, rgba(14,33,59,0.92), rgba(10,22,40,0.96));
+        }
+        .clock-box {
+            border-color: rgba(255,166,94,0.52);
+            background: linear-gradient(180deg, rgba(56,34,19,0.9), rgba(33,22,14,0.95));
+        }
+        .clock-box.brasilia {
+            border-color: rgba(104,214,142,0.54);
+            background: linear-gradient(180deg, rgba(19,60,36,0.9), rgba(13,40,25,0.95));
+        }
+        .fx-label { color: #9ecfff; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
+        .clock-label { color: #ffca9f; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
+        .clock-box.brasilia .clock-label { color: #9be9b6; }
+        .clock-value { color: #ffc68f; font-size: 1.65rem; font-weight: 800; line-height: 1; }
+        .clock-box.brasilia .clock-value { color: #7bffab; }
+        .fx-value { color: #9dd6ff; font-size: 1.7rem; font-weight: 800; line-height: 1; }
+        .fx-time { color: #d2e6ff; font-size: 0.9rem; font-weight: 700; }
+        .fx-chip { display: none; }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            text-decoration: none;
+            color: #fff;
+            border-radius: 10px;
+            border: 1px solid #4b9fff;
+            background: linear-gradient(180deg, #5eb5ff, #2e88db);
+            padding: 9px 14px;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+        }
+
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, #63bbff, #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            z-index: 1200;
+        }
+
+        .back-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+            color: #fff;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.4rem;
+            color: #ffe59a;
+        }
+
+        .meta-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .chip {
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid #385784;
+            background: #16253f;
+            color: #cfe5ff;
+            font-weight: 700;
+            font-size: 0.84rem;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1.15fr 1fr 0.66fr;
+            gap: 14px;
+        }
+
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .analysis-grid .tile.blue-strong {
+            grid-column: span 1;
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: linear-gradient(180deg, #131f34, #10192c);
+            padding: 12px;
+        }
+
+        .card h2 {
+            margin: 0 0 10px;
+            color: #9fd4ff;
+            font-size: 1rem;
+            letter-spacing: 0.3px;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: 220px 1fr;
+            gap: 12px;
+            align-items: start;
+        }
+
+        .foto-col {
+            display: grid;
+            gap: 10px;
+        }
+
+        .foto-box {
+            border: 2px solid #3d5f92;
+            border-radius: 14px;
+            background: #091122;
+            min-height: 220px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .foto-box img {
+            width: 100%;
+            height: 100%;
+            min-height: 220px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .sem-foto {
+            color: var(--muted);
+            font-size: 0.9rem;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .ncm-desc-card {
+            border-radius: 12px;
+            border: 1px solid #304a73;
+            background: #13223a;
+            padding: 10px;
+            min-height: 84px;
+            position: relative;
+        }
+
+        .ncm-desc-card .label {
+            color: #b5c8e4;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+
+        .ncm-desc-card .value {
+            color: #fff;
+            font-size: 0.92rem;
+            font-weight: 700;
+            line-height: 1.25;
+            word-break: break-word;
+            display: -webkit-box;
+            -webkit-line-clamp: 9;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: pre-wrap;
+            padding-right: 2px;
+        }
+
+        .ncm-desc-card .full-tooltip {
+            position: absolute;
+            left: calc(100% + 10px);
+            top: -1px;
+            width: min(460px, 66vw);
+            max-height: 380px;
+            overflow: auto;
+            border-radius: 12px;
+            border: 1px solid #3f6290;
+            background: linear-gradient(180deg, #1a3255, #142a47);
+            color: #fff;
+            font-size: 0.9rem;
+            font-weight: 700;
+            line-height: 1.4;
+            padding: 10px 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
+            z-index: 60;
+            opacity: 0;
+            transform: translateX(6px);
+            pointer-events: none;
+            transition: opacity 0.14s ease, transform 0.14s ease;
+        }
+
+        .ncm-desc-card .full-tooltip::before {
+            content: '';
+            position: absolute;
+            left: -7px;
+            top: 18px;
+            width: 12px;
+            height: 12px;
+            transform: rotate(45deg);
+            border-left: 1px solid #3f6290;
+            border-bottom: 1px solid #3f6290;
+            background: #173152;
+        }
+
+        .ncm-desc-card.has-full-desc:hover .full-tooltip,
+        .ncm-desc-card.has-full-desc:focus-within .full-tooltip {
+            opacity: 1;
+            transform: translateX(0);
+            pointer-events: auto;
+        }
+
+        @media (max-width: 1180px) {
+            .ncm-desc-card .full-tooltip {
+                left: 0;
+                top: calc(100% + 8px);
+                width: min(460px, calc(100vw - 56px));
+            }
+
+            .ncm-desc-card .full-tooltip::before {
+                left: 20px;
+                top: -7px;
+                border-left: 1px solid #3f6290;
+                border-top: 1px solid #3f6290;
+                border-bottom: none;
+                background: #173152;
+            }
+        }
+
+        .kv-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(180px, 1fr));
+            gap: 10px;
+        }
+
+        .kv {
+            border-radius: 12px;
+            border: 1px solid #304a73;
+            background: #13223a;
+            padding: 10px;
+        }
+
+        .kv .label {
+            color: #b5c8e4;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+
+        .kv .value {
+            color: #fff;
+            font-size: 1.02rem;
+            font-weight: 800;
+            word-break: break-word;
+        }
+
+        .kv.title {
+            grid-column: 1 / -1;
+            background: linear-gradient(180deg, #1c2f4e, #152640);
+        }
+
+        .kv.sku {
+            border-color: #6f5a13;
+            background: linear-gradient(180deg, #4e3f16, #3f3010);
+        }
+
+        .kv.prop {
+            border-color: #8b206f;
+            background: linear-gradient(180deg, #4f0f42, #3a0c33);
+        }
+
+        .kv.prop .value {
+            cursor: pointer;
+        }
+
+        .kv.prop .value::after {
+            content: ' \270e';
+            font-size: 0.75rem;
+            opacity: 0.65;
+            vertical-align: middle;
+        }
+
+        .kv.prop input.prop-input {
+            width: 100%;
+            background: rgba(8, 4, 14, 0.9);
+            border: 1px solid #d063b9;
+            border-radius: 6px;
+            color: #f8d7ff;
+            font-size: 1rem;
+            font-weight: 800;
+            padding: 4px 7px;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(176, 80, 164, 0.35);
+        }
+
+        .section-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(132px, 1fr));
+            gap: 6px;
+        }
+
+        .cards-reordenaveis .arrastavel-card {
+            cursor: grab;
+            user-select: none;
+            transition: transform 0.12s ease, opacity 0.12s ease, border-color 0.12s ease;
+        }
+
+        .cards-reordenaveis .arrastavel-card:active {
+            cursor: grabbing;
+        }
+
+        .cards-reordenaveis .arrastavel-card.dragging {
+            opacity: 0.45;
+            transform: scale(0.985);
+            border-style: dashed;
+            border-color: #8cc8ff;
+        }
+
+        .cards-reordenaveis .arrastavel-card.drag-over-left {
+            transform: translateX(-14px);
+        }
+
+        .cards-reordenaveis .arrastavel-card.drag-over-right {
+            transform: translateX(14px);
+        }
+
+        .cards-reordenaveis .drop-placeholder {
+            border: 2px dashed rgba(140, 200, 255, 0.9);
+            border-radius: 12px;
+            background: rgba(66, 140, 214, 0.18);
+            box-shadow: inset 0 0 0 1px rgba(173, 220, 255, 0.35);
+        }
+
+        .tile {
+            border-radius: 12px;
+            border: 1px solid #35557f;
+            background: #15253f;
+            padding: 7px;
+            min-height: 74px;
+            height: 74px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .tile .label {
+            color: #cad9f2;
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.45px;
+            margin-bottom: 3px;
+            font-weight: 700;
+            line-height: 1.1;
+            min-height: 1.4em;
+        }
+
+        .tile .label .label-link {
+            color: inherit;
+            text-decoration: underline;
+            text-decoration-style: dotted;
+            text-underline-offset: 2px;
+        }
+
+        .tile .label .label-link:hover {
+            color: #ffffff;
+        }
+
+        .tile .value {
+            color: #fff;
+            font-size: 1.02rem;
+            font-weight: 800;
+            line-height: 1.06;
+        }
+        .tile .value-sub {
+            display: block;
+            margin-top: 3px;
+            color: #d6ebff;
+            font-size: 0.82rem;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+
+        .tile .value-sub.hover-info {
+            display: none;
+            margin-top: 6px;
+            font-size: 0.74rem;
+            color: #d5e8ff;
+            opacity: 0.92;
+            font-weight: 600;
+            line-height: 1.2;
+            word-break: break-word;
+        }
+
+        .tile:hover .value-sub.hover-info {
+            display: block;
+        }
+
+        .tile.yellow { background: linear-gradient(180deg, #6a5314, #4e3d0e); border-color: #b08b22; }
+        .tile.orange { background: linear-gradient(180deg, #6a3410, #4e280a); border-color: #e07a30; }
+        .tile.orange .label { color: #ffc49a; }
+        .tile.orange .value { color: #ffad6e; }
+        .tile.cyan { background: linear-gradient(180deg, #0f4c5b, #0c3a46); border-color: #1cb7de; }
+        .tile.green { background: linear-gradient(180deg, #14542d, #0f3f21); border-color: #23b05d; }
+        .tile.red { background: linear-gradient(180deg, #5b1f1a, #421613); border-color: #de5547; }
+        .tile.purple { background: linear-gradient(180deg, #4a1f62, #38184d); border-color: #b26cf2; }
+        .tile.blue-strong { background: linear-gradient(180deg, #173c6a, #112d52); border-color: #4da6ff; grid-column: span 2; }
+        .tile.blue-strong .label { color: #b0d6ff; }
+        .tile.blue-strong .value { color: #7ecfff; font-size: 1.18rem; }
+        .tile.compact-top {
+            grid-column: span 1;
+            min-height: 64px;
+            height: 64px;
+            padding: 6px 7px;
+        }
+        .tile.compact-top .label {
+            font-size: 0.69rem;
+        }
+        .tile.compact-top .value {
+            font-size: 1rem;
+        }
+
+        .erro {
+            display: none;
+            margin-bottom: 12px;
+            border: 1px solid #7e2f2f;
+            border-radius: 10px;
+            padding: 10px;
+            background: #2a1515;
+            color: #ffc4c4;
+            font-weight: 700;
+        }
+
+        .empty {
+            border: 1px dashed #35557f;
+            border-radius: 10px;
+            padding: 14px;
+            color: var(--muted);
+        }
+
+        .link-prod {
+            color: #b9dcff;
+            text-decoration: none;
+            border-bottom: 1px dashed #7db7e8;
+        }
+
+        .link-prod:hover {
+            color: #fff;
+            border-bottom-color: #fff;
+        }
+
+        @media (max-width: 1020px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+            .hero-grid {
+                grid-template-columns: 1fr;
+            }
+            .foto-box {
+                min-height: 200px;
+            }
+            .kv-grid,
+            .section-grid {
+                grid-template-columns: 1fr;
+            }
+            .analysis-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+            .fx-chip {
+                max-width: calc(100% - 28px);
+                width: auto;
+                justify-content: center;
+                top: 8px;
+            }
+
+            .back-btn {
+                width: auto;
+                min-height: 44px;
+                font-size: 1rem;
+                padding: 0 13px;
+                top: 12px;
+                right: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="topbar">
+            <a id="btnVoltar" class="back-btn" href="importacoes_lista.html">Voltar</a>
+            <div class="fx-box">
+                <div>
+                    <div class="fx-label">Dólar x Real (USD/BRL)</div>
+                    <div id="fxValue" class="fx-value">Carregando...</div>
+                </div>
+                <div id="fxTime" class="fx-time">--:--:--</div>
+            </div>
+            <div class="clock-box brasilia">
+                <div>
+                    <div class="clock-label">Horário de Brasília</div>
+                    <div id="clockBrasilia" class="clock-value">--:--:--</div>
+                </div>
+            </div>
+            <div class="clock-box">
+                <div>
+                    <div class="clock-label">Horário em Pequim</div>
+                    <div id="clockBeijing" class="clock-value">--:--:--</div>
+                </div>
+            </div>
+            <h1>Importações - Detalhe do SKU</h1>
+        </div>
+
+        <div id="meta" class="meta-strip"></div>
+        <div id="erro" class="erro"></div>
+
+        <div class="layout">
+            <section class="card">
+                <h2>Produto</h2>
+                <div class="hero-grid">
+                    <div class="foto-col">
+                        <div id="fotoBox" class="foto-box"><div class="sem-foto">Sem foto</div></div>
+                        <div id="ncmDescCard" class="ncm-desc-card">
+                            <div class="label">Descrição do NCM</div>
+                            <div id="vNcmDesc" class="value">-</div>
+                            <div id="vNcmDescTooltip" class="full-tooltip">-</div>
+                            <div class="label" style="margin-top:8px;">Link do produto</div>
+                            <div id="vLink" class="value" style="word-break:break-all;font-size:0.82rem;">-</div>
+                        </div>
+                    </div>
+                    <div class="kv-grid">
+                        <div class="kv sku" data-card-id="kv_sku"><div class="label">SKU</div><div id="vSku" class="value">-</div></div>
+                        <div class="kv prop" data-card-id="kv_prop"><div class="label">Proporção</div><div id="vProp" class="value">-</div></div>
+                        <div class="kv title" data-card-id="kv_titulo_pt"><div class="label">Título em português</div><div id="vTituloPt" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_valor_dolar"><div class="label">Valor em dólar</div><div id="vDolar" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_valor_total_dolar"><div class="label">Total em Dólar</div><div id="vValorTotalDolar" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_valor_total_reais"><div class="label">Valor total em reais</div><div id="vValorTotalBrl" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_valor_por_m3"><div class="label">Valor por M³</div><div id="vValorPorM3" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_peso"><div class="label">Peso</div><div id="vPeso" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_ncm"><div class="label">NCM</div><div id="vNcm" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_cest"><div class="label">CEST</div><div id="vCest" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_dolar_compra"><div class="label">Dólar da Compra</div><div id="vDolarCompra" class="value">-</div></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Impostos e Custos</h2>
+                <div class="section-grid">
+                    <div class="tile blue-strong compact-top" data-card-id="custo_total_produto"><div class="label">Custo Total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
+                    <div class="tile blue-strong compact-top" data-card-id="custo_valor_unitario"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
+                    <div class="tile green" data-card-id="custo_ii"><div id="lblIi" class="label">II</div><div id="vIi" class="value">-</div></div>
+                    <div class="tile green" data-card-id="custo_ipi"><div id="lblIpi" class="label">IPI</div><div id="vIpi" class="value">-</div></div>
+                    <div class="tile green" data-card-id="custo_ipi_pb_mg"><div class="label">IPI PB&gt;MG</div><div id="vIpiPbMg" class="value">-</div></div>
+                    <div class="tile green" data-card-id="custo_pis"><div id="lblPis" class="label">PIS</div><div id="vPis" class="value">-</div></div>
+                    <div class="tile green" data-card-id="custo_cofins"><div id="lblCofins" class="label">COFINS</div><div id="vCofins" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_frete_imposto"><div class="label">Frete + Imp. Federais</div><div id="vFreteImp" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_frete_internacional"><div class="label">Frete Internacional</div><div id="vFreteInternacional" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_seguro_internacional"><div class="label">Seguro Internacional</div><div id="vSeguroInternacional" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_icms"><div class="label">ICMS</div><div id="vIcms" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_icms_retido_nfe"><div class="label">4% ICMS retido NFe</div><div id="vIcmsRetidoNfe" class="value">-</div></div>
+                    <div class="tile yellow" data-card-id="custo_trade"><div class="label">Trade</div><div id="vTrade" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_afrm"><div class="label">AFRM</div><div id="vAfrm" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_armazenagem"><div class="label">Armazenagem</div><div id="vArmazenagem" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_taxas_fixas"><div class="label">Taxas fixas</div><div id="vTaxasFixas" class="value">-</div></div>
+                    <div class="tile cyan" data-card-id="custo_monofasico"><div class="label">Monofásico</div><div id="vMonofasico" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_st_minas"><div class="label">ST Minas</div><div id="vStMinas" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_st_paraiba"><div class="label">ST Paraíba</div><div id="vStParaiba" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_base_icms"><div class="label">Base ICMS</div><div id="vBaseIcms" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_base_cst_mg"><div class="label">B. de C.ST MG</div><div id="vBaseCstMg" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_base_cst_pb"><div class="label">B. de C.ST PB</div><div id="vBaseCstPb" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_mva_minas"><div class="label">MVA Minas</div><div id="vMvaMinas" class="value">-</div></div>
+                    <div class="tile purple" data-card-id="custo_mva_ajustado"><div class="label">MVA ajustado</div><div id="vMvaAjustado" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_taxa_siscomex"><div class="label">Taxa Siscomex</div><div id="vTaxaSiscomex" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_capatazia"><div class="label">Capatazia</div><div id="vCapatazia" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_bl_fee"><div class="label">BL Fee</div><div id="vBlFee" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_desconsolidacao"><div class="label">Desconsolidação</div><div id="vDesconsolidacao" class="value">-</div></div>
+                    <div class="tile red" data-card-id="custo_handling"><div class="label">Handling</div><div id="vHandling" class="value">-</div></div>
+                    <div class="tile orange" data-card-id="custo_despesas_nacionais"><div class="label">Despesas Nacionais</div><div id="vDespesasNacionais" class="value">-</div></div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Análise</h2>
+                <div class="analysis-grid">
+                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_1"><div id="lblMlb1" class="label">MLB</div><div id="vMlb1" class="value">-</div></div>
+                    <div class="tile cyan" data-card-id="analise_conc_1"><div id="lblConcorrente1" class="label">Concorrente 1</div><div id="vConcorrente1" class="value">-</div></div>
+                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_2"><div id="lblMlb2" class="label">MLB</div><div id="vMlb2" class="value">-</div></div>
+                    <div class="tile cyan" data-card-id="analise_conc_2"><div id="lblConcorrente2" class="label">Concorrente 2</div><div id="vConcorrente2" class="value">-</div></div>
+                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_3"><div id="lblMlb3" class="label">MLB</div><div id="vMlb3" class="value">-</div></div>
+                    <div class="tile cyan" data-card-id="analise_conc_3"><div id="lblConcorrente3" class="label">Concorrente 3</div><div id="vConcorrente3" class="value">-</div></div>
+                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_4"><div id="lblMlb4" class="label">MLB</div><div id="vMlb4" class="value">-</div></div>
+                    <div class="tile cyan" data-card-id="analise_conc_4"><div id="lblConcorrente4" class="label">Concorrente 4</div><div id="vConcorrente4" class="value">-</div></div>
+                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_5"><div id="lblMlb5" class="label">MLB</div><div id="vMlb5" class="value">-</div></div>
+                    <div class="tile cyan" data-card-id="analise_conc_5"><div id="lblConcorrente5" class="label">Concorrente 5</div><div id="vConcorrente5" class="value">-</div></div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        if (!verificarSessao()) {
+            // verificarSessao já redireciona quando não há token.
+        }
+
+        let cotacaoDolarHoje = 0;
+        let ultimoValorTotalDolarIi = null;
+        let ultimoFreteInternacionalUsdIi = null;
+        let ultimoPercentualIi = null;
+        let ultimoPercentualIpi = null;
+        let ultimoPercentualPis = null;
+        let ultimoPercentualCofins = null;
+        let ultimaProporcao = 100;
+        let ultimoQtdSku = 1;
+        let ultimaCotacaoBase = 0;
+        let cacheImpostosProdutos = null;
+        let promessaImpostosProdutos = null;
+        let cardArrastado = null;
+        const LS_CARD_ORDER_KEY = 'importacoes_sku_card_order_v1';
+        const LS_CARD_ORDER_CONTEXT = 'global';
+        const LS_RESUMO_EDITAVEL_KEY = 'importacoes_lista_resumo_editavel';
+        const LS_PROPORCAO_KEY = 'importacoes_sku_proporcao_v1';
+
+        function carregarProporcaoLocal(listaId, sku) {
+            if (!listaId || !sku) return 100;
+            try {
+                const bruto = JSON.parse(localStorage.getItem(LS_PROPORCAO_KEY) || '{}') || {};
+                const porLista = bruto[String(listaId)] || {};
+                const v = porLista[String(sku).toUpperCase()];
+                if (v === undefined || v === null || String(v).trim() === '') return 100;
+                const n = Number(String(v).replace(',', '.').replace('%', '').trim());
+                return Number.isFinite(n) && n > 0 ? n : 100;
+            } catch (_e) {
+                return 100;
+            }
+        }
+
+        function salvarProporcaoLocal(listaId, sku, valor) {
+            if (!listaId || !sku) return;
+            try {
+                const bruto = JSON.parse(localStorage.getItem(LS_PROPORCAO_KEY) || '{}') || {};
+                if (!bruto[String(listaId)]) bruto[String(listaId)] = {};
+                bruto[String(listaId)][String(sku).toUpperCase()] = String(valor || '').trim();
+                localStorage.setItem(LS_PROPORCAO_KEY, JSON.stringify(bruto));
+            } catch (_e) { /* ignora */ }
+        }
+
+        function inicializarEdicaoProporcao(listaId, sku) {
+            const card = document.querySelector('.kv.prop');
+            const elValor = document.getElementById('vProp');
+            if (!card || !elValor) return;
+
+            const iniciarEdicao = (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (card.dataset.editando === '1') return;
+                card.dataset.editando = '1';
+
+                const valorAtual = String(elValor.textContent || '').trim().replace('%', '') || '100';
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.min = '0';
+                input.max = '100';
+                input.step = '1';
+                input.className = 'prop-input';
+                input.value = valorAtual;
+                elValor.replaceWith(input);
+                input.focus();
+                input.select();
+
+                const encerrar = () => {
+                    if (card.dataset.editando !== '1') return;
+                    card.dataset.editando = '0';
+                    input.replaceWith(elValor);
+                };
+
+                const salvar = () => {
+                    const txt = String(input.value || '').trim();
+                    const n = Number(txt);
+                    const valFinal = (Number.isFinite(n) && n > 0 && n <= 100) ? n : 100;
+                    elValor.textContent = valFinal.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + '%';
+                    salvarProporcaoLocal(listaId, sku, String(valFinal));
+                    ultimaProporcao = valFinal;
+                    encerrar();
+                    atualizarCardsIiIpiComValor(
+                        ultimoValorTotalDolarIi,
+                        ultimoFreteInternacionalUsdIi,
+                        ultimoPercentualIi,
+                        ultimoPercentualIpi,
+                        ultimoPercentualPis,
+                        ultimoPercentualCofins,
+                        valFinal,
+                        ultimoQtdSku
+                    );
+                };
+
+                input.addEventListener('keydown', (e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') { e.preventDefault(); salvar(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); encerrar(); }
+                });
+                input.addEventListener('blur', () => { if (card.dataset.editando === '1') salvar(); });
+            };
+
+            elValor.addEventListener('dblclick', iniciarEdicao);
+            card.addEventListener('dblclick', (ev) => {
+                if (ev.target === elValor) return;
+                iniciarEdicao(ev);
+            });
+        }
+
+        function normTxt(v) {
+            return String(v || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim();
+        }
+
+        function normSku(v) {
+            return String(v || '').trim().toUpperCase();
+        }
+
+        function normalizarSkuComparacao(v) {
+            let sku = normSku(v);
+            if (!sku) return '';
+
+            sku = sku.replace(/\s+/g, '');
+            sku = sku.replace(/\.0+$/, '');
+
+            const meses = {
+                JAN: '1', FEV: '2', MAR: '3', ABR: '4', MAI: '5', JUN: '6',
+                JUL: '7', AGO: '8', SET: '9', OUT: '10', NOV: '11', DEZ: '12'
+            };
+            sku = sku.replace(/-([A-Z]{3})\b/g, (_m, mes) => '-' + (meses[mes] || mes));
+
+            return sku;
+        }
+
+        function pickCadastro(item, aliases) {
+            if (!item || typeof item !== 'object') return '';
+            const aliasNorm = (aliases || []).map(normTxt).filter(Boolean);
+            if (!aliasNorm.length) return '';
+
+            const pares = Object.keys(item).map((k) => ({
+                key: k,
+                norm: normTxt(k),
+            }));
+
+            for (const alvo of aliasNorm) {
+                const achado = pares.find((p) => p.norm === alvo);
+                if (achado) {
+                    const val = item[achado.key];
+                    if (val !== undefined && val !== null && String(val).trim() !== '') {
+                        return String(val).trim();
+                    }
+                }
+            }
+
+            for (const alvo of aliasNorm) {
+                const achado = pares.find((p) => p.norm.includes(alvo));
+                if (achado) {
+                    const val = item[achado.key];
+                    if (val !== undefined && val !== null && String(val).trim() !== '') {
+                        return String(val).trim();
+                    }
+                }
+            }
+            return '';
+        }
+
+        function getParams() {
+            const p = new URLSearchParams(window.location.search);
+            return {
+                listaId: String(p.get('lista_id') || '').trim(),
+                sku: String(p.get('sku') || '').trim(),
+            };
+        }
+
+        function obterContextoOrdemCards() {
+            return LS_CARD_ORDER_CONTEXT;
+        }
+
+        function listarContextosLegados() {
+            const { listaId, sku } = getParams();
+            const skuNormalizado = normSku(sku);
+            const lista = String(listaId || '').trim() || 'sem_lista';
+            const skuVal = String(skuNormalizado || '').trim() || 'sem_sku';
+            return [
+                lista + '::' + skuVal,
+                lista + '::sem_sku',
+                'sem_lista::' + skuVal,
+                'sem_lista::sem_sku',
+            ];
+        }
+
+        function carregarOrdensCards() {
+            try {
+                const bruto = JSON.parse(localStorage.getItem(LS_CARD_ORDER_KEY) || '{}') || {};
+                return (bruto && typeof bruto === 'object') ? bruto : {};
+            } catch (_e) {
+                return {};
+            }
+        }
+
+        function salvarOrdensCards(mapa) {
+            try {
+                localStorage.setItem(LS_CARD_ORDER_KEY, JSON.stringify(mapa || {}));
+            } catch (_e) {
+                // Ignora falha de persistência local.
+            }
+        }
+
+        function obterOrdemContainer(contexto, containerKey) {
+            const ordens = carregarOrdensCards();
+            const porContexto = ordens[contexto];
+            if (porContexto && typeof porContexto === 'object') {
+                const ordem = porContexto[containerKey];
+                if (Array.isArray(ordem)) return ordem;
+            }
+
+            // Migra automaticamente configuração antiga (por lista/SKU) para o contexto global.
+            const legados = listarContextosLegados();
+            for (const ctxLegado of legados) {
+                const porLegado = ordens[ctxLegado];
+                if (!porLegado || typeof porLegado !== 'object') continue;
+                const ordemLegada = porLegado[containerKey];
+                if (!Array.isArray(ordemLegada) || !ordemLegada.length) continue;
+                salvarOrdemContainer(contexto, containerKey, ordemLegada);
+                return ordemLegada;
+            }
+
+            return [];
+        }
+
+        function salvarOrdemContainer(contexto, containerKey, ordem) {
+            if (!contexto || !containerKey || !Array.isArray(ordem)) return;
+            const ordens = carregarOrdensCards();
+            if (!ordens[contexto] || typeof ordens[contexto] !== 'object') {
+                ordens[contexto] = {};
+            }
+            ordens[contexto][containerKey] = ordem;
+            salvarOrdensCards(ordens);
+        }
+
+        function aplicarOrdemNoContainer(container, ordem) {
+            if (!container || !Array.isArray(ordem) || !ordem.length) return;
+            const cards = Array.from(container.children).filter((el) => el && el.dataset && el.dataset.cardId);
+            const mapa = new Map(cards.map((el) => [el.dataset.cardId, el]));
+            ordem.forEach((cardId) => {
+                const el = mapa.get(String(cardId || '').trim());
+                if (el) container.appendChild(el);
+            });
+        }
+
+        function limparIndicacaoDrag(container) {
+            if (!container) return;
+            container.querySelectorAll('.arrastavel-card.drag-over-left, .arrastavel-card.drag-over-right').forEach((el) => {
+                el.classList.remove('drag-over-left', 'drag-over-right');
+            });
+        }
+
+        function obterAlvoPeloPonto(container, x, y) {
+            const elementoNoPonto = document.elementFromPoint(x, y);
+            const cardDireto = elementoNoPonto && elementoNoPonto.closest
+                ? elementoNoPonto.closest('.arrastavel-card')
+                : null;
+            if (cardDireto && cardDireto.parentElement === container && !cardDireto.classList.contains('dragging')) {
+                return cardDireto;
+            }
+            return null;
+        }
+
+        function obterCardDireitaParaInserir(container, x, y) {
+            const cards = Array.from(container.querySelectorAll('.arrastavel-card:not(.dragging)'));
+            if (!cards.length) return null;
+
+            const cardsMesmaFaixa = cards.filter((el) => {
+                const r = el.getBoundingClientRect();
+                return y >= (r.top - 6) && y <= (r.bottom + 6);
+            });
+
+            const base = cardsMesmaFaixa.length ? cardsMesmaFaixa : cards;
+            const candidatosDireita = base
+                .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+                .filter((d) => d.rect.left >= x)
+                .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
+
+            if (candidatosDireita.length) {
+                return candidatosDireita[0].el;
+            }
+
+            const abaixo = cards
+                .map((el) => ({ el, rect: el.getBoundingClientRect() }))
+                .filter((d) => d.rect.top > y)
+                .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+
+            return abaixo.length ? abaixo[0].el : null;
+        }
+
+        function habilitarReordenacaoCards(container, containerKey, contexto) {
+            if (!container) return;
+
+            container.classList.add('cards-reordenaveis');
+            aplicarOrdemNoContainer(container, obterOrdemContainer(contexto, containerKey));
+
+            const placeholder = document.createElement('div');
+            placeholder.className = 'drop-placeholder';
+
+            const cards = Array.from(container.children).filter((el) => el && el.dataset && el.dataset.cardId);
+            if (cards.length < 2) return;
+
+            let rafId = 0;
+            let ultimoAlvo = null;
+            let ultimaReferencia = null;
+
+            const persistirOrdemAtual = () => {
+                const ordemAtual = Array.from(container.children)
+                    .map((el) => String((el.dataset && el.dataset.cardId) || '').trim())
+                    .filter(Boolean);
+                salvarOrdemContainer(contexto, containerKey, ordemAtual);
+            };
+
+            const limparPlaceholder = () => {
+                if (placeholder.parentElement) {
+                    placeholder.parentElement.removeChild(placeholder);
+                }
+            };
+
+            const resetarEstadoDrag = () => {
+                limparIndicacaoDrag(container);
+                limparPlaceholder();
+                ultimoAlvo = null;
+                ultimaReferencia = null;
+                if (rafId) {
+                    cancelAnimationFrame(rafId);
+                    rafId = 0;
+                }
+            };
+
+            const atualizarPlaceholder = (x, y) => {
+                if (!cardArrastado || cardArrastado.parentElement !== container) return;
+
+                const alvoDireto = obterAlvoPeloPonto(container, x, y);
+                const referencia = alvoDireto || obterCardDireitaParaInserir(container, x, y);
+                limparIndicacaoDrag(container);
+
+                if (!referencia) {
+                    if (container.lastElementChild !== placeholder) {
+                        container.appendChild(placeholder);
+                    }
+                    ultimoAlvo = null;
+                    ultimaReferencia = null;
+                    return;
+                }
+
+                if (referencia === ultimaReferencia) {
+                    return;
+                }
+
+                // Regra: sempre inserir antes da referência para "abrir espaço" à direita.
+                referencia.classList.add('drag-over-right');
+                container.insertBefore(placeholder, referencia);
+                ultimoAlvo = referencia;
+                ultimaReferencia = referencia;
+            };
+
+            cards.forEach((card) => {
+                card.classList.add('arrastavel-card');
+                card.setAttribute('draggable', 'true');
+
+                card.addEventListener('dragstart', () => {
+                    cardArrastado = card;
+                    card.classList.add('dragging');
+                    placeholder.style.width = card.offsetWidth + 'px';
+                    placeholder.style.height = card.offsetHeight + 'px';
+
+                    container.insertBefore(placeholder, card.nextSibling);
+                    requestAnimationFrame(() => {
+                        if (cardArrastado === card) {
+                            card.style.display = 'none';
+                        }
+                    });
+                });
+
+                card.addEventListener('dragend', () => {
+                    card.style.display = '';
+                    card.classList.remove('dragging');
+                    if (placeholder.parentElement === container) {
+                        container.insertBefore(card, placeholder);
+                    }
+                    resetarEstadoDrag();
+                    cardArrastado = null;
+                    persistirOrdemAtual();
+                });
+            });
+
+            container.addEventListener('dragover', (ev) => {
+                if (!cardArrastado || cardArrastado.parentElement !== container) return;
+                ev.preventDefault();
+
+                if (rafId) return;
+                rafId = requestAnimationFrame(() => {
+                    rafId = 0;
+                    atualizarPlaceholder(ev.clientX, ev.clientY);
+                });
+            });
+
+            container.addEventListener('drop', (ev) => {
+                if (!cardArrastado || cardArrastado.parentElement !== container) return;
+                ev.preventDefault();
+                cardArrastado.style.display = '';
+                cardArrastado.classList.remove('dragging');
+                if (placeholder.parentElement === container) {
+                    container.insertBefore(cardArrastado, placeholder);
+                }
+                resetarEstadoDrag();
+                cardArrastado = null;
+                persistirOrdemAtual();
+            });
+
+            container.addEventListener('dragleave', (ev) => {
+                if (!ev.relatedTarget || !container.contains(ev.relatedTarget)) {
+                    limparIndicacaoDrag(container);
+                }
+            });
+        }
+
+        function inicializarReordenacaoDosCards() {
+            const contexto = obterContextoOrdemCards();
+            habilitarReordenacaoCards(document.querySelector('.kv-grid'), 'produto_cards', contexto);
+            habilitarReordenacaoCards(document.querySelector('.section-grid'), 'custos_cards', contexto);
+            habilitarReordenacaoCards(document.querySelector('.analysis-grid'), 'analise_cards', contexto);
+        }
+
+        function escaparHtml(v) {
+            return String(v || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function setErro(msg) {
+            const el = document.getElementById('erro');
+            if (!el) return;
+            const txt = String(msg || '').trim();
+            el.textContent = txt;
+            el.style.display = txt ? 'block' : 'none';
+        }
+
+        function getField(item, aliases, fallback = '-') {
+            const obj = item || {};
+            const aliasNorm = (aliases || []).map(normTxt);
+
+            for (const k of Object.keys(obj)) {
+                const nk = normTxt(k);
+                if (aliasNorm.includes(nk)) {
+                    const val = obj[k];
+                    if (val !== null && val !== undefined && String(val).trim() !== '') {
+                        return String(val).trim();
+                    }
+                }
+            }
+
+            return fallback;
+        }
+
+        function getFieldItemOuLista(item, lista, aliases, fallback = '-') {
+            const vItem = getField(item, aliases, '');
+            if (String(vItem || '').trim()) return vItem;
+            const vLista = getField(lista, aliases, '');
+            if (String(vLista || '').trim()) return vLista;
+            return fallback;
+        }
+
+        function carregarResumoEditavelLista(listaId) {
+            if (!listaId) return {};
+            try {
+                const bruto = JSON.parse(localStorage.getItem(LS_RESUMO_EDITAVEL_KEY) || '{}') || {};
+                const porLista = bruto[listaId];
+                return (porLista && typeof porLista === 'object') ? porLista : {};
+            } catch (_e) {
+                return {};
+            }
+        }
+
+        function obterM3TotalItem(item) {
+            const qtd = getNumber(item && (item.Quantidade || item.Qtd));
+            const m3Total = getNumber(item && (item['M³'] || item['M?'] || item.M3 || item.m3 || item.CBM));
+            const m3Individual = getNumber(item && (item['M³ Individual'] || item['M? Individual'] || item['M3 Individual'] || item.m3_individual));
+
+            if (m3Total !== null && m3Total > 0) return m3Total;
+            if (m3Individual !== null && m3Individual > 0 && qtd !== null && qtd > 0) {
+                return m3Individual * qtd;
+            }
+            return 0;
+        }
+
+        function calcularValorPorM3PeloCabecalho(lista, itens) {
+            const dados = Array.isArray(itens) ? itens : [];
+            if (!dados.length) return null;
+
+            const totalUsd = dados.reduce((acc, row) => {
+                const qtd = getNumber(row && (row.Quantidade || row.Qtd));
+                const total = getNumber(row && (row['Valor total'] || row['Valor total em dólar']));
+                const unit = getNumber(row && (row['Valor unidade'] || row['Valor em dólar']));
+                return acc + (total !== null && total > 0 ? total : ((qtd || 0) * (unit || 0)));
+            }, 0);
+
+            const totalM3 = dados.reduce((acc, row) => acc + obterM3TotalItem(row), 0);
+            if (totalUsd > 0 && totalM3 > 0) {
+                return totalUsd / totalM3;
+            }
+            return null;
+        }
+
+        function obterValorPorM3Usd(lista, item, itensLista) {
+            const listaId = String((lista && lista.id) || getParams().listaId || '').trim();
+            const resumoEditavel = carregarResumoEditavelLista(listaId);
+
+            const valorSalvo = String((resumoEditavel && resumoEditavel.valor_por_m3) || '').trim();
+            const valorSalvoNum = getNumber(valorSalvo);
+            if (valorSalvoNum !== null && valorSalvoNum > 0) return valorSalvoNum;
+
+            const bruto = getFieldItemOuLista(
+                item,
+                lista,
+                ['Valor por M³', 'Valor por M?', 'Valor por M3', 'Valor por m³', 'Valor por m?', 'Valor por m3', 'Valor/M³', 'Valor/M?', 'Valor/M3'],
+                ''
+            );
+            const num = getNumber(bruto);
+            if (num !== null && num > 0) return num;
+
+            const calcCabecalho = calcularValorPorM3PeloCabecalho(lista, itensLista);
+            if (calcCabecalho !== null && calcCabecalho > 0) return calcCabecalho;
+
+            return null;
+        }
+
+        function getNumber(val) {
+            if (val === null || val === undefined) return null;
+            if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+            const txt = String(val).trim();
+            if (!txt) return null;
+            let s = txt.replace(/\s+/g, '').replace(/R\$/gi, '').replace(/US\$/gi, '').replace(/\$/g, '').replace(/%/g, '');
+
+            // Suporta tanto 1.234,56 quanto 1234.56 sem inflar valores percentuais.
+            const hasComma = s.includes(',');
+            const hasDot = s.includes('.');
+            if (hasComma && hasDot) {
+                const lastComma = s.lastIndexOf(',');
+                const lastDot = s.lastIndexOf('.');
+                if (lastComma > lastDot) {
+                    s = s.replace(/\./g, '').replace(',', '.');
+                } else {
+                    s = s.replace(/,/g, '');
+                }
+            } else if (hasComma) {
+                s = s.replace(',', '.');
+            }
+
+            const n = Number(s);
+            return Number.isFinite(n) ? n : null;
+        }
+
+        function fmtUsd(val) {
+            const n = getNumber(val);
+            if (n === null) return String(val || '-');
+            return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+        }
+
+        function fmtBRL(val) {
+            const n = getNumber(val);
+            if (n === null) return '-';
+            return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        }
+
+        function atualizarFxTopo(valorTxt, horaTxt) {
+            const elV = document.getElementById('fxValue');
+            const elT = document.getElementById('fxTime');
+            if (elV) elV.textContent = String(valorTxt || '-');
+            if (elT && horaTxt) elT.textContent = horaTxt;
+        }
+
+        function atualizarFxCompraTopo(valor) {
+            // legado — sem uso com novo layout
+        }
+
+        function atualizarHorarioBrasilia() {
+            const el = document.getElementById('clockBrasilia');
+            if (!el) return;
+            try {
+                el.textContent = new Intl.DateTimeFormat('pt-BR', {
+                    timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+                }).format(new Date());
+            } catch (_e) { el.textContent = '--:--:--'; }
+        }
+
+        function atualizarHorarioPequim() {
+            const el = document.getElementById('clockBeijing');
+            if (!el) return;
+            try {
+                el.textContent = new Intl.DateTimeFormat('pt-BR', {
+                    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+                }).format(new Date());
+            } catch (_e) { el.textContent = '--:--:--'; }
+        }
+
+        async function carregarFxTopo() {
+            try {
+                const resp = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL', {
+                    method: 'GET',
+                    cache: 'no-store'
+                });
+                if (!resp.ok) throw new Error('falha cotação');
+                const data = await resp.json();
+                const usd = data && (data.USDBRL || data['USD-BRL']);
+                const bid = Number(usd && (usd.bid || usd.ask || usd.high || usd.low) || 0);
+                cotacaoDolarHoje = bid > 0 ? Number(bid.toFixed(2)) : 0;
+                const hora = usd && usd.create_date ? String(usd.create_date).slice(11, 19) : '';
+                atualizarFxTopo(bid > 0 ? fmtBRL(bid) : '-', hora);
+                atualizarCardsIiIpiComValor(
+                    ultimoValorTotalDolarIi,
+                    ultimoFreteInternacionalUsdIi,
+                    ultimoPercentualIi,
+                    ultimoPercentualIpi,
+                    ultimoPercentualPis,
+                    ultimoPercentualCofins,
+                    ultimaProporcao,
+                    ultimoQtdSku
+                );
+            } catch (_e) {
+                cotacaoDolarHoje = 0;
+                atualizarFxTopo('-');
+                atualizarCardsIiIpiComValor(
+                    ultimoValorTotalDolarIi,
+                    ultimoFreteInternacionalUsdIi,
+                    ultimoPercentualIi,
+                    ultimoPercentualIpi,
+                    ultimoPercentualPis,
+                    ultimoPercentualCofins,
+                    ultimaProporcao,
+                    ultimoQtdSku
+                );
+            }
+        }
+
+        function atualizarCardsIiIpiComValor(valorTotalDolar, freteInternacionalDolar, iiPercentual, ipiPercentual, pisPercentual, cofinsPercentual, proporcaoPct, qtdNum) {
+            const elIi = document.getElementById('vIi');
+            const elIpi = document.getElementById('vIpi');
+            const elIpiPbMg = document.getElementById('vIpiPbMg');
+            const elPis = document.getElementById('vPis');
+            const elCofins = document.getElementById('vCofins');
+            const elIcmsRetidoNfe = document.getElementById('vIcmsRetidoNfe');
+            const elTrade = document.getElementById('vTrade');
+            if (!elIi && !elIpi && !elIpiPbMg && !elPis && !elCofins && !elIcmsRetidoNfe && !elTrade) return;
+
+            const propFactor = (proporcaoPct !== undefined && proporcaoPct !== null && Number(proporcaoPct) > 0) ? Number(proporcaoPct) / 100 : 1;
+            const qtd = (qtdNum !== undefined && qtdNum !== null && Number(qtdNum) > 0) ? Number(qtdNum) : 1;
+
+            const iiNum = getNumber(iiPercentual);
+            const iiPctTxt = (iiNum === null) ? String(iiPercentual || '-') : fmtPct(iiNum);
+            const ipiNum = getNumber(ipiPercentual);
+            const ipiPctTxt = (ipiNum === null) ? String(ipiPercentual || '-') : fmtPct(ipiNum);
+            const pisNum = getNumber(pisPercentual);
+            const pisPctTxt = (pisNum === null) ? String(pisPercentual || '-') : fmtPct(pisNum);
+            const cofinsNum = getNumber(cofinsPercentual);
+            const cofinsPctTxt = (cofinsNum === null) ? String(cofinsPercentual || '-') : fmtPct(cofinsNum);
+
+            const setAliquotaNoTitulo = (labelId, nome, aliquotaTxt) => {
+                const lbl = document.getElementById(labelId);
+                if (!lbl) return;
+                const aliq = String(aliquotaTxt || '').trim();
+                lbl.textContent = (aliq && aliq !== '-') ? (nome + ' ' + aliq) : nome;
+            };
+
+            setAliquotaNoTitulo('lblIi', 'II', iiPctTxt);
+            setAliquotaNoTitulo('lblIpi', 'IPI', ipiPctTxt);
+            setAliquotaNoTitulo('lblPis', 'PIS', pisPctTxt);
+            setAliquotaNoTitulo('lblCofins', 'COFINS', cofinsPctTxt);
+
+            const totalUsd = getNumber(valorTotalDolar);
+            const freteUsd = getNumber(freteInternacionalDolar);
+            const valorProdutoUsd = (totalUsd !== null ? totalUsd : 0);
+            const freteUsdNum = (freteUsd !== null ? freteUsd : 0);
+            const baseTributosUsd = valorProdutoUsd + freteUsdNum;
+            const cotacaoBase = (ultimaCotacaoBase > 0) ? ultimaCotacaoBase : cotacaoDolarHoje;
+            const valorProdutoReais = (valorProdutoUsd > 0 && cotacaoBase > 0)
+                ? (valorProdutoUsd * cotacaoBase)
+                : null;
+            const baseTributosReais = (baseTributosUsd > 0 && cotacaoBase > 0)
+                ? (baseTributosUsd * cotacaoBase)
+                : null;
+            const baseTributosReaisProp = baseTributosReais !== null ? baseTributosReais * propFactor : null;
+            const valorProdutoReaisProp = valorProdutoReais !== null ? valorProdutoReais * propFactor : null;
+
+            const iiEmReais = (baseTributosReaisProp !== null && iiNum !== null)
+                ? (baseTributosReaisProp * (iiNum / 100))
+                : null;
+
+            const baseIpiReais = (valorProdutoReaisProp !== null)
+                ? (valorProdutoReaisProp + (iiEmReais || 0))
+                : null;
+            const ipiEmReais = (baseIpiReais !== null && ipiNum !== null)
+                ? (baseIpiReais * (ipiNum / 100))
+                : null;
+            const pisEmReais = (baseTributosReaisProp !== null && pisNum !== null)
+                ? (baseTributosReaisProp * (pisNum / 100))
+                : null;
+            const cofinsEmReais = (baseTributosReaisProp !== null && cofinsNum !== null)
+                ? (baseTributosReaisProp * (cofinsNum / 100))
+                : null;
+
+            // Custo Total, Valor Unitário, IPI PB>MG e Trade
+            const freteBrl = (freteUsdNum > 0 && cotacaoBase > 0) ? freteUsdNum * cotacaoBase : 0;
+            const seguroBrl = (baseTributosUsd > 0 && cotacaoBase > 0) ? (baseTributosUsd * cotacaoBase * 0.0028) : 0;
+            const prodBrl = valorProdutoReais !== null ? valorProdutoReais : 0;
+            const freteImpFederaisCalc = (valorProdutoReaisProp !== null)
+                ? (valorProdutoReaisProp + (iiEmReais || 0) + (ipiEmReais || 0) + (pisEmReais || 0) + (cofinsEmReais || 0) + freteBrl + seguroBrl)
+                : null;
+            const ipiPbMgEmReais = (freteImpFederaisCalc !== null && ipiNum !== null)
+                ? ((freteImpFederaisCalc * (ipiNum / 100)) - (ipiEmReais || 0))
+                : null;
+            const icmsRetidoNfeEmReais = freteImpFederaisCalc !== null
+                ? (freteImpFederaisCalc * 0.04)
+                : null;
+
+            if (elIi) elIi.textContent = iiEmReais !== null ? fmtBRL(iiEmReais) : '-';
+            if (elIpi) elIpi.textContent = ipiEmReais !== null ? fmtBRL(ipiEmReais) : '-';
+            if (elIpiPbMg) elIpiPbMg.textContent = ipiPbMgEmReais !== null ? fmtBRL(ipiPbMgEmReais) : '-';
+            if (elPis) elPis.textContent = pisEmReais !== null ? fmtBRL(pisEmReais) : '-';
+            if (elCofins) elCofins.textContent = cofinsEmReais !== null ? fmtBRL(cofinsEmReais) : '-';
+            if (elIcmsRetidoNfe) elIcmsRetidoNfe.textContent = icmsRetidoNfeEmReais !== null ? fmtBRL(icmsRetidoNfeEmReais) : '-';
+            atualizarCardIcmsCalculado(
+                document.getElementById('vBaseIcms')?.textContent || '-',
+                document.getElementById('vBaseCstMg')?.textContent || '-',
+                document.getElementById('vBaseCstPb')?.textContent || '-',
+                document.getElementById('vStMinas')?.textContent || '-',
+                document.getElementById('vStParaiba')?.textContent || '-',
+                icmsRetidoNfeEmReais !== null ? fmtBRL(icmsRetidoNfeEmReais) : '-',
+                document.getElementById('vIcms')?.textContent || '-'
+            );
+
+            const baseTrade = (prodBrl * propFactor) + freteBrl + seguroBrl;
+            const tradeBrl = baseTrade > 0 ? (baseTrade * 0.03) : null;
+            const baseCusto = (prodBrl > 0)
+                ? (prodBrl + (iiEmReais || 0) + (ipiEmReais || 0) + (pisEmReais || 0) + (cofinsEmReais || 0) + freteBrl + seguroBrl)
+                : null;
+            // Despesas Nacionais = 10% do Custo Total final → custoTotal = baseCusto / 0.90
+            const custoTotal = baseCusto !== null ? (baseCusto / 0.90) : null;
+            const despesasNacionais = custoTotal !== null ? (custoTotal * 0.10) : null;
+            const elCustoTotal = document.getElementById('vCustoTotalProduto');
+            const elValUnit = document.getElementById('vValorUnitarioProduto');
+            const elDespesasNacionais = document.getElementById('vDespesasNacionais');
+            if (elCustoTotal) elCustoTotal.textContent = custoTotal !== null ? fmtBRL(custoTotal) : '-';
+            if (elValUnit) elValUnit.textContent = (custoTotal !== null && qtd > 0) ? fmtBRL(custoTotal / qtd) : '-';
+            if (elDespesasNacionais) elDespesasNacionais.textContent = despesasNacionais !== null ? fmtBRL(despesasNacionais) : '-';
+            if (elTrade) elTrade.textContent = tradeBrl !== null ? fmtBRL(tradeBrl) : '-';
+        }
+
+        function fmtQty(val) {
+            const n = getNumber(val);
+            if (n === null) return String(val || '-');
+            return n.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+        }
+
+        function fmtM3(val) {
+            const n = getNumber(val);
+            if (n === null) return String(val || '-');
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+        }
+
+        function fmtPct(val) {
+            const n = getNumber(val);
+            if (n === null) return String(val || '-');
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+        }
+
+        function setText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = String(value || '-');
+        }
+
+        function setNcmDescricao(value) {
+            const texto = String(value || '-').trim() || '-';
+            const el = document.getElementById('vNcmDesc');
+            const tooltip = document.getElementById('vNcmDescTooltip');
+            const card = document.getElementById('ncmDescCard');
+            if (el) {
+                el.textContent = texto;
+            }
+            if (tooltip) {
+                tooltip.textContent = texto;
+            }
+            if (card) {
+                card.classList.toggle('has-full-desc', texto !== '-');
+            }
+        }
+
+        function setFreteInternacional(valor, formulaHover) {
+            const el = document.getElementById('vFreteInternacional');
+            if (!el) return;
+            el.textContent = String(valor || '-');
+        }
+
+        function setLink(id, value) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const v = String(value || '').trim();
+            if (!v) {
+                el.textContent = '-';
+                return;
+            }
+            const ok = /^https?:\/\//i.test(v);
+            if (!ok) {
+                el.textContent = v;
+                return;
+            }
+            el.innerHTML = '<a class="link-prod" href="' + v.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer">Abrir link do produto</a>';
+        }
+
+        function setLinkConcorrente(labelId, labelTexto, value) {
+            const lbl = document.getElementById(labelId);
+            const v = String(value || '').trim();
+            if (!lbl) return;
+
+            const ok = /^https?:\/\//i.test(v);
+            if (!ok) {
+                lbl.textContent = labelTexto;
+                return;
+            }
+            lbl.innerHTML = '<a class="label-link" href="' + v.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer">' + escaparHtml(labelTexto) + '</a>';
+        }
+
+        function renderFoto(url, sku) {
+            const box = document.getElementById('fotoBox');
+            if (!box) return;
+            const foto = String(url || '').trim();
+            if (!foto) {
+                box.innerHTML = '<div class="sem-foto">Sem foto</div>';
+                return;
+            }
+            const segura = foto.replace(/"/g, '&quot;');
+            const alt = String(sku || 'Produto').replace(/"/g, '&quot;');
+            box.innerHTML = '<img src="' + segura + '" alt="' + alt + '" loading="lazy" onerror="this.remove(); this.parentElement.innerHTML=\'<div class=\'sem-foto\'>Sem foto</div>\';">';
+        }
+
+        function montarMeta(listaNome, sku) {
+            const meta = document.getElementById('meta');
+            if (!meta) return;
+            meta.innerHTML =
+                '<span class="chip">Lista: ' + (listaNome || '-') + '</span>' +
+                '<span class="chip">SKU: ' + (sku || '-') + '</span>';
+        }
+
+        function obterUrlFoto(valor) {
+            const foto = String(valor || '').trim();
+            if (!foto) return '';
+            if (/^https?:\/\//i.test(foto) || foto.startsWith('//')) return foto;
+            const nomeArquivo = foto.split('/').pop();
+            if (!nomeArquivo) return '';
+            return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
+        }
+
+        function preencherCampos(item, lista, cad, itensLista) {
+            const sku = getField(item, ['SKU']);
+            const proporcao = getField(item, ['Proporção', 'Proporcao', 'Propor??o']);
+            const foto = getField(item, ['Foto', 'Imagem', 'Image'], '');
+            const tituloPtBase = getField(item, [
+                'Título em portugues',
+                'Titulo em portugues',
+                'Título em português',
+                'Titulo em português',
+                'Título do produto em português',
+                'Título do produto em portugues',
+                'Título em portugues',
+                'Título em português',
+                'Título do produto em português',
+                'Título do produto em portugues',
+                'Título',
+                'Título',
+                'Titulo',
+                'Produto',
+                'Descrição',
+                'Descrição',
+                'Descricao'
+            ]);
+            const ncmBase = getField(item, ['NCM']);
+            const cestBase = getField(item, ['Cest', 'CEST']);
+            const valorDolar = getField(item, ['Valor em dolar', 'Valor em dólar', 'Valor em d?lar', 'Valor unidade', 'Valor unitário em dólar', 'Valor unitario em dolar', 'Valor unit?rio em d?lar']);
+            const quantidade = getField(item, ['Quantidade', 'Qtd']);
+            const valorTotalDolar = getField(item, ['Valor total em dolar', 'Valor total em dólar', 'Valor total em d?lar', 'Valor total']);
+            const m3Base = getField(item, ['M³', 'M?', 'M3', 'm3', 'CBM']);
+            const peso = getField(item, ['Peso']);
+            const ii = getField(item, ['II']);
+            const ipi = getField(item, ['IPI']);
+            const pis = getField(item, ['Pis', 'PIS']);
+            const cofins = getField(item, ['Cofins', 'COFINS']);
+            const freteImp = getField(item, ['Frete + imposto', 'Frete+imposto', 'Frete e imposto', 'Frete/imposto']);
+            const seguroInternacionalBruto = getFieldItemOuLista(item, lista, ['Seguro Internacional 0,28%', 'Seguro Internacional']);
+            const icms = getField(item, ['ICMS']);
+            const afrm = getField(item, ['AFRM', 'Afrm']);
+            const armazenagem = getField(item, ['Armazenagem']);
+            const taxasFixas = getField(item, ['Taxas fixas', 'Taxas Fixas', 'Taxas']);
+            const monofasico = getFieldItemOuLista(item, lista, ['Monofásico', 'Monof?sico', 'Monofasico']);
+            const stMinas = getFieldItemOuLista(item, lista, ['ST Minas', 'ST-Minas', 'ST_Minas', 'ST MG', 'convenio_mg_st_minas']);
+            const stParaiba = getFieldItemOuLista(item, lista, ['ST Paraíba', 'ST Para?ba', 'ST Paraiba', 'ST-Paraiba', 'ST_Paraiba', 'ST PB', 'convenio_mg_st_paraiba']);
+            const baseIcms = getFieldItemOuLista(item, lista, ['Base ICMS', 'Base de ICMS', 'Base_ICMS']);
+            const baseCstMg = getFieldItemOuLista(item, lista, ['B. de C.ST MG', 'Base de C.ST MG', 'Base C.ST MG']);
+            const baseCstPb = getFieldItemOuLista(item, lista, ['B. de C.ST PB', 'Base de C.ST PB', 'Base C.ST PB']);
+            const mvaMinas = getFieldItemOuLista(item, lista, ['MVA Minas', 'MVA-Minas', 'MVA_Minas', 'MVA (Conv. MG)', 'convenio_mg_mva']);
+            const mvaAjustado = getFieldItemOuLista(item, lista, ['MVA ajustado', 'MVA Ajustado', 'MVA_ajustado']);
+            const taxaSiscomex = getFieldItemOuLista(item, lista, ['Taxa Siscomex']);
+            const capatazia = getFieldItemOuLista(item, lista, ['Capatazia']);
+            const blFee = getFieldItemOuLista(item, lista, ['BL Fee', 'BL fee']);
+            const desconsolidacao = getFieldItemOuLista(item, lista, ['Desconsolidação', 'Desconsolida??o', 'Desconsolidacao']);
+            const handling = getFieldItemOuLista(item, lista, ['Handling']);
+            const concorrente1 = getFieldItemOuLista(item, lista, ['Concorrente 1', 'Concorrente1', 'Concorrente_1']);
+            const concorrente2 = getFieldItemOuLista(item, lista, ['Concorrente 2', 'Concorrente2', 'Concorrente_2']);
+            const concorrente3 = getFieldItemOuLista(item, lista, ['Concorrente 3', 'Concorrente3', 'Concorrente_3']);
+            const concorrente4 = getFieldItemOuLista(item, lista, ['Concorrente 4', 'Concorrente4', 'Concorrente_4']);
+            const concorrente5 = getFieldItemOuLista(item, lista, ['Concorrente 5', 'Concorrente5', 'Concorrente_5']);
+            const link = getField(item, ['Link', 'URL', 'Url']);
+
+            const qtdNum = getNumber(quantidade) || 0;
+            let m3Num = getNumber(m3Base);
+            if (cad && Number(cad.m3Individual || 0) > 0 && qtdNum > 0) {
+                m3Num = Number(cad.m3Individual) * qtdNum;
+            }
+
+            // --- Proporção: carrega do localStorage ou usa 100% como padrão ---
+            const { listaId: listaIdParam } = getParams();
+            const propLocal = carregarProporcaoLocal(listaIdParam, sku);
+            const propFactor = propLocal / 100;
+            ultimaProporcao = propLocal;
+            ultimoQtdSku = qtdNum || 1;
+
+            const tituloPt = (cad && cad.tituloPt) ? cad.tituloPt : tituloPtBase;
+            const ncm = (cad && cad.ncm) ? cad.ncm : ncmBase;
+            const cest = (cad && cad.cest) ? cad.cest : cestBase;
+            const ncmDescricao = (cad && cad.ncmDescricao)
+                ? cad.ncmDescricao
+                : getFieldItemOuLista(item, lista, ['Descrição do NCM', 'Descri??o do NCM', 'Descricao do NCM', 'Descrição NCM', 'Descri??o NCM', 'Descricao NCM'], '-');
+
+            const valorPorM3Usd = obterValorPorM3Usd(lista, item, itensLista);
+            const dolarCompra = getNumber(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+            const dolarBase = (dolarCompra !== null && dolarCompra > 0) ? dolarCompra : cotacaoDolarHoje;
+            ultimaCotacaoBase = (dolarBase !== null && dolarBase > 0) ? dolarBase : 0;
+            // Frete Internacional = Valor por M³ (USD) × Dólar da Compra × M³ do SKU
+            const freteInternacionalUsdCalc = (valorPorM3Usd !== null && m3Num !== null)
+                ? (valorPorM3Usd * m3Num)
+                : null;
+            const freteInternacionalBrlCalc = (freteInternacionalUsdCalc !== null && dolarBase !== null && dolarBase > 0)
+                ? (freteInternacionalUsdCalc * dolarBase)
+                : null;
+            const freteInternacionalUsd = freteInternacionalUsdCalc;
+            const freteInternacionalExibicao = freteInternacionalBrlCalc !== null
+                ? fmtBRL(freteInternacionalBrlCalc)
+                : '-';
+            const formulaFreteInternacional = freteInternacionalBrlCalc !== null
+                ? (fmtUsd(valorPorM3Usd) + ' × ' + fmtBRL(dolarBase) + ' × ' + fmtM3(m3Num) + ' m³')
+                : '';
+
+            setText('vSku', sku);
+            setText('vProp', propLocal.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + '%');
+            setText('vTituloPt', tituloPt);
+            setText('vNcm', ncm);
+            setNcmDescricao(ncmDescricao || '-');
+            setText('vCest', cest);
+            setText('vDolar', fmtUsd(valorDolar));
+            setText('vValorTotalDolar', fmtUsd(valorTotalDolar !== '-' ? valorTotalDolar : ((getNumber(valorDolar) || 0) * (getNumber(quantidade) || 0))));
+            const valorTotalDolarNum = getNumber(valorTotalDolar !== '-' ? valorTotalDolar : ((getNumber(valorDolar) || 0) * (getNumber(quantidade) || 0)));
+            const valorTotalBrlCalc = (valorTotalDolarNum !== null && dolarBase !== null && dolarBase > 0)
+                ? (valorTotalDolarNum * dolarBase)
+                : null;
+            setText('vValorTotalBrl', valorTotalBrlCalc !== null ? fmtBRL(valorTotalBrlCalc) : '-');
+            setText('vQtd', fmtQty(quantidade));
+            setText('vM3', fmtM3(m3Num !== null ? m3Num : m3Base));
+            // Exibe o mesmo valor que aparece no cabeçalho da lista: editável → cálculo total (não usa campo do item)
+            const { listaId: listaIdParamDisplay } = getParams();
+            const resumoEditavelDisplay = carregarResumoEditavelLista(listaIdParamDisplay);
+            const valorPorM3EditadoDisplay = getNumber(resumoEditavelDisplay && resumoEditavelDisplay.valor_por_m3);
+            const valorPorM3Display = (valorPorM3EditadoDisplay !== null && valorPorM3EditadoDisplay > 0)
+                ? valorPorM3EditadoDisplay
+                : calcularValorPorM3PeloCabecalho(lista, itensLista);
+            setText('vValorPorM3', valorPorM3Display !== null ? fmtUsd(valorPorM3Display) : '-');
+            setText('vDolarCompra', dolarBase !== null && dolarBase > 0 ? fmtBRL(dolarBase) : '-');
+            setText('vPeso', fmtQty(peso));
+            const valorTotalDolarCalc = valorTotalDolar !== '-'
+                ? valorTotalDolar
+                : ((getNumber(valorDolar) || 0) * (getNumber(quantidade) || 0));
+            const freteBrlBase = (freteInternacionalBrlCalc !== null)
+                ? freteInternacionalBrlCalc
+                : getNumber(freteInternacionalBruto);
+            const seguroInternacionalBrlCalc = (valorTotalDolarNum !== null && dolarBase !== null && freteBrlBase !== null)
+                ? (((valorTotalDolarNum * dolarBase) + freteBrlBase) * 0.0028)
+                : null;
+
+            const iiPct = getNumber(ii);
+            const ipiPct = getNumber(ipi);
+            const pisPct = getNumber(pis);
+            const cofinsPct = getNumber(cofins);
+
+            const valorProdutoBrl = (valorTotalDolarNum !== null && dolarBase !== null)
+                ? (valorTotalDolarNum * dolarBase)
+                : null;
+            const baseTributosBrl = (valorTotalDolarNum !== null && freteInternacionalUsd !== null && dolarBase !== null)
+                ? ((valorTotalDolarNum + freteInternacionalUsd) * dolarBase)
+                : null;
+            // Aplica a proporção apenas na base tributável
+            const baseTributosBrlProp = baseTributosBrl !== null ? baseTributosBrl * propFactor : null;
+            const valorProdutoBrlProp = valorProdutoBrl !== null ? valorProdutoBrl * propFactor : null;
+            const iiBrl = (baseTributosBrlProp !== null && iiPct !== null)
+                ? (baseTributosBrlProp * (iiPct / 100))
+                : null;
+            const baseIpiBrl = (valorProdutoBrlProp !== null)
+                ? (valorProdutoBrlProp + (iiBrl || 0))
+                : null;
+            const ipiBrl = (baseIpiBrl !== null && ipiPct !== null)
+                ? (baseIpiBrl * (ipiPct / 100))
+                : null;
+            const pisBrl = (baseTributosBrlProp !== null && pisPct !== null)
+                ? (baseTributosBrlProp * (pisPct / 100))
+                : null;
+            const cofinsBrl = (baseTributosBrlProp !== null && cofinsPct !== null)
+                ? (baseTributosBrlProp * (cofinsPct / 100))
+                : null;
+
+            const freteImpFederaisBrlCalc = (
+                valorProdutoBrlProp !== null &&
+                iiBrl !== null &&
+                ipiBrl !== null &&
+                pisBrl !== null &&
+                cofinsBrl !== null &&
+                freteBrlBase !== null &&
+                seguroInternacionalBrlCalc !== null
+            )
+                ? (valorProdutoBrlProp + iiBrl + ipiBrl + pisBrl + cofinsBrl + freteBrlBase + seguroInternacionalBrlCalc)
+                : null;
+            ultimoValorTotalDolarIi = valorTotalDolarCalc;
+            ultimoFreteInternacionalUsdIi = freteInternacionalUsd;
+            ultimoPercentualIi = ii;
+            ultimoPercentualIpi = ipi;
+            ultimoPercentualPis = pis;
+            ultimoPercentualCofins = cofins;
+            atualizarCardsIiIpiComValor(valorTotalDolarCalc, freteInternacionalUsd, ii, ipi, pis, cofins, propLocal, qtdNum || 1);
+            setText('vFreteImp', freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : freteImp);
+            setFreteInternacional(freteInternacionalExibicao, formulaFreteInternacional);
+            setText('vSeguroInternacional', seguroInternacionalBrlCalc !== null ? fmtBRL(seguroInternacionalBrlCalc) : seguroInternacionalBruto);
+            setText('vIcms', icms);
+            setText('vAfrm', afrm);
+            setText('vArmazenagem', armazenagem);
+            setText('vTaxasFixas', taxasFixas);
+            setText('vMonofasico', monofasico);
+            const usaStMgLocal = possuiRespostaSim(stMinas);
+            const usaStPbLocal = possuiRespostaSim(stParaiba);
+            const mvaMinasNumLocal = extrairPrimeiroNumero(mvaMinas);
+            const mvaAjustadoCalc = (mvaMinasNumLocal !== null)
+                ? calcularMvaAjustadoPct(mvaMinasNumLocal)
+                : null;
+            const fatorIpiLocal = ipiPct !== null ? (1 + (ipiPct / 100)) : null;
+            const baseCstMgCalc = (freteImpFederaisBrlCalc !== null && fatorIpiLocal !== null && mvaMinasNumLocal !== null)
+                ? ((freteImpFederaisBrlCalc * fatorIpiLocal) * (1 + (mvaMinasNumLocal / 100)))
+                : null;
+            const baseCstPbCalc = (freteImpFederaisBrlCalc !== null && fatorIpiLocal !== null && mvaAjustadoCalc !== null)
+                ? ((freteImpFederaisBrlCalc * fatorIpiLocal) * (1 + (mvaAjustadoCalc / 100)))
+                : null;
+
+            setText('vStMinas', stMinas);
+            setText('vStParaiba', stParaiba);
+            setText('vBaseIcms', freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : (baseIcms || '-'));
+            setText('vBaseCstMg', baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : (baseCstMg || '-'));
+            setText('vBaseCstPb', baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : (baseCstPb || '-'));
+            atualizarCardIcmsCalculado(
+                freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : baseIcms,
+                baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : baseCstMg,
+                baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : baseCstPb,
+                stMinas,
+                stParaiba,
+                document.getElementById('vIcmsRetidoNfe')?.textContent || '-',
+                icms
+            );
+            setText('vMvaMinas', usaStMgLocal ? formatarValorMvaConvMg(mvaMinas) : '-');
+            setText('vMvaAjustado', mvaAjustadoCalc !== null ? fmtPct(mvaAjustadoCalc) : (mvaAjustado || '-'));
+            setText('vTaxaSiscomex', taxaSiscomex);
+            setText('vCapatazia', capatazia);
+            setText('vBlFee', blFee);
+            setText('vDesconsolidacao', desconsolidacao);
+            setText('vHandling', handling);
+            setText('vConcorrente1', concorrente1);
+            setText('vConcorrente2', concorrente2);
+            setText('vConcorrente3', concorrente3);
+            setText('vConcorrente4', concorrente4);
+            setText('vConcorrente5', concorrente5);
+            setLink('vLink', link);
+            renderFoto(obterUrlFoto(foto), sku);
+            aplicarDadosImpostoNosCards(sku, baseIcms, stMinas, stParaiba, mvaMinas, ipiPct, freteImpFederaisBrlCalc, baseCstMg, baseCstPb);
+            inicializarEdicaoProporcao(listaIdParam, sku);
+        }
+
+        function possuiRespostaSim(valor) {
+            return String(valor || '')
+                .toUpperCase()
+                .split('|')
+                .some((parte) => parte.trim() === 'SIM');
+        }
+
+        function extrairPrimeiroNumero(valor) {
+            const txt = String(valor || '').trim();
+            if (!txt || txt === '-') return null;
+            const match = txt.replace(/\s+/g, '').match(/-?\d+(?:[.,]\d+)?/);
+            if (!match) return null;
+            const num = Number(String(match[0]).replace(',', '.'));
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function calcularMvaAjustadoPct(mvaMinasPct) {
+            const mvaNum = (typeof mvaMinasPct === 'number') ? mvaMinasPct : extrairPrimeiroNumero(mvaMinasPct);
+            if (mvaNum === null) return null;
+            return (((1 + (mvaNum / 100)) * ((1 - 0.04) / (1 - 0.18))) - 1) * 100;
+        }
+
+        function formatarValorMvaConvMg(valor) {
+            const txt = String(valor || '').trim();
+            if (!txt || txt === '-') return '-';
+            const partes = txt
+                .split('|')
+                .map((parte) => String(parte || '').trim())
+                .filter(Boolean)
+                .map((parte) => {
+                    if (parte.includes('%')) return parte;
+                    const n = extrairPrimeiroNumero(parte);
+                    if (n === null) return parte;
+                    return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+                });
+            return partes.length ? partes.join(' | ') : '-';
+        }
+
+        function atualizarCardIcmsCalculado(baseIcmsValor, baseCstMgValor, baseCstPbValor, stMinasValor, stParaibaValor, icmsRetidoValor, fallbackValor) {
+            const stMgSim = possuiRespostaSim(stMinasValor);
+            const stPbSim = possuiRespostaSim(stParaibaValor);
+            const baseIcmsNum = getNumber(baseIcmsValor);
+            const baseCstMgNum = getNumber(baseCstMgValor);
+            const baseCstPbNum = getNumber(baseCstPbValor);
+            const icmsRetidoNum = getNumber(icmsRetidoValor) || 0;
+
+            let baseCalculo = null;
+            if (stPbSim) {
+                baseCalculo = baseCstPbNum;
+            } else if (stMgSim && !stPbSim) {
+                baseCalculo = (baseCstPbNum !== null ? baseCstPbNum : baseCstMgNum);
+            } else if (!stMgSim && !stPbSim) {
+                baseCalculo = baseIcmsNum;
+            }
+
+            const icmsCalculado = (baseCalculo !== null)
+                ? ((baseCalculo * 0.18) - icmsRetidoNum)
+                : null;
+
+            setText('vIcms', icmsCalculado !== null ? fmtBRL(icmsCalculado) : (fallbackValor || '-'));
+        }
+
+        async function carregarMapaProdutosImpostos() {
+            if (cacheImpostosProdutos instanceof Map) return cacheImpostosProdutos;
+            if (!promessaImpostosProdutos) {
+                promessaImpostosProdutos = (async () => {
+                    const mapa = new Map();
+                    try {
+                        const resp = await fetch('/api/impostos/produtos', {
+                            method: 'GET',
+                            headers: { ...obterAuthHeaders() },
+                            cache: 'no-store'
+                        });
+                        if (!resp.ok) return mapa;
+
+                        const data = await resp.json().catch(() => ({}));
+                        const produtos = Array.isArray(data && data.produtos) ? data.produtos : [];
+                        produtos.forEach((produto) => {
+                            const k1 = normSku(produto && produto.sku);
+                            const k2 = normalizarSkuComparacao(produto && produto.sku);
+                            if (k1 && !mapa.has(k1)) mapa.set(k1, produto);
+                            if (k2 && !mapa.has(k2)) mapa.set(k2, produto);
+                        });
+                    } catch (_e) {
+                        // ignora falha e mantém fallback local
+                    }
+                    cacheImpostosProdutos = mapa;
+                    return mapa;
+                })();
+            }
+            return promessaImpostosProdutos;
+        }
+
+        async function aplicarDadosImpostoNosCards(sku, baseIcmsAtual, stMinasAtual, stParaibaAtual, mvaMinasAtual, ipiPercentualAtual, freteImpFederalAtual, baseCstMgAtual, baseCstPbAtual) {
+            const stMgFallback = String(stMinasAtual || '').trim();
+            const stPbFallback = String(stParaibaAtual || '').trim();
+            const baseCstMgTexto = String(baseCstMgAtual || '').trim();
+            const baseCstPbTexto = String(baseCstPbAtual || '').trim();
+            const freteImpBase = (typeof freteImpFederalAtual === 'number' && Number.isFinite(freteImpFederalAtual))
+                ? freteImpFederalAtual
+                : extrairPrimeiroNumero(freteImpFederalAtual);
+            const ipiNumBase = (typeof ipiPercentualAtual === 'number') ? ipiPercentualAtual : extrairPrimeiroNumero(ipiPercentualAtual);
+            const fatorIpi = ipiNumBase !== null ? (1 + (ipiNumBase / 100)) : null;
+
+            try {
+                const mapa = await carregarMapaProdutosImpostos();
+                const dados = mapa.get(normSku(sku)) || mapa.get(normalizarSkuComparacao(sku)) || null;
+
+                const stMg = String((dados && dados.convenio_mg_st_minas) || stMgFallback || '').trim();
+                const stPb = String((dados && dados.convenio_mg_st_paraiba) || stPbFallback || '').trim();
+                const usaStMg = possuiRespostaSim(stMg);
+                const usaStPb = possuiRespostaSim(stPb);
+                const mvaFonte = (dados && dados.convenio_mg_mva) || mvaMinasAtual;
+                const mvaMgNum = extrairPrimeiroNumero(mvaFonte);
+                const mvaAjustadoNum = calcularMvaAjustadoPct(mvaMgNum);
+                const baseCstMgCalc = (freteImpBase !== null && fatorIpi !== null && mvaMgNum !== null)
+                    ? ((freteImpBase * fatorIpi) * (1 + (mvaMgNum / 100)))
+                    : null;
+                const baseCstPbCalc = (freteImpBase !== null && fatorIpi !== null && mvaAjustadoNum !== null)
+                    ? ((freteImpBase * fatorIpi) * (1 + (mvaAjustadoNum / 100)))
+                    : null;
+
+                setText('vStMinas', stMg || '-');
+                setText('vStParaiba', stPb || '-');
+                setText('vMvaMinas', usaStMg ? formatarValorMvaConvMg(mvaFonte) : '-');
+                setText('vMvaAjustado', mvaAjustadoNum !== null ? fmtPct(mvaAjustadoNum) : '-');
+                setText('vBaseCstMg', baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : (baseCstMgTexto || '-'));
+                setText('vBaseCstPb', baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : (baseCstPbTexto || '-'));
+                atualizarCardIcmsCalculado(
+                    document.getElementById('vBaseIcms')?.textContent || baseIcmsAtual || '-',
+                    baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : baseCstMgTexto,
+                    baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : baseCstPbTexto,
+                    stMg,
+                    stPb,
+                    document.getElementById('vIcmsRetidoNfe')?.textContent || '-',
+                    document.getElementById('vIcms')?.textContent || '-'
+                );
+            } catch (_e) {
+                const usaStMg = possuiRespostaSim(stMgFallback);
+                const usaStPb = possuiRespostaSim(stPbFallback);
+                const mvaMgNum = extrairPrimeiroNumero(mvaMinasAtual);
+                const mvaAjustadoNum = calcularMvaAjustadoPct(mvaMgNum);
+                const baseCstMgCalc = (freteImpBase !== null && fatorIpi !== null && mvaMgNum !== null)
+                    ? ((freteImpBase * fatorIpi) * (1 + (mvaMgNum / 100)))
+                    : null;
+                const baseCstPbCalc = (freteImpBase !== null && fatorIpi !== null && mvaAjustadoNum !== null)
+                    ? ((freteImpBase * fatorIpi) * (1 + (mvaAjustadoNum / 100)))
+                    : null;
+                setText('vMvaMinas', usaStMg ? formatarValorMvaConvMg(mvaMinasAtual) : '-');
+                setText('vMvaAjustado', mvaAjustadoNum !== null ? fmtPct(mvaAjustadoNum) : '-');
+                setText('vBaseCstMg', baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : (baseCstMgTexto || '-'));
+                setText('vBaseCstPb', baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : (baseCstPbTexto || '-'));
+                atualizarCardIcmsCalculado(
+                    document.getElementById('vBaseIcms')?.textContent || baseIcmsAtual || '-',
+                    baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : baseCstMgTexto,
+                    baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : baseCstPbTexto,
+                    stMgFallback,
+                    stPbFallback,
+                    document.getElementById('vIcmsRetidoNfe')?.textContent || '-',
+                    document.getElementById('vIcms')?.textContent || '-'
+                );
+            }
+        }
+
+        async function buscarDadosNoCadastro(sku) {
+            const skuNorm = normSku(sku);
+            const skuCmp = normalizarSkuComparacao(sku);
+            if (!skuNorm) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+
+            try {
+                const resp = await fetch('/api/cadastro/produtos', {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() }
+                });
+                if (!resp.ok) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+
+                const produtos = await resp.json();
+                const lista = Array.isArray(produtos) ? produtos : [];
+                let produto = lista.find((p) => normSku(p && p.sku) === skuNorm);
+                if (!produto && skuCmp) {
+                    produto = lista.find((p) => normalizarSkuComparacao(p && p.sku) === skuCmp);
+                }
+                if (!produto) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+
+                const tituloPt = pickCadastro(produto, [
+                    'produtos blig',
+                    'produto blig',
+                    'produtos bling',
+                    'produto bling',
+                    'produto'
+                ]);
+
+                const ncm = pickCadastro(produto, ['ncm', 'NCM']);
+                const cest = pickCadastro(produto, ['cest', 'CEST']);
+                const ncmDescricao = pickCadastro(produto, [
+                    'descricao ncm',
+                    'descrição ncm',
+                    'ncm descricao',
+                    'ncm descrição',
+                    'desc ncm',
+                    'ncm desc'
+                ]);
+                const m3Individual = getNumber(
+                    pickCadastro(produto, ['cg_m³ individual', 'cg_m3 individual', 'm³ individual', 'm3 individual', 'm3'])
+                ) || 0;
+                return { tituloPt, ncm, cest, m3Individual, ncmDescricao };
+            } catch (_e) {
+                return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+            }
+        }
+
+        async function buscarLinksConcorrentes(sku) {
+            const skuNorm = normSku(sku);
+            const vazio = {
+                links: { concorrente_1: '', concorrente_2: '', concorrente_3: '', concorrente_4: '', concorrente_5: '' },
+                valores: { concorrente_1: '', concorrente_2: '', concorrente_3: '', concorrente_4: '', concorrente_5: '' },
+                mlb: { concorrente_1: '', concorrente_2: '', concorrente_3: '', concorrente_4: '', concorrente_5: '' },
+                preco: { concorrente_1: '', concorrente_2: '', concorrente_3: '', concorrente_4: '', concorrente_5: '' },
+            };
+            if (!skuNorm) return vazio;
+
+            try {
+                const resp = await fetch('/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(skuNorm), {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store'
+                });
+                if (!resp.ok) return vazio;
+                const data = await resp.json();
+                const c = data && data.concorrentes ? data.concorrentes : {};
+                const v = data && data.concorrentes_valores ? data.concorrentes_valores : {};
+                const m = data && data.concorrentes_mlb ? data.concorrentes_mlb : {};
+                const p = data && data.concorrentes_preco ? data.concorrentes_preco : {};
+                return {
+                    links: {
+                        concorrente_1: String(c.concorrente_1 || '').trim(),
+                        concorrente_2: String(c.concorrente_2 || '').trim(),
+                        concorrente_3: String(c.concorrente_3 || '').trim(),
+                        concorrente_4: String(c.concorrente_4 || '').trim(),
+                        concorrente_5: String(c.concorrente_5 || '').trim(),
+                    },
+                    valores: {
+                        concorrente_1: String(v.concorrente_1 || '').trim(),
+                        concorrente_2: String(v.concorrente_2 || '').trim(),
+                        concorrente_3: String(v.concorrente_3 || '').trim(),
+                        concorrente_4: String(v.concorrente_4 || '').trim(),
+                        concorrente_5: String(v.concorrente_5 || '').trim(),
+                    },
+                    mlb: {
+                        concorrente_1: String(m.concorrente_1 || '').trim(),
+                        concorrente_2: String(m.concorrente_2 || '').trim(),
+                        concorrente_3: String(m.concorrente_3 || '').trim(),
+                        concorrente_4: String(m.concorrente_4 || '').trim(),
+                        concorrente_5: String(m.concorrente_5 || '').trim(),
+                    },
+                    preco: {
+                        concorrente_1: String(p.concorrente_1 || '').trim(),
+                        concorrente_2: String(p.concorrente_2 || '').trim(),
+                        concorrente_3: String(p.concorrente_3 || '').trim(),
+                        concorrente_4: String(p.concorrente_4 || '').trim(),
+                        concorrente_5: String(p.concorrente_5 || '').trim(),
+                    }
+                };
+            } catch (_e) {
+                return vazio;
+            }
+        }
+
+        async function carregarDetalheSku() {
+            const { listaId, sku } = getParams();
+            const btnVoltar = document.getElementById('btnVoltar');
+            if (btnVoltar && listaId) {
+                btnVoltar.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
+            }
+
+            if (!listaId || !sku) {
+                setErro('Parâmetros inválidos. Informe lista_id e sku na URL.');
+                return;
+            }
+
+            try {
+                setErro('');
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() }
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Não foi possível carregar a lista.');
+                }
+
+                const data = await resp.json();
+                const lista = data && data.lista ? data.lista : {};
+                atualizarFxCompraTopo(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+                const itens = Array.isArray(lista.itens) ? lista.itens : [];
+                const skuNorm = normSku(sku);
+                const item = itens.find((i) => normSku(i && i.SKU) === skuNorm);
+
+                montarMeta(String(lista.nome_lista || '-'), skuNorm);
+
+                if (!item) {
+                    throw new Error('SKU não encontrado nesta lista.');
+                }
+
+                const cad = await buscarDadosNoCadastro(skuNorm);
+                preencherCampos(item, lista, cad, itens);
+
+                const linksConc = await buscarLinksConcorrentes(skuNorm);
+                setLinkConcorrente('lblConcorrente1', 'Concorrente 1', linksConc.links.concorrente_1);
+                setLinkConcorrente('lblConcorrente2', 'Concorrente 2', linksConc.links.concorrente_2);
+                setLinkConcorrente('lblConcorrente3', 'Concorrente 3', linksConc.links.concorrente_3);
+                setLinkConcorrente('lblConcorrente4', 'Concorrente 4', linksConc.links.concorrente_4);
+                setLinkConcorrente('lblConcorrente5', 'Concorrente 5', linksConc.links.concorrente_5);
+
+                setText('vConcorrente1', linksConc.valores.concorrente_1 || '-');
+                setText('vConcorrente2', linksConc.valores.concorrente_2 || '-');
+                setText('vConcorrente3', linksConc.valores.concorrente_3 || '-');
+                setText('vConcorrente4', linksConc.valores.concorrente_4 || '-');
+                setText('vConcorrente5', linksConc.valores.concorrente_5 || '-');
+
+                function extrairCodigoMlb(v) {
+                    const txt = String(v || '').trim().toUpperCase();
+                    if (!txt) return '';
+                    const m1 = txt.match(/MLB\d{5,}/);
+                    if (m1) return m1[0];
+                    const m2 = txt.match(/\b\d{8,14}\b/);
+                    if (m2) return 'MLB' + m2[0];
+                    return '';
+                }
+
+                function normalizarValorCardMlb(v) {
+                    const txt = String(v || '').trim();
+                    if (!txt) return '-';
+                    if (/(https?:\/\/|www\.|mercadolivre\.com)/i.test(txt)) return '-';
+                    return txt;
+                }
+
+                function escolherValorCardMlb(preferido, fallback) {
+                    const p = normalizarValorCardMlb(preferido);
+                    if (p !== '-') return p;
+                    const f = normalizarValorCardMlb(fallback);
+                    return f !== '-' ? f : '-';
+                }
+
+                // Cards MLB (título = apenas código MLB, sem link)
+                [1, 2, 3, 4, 5].forEach(function(n) {
+                    const mlbVal = linksConc.mlb['concorrente_' + n] || '';
+                    const precoVal = linksConc.preco['concorrente_' + n] || '';
+                    const valorConc = linksConc.valores['concorrente_' + n] || '';
+                    const linkVal = linksConc.links['concorrente_' + n] || '';
+                    const mlbCode = extrairCodigoMlb(mlbVal)
+                        || extrairCodigoMlb(linkVal)
+                        || extrairCodigoMlb(precoVal)
+                        || extrairCodigoMlb(valorConc);
+                    const lblEl = document.getElementById('lblMlb' + n);
+                    const valEl = document.getElementById('vMlb' + n);
+                    if (lblEl) lblEl.textContent = mlbCode || 'MLB';
+                    if (valEl) valEl.textContent = escolherValorCardMlb(precoVal, valorConc);
+                });
+            } catch (e) {
+                setErro(e.message || 'Erro ao carregar detalhe do SKU.');
+            }
+        }
+
+        carregarFxTopo();
+        atualizarHorarioBrasilia();
+        setInterval(atualizarHorarioBrasilia, 1000);
+        atualizarHorarioPequim();
+        setInterval(atualizarHorarioPequim, 1000);
+        inicializarReordenacaoDosCards();
+        carregarDetalheSku();
+    </script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

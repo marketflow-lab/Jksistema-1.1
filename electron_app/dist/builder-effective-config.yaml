@@ -1,0 +1,13 @@
+directories:
+  output: dist
+  buildResources: build
+appId: com.jksistema.app
+productName: JK Sistema
+win:
+  target: nsis
+  icon: icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+files: []
+electronVersion: 28.3.3

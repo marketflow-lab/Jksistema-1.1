@@ -1,0 +1,361 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Produtos há algum tempo sem vender - JK Sistema</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f1117;
+            color: #e5e5e5;
+            margin: 0;
+            padding: 16px;
+        }
+        .container {
+            max-width: 1420px;
+            margin: 0 auto;
+        }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .title {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+        .subtitle {
+            margin: 4px 0 0;
+            color: #9bb3d1;
+        }
+        .topbar-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .btn-link, .back-btn, .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 12px;
+            border-radius: 8px;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            font-weight: 700;
+        }
+        .btn-link { background: #4facfe; color: #07101b; }
+        .back-btn { background: #27344a; color: #e5e5e5; }
+        .btn-secondary { background: #2b3447; color: #e5e5e5; }
+        .card {
+            background: #161925;
+            border: 1px solid #2a3142;
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.18);
+        }
+        .status {
+            min-height: 22px;
+            color: #9bd1ff;
+            font-weight: 600;
+        }
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .filtros-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 10px;
+            flex: 1;
+        }
+        .filtro-card {
+            background: linear-gradient(145deg, #111827 0%, #101520 100%);
+            border: 1px solid #334055;
+            color: #e5e5e5;
+            border-radius: 12px;
+            padding: 12px;
+            cursor: pointer;
+            text-align: left;
+            box-shadow: 0 8px 18px rgba(0,0,0,0.16);
+        }
+        .filtro-card.active {
+            border-color: #7cb8ff;
+            box-shadow: 0 12px 24px rgba(79,172,254,0.24);
+            background: linear-gradient(145deg, #14243a 0%, #132135 100%);
+        }
+        .filtro-titulo {
+            font-size: 0.96rem;
+            font-weight: 800;
+            margin-bottom: 6px;
+        }
+        .filtro-meta {
+            font-size: 0.82rem;
+            color: #9bb3d1;
+        }
+        .table-wrap {
+            overflow: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            min-width: 980px;
+        }
+        th, td {
+            border-bottom: 1px solid #222b3a;
+            padding: 8px;
+            vertical-align: middle;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        th {
+            background: linear-gradient(180deg, #1d2a3f 0%, #162033 100%);
+            color: #b9e1ff;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            text-align: center;
+            line-height: 1.1;
+        }
+        td.num { text-align: center; }
+        .foto-sku {
+            width: 42px;
+            height: 42px;
+            border-radius: 6px;
+            object-fit: cover;
+            border: 1px solid #2d3a52;
+            background: #0e1117;
+        }
+        .badge-msg {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 0.76rem;
+            font-weight: 800;
+        }
+        .badge-3m { background: #4a3f16; color: #fff2bf; border: 1px solid #8a7430; }
+        .badge-6m { background: #5a3016; color: #ffd7b3; border: 1px solid #a96433; }
+        .badge-6mplus { background: #51232a; color: #ffd1d6; border: 1px solid #b65d6b; }
+        tr.linha-3m td { background: #413817 !important; }
+        tr.linha-6m td { background: #4c2d17 !important; }
+        tr.linha-6mplus td { background: #482129 !important; }
+        tr:hover td { background: #274766 !important; }
+        .muted { color: #9bb3d1; }
+        @media (max-width: 900px) {
+            body { padding: 10px; }
+            .toolbar { align-items: stretch; }
+            .btn-secondary { width: 100%; }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+    <script src="/global-status.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="topbar">
+        <div>
+            <h1 class="title">Produtos há algum tempo sem vender</h1>
+            <p class="subtitle">Itens ordenados por tempo sem venda para facilitar a análise de estoque.</p>
+        </div>
+        <div class="topbar-actions">
+            <a class="btn-link" href="/medias_compras.html">Voltar para Médias e Pedidos</a>
+            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
+            <a class="back-btn" href="/dashboard.html">Voltar</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <div class="filtros-grid">
+                <button id="filtro3m" class="filtro-card active" type="button" onclick="selecionarFaixa('3m')">
+                    <div class="filtro-titulo">3 meses sem vender</div>
+                    <div class="filtro-meta">SKUs parados entre 3 e 5 meses • <span id="count3m">0</span></div>
+                </button>
+                <button id="filtro6m" class="filtro-card" type="button" onclick="selecionarFaixa('6m')">
+                    <div class="filtro-titulo">6 meses sem vender</div>
+                    <div class="filtro-meta">SKUs parados exatamente 6 meses • <span id="count6m">0</span></div>
+                </button>
+                <button id="filtro6mplus" class="filtro-card" type="button" onclick="selecionarFaixa('6m+')">
+                    <div class="filtro-titulo">Mais de 6 meses sem vender</div>
+                    <div class="filtro-meta">SKUs parados por longo período • <span id="count6mplus">0</span></div>
+                </button>
+            </div>
+            <button id="btnOrdem" class="btn-secondary" type="button" onclick="inverterOrdem()">Ordem: mais tempo primeiro</button>
+        </div>
+        <div id="status" class="status">Carregando produtos...</div>
+    </div>
+
+    <div class="card table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>SKU</th>
+                    <th>Foto</th>
+                    <th>Produto</th>
+                    <th>Última venda</th>
+                    <th>Meses sem vender</th>
+                    <th>Estoque atual</th>
+                    <th>Mensagem</th>
+                </tr>
+            </thead>
+            <tbody id="tbodySemVenda"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    if (!verificarSessao()) {
+        // fluxo gerenciado pelo auth.js
+    }
+
+    const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
+    if (!(permissions.full === true || permissions.medias_compras)) {
+        alert('Acesso nao autorizado para Medias e Pedidos.');
+        window.location.href = 'dashboard.html';
+    }
+
+    const query = new URLSearchParams(window.location.search);
+    let lojaSelecionada = String(query.get('loja') || '__todas');
+    let faixaAtual = '3m';
+    let ordemAtual = 'desc';
+
+    function escaparHtml(valor) {
+        return String(valor || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function numero(v) {
+        return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+
+    function setStatus(msg) {
+        const el = document.getElementById('status');
+        if (el) el.textContent = msg || '';
+    }
+
+    function obterBadgeClasse(meses) {
+        const m = Number(meses || 0);
+        if (m > 6) return 'badge-6mplus';
+        if (m >= 6) return 'badge-6m';
+        return 'badge-3m';
+    }
+
+    function obterLinhaClasse(meses) {
+        const m = Number(meses || 0);
+        if (m > 6) return 'linha-6mplus';
+        if (m >= 6) return 'linha-6m';
+        return 'linha-3m';
+    }
+
+    function formatarData(dataIso) {
+        const txt = String(dataIso || '').trim();
+        if (!txt) return 'Sem venda registrada';
+        const dt = new Date(txt + 'T00:00:00');
+        if (Number.isNaN(dt.getTime())) return txt;
+        return dt.toLocaleDateString('pt-BR');
+    }
+
+    function atualizarCardsResumo(resumo) {
+        document.getElementById('count3m').textContent = numero((resumo || {}).faixa_3m || 0);
+        document.getElementById('count6m').textContent = numero((resumo || {}).faixa_6m || 0);
+        document.getElementById('count6mplus').textContent = numero((resumo || {}).faixa_6m_mais || 0);
+
+        document.getElementById('filtro3m').classList.toggle('active', faixaAtual === '3m');
+        document.getElementById('filtro6m').classList.toggle('active', faixaAtual === '6m');
+        document.getElementById('filtro6mplus').classList.toggle('active', faixaAtual === '6m+');
+    }
+
+    function atualizarBotaoOrdem() {
+        const btn = document.getElementById('btnOrdem');
+        if (!btn) return;
+        btn.textContent = ordemAtual === 'desc' ? 'Ordem: mais tempo primeiro' : 'Ordem: menos tempo primeiro';
+    }
+
+    function selecionarFaixa(faixa) {
+        faixaAtual = faixa;
+        carregarProdutosSemVenda();
+    }
+
+    function inverterOrdem() {
+        ordemAtual = ordemAtual === 'desc' ? 'asc' : 'desc';
+        atualizarBotaoOrdem();
+        carregarProdutosSemVenda();
+    }
+
+    function renderTabela(itens) {
+        const tbody = document.getElementById('tbodySemVenda');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!Array.isArray(itens) || !itens.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="muted">Nenhum produto encontrado para este filtro.</td></tr>';
+            return;
+        }
+
+        itens.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.className = obterLinhaClasse(item.meses_sem_vender);
+            const fotoUrl = String(item.foto || '').trim();
+            const badgeClasse = obterBadgeClasse(item.meses_sem_vender);
+            tr.innerHTML = '' +
+                '<td>' + escaparHtml(item.sku || '') + '</td>' +
+                '<td>' + (fotoUrl ? '<img class="foto-sku" src="' + escaparHtml(fotoUrl) + '" alt="Foto" loading="lazy">' : '<span class="muted">Sem foto</span>') + '</td>' +
+                '<td>' + escaparHtml(item.titulo_anuncio || '') + '</td>' +
+                '<td class="num">' + escaparHtml(formatarData(item.ultima_venda || '')) + '</td>' +
+                '<td class="num"><strong>' + numero(item.meses_sem_vender || 0) + '</strong></td>' +
+                '<td class="num">' + numero(item.saldo_atual_estoque || 0) + '</td>' +
+                '<td><span class="badge-msg ' + badgeClasse + '">' + escaparHtml(item.aviso_sem_venda || '') + '</span></td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function carregarProdutosSemVenda() {
+        atualizarBotaoOrdem();
+        setStatus('Carregando produtos sem venda...');
+        try {
+            const params = new URLSearchParams();
+            params.set('faixa', faixaAtual);
+            params.set('order', ordemAtual);
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.set('loja', lojaSelecionada);
+            }
+
+            const resp = await fetch('/api/medias-compras/produtos-sem-venda?' + params.toString(), {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao carregar os produtos sem venda.');
+            }
+
+            const data = await resp.json();
+            atualizarCardsResumo(data.resumo || {});
+            renderTabela(data.items || []);
+            const lojaMsg = data.loja && data.loja !== '__todas' ? ' | Loja: ' + data.loja : '';
+            setStatus('Produtos carregados: ' + numero(((data || {}).resumo || {}).total || 0) + lojaMsg);
+        } catch (e) {
+            setStatus(e.message || 'Erro ao consultar produtos sem venda.');
+        }
+    }
+
+    carregarProdutosSemVenda();
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

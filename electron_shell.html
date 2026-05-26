@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: http://127.0.0.1:8001 http://localhost:8001 https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file: http://127.0.0.1:8001 http://localhost:8001 https:; frame-src http://127.0.0.1:8001 http://localhost:8001 https:; connect-src 'self' http://127.0.0.1:8001 http://localhost:8001 https:;">
+    <title>JK Sistema</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            height: 100vh;
+            overflow: hidden;
+            background: #eef3f9;
+            color: #0f172a;
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+        .shell {
+            display: grid;
+            grid-template-rows: 42px minmax(0, 1fr);
+            height: 100vh;
+        }
+        .toolbar {
+            align-items: center;
+            background: linear-gradient(180deg, #f8fbff, #e7eef8);
+            border-bottom: 1px solid #cbd8ea;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+            display: flex;
+            gap: 8px;
+            min-width: 0;
+            padding: 6px 10px;
+            z-index: 5;
+        }
+        .tabs {
+            align-items: center;
+            display: flex;
+            flex: 1;
+            gap: 6px;
+            min-width: 0;
+            overflow-x: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(37, 99, 235, .3) transparent;
+        }
+        .tabs::-webkit-scrollbar { height: 5px; }
+        .tabs::-webkit-scrollbar-track { background: transparent; }
+        .tabs::-webkit-scrollbar-thumb { background: rgba(37, 99, 235, .24); border-radius: 999px; }
+        .tab {
+            align-items: center;
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid #d5e2f2;
+            border-radius: 9px;
+            color: #334155;
+            cursor: pointer;
+            display: flex;
+            flex: 0 0 auto;
+            gap: 7px;
+            height: 30px;
+            max-width: 220px;
+            min-width: 116px;
+            padding: 0 7px 0 10px;
+        }
+        .tab.is-active {
+            background: #ffffff;
+            border-color: #4facfe;
+            box-shadow: 0 0 0 2px rgba(79, 172, 254, 0.12);
+            color: #0f172a;
+        }
+        .tab-title {
+            display: block;
+            flex: 1;
+            font-size: 12px;
+            font-weight: 700;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .tab-close {
+            align-items: center;
+            background: transparent;
+            border: 0;
+            border-radius: 999px;
+            color: #64748b;
+            cursor: pointer;
+            display: flex;
+            flex: 0 0 auto;
+            font-size: 16px;
+            height: 20px;
+            justify-content: center;
+            line-height: 1;
+            padding: 0;
+            width: 20px;
+        }
+        .tab-close:hover { background: #e2e8f0; color: #0f172a; }
+        .toolbar-btn {
+            align-items: center;
+            background: #ffffff;
+            border: 1px solid #cbd8ea;
+            border-radius: 9px;
+            color: #0f172a;
+            cursor: pointer;
+            display: inline-flex;
+            flex: 0 0 auto;
+            font-size: 12px;
+            font-weight: 800;
+            gap: 6px;
+            height: 30px;
+            padding: 0 10px;
+        }
+        .toolbar-btn:hover { background: #eef6ff; border-color: #4facfe; }
+        .toolbar-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+        .views {
+            min-height: 0;
+            position: relative;
+        }
+        .tab-view {
+            background: #ffffff;
+            border: 0;
+            display: none;
+            height: 100%;
+            inset: 0;
+            position: absolute;
+            width: 100%;
+        }
+        .tab-view.is-active {
+            display: block;
+        }
+        .ml-browser-shell-webview {
+            background: #ffffff;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.03);
+            display: none;
+            overflow: hidden;
+            position: absolute;
+            z-index: 4;
+        }
+        .ml-browser-shell-webview.is-active {
+            display: flex;
+        }
+        .empty-state {
+            align-items: center;
+            color: #64748b;
+            display: none;
+            font-size: 14px;
+            height: 100%;
+            justify-content: center;
+        }
+        .empty-state.is-active { display: flex; }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <header class="toolbar">
+            <div id="tabs" class="tabs" aria-label="Abas abertas"></div>
+            <button id="home-tab" type="button" class="toolbar-btn" title="Ir para o inÃ­cio">Home</button>
+            <button id="back-tab" type="button" class="toolbar-btn" title="Voltar na aba atual">Voltar</button>
+            <button id="new-tab" type="button" class="toolbar-btn" title="Abrir nova aba">+ Aba</button>
+            <button id="reload-tab" type="button" class="toolbar-btn" title="Atualizar a aba atual">Atualizar</button>
+        </header>
+        <section id="views" class="views">
+            <div id="empty" class="empty-state">Nenhuma aba aberta.</div>
+        </section>
+    </main>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const appUrl = params.get('appUrl') || 'http://127.0.0.1:8001/frontend_index.html';
+        const tabPreload = params.get('tabPreload') || '';
+        const browserPartition = params.get('browserPartition') || 'persist:jk-sistema-browser';
+        const tabsEl = document.getElementById('tabs');
+        const viewsEl = document.getElementById('views');
+        const emptyEl = document.getElementById('empty');
+        const homeBtn = document.getElementById('home-tab');
+        const backBtn = document.getElementById('back-tab');
+        const reloadBtn = document.getElementById('reload-tab');
+        const newTabBtn = document.getElementById('new-tab');
+        const tabs = new Map();
+        let activeId = '';
+        let serial = 0;
+        let mlBrowserWebview = null;
+        let mlBrowserOwnerId = '';
+        const mlBrowserBoundsByTab = new Map();
+        const mlBrowserUrlByTab = new Map();
+
+        function normalizeTitle(value, fallback = 'Nova aba') {
+            const clean = String(value || '')
+                .replace(/\s+/g, ' ')
+                .replace(/^[^\p{L}\p{N}]+/u, '')
+                .replace(/\s+-\s+JK Sistema(?:\s+de Gest[aÃ£]o)?\s*$/iu, '')
+                .trim();
+            return (clean || fallback).slice(0, 90);
+        }
+
+        function titleFromUrl(value) {
+            try {
+                const url = new URL(value, appUrl);
+                const file = (url.pathname.split('/').pop() || '').toLowerCase();
+                const titles = {
+                    'frontend_index.html': 'Inicio',
+                    'dashboard.html': 'Inicio',
+                    'favoritos.html': 'Favoritos ML',
+                    'perguntas_pos_venda.html': 'Perguntas e pos venda',
+                    'cadastro.html': 'Cadastro de Produtos',
+                    'configuracoes.html': 'Configuracoes',
+                    'integracoes.html': 'Integracoes',
+                    'estoque.html': 'Estoque',
+                    'vendas.html': 'Vendas',
+                    'medias_compras.html': 'Medias e Pedidos',
+                    'frontend_promo.html': 'Promocao ML',
+                    'renovacao.html': 'Renovacao Fixa',
+                    'frontend_etiquetas.html': 'Etiquetas',
+                    'anunciosml.html': 'Anuncios ML',
+                    'impostos.html': 'Impostos',
+                    'importacoes.html': 'Importacoes'
+                };
+                if (titles[file]) return titles[file];
+                if (file.endsWith('.html')) {
+                    return file
+                        .replace(/\.html$/i, '')
+                        .replace(/[_-]+/g, ' ')
+                        .replace(/\b\w/g, char => char.toUpperCase());
+                }
+            } catch (_err) {}
+            return '';
+        }
+
+        function normalizeTabUrl(value, fallback = '') {
+            try {
+                return new URL(value, appUrl).href;
+            } catch (_err) {
+                return String(value || fallback || '');
+            }
+        }
+
+        function titleFromFrame(webview) {
+            try {
+                const doc = webview && (webview.contentDocument || webview.contentWindow?.document);
+                const pageTitle = normalizeTitle(doc?.title || '', '');
+                if (pageTitle && !/^JK Sistema(?: de Gest[aÃ£]o)?$/i.test(pageTitle)) {
+                    return pageTitle;
+                }
+                const heading = normalizeTitle(doc?.querySelector('h1')?.textContent || '', '');
+                if (heading && !/^JK Sistema(?: de Gest[aÃ£]o)?$/i.test(heading)) {
+                    return heading;
+                }
+            } catch (_err) {}
+            return '';
+        }
+
+        function sameUrlWithoutCache(left, right) {
+            try {
+                const a = new URL(left);
+                const b = new URL(right);
+                a.searchParams.delete('_jk_nocache');
+                b.searchParams.delete('_jk_nocache');
+                return a.toString() === b.toString();
+            } catch (_err) {
+                return String(left || '') === String(right || '');
+            }
+        }
+
+        function setTabTitle(id, title) {
+            const tab = tabs.get(id);
+            if (!tab) return;
+            tab.title = normalizeTitle(title, tab.title || 'JK Sistema');
+            const titleEl = tab.button.querySelector('.tab-title');
+            if (titleEl) titleEl.textContent = tab.title;
+            tab.button.title = tab.title;
+            if (id === activeId) document.title = `${tab.title} - JK Sistema`;
+        }
+
+        function findTabBySource(source) {
+            for (const [id, tab] of tabs) {
+                if (tab.webview && tab.webview.contentWindow === source) return { id, tab };
+            }
+            return null;
+        }
+
+        function postToTab(tab, message) {
+            try {
+                if (tab && tab.webview && tab.webview.contentWindow) {
+                    tab.webview.contentWindow.postMessage(message, '*');
+                }
+            } catch (_err) {}
+        }
+
+        function ensureMlBrowserWebview() {
+            if (mlBrowserWebview && mlBrowserWebview.parentNode) return mlBrowserWebview;
+
+            mlBrowserWebview = document.createElement('webview');
+            mlBrowserWebview.className = 'ml-browser-shell-webview';
+            mlBrowserWebview.setAttribute('partition', browserPartition);
+            mlBrowserWebview.setAttribute('allowpopups', 'true');
+            mlBrowserWebview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no');
+
+            const sendEvent = (name, event = {}) => {
+                const owner = tabs.get(mlBrowserOwnerId);
+                postToTab(owner, {
+                    channel: 'jk-ml-browser-event',
+                    event: name,
+                    url: event.url || (typeof mlBrowserWebview.getURL === 'function' ? mlBrowserWebview.getURL() : ''),
+                    errorDescription: event.errorDescription || '',
+                    errorCode: event.errorCode || 0
+                });
+            };
+
+            mlBrowserWebview.addEventListener('dom-ready', event => sendEvent('dom-ready', event));
+            mlBrowserWebview.addEventListener('did-finish-load', event => sendEvent('did-finish-load', event));
+            mlBrowserWebview.addEventListener('did-navigate', event => sendEvent('did-navigate', event));
+            mlBrowserWebview.addEventListener('did-navigate-in-page', event => sendEvent('did-navigate-in-page', event));
+            mlBrowserWebview.addEventListener('did-fail-load', event => sendEvent('did-fail-load', event));
+            mlBrowserWebview.addEventListener('new-window', (event) => {
+                if (event && event.url && /^https?:\/\//i.test(event.url)) {
+                    event.preventDefault();
+                    mlBrowserWebview.src = event.url;
+                }
+            });
+
+            viewsEl.appendChild(mlBrowserWebview);
+            return mlBrowserWebview;
+        }
+
+        function positionMlBrowserForTab(source, bounds) {
+            const found = findTabBySource(source);
+            if (!found) return null;
+            const frameRect = found.tab.webview.getBoundingClientRect();
+            const viewsRect = viewsEl.getBoundingClientRect();
+            const temBoundsValidos = !!(
+                bounds &&
+                Number.isFinite(Number(bounds.left)) &&
+                Number.isFinite(Number(bounds.top)) &&
+                Number(bounds.width) >= 20 &&
+                Number(bounds.height) >= 20
+            );
+            const left = temBoundsValidos
+                ? Math.max(0, frameRect.left - viewsRect.left + Number(bounds.left || 0))
+                : Math.max(0, frameRect.left - viewsRect.left);
+            const top = temBoundsValidos
+                ? Math.max(0, frameRect.top - viewsRect.top + Number(bounds.top || 0))
+                : Math.max(0, frameRect.top - viewsRect.top);
+            const width = temBoundsValidos
+                ? Math.max(80, Number(bounds.width || 0))
+                : Math.max(80, Number(frameRect.width || 0));
+            const height = temBoundsValidos
+                ? Math.max(80, Number(bounds.height || 0))
+                : Math.max(80, Number(frameRect.height || 0));
+            const webview = ensureMlBrowserWebview();
+            webview.style.left = `${left}px`;
+            webview.style.top = `${top}px`;
+            webview.style.width = `${width}px`;
+            webview.style.height = `${height}px`;
+            mlBrowserOwnerId = found.id;
+            webview.classList.toggle('is-active', found.id === activeId);
+            return { found, webview };
+        }
+
+        function positionMlBrowserForTabId(id, bounds) {
+            const tab = tabs.get(id);
+            if (!tab || !tab.webview || !tab.webview.contentWindow) return null;
+            return positionMlBrowserForTab(tab.webview.contentWindow, bounds);
+        }
+
+        function getMlBrowserBoundsForTab(tab, bounds) {
+            if (!tab || !tab.webview || typeof tab.webview.getBoundingClientRect !== 'function') return null;
+            const frameRect = tab.webview.getBoundingClientRect();
+            const temBoundsValidos = !!(
+                bounds &&
+                Number.isFinite(Number(bounds.left)) &&
+                Number.isFinite(Number(bounds.top)) &&
+                Number(bounds.width) >= 20 &&
+                Number(bounds.height) >= 20
+            );
+            return {
+                bounds: {
+                    x: temBoundsValidos
+                        ? Math.max(0, Math.round(frameRect.left + Number(bounds.left || 0)))
+                        : Math.max(0, Math.round(frameRect.left)),
+                    y: temBoundsValidos
+                        ? Math.max(0, Math.round(frameRect.top + Number(bounds.top || 0)))
+                        : Math.max(0, Math.round(frameRect.top)),
+                    width: temBoundsValidos
+                        ? Math.max(80, Math.round(Number(bounds.width || 0)))
+                        : Math.max(80, Math.round(Number(frameRect.width || 0))),
+                    height: temBoundsValidos
+                        ? Math.max(80, Math.round(Number(bounds.height || 0)))
+                        : Math.max(80, Math.round(Number(frameRect.height || 0)))
+                }
+            };
+        }
+
+        function getMlBrowserBoundsForMainWindow(source, bounds) {
+            const found = findTabBySource(source);
+            if (!found) return null;
+            const data = getMlBrowserBoundsForTab(found.tab, bounds);
+            if (!data) return null;
+            return { found, bounds: data.bounds };
+        }
+
+        function restaurarEmbeddedMlBrowserSeAtivo() {
+            if (!activeId) return;
+            const url = mlBrowserUrlByTab.get(activeId);
+            if (!url) return;
+            const tab = tabs.get(activeId);
+            if (!tab) return;
+            const data = getMlBrowserBoundsForTab(tab, mlBrowserBoundsByTab.get(activeId) || null);
+            if (!data || !data.bounds) return;
+            if (window.electronAPI && typeof window.electronAPI.showEmbeddedMlBrowser === 'function') {
+                window.electronAPI.showEmbeddedMlBrowser(url, data.bounds).catch(() => {});
+                return;
+            }
+            const positioned = positionMlBrowserForTabId(activeId, mlBrowserBoundsByTab.get(activeId) || null);
+            if (!positioned || !positioned.webview) return;
+            const currentUrl = typeof positioned.webview.getURL === 'function'
+                ? positioned.webview.getURL()
+                : positioned.webview.src;
+            if (currentUrl !== url) {
+                positioned.webview.src = url;
+            }
+        }
+
+        function hideMlBrowserShell() {
+            if (mlBrowserWebview) mlBrowserWebview.classList.remove('is-active');
+        }
+
+        function updateVisibleState() {
+            const hasTabs = tabs.size > 0;
+            emptyEl.classList.toggle('is-active', !hasTabs);
+            homeBtn.disabled = !hasTabs;
+            backBtn.disabled = !hasTabs;
+            reloadBtn.disabled = !hasTabs;
+            tabs.forEach((tab, id) => {
+                const active = id === activeId;
+                tab.button.classList.toggle('is-active', active);
+                tab.webview.classList.toggle('is-active', active);
+            });
+            const activeHasMlState = !!(activeId && mlBrowserUrlByTab.get(activeId));
+            if (activeHasMlState) {
+                mlBrowserOwnerId = activeId;
+            } else {
+                mlBrowserOwnerId = '';
+            }
+            if (mlBrowserWebview) {
+                mlBrowserWebview.classList.toggle('is-active', !!activeHasMlState);
+            }
+            if (!activeHasMlState && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
+                window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
+                hideMlBrowserShell();
+            } else {
+                restaurarEmbeddedMlBrowserSeAtivo();
+            }
+        }
+
+        function activateTab(id) {
+            if (!tabs.has(id)) return;
+            activeId = id;
+            const tab = tabs.get(id);
+            document.title = `${tab.title || 'JK Sistema'} - JK Sistema`;
+            updateVisibleState();
+        }
+
+        function closeTab(id) {
+            const tab = tabs.get(id);
+            if (!tab) return;
+            if (mlBrowserOwnerId === id) {
+                mlBrowserOwnerId = '';
+                hideMlBrowserShell();
+            }
+            mlBrowserBoundsByTab.delete(id);
+            mlBrowserUrlByTab.delete(id);
+            tab.button.remove();
+            tab.webview.remove();
+            tabs.delete(id);
+            if (activeId === id) {
+                const last = Array.from(tabs.keys()).pop();
+                activeId = last || '';
+            }
+            updateVisibleState();
+        }
+
+        function createTab(url, title = 'JK Sistema', options = {}) {
+            const targetUrl = String(url || appUrl);
+            if (options.reuseExisting) {
+                for (const [id, tab] of tabs) {
+                    if (sameUrlWithoutCache(tab.url, targetUrl)) {
+                        activateTab(id);
+                        return id;
+                    }
+                }
+            }
+
+            const id = `tab-${Date.now()}-${++serial}`;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'tab';
+            button.innerHTML = '<span class="tab-title"></span><span class="tab-close" title="Fechar aba" aria-label="Fechar aba">x</span>';
+            button.addEventListener('click', () => activateTab(id));
+            button.querySelector('.tab-close').addEventListener('click', (event) => {
+                event.stopPropagation();
+                closeTab(id);
+            });
+
+            const webview = document.createElement('iframe');
+            webview.className = 'tab-view';
+            webview.src = targetUrl;
+            webview.setAttribute('allow', 'clipboard-read; clipboard-write; fullscreen');
+            webview.addEventListener('load', () => {
+                const tab = tabs.get(id);
+                if (!tab) return;
+                const frameTitle = titleFromFrame(webview);
+                if (frameTitle) setTabTitle(id, frameTitle);
+            });
+
+            tabs.set(id, { id, title: normalizeTitle(title), url: targetUrl, button, webview });
+            tabsEl.appendChild(button);
+            viewsEl.appendChild(webview);
+            setTabTitle(id, title);
+            activateTab(id);
+            return id;
+        }
+
+        function reloadActiveTab() {
+            const tab = tabs.get(activeId);
+            if (!tab) return;
+            try {
+                if (tab.webview && tab.webview.contentWindow && tab.webview.contentWindow.location) {
+                    tab.webview.contentWindow.location.reload();
+                    return;
+                }
+            } catch (_err) {}
+            try {
+                const currentUrl = normalizeTabUrl(tab.url || tab.webview?.src || appUrl, appUrl);
+                if (currentUrl) tab.webview.src = currentUrl;
+            } catch (_err) {}
+        }
+
+        function dashboardUrl() {
+            try {
+                return new URL('/dashboard.html', appUrl).href;
+            } catch (_err) {
+                return appUrl;
+            }
+        }
+
+        function navigateActiveTab(url, title = '') {
+            const targetUrl = normalizeTabUrl(url, appUrl);
+            const tab = tabs.get(activeId);
+            if (!tab) {
+                createTab(targetUrl, title || titleFromUrl(targetUrl) || 'Inicio');
+                return;
+            }
+            tab.url = targetUrl;
+            if (title) setTabTitle(activeId, title);
+            try {
+                tab.webview.src = targetUrl;
+            } catch (_err) {}
+        }
+
+        function goHomeActiveTab() {
+            navigateActiveTab(dashboardUrl(), 'Inicio');
+        }
+
+        function goBackActiveTab() {
+            const tab = tabs.get(activeId);
+            if (!tab) return;
+            postToTab(tab, { channel: 'jk-shell-history-back', fallbackUrl: dashboardUrl() });
+        }
+
+        window.addEventListener('message', (event) => {
+            const data = event && event.data ? event.data : {};
+            if (!data || typeof data !== 'object') return;
+
+            if (data.channel === 'jk-ml-browser-show' || data.channel === 'jk-ml-browser-position') {
+                const payload = data.payload || {};
+                const embedded = getMlBrowserBoundsForMainWindow(event.source, payload.bounds);
+                if (embedded && window.electronAPI && typeof window.electronAPI.showEmbeddedMlBrowser === 'function') {
+                    mlBrowserOwnerId = embedded.found.id;
+                    mlBrowserBoundsByTab.set(embedded.found.id, payload.bounds || null);
+                    if (payload.url && /^https?:\/\//i.test(payload.url)) {
+                        mlBrowserUrlByTab.set(embedded.found.id, payload.url);
+                    }
+                    const action = data.channel === 'jk-ml-browser-show'
+                        ? window.electronAPI.showEmbeddedMlBrowser(mlBrowserUrlByTab.get(embedded.found.id) || payload.url, embedded.bounds)
+                        : window.electronAPI.positionEmbeddedMlBrowser(embedded.bounds);
+                    action
+                        .then(result => {
+                            if (data.channel === 'jk-ml-browser-show') {
+                                postToTab(embedded.found.tab, {
+                                    channel: 'jk-ml-browser-event',
+                                    event: 'did-finish-load',
+                                    url: result && result.url || payload.url || ''
+                                });
+                            }
+                        })
+                        .catch(err => {
+                            postToTab(embedded.found.tab, {
+                                channel: 'jk-ml-browser-event',
+                                event: 'did-fail-load',
+                                url: payload.url || '',
+                                errorDescription: err && err.message ? err.message : String(err),
+                                errorCode: -1
+                            });
+                        });
+                    return;
+                }
+                const positioned = positionMlBrowserForTab(event.source, payload.bounds);
+                if (positioned && positioned.found) {
+                    mlBrowserBoundsByTab.set(positioned.found.id, payload.bounds || null);
+                    if (payload.url && /^https?:\/\//i.test(payload.url)) {
+                        mlBrowserUrlByTab.set(positioned.found.id, payload.url);
+                    }
+                }
+                if (!positioned && data.channel === 'jk-ml-browser-show') {
+                    const found = findTabBySource(event.source);
+                    postToTab(found && found.tab, {
+                        channel: 'jk-ml-browser-event',
+                        event: 'did-fail-load',
+                        url: payload.url || '',
+                        errorDescription: 'Nao foi possivel posicionar o navegador interno no shell.',
+                        errorCode: -1
+                    });
+                    return;
+                }
+                if (positioned && data.channel === 'jk-ml-browser-show' && payload.url && /^https?:\/\//i.test(payload.url)) {
+                    const currentUrl = typeof positioned.webview.getURL === 'function' ? positioned.webview.getURL() : positioned.webview.src;
+                    if (currentUrl !== payload.url) positioned.webview.src = payload.url;
+                }
+                return;
+            }
+
+            if (data.channel === 'jk-ml-browser-hide') {
+                const found = findTabBySource(event.source);
+                if (found && found.id === mlBrowserOwnerId && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
+                    window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
+                }
+                if (found && found.id === mlBrowserOwnerId) hideMlBrowserShell();
+                return;
+            }
+
+            if (data.channel === 'jk-ml-browser-execute') {
+                const payload = data.payload || {};
+                const requestId = payload.requestId;
+                const code = payload.code || '';
+                const found = findTabBySource(event.source);
+                if (found && found.id === mlBrowserOwnerId && window.electronAPI && typeof window.electronAPI.executeEmbeddedMlBrowser === 'function') {
+                    window.electronAPI.executeEmbeddedMlBrowser(code)
+                        .then(result => {
+                            postToTab(found.tab, { channel: 'jk-ml-browser-execute-result', requestId, result });
+                        })
+                        .catch(err => {
+                            postToTab(found.tab, {
+                                channel: 'jk-ml-browser-execute-result',
+                                requestId,
+                                error: err && err.message ? err.message : String(err)
+                            });
+                        });
+                    return;
+                }
+                if (!found || found.id !== mlBrowserOwnerId || !mlBrowserWebview || typeof mlBrowserWebview.executeJavaScript !== 'function') {
+                    postToTab(found && found.tab, {
+                        channel: 'jk-ml-browser-execute-result',
+                        requestId,
+                        error: 'Navegador do Mercado Livre indisponivel.'
+                    });
+                    return;
+                }
+                mlBrowserWebview.executeJavaScript(code, true)
+                    .then(result => {
+                        postToTab(found.tab, { channel: 'jk-ml-browser-execute-result', requestId, result });
+                    })
+                    .catch(err => {
+                        postToTab(found.tab, {
+                            channel: 'jk-ml-browser-execute-result',
+                            requestId,
+                            error: err && err.message ? err.message : String(err)
+                        });
+                    });
+                return;
+            }
+
+            if (data.channel === 'jk-open-module-tab') {
+                const payload = data.payload || {};
+                if (payload.url) createTab(payload.url, payload.title || 'Modulo', { reuseExisting: true });
+                return;
+            }
+
+            if (data.channel === 'jk-tab-title') {
+                const payload = data.payload || {};
+                const incomingTitle = payload.title || data.title || '';
+                for (const [id, tab] of tabs) {
+                    if (tab.webview && tab.webview.contentWindow === event.source) {
+                        if (payload.url) tab.url = normalizeTabUrl(payload.url, tab.url);
+                        setTabTitle(id, incomingTitle || titleFromUrl(tab.url) || tab.title);
+                        break;
+                    }
+                }
+            }
+        });
+
+        homeBtn.addEventListener('click', goHomeActiveTab);
+        backBtn.addEventListener('click', goBackActiveTab);
+        reloadBtn.addEventListener('click', reloadActiveTab);
+        newTabBtn.addEventListener('click', () => createTab(appUrl, 'Inicio'));
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'F5' || ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 'r')) {
+                event.preventDefault();
+                reloadActiveTab();
+            }
+        });
+
+        createTab(appUrl, 'Inicio');
+    </script>
+</body>
+</html>

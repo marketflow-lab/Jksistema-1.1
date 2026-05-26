@@ -1,0 +1,37 @@
+{
+   "action": {
+      "default_icon": "public/icons/128x128.png",
+      "default_title": "Avantpro ML"
+   },
+   "background": {
+      "service_worker": "background.js"
+   },
+   "content_scripts": [ {
+      "all_frames": true,
+      "exclude_matches": [ "http://developers.mercadolivre.com.br/*", "https://developers.mercadolivre.com.br/*" ],
+      "js": [ "common.js", "index.js" ],
+      "matches": [ "http://*.mercadolivre.com.br/*", "https://*.mercadolivre.com.br/*" ],
+      "run_at": "document_idle"
+   } ],
+   "content_security_policy": {
+      "extension_pages": "script-src 'self'; object-src 'self'"
+   },
+   "description": "Extensão Avantpro para análise detalhada de concorrência no ML.",
+   "host_permissions": [ "http://*.mercadolivre.com.br/*", "https://*.mercadolivre.com.br/*" ],
+   "icons": {
+      "128": "public/icons/128x128.png",
+      "16": "public/icons/16x16.png",
+      "48": "public/icons/48x48.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAigdFGjr7O/6iQG0DMQFdwXmzQTPnoJCOLsgr+lRy6vnJO1ZEr+LdYNNStPDa0JGc5qtGq0FOw6Vi+1REymb+LXB+Ke9avriUrtmXiueRdirmDSqze2eFIr7e+0whJl3682UAOfngozeEplUntT6xmabQ5G0cxEa2YrQv18qR7tIfLoVW/Slf6ak2Molc6o2jEQDnhdEXv08y+MbhYrRhF/ZlJ6FxpCUSRGQQ5RVHhUlZL5Y1eOMXC540Psux3fJHdaLqTVZeBcx11A1gJNxJnI1yHo0jLs6mVWBD9xho1HJ9SA/fV3XVFhLBYJs3MX/1hd51AdJ6CgK3FqqYy+N7SQIDAQAB",
+   "manifest_version": 3,
+   "name": "Avantpro ML",
+   "permissions": [ "activeTab", "tabs", "scripting", "storage" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "7.0.3",
+   "web_accessible_resources": [ {
+      "exclude_matches": [ "http://developers.mercadolivre.com.br/*", "https://developers.mercadolivre.com.br/*" ],
+      "matches": [ "http://*.mercadolivre.com.br/*", "https://*.mercadolivre.com.br/*" ],
+      "resources": [ "public/icons/128x128.png", "public/icons/16x16.png", "public/icons/48x48.png", "public/icons/disabled-128x128.png", "public/icons/disabled-16x16.png", "public/icons/disabled-48x48.png", "public/icons/disabled-icone.png", "public/icons/icone.png", "public/images/already-vinculated.png", "public/images/negative-feedback.png", "public/images/vinculation-avantpro-ml.png", "public/fonts/*.woff2", "public/fonts/*.woff" ]
+   } ]
+}

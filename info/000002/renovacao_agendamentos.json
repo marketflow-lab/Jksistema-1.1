@@ -1,0 +1,48 @@
+{
+  "agendamentos": [
+    {
+      "enabled": false,
+      "loja": "Carlos José",
+      "campanha_id": "C-MLB3646809",
+      "nome": "Promo Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-20T10:33:28",
+      "last_run_key": null,
+      "last_result": null,
+      "last_error": ""
+    },
+    {
+      "enabled": false,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB4170657",
+      "nome": "FULL DESOVA 18-24 Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-20T10:44:54",
+      "last_run_key": null,
+      "last_result": null,
+      "last_error": ""
+    },
+    {
+      "enabled": false,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB3646012",
+      "nome": "Promo Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-20T13:46:26",
+      "last_run_key": null,
+      "last_result": null,
+      "last_error": ""
+    },
+    {
+      "enabled": false,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB4200924",
+      "nome": "Promo Julho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-21T07:14:48",
+      "last_run_key": null,
+      "last_result": null,
+      "last_error": ""
+    }
+  ]
+}

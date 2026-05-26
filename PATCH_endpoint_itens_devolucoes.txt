@@ -1,0 +1,39 @@
+# Adicionar endpoint /api/notas-entrada/itens no backend_api.py
+
+# Inserir ANTES da linha "@app.get("/api/notas-entrada/sku/{sku}")"
+# Aproximadamente linha 2677
+
+@app.get("/api/notas-entrada/itens")
+async def listar_itens_devolucoes(client_id: str = Depends(get_tenant_id), data_inicio: str = None, data_fim: str = None):
+    """Retorna todos os itens de devoluções (para cálculo de totais)"""
+    db_path = _get_notas_entrada_db(client_id)
+    if not (db_path and os.path.exists(db_path)):
+        return []
+
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        query = "SELECT sku, descricao, quantidade, valor_total, data_emissao FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
+        params = []
+        
+        if data_inicio and data_fim:
+            query += " AND date(data_emissao) BETWEEN ? AND ?"
+            params.extend([data_inicio, data_fim])
+        elif data_inicio:
+            query += " AND date(data_emissao) >= ?"
+            params.append(data_inicio)
+        elif data_fim:
+            query += " AND date(data_emissao) <= ?"
+            params.append(data_fim)
+
+        query += " ORDER BY date(data_emissao) DESC"
+        rows = cur.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao ler itens de devoluções: {str(e)}")
+    finally:
+        if conn:
+            conn.close()

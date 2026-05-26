@@ -1,0 +1,478 @@
+{
+  "JK Peças": {
+    "processadas": {
+      "13583943125": {
+        "status": "rejected",
+        "updated_at": "2026-05-17T11:35:20"
+      },
+      "13584012735": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-17T13:48:59"
+      },
+      "pos_venda:2000016428290454:019e2b517b7a7ddab3fb2f6d42a96655": {
+        "status": "rejected",
+        "updated_at": "2026-05-17T13:56:00"
+      },
+      "13584850362": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-17T16:23:40"
+      },
+      "13584923050": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-17T19:29:01"
+      },
+      "13584946712": {
+        "status": "rejected",
+        "updated_at": "2026-05-17T19:43:18"
+      },
+      "13585070240": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-18T05:56:14"
+      },
+      "13584999112": {
+        "status": "rejected",
+        "updated_at": "2026-05-18T08:41:37"
+      },
+      "13585207736": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-18T10:25:52"
+      },
+      "13585207488": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-18T10:29:52"
+      },
+      "pos_venda:2000012964130811:019e3b5b1f887140946b77fa09750226": {
+        "status": "rejected",
+        "updated_at": "2026-05-18T12:09:20"
+      },
+      "13585451096": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-18T15:05:54"
+      },
+      "13585451496": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-18T14:37:57"
+      },
+      "13584706281": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-18T14:46:11"
+      },
+      "13584773019": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-18T16:01:07"
+      },
+      "13584764941": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-18T17:03:34"
+      },
+      "13584899625": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-18T18:42:37"
+      },
+      "13585015967": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-18T21:22:41"
+      },
+      "13585032955": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-18T21:47:35"
+      },
+      "13585363689": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T12:36:53"
+      },
+      "13585341045": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T12:37:25"
+      },
+      "13585243887": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T12:37:55"
+      },
+      "13586223360": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-19T14:46:25"
+      },
+      "13586250668": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-19T15:24:21"
+      },
+      "13586352432": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T17:21:38"
+      },
+      "13586459724": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T20:01:41"
+      },
+      "13586509804": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T21:16:36"
+      },
+      "13585765927": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T21:31:43"
+      },
+      "13585790807": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T22:06:44"
+      },
+      "13586544330": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-19T22:07:19"
+      },
+      "13585922459": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T08:00:54"
+      },
+      "pos_venda:2000013069919023:019e42f8e8037a55b6e681e36fa17ff9": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T08:08:11"
+      },
+      "13586694332": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-20T09:07:57"
+      },
+      "13585969605": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T09:56:48"
+      },
+      "13586733364": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-20T09:59:15"
+      },
+      "pos_venda:2000016504377982:019e4595c42d7747a444ab3fb7f1defb": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T13:04:54"
+      },
+      "pos_venda:2000016504377982:019e463517367692b3bf72257ab8f345": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T15:40:51"
+      },
+      "13586986032": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T15:11:24"
+      },
+      "pos_venda:2000016504377982:019e46b9ea7279f08d4b9d4c98d47c9a": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T16:13:01"
+      },
+      "13587057970": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-20T17:01:58"
+      },
+      "13587098184": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-20T17:37:40"
+      },
+      "13587108306": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-20T17:47:36"
+      },
+      "13586471439": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-20T20:47:40"
+      },
+      "13586620241": {
+        "status": "sent_auto",
+        "updated_at": "2026-05-21T07:03:40"
+      },
+      "13587578600": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-21T12:40:04"
+      },
+      "13587583246": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-21T12:46:13"
+      },
+      "pos_venda:2000016539612736:019e4f28ae7b71909df11295b0b62483": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-22T14:55:31"
+      },
+      "pos_venda:2000016555362560:019e4fed421975b69c85db580b5c9457": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-22T14:55:32"
+      },
+      "13587943325": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:20:55"
+      },
+      "13587854493": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:21:28"
+      },
+      "13588779130": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:28:21"
+      },
+      "13588738070": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:31:39"
+      },
+      "13587984667": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:32:36"
+      },
+      "13588562966": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:34:16"
+      },
+      "13588026673": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:38:47"
+      },
+      "13587695493": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-23T16:41:27"
+      },
+      "pos_venda:2000016515150166:019e5532fc1a7ac9b18e8cd151fd409d": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-25T07:08:42"
+      },
+      "pos_venda:2000016527341098:019e5569169475e78c7081f744cc01de": {
+        "status": "rejected",
+        "updated_at": "2026-05-25T07:11:33"
+      },
+      "13588232821": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:13:59"
+      },
+      "13589102904": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:15:17"
+      },
+      "13589173850": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:17:55"
+      },
+      "13589257200": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:19:23"
+      },
+      "13588421877": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:20:45"
+      },
+      "13589173860": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:20:55"
+      },
+      "13588728975": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:21:47"
+      },
+      "13588873449": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:22:58"
+      },
+      "13588945539": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T09:58:05"
+      },
+      "13589196717": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T15:14:55"
+      },
+      "13589228431": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T15:49:14"
+      },
+      "13589991614": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T16:07:11"
+      },
+      "13590019384": {
+        "status": "rejected",
+        "updated_at": "2026-05-25T17:13:21"
+      },
+      "13589266461": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-25T17:14:24"
+      },
+      "13589337605": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T09:50:37"
+      },
+      "13590061544": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T09:50:37"
+      },
+      "13590171834": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T09:50:39"
+      },
+      "13589712001": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-26T10:31:53"
+      },
+      "13590517826": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T12:59:14"
+      },
+      "13589811577": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-26T13:00:19"
+      },
+      "13589792757": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-26T13:08:01"
+      },
+      "13589880773": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-26T13:32:44"
+      }
+    }
+  },
+  "Carlos José": {
+    "processadas": {
+      "pos_venda:2000016509231688:019e418f4fe4749fbb58b7adeca2d2f1": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T09:55:24"
+      },
+      "pos_venda:2000016500454554:019e3ff530ab7471b4ea47ec441658a7": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T09:57:02"
+      },
+      "pos_venda:2000016422940886:019e4577c356706693af86c5d1ef253b": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-20T15:39:59"
+      },
+      "pos_venda:2000016528873868:019e4a2ba2487c4488f3d0cc0007e2d9": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-21T10:07:42"
+      },
+      "pos_venda:2000016528873868:019e4aae7f24712dabd2522b798e7e72": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T10:25:39"
+      },
+      "pos_venda:2000016509231688:019e500f8ae4746587cbbe40dbb22648": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-22T14:55:35"
+      },
+      "pos_venda:2000016509231688:019e5012c7dd7dca88a2142b62c4db8e": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-22T14:55:37"
+      },
+      "pos_venda:2000016569042462:019e54c843bf70228b6c92e13d7c1b23": {
+        "status": "rejected",
+        "updated_at": "2026-05-25T07:10:59"
+      },
+      "pos_venda:2000016569042462:019e59ed88227100bd1f1eddb31afab6": {
+        "status": "rejected",
+        "updated_at": "2026-05-25T07:12:55"
+      },
+      "13587669965": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:29:44"
+      },
+      "13588761268": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:30:50"
+      },
+      "13588882104": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:35:56"
+      },
+      "13588917476": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:36:15"
+      },
+      "13588411331": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:37:23"
+      },
+      "13589511630": {
+        "status": "sent_manual",
+        "updated_at": "2026-05-25T07:39:29"
+      }
+    }
+  },
+  "Uai Mineirinho": {
+    "processadas": {
+      "pos_venda:2000012982287427:019e470bcb0c779fa9675ffa2318f569": {
+        "status": "sent_auto_pos_venda",
+        "updated_at": "2026-05-20T17:22:48"
+      },
+      "pos_venda:2000012982287427:019e4774b75c753bbad4615af597fb08": {
+        "status": "sent_auto_pos_venda",
+        "updated_at": "2026-05-20T19:22:55"
+      },
+      "pos_venda:2000016373452440:019e1b994fec7c9ba9bbfa3b4225ca02": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T07:55:40"
+      },
+      "pos_venda:2000016382757418:019e1cba1be97b02a6d96e48c98629fc": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T07:56:34"
+      },
+      "pos_venda:2000012982287427:019e4a34004b71c48636ffc406972526": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T09:41:11"
+      },
+      "pos_venda:2000012982287427:019e4ac4bd7c70ac9d306ce0e70cb767": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T14:39:09"
+      },
+      "pos_venda:2000012982287427:019e4abb25cd7c6180214bdd25361bc7": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T14:38:59"
+      },
+      "13587530594": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-21T11:30:57"
+      },
+      "pos_venda:2000013098844661:019e4b2227f4722681698ef626cda4dd": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T12:57:37"
+      },
+      "pos_venda:2000012982287427:019e4b8a4c687607b31e1b7c2db3af93": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T14:42:27"
+      },
+      "pos_venda:2000012982287427:019e54c4160e705eb0ad7c1b4c843b2b": {
+        "status": "rejected",
+        "updated_at": "2026-05-25T07:10:13"
+      },
+      "pos_venda:2000016573311334:019e5614503c74d48e75350f0459fbc5": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-25T07:12:25"
+      },
+      "pos_venda:2000013024465605:019e5184fc4a7cc09ca7c93c49d729ec": {
+        "status": "rejected",
+        "updated_at": "2026-05-25T10:01:07"
+      },
+      "13589293085": {
+        "status": "sent_approved",
+        "updated_at": "2026-05-25T17:15:34"
+      },
+      "13589336523": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T09:50:37"
+      },
+      "13589300777": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T09:50:38"
+      },
+      "13590625234": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-26T13:32:13"
+      }
+    }
+  },
+  "Deckas": {
+    "processadas": {
+      "pos_venda:2000012775293343:019dfde437f272b2a4b269bc8802ed96": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T07:56:41"
+      },
+      "pos_venda:2000013099624421:019e4b3cdc7f7c1fab25e63491b6f04e": {
+        "status": "rejected",
+        "updated_at": "2026-05-21T13:02:40"
+      },
+      "pos_venda:2000013073307869:019e55e420af7377b1aa474574251d71": {
+        "status": "answered_elsewhere",
+        "updated_at": "2026-05-25T07:08:45"
+      }
+    }
+  }
+}

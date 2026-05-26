@@ -1,0 +1,1790 @@
+﻿// JK Sistema - Helpers de autenticação (JWT)
+// Incluir este arquivo em todas as páginas via <script src="/auth.js"></script>
+
+function obterToken() {
+    return localStorage.getItem('access_token') || null;
+}
+
+function _jwtPayloadLocal(token) {
+    try {
+        const partes = String(token || '').split('.');
+        if (partes.length < 2) return null;
+        const base64 = partes[1].replace(/-/g, '+').replace(/_/g, '/');
+        const json = decodeURIComponent(Array.from(atob(base64)).map(ch => {
+            return '%' + ('00' + ch.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(json);
+    } catch (_e) {
+        return null;
+    }
+}
+
+function tokenSessaoExpirado() {
+    const token = obterToken();
+    if (!token) return false;
+    const payload = _jwtPayloadLocal(token);
+    const exp = Number(payload && payload.exp ? payload.exp : 0);
+    return !!exp && Date.now() >= (exp * 1000);
+}
+
+function respostaIndicaSessaoExpirada(resp, payload) {
+    if (!resp || resp.status !== 401) return false;
+    const authHeader = String(resp.headers && resp.headers.get ? resp.headers.get('WWW-Authenticate') || '' : '');
+    if (/bearer/i.test(authHeader)) return true;
+    const detail = String(
+        (payload && (payload.detail || payload.message || payload.error)) || ''
+    ).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    return (
+        detail.includes('sessao expirada') ||
+        detail.includes('token de autenticacao') ||
+        detail.includes('faca o login novamente') ||
+        detail.includes('login novamente')
+    );
+}
+
+function redirecionarSessaoExpirada() {
+    if (window.__jkSessionRedirecting) return;
+    window.__jkSessionRedirecting = true;
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('user_data');
+    localStorage.removeItem('permissions');
+    navegarComTransicao('/frontend_index.html');
+}
+
+(function initAuthFetchInterceptor() {
+    if (window.__jkAuthFetchInterceptorInit || typeof window.fetch !== 'function') return;
+    window.__jkAuthFetchInterceptorInit = true;
+    const fetchOriginal = window.fetch.bind(window);
+    window.fetch = async function jkAuthFetch(input, init) {
+        const resp = await fetchOriginal(input, init);
+        if (resp && resp.status === 401 && obterToken()) {
+            let payload = null;
+            try {
+                payload = await resp.clone().json();
+            } catch (_e) {}
+            if (respostaIndicaSessaoExpirada(resp, payload)) {
+                redirecionarSessaoExpirada();
+            }
+        }
+        return resp;
+    };
+})();
+
+const JK_TRANSITION_KEY = 'jk-page-transition';
+const JK_TRANSITION_MS = 280;
+
+function _isHtmlInterna(url) {
+    try {
+        const target = new URL(url, window.location.href);
+        const sameOrigin = target.origin === window.location.origin;
+        const isHtml = /\.html?$/i.test(target.pathname) || target.pathname === '/';
+        return sameOrigin && isHtml;
+    } catch (_e) {
+        return false;
+    }
+}
+
+function navegarComTransicao(url) {
+    if (!_isHtmlInterna(url)) {
+        window.location.href = url;
+        return;
+    }
+
+    const target = new URL(url, window.location.href);
+    if (document.body) {
+        document.body.classList.add('jk-page-leaving');
+    }
+    sessionStorage.setItem(JK_TRANSITION_KEY, '1');
+    setTimeout(() => {
+        window.location.href = target.href;
+    }, JK_TRANSITION_MS);
+}
+
+(function initElectronTabNavigationBridge() {
+    let dentroDaCascaDeAbas = false;
+    try {
+        dentroDaCascaDeAbas = !!window.top && window.top !== window;
+    } catch (_err) {
+        dentroDaCascaDeAbas = true;
+    }
+    if (!dentroDaCascaDeAbas || window.__jkElectronTabNavigationBridgeInit) return;
+    window.__jkElectronTabNavigationBridgeInit = true;
+
+    document.documentElement.classList.add('jk-electron-tab-shell');
+
+    const style = document.createElement('style');
+    style.id = 'jk-electron-tab-shell-nav-style';
+    style.textContent = `
+        html.jk-electron-tab-shell .top-actions,
+        html.jk-electron-tab-shell .nav-top-actions,
+        html.jk-electron-tab-shell .nav-actions {
+            display: none !important;
+        }
+        html.jk-electron-tab-shell [data-jk-shell-nav-hidden="1"] {
+            display: none !important;
+        }
+        html.jk-electron-tab-shell [data-jk-shell-nav-container-empty="1"] {
+            display: none !important;
+        }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+
+    function textoNormalizado(el) {
+        return String(el?.textContent || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+    }
+
+    function apontaParaDashboard(el) {
+        const href = String(el?.getAttribute?.('href') || '');
+        const onclick = String(el?.getAttribute?.('onclick') || '');
+        return /dashboard\.html/i.test(href) || /dashboard\.html/i.test(onclick);
+    }
+
+    function ehBotaoNavegacaoPrincipal(el) {
+        if (!el || !el.matches || !el.matches('a, button')) return false;
+        const texto = textoNormalizado(el);
+        if (texto === 'home') return true;
+        if (texto === 'voltar' && apontaParaDashboard(el)) return true;
+        if (texto === 'voltar ao dashboard') return true;
+        if (texto === 'voltar dashboard') return true;
+        return false;
+    }
+
+    function ocultarNavegacaoInterna() {
+        const paisParaRevisar = new Set();
+        document.querySelectorAll('a, button').forEach((el) => {
+            if (ehBotaoNavegacaoPrincipal(el)) {
+                el.setAttribute('data-jk-shell-nav-hidden', '1');
+                if (el.parentElement) paisParaRevisar.add(el.parentElement);
+            }
+        });
+
+        document.querySelectorAll('.header-actions, .top-actions, .nav-top-actions, .nav-actions').forEach((container) => {
+            paisParaRevisar.add(container);
+        });
+
+        paisParaRevisar.forEach((container) => {
+            if (!container || container === document.body || container === document.documentElement) return;
+            const filhosVisiveis = Array.from(container.children || []).filter((child) => {
+                return child.getAttribute('data-jk-shell-nav-hidden') !== '1';
+            });
+            if (!filhosVisiveis.length) {
+                container.setAttribute('data-jk-shell-nav-container-empty', '1');
+            }
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ocultarNavegacaoInterna, { once: true });
+    } else {
+        ocultarNavegacaoInterna();
+    }
+    window.addEventListener('load', ocultarNavegacaoInterna);
+
+    window.addEventListener('message', (event) => {
+        const data = event && event.data ? event.data : {};
+        if (!data || typeof data !== 'object' || data.channel !== 'jk-shell-history-back') return;
+        try {
+            if (window.history.length > 1) {
+                window.history.back();
+                return;
+            }
+        } catch (_err) {}
+        navegarComTransicao(data.fallbackUrl || '/dashboard.html');
+    });
+})();
+
+(function initElectronTabTitleSync() {
+    if (window.__jkElectronTabTitleSyncInit) return;
+    window.__jkElectronTabTitleSyncInit = true;
+
+    function limparTituloAba(valor) {
+        return String(valor || '')
+            .replace(/\s+/g, ' ')
+            .replace(/^[^\p{L}\p{N}]+/u, '')
+            .replace(/\s+-\s+JK Sistema.*$/i, '')
+            .trim()
+            .slice(0, 90);
+    }
+
+    function obterTituloAbaAtual() {
+        const titulo = limparTituloAba(document.title || '');
+        if (titulo && !/^JK Sistema/i.test(titulo)) return titulo;
+        const h1 = limparTituloAba(document.querySelector('h1')?.textContent || '');
+        if (h1 && !/^JK Sistema/i.test(h1)) return h1;
+        return titulo || h1 || '';
+    }
+
+    function enviarTituloAba() {
+        try {
+            if (!window.top || window.top === window || typeof window.top.postMessage !== 'function') return;
+            const titulo = obterTituloAbaAtual();
+            if (!titulo) return;
+            window.top.postMessage({
+                channel: 'jk-tab-title',
+                payload: {
+                    title: titulo,
+                    url: window.location.href
+                }
+            }, '*');
+        } catch (_err) {}
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', enviarTituloAba, { once: true });
+    } else {
+        enviarTituloAba();
+    }
+    window.addEventListener('load', enviarTituloAba);
+    setTimeout(enviarTituloAba, 250);
+    setTimeout(enviarTituloAba, 1000);
+
+    try {
+        const titleEl = document.querySelector('title');
+        if (titleEl && typeof MutationObserver !== 'undefined') {
+            new MutationObserver(enviarTituloAba).observe(titleEl, { childList: true, characterData: true, subtree: true });
+        }
+    } catch (_err) {}
+})();
+
+function obterClientId() {
+    const u = JSON.parse(localStorage.getItem('user_data') || 'null');
+    return u && u.client_id ? u.client_id : null;
+}
+
+/**
+ * Retorna o objeto de headers HTTP com Authorization: Bearer <token>.
+ * Se `extra` for fornecido (objeto), as propriedades são mescladas.
+ * Se não houver token, redireciona para o login.
+ */
+function obterAuthHeaders(extra) {
+    const token = obterToken();
+    const clientId = obterClientId();
+    if (tokenSessaoExpirado()) {
+        redirecionarSessaoExpirada();
+        return {};
+    }
+    if (!token && !clientId) {
+        window.location.href = '/frontend_index.html';
+        return {};
+    }
+    const headers = token
+        ? { 'Authorization': 'Bearer ' + token }
+        : { 'X-Client-ID': clientId }; // Compatibilidade com backend legado sem JWT
+    if (extra && typeof extra === 'object') {
+        Object.assign(headers, extra);
+    }
+    return headers;
+}
+
+/** Remove dados de sessão e redireciona para login. */
+function encerrarSessao() {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('user_data');
+    localStorage.removeItem('permissions');
+    navegarComTransicao('/frontend_index.html');
+}
+
+/** Verifica se há token na sessão; redireciona se não houver. */
+function verificarSessao() {
+    if (tokenSessaoExpirado()) {
+        redirecionarSessaoExpirada();
+        return false;
+    }
+    if (!obterToken() && !obterClientId()) {
+        window.location.href = '/frontend_index.html';
+        return false;
+    }
+    return true;
+}
+
+(function initGlobalIaRagAutoIndex() {
+    if (window.__jkIaRagAutoIndexInit) return;
+    window.__jkIaRagAutoIndexInit = true;
+
+    const STORAGE_KEY = 'jk-ia-rag-autoindex-v1';
+    const SUCESSO_INTERVALO_MS = 6 * 60 * 60 * 1000; // 6h
+    const TENTATIVA_MIN_INTERVALO_MS = 5 * 60 * 1000; // 5min
+    const INDICATOR_REFRESH_MS = 60 * 1000;
+    let emExecucao = false;
+    let indicadorTimer = null;
+    let modalDiagnostico = null;
+
+    function usuarioAdmin() {
+        try {
+            const permissoes = JSON.parse(localStorage.getItem('permissions') || '{}');
+            return permissoes && (permissoes.full === true || permissoes.admin_usuarios === true);
+        } catch (_e) {
+            return false;
+        }
+    }
+
+    function formatarTempoDecorrido(timestamp) {
+        const t = Number(timestamp || 0);
+        if (!t) return '';
+        const deltaMs = Math.max(0, Date.now() - t);
+        const totalMin = Math.floor(deltaMs / 60000);
+        if (totalMin <= 0) return 'agora';
+        if (totalMin < 60) return `ha ${totalMin} min`;
+        const horas = Math.floor(totalMin / 60);
+        const minutos = totalMin % 60;
+        if (horas < 24) {
+            return minutos > 0 ? `ha ${horas}h ${minutos}min` : `ha ${horas}h`;
+        }
+        const dias = Math.floor(horas / 24);
+        return `ha ${dias}d`;
+    }
+
+    function garantirIndicador() {
+        if (!usuarioAdmin()) return null;
+
+        if (!document.getElementById('jk-ia-rag-indicador-style')) {
+            const style = document.createElement('style');
+            style.id = 'jk-ia-rag-indicador-style';
+            style.textContent = `
+                #jk-ia-rag-indicador {
+                    position: fixed;
+                    left: 14px;
+                    bottom: 14px;
+                    z-index: 99996;
+                    max-width: min(360px, calc(100vw - 28px));
+                    padding: 8px 10px;
+                    border-radius: 10px;
+                    border: 1px solid rgba(123, 207, 255, 0.36);
+                    background: linear-gradient(180deg, rgba(14, 29, 52, 0.96), rgba(10, 21, 38, 0.98));
+                    color: #d9ecff;
+                    font: 600 12px "Segoe UI", Tahoma, sans-serif;
+                    line-height: 1.35;
+                    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+                    letter-spacing: 0.1px;
+                    user-select: none;
+                    cursor: pointer;
+                }
+                #jk-ia-rag-indicador:hover {
+                    filter: brightness(1.05);
+                }
+                #jk-ia-rag-indicador.running {
+                    border-color: rgba(140, 215, 255, 0.6);
+                }
+                #jk-ia-rag-indicador.ok {
+                    border-color: rgba(108, 224, 154, 0.55);
+                }
+                #jk-ia-rag-indicador.warn {
+                    border-color: rgba(255, 169, 109, 0.62);
+                }
+                #jk-ia-rag-modal {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 99997;
+                    display: none;
+                    align-items: center;
+                    justify-content: center;
+                    background: rgba(2, 6, 12, 0.66);
+                    backdrop-filter: blur(3px);
+                }
+                #jk-ia-rag-modal.open {
+                    display: flex;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-card {
+                    width: min(560px, calc(100vw - 28px));
+                    max-height: min(78vh, 760px);
+                    overflow: auto;
+                    border-radius: 12px;
+                    border: 1px solid rgba(123, 207, 255, 0.38);
+                    background: linear-gradient(180deg, rgba(12, 24, 44, 0.98), rgba(8, 17, 33, 0.98));
+                    color: #d9ecff;
+                    box-shadow: 0 22px 44px rgba(0, 0, 0, 0.52);
+                    padding: 14px;
+                    font: 600 12px "Segoe UI", Tahoma, sans-serif;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 8px;
+                    margin-bottom: 12px;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-title {
+                    font-size: 14px;
+                    font-weight: 800;
+                    color: #cbe8ff;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-close {
+                    width: 28px;
+                    height: 28px;
+                    border: 1px solid rgba(123, 207, 255, 0.36);
+                    border-radius: 8px;
+                    background: rgba(14, 29, 52, 0.9);
+                    color: #d9ecff;
+                    cursor: pointer;
+                    font-weight: 800;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-grid {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 8px;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-item {
+                    border: 1px solid rgba(123, 207, 255, 0.2);
+                    border-radius: 8px;
+                    padding: 8px;
+                    background: rgba(255, 255, 255, 0.03);
+                }
+                #jk-ia-rag-modal .jk-ia-rag-item .k {
+                    color: #9fd4ff;
+                    font-weight: 700;
+                    margin-bottom: 3px;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-item .v {
+                    color: #e4f2ff;
+                    word-break: break-word;
+                    white-space: pre-wrap;
+                }
+                #jk-ia-rag-modal .jk-ia-rag-foot {
+                    margin-top: 10px;
+                    color: #9ab8d8;
+                    font-size: 11px;
+                }
+                @media (max-width: 760px) {
+                    #jk-ia-rag-modal .jk-ia-rag-grid {
+                        grid-template-columns: 1fr;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        let el = document.getElementById('jk-ia-rag-indicador');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'jk-ia-rag-indicador';
+            el.title = 'Clique para abrir diagnostico IA/RAG';
+            el.addEventListener('click', () => {
+                abrirDiagnosticoRag();
+            });
+            (document.body || document.documentElement).appendChild(el);
+        }
+        return el;
+    }
+
+    function boolTexto(v) {
+        return v ? 'sim' : 'nao';
+    }
+
+    function textoCurto(v, limite = 280) {
+        const s = String(v || '').trim();
+        return s.length > limite ? `${s.slice(0, limite)}...` : s;
+    }
+
+    function garantirModalDiagnostico() {
+        if (!usuarioAdmin()) return null;
+        if (modalDiagnostico) return modalDiagnostico;
+
+        const el = document.createElement('div');
+        el.id = 'jk-ia-rag-modal';
+        el.innerHTML = `
+            <div class="jk-ia-rag-card" role="dialog" aria-modal="true" aria-label="Diagnostico IA RAG">
+                <div class="jk-ia-rag-head">
+                    <div class="jk-ia-rag-title">Diagnostico IA/RAG</div>
+                    <button type="button" class="jk-ia-rag-close" aria-label="Fechar">x</button>
+                </div>
+                <div id="jk-ia-rag-modal-body">Carregando status...</div>
+                <div class="jk-ia-rag-foot">Fonte: /api/ia/rag/status</div>
+            </div>
+        `;
+        el.addEventListener('click', (event) => {
+            if (event.target === el) {
+                el.classList.remove('open');
+            }
+        });
+        el.querySelector('.jk-ia-rag-close')?.addEventListener('click', () => {
+            el.classList.remove('open');
+        });
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                el.classList.remove('open');
+            }
+        });
+        (document.body || document.documentElement).appendChild(el);
+        modalDiagnostico = el;
+        return el;
+    }
+
+    async function abrirDiagnosticoRag() {
+        const modal = garantirModalDiagnostico();
+        if (!modal) return;
+
+        modal.classList.add('open');
+        const body = modal.querySelector('#jk-ia-rag-modal-body');
+        if (body) body.textContent = 'Carregando status...';
+
+        try {
+            const resp = await fetch('/api/ia/rag/status', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            let data = null;
+            try {
+                data = await resp.json();
+            } catch (_e) {
+                data = null;
+            }
+
+            if (!resp.ok) {
+                const detalhe = textoCurto(data && data.detail ? data.detail : resp.statusText || 'falha ao consultar status');
+                if (body) body.innerHTML = `<div class="jk-ia-rag-item"><div class="k">Erro</div><div class="v">${detalhe}</div></div>`;
+                return;
+            }
+
+            if (!data || typeof data !== 'object') {
+                if (body) body.innerHTML = `<div class="jk-ia-rag-item"><div class="k">Erro</div><div class="v">Resposta invalida do servidor.</div></div>`;
+                return;
+            }
+
+            const itens = [
+                ['Client ID', data.client_id || '-'],
+                ['RAG habilitado', boolTexto(data.enabled)],
+                ['Postgres configurado', boolTexto(data.postgres_configurado)],
+                ['Postgres ok', boolTexto(data.postgres_ok)],
+                ['pgvector ok', boolTexto(data.pgvector_ok)],
+                ['Ollama ok', boolTexto(data.ollama_ok)],
+                ['Ollama base URL', data.ollama_base_url || '-'],
+                ['Modelo embedding', data.ollama_embedding_model || '-'],
+                ['Top K', data.top_k != null ? String(data.top_k) : '-'],
+                ['psycopg instalado', boolTexto(data.psycopg_instalado)],
+                ['Erro Ollama', textoCurto(data.ollama_error || '-')],
+                ['Erro Postgres', textoCurto(data.postgres_error || '-')]
+            ];
+
+            if (body) {
+                body.innerHTML = `<div class="jk-ia-rag-grid">${itens.map(([k, v]) => `<div class="jk-ia-rag-item"><div class="k">${k}</div><div class="v">${String(v || '-')}</div></div>`).join('')}</div>`;
+            }
+        } catch (_e) {
+            if (body) body.innerHTML = `<div class="jk-ia-rag-item"><div class="k">Erro</div><div class="v">Falha de conexao ao consultar /api/ia/rag/status.</div></div>`;
+        }
+    }
+
+    function atualizarIndicador() {
+        const el = garantirIndicador();
+        if (!el) return;
+
+        const estado = lerEstado();
+        const ultimoOk = Number(estado.last_ok_at || 0);
+        const ultimaFalha = Number(estado.last_fail_at || 0);
+
+        el.classList.remove('running', 'ok', 'warn');
+
+        if (emExecucao) {
+            el.classList.add('running');
+            el.textContent = 'IA RAG: indexando em background...';
+            return;
+        }
+
+        if (ultimoOk > 0) {
+            el.classList.add('ok');
+            el.textContent = `IA RAG: indexado ${formatarTempoDecorrido(ultimoOk)}.`;
+            return;
+        }
+
+        if (ultimaFalha > 0) {
+            el.classList.add('warn');
+            el.textContent = `IA RAG: ultima tentativa falhou ${formatarTempoDecorrido(ultimaFalha)}.`;
+            return;
+        }
+
+        el.classList.add('warn');
+        el.textContent = 'IA RAG: aguardando primeira indexacao automatica.';
+    }
+
+    function lerEstado() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            return raw ? JSON.parse(raw) : {};
+        } catch (_e) {
+            return {};
+        }
+    }
+
+    function salvarEstado(patch) {
+        try {
+            const atual = lerEstado();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...atual, ...patch }));
+        } catch (_e) {
+            // silencioso
+        }
+    }
+
+    function deveExecutar(clientId, agora) {
+        const estado = lerEstado();
+        if (!estado || estado.client_id !== clientId) return true;
+
+        const ultimoSucesso = Number(estado.last_ok_at || 0);
+        if (ultimoSucesso > 0 && (agora - ultimoSucesso) < SUCESSO_INTERVALO_MS) {
+            return false;
+        }
+
+        const ultimaTentativa = Number(estado.last_try_at || 0);
+        if (ultimaTentativa > 0 && (agora - ultimaTentativa) < TENTATIVA_MIN_INTERVALO_MS) {
+            return false;
+        }
+
+        return true;
+    }
+
+    async function dispararAutoIndex() {
+        if (!obterToken() && !obterClientId()) return;
+
+        const clientId = obterClientId() || 'desconhecido';
+        const agora = Date.now();
+        if (!deveExecutar(clientId, agora)) return;
+
+        emExecucao = true;
+        salvarEstado({ client_id: clientId, last_try_at: agora });
+        atualizarIndicador();
+
+        try {
+            const resp = await fetch('/api/ia/rag/reindexar', {
+                method: 'POST',
+                headers: {
+                    ...obterAuthHeaders(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ force: false })
+            });
+
+            if (resp.ok) {
+                salvarEstado({
+                    client_id: clientId,
+                    last_ok_at: Date.now(),
+                    last_fail_at: 0,
+                    last_fail_msg: ''
+                });
+            } else {
+                let erroMsg = '';
+                try {
+                    const data = await resp.json();
+                    erroMsg = String(data && data.detail ? data.detail : '').slice(0, 180);
+                } catch (_e) {
+                    erroMsg = resp.statusText || '';
+                }
+                salvarEstado({
+                    client_id: clientId,
+                    last_fail_at: Date.now(),
+                    last_fail_msg: erroMsg
+                });
+            }
+        } catch (_e) {
+            salvarEstado({
+                client_id: clientId,
+                last_fail_at: Date.now(),
+                last_fail_msg: 'falha de conexao'
+            });
+        } finally {
+            emExecucao = false;
+            atualizarIndicador();
+        }
+    }
+
+    const iniciar = () => {
+        // Aguarda a página estabilizar para não competir com chamadas críticas de carregamento.
+        atualizarIndicador();
+        if (!indicadorTimer) {
+            indicadorTimer = setInterval(atualizarIndicador, INDICATOR_REFRESH_MS);
+        }
+        window.addEventListener('storage', (event) => {
+            if (!event || event.key === STORAGE_KEY || event.key === 'permissions') {
+                atualizarIndicador();
+            }
+        });
+        setTimeout(dispararAutoIndex, 3500);
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+    } else {
+        iniciar();
+    }
+})();
+
+(function ensureGlobalTableColumns() {
+    if (window.__jkTableColumnsLoaderInit) return;
+    window.__jkTableColumnsLoaderInit = true;
+
+    function carregarScript() {
+        if (window.JKTableColumns || document.querySelector('script[data-jk-table-columns="1"]')) return;
+        const script = document.createElement('script');
+        script.src = '/table_columns.js';
+        script.async = false;
+        script.dataset.jkTableColumns = '1';
+        document.head.appendChild(script);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', carregarScript, { once: true });
+    } else {
+        carregarScript();
+    }
+})();
+
+(function initGlobalPageTransitions() {
+    if (window.__jkPageTransitionsInit) return;
+    window.__jkPageTransitionsInit = true;
+
+    const style = document.createElement('style');
+    style.id = 'jk-page-transitions-style';
+    style.textContent = `
+        .jk-page-transition-overlay {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity ${JK_TRANSITION_MS}ms ease;
+            z-index: 2147483647;
+        }
+        body.jk-page-preload .jk-page-transition-overlay {
+            opacity: 1;
+        }
+        body.jk-page-leaving .jk-page-transition-overlay {
+            opacity: 1;
+        }
+        body.jk-page-preload {
+            overflow: hidden;
+        }
+        body.jk-page-preload > *:not(.jk-page-transition-overlay):not(.dashboard-handoff) {
+            opacity: 0;
+            transform: translateY(10px);
+            filter: blur(6px);
+            transition: opacity ${JK_TRANSITION_MS}ms ease, transform ${JK_TRANSITION_MS}ms ease, filter ${JK_TRANSITION_MS}ms ease;
+        }
+        body.jk-page-ready > *:not(.jk-page-transition-overlay):not(.dashboard-handoff) {
+            opacity: 1;
+            transform: none;
+            filter: none;
+            transition: opacity ${JK_TRANSITION_MS}ms ease, transform ${JK_TRANSITION_MS}ms ease, filter ${JK_TRANSITION_MS}ms ease;
+        }
+    `;
+    document.head.appendChild(style);
+
+    const garantirPaginaVisivel = () => {
+        if (!document.body) return;
+        document.body.classList.remove('jk-page-preload', 'jk-page-leaving');
+        document.body.classList.add('jk-page-ready');
+    };
+
+    const prepararEntrada = () => {
+        if (!document.body) return;
+        if (document.body.classList.contains('dashboard-preload')) {
+            sessionStorage.removeItem(JK_TRANSITION_KEY);
+            return;
+        }
+
+        if (!document.querySelector('.jk-page-transition-overlay')) {
+            const overlay = document.createElement('div');
+            overlay.className = 'jk-page-transition-overlay';
+            document.body.appendChild(overlay);
+        }
+
+        const veioTransicao = sessionStorage.getItem(JK_TRANSITION_KEY) === '1';
+        if (!veioTransicao) {
+            garantirPaginaVisivel();
+            return;
+        }
+
+        sessionStorage.removeItem(JK_TRANSITION_KEY);
+        document.body.classList.add('jk-page-preload');
+        requestAnimationFrame(() => {
+            requestAnimationFrame(garantirPaginaVisivel);
+        });
+    };
+
+    const interceptarLinks = () => {
+        document.addEventListener('click', (event) => {
+            const link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+            if (!link) return;
+
+            const href = link.getAttribute('href');
+            if (!href || href.startsWith('#')) return;
+            if (link.target && link.target !== '_self') return;
+            if (link.hasAttribute('download')) return;
+            if (link.dataset && link.dataset.jkNoTransition === '1') return;
+            if (event.defaultPrevented) return;
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            if (!_isHtmlInterna(href)) return;
+
+            event.preventDefault();
+            navegarComTransicao(link.href);
+        }, true);
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            prepararEntrada();
+            interceptarLinks();
+        }, { once: true });
+    } else {
+        prepararEntrada();
+        interceptarLinks();
+    }
+
+    window.addEventListener('pageshow', () => {
+        setTimeout(garantirPaginaVisivel, 0);
+    });
+    window.addEventListener('load', () => {
+        setTimeout(garantirPaginaVisivel, 120);
+    }, { once: true });
+    setTimeout(garantirPaginaVisivel, Math.max(900, JK_TRANSITION_MS * 4));
+
+    window.navegarComTransicao = navegarComTransicao;
+})();
+
+(function initGlobalNavigationCards() {
+    if (window.__jkNavigationCardsInit) return;
+    window.__jkNavigationCardsInit = true;
+
+    const style = document.createElement('style');
+    style.id = 'jk-global-navigation-cards-style';
+    style.textContent = `
+        .jk-topbar-actions-enhanced {
+            display: flex !important;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .jk-nav-card-group {
+            position: fixed !important;
+            top: 16px;
+            right: 18px;
+            z-index: 1600;
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+            max-width: calc(100vw - 24px);
+        }
+        .jk-nav-card,
+        .jk-nav-card-group .back-btn,
+        .jk-nav-card-group .back-main-btn,
+        .jk-nav-card-group .btn-back,
+        .jk-nav-card-group .btn-voltar,
+        .jk-nav-card-group #btnVoltar,
+        .jk-nav-card-group #btnVoltarVendas {
+            position: static !important;
+            top: auto !important;
+            right: auto !important;
+            left: auto !important;
+            margin: 0 !important;
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-height: 46px;
+            padding: 10px 16px !important;
+            border-radius: 14px !important;
+            border: 1px solid rgba(110, 189, 255, 0.34) !important;
+            background: linear-gradient(180deg, rgba(25, 48, 83, 0.98), rgba(17, 34, 61, 1)) !important;
+            color: #eef6ff !important;
+            text-decoration: none !important;
+            font-weight: 800 !important;
+            line-height: 1.1;
+            box-shadow: 0 12px 24px rgba(8, 17, 34, 0.24);
+            cursor: pointer;
+            transition: transform 0.18s ease, filter 0.18s ease, box-shadow 0.18s ease;
+        }
+        .jk-nav-card:hover,
+        .jk-nav-card-group .back-btn:hover,
+        .jk-nav-card-group .back-main-btn:hover,
+        .jk-nav-card-group .btn-back:hover,
+        .jk-nav-card-group .btn-voltar:hover,
+        .jk-nav-card-group #btnVoltar:hover,
+        .jk-nav-card-group #btnVoltarVendas:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.04);
+            box-shadow: 0 14px 28px rgba(8, 17, 34, 0.3);
+        }
+        .jk-home-card {
+            background: linear-gradient(180deg, rgba(22, 110, 114, 0.98), rgba(15, 85, 94, 1)) !important;
+            border-color: rgba(101, 232, 229, 0.38) !important;
+        }
+        .jk-import-card {
+            background: linear-gradient(180deg, rgba(85, 61, 153, 0.98), rgba(58, 38, 115, 1)) !important;
+            border-color: rgba(190, 163, 255, 0.4) !important;
+        }
+        @media (max-width: 760px) {
+            .jk-topbar-actions-enhanced,
+            .jk-nav-card-group {
+                width: auto;
+                max-width: calc(100vw - 20px);
+                right: 10px;
+                top: 10px;
+                justify-content: flex-end;
+            }
+            .jk-nav-card,
+            .jk-nav-card-group .back-btn,
+            .jk-nav-card-group .back-main-btn,
+            .jk-nav-card-group .btn-back,
+            .jk-nav-card-group .btn-voltar,
+            .jk-nav-card-group #btnVoltar,
+            .jk-nav-card-group #btnVoltarVendas {
+                min-height: 42px;
+                padding: 8px 12px !important;
+                font-size: 0.95rem !important;
+            }
+        }
+    `;
+    document.head.appendChild(style);
+
+    function normalizarTexto(value) {
+        return String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim()
+            .toLowerCase();
+    }
+
+    function adicionarCardHome() {
+        const candidatos = Array.from(document.querySelectorAll('a.back-btn, a.back-main-btn, button.back-btn, button.back-main-btn, button.btn-back, a.btn-voltar, button.btn-voltar, #btnVoltar, #btnVoltarVendas'));
+
+        const obterGrupo = () => {
+            let group = document.querySelector('.jk-nav-card-group');
+            if (!group) {
+                group = document.createElement('div');
+                group.className = 'jk-nav-card-group';
+                (document.body || document.documentElement).appendChild(group);
+            }
+            return group;
+        };
+
+        candidatos.forEach((backButton) => {
+            if (!/voltar/.test(normalizarTexto(backButton.textContent))) return;
+
+            const parent = backButton.parentElement || document.body;
+            const group = obterGrupo();
+
+            if (parent.classList.contains('topbar-actions') || parent.classList.contains('header-actions') || parent.classList.contains('header')) {
+                parent.classList.add('jk-topbar-actions-enhanced');
+            }
+
+            backButton.classList.add('jk-nav-card', 'jk-back-card');
+
+            let homeLink = Array.from(parent.querySelectorAll('a, button')).find((el) => {
+                if (!el || el === backButton) return false;
+                return /home/.test(normalizarTexto(el.textContent));
+            }) || group.querySelector('.jk-home-card');
+
+            if (!homeLink) {
+                homeLink = document.createElement('a');
+                homeLink.href = '/dashboard.html';
+                homeLink.textContent = '🏠 Home';
+            }
+
+            homeLink.classList.add('jk-nav-card', 'jk-home-card');
+
+            if (homeLink.parentElement !== group) group.appendChild(homeLink);
+            if (backButton.parentElement !== group) group.appendChild(backButton);
+
+            const duplicadosHome = Array.from(group.querySelectorAll('a, button')).filter((el) => el !== homeLink && /home/.test(normalizarTexto(el.textContent)));
+            duplicadosHome.forEach((dup) => dup.remove());
+        });
+    }
+
+    function transformarLinksDeImportacao() {
+        const links = Array.from(document.querySelectorAll('a[href]'));
+        links.forEach((link) => {
+            const texto = normalizarTexto(link.textContent);
+            if (!texto.startsWith('ir para importa')) return;
+            link.classList.add('jk-nav-card', 'jk-import-card');
+            if (!String(link.textContent || '').includes('📥')) {
+                link.textContent = `📥 ${String(link.textContent || '').trim()}`;
+            }
+            const parent = link.parentElement;
+            if (parent && (parent.classList.contains('topbar-actions') || parent.classList.contains('header-actions') || parent.classList.contains('header'))) {
+                parent.classList.add('jk-topbar-actions-enhanced');
+            }
+        });
+    }
+
+    function init() {
+        adicionarCardHome();
+        transformarLinksDeImportacao();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();
+
+(function initGlobalVendasSyncMonitor() {
+    if (window.__jkSyncMonitorInit) return;
+    window.__jkSyncMonitorInit = true;
+
+    const JK_SYNC_WIDGET_MIN_KEY = 'jk-sync-widget-minimized';
+
+    function obterSyncWidgetMinimizado() {
+        try {
+            return localStorage.getItem(JK_SYNC_WIDGET_MIN_KEY) === '1';
+        } catch (_e) {
+            return false;
+        }
+    }
+
+    function salvarSyncWidgetMinimizado(minimizado) {
+        try {
+            localStorage.setItem(JK_SYNC_WIDGET_MIN_KEY, minimizado ? '1' : '0');
+        } catch (_e) {
+            // silencioso
+        }
+    }
+
+    function formatarDataBr(isoDate) {
+        if (!isoDate || typeof isoDate !== 'string') return '-';
+        const base = isoDate.slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return isoDate;
+        const [ano, mes, dia] = base.split('-');
+        return `${dia}/${mes}/${ano}`;
+    }
+
+    function garantirWidget() {
+        let el = document.getElementById('jk-global-sync-widget');
+        if (el) return el;
+
+        const style = document.createElement('style');
+        style.id = 'jk-global-sync-style';
+        style.textContent = `
+            #jk-global-sync-widget {
+                position: fixed;
+                right: 16px;
+                bottom: 16px;
+                width: min(420px, calc(100vw - 32px));
+                z-index: 99999;
+                background: #0a1428;
+                border: 1px solid #2f7ed3;
+                border-radius: 10px;
+                box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+                color: #d7ebff;
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                padding: 10px 12px;
+                display: none;
+                overflow: hidden;
+            }
+            #jk-global-sync-widget .jk-head {
+                position: relative;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 6px;
+                padding-right: 34px;
+            }
+            #jk-global-sync-widget .jk-title {
+                flex: 1 1 auto;
+                min-width: 0;
+                font-size: 13px;
+                font-weight: 700;
+                color: #9bd1ff;
+                margin-bottom: 0;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            #jk-global-sync-widget .jk-toggle {
+                position: absolute;
+                top: 0;
+                right: 0;
+                width: 26px;
+                height: 26px;
+                border-radius: 8px;
+                border: 1px solid #3b5f8e;
+                background: #10213d;
+                color: #d7ebff;
+                font-size: 16px;
+                font-weight: 800;
+                line-height: 1;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0;
+                z-index: 2;
+            }
+            #jk-global-sync-widget .jk-toggle:hover {
+                filter: brightness(1.08);
+            }
+            #jk-global-sync-widget .jk-widget-body {
+                display: block;
+            }
+            #jk-global-sync-widget.is-collapsed {
+                width: 46px;
+                height: 46px;
+                min-width: 46px;
+                padding: 0;
+                border-radius: 999px;
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                background: linear-gradient(180deg, #0f1e39, #091427);
+                cursor: pointer;
+            }
+            #jk-global-sync-widget.is-collapsed .jk-widget-body {
+                display: none;
+            }
+            #jk-global-sync-widget.is-collapsed .jk-head {
+                margin: 0;
+                padding-right: 0;
+                justify-content: center;
+            }
+            #jk-global-sync-widget.is-collapsed .jk-title {
+                display: none;
+            }
+            #jk-global-sync-widget.is-collapsed .jk-toggle {
+                position: static;
+                width: 34px;
+                height: 34px;
+                min-width: 34px;
+                border-radius: 999px;
+                font-size: 0;
+                border-color: rgba(91, 208, 255, 0.65);
+                background: radial-gradient(circle at 30% 30%, #6ecbff, #2f7ed3 58%, #17345e 100%);
+                box-shadow: 0 0 0 2px rgba(18, 39, 71, 0.45);
+                animation: jk-sync-spin 1.1s linear infinite;
+            }
+            #jk-global-sync-widget.is-collapsed .jk-toggle::before {
+                content: '';
+                width: 10px;
+                height: 10px;
+                border-radius: 999px;
+                background: rgba(255,255,255,0.92);
+                display: block;
+            }
+            @keyframes jk-sync-spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+            #jk-global-sync-widget .jk-meta {
+                font-size: 12px;
+                color: #c8e2ff;
+                margin-bottom: 8px;
+            }
+            #jk-global-sync-widget .jk-progress-wrap {
+                height: 8px;
+                background: #2a3140;
+                border-radius: 999px;
+                overflow: hidden;
+                margin-bottom: 6px;
+            }
+            #jk-global-sync-widget .jk-progress-bar {
+                height: 8px;
+                width: 0%;
+                background: linear-gradient(90deg, #4facfe, #2b86d9);
+                transition: width .4s ease;
+            }
+            #jk-global-sync-widget .jk-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                font-size: 12px;
+                color: #a9d5ff;
+            }
+            #jk-global-sync-widget .jk-link {
+                color: #9bd1ff;
+                text-decoration: underline;
+                cursor: pointer;
+                white-space: nowrap;
+            }
+        `;
+        document.head.appendChild(style);
+
+        el = document.createElement('div');
+        el.id = 'jk-global-sync-widget';
+        el.innerHTML = `
+            <div class="jk-head">
+                <div class="jk-title">Sincronização de vendas em andamento</div>
+                <button type="button" class="jk-toggle" aria-label="Minimizar status" title="Minimizar status">−</button>
+            </div>
+            <div class="jk-widget-body">
+                <div class="jk-meta" id="jk-sync-meta">Período: -</div>
+                <div class="jk-progress-wrap"><div class="jk-progress-bar" id="jk-sync-bar"></div></div>
+                <div class="jk-row">
+                    <div id="jk-sync-status">Preparando...</div>
+                    <a class="jk-link" href="/vendas.html">Abrir vendas</a>
+                </div>
+            </div>
+        `;
+
+        function aplicarEstadoMinimizado(minimizado) {
+            el.classList.toggle('is-collapsed', !!minimizado);
+            const btn = el.querySelector('.jk-toggle');
+            const titleEl = el.querySelector('.jk-title');
+            if (btn) {
+                btn.textContent = minimizado ? '+' : '−';
+                btn.title = minimizado ? 'Expandir status' : 'Minimizar status';
+                btn.setAttribute('aria-label', btn.title);
+            }
+            if (titleEl) {
+                const fullTitle = titleEl.dataset.fullTitle || titleEl.textContent || 'Sincronização de vendas';
+                titleEl.dataset.fullTitle = fullTitle;
+                titleEl.textContent = minimizado ? 'Status de vendas' : fullTitle;
+            }
+        }
+
+        const btnToggle = el.querySelector('.jk-toggle');
+        if (btnToggle) {
+            btnToggle.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const minimizado = !el.classList.contains('is-collapsed');
+                aplicarEstadoMinimizado(minimizado);
+                salvarSyncWidgetMinimizado(minimizado);
+            });
+        }
+
+        el.addEventListener('click', () => {
+            if (!el.classList.contains('is-collapsed')) return;
+            aplicarEstadoMinimizado(false);
+            salvarSyncWidgetMinimizado(false);
+        });
+
+        const sincronizarEstadoGlobal = () => {
+            aplicarEstadoMinimizado(obterSyncWidgetMinimizado());
+        };
+
+        window.addEventListener('pageshow', sincronizarEstadoGlobal);
+        window.addEventListener('storage', (event) => {
+            if (!event || event.key === JK_SYNC_WIDGET_MIN_KEY) {
+                sincronizarEstadoGlobal();
+            }
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) sincronizarEstadoGlobal();
+        });
+
+        aplicarEstadoMinimizado(obterSyncWidgetMinimizado());
+        document.body.appendChild(el);
+        return el;
+    }
+
+    function renderWidget(payload) {
+        const widget = garantirWidget();
+        const progress = payload && payload.progress ? payload.progress : null;
+        const active = !!(payload && payload.active);
+        const meta = payload && payload.sync_meta ? payload.sync_meta : null;
+
+        if (!active) {
+            widget.style.display = 'none';
+            return;
+        }
+
+        const percent = Math.max(0, Math.min(100, Number(progress && progress.percentual ? progress.percentual : 0)));
+        const loja = meta && meta.loja ? meta.loja : '-';
+        const inicio = formatarDataBr(meta && meta.data_inicio ? meta.data_inicio : '');
+        const fim = formatarDataBr(meta && meta.data_fim ? meta.data_fim : '');
+        const etapa = progress && progress.etapa ? progress.etapa : 'Preparando';
+        const mensagem = progress && progress.mensagem ? progress.mensagem : 'Sincronizando...';
+
+        const titleEl = widget.querySelector('.jk-title');
+        const fullTitle = `Sincronização de vendas (${loja})`;
+        titleEl.dataset.fullTitle = fullTitle;
+        titleEl.textContent = widget.classList.contains('is-collapsed') ? 'Status de vendas' : fullTitle;
+        widget.querySelector('#jk-sync-meta').textContent = `Período: ${inicio} até ${fim}`;
+        widget.querySelector('#jk-sync-bar').style.width = `${percent}%`;
+        widget.querySelector('#jk-sync-status').textContent = `${percent}% • ${etapa} • ${mensagem}`;
+        widget.style.display = 'block';
+    }
+
+    async function atualizarSyncGlobal() {
+        if (!obterToken() && !obterClientId()) return;
+        try {
+            const permissoes = JSON.parse(localStorage.getItem('permissions') || '{}');
+            if (!(permissoes.full === true || permissoes.vendas === true)) {
+                if (window.__jkSyncMonitorTimer) {
+                    clearInterval(window.__jkSyncMonitorTimer);
+                    window.__jkSyncMonitorTimer = null;
+                }
+                return;
+            }
+        } catch (_e) {
+            // Se permissões locais estiverem inválidas, deixa o backend decidir.
+        }
+        try {
+            const resp = await fetch('/api/vendas/sync/progress', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            if (resp.status === 401 || resp.status === 403) {
+                if (window.__jkSyncMonitorTimer) {
+                    clearInterval(window.__jkSyncMonitorTimer);
+                    window.__jkSyncMonitorTimer = null;
+                }
+                return;
+            }
+            if (!resp.ok) return;
+            const payload = await resp.json();
+            renderWidget(payload);
+        } catch (_e) {
+            // Silencioso: monitor global não deve quebrar páginas.
+        }
+    }
+
+    const iniciar = () => {
+        atualizarSyncGlobal();
+        window.__jkSyncMonitorTimer = setInterval(atualizarSyncGlobal, 3000);
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+    } else {
+        iniciar();
+    }
+})();
+
+(function initGlobalAiSidebar() {
+    if (window.__jkGlobalAiSidebarInit) return;
+    window.__jkGlobalAiSidebarInit = true;
+
+    const STORAGE_KEY = 'jk-global-ai-sidebar-open';
+
+    function obterAberto() {
+        try {
+            return localStorage.getItem(STORAGE_KEY) === '1';
+        } catch (_e) {
+            return false;
+        }
+    }
+
+    function salvarAberto(aberto) {
+        try {
+            localStorage.setItem(STORAGE_KEY, aberto ? '1' : '0');
+        } catch (_e) {
+            // silencioso
+        }
+    }
+
+    function obterTituloPagina() {
+        const h1 = document.querySelector('h1');
+        const titulo = (h1 && h1.textContent ? h1.textContent : document.title || 'Sistema').trim();
+        return titulo.replace(/\s+/g, ' ');
+    }
+
+    function obterResumoPagina() {
+        const cards = Array.from(document.querySelectorAll('.card, .summary .card, [class*="card"]'))
+            .slice(0, 6)
+            .map((card) => card.textContent.replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+        const filtros = Array.from(document.querySelectorAll('select, input[type="text"], input[type="date"], input[type="search"]'))
+            .slice(0, 5)
+            .map((el) => {
+                const label = el.getAttribute('aria-label') || el.id || el.name || 'campo';
+                const value = el.value || el.getAttribute('placeholder') || '';
+                return value ? `${label}: ${value}` : '';
+            })
+            .filter(Boolean);
+        const table = Array.from(document.querySelectorAll('tbody tr'))
+            .slice(0, 8)
+            .map((row) => row.textContent.replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+        return {
+            title: obterTituloPagina(),
+            url: location.pathname,
+            cards,
+            filtros,
+            table
+        };
+    }
+
+    function obterHistoricoSidebar(sidebar) {
+        return Array.from(sidebar.querySelectorAll('.jk-ai-msg')).slice(-8).map((msg) => ({
+            role: msg.classList.contains('user') ? 'user' : 'assistant',
+            content: msg.textContent || ''
+        })).filter((msg) => msg.content.trim());
+    }
+
+    async function chamarAssistenteBackend(sidebar, pergunta) {
+        const payload = JSON.stringify({
+            message: pergunta,
+            page: obterTituloPagina(),
+            context: obterResumoPagina(),
+            history: obterHistoricoSidebar(sidebar)
+        });
+        const urls = ['/api/ia/chat'];
+        if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
+            urls.push('http://127.0.0.1:8012/api/ia/chat');
+        }
+
+        let ultimoErro = null;
+        for (const url of urls) {
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: payload
+                });
+                let data = null;
+                try {
+                    data = await resp.json();
+                } catch (_e) {
+                    data = null;
+                }
+                if (resp.ok) {
+                    return data?.resposta || 'A IA não retornou resposta.';
+                }
+                ultimoErro = new Error(resp.status === 405
+                    ? 'O servidor local ainda está com uma versão antiga. Reinicie o programa para ativar a IA.'
+                    : (data?.detail || resp.statusText || 'Falha ao consultar o assistente IA.'));
+                if (resp.status !== 405) break;
+            } catch (error) {
+                if (!ultimoErro) ultimoErro = error;
+            }
+        }
+        throw ultimoErro || new Error('Falha ao consultar o assistente IA.');
+    }
+
+    function garantirSidebar() {
+        if (document.getElementById('jk-global-ai-sidebar')) return document.getElementById('jk-global-ai-sidebar');
+        if (document.getElementById('sidebarPainelAssistenteVendas')) return null;
+
+        if (!document.getElementById('jk-ia-panel') && !document.getElementById('jk-ia-fab')) {
+            const jaExisteScript = Array.from(document.querySelectorAll('script[src]')).some((s) => {
+                const src = String(s.getAttribute('src') || '');
+                return src.includes('/ia-sidebar.js') || src.includes('/static/ia-sidebar.js');
+            });
+            if (!jaExisteScript) {
+                const script = document.createElement('script');
+                script.src = '/ia-sidebar.js?v=20260518-img-fallback';
+                script.async = true;
+                script.setAttribute('data-jk-ia-loader', '1');
+                document.body.appendChild(script);
+            }
+            return null;
+        }
+
+        if (!document.getElementById('jk-global-ai-sidebar-style')) {
+            const style = document.createElement('style');
+            style.id = 'jk-global-ai-sidebar-style';
+            style.textContent = `
+                #jk-global-ai-tab {
+                    position: fixed;
+                    right: 0;
+                    top: 50vh;
+                    transform: translateY(-50%);
+                    width: 44px;
+                    height: 84px;
+                    z-index: 99998;
+                    border-radius: 12px 0 0 12px;
+                    border: 1px solid rgba(123, 207, 255, 0.85);
+                    border-right: 0;
+                    background: linear-gradient(165deg, #4facfe, #2e8be6);
+                    color: #061523;
+                    font: 900 13px "Segoe UI", Tahoma, sans-serif;
+                    cursor: pointer;
+                    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.38);
+                }
+                #jk-global-ai-sidebar {
+                    position: fixed;
+                    top: 0;
+                    right: 0;
+                    width: 320px;
+                    height: 100vh;
+                    z-index: 99997;
+                    transform: translateX(100%);
+                    transition: transform 0.2s ease;
+                    background: linear-gradient(165deg, #0d1e37, #071321);
+                    border-left: 1px solid rgba(123, 207, 255, 0.35);
+                    box-shadow: -18px 0 34px rgba(0, 0, 0, 0.38);
+                    color: #eaf3ff;
+                    font-family: "Segoe UI", Tahoma, sans-serif;
+                    padding: 14px;
+                    overflow: hidden;
+                    display: flex;
+                    flex-direction: column;
+                }
+                #jk-global-ai-sidebar.open { transform: translateX(0); }
+                #jk-global-ai-sidebar.open + #jk-global-ai-tab { right: 320px; }
+                #jk-global-ai-sidebar .jk-ai-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 10px;
+                    margin-bottom: 12px;
+                }
+                #jk-global-ai-sidebar h3 {
+                    margin: 0;
+                    color: #9bd1ff;
+                    font-size: 1rem;
+                }
+                #jk-global-ai-sidebar .jk-ai-close {
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 8px;
+                    border: 1px solid rgba(123, 207, 255, 0.36);
+                    background: rgba(15, 32, 57, 0.95);
+                    color: #d7efff;
+                    cursor: pointer;
+                    font-weight: 900;
+                }
+                #jk-global-ai-sidebar .jk-ai-status {
+                    color: #b8c7d9;
+                    font-size: 0.76rem;
+                    line-height: 1.35;
+                    margin-bottom: 12px;
+                }
+                #jk-global-ai-sidebar .jk-ai-chat {
+                    flex: 1 1 auto;
+                    min-height: 220px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
+                    overflow-y: auto;
+                    padding: 4px 2px 12px;
+                    margin-bottom: 10px;
+                    scrollbar-width: none;
+                }
+                #jk-global-ai-sidebar .jk-ai-chat::-webkit-scrollbar {
+                    display: none;
+                }
+                #jk-global-ai-sidebar .jk-ai-msg {
+                    max-width: 86%;
+                    border-radius: 16px;
+                    padding: 10px 12px;
+                    border: 1px solid transparent;
+                    font-size: 0.84rem;
+                    line-height: 1.45;
+                    white-space: pre-wrap;
+                }
+                #jk-global-ai-sidebar .jk-ai-msg.user {
+                    align-self: flex-end;
+                    background: linear-gradient(165deg, #1888ff, #0f65d8);
+                    color: #ffffff;
+                    border-bottom-right-radius: 5px;
+                }
+                #jk-global-ai-sidebar .jk-ai-msg.assistant {
+                    align-self: flex-start;
+                    background: rgba(255, 255, 255, 0.08);
+                    color: #eef5ff;
+                    border-color: rgba(255, 255, 255, 0.1);
+                    border-bottom-left-radius: 5px;
+                }
+                #jk-global-ai-sidebar .jk-ai-msg.assistant code {
+                    background: rgba(255, 255, 255, 0.14);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 6px;
+                    padding: 1px 5px;
+                    font-size: 0.78rem;
+                }
+                #jk-global-ai-sidebar .jk-ai-msg.assistant strong {
+                    color: #ffffff;
+                }
+                #jk-global-ai-sidebar .jk-ai-msg.loading {
+                    color: #b8c7d9;
+                    font-style: italic;
+                }
+                #jk-global-ai-sidebar .jk-ai-suggestions {
+                    display: grid;
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                    gap: 8px;
+                    margin-bottom: 10px;
+                    padding-bottom: 2px;
+                }
+                #jk-global-ai-sidebar .jk-ai-chip {
+                    min-height: 42px;
+                    border: 1px solid rgba(123, 207, 255, 0.22);
+                    border-radius: 12px;
+                    background: rgba(255, 255, 255, 0.06);
+                    color: #d7eaff;
+                    font-size: 0.75rem;
+                    font-weight: 700;
+                    padding: 8px 10px;
+                    cursor: pointer;
+                    text-align: left;
+                    white-space: normal;
+                }
+                #jk-global-ai-sidebar .jk-ai-composer {
+                    display: flex;
+                    align-items: flex-end;
+                    gap: 8px;
+                    border: 1px solid rgba(123, 207, 255, 0.22);
+                    border-radius: 16px;
+                    background: rgba(5, 13, 25, 0.88);
+                    padding: 8px;
+                }
+                #jk-global-ai-sidebar .jk-ai-input {
+                    flex: 1 1 auto;
+                    min-height: 42px;
+                    max-height: 140px;
+                    resize: none;
+                    border-radius: 12px;
+                    border: 0;
+                    background: transparent;
+                    color: #eaf3ff;
+                    font: inherit;
+                    font-size: 0.82rem;
+                    padding: 9px 8px;
+                    outline: none;
+                }
+                #jk-global-ai-sidebar .jk-ai-send {
+                    flex: 0 0 42px;
+                    width: 42px;
+                    height: 42px;
+                    border: 0;
+                    border-radius: 999px;
+                    background: linear-gradient(165deg, #4facfe, #2e8be6);
+                    color: #061523;
+                    font-size: 1rem;
+                    font-weight: 900;
+                    padding: 0;
+                    cursor: pointer;
+                }
+                @media (max-width: 760px) {
+                    #jk-global-ai-sidebar { width: min(320px, calc(100vw - 46px)); }
+                    #jk-global-ai-sidebar.open + #jk-global-ai-tab { right: min(320px, calc(100vw - 46px)); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const sidebar = document.createElement('aside');
+        sidebar.id = 'jk-global-ai-sidebar';
+        sidebar.setAttribute('aria-label', 'Assistente IA');
+        sidebar.innerHTML = `
+            <div class="jk-ai-head">
+                <h3>Assistente IA</h3>
+                <button type="button" class="jk-ai-close" aria-label="Fechar assistente">×</button>
+            </div>
+            <div class="jk-ai-status">Assistente conectado ao contexto da tela atual.</div>
+            <div class="jk-ai-chat" aria-live="polite">
+                <div class="jk-ai-msg assistant">Olá. Posso resumir esta tela, apontar dados importantes ou sugerir a próxima análise.</div>
+            </div>
+            <div class="jk-ai-suggestions">
+                <button class="jk-ai-chip" type="button" data-prompt="Resuma a tela atual">Resumir tela atual</button>
+                <button class="jk-ai-chip" type="button" data-prompt="O que devo investigar agora?">Proxima analise</button>
+                <button class="jk-ai-chip" type="button" data-prompt="Quais dados visiveis sao importantes?">Dados importantes</button>
+            </div>
+            <div class="jk-ai-composer">
+                <textarea class="jk-ai-input" placeholder="Pergunte sobre esta pagina..."></textarea>
+                <button class="jk-ai-send" type="button" aria-label="Enviar pergunta">↑</button>
+            </div>
+        `;
+
+        const tab = document.createElement('button');
+        tab.id = 'jk-global-ai-tab';
+        tab.type = 'button';
+        tab.textContent = 'IA';
+        tab.setAttribute('aria-label', 'Abrir assistente IA');
+
+        document.body.appendChild(sidebar);
+        document.body.appendChild(tab);
+        return sidebar;
+    }
+
+    function escaparHtmlAssistente(texto) {
+        return String(texto || '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+    }
+
+    function formatarMarkdownBasicoAssistente(texto) {
+        let html = escaparHtmlAssistente(texto || '');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        html = html.replace(/\r\n?|\n/g, '<br>');
+        return html;
+    }
+
+    function definirTextoMensagemAssistente(el, texto, tipo) {
+        if (!el) return;
+        if (tipo === 'assistant') {
+            el.innerHTML = formatarMarkdownBasicoAssistente(texto || '');
+            return;
+        }
+        el.textContent = texto || '';
+    }
+
+    function adicionarMensagem(sidebar, tipo, texto) {
+        const chat = sidebar.querySelector('.jk-ai-chat');
+        if (!chat) return;
+        const msg = document.createElement('div');
+        msg.className = `jk-ai-msg ${tipo}`;
+        definirTextoMensagemAssistente(msg, texto, tipo);
+        if (tipo === 'assistant' && /consultando/i.test(texto)) {
+            msg.classList.add('loading');
+        }
+        chat.appendChild(msg);
+        chat.scrollTop = chat.scrollHeight;
+        return msg;
+    }
+
+    function setAberto(sidebar, aberto) {
+        const tab = document.getElementById('jk-global-ai-tab');
+        sidebar.classList.toggle('open', !!aberto);
+        if (tab) tab.setAttribute('aria-label', aberto ? 'Fechar assistente IA' : 'Abrir assistente IA');
+        salvarAberto(aberto);
+    }
+
+    function init() {
+        const sidebar = garantirSidebar();
+        if (!sidebar) return;
+        const tab = document.getElementById('jk-global-ai-tab');
+        const input = sidebar.querySelector('.jk-ai-input');
+
+        const enviar = async (textoManual) => {
+            const texto = String(textoManual || input.value || '').trim();
+            if (!texto) return;
+            adicionarMensagem(sidebar, 'user', texto);
+            input.value = '';
+            setAberto(sidebar, true);
+            const aguardando = adicionarMensagem(sidebar, 'assistant', 'Pensando...');
+            try {
+                const resposta = await chamarAssistenteBackend(sidebar, texto);
+                definirTextoMensagemAssistente(aguardando, resposta, 'assistant');
+                aguardando.classList.remove('loading');
+            } catch (error) {
+                definirTextoMensagemAssistente(aguardando, error?.message === 'Method Not Allowed'
+                    ? 'O servidor local ainda está com uma versão antiga. Reinicie o programa para ativar a IA.'
+                    : (error?.message || 'Não foi possível consultar a IA.'), 'assistant');
+                aguardando.classList.remove('loading');
+            }
+        };
+
+        tab.addEventListener('click', () => {
+            const jaAberto = sidebar.classList.contains('open');
+            setAberto(sidebar, !jaAberto);
+        });
+        sidebar.querySelector('.jk-ai-close')?.addEventListener('click', () => setAberto(sidebar, false));
+        sidebar.querySelector('.jk-ai-send')?.addEventListener('click', () => enviar());
+        input?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                enviar();
+            }
+        });
+        sidebar.querySelectorAll('.jk-ai-chip').forEach((btn) => {
+            btn.addEventListener('click', () => enviar(btn.dataset.prompt || btn.textContent));
+        });
+
+        setAberto(sidebar, obterAberto());
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();
+
+
+
+

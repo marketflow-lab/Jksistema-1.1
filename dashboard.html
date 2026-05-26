@@ -1,0 +1,376 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - JK Sistema</title>
+    <style>
+        @property --neon-angle {
+            syntax: '<angle>';
+            inherits: false;
+            initial-value: 0deg;
+        }
+
+        :root {
+            --bg: #070c14;
+            --bg-alt: #0f1a2a;
+            --card: #161925;
+            --card-hover: #1b2232;
+            --border: #2f3d56;
+            --text: #e5e5e5;
+            --muted: #b9c9df;
+            --accent: #4facfe;
+            --accent-hover: #3b8de0;
+            --danger: #ff6b6b;
+            --danger-hover: #e15757;
+        }
+
+        body.dashboard-preload {
+            overflow: hidden;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 32px 20px;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 14% 8%, rgba(79, 172, 254, 0.16), transparent 34%),
+                radial-gradient(circle at 85% 12%, rgba(53, 182, 166, 0.11), transparent 30%),
+                linear-gradient(145deg, var(--bg), #0b1320 58%, var(--bg-alt));
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before,
+        body::after {
+            content: "";
+            position: fixed;
+            width: 340px;
+            height: 340px;
+            border-radius: 50%;
+            filter: blur(60px);
+            pointer-events: none;
+            z-index: -1;
+            opacity: 0.28;
+        }
+
+        body::before {
+            top: -120px;
+            left: -80px;
+            background: rgba(79, 172, 254, 0.55);
+        }
+
+        body::after {
+            bottom: -130px;
+            right: -90px;
+            background: rgba(190, 135, 255, 0.45);
+        }
+
+        .container {
+            max-width: 1160px;
+            margin: 0 auto;
+            transition: opacity 0.6s ease, transform 0.6s ease, filter 0.6s ease;
+        }
+
+        body.dashboard-preload .container {
+            opacity: 0;
+            transform: translateY(16px);
+            filter: blur(8px);
+        }
+
+        h1 {
+            color: #9bd1ff;
+            text-align: center;
+            margin-bottom: 28px;
+            font-size: clamp(1.7rem, 2.8vw, 2.4rem);
+            letter-spacing: 0.4px;
+            text-shadow: 0 6px 20px rgba(79, 172, 254, 0.2);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+            gap: 18px;
+        }
+
+        .card {
+            --module: var(--accent);
+            --module-soft: rgba(79, 172, 254, 0.28);
+            --neon-angle: 0deg;
+            --neon-a: rgba(0, 191, 255, 0);
+            --neon-b: rgba(102, 214, 255, 0);
+            background:
+                radial-gradient(circle at 100% -10%, color-mix(in srgb, var(--module) 30%, transparent), transparent 42%),
+                linear-gradient(180deg, rgba(18, 27, 42, 0.95), rgba(14, 23, 37, 0.96)) padding-box,
+                conic-gradient(
+                    from var(--neon-angle),
+                    transparent 0deg 58deg,
+                    var(--neon-b) 76deg,
+                    var(--neon-a) 90deg,
+                    var(--neon-b) 104deg,
+                    transparent 122deg 238deg,
+                    var(--neon-b) 256deg,
+                    var(--neon-a) 270deg,
+                    var(--neon-b) 284deg,
+                    transparent 302deg 360deg
+                ) border-box;
+            border: 1px solid transparent;
+            padding: 26px 22px;
+            border-radius: 16px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
+            text-decoration: none;
+            color: inherit;
+            position: relative;
+            overflow: hidden;
+            isolation: isolate;
+            backdrop-filter: blur(4px);
+            will-change: transform;
+            opacity: 1;
+        }
+
+        .card::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, var(--module), transparent);
+            opacity: 0.9;
+        }
+
+        .card::after {
+            display: none;
+        }
+
+        .card:hover {
+            transform: translateY(-8px) scale(1.08);
+            --neon-a: rgba(0, 191, 255, 1);
+            --neon-b: rgba(102, 214, 255, 0.92);
+            background:
+                radial-gradient(circle at 100% -10%, color-mix(in srgb, var(--module) 34%, transparent), transparent 40%),
+                linear-gradient(180deg, var(--card-hover), rgba(22, 34, 51, 0.98)) padding-box,
+                conic-gradient(
+                    from var(--neon-angle),
+                    transparent 0deg 58deg,
+                    var(--neon-b) 76deg,
+                    var(--neon-a) 90deg,
+                    var(--neon-b) 104deg,
+                    transparent 122deg 238deg,
+                    var(--neon-b) 256deg,
+                    var(--neon-a) 270deg,
+                    var(--neon-b) 284deg,
+                    transparent 302deg 360deg
+                ) border-box;
+            box-shadow: 0 18px 34px rgba(0, 0, 0, 0.36), 0 0 0 1px var(--module-soft), 0 0 22px rgba(0, 191, 255, 0.22);
+            z-index: 2;
+                animation: neonBorderSpin 1.2s linear infinite;
+        }
+
+        .card h2 {
+            margin: 0;
+            color: var(--module);
+            font-size: 1.95rem;
+            line-height: 1.2;
+            letter-spacing: 0.2px;
+            text-wrap: balance;
+            text-shadow: 0 2px 12px color-mix(in srgb, var(--module) 35%, transparent);
+        }
+
+        .card p {
+            color: var(--muted);
+            margin: 12px 0 0;
+            font-size: 0.98rem;
+            line-height: 1.45;
+            text-wrap: balance;
+        }
+
+        .logout {
+            text-align: center;
+            margin-top: 30px;
+        }
+
+        button {
+            padding: 11px 24px;
+            background: linear-gradient(100deg, var(--danger), #ff8e8e);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 700;
+            transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: 0 10px 24px rgba(255, 107, 107, 0.24);
+        }
+
+        button:hover {
+            background: linear-gradient(100deg, var(--danger-hover), #ff7777);
+            transform: translateY(-1px);
+            box-shadow: 0 14px 28px rgba(255, 107, 107, 0.3);
+        }
+
+        @keyframes cardIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px) scale(0.985);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        @keyframes neonBorderSpin {
+            to {
+                --neon-angle: 360deg;
+            }
+        }
+
+        @media (max-width: 720px) {
+            body {
+                padding: 22px 14px;
+            }
+
+            .grid {
+                grid-template-columns: 1fr;
+                gap: 14px;
+            }
+
+            .card {
+                padding: 22px 18px;
+            }
+
+            .card h2 {
+                font-size: 1.7rem;
+            }
+        }
+
+        .card[data-key="analise_promo"] { --module: #4facfe; --module-soft: rgba(79, 172, 254, 0.3); }
+        .card[data-key="renovacao_fixa"] { --module: #66c2ff; --module-soft: rgba(102, 194, 255, 0.3); }
+        .card[data-key="anuncios_ml"] { --module: #3fc0d8; --module-soft: rgba(63, 192, 216, 0.3); }
+        .card[data-key="etiquetas"] { --module: #32c58f; --module-soft: rgba(50, 197, 143, 0.3); }
+        .card[data-key="integracao"] { --module: #35b6a6; --module-soft: rgba(53, 182, 166, 0.3); }
+        .card[data-key="cadastro"] { --module: #6fb1ff; --module-soft: rgba(111, 177, 255, 0.3); }
+        .card[data-key="estoque"] { --module: #5cb7ff; --module-soft: rgba(92, 183, 255, 0.3); }
+        .card[data-key="vendas"] { --module: #f5a84b; --module-soft: rgba(245, 168, 75, 0.32); }
+        .card[data-key="favoritos"] { --module: #f2c94c; --module-soft: rgba(242, 201, 76, 0.32); }
+        .card[data-key="perguntas_pos_venda"] { --module: #38d4ff; --module-soft: rgba(56, 212, 255, 0.32); }
+        .card[data-key="medias_compras"] { --module: #7bd36b; --module-soft: rgba(123, 211, 107, 0.32); }
+        .card[data-key="impostos"] { --module: #ff8c5a; --module-soft: rgba(255, 140, 90, 0.33); }
+        .card[data-key="configuracoes"] { --module: #be87ff; --module-soft: rgba(190, 135, 255, 0.33); }
+        .card[data-key="importacoes"] { --module: #ffdd75; --module-soft: rgba(255, 221, 117, 0.35); }
+    </style>
+    <script src="/auth.js?v=20260417d"></script>
+</head>
+<body>
+
+<div class="container">
+    <h1>🚀 JK Sistema de Gestão</h1>
+    
+    <div id="cards" class="grid"></div>
+
+    <div class="logout">
+        <button onclick="sair()">Sair</button>
+    </div>
+</div>
+
+<script>
+    function finalizarEntradaDashboard() {
+        if (!document.body) return;
+        document.body.classList.add('dashboard-ready', 'jk-page-ready');
+        document.body.classList.remove('dashboard-preload', 'jk-page-preload', 'jk-page-leaving');
+    }
+
+    function safeJsonParse(value, fallback) {
+        try {
+            return JSON.parse(value);
+        } catch (_e) {
+            return fallback;
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', finalizarEntradaDashboard, { once: true });
+    } else {
+        finalizarEntradaDashboard();
+    }
+    window.addEventListener('pageshow', finalizarEntradaDashboard);
+    window.addEventListener('load', () => setTimeout(finalizarEntradaDashboard, 80), { once: true });
+    setTimeout(finalizarEntradaDashboard, 250);
+    setTimeout(finalizarEntradaDashboard, 1200);
+
+    if (!verificarSessao()) {
+        // verificarSessao já redireciona quando não há token.
+    }
+
+    const userData = safeJsonParse(localStorage.getItem('user_data') || 'null', null);
+    const permissions = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
+
+    if (!userData) {
+        window.location.href = 'frontend_index.html';
+    }
+
+    document.body.classList.remove('dashboard-preload');
+    document.body.classList.add('dashboard-ready');
+
+    const modules = [
+        { key: 'analise_promo', href: 'frontend_promo.html', title: '📈 Promoção ML', desc: 'Análise de campanhas e cálculo de taxas.' },
+        { key: 'renovacao_fixa', href: 'renovacao.html', title: '🔄 Renovação Fixa', desc: 'Comparar e renovar campanhas.' },
+        { key: 'anuncios_ml', href: 'anunciosml.html', title: '📦 Anúncios ML', desc: 'Gestão de anúncios no Mercado Livre.' },
+        { key: 'etiquetas', href: 'frontend_etiquetas.html', title: '🏷️ Etiquetas', desc: 'Gerador de etiquetas (ML, Shopee, TikTok).' },
+        { key: 'integracao', href: 'integracoes.html', title: '🔗 Integrações', desc: 'Gerenciar conexões com Bling, ML, etc.' },
+        { key: 'cadastro', href: 'cadastro.html', title: '🧾 Cadastro', desc: 'Cadastro manual de produtos.' },
+        { key: 'estoque', href: 'estoque.html', title: '📦 Estoque', desc: 'Consulta rápida do estoque consolidado.' },
+        { key: 'vendas', href: 'vendas.html', title: '💰 Vendas', desc: 'Histórico de pedidos e itens.' },
+        { key: 'favoritos', href: 'favoritos.html', title: '⭐ Favoritos ML', desc: 'Pesquisa e ranking de anúncios no Mercado Livre.' },
+        { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '💬 Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
+        { key: 'medias_compras', href: 'medias_compras.html', title: '📊 Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
+        { key: 'impostos', href: 'impostos.html', title: '💸 Impostos', desc: 'Regras fiscais por NCM/CEST e simulação tributária.' },
+        { key: 'configuracoes', href: 'configuracoes.html', title: '⚙️ Configurações', desc: 'Parâmetros globais do sistema para todos os usuários.' },
+        { key: 'importacoes', href: 'importacoes.html', title: '📥 Importações', desc: 'Central de importação e processamento de planilhas.' }
+    ];
+
+    const canSeeAll = permissions.full === true;
+    const enabledBase = canSeeAll
+        ? modules
+        : modules.filter(m => permissions[m.key] === true);
+    const enabled = enabledBase.slice().sort((a, b) => {
+        if (a.key === 'configuracoes' && b.key !== 'configuracoes') return 1;
+        if (a.key !== 'configuracoes' && b.key === 'configuracoes') return -1;
+        return 0;
+    });
+
+    const cards = document.getElementById('cards');
+    if (!enabled.length) {
+        const p = document.createElement('p');
+        p.textContent = 'Nenhum módulo habilitado para seu usuário.';
+        cards.appendChild(p);
+    } else {
+        enabled.forEach(mod => {
+            const a = document.createElement('a');
+            a.className = 'card';
+            a.dataset.key = String(mod.key || '');
+            a.style.setProperty('--d', String(Math.min(560, cards.childElementCount * 40)) + 'ms');
+            if (mod.dev) {
+                a.href = '#';
+                a.addEventListener('click', (e) => { e.preventDefault(); alert('Em desenvolvimento'); });
+            } else {
+                a.href = mod.href;
+            }
+            a.innerHTML = '<h2>' + mod.title + '</h2><p>' + mod.desc + '</p>';
+            cards.appendChild(a);
+        });
+    }
+
+    function sair() {
+        encerrarSessao();
+    }
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+

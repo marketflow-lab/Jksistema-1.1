@@ -1,0 +1,704 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pesquisa ML - Navegador</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        /* Header */
+        .header {
+            background: #fff;
+            border-bottom: 1px solid #e8e8e8;
+            padding: 12px 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 15px 8px;
+            border-bottom: 1px solid #e8e8e8;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: #f1642e;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .header-actions a, .header-actions button {
+            text-decoration: none;
+            color: #666;
+            font-size: 13px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            padding: 0;
+        }
+
+        .header-actions a:hover, .header-actions button:hover {
+            color: #f1642e;
+        }
+
+        .btn-voltar {
+            padding: 8px 12px;
+            background: #4facfe;
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .btn-voltar:hover {
+            background: #007bff;
+        }
+
+        /* Search Bar */
+        .search-container {
+            background: #fff;
+            padding: 20px 0;
+            border-bottom: 1px solid #e8e8e8;
+        }
+
+        .search-wrapper {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 15px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .search-box {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            background: #fff;
+            border: 1px solid #d0d0d0;
+            border-radius: 4px;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .search-box:focus-within {
+            border-color: #3483fa;
+            box-shadow: 0 1px 4px rgba(52, 131, 250, 0.2);
+        }
+
+        .search-box input {
+            flex: 1;
+            border: none;
+            padding: 10px 12px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .search-box button {
+            background: #3483fa;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .search-box button:hover {
+            background: #2865cc;
+        }
+
+        /* Categories */
+        .categories {
+            background: #fff;
+            padding: 16px 0;
+            border-bottom: 1px solid #e8e8e8;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+
+        .categories-wrapper {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 15px;
+            display: flex;
+            gap: 20px;
+        }
+
+        .category {
+            text-decoration: none;
+            color: #333;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 4px 0;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+            flex-shrink: 0;
+        }
+
+        .category:hover {
+            color: #3483fa;
+            border-bottom-color: #3483fa;
+        }
+
+        /* Banners */
+        .banners {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 15px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+        }
+
+        .banner {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a6f);
+            border-radius: 4px;
+            padding: 20px;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.3s;
+        }
+
+        .banner:hover {
+            transform: translateY(-2px);
+        }
+
+        .banner h3 {
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+
+        .banner p {
+            font-size: 12px;
+        }
+
+        /* Main Content */
+        .main-container {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 15px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 24px 0 16px;
+            color: #333;
+        }
+
+        /* Products Grid */
+        .products-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+
+        .product-card {
+            background: #fff;
+            border: 1px solid #e8e8e8;
+            border-radius: 4px;
+            overflow: hidden;
+            transition: all 0.3s;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .product-card:hover {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .product-image {
+            width: 100%;
+            height: 156px;
+            background: linear-gradient(135deg, #e0e0e0, #f5f5f5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .product-image img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .badge {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: #e74c3c;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .product-info {
+            padding: 8px;
+        }
+
+        .product-price {
+            font-size: 16px;
+            font-weight: 700;
+            color: #3483fa;
+            margin-bottom: 4px;
+        }
+
+        .product-title {
+            font-size: 12px;
+            color: #333;
+            line-height: 1.3;
+            margin-bottom: 8px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .product-rating {
+            font-size: 11px;
+            color: #999;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stars {
+            color: #ffc107;
+        }
+
+        /* Promotional Section */
+        .promo-section {
+            background: linear-gradient(135deg, #3483fa, #4facfe);
+            border-radius: 4px;
+            padding: 30px;
+            color: white;
+            text-align: center;
+            margin: 30px 0;
+        }
+
+        .promo-section h2 {
+            font-size: 24px;
+            margin-bottom: 12px;
+        }
+
+        .promo-section p {
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        .btn-promo {
+            background: white;
+            color: #3483fa;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .btn-promo:hover {
+            background: #f5f5f5;
+        }
+
+        /* Footer */
+        .footer {
+            background: #f8f8f8;
+            border-top: 1px solid #e8e8e8;
+            padding: 20px 0;
+            margin-top: 40px;
+        }
+
+        .footer-wrapper {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 15px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .footer-section h3 {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #333;
+        }
+
+        .footer-section a {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            text-decoration: none;
+            margin-bottom: 8px;
+            transition: color 0.3s;
+        }
+
+        .footer-section a:hover {
+            color: #3483fa;
+        }
+
+        .footer-bottom {
+            border-top: 1px solid #e8e8e8;
+            margin-top: 20px;
+            padding-top: 20px;
+            text-align: center;
+            font-size: 11px;
+            color: #999;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header-top {
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .search-wrapper {
+                flex-direction: column;
+            }
+
+            .categories-wrapper {
+                gap: 12px;
+            }
+
+            .products-grid {
+                grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+                gap: 8px;
+            }
+
+            .banners {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-close {
+            float: right;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .modal-close:hover {
+            color: #333;
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-top">
+            <div style="display: flex; gap: 20px; align-items: center;">
+                <a href="dashboard.html" class="logo">🛒 Mercado Livre</a>
+                <button class="btn-voltar" onclick="window.location.href='dashboard.html'">← Voltar ao Dashboard</button>
+            </div>
+            <div class="header-actions">
+                <button onclick="showLogin()">Faça login</button>
+                <button onclick="showRegister()">Registre-se</button>
+                <a href="#">Meus pedidos</a>
+                <a href="#">Minhas compras</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Search Bar -->
+    <div class="search-container">
+        <div class="search-wrapper">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="O que você quer encontrar?">
+                <button onclick="buscar()">Buscar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Categories -->
+    <div class="categories">
+        <div class="categories-wrapper">
+            <a href="#" class="category">Eletrônicos</a>
+            <a href="#" class="category">Moda</a>
+            <a href="#" class="category">Casa e Jardim</a>
+            <a href="#" class="category">Esportes</a>
+            <a href="#" class="category">Brinquedos</a>
+            <a href="#" class="category">Beleza e Cuidado Pessoal</a>
+            <a href="#" class="category">Livros e Revistas</a>
+            <a href="#" class="category">Carros</a>
+            <a href="#" class="category">Ver mais</a>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-container">
+        <!-- Banners -->
+        <div class="banners">
+            <div class="banner" onclick="buscar('eletrônicos')">
+                <h3>🎮 Eletrônicos</h3>
+                <p>Últimas ofertas em produtos tech</p>
+            </div>
+            <div class="banner" onclick="buscar('moda')">
+                <h3>👕 Moda</h3>
+                <p>Coleção exclusiva com até 50% OFF</p>
+            </div>
+            <div class="banner" onclick="buscar('casa')">
+                <h3>🏠 Casa e Jardim</h3>
+                <p>Tudo para sua casa e jardim</p>
+            </div>
+        </div>
+
+        <!-- Promotional Section -->
+        <div class="promo-section">
+            <h2>🎁 Ofertas do Dia</h2>
+            <p>Aproveite produtos com descontos especiais</p>
+            <button class="btn-promo" onclick="buscar('ofertas')">Ver ofertas</button>
+        </div>
+
+        <!-- Produtos Destaque -->
+        <div class="section-title">📦 Produtos em Destaque</div>
+        <div class="products-grid" id="featuredProducts">
+            <!-- Produtos serão gerados por JavaScript -->
+        </div>
+
+        <!-- Mais Buscados -->
+        <div class="section-title">🔥 Mais Buscados</div>
+        <div class="products-grid" id="trendingProducts">
+            <!-- Produtos serão gerados por JavaScript -->
+        </div>
+
+        <!-- Recomendações -->
+        <div class="section-title">💡 Recomendado para Você</div>
+        <div class="products-grid" id="recommendedProducts">
+            <!-- Produtos serão gerados por JavaScript -->
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+        <div class="footer-wrapper">
+            <div class="footer-section">
+                <h3>Sobre Nós</h3>
+                <a href="#">Sobre Mercado Livre</a>
+                <a href="#">Carreiras</a>
+                <a href="#">Segurança na Internet</a>
+            </div>
+            <div class="footer-section">
+                <h3>Serviços</h3>
+                <a href="#">Consultas e Reclamações</a>
+                <a href="#">Meu Mercado Livre</a>
+                <a href="#">Política de Privacidade</a>
+            </div>
+            <div class="footer-section">
+                <h3>Meus Pedidos</h3>
+                <a href="#">Compras</a>
+                <a href="#">Vendas</a>
+                <a href="#">Devoluções</a>
+            </div>
+            <div class="footer-section">
+                <h3>Suporte</h3>
+                <a href="#">Contato</a>
+                <a href="#">Ajuda</a>
+                <a href="#">Segurança</a>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <p>&copy; 2024 Mercado Livre Brasil - Todos os direitos reservados</p>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="loginModal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal('loginModal')">&times;</span>
+            <h2>Fazer Login</h2>
+            <form onsubmit="handleLogin(event)">
+                <div style="margin: 15px 0;">
+                    <label>Email:</label><br>
+                    <input type="email" required style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <div style="margin: 15px 0;">
+                    <label>Senha:</label><br>
+                    <input type="password" required style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+                <button type="submit" style="width: 100%; padding: 10px; background: #3483fa; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Entrar</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        if (!verificarSessao()) {
+            // Já redireciona quando não há token
+        }
+
+        const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+        const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
+
+        if (!userData) {
+            window.location.href = 'frontend_index.html';
+        }
+
+        // Generar produtos aleatórios
+        function gerarProduto(id) {
+            const produtos = [
+                { titulo: 'Fone Bluetooth Preto', preco: 'R$ 149,90', categoria: 'Eletrônicos', emoji: '🎧' },
+                { titulo: 'Camiseta Premium Branca', preco: 'R$ 79,90', categoria: 'Moda', emoji: '👕' },
+                { titulo: 'Sapato Esportivo', preco: 'R$ 189,90', categoria: 'Moda', emoji: '👟' },
+                { titulo: 'Luminária LED RGB', preco: 'R$ 59,90', categoria: 'Casa', emoji: '💡' },
+                { titulo: 'Mochila Executiva', preco: 'R$ 139,90', categoria: 'Acessórios', emoji: '🎒' },
+                { titulo: 'Mouse Sem Fio Gamer', preco: 'R$ 99,90', categoria: 'Eletrônicos', emoji: '🖱️' },
+                { titulo: 'Teclado Mecânico', preco: 'R$ 349,90', categoria: 'Eletrônicos', emoji: '⌨️' },
+                { titulo: 'Monitor LED 24"', preco: 'R$ 599,90', categoria: 'Eletrônicos', emoji: '🖥️' },
+                { titulo: 'Webcam Full HD', preco: 'R$ 179,90', categoria: 'Eletrônicos', emoji: '📷' },
+                { titulo: 'Headset Gamer', preco: 'R$ 249,90', categoria: 'Eletrônicos', emoji: '🎮' },
+                { titulo: 'Bolsa de Couro', preco: 'R$ 219,90', categoria: 'Moda', emoji: '👜' },
+                { titulo: 'Relógio Inteligente', preco: 'R$ 299,90', categoria: 'Eletrônicos', emoji: '⌚' }
+            ];
+            
+            const produto = produtos[id % produtos.length];
+            const desconto = Math.random() > 0.5 ? Math.floor(Math.random() * 30) + 5 : 0;
+            
+            return {
+                ...produto,
+                desconto: desconto,
+                vendas: Math.floor(Math.random() * 500) + 10
+            };
+        }
+
+        function renderizarProduto(container, produtoData) {
+            const produto = gerarProduto(produtoData);
+            const div = document.createElement('div');
+            div.className = 'product-card';
+            div.innerHTML = `
+                <div class="product-image">
+                    ${produto.emoji}
+                    ${produto.desconto > 0 ? `<div class="badge">-${produto.desconto}%</div>` : ''}
+                </div>
+                <div class="product-info">
+                    <div class="product-price">${produto.preco}</div>
+                    <div class="product-title">${produto.titulo}</div>
+                    <div class="product-rating">
+                        <span class="stars">★★★★★</span>
+                        <span>(${produto.vendas})</span>
+                    </div>
+                </div>
+            `;
+            container.appendChild(div);
+        }
+
+        // Carregar produtos
+        document.addEventListener('DOMContentLoaded', () => {
+            const featured = document.getElementById('featuredProducts');
+            const trending = document.getElementById('trendingProducts');
+            const recommended = document.getElementById('recommendedProducts');
+
+            for (let i = 0; i < 12; i++) {
+                renderizarProduto(featured, i);
+                renderizarProduto(trending, i + 12);
+                renderizarProduto(recommended, i + 24);
+            }
+        });
+
+        function buscar(termo) {
+            const searchInput = document.getElementById('searchInput');
+            if (termo) {
+                searchInput.value = termo;
+            }
+            alert(`Buscando por: "${searchInput.value}"\n\nEsta é uma página de simulação. Em produção, isso faria uma busca real no Mercado Livre.`);
+        }
+
+        function showLogin() {
+            document.getElementById('loginModal').classList.add('active');
+        }
+
+        function showRegister() {
+            alert('Página de registro do Mercado Livre');
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
+        }
+
+        function handleLogin(event) {
+            event.preventDefault();
+            alert('Login simulado no Mercado Livre');
+            closeModal('loginModal');
+        }
+
+        // Permitir busca com Enter
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                buscar();
+            }
+        });
+
+        // Fechar modal ao clicar fora
+        window.addEventListener('click', (e) => {
+            const modal = document.getElementById('loginModal');
+            if (e.target === modal) {
+                closeModal('loginModal');
+            }
+        });
+    </script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

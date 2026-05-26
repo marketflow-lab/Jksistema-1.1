@@ -1,0 +1,685 @@
+{
+    "repelentes ultrassonicos para animais de estimacao": {
+        "Clássico": "12,5%",
+        "Premium": "17,5%"
+    },
+    "mangueiras de direcao hidraulica para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lampadas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "farois de milhas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "coleiras antilatidos para caes": {
+        "Clássico": "12,5%",
+        "Premium": "17,5%"
+    },
+    "luzes de freio para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores ect para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores tps para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "emblemas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "comutadores de ignicao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores tpms para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "acessorios nauticos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "valvulas de pneus para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de eletroventilador para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "cubos de roda para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "limpa para-brisas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de volantes para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "acessorios para motos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de trava central para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "ferramentas e artigos de construcao": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "tampas de tanque de combustivel para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "mangueiras de admissao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "boias de combustivel para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "pecas de linha leviana": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "retentores para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "motores de geladeiras e freezers": {
+        "Clássico": "11%",
+        "Premium": "16%"
+    },
+    "suportes de celulares e gps para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "rotores para bombas de agua nauticas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "aspersores para irrigacao": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "interruptores de levantamento de vidro para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de ar condicionado para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "conjuntos de luzes de circulacao diurna": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "produtos eletronicos": {
+        "Clássico": "13%",
+        "Premium": "18%"
+    },
+    "carburadores para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lampadas led para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores de pressao de oleo de direcao hidraulica para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "telas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "espelhos laterais para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "juntas de motor para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "fechaduras de porta-malas e portoes para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "manoplas de cambio para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "conjuntos de luzes de seta": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "acessorios e pecas de reposicao para bicicletas": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "valvulas de expansao de ar condicionado para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores de velocidade para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de farois de milhas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "spoilers para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "alavancas e manoplas de regulagem de assentos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "apoios de braco para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "motores de limpa para-brisas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bombas solares": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "coifas de alavancas de cambios manuais para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "audio para veiculos": {
+        "Clássico": "10%",
+        "Premium": "15%"
+    },
+    "capas de alca exteriores de portas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "scanners para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "chicotes eletricos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "acessorios cromados para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "filtros de motor nauticos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "caixas de fusiveis para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores maf para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "mangueiras de aquecimento para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "mangueiras de intercooler para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "reguladores de pressao de combustivel para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lentes de lanternas de pisca para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "borrachas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "capas de retrovisores para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "tampas de tanques de gasolina para motos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bombas de vacuo do sistema de emissoes para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de luz para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lanternas de pisca para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lanternas traseiras para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "localizadores de satelites": {
+        "Clássico": "13%",
+        "Premium": "18%"
+    },
+    "grades de para-choques para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "grades de farois de milha para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de espelhos laterais para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "filtros de oleo para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "canos de injetores para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "grampos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores de pressao de oleo de motor para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bobinas de ignicao nauticas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "frisos para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "luzes de popa nauticas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bombas de combustivel para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "filtros de combustivel para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores de detonacao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bracos de limpa para-brisas para outros veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "fechaduras de portas para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "alavancas de freio de mao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lanternas de placas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "pecas nauticas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "lanternas traseiras para outros veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "silenciosos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "macanetas de portas para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "alavancas de cambios manuais para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de freio de estacionamento para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "cilindros escravos de embreagem para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "mangueiras de radiador para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bombas injetoras para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "coletores de escapamento para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "carcacas de valvulas termostaticas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "performance y tuning para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "parafusos de cabecote de cilindro para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "equipamento industrial e comercial": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "vidros traseiros para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "radiadores de agua para outros veiculos": {
+        "Premium": "17%"
+    },
+    "ventiladores de radiador para motos": {
+        "Premium": "17%",
+        "Clássico": "12%"
+    },
+    "calotas de rodas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "velas de ignicao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "cintos de seguranca para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "antenas para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "atuadores de marcha lenta para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "valvulas egr para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "manometros analogicos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "parafusos prisioneiros de roda para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "interruptores de levantamento de vidro para outros veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "kits de ferramentas eletricas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "tampas de radiador para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "acessorios para linha leviana": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "amortecedores a gas para veiculos": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "brocas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "motores de arranque para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "valvulas canister para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores map para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "eletroventiladores completos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "shampoos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "higrometros": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "velocimetros e conta-giros para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "carregadores de dispositivos moveis": {
+        "Clássico": "13%",
+        "Premium": "18%"
+    },
+    "controladores de temperatura digitais": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "canetas touch": {
+        "Clássico": "13%",
+        "Premium": "18%"
+    },
+    "produtos nao classificados": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "valvulas solenoides para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "desamassador de ventosa": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "termometros ambientais": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "pistolas de irrigacao para jardim": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "molduras de estereos para veiculos": {
+        "Clássico": "10%",
+        "Premium": "15%"
+    },
+    "difusores de ar condicionado para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "hubs usb": {
+        "Clássico": "13%",
+        "Premium": "18%"
+    },
+    "cinzeiros para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "jogos de aneis de pistao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bombas de agua para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "cercadinhos e bercos portateis para bebes": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "valvulas de motor para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "refletores olhos de gato para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "cabecotes de cilindros de motor para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "artigos para bebes": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "radiadores de agua para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "aspiradores de cravos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "cameras para veiculos": {
+        "Clássico": "11%",
+        "Premium": "16%"
+    },
+    "coroas de bicicletas": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "inversores de corrente": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "velocimetros para motos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "scoops de ar para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "carcacas de alarme a controle remoto para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "valvulas termostaticas de motores para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "enxadas": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "niveis laser": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "buchas de controle de suspensao para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "sensores de rotacao do virabrequim para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "transmissores fm sem fio para veiculos": {
+        "Clássico": "11%",
+        "Premium": "16%"
+    },
+    "rolamentos de semi-eixos para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "detectores de metais": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "paineis decorativos": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "coxines amortecedores para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "suportes de relogios para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "vidros de espelhos laterais para carros e caminhonetes": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "vibradores": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "bancos de bicicletas": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    },
+    "fechos de gancho e laco": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "valvulas torre do compressor de ar condicionado para veiculos": {
+        "Clássico": "12%",
+        "Premium": "17%"
+    },
+    "selos postais colecionaveis": {
+        "Clássico": "11,5%",
+        "Premium": "16,5%"
+    }
+}

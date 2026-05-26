@@ -1,0 +1,22 @@
+info/gemini_api_key.txt
+info/groq_api_key.txt
+info/openai_api_key.txt
+info/jwt_secret.key
+info/credentials.json
+info/auth_users.db
+info/backend.log
+jkjkjk-*.json
+*service-account*.json
+.env
+node_modules
+node_modules
+
+# Artefatos de runtime/build locais (não versionar)
+logs/
+info/electron_user_data/
+info/electron_user_data*/
+info/promo_worker_jobs/
+info/*/tmp/
+electron_app/dist-client-final/
+electron_app/dist-client-setup/
+electron_app/dist-client-setup.zip

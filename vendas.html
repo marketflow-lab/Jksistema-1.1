@@ -1,0 +1,2547 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vendas - JK Sistema</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/rangePlugin.js"></script>
+    <script src="/auth.js?v=20260417g"></script>
+    <script src="/ncm-sync.js"></script>
+    <script src="/global-status.js"></script>
+    <style>
+        body { margin:0; padding:20px; background:#0e1117; color:#e5e5e5; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        .container { max-width:1360px; margin:0 auto; }
+        .header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+        .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .back-btn { padding:7px 12px; background:#4facfe; color:#fff; text-decoration:none; border-radius:6px; font-weight:bold; }
+        .back-btn:hover { background:#0073e6; }
+        .back-btn:disabled { opacity:0.6; cursor:not-allowed; }
+        .back-main-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, #63bbff, #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            z-index: 1200;
+        }
+        .back-main-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+            color: #fff;
+        }
+        .nav-actions .back-main-btn {
+            position: static;
+            top: auto;
+            right: auto;
+        }
+        h1 { margin:0; }
+        .filters {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .periodo-linha {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+            align-items: center;
+            background: #121722;
+            border: 1px solid #1f2a3a;
+            border-radius: 8px;
+            padding: 8px;
+        }
+        .periodo-range {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            flex: 1 1 520px;
+        }
+        .periodo-separador {
+            color: #8fa7c4;
+            font-size: 0.92rem;
+            font-weight: 600;
+        }
+        .periodo-texto {
+            color: #9bd1ff;
+            font-size: 0.86rem;
+            font-weight: 500;
+            padding: 0;
+        }
+        .menus-linha {
+            display: grid;
+            grid-template-columns: minmax(280px, 1.6fr) minmax(220px, 1fr) auto auto;
+            gap: 8px;
+            align-items: center;
+            background: #121722;
+            border: 1px solid #1f2a3a;
+            border-radius: 8px;
+            padding: 8px;
+        }
+        .sync-actions {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 8px;
+            align-items: center;
+        }
+        .sync-toggle {
+            display:flex;
+            align-items:center;
+            gap:8px;
+            color:#9bd1ff;
+            cursor:pointer;
+            user-select:none;
+            font-weight:600;
+        }
+        input, select { padding:7px 8px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; }
+        .loja-group { display:flex; flex-wrap:nowrap; gap:8px; align-items:center; overflow-x:auto; }
+        .loja-btn { padding:7px 10px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; }
+        .loja-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; font-weight:bold; }
+        .summary {
+            display:grid;
+            grid-template-columns:repeat(8, minmax(0, 1fr));
+            gap:8px;
+            margin-bottom:12px;
+        }
+        .card { background:#151d2c; border:1px solid #324762; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding:8px 10px; border-radius:8px; min-height:78px; min-width:0; display:flex; flex-direction:column; justify-content:space-between; }
+        .card h3 { margin:0 0 5px 0; font-size:0.87rem; color:#c6e3ff; font-weight:700; }
+        .card .val { font-size:1.02rem; font-weight:bold; color:#f3f8ff; }
+        .sku-search-wrap {
+            display: grid;
+            grid-template-columns: auto minmax(260px, 1fr);
+            gap: 10px;
+            align-items: center;
+            border: 1px solid #1f2a3a;
+            border-radius: 8px;
+            padding: 8px;
+            margin-top: -8px;
+            margin-bottom: 10px;
+            background: #121722;
+        }
+        .sku-search-wrap label {
+            display: block;
+            color: #9bd1ff;
+            font-weight: 600;
+            margin-bottom: 0;
+        }
+        .sku-search-wrap input {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .table-wrapper { max-height:none; overflow:visible; }
+        table { width:100%; border-collapse:collapse; background:#1c1f2b; border:1px solid #222; }
+        th, td { padding:10px; border-bottom:1px solid #222; text-align:left; font-size:0.95rem; }
+        th {
+            background:#161925;
+            color:#9bd1ff;
+            position:sticky;
+            top:82px;
+            z-index:5;
+        }
+        tr:hover { background:#1f2331; }
+        .status-bar { margin:10px 0; padding:10px 12px; border-radius:8px; background:#161925; border:1px solid #222; min-height:20px; }
+        .status-bar:empty { display:none; }
+        .status-bar.loading { color:#9bd1ff; border-color:#4facfe; background:#0a1428; }
+        .status-bar.error { color:#ff6b6b; border-color:#c62828; background:#28010d; }
+        .status-bar.success { color:#66bb6a; border-color:#1b5e20; background:#0f2e0d; }
+        .spinner { display:inline-block; width:14px; height:14px; border:2px solid #4facfe; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .empty { color:#aaa; }
+        .sku-loading-overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            pointer-events: none;
+        }
+        .sku-loading-overlay.active {
+            display: flex;
+            animation: skuFadeIn 0.18s ease;
+        }
+        .sku-loading-card {
+            min-width: 250px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            border: 1px solid rgba(120, 177, 255, 0.42);
+            background: linear-gradient(135deg, rgba(22, 35, 55, 0.92), rgba(17, 27, 42, 0.92));
+            color: #e8f3ff;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            box-shadow: 0 10px 24px rgba(7, 12, 20, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+            backdrop-filter: blur(8px);
+        }
+        .spinner-lg {
+            width: 18px;
+            height: 18px;
+            border-width: 3px;
+            margin-right: 0;
+            border-color: rgba(162, 210, 255, 0.9);
+            border-top-color: transparent;
+        }
+        .sku-loading-text {
+            letter-spacing: 0.2px;
+            font-size: 0.94rem;
+        }
+        .sku-loading-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: #7ec1ff;
+            opacity: 0.35;
+            animation: skuDot 1s ease-in-out infinite;
+        }
+        .sku-loading-dot:nth-child(4) { animation-delay: 0.12s; }
+        .sku-loading-dot:nth-child(5) { animation-delay: 0.24s; }
+        .sku-loading-dot:nth-child(6) { animation-delay: 0.36s; }
+        @keyframes skuDot {
+            0%, 100% { transform: translateY(0); opacity: 0.35; }
+            50% { transform: translateY(-3px); opacity: 1; }
+        }
+        @keyframes skuFadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* Estilos para gráficos */
+        .graficos-container { margin: 14px 0; }
+        .grafico-controles {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+            align-items: stretch;
+        }
+        .grafico-grupo {
+            display: flex;
+            align-items: stretch;
+            flex-direction: column;
+            gap: 6px;
+            background: #121722;
+            border: 1px solid #1f2a3a;
+            border-radius: 8px;
+            padding: 7px 8px;
+            min-height: 44px;
+        }
+        .grafico-label {
+            color: #9bd1ff;
+            font-weight: bold;
+            white-space: nowrap;
+            text-align: center;
+            width: 100%;
+            display: block;
+        }
+        .grafico-opcoes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }
+        .grafico-btn { padding: 6px 11px; border-radius: 6px; border: 1px solid #333; background: #1c1f2b; color: #e5e5e5; cursor: pointer; font-size: 13px; }
+        .grafico-btn.active { background: #4facfe; color: #0e1117; border-color: #4facfe; font-weight: bold; }
+        .grafico-btn:hover:not(.active) { background: #2a2e3b; }
+        .grafico-wrapper { background: #1c1f2b; border: 1px solid #222; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+        .grafico-wrapper canvas { max-height: 400px; }
+
+        .flatpickr-calendar {
+            background: #f5f7fb;
+            border: 1px solid #cfd8e3;
+            box-shadow: 0 14px 32px rgba(0, 0, 0, 0.38);
+        }
+        .flatpickr-months .flatpickr-month,
+        .flatpickr-weekday,
+        .flatpickr-day {
+            color: #32445e;
+        }
+        .flatpickr-current-month input.cur-year,
+        .flatpickr-current-month .flatpickr-monthDropdown-months {
+            color: #32445e;
+            font-weight: 700;
+        }
+        .flatpickr-day.today {
+            border-color: #4facfe;
+        }
+        .flatpickr-day.selected,
+        .flatpickr-day.startRange,
+        .flatpickr-day.endRange {
+            background: #31b364;
+            border-color: #31b364;
+            color: #fff;
+        }
+        .flatpickr-day.inRange {
+            background: #d7f2df;
+            border-color: #d7f2df;
+            color: #426556;
+            box-shadow: none;
+        }
+        .flatpickr-prev-month,
+        .flatpickr-next-month {
+            opacity: 1 !important;
+            visibility: visible !important;
+            display: block !important;
+            width: 34px;
+            height: 34px;
+            padding: 6px !important;
+            border-radius: 8px;
+            top: 4px;
+            color: #2f4a67 !important;
+        }
+        .flatpickr-prev-month svg,
+        .flatpickr-next-month svg {
+            display: block !important;
+            width: 18px;
+            height: 18px;
+            fill: #2f4a67 !important;
+        }
+        .flatpickr-prev-month.flatpickr-disabled,
+        .flatpickr-next-month.flatpickr-disabled {
+            opacity: 0.45 !important;
+            visibility: visible !important;
+            display: block !important;
+        }
+        .flatpickr-prev-month:hover,
+        .flatpickr-next-month:hover {
+            background: #e6edf7;
+        }
+        .flatpickr-current-month .numInputWrapper {
+            width: 7.5ch;
+        }
+        .flatpickr-current-month .numInputWrapper span {
+            opacity: 1 !important;
+            visibility: visible !important;
+            border-width: 6px !important;
+            right: 3px;
+            cursor: pointer;
+        }
+        .flatpickr-current-month .numInputWrapper span.arrowUp {
+            border-bottom-color: #2f4a67;
+            top: 2px;
+        }
+        .flatpickr-current-month .numInputWrapper span.arrowDown {
+            border-top-color: #2f4a67;
+            top: 15px;
+        }
+        @media (max-width: 980px) {
+            .menus-linha { grid-template-columns: 1fr; }
+            .sync-actions { width: 100%; flex-wrap: wrap; }
+            .sku-search-wrap {
+                grid-template-columns: 1fr;
+                gap: 6px;
+            }
+            .back-main-btn {
+                top: 12px;
+                right: 12px;
+                min-height: 48px;
+            }
+        }
+        @media (max-width: 760px) {
+            .back-main-btn {
+                width: auto;
+                min-height: 44px;
+                font-size: 1rem;
+                padding: 0 13px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<script>
+    // Debug: Verificar sessão no início
+    if (typeof verificarSessao === 'function' && !verificarSessao()) {
+        // Redirecionamento já tratado por auth.js
+    }
+    const userData = localStorage.getItem('user_data');
+    console.log('userData no localStorage:', userData);
+    if (!userData) {
+        console.warn('userData não encontrado no localStorage');
+    }
+</script>
+
+<div class="container">
+    <div class="header">
+        <h1>💰 Vendas</h1>
+        <div class="nav-actions">
+            <a class="back-main-btn" href="/dashboard.html">🏠 Home</a>
+            <a class="back-main-btn" href="/dashboard.html">Voltar</a>
+        </div>
+    </div>
+
+    <div id="status" class="status-bar"></div>
+
+    <div class="filters">
+        <div class="periodo-linha">
+            <div class="periodo-range">
+                <select id="mesAno">
+                <option value="">Selecione um mês</option>
+                </select>
+                <span class="periodo-separador">ou</span>
+                <input type="text" id="dataIni" placeholder="DD/MM/AAAA" aria-label="Data inicial" readonly>
+                <input type="text" id="dataFim" placeholder="DD/MM/AAAA" aria-label="Data final" readonly>
+            </div>
+        </div>
+        <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
+        <div class="menus-linha">
+            <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
+            <select id="unidadeNegocioSelect" aria-label="Selecionar loja">
+                <option value="__todos">Todas as lojas</option>
+            </select>
+            <label class="sync-toggle">
+                <input type="checkbox" id="forcarSync" style="cursor:pointer;">
+                <span>🔄 Forçar re-sincronização</span>
+            </label>
+            <div class="sync-actions">
+                <button id="btnSync" class="back-btn" style="background:#28a745;">🔄 Atualizar período</button>
+                <button id="btnCancel" class="back-btn" style="background:#dc3545;" disabled>⏹️ Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="summary" id="resumo"></div>
+
+    <!-- Seção de Gráficos -->
+    <div class="graficos-container">
+        <div class="grafico-controles">
+            <div class="grafico-grupo">
+                <span class="grafico-label">📊 Visualização:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-periodo="3m">3 Meses</button>
+                    <button class="grafico-btn" data-periodo="6m">6 Meses</button>
+                    <button class="grafico-btn" data-periodo="1a">1 Ano</button>
+                    <button class="grafico-btn" data-periodo="2a">2 Anos</button>
+                    <button class="grafico-btn" data-periodo="max">Máximo</button>
+                </div>
+            </div>
+            <div class="grafico-grupo">
+                <span class="grafico-label">📈 Tipo:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-tipo="linha">Linha</button>
+                    <button class="grafico-btn" data-tipo="barra">Barra</button>
+                </div>
+            </div>
+            <div class="grafico-grupo">
+                <span class="grafico-label">📐 Métrica:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-metrica="valor">Valor vendido</button>
+                    <button class="grafico-btn" data-metrica="quantidade">Quantidade vendida</button>
+                </div>
+            </div>
+            <div class="grafico-grupo">
+                <span class="grafico-label">📅 Intervalo:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-intervalo="dia">Dia</button>
+                    <button class="grafico-btn" data-intervalo="semana">Semana</button>
+                    <button class="grafico-btn" data-intervalo="mes">Mês</button>
+                </div>
+            </div>
+        </div>
+        <div class="grafico-wrapper">
+            <canvas id="graficoVendas"></canvas>
+        </div>
+    </div>
+
+    <div class="sku-search-wrap">
+        <label for="filtroTexto">Pesquisar SKU</label>
+        <input type="text" id="filtroTexto" placeholder="Digite o SKU para filtrar" aria-label="Pesquisar SKU">
+    </div>
+
+    <div id="devolucaoInfo" class="status-bar" style="display:none;"></div>
+
+    <div class="table-wrapper">
+        <table>
+            <thead id="tHead"></thead>
+            <tbody id="tBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<div id="skuLoadingOverlay" class="sku-loading-overlay" aria-hidden="true">
+    <div class="sku-loading-card">
+        <span class="spinner spinner-lg"></span>
+        <span class="sku-loading-text">Carregando SKU</span>
+        <span class="sku-loading-dot"></span>
+        <span class="sku-loading-dot"></span>
+        <span class="sku-loading-dot"></span>
+    </div>
+</div>
+
+<script>
+    const tHead = document.getElementById('tHead');
+    const tBody = document.getElementById('tBody');
+    const resumo = document.getElementById('resumo');
+    const statusEl = document.getElementById('status');
+    const filtroTexto = document.getElementById('filtroTexto');
+    const lojaBotoes = document.getElementById('lojaBotoes');
+    const unidadeNegocioSelect = document.getElementById('unidadeNegocioSelect');
+    const mesAno = document.getElementById('mesAno');
+    const dataIni = document.getElementById('dataIni');
+    const dataFim = document.getElementById('dataFim');
+    const periodoTexto = document.getElementById('periodoTexto');
+    const btnSync = document.getElementById('btnSync');
+    const btnCancel = document.getElementById('btnCancel');
+    const skuLoadingOverlay = document.getElementById('skuLoadingOverlay');
+    const spinnerHtml = '<span class="spinner"></span>';
+    const REQUEST_TIMEOUT_MS = 15000;
+    const VENDAS_VIEW_CACHE_KEY = 'vendas_view_cache_v2';
+    const VENDAS_VIEW_CACHE_TTL_MS = 10 * 60 * 1000;
+    const VENDAS_VIEW_CACHE_MAX_ROWS = 5000;
+
+    let dados = [];
+    let dadosFiltrados = [];
+    let notasEntrada = [];
+    let devolucaoItens = [];
+    let clientId = null;
+    let lojaSelecionada = '__todas';
+    let lojasDisponiveis = [];
+    let missingPromptShown = false;
+    let missingPromptKey = '';
+    let syncController = null;
+    let syncEmAndamento = false;
+    let cancelSolicitado = false;
+    let progressTimer = null;
+    let progressPollInFlight = false;
+    let mapeamentoUnidades = {}; // Armazenar mapeamento de ID -> Nome
+    let autoSyncAoTrocarLoja = false;
+    let autoSyncTimer = null;
+    let dateRangePicker = null;
+    let dateFimPicker = null;
+    let periodoApplyTimer = null;
+    let periodoSelecionadoPeloUsuario = false;
+    let carregarVendasPromise = null;
+    let tabelaRenderToken = 0;
+    let filtrarToken = 0;
+    let cacheSaveTimer = null;
+
+    function mostrarCarregamentoSku() {
+        if (!skuLoadingOverlay) return;
+        skuLoadingOverlay.setAttribute('aria-hidden', 'false');
+        skuLoadingOverlay.classList.add('active');
+    }
+
+    function ocultarCarregamentoSku() {
+        if (!skuLoadingOverlay) return;
+        skuLoadingOverlay.classList.remove('active');
+        skuLoadingOverlay.setAttribute('aria-hidden', 'true');
+    }
+
+    window.addEventListener('pageshow', () => {
+        ocultarCarregamentoSku();
+    });
+
+    tBody.addEventListener('click', (event) => {
+        const tr = event.target && event.target.closest ? event.target.closest('tr[data-sku]') : null;
+        if (!tr) return;
+        const sku = tr.getAttribute('data-sku') || '';
+        if (!sku) return;
+        mostrarCarregamentoSku();
+        const qs = new URLSearchParams();
+        qs.append('sku', sku);
+        const iniIso = getDataIniISO();
+        const fimIso = getDataFimISO();
+        if (iniIso) qs.append('data_inicio', iniIso);
+        if (fimIso) qs.append('data_fim', fimIso);
+        if (lojaSelecionada && lojaSelecionada !== '__todas') qs.append('loja', lojaSelecionada);
+        requestAnimationFrame(() => {
+            window.location.href = `/vendas_sku.html?${qs.toString()}`;
+        });
+    });
+
+    function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false) {
+        if (marcarSelecaoManual) {
+            periodoSelecionadoPeloUsuario = true;
+        }
+        atualizarPeriodoTexto();
+        if (!getDataIniISO() || !getDataFimISO()) {
+            return;
+        }
+        salvarPreferenciaPeriodoData();
+        if (periodoApplyTimer) {
+            clearTimeout(periodoApplyTimer);
+        }
+        periodoApplyTimer = setTimeout(() => {
+            carregarVendas().then(() => carregarGrafico());
+        }, 140);
+    }
+
+    function setSyncButtons(isSyncing) {
+        btnSync.disabled = isSyncing;
+        btnCancel.disabled = !isSyncing;
+    }
+
+    function renderProgresso(p, logs) {
+        if (!p) return;
+        const percent = Math.max(0, Math.min(100, Number(p.percentual || 0)));
+        const logsList = (logs || []).slice(-10).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${l}</div>`).join('');
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `${spinnerHtml}<strong>${p.mensagem || 'Sincronizando...'}</strong>
+            <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
+                <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
+            </div>
+            <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percent}%</div>
+            <div style="margin-top:8px;font-size:0.85rem;">${logsList}</div>`;
+    }
+
+    function iniciarMonitoramentoProgresso() {
+        if (progressTimer) clearInterval(progressTimer);
+        progressTimer = setInterval(async () => {
+            if (progressPollInFlight) return;
+            progressPollInFlight = true;
+            try {
+                clientId = clientId || obterClientId();
+                if (!clientId) {
+                    console.warn('ClientId não obtido');
+                    return;
+                }
+                const resp = await fetch('/api/vendas/sync/progress', {
+                    headers: obterAuthHeaders()
+                });
+                if (!resp.ok) {
+                    console.error(`Erro na resposta: ${resp.status} ${resp.statusText}`);
+                    return;
+                }
+                const data = await resp.json();
+                console.log('Dados do progresso recebidos:', data);
+                if (data && data.active === false && syncEmAndamento) {
+                    syncEmAndamento = false;
+                    setSyncButtons(false);
+                    pararMonitoramentoProgresso();
+                    statusEl.className = 'status-bar loading';
+                    statusEl.innerHTML = `${spinnerHtml}Sincronização finalizada. Atualizando dados...`;
+                    await carregarVendas();
+                    await carregarGrafico();
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = '';
+                    return;
+                }
+                if (data && data.progress) {
+                    console.log('Progresso atualizado:', data.progress.percentual + '%', data.progress.mensagem);
+                    renderProgresso(data.progress, data.logs);
+                } else if (syncEmAndamento) {
+                    // Se está sincronizando mas não recebeu progresso ainda, mostrar status
+                    console.log('Aguardando progresso do servidor...');
+                    statusEl.className = 'status-bar loading';
+                    statusEl.innerHTML = `${spinnerHtml}<strong>Aguardando resposta do servidor...</strong>`;
+                }
+            } catch (e) {
+                console.error('Erro ao buscar progresso:', e);
+                if (syncEmAndamento) {
+                    statusEl.className = 'status-bar loading';
+                    statusEl.innerHTML = `${spinnerHtml}<strong>Conectando...</strong><div style="color:#ff6b6b; font-size:0.85rem;">${e.message}</div>`;
+                }
+            } finally {
+                progressPollInFlight = false;
+            }
+        }, 3000); // Atualizar a cada 3 segundos
+    }
+
+    function pararMonitoramentoProgresso() {
+        if (progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+        }
+        progressPollInFlight = false;
+    }
+
+    async function verificarSyncEmAndamentoNaEntrada() {
+        try {
+            clientId = clientId || obterClientId();
+            if (!clientId) return false;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const resp = await fetch('/api/vendas/sync/progress', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            if (!resp.ok) return false;
+            const data = await resp.json();
+            if (data && data.active) {
+                syncEmAndamento = true;
+                setSyncButtons(true);
+                if (data.progress) {
+                    renderProgresso(data.progress, data.logs);
+                } else {
+                    statusEl.className = 'status-bar loading';
+                    statusEl.innerHTML = `${spinnerHtml}Sincronização em andamento...`;
+                }
+                iniciarMonitoramentoProgresso();
+                return true;
+            }
+            syncEmAndamento = false;
+            setSyncButtons(false);
+        } catch (e) {
+            console.warn('Falha ao verificar sincronização ativa:', e);
+        }
+        return false;
+    }
+
+    // Funções utilitárias
+    function formatDate(dateStr) {
+        if (!dateStr) return '';
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return dateStr;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            const [year, month, day] = dateStr.split('-');
+            return day + '/' + month + '/' + year;
+        }
+        return dateStr;
+    }
+
+    function toIsoDateFromInput(value) {
+        const v = String(value || '').trim();
+        if (!v) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(v)) {
+            const [d, m, y] = v.split('/');
+            return `${y}-${m}-${d}`;
+        }
+        return '';
+    }
+
+    function normalizarChaveFiltro(valor, removerPrefixoUnidade = false) {
+        let txt = String(valor || '').trim().toLowerCase();
+        if (!txt) return '';
+        txt = txt.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        if (removerPrefixoUnidade) {
+            txt = txt.replace(/^\s*unidade\s+/i, '');
+        }
+        txt = txt.replace(/\s+/g, ' ').trim();
+        return txt;
+    }
+
+    function mesmaLoja(a, b) {
+        return normalizarChaveFiltro(a) === normalizarChaveFiltro(b);
+    }
+
+    function mesmaUnidade(a, b) {
+        return normalizarChaveFiltro(a, true) === normalizarChaveFiltro(b, true);
+    }
+
+    function getDataIniISO() {
+        return toIsoDateFromInput(dataIni.value);
+    }
+
+    function getDataFimISO() {
+        return toIsoDateFromInput(dataFim.value);
+    }
+
+    function getHojeISO() {
+        return new Date().toISOString().split('T')[0];
+    }
+
+    function chavePreferenciaPeriodoData() {
+        const cid = clientId || obterClientId() || 'anon';
+        return `vendas_periodo_pref_${cid}`;
+    }
+
+    function salvarPreferenciaPeriodoData() {
+        const iniIso = getDataIniISO();
+        const fimIso = getDataFimISO();
+        if (!iniIso || !fimIso) return;
+
+        try {
+            localStorage.setItem(chavePreferenciaPeriodoData(), JSON.stringify({
+                data_inicio: iniIso,
+                data_fim: fimIso
+            }));
+        } catch (_e) {
+            // Ignora erro de localStorage.
+        }
+    }
+
+    function carregarPreferenciaPeriodoData() {
+        try {
+            const raw = localStorage.getItem(chavePreferenciaPeriodoData());
+            if (!raw) return null;
+            const pref = JSON.parse(raw);
+            let inicio = pref?.data_inicio;
+            let fim = pref?.data_fim;
+            if (!inicio || !fim) return null;
+
+            const hojeIso = getHojeISO();
+            if (fim > hojeIso) fim = hojeIso;
+            if (inicio > fim) inicio = fim;
+
+            return { inicio, fim };
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    function limitarDataFinalAoHoje() {
+        const fimIso = getDataFimISO();
+        if (!fimIso) return false;
+
+        const hojeIso = getHojeISO();
+        if (fimIso <= hojeIso) return false;
+
+        const iniIso = getDataIniISO() || hojeIso;
+        setDataRangeISO(iniIso, hojeIso);
+        return true;
+    }
+
+    function garantirOrdemPeriodo() {
+        const iniIso = getDataIniISO();
+        const fimIso = getDataFimISO();
+        if (!iniIso || !fimIso) return false;
+        if (fimIso >= iniIso) return false;
+
+        setDataRangeISO(iniIso, iniIso);
+        return true;
+    }
+
+    function setDataRangeISO(inicioIso, fimIso) {
+        const hojeIso = getHojeISO();
+        const fimSeguroIso = fimIso && fimIso > hojeIso ? hojeIso : fimIso;
+        const inicioFmt = formatDate(inicioIso);
+        const fimFmt = formatDate(fimSeguroIso);
+
+        if (dateRangePicker) {
+            dateRangePicker.setDate(inicioIso, false);
+        }
+
+        if (dateFimPicker) {
+            if (fimSeguroIso) {
+                dateFimPicker.setDate(fimSeguroIso, false);
+            } else {
+                dateFimPicker.clear(false);
+            }
+        }
+
+        // Garante que os dois inputs fiquem sempre separados (início/fim), sem intervalo combinado no primeiro campo.
+        dataIni.value = inicioFmt;
+        dataFim.value = fimFmt;
+
+        if (dateRangePicker) {
+            setTimeout(() => {
+                dataIni.value = inicioFmt;
+                dataFim.value = fimFmt;
+            }, 0);
+        }
+    }
+
+    function atualizarPeriodoTexto() {
+        const iniIso = getDataIniISO();
+        const fimIso = getDataFimISO();
+        if (iniIso && fimIso) {
+            periodoTexto.textContent = 'Período: ' + formatDate(iniIso) + ' até ' + formatDate(fimIso);
+        } else {
+            periodoTexto.textContent = 'Período: não selecionado';
+        }
+    }
+
+    function salvarCacheTelaVendas() {
+        try {
+            const dadosParaCache = Array.isArray(dados) ? dados : [];
+            const devolucoesParaCache = Array.isArray(devolucaoItens) ? devolucaoItens : [];
+            if ((dadosParaCache.length + devolucoesParaCache.length) > VENDAS_VIEW_CACHE_MAX_ROWS) {
+                sessionStorage.removeItem(VENDAS_VIEW_CACHE_KEY);
+                return;
+            }
+
+            const payload = {
+                ts: Date.now(),
+                data_inicio: getDataIniISO(),
+                data_fim: getDataFimISO(),
+                lojaSelecionada,
+                unidadeSelecionada: unidadeNegocioSelect.value || '__todos',
+                filtroTexto: filtroTexto.value || '',
+                dados: dadosParaCache.map(r => ({
+                    data: r.data || '',
+                    loja_conta: r.loja_conta || '',
+                    unidade_negocio: r.unidade_negocio || '',
+                    sku: r.sku || '',
+                    produto: r.produto || '',
+                    quantidade: Number(r.quantidade || 0),
+                    valor: Number(r.valor || 0)
+                })),
+                devolucaoItens: devolucoesParaCache.map(d => ({
+                    sku: d.sku || '',
+                    descricao: d.descricao || '',
+                    quantidade: Number(d.quantidade || 0),
+                    valor_total: Number(d.valor_total || 0),
+                    loja_conta: d.loja_conta || '',
+                    unidade_negocio: d.unidade_negocio || '',
+                    unidade_negocio_virtual: d.unidade_negocio_virtual || ''
+                })),
+                mapeamentoUnidades
+            };
+            sessionStorage.setItem(VENDAS_VIEW_CACHE_KEY, JSON.stringify(payload));
+        } catch (_e) {
+            // Cache de tela é best-effort.
+        }
+    }
+
+    function agendarSalvarCacheTelaVendas() {
+        if (cacheSaveTimer) {
+            clearTimeout(cacheSaveTimer);
+        }
+        cacheSaveTimer = setTimeout(() => {
+            cacheSaveTimer = null;
+            agendarSegundoPlano(() => salvarCacheTelaVendas(), 60);
+        }, 180);
+    }
+
+    async function restaurarCacheTelaVendasSeValido() {
+        try {
+            const raw = sessionStorage.getItem(VENDAS_VIEW_CACHE_KEY);
+            if (!raw) return false;
+            const payload = JSON.parse(raw);
+            if (!payload || !payload.ts || (Date.now() - Number(payload.ts)) > VENDAS_VIEW_CACHE_TTL_MS) {
+                sessionStorage.removeItem(VENDAS_VIEW_CACHE_KEY);
+                return false;
+            }
+
+            const iniAtual = getDataIniISO() || '';
+            const fimAtual = getDataFimISO() || '';
+            if ((payload.data_inicio || '') !== iniAtual || (payload.data_fim || '') !== fimAtual) {
+                return false;
+            }
+
+            if (!Array.isArray(payload.dados)) return false;
+
+            dados = payload.dados;
+            devolucaoItens = Array.isArray(payload.devolucaoItens) ? payload.devolucaoItens : [];
+            mapeamentoUnidades = payload.mapeamentoUnidades || {};
+
+            if (payload.filtroTexto != null) {
+                filtroTexto.value = String(payload.filtroTexto);
+            }
+            if (payload.lojaSelecionada) {
+                lojaSelecionada = payload.lojaSelecionada;
+            }
+
+            atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
+            if (payload.unidadeSelecionada) {
+                unidadeNegocioSelect.value = payload.unidadeSelecionada;
+            }
+            renderBotoesLojas(lojasDisponiveis || []);
+            await filtrar();
+            if (!syncEmAndamento) {
+                statusEl.className = 'status-bar';
+                statusEl.textContent = '';
+            }
+            return true;
+        } catch (_e) {
+            return false;
+        }
+    }
+
+    function preencherMeses() {
+        const hoje = new Date();
+        for (let i = 0; i < 12; i++) {
+            const data = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+            const mes = (data.getMonth() + 1).toString().padStart(2, '0');
+            const ano = data.getFullYear();
+            const opcao = document.createElement('option');
+            opcao.value = ano + '-' + mes;
+            const meses = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 
+                          'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+            opcao.textContent = meses[data.getMonth()] + ' de ' + ano;
+            mesAno.appendChild(opcao);
+        }
+    }
+
+    function selecionarMes(mesAnoValue) {
+        if (!mesAnoValue) return;
+        const [ano, mes] = mesAnoValue.split('-');
+        const data = new Date(ano, parseInt(mes) - 1, 1);
+        const ultimoDia = new Date(ano, parseInt(mes), 0);
+
+        const ini = ano + '-' + mes + '-01';
+        const fim = ano + '-' + mes + '-' + ultimoDia.getDate().toString().padStart(2, '0');
+
+        setDataRangeISO(ini, fim);
+        atualizarPeriodoComRecarregamento(true);
+    }
+
+    function sincronizarPeriodoTopo(inicioIso, fimIso) {
+        if (!inicioIso || !fimIso) return;
+        setDataRangeISO(inicioIso, fimIso);
+
+        // Se o intervalo for o mês fechado, reflete no seletor de mês.
+        const mIni = inicioIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const mFim = fimIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        let valorMes = '';
+        if (mIni && mFim && mIni[1] === mFim[1] && mIni[2] === mFim[2] && mIni[3] === '01') {
+            const ultimoDiaMes = new Date(Number(mIni[1]), Number(mIni[2]), 0).getDate();
+            if (Number(mFim[3]) === ultimoDiaMes) {
+                valorMes = `${mIni[1]}-${mIni[2]}`;
+            }
+        }
+        mesAno.value = valorMes;
+    }
+
+    function initDateRangePicker() {
+        if (typeof flatpickr !== 'function') {
+            return;
+        }
+
+        if (flatpickr?.localize && flatpickr?.l10ns?.pt) {
+            flatpickr.localize(flatpickr.l10ns.pt);
+        }
+
+        dateRangePicker = flatpickr(dataIni, {
+            dateFormat: 'd/m/Y',
+            disableMobile: true,
+            allowInput: true,
+            clickOpens: true,
+            showMonths: 1,
+            maxDate: 'today',
+            locale: flatpickr.l10ns.pt,
+            onChange: (selectedDates) => {
+                if (selectedDates.length === 1) {
+                    dataFim.value = '';
+                    if (dateFimPicker) {
+                        dateFimPicker.clear(false);
+                        dateFimPicker.open();
+                    } else {
+                        const secondInput = document.getElementById('dataFim');
+                        if (secondInput) secondInput.focus();
+                    }
+                }
+            },
+            onValueUpdate: () => {
+                atualizarPeriodoTexto();
+            },
+            onClose: () => {
+                limitarDataFinalAoHoje();
+                if (getDataIniISO() && getDataFimISO()) {
+                    atualizarPeriodoComRecarregamento(true);
+                }
+            }
+        });
+
+        dateFimPicker = flatpickr(dataFim, {
+            dateFormat: 'd/m/Y',
+            disableMobile: true,
+            allowInput: true,
+            clickOpens: true,
+            showMonths: 1,
+            maxDate: 'today',
+            locale: flatpickr.l10ns.pt,
+            onChange: (selectedDates, _dateStr, instance) => {
+                if (selectedDates.length === 1 && instance?.isOpen) {
+                    instance.close();
+                }
+            },
+            onValueUpdate: () => {
+                limitarDataFinalAoHoje();
+                garantirOrdemPeriodo();
+                atualizarPeriodoTexto();
+            },
+            onClose: () => {
+                limitarDataFinalAoHoje();
+                garantirOrdemPeriodo();
+                if (getDataIniISO() && getDataFimISO()) {
+                    atualizarPeriodoComRecarregamento(true);
+                }
+            }
+        });
+    }
+
+    function fecharCalendariosData() {
+        if (dateRangePicker?.isOpen) {
+            dateRangePicker.close();
+        }
+        if (dateFimPicker?.isOpen) {
+            dateFimPicker.close();
+        }
+        dataIni.blur();
+        dataFim.blur();
+    }
+
+    // Ler parâmetros de URL e preencher datas
+    const params_url = new URLSearchParams(window.location.search);
+    const data_inicio_param = params_url.get('data_inicio');
+    const data_fim_param = params_url.get('data_fim');
+    const retornoDoSku = params_url.get('from_sku') === '1';
+    const periodoPrefSalvo = carregarPreferenciaPeriodoData();
+    
+    if (data_inicio_param && data_fim_param) {
+        setDataRangeISO(data_inicio_param, data_fim_param);
+    } else if (periodoPrefSalvo?.inicio && periodoPrefSalvo?.fim) {
+        setDataRangeISO(periodoPrefSalvo.inicio, periodoPrefSalvo.fim);
+    } else {
+        dataIni.value = '';
+        dataFim.value = '';
+    }
+
+    initDateRangePicker();
+
+    dataFim.addEventListener('change', () => {
+        if (limitarDataFinalAoHoje()) {
+            atualizarPeriodoTexto();
+        }
+    });
+    dataFim.addEventListener('blur', () => {
+        if (limitarDataFinalAoHoje()) {
+            atualizarPeriodoTexto();
+        }
+    });
+
+    preencherMeses();
+    atualizarPeriodoTexto();
+    mesAno.addEventListener('change', (e) => selecionarMes(e.target.value));
+
+    function obterClientId() {
+        const user = JSON.parse(localStorage.getItem('user_data') || 'null');
+        return user && user.client_id ? user.client_id : null;
+    }
+
+    async function fetchComTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    function aguardarProximoFrame() {
+        return new Promise(resolve => requestAnimationFrame(() => resolve()));
+    }
+
+    function agendarSegundoPlano(fn, delayMs = 0) {
+        if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(() => setTimeout(fn, delayMs), { timeout: 900 });
+            return;
+        }
+        setTimeout(fn, delayMs);
+    }
+
+    function formatCurrency(v) {
+        return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function renderResumo(lista, devolucoesLista = [], exibirDevolucoes = true) {
+        const totalPedidos = lista.length;
+        const totalItens = lista.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const totalValor = lista.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
+        
+        // Calcular totais de devoluções
+        const totalDevolucoes = devolucoesLista.length;
+        const itensDevolucao = devolucoesLista.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const valorDevolucao = devolucoesLista.reduce((acc, cur) => acc + Number(cur.valor_total || 0), 0);
+        
+        // Totais líquidos (vendas - devoluções)
+        const itensLiquidos = totalItens - itensDevolucao;
+        const valorLiquido = totalValor - valorDevolucao;
+        
+        resumo.innerHTML = '';
+        const cards = [
+            { label: 'Pedidos', value: totalPedidos },
+            { label: 'Itens Vendidos', value: totalItens },
+            { label: 'Valor Bruto', value: formatCurrency(totalValor) }
+        ];
+
+        if (exibirDevolucoes) {
+            cards.push(
+                { label: 'Devoluções', value: totalDevolucoes, isDevolucao: true },
+                { label: 'Itens Devolvidos', value: itensDevolucao, isNegative: true },
+                { label: 'Valor Devolvido', value: formatCurrency(valorDevolucao), isNegative: true },
+                { label: 'Itens Líquidos', value: itensLiquidos, isLiquido: true },
+                { label: 'Valor Líquido', value: formatCurrency(valorLiquido), isLiquido: true }
+            );
+        }
+        cards.forEach(c => {
+            const div = document.createElement('div');
+            div.className = 'card';
+            if (c.isNegative) {
+                div.style.background = '#8f1f26';
+                div.style.borderLeft = '4px solid #ff6d74';
+                div.style.color = '#fff';
+            } else if (c.isLiquido) {
+                div.style.background = '#1a5a29';
+                div.style.borderLeft = '4px solid #69d68e';
+                div.style.fontWeight = 'bold';
+                div.style.color = '#fff';
+            }
+            div.innerHTML = `<h3 style="${c.isNegative || c.isLiquido ? 'color:#fff;' : ''}">${c.label}</h3><div class="val" style="${c.isNegative || c.isLiquido ? 'color:#fff;' : ''}">${c.value}</div>`;
+            if (c.isDevolucao) {
+                const btn = document.createElement('button');
+                btn.className = 'back-btn';
+                btn.style.background = '#9b59b6';
+                btn.style.marginTop = '8px';
+                btn.textContent = 'Ver devoluções';
+                btn.onclick = () => {
+                    const qs = new URLSearchParams();
+                    const iniIso = getDataIniISO();
+                    const fimIso = getDataFimISO();
+                    if (iniIso) qs.append('data_inicio', iniIso);
+                    if (fimIso) qs.append('data_fim', fimIso);
+                    window.location.href = '/devolucoes.html' + (qs.toString() ? `?${qs.toString()}` : '');
+                };
+                div.appendChild(btn);
+            }
+            resumo.appendChild(div);
+        });
+    }
+
+    function renderTabelaAgrupada(lista) {
+        tabelaRenderToken += 1;
+        const tokenAtual = tabelaRenderToken;
+        tHead.innerHTML = '';
+        tBody.innerHTML = '';
+        if (!lista.length) {
+            if (!syncEmAndamento) {
+                statusEl.className = 'status-bar empty';
+                statusEl.textContent = 'Nenhum registro encontrado.';
+            }
+            return;
+        }
+        if (!syncEmAndamento) {
+            statusEl.textContent = '';
+        }
+        const cols = ['sku','produto','pedidos','itens','devolucoes','valor'];
+        const trHead = document.createElement('tr');
+        cols.forEach(col => {
+            const th = document.createElement('th');
+            th.textContent = col;
+            trHead.appendChild(th);
+        });
+        tHead.appendChild(trHead);
+
+        let index = 0;
+        const CHUNK = 180;
+
+        const renderChunk = () => {
+            if (tokenAtual !== tabelaRenderToken) return;
+            const frag = document.createDocumentFragment();
+            const fim = Math.min(index + CHUNK, lista.length);
+
+            for (; index < fim; index++) {
+                const item = lista[index];
+                const tr = document.createElement('tr');
+                tr.style.cursor = 'pointer';
+                tr.setAttribute('data-sku', item.sku || '');
+                cols.forEach(col => {
+                    const td = document.createElement('td');
+                    let val = item[col];
+                    if (col === 'valor') val = formatCurrency(val);
+                    td.textContent = val;
+                    tr.appendChild(td);
+                });
+                frag.appendChild(tr);
+            }
+
+            tBody.appendChild(frag);
+
+            if (index < lista.length) {
+                requestAnimationFrame(renderChunk);
+            }
+        };
+
+        requestAnimationFrame(renderChunk);
+    }
+
+    function renderBotoesLojas(lojas) {
+        lojaBotoes.innerHTML = '';
+        const todosBtn = document.createElement('button');
+        todosBtn.textContent = 'Todas as lojas';
+        todosBtn.className = 'loja-btn' + (lojaSelecionada === '__todas' ? ' active' : '');
+        todosBtn.onclick = () => { lojaSelecionada = '__todas'; atualizarSelecao(); };
+        lojaBotoes.appendChild(todosBtn);
+
+        lojas.forEach(l => {
+            const btn = document.createElement('button');
+            btn.textContent = l.nome;
+            btn.className = 'loja-btn' + (lojaSelecionada === l.nome ? ' active' : '');
+            btn.onclick = () => { lojaSelecionada = l.nome; atualizarSelecao(); };
+            lojaBotoes.appendChild(btn);
+        });
+    }
+
+    async function atualizarSelecao() {
+        Array.from(lojaBotoes.children).forEach(btn => {
+            btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
+        });
+
+        unidadeNegocioSelect.value = '__todos';
+        autoSyncAoTrocarLoja = true;
+        try {
+            // Sempre recarrega os dados da loja selecionada para manter as lojas virtuais atualizadas.
+            await carregarVendas({ retornoRapido: true });
+        } catch (_e) {
+            const dadosDaLojaSelecionada = (lojaSelecionada && lojaSelecionada !== '__todas')
+                ? dados.filter(row => mesmaLoja(row.loja_conta, lojaSelecionada))
+                : dados;
+            atualizarUnidadesNegocio(dadosDaLojaSelecionada, mapeamentoUnidades || {});
+            await filtrar();
+        } finally {
+            autoSyncAoTrocarLoja = false;
+        }
+        agendarSegundoPlano(() => carregarGrafico(), 80);
+    }
+
+    function atualizarUnidadesNegocio(lista, mapeamento) {
+        // Armazenar o mapeamento globalmente para uso posterior
+        if (mapeamento) {
+            mapeamentoUnidades = mapeamento;
+        }
+        
+        // Coletar IDs únicos de unidade_negocio dos dados
+        const unidadeIds = new Set(lista.map(r => String(r.unidade_negocio)).filter(Boolean));
+        const atual = unidadeNegocioSelect.value;
+        
+        unidadeNegocioSelect.innerHTML = '<option value="__todos">Todas as lojas</option>';
+        
+        // Ordenar IDs e criar options
+        const idsOrdenados = Array.from(unidadeIds).sort();
+        idsOrdenados.forEach(id => {
+            const opt = document.createElement('option');
+            opt.value = id; // Valor é o ID
+            // Texto é o nome amigável do mapeamento ou fallback para o ID
+            const nomeBase = mapeamentoUnidades[id] || mapeamento?.[id] || String(id || '').trim();
+            const nomeAmigavel = String(nomeBase || '').replace(/^\s*Unidade\s+/i, '').trim() || String(id || '').trim();
+            opt.textContent = nomeAmigavel;
+            unidadeNegocioSelect.appendChild(opt);
+        });
+        
+        // Restaurar seleção anterior se ainda existir
+        if (atual && idsOrdenados.includes(atual)) {
+            unidadeNegocioSelect.value = atual;
+        } else {
+            unidadeNegocioSelect.value = '__todos';
+        }
+    }
+
+    function diasIntervalo(inicio, fim) {
+        const out = [];
+        if (!inicio || !fim) return out;
+        let d = new Date(inicio);
+        const end = new Date(fim);
+        while (d <= end) {
+            out.push(d.toISOString().slice(0,10));
+            d.setDate(d.getDate() + 1);
+        }
+        return out;
+    }
+
+    function datasFaltantes(lista, inicio, fim) {
+        if (!inicio || !fim) return [];
+        const todas = diasIntervalo(inicio, fim);
+        const presentes = new Set(lista.map(r => (r.data || '').slice(0,10)).filter(Boolean));
+        return todas.filter(d => !presentes.has(d));
+    }
+
+    function diasNoPeriodo(inicio, fim) {
+        if (!inicio || !fim) return 0;
+        const d1 = new Date(inicio);
+        const d2 = new Date(fim);
+        return Math.floor((d2 - d1) / (1000*60*60*24)) + 1;
+    }
+
+    function parseIsoDate(iso) {
+        const [ano, mes, dia] = String(iso || '').split('-').map(Number);
+        return new Date(ano, (mes || 1) - 1, dia || 1);
+    }
+
+    function toIsoDate(dateObj) {
+        const y = dateObj.getFullYear();
+        const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const d = String(dateObj.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
+    function addDaysIso(iso, dias) {
+        const d = parseIsoDate(iso);
+        d.setDate(d.getDate() + dias);
+        return toIsoDate(d);
+    }
+
+    function montarPeriodosEmFila(inicio, fim, maxDiasPorLote = 365) {
+        if (!inicio || !fim) return [];
+        const totalDias = diasNoPeriodo(inicio, fim);
+        if (totalDias <= 0) return [];
+
+        const lotes = [];
+        let atualInicio = inicio;
+        while (true) {
+            const loteFimCandidato = addDaysIso(atualInicio, maxDiasPorLote - 1);
+            const atualFim = loteFimCandidato > fim ? fim : loteFimCandidato;
+            lotes.push({ data_inicio: atualInicio, data_fim: atualFim });
+            if (atualFim >= fim) break;
+            atualInicio = addDaysIso(atualFim, 1);
+        }
+        return lotes;
+    }
+
+    function montarPeriodosFaltantes(inicio, fim, listaDados) {
+        if (!inicio || !fim) return [];
+        const datasPeriodo = diasIntervalo(inicio, fim);
+        if (!datasPeriodo.length) return [];
+
+        const presentes = new Set((listaDados || [])
+            .map(r => (r.data || '').slice(0, 10))
+            .filter(Boolean));
+
+        const faltantes = datasPeriodo.filter(d => !presentes.has(d));
+        if (!faltantes.length) return [];
+
+        const periodos = [];
+        let inicioBloco = faltantes[0];
+        let anterior = faltantes[0];
+
+        for (let i = 1; i < faltantes.length; i++) {
+            const atual = faltantes[i];
+            const diaSeguinte = addDaysIso(anterior, 1);
+            if (atual !== diaSeguinte) {
+                periodos.push({ data_inicio: inicioBloco, data_fim: anterior });
+                inicioBloco = atual;
+            }
+            anterior = atual;
+        }
+
+        periodos.push({ data_inicio: inicioBloco, data_fim: anterior });
+        return periodos;
+    }
+
+    function totalDiasDosPeriodos(periodos) {
+        return (periodos || []).reduce((acc, p) => acc + diasNoPeriodo(p.data_inicio, p.data_fim), 0);
+    }
+
+    function contextoPromptFaltantes() {
+        return [
+            lojaSelecionada || '__todas',
+            getDataIniISO() || '',
+            getDataFimISO() || ''
+        ].join('|');
+    }
+
+    function setStatusProgress(step, total, texto, etapas) {
+        const percent = Math.max(0, Math.min(100, Math.round((step / total) * 100)));
+        const stepsHtml = etapas.map((e, i) => {
+            const done = i < step;
+            return `<div style="margin:2px 0; color:${done ? '#9bd1ff' : '#aaa'};">${done ? '✅' : '⏳'} ${e}</div>`;
+        }).join('');
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `${spinnerHtml}${texto}
+            <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
+                <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
+            </div>
+            <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percent}%</div>
+            <div style="margin-top:6px;font-size:0.9rem;">${stepsHtml}</div>`;
+    }
+
+    function obterNomesLojasParaSync() {
+        return (lojasDisponiveis || [])
+            .map(l => String(l?.nome || '').trim())
+            .filter(Boolean);
+    }
+
+    function agendarSyncAutomaticoAposCarregar(promptKey) {
+        if (autoSyncTimer) {
+            clearTimeout(autoSyncTimer);
+        }
+        autoSyncTimer = setTimeout(() => {
+            autoSyncTimer = null;
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    if (syncEmAndamento || missingPromptKey !== promptKey) return;
+                    executarSync({ automatico: true });
+                }, 250);
+            });
+        }, 0);
+    }
+
+    function aguardar(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function aguardarFimSyncAtual() {
+        while (true) {
+            if (cancelSolicitado) {
+                throw new Error('Sincronização cancelada.');
+            }
+            const resp = await fetch('/api/vendas/sync/progress', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            if (!resp.ok) {
+                throw new Error(`Falha ao consultar progresso: HTTP ${resp.status}`);
+            }
+            const payload = await resp.json();
+            if (!payload.active) {
+                const progresso = payload.progress || {};
+                if ((progresso.etapa || '').toLowerCase() === 'erro') {
+                    throw new Error(progresso.mensagem || 'Erro na sincronização.');
+                }
+                return payload;
+            }
+            await aguardar(1500);
+        }
+    }
+
+    async function iniciarSyncLoja(lojaNome, periodo = null) {
+        const inicioSync = periodo?.data_inicio || getDataIniISO();
+        const fimSync = periodo?.data_fim || getDataFimISO();
+
+        const resp = await fetch('/api/vendas/sync', {
+            method: 'POST',
+            headers: obterAuthHeaders({
+                'Content-Type': 'application/json'
+            }),
+            body: JSON.stringify({
+                loja: lojaNome,
+                data_inicio: inicioSync,
+                data_fim: fimSync,
+                forcar_resync: document.getElementById('forcarSync').checked
+            }),
+            signal: syncController.signal
+        });
+
+        const result = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            throw new Error(result.detail || 'Erro ao sincronizar.');
+        }
+        if (result.already_running) {
+            await aguardarFimSyncAtual();
+            return result;
+        }
+        return result;
+    }
+
+    async function executarSync(opcoes = {}) {
+        const syncAutomatico = !!opcoes.automatico;
+        if (autoSyncTimer) {
+            clearTimeout(autoSyncTimer);
+            autoSyncTimer = null;
+        }
+        fecharCalendariosData();
+
+        const dataIniIso = getDataIniISO();
+        const dataFimIso = getDataFimISO();
+        if (!dataIniIso || !dataFimIso) {
+            if (syncAutomatico) return;
+            alert('Informe data inicial e final para sincronizar.');
+            return;
+        }
+        periodoSelecionadoPeloUsuario = true;
+        const forcarResync = document.getElementById('forcarSync').checked;
+        const diasSelecionados = diasNoPeriodo(dataIniIso, dataFimIso);
+
+        let periodosBase = [];
+        if (forcarResync) {
+            periodosBase = [{ data_inicio: dataIniIso, data_fim: dataFimIso }];
+        } else {
+            periodosBase = montarPeriodosFaltantes(dataIniIso, dataFimIso, dados);
+            if (!periodosBase.length) {
+                if (syncAutomatico) return;
+                alert('Não há dias faltantes no período selecionado. Para atualizar dias já sincronizados, marque "Forçar re-sincronização".');
+                return;
+            }
+        }
+
+        const lotesPeriodo = periodosBase.flatMap(p => montarPeriodosEmFila(p.data_inicio, p.data_fim, 365));
+        const diasParaSincronizar = totalDiasDosPeriodos(lotesPeriodo);
+
+        if (!syncAutomatico && diasParaSincronizar > 365) {
+            const cont = confirm(`Serão sincronizados ${diasParaSincronizar} dia(s) em ${lotesPeriodo.length} lote(s) para envio em fila. Deseja continuar?`);
+            if (!cont) return;
+        } else if (!syncAutomatico && (diasSelecionados > 15 || diasParaSincronizar > 15)) {
+            const cont = confirm(`Serão sincronizados ${diasParaSincronizar} dia(s). A atualização pode demorar. Deseja continuar?`);
+            if (!cont) return;
+        }
+        clientId = clientId || obterClientId();
+        if (!clientId) { window.location.href = '/frontend_index.html'; return; }
+        
+        cancelSolicitado = false;
+        syncEmAndamento = true;
+        setSyncButtons(true);
+        syncController = new AbortController();
+        iniciarMonitoramentoProgresso();
+
+        const lojasParaSincronizar = lojaSelecionada === '__todas'
+            ? obterNomesLojasParaSync()
+            : [lojaSelecionada];
+
+        if (!lojasParaSincronizar.length) {
+            if (syncAutomatico) {
+                syncEmAndamento = false;
+                setSyncButtons(false);
+                syncController = null;
+                pararMonitoramentoProgresso();
+                return;
+            }
+            alert('Nenhuma loja disponível para sincronizar.');
+            syncEmAndamento = false;
+            setSyncButtons(false);
+            syncController = null;
+            pararMonitoramentoProgresso();
+            return;
+        }
+
+        // Atualizar status local
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `<span class="spinner"></span>Iniciando sincronização de vendas... (0%)`;
+        
+        // Executar sincronização em background (não bloqueia UI)
+        (async () => {
+            try {
+                const inicioSync = new Date();
+                console.log('[SYNC] Iniciando sincronização...', lojasParaSincronizar);
+                const totalLojas = lojasParaSincronizar.length;
+                const totalLotes = Math.max(1, lotesPeriodo.length);
+                const totalEtapas = totalLojas * totalLotes;
+                let etapaAtual = 0;
+
+                for (let idx = 0; idx < totalLojas; idx++) {
+                    const lojaAtual = lojasParaSincronizar[idx];
+                    for (let loteIdx = 0; loteIdx < totalLotes; loteIdx++) {
+                        const lote = lotesPeriodo[loteIdx];
+                        const percentualBase = Math.round((etapaAtual / totalEtapas) * 100);
+                        statusEl.className = 'status-bar loading';
+                        statusEl.innerHTML = `<span class="spinner"></span><strong>Sincronizando loja ${idx + 1} de ${totalLojas}</strong><br>
+                            🏬 ${lojaAtual}<br>
+                            📆 Lote ${loteIdx + 1}/${totalLotes}: ${formatDate(lote.data_inicio)} até ${formatDate(lote.data_fim)}<br>
+                            <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
+                                <div style="height:8px;width:${percentualBase}%;background:#4facfe;"></div>
+                            </div>
+                            <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percentualBase}%</div>`;
+
+                        await iniciarSyncLoja(lojaAtual, lote);
+                        await aguardarFimSyncAtual();
+                        etapaAtual += 1;
+                    }
+                }
+
+                statusEl.className = 'status-bar loading';
+                statusEl.innerHTML = `<span class="spinner"></span><strong>Sincronização concluída.</strong><br>
+                    Recarregando dados...`;
+                
+                await carregarVendas();
+                
+                // Finalizar
+                statusEl.className = 'status-bar success';
+                const tempoTotal = ((new Date() - inicioSync) / 1000).toFixed(2);
+                statusEl.innerHTML = `✅ <strong>Sincronização Finalizada!</strong><br>
+                    Lojas processadas: <strong>${lojasParaSincronizar.length}</strong><br>
+                    ⏱️ Tempo total: ${tempoTotal}s`;
+                
+                // Limpar após 5 segundos
+                setTimeout(() => { 
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = ''; 
+                }, 5000);
+                
+            } catch (e) {
+                console.error('[SYNC] Erro na sincronização:', e);
+                if (cancelSolicitado || e.name === 'AbortError') {
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = '⏹️ Sincronização cancelada.';
+                } else {
+                    statusEl.className = 'status-bar error';
+                    statusEl.innerHTML = `❌ Erro ao sincronizar: ${e.message}`;
+                }
+            } finally {
+                syncEmAndamento = false;
+                setSyncButtons(false);
+                syncController = null;
+                cancelSolicitado = false;
+                // Aguardar 2 segundos para mostrar o progresso final 100%
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                pararMonitoramentoProgresso();
+            }
+        })();
+    }
+
+    btnCancel.addEventListener('click', async () => {
+        if (!syncEmAndamento) return;
+        cancelSolicitado = true;
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `${spinnerHtml}Cancelando sincronização...`;
+        try {
+            clientId = clientId || obterClientId();
+            if (clientId) {
+                await fetch('/api/vendas/sync/cancel', {
+                    method: 'POST',
+                    headers: obterAuthHeaders()
+                });
+            }
+        } catch (e) {
+            console.warn('[SYNC] Falha ao solicitar cancelamento:', e);
+        }
+        if (syncController) syncController.abort();
+    });
+
+    async function agruparPorSkuEmLotes(lista, mostrarDevolucoes, token, devolucoesParaAgrupar) {
+        if (devolucoesParaAgrupar === undefined) devolucoesParaAgrupar = devolucaoItens;
+        const agrupadoMapa = {};
+        const CHUNK = 1200;
+        let index = 0;
+
+        while (index < lista.length) {
+            if (token !== filtrarToken) return null;
+            const fim = Math.min(index + CHUNK, lista.length);
+            for (; index < fim; index++) {
+                const r = lista[index];
+                const sku = r.sku || 'N/D';
+                if (!agrupadoMapa[sku]) {
+                    agrupadoMapa[sku] = {
+                        sku,
+                        produto: r.produto || '-',
+                        pedidos: 0,
+                        itens: 0,
+                        devolucoes: 0,
+                        itensDevolucao: 0,
+                        valorDevolucao: 0,
+                        valor: 0
+                    };
+                }
+                agrupadoMapa[sku].pedidos += 1;
+                agrupadoMapa[sku].itens += Number(r.quantidade || 0);
+                agrupadoMapa[sku].valor += Number(r.valor || 0);
+            }
+            await aguardarProximoFrame();
+        }
+
+        if (mostrarDevolucoes) {
+            let iDev = 0;
+            while (iDev < devolucoesParaAgrupar.length) {
+                if (token !== filtrarToken) return null;
+                const fimDev = Math.min(iDev + CHUNK, devolucoesParaAgrupar.length);
+                for (; iDev < fimDev; iDev++) {
+                    const dev = devolucoesParaAgrupar[iDev];
+                    const sku = dev.sku || 'N/D';
+                    if (!agrupadoMapa[sku]) {
+                        agrupadoMapa[sku] = {
+                            sku,
+                            produto: dev.descricao || '-',
+                            pedidos: 0,
+                            itens: 0,
+                            devolucoes: 0,
+                            itensDevolucao: 0,
+                            valorDevolucao: 0,
+                            valor: 0
+                        };
+                    }
+                    agrupadoMapa[sku].devolucoes += 1;
+                    agrupadoMapa[sku].itensDevolucao += Number(dev.quantidade || 0);
+                    agrupadoMapa[sku].valorDevolucao += Number(dev.valor_total || 0);
+                }
+                await aguardarProximoFrame();
+            }
+        }
+
+        const agrupadoLista = Object.values(agrupadoMapa).sort((a, b) => {
+            const diffItens = (b.itens || 0) - (a.itens || 0);
+            if (diffItens !== 0) return diffItens;
+            return (b.valor || 0) - (a.valor || 0);
+        });
+
+        return agrupadoLista;
+    }
+
+    async function filtrar() {
+        filtrarToken += 1;
+        const tokenAtual = filtrarToken;
+        const termo = filtroTexto.value.trim().toLowerCase();
+        const unidadeSel = unidadeNegocioSelect.value;
+        let lista = Array.isArray(dados) ? dados : [];
+
+        if (lojaSelecionada && lojaSelecionada !== '__todas') {
+            lista = lista.filter(row => mesmaLoja(row.loja_conta, lojaSelecionada));
+        }
+        if (unidadeSel && unidadeSel !== '__todos') {
+            lista = lista.filter(row => mesmaUnidade(row.unidade_negocio, unidadeSel));
+        }
+        if (termo) {
+            lista = lista.filter(row => String(row.sku || '').toLowerCase().includes(termo));
+        }
+
+        dadosFiltrados = lista;
+        const mostrarDevolucoes = true;
+        let devolucoesAtivas = [];
+
+        // Filtra devolucaoItens pela loja selecionada antes de qualquer outro filtro
+        const devolucaoItensFiltradas = (lojaSelecionada && lojaSelecionada !== '__todas')
+            ? devolucaoItens.filter(dev => mesmaLoja(dev.loja_conta, lojaSelecionada))
+            : devolucaoItens;
+
+        const normalizarUnidadeDevolucao = (dev) => normalizarChaveFiltro(
+            dev?.unidade_negocio_virtual || dev?.unidade_negocio || '',
+            true
+        );
+
+        if (!unidadeSel || unidadeSel === '__todos') {
+            devolucoesAtivas = devolucaoItensFiltradas;
+        } else {
+            const unidadeAlvo = normalizarChaveFiltro(unidadeSel, true);
+            devolucoesAtivas = devolucaoItensFiltradas.filter(dev => {
+                const uv = normalizarUnidadeDevolucao(dev);
+                return uv === unidadeAlvo;
+            });
+        }
+        renderResumo(lista, devolucoesAtivas, mostrarDevolucoes);
+
+        if (lista.length > 3000 && !syncEmAndamento) {
+            statusEl.className = 'status-bar loading';
+            statusEl.innerHTML = `${spinnerHtml}Processando tabela...`;
+        }
+
+        const agrupadoLista = await agruparPorSkuEmLotes(lista, mostrarDevolucoes, tokenAtual, devolucoesAtivas);
+        if (!agrupadoLista || tokenAtual !== filtrarToken) return;
+
+        renderTabelaAgrupada(agrupadoLista);
+        agendarSalvarCacheTelaVendas();
+
+        const faltantes = datasFaltantes(lista, getDataIniISO(), getDataFimISO());
+        const totalDiasPeriodo = diasNoPeriodo(getDataIniISO(), getDataFimISO());
+        const periodoGrande = totalDiasPeriodo > 60;
+        const possivelNaoSincronizado = totalDiasPeriodo > 0 && (
+            lista.length === 0 || faltantes.length >= Math.ceil(totalDiasPeriodo * 0.7)
+        );
+
+        if (!periodoSelecionadoPeloUsuario) {
+            missingPromptShown = false;
+            missingPromptKey = '';
+            return;
+        }
+
+        if (faltantes.length) {
+            if (!syncEmAndamento && !autoSyncAoTrocarLoja) {
+                statusEl.className = 'status-bar empty';
+                statusEl.textContent = `Existem ${faltantes.length} dia(s) sem vendas no período selecionado.`;
+            }
+            const promptKeyAtual = contextoPromptFaltantes();
+            if (missingPromptKey !== promptKeyAtual) {
+                missingPromptShown = false;
+                missingPromptKey = promptKeyAtual;
+            }
+            if (!missingPromptShown && !syncEmAndamento) {
+                missingPromptShown = true;
+                agendarSyncAutomaticoAposCarregar(promptKeyAtual);
+                return;
+            }
+        } else {
+            missingPromptShown = false;
+            missingPromptKey = '';
+        }
+    }
+
+    async function carregarLojas() {
+        try {
+            clientId = obterClientId();
+            if (!clientId) {
+                window.location.href = '/frontend_index.html';
+                return;
+            }
+            const resp = await fetchComTimeout('/api/lojas', { headers: obterAuthHeaders() });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const lojas = await resp.json();
+            lojasDisponiveis = Array.isArray(lojas) ? lojas : [];
+            renderBotoesLojas(lojas);
+        } catch (e) {
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = `Erro ao carregar lojas: ${e.name === 'AbortError' ? 'tempo de resposta excedido' : e.message}`;
+        }
+    }
+
+    async function buscarDadosComplementares(paramsBase) {
+        const paramsDev = new URLSearchParams(paramsBase);
+        paramsDev.append('agrupado', 'false');
+        const paramsUnidades = new URLSearchParams();
+        if (lojaSelecionada && lojaSelecionada !== '__todas') {
+            paramsUnidades.append('loja', lojaSelecionada);
+        }
+
+        const [respNotasRes, respDevolucaoRes, respUnidadesRes] = await Promise.allSettled([
+            fetchComTimeout('/api/notas-entrada' + (paramsBase.toString() ? `?${paramsBase.toString()}` : ''), { headers: obterAuthHeaders() }),
+            fetchComTimeout('/api/notas-entrada/itens' + (paramsDev.toString() ? `?${paramsDev.toString()}` : ''), { headers: obterAuthHeaders() }),
+            fetchComTimeout('/api/unidades-negocios' + (paramsUnidades.toString() ? `?${paramsUnidades.toString()}` : ''), { headers: obterAuthHeaders() })
+        ]);
+
+        const notas = (respNotasRes.status === 'fulfilled' && respNotasRes.value.ok)
+            ? await respNotasRes.value.json()
+            : [];
+        const devolucoes = (respDevolucaoRes.status === 'fulfilled' && respDevolucaoRes.value.ok)
+            ? await respDevolucaoRes.value.json()
+            : [];
+        const mapeamento = (respUnidadesRes.status === 'fulfilled' && respUnidadesRes.value.ok)
+            ? ((await respUnidadesRes.value.json()).mapeamento || {})
+            : {};
+
+        return { notas, devolucoes, mapeamento };
+    }
+
+    async function carregarVendas(opcoes = {}) {
+        const retornoRapido = !!opcoes.retornoRapido;
+        if (carregarVendasPromise) {
+            return carregarVendasPromise;
+        }
+
+        carregarVendasPromise = (async () => {
+        const dataIniIso = getDataIniISO();
+        const dataFimIso = getDataFimISO();
+        if (!dataIniIso || !dataFimIso) {
+            statusEl.className = 'status-bar';
+            statusEl.textContent = '';
+            return;
+        }
+
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `${spinnerHtml}Carregando vendas...`;
+        try {
+            clientId = clientId || obterClientId();
+            if (!clientId) {
+                console.warn('ClientId vazio - tentando carregar de localStorage novamente');
+                const userData2 = JSON.parse(localStorage.getItem('user_data') || 'null');
+                if (userData2 && userData2.client_id) {
+                    clientId = userData2.client_id;
+                    console.log('ClientId recuperado:', clientId);
+                }
+            }
+            
+            if (!clientId) {
+                statusEl.className = 'status-bar error';
+                statusEl.innerHTML = '⚠️ Sessão expirada. <a href="/frontend_index.html" style="color:white; text-decoration:underline;">Fazer login novamente</a>';
+                console.warn('ClientId ainda vazio após nova tentativa');
+                return;
+            }
+            const params = new URLSearchParams();
+            if (dataIniIso) params.append('data_inicio', dataIniIso);
+            if (dataFimIso) params.append('data_fim', dataFimIso);
+            if (lojaSelecionada && lojaSelecionada !== '__todas') params.append('loja', lojaSelecionada);
+            params.append('resolver_nf', 'false');
+            const url = '/api/vendas' + (params.toString() ? `?${params.toString()}` : '');
+            statusEl.innerHTML = `${spinnerHtml}Buscando vendas...`;
+            const resp = await fetchComTimeout(url, { headers: obterAuthHeaders() }, 45000);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            dados = await resp.json();
+
+            if (retornoRapido) {
+                notasEntrada = [];
+                devolucaoItens = [];
+                statusEl.innerHTML = `${spinnerHtml}Renderizando lista...`;
+                await aguardarProximoFrame();
+                atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
+                await filtrar();
+                if (!syncEmAndamento) {
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = '';
+                }
+
+                agendarSegundoPlano(async () => {
+                    try {
+                        const comp = await buscarDadosComplementares(params);
+                        notasEntrada = comp.notas;
+                        devolucaoItens = comp.devolucoes;
+                        atualizarUnidadesNegocio(dados, comp.mapeamento);
+                        await filtrar();
+                        if (!syncEmAndamento) {
+                            statusEl.className = 'status-bar';
+                            statusEl.textContent = '';
+                        }
+                    } catch (e) {
+                        console.warn('Falha ao carregar complementos em segundo plano:', e);
+                    }
+                }, 120);
+            } else {
+                statusEl.innerHTML = `${spinnerHtml}Carregando dados complementares...`;
+                const comp = await buscarDadosComplementares(params);
+                notasEntrada = comp.notas;
+                devolucaoItens = comp.devolucoes;
+
+                statusEl.innerHTML = `${spinnerHtml}Aplicando filtros e cálculos...`;
+                atualizarUnidadesNegocio(dados, comp.mapeamento);
+                await filtrar();
+                statusEl.className = 'status-bar';
+                statusEl.textContent = '';
+            }
+        } catch (e) {
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = `Erro ao carregar vendas: ${e.name === 'AbortError' ? 'tempo de resposta excedido' : e.message}`;
+        }
+        })();
+
+        try {
+            return await carregarVendasPromise;
+        } finally {
+            carregarVendasPromise = null;
+        }
+    }
+
+    filtroTexto.addEventListener('input', filtrar);
+    unidadeNegocioSelect.addEventListener('change', async () => { await filtrar(); carregarGrafico(); });
+    dataIni.addEventListener('change', () => { atualizarPeriodoComRecarregamento(true); });
+    dataFim.addEventListener('change', () => { atualizarPeriodoComRecarregamento(true); });
+    btnSync.addEventListener('click', executarSync);
+
+    // ==================== GRÁFICOS ====================
+    let chartInstance = null;
+    let periodoGrafico = '3m';
+    let tipoGrafico = 'linha';
+    let metricaGrafico = 'valor';
+    let intervaloGrafico = 'dia';
+    let skuAtualGrafico = null;
+    let carregarGraficoToken = 0;
+
+    function chavePreferenciaGrafico() {
+        const cid = clientId || obterClientId() || 'anon';
+        return `vendas_grafico_pref_${cid}`;
+    }
+
+    function salvarPreferenciaGrafico() {
+        try {
+            localStorage.setItem(chavePreferenciaGrafico(), JSON.stringify({
+                periodo: periodoGrafico,
+                tipo: tipoGrafico,
+                metrica: metricaGrafico,
+                intervalo: intervaloGrafico
+            }));
+        } catch (_e) {
+            // Ignora erro de localStorage.
+        }
+    }
+
+    function carregarPreferenciaGrafico() {
+        try {
+            const raw = localStorage.getItem(chavePreferenciaGrafico());
+            if (!raw) return;
+            const pref = JSON.parse(raw);
+            if (pref?.periodo) periodoGrafico = pref.periodo;
+            if (pref?.tipo) tipoGrafico = pref.tipo;
+            if (pref?.metrica) metricaGrafico = pref.metrica;
+            if (pref?.intervalo) intervaloGrafico = pref.intervalo;
+        } catch (_e) {
+            // Ignora preferência inválida.
+        }
+    }
+
+    function aplicarPreferenciaGraficoUI() {
+        document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => {
+            b.classList.toggle('active', b.dataset.periodo === periodoGrafico);
+        });
+        document.querySelectorAll('.grafico-btn[data-tipo]').forEach(b => {
+            b.classList.toggle('active', b.dataset.tipo === tipoGrafico);
+        });
+        document.querySelectorAll('.grafico-btn[data-metrica]').forEach(b => {
+            b.classList.toggle('active', b.dataset.metrica === metricaGrafico);
+        });
+        document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(b => {
+            b.classList.toggle('active', b.dataset.intervalo === intervaloGrafico);
+        });
+
+        const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
+        if (intervaloGrafico === 'semana') {
+            btnsPeriodo.forEach(btn => {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+                btn.style.cursor = 'not-allowed';
+            });
+        } else {
+            btnsPeriodo.forEach(btn => {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.cursor = 'pointer';
+            });
+        }
+    }
+
+    function formatarLabelDataGrafico(label) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(label || '')) {
+            const [ano, mes, dia] = label.split('-');
+            return `${dia}/${mes}/${ano}`;
+        }
+        return label;
+    }
+
+    function aplicarFiltroTempoDoGrafico(labelOriginal) {
+        if (!labelOriginal) return;
+
+        let inicio = null;
+        let fim = null;
+
+        if (/^\d{4}-\d{2}-\d{2}$/.test(labelOriginal)) {
+            inicio = labelOriginal;
+            fim = labelOriginal;
+        } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(labelOriginal)) {
+            const [dd, mm, yyyy] = labelOriginal.split('/');
+            const base = `${yyyy}-${mm}-${dd}`;
+            if (intervaloGrafico === 'semana') {
+                const d = new Date(base + 'T00:00:00');
+                const fimSemana = new Date(d);
+                fimSemana.setDate(d.getDate() + 6);
+                inicio = d.toISOString().slice(0, 10);
+                fim = fimSemana.toISOString().slice(0, 10);
+            } else {
+                inicio = base;
+                fim = base;
+            }
+        } else {
+            const m = String(labelOriginal).trim().match(/^([A-Za-zÀ-ÿ]{3})\/(\d{4})$/);
+            if (m) {
+                const mesNome = m[1].toLowerCase();
+                const ano = m[2];
+                const mapaMes = { jan: '01', fev: '02', mar: '03', abr: '04', mai: '05', jun: '06', jul: '07', ago: '08', set: '09', out: '10', nov: '11', dez: '12' };
+                const mes = mapaMes[mesNome.slice(0, 3)];
+                if (mes) {
+                    inicio = `${ano}-${mes}-01`;
+                    const ultimoDia = new Date(Number(ano), Number(mes), 0).getDate();
+                    fim = `${ano}-${mes}-${String(ultimoDia).padStart(2, '0')}`;
+                    const valorMesAno = `${ano}-${mes}`;
+                    if ([...mesAno.options].some(opt => opt.value === valorMesAno)) {
+                        mesAno.value = valorMesAno;
+                    }
+                }
+            }
+        }
+
+        if (!inicio || !fim) return;
+        sincronizarPeriodoTopo(inicio, fim);
+        atualizarPeriodoComRecarregamento(true);
+    }
+
+    async function carregarGrafico() {
+        const tokenAtual = ++carregarGraficoToken;
+        try {
+            const params = new URLSearchParams({
+                periodo: periodoGrafico,
+                intervalo: intervaloGrafico
+            });
+
+            if (getDataIniISO()) {
+                params.append('data_inicio', getDataIniISO());
+            }
+            if (getDataFimISO()) {
+                params.append('data_fim', getDataFimISO());
+            }
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.append('loja', lojaSelecionada);
+            }
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                params.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+            
+            if (skuAtualGrafico) {
+                params.append('sku', skuAtualGrafico);
+            }
+
+            const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await response.json();
+
+            if (tokenAtual !== carregarGraficoToken) return;
+
+            renderizarGrafico(data);
+        } catch (error) {
+            console.error('Erro ao carregar gráfico:', error);
+        }
+    }
+
+    function compactarDadosGrafico(labels, series, maxPontos = 160) {
+        const baseLabels = Array.isArray(labels) ? labels : [];
+        if (baseLabels.length <= maxPontos) {
+            return { labels: baseLabels, series };
+        }
+
+        const passo = Math.max(1, Math.ceil(baseLabels.length / maxPontos));
+        const labelsCompactos = [];
+        const seriesCompactas = series.map(() => []);
+
+        for (let i = 0; i < baseLabels.length; i += passo) {
+            labelsCompactos.push(baseLabels[i]);
+            series.forEach((arr, idx) => {
+                seriesCompactas[idx].push(Array.isArray(arr) ? arr[i] : undefined);
+            });
+        }
+
+        return { labels: labelsCompactos, series: seriesCompactas };
+    }
+
+    function renderizarGrafico(data) {
+        const ctx = document.getElementById('graficoVendas').getContext('2d');
+        const mostrarDevolucoesGrafico = true;
+        
+        // Destruir gráfico anterior se existir
+        if (chartInstance) {
+            chartInstance.destroy();
+        }
+
+        const tipo = tipoGrafico === 'linha' ? 'line' : 'bar';
+
+        // Função para formatar moeda brasileira
+        const formatarMoeda = (valor) => {
+            return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        };
+
+        const labelsOriginais = data.labels || [];
+        const valoresVendasOrig = data.valores_vendas || [];
+        const valoresDevOrig = data.valores_devolucoes || [];
+        const qtdVendasOrig = data.quantidades_vendas || [];
+        const qtdDevOrig = data.quantidades_devolucoes || [];
+
+        const compactado = compactarDadosGrafico(labelsOriginais, [
+            valoresVendasOrig,
+            valoresDevOrig,
+            qtdVendasOrig,
+            qtdDevOrig
+        ]);
+
+        const labelsRender = compactado.labels;
+        const valoresVendas = compactado.series[0] || [];
+        const valoresDevolucoes = compactado.series[1] || [];
+        const quantidadesVendas = compactado.series[2] || [];
+        const quantidadesDevolucoes = compactado.series[3] || [];
+        const graficoPesado = labelsRender.length > 120;
+
+        // Preparar dados com quantidades como metadados
+        const usandoQuantidade = metricaGrafico === 'quantidade';
+        const datasetsVendas = {
+            label: usandoQuantidade ? 'Vendas (Qtd)' : 'Vendas (R$)',
+            data: usandoQuantidade ? quantidadesVendas : valoresVendas,
+            backgroundColor: tipoGrafico === 'linha' ? 'rgba(79, 172, 254, 0.2)' : 'rgba(79, 172, 254, 0.6)',
+            borderColor: 'rgba(79, 172, 254, 1)',
+            borderWidth: 2,
+            tension: 0.4,
+            fill: true,
+            quantidades: quantidadesVendas // Armazenar quantidades como metadado
+        };
+        
+        const datasetsDevol = {
+            label: usandoQuantidade ? 'Devoluções (Qtd)' : 'Devoluções (R$)',
+            data: usandoQuantidade ? quantidadesDevolucoes : valoresDevolucoes,
+            backgroundColor: tipoGrafico === 'linha' ? 'rgba(255, 107, 107, 0.2)' : 'rgba(255, 107, 107, 0.6)',
+            borderColor: 'rgba(255, 107, 107, 1)',
+            borderWidth: 2,
+            tension: 0.4,
+            fill: true,
+            quantidades: quantidadesDevolucoes // Armazenar quantidades como metadado
+        };
+
+        const datasets = [datasetsVendas];
+        if (mostrarDevolucoesGrafico) {
+            datasets.push(datasetsDevol);
+        }
+
+        const unidadesNoTopoPlugin = {
+            id: 'unidadesNoTopo',
+            afterDatasetsDraw(chart) {
+                const { ctx } = chart;
+                ctx.save();
+                ctx.font = '700 11px Segoe UI';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+
+                chart.data.datasets.forEach((dataset, datasetIndex) => {
+                    const meta = chart.getDatasetMeta(datasetIndex);
+                    if (!meta || meta.hidden) return;
+
+                    meta.data.forEach((pointOrBar, index) => {
+                        const pos = pointOrBar.tooltipPosition();
+                        ctx.fillStyle = datasetIndex === 0 ? '#9bd1ff' : '#ffb3b3';
+
+                        if (tipoGrafico === 'barra') {
+                            const valorMetrica = Number((dataset.data || [])[index] || 0);
+                            if (!valorMetrica) return;
+                            const yBar = Math.min(pos.y - 6, chart.chartArea.bottom - 4);
+                            const textoBarra = usandoQuantidade
+                                ? Math.round(valorMetrica).toLocaleString('pt-BR')
+                                : formatarMoeda(valorMetrica);
+                            ctx.fillText(textoBarra, pos.x, yBar);
+                            return;
+                        }
+
+                        if (tipoGrafico === 'linha') {
+                            const valor = Number((dataset.data || [])[index] || 0);
+                            if (!Number.isFinite(valor)) return;
+                            const texto = usandoQuantidade
+                                ? Math.round(valor).toLocaleString('pt-BR')
+                                : formatarMoeda(valor);
+                            const yLinha = pos.y - 8;
+                            ctx.fillText(texto, pos.x, yLinha);
+                        }
+                    });
+                });
+
+                ctx.restore();
+            }
+        };
+
+        chartInstance = new Chart(ctx, {
+            type: tipo,
+            plugins: graficoPesado ? [] : [unidadesNoTopoPlugin],
+            data: {
+                labels: labelsRender.map(formatarLabelDataGrafico),
+                datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                animation: graficoPesado ? false : { duration: 220 },
+                elements: {
+                    point: { radius: graficoPesado ? 0 : 2, hitRadius: 8 },
+                    line: { tension: 0.35 }
+                },
+                onClick: function(_event, elements) {
+                    if (!elements || !elements.length) return;
+                    const idx = elements[0].index;
+                    const labelOriginal = (labelsRender || [])[idx] || '';
+                    aplicarFiltroTempoDoGrafico(labelOriginal);
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: {
+                            color: '#e5e5e5'
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                const dataset = context.chart.data.datasets[context.datasetIndex];
+                                const quantidades = dataset.quantidades || [];
+                                const quantidade = quantidades[context.dataIndex] || 0;
+                                
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (usandoQuantidade) {
+                                    label += Math.round(context.parsed.y);
+                                } else {
+                                    label += formatarMoeda(context.parsed.y);
+                                    label += ' | Qtd: ' + Math.round(quantidade);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            color: '#e5e5e5',
+                            maxRotation: 45,
+                            minRotation: 45
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    },
+                    y: {
+                        ticks: {
+                            color: '#e5e5e5',
+                            callback: function(value) {
+                                if (usandoQuantidade) {
+                                    return Number(value || 0).toLocaleString('pt-BR');
+                                }
+                                return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    function obterLimitesComVendas() {
+        let lista = Array.isArray(dados) ? dados : [];
+
+        if (lojaSelecionada && lojaSelecionada !== '__todas') {
+            lista = lista.filter(row => mesmaLoja(row.loja_conta, lojaSelecionada));
+        }
+        if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+            lista = lista.filter(row => mesmaUnidade(row.unidade_negocio, unidadeNegocioSelect.value));
+        }
+
+        const datas = lista
+            .map(row => String(row.data || '').slice(0, 10))
+            .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+            .sort();
+
+        if (!datas.length) return null;
+        return { inicio: datas[0], fim: datas[datas.length - 1] };
+    }
+
+    async function obterLimitesComVendasServidor() {
+        try {
+            const params = new URLSearchParams();
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.append('loja', lojaSelecionada);
+            }
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                params.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+            const url = '/api/vendas/limites' + (params.toString() ? `?${params.toString()}` : '');
+            const resp = await fetchComTimeout(url, { headers: obterAuthHeaders() });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            const inicio = String(data?.inicio || '').trim();
+            const fim = String(data?.fim || '').trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(inicio) || !/^\d{4}-\d{2}-\d{2}$/.test(fim)) {
+                return null;
+            }
+            return { inicio, fim };
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    // Event listeners para controles de gráfico
+    document.querySelectorAll('.grafico-btn[data-periodo]').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            periodoGrafico = this.dataset.periodo;
+            salvarPreferenciaGrafico();
+            
+            // Calcular e aplicar datas correspondentes
+            const hoje = new Date();
+            let dataInicial;
+            
+            if (periodoGrafico === '3m') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 90);
+            } else if (periodoGrafico === '6m') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 180);
+            } else if (periodoGrafico === '1a') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 365);
+            } else if (periodoGrafico === '2a') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 730);
+            } else if (periodoGrafico === 'max') {
+                const limites = await obterLimitesComVendasServidor() || obterLimitesComVendas();
+                if (limites) {
+                    sincronizarPeriodoTopo(limites.inicio, limites.fim);
+                    atualizarPeriodoComRecarregamento(true);
+                    return;
+                }
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 90);
+            } else {
+                // Padrão: 3 meses
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 90);
+            }
+            
+            // Atualizar inputs de data
+            sincronizarPeriodoTopo(dataInicial.toISOString().split('T')[0], hoje.toISOString().split('T')[0]);
+            atualizarPeriodoComRecarregamento(true);
+        });
+    });
+
+    document.querySelectorAll('.grafico-btn[data-tipo]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-tipo]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            tipoGrafico = this.dataset.tipo;
+            salvarPreferenciaGrafico();
+            carregarGrafico();
+        });
+    });
+
+    document.querySelectorAll('.grafico-btn[data-metrica]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-metrica]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            metricaGrafico = this.dataset.metrica;
+            salvarPreferenciaGrafico();
+            carregarGrafico();
+        });
+    });
+
+    document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            intervaloGrafico = this.dataset.intervalo;
+            salvarPreferenciaGrafico();
+            
+            // Desabilitar botões de período se intervalo = semana
+            const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
+            if (intervaloGrafico === 'semana') {
+                btnsPeriodo.forEach(btn => {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                });
+            } else {
+                btnsPeriodo.forEach(btn => {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                });
+            }
+            
+            carregarGrafico();
+        });
+    });
+
+    // Carregar lojas e vendas salvas automaticamente
+    carregarPreferenciaGrafico();
+    aplicarPreferenciaGraficoUI();
+    carregarLojas()
+        .then(async () => {
+            if (retornoDoSku) {
+                statusEl.className = 'status-bar loading';
+                statusEl.innerHTML = `${spinnerHtml}Retornando da visão SKU...`;
+                setTimeout(async () => {
+                    try {
+                        const restaurouCache = await restaurarCacheTelaVendasSeValido();
+                        if (restaurouCache) {
+                            agendarSegundoPlano(() => carregarGrafico(), 120);
+                            return;
+                        }
+                        const syncAtivo = await verificarSyncEmAndamentoNaEntrada();
+                        if (!syncAtivo && getDataIniISO() && getDataFimISO()) {
+                            await carregarVendas({ retornoRapido: true });
+                            agendarSegundoPlano(() => carregarGrafico(), 200);
+                        }
+                        if (!syncEmAndamento) {
+                            statusEl.className = 'status-bar';
+                            statusEl.textContent = '';
+                        }
+                    } catch (_e) {
+                        statusEl.className = 'status-bar';
+                        statusEl.textContent = 'Retorno concluído. Clique em Atualizar período para recarregar os dados.';
+                    }
+                }, 180);
+                return null;
+            }
+
+            await verificarSyncEmAndamentoNaEntrada();
+            if (getDataIniISO() && getDataFimISO()) {
+                return carregarVendas().then(() => carregarGrafico());
+            }
+            statusEl.className = 'status-bar';
+            statusEl.textContent = '';
+            return null;
+        })
+        .catch(e => console.error('Erro ao carregar dados:', e));
+
+</script>
+</body>
+</html>

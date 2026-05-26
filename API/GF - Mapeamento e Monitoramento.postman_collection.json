@@ -1,0 +1,926 @@
+{
+	"info": {
+		"_postman_id": "b4b46fab-c731-44bb-b39d-487a9b8a1683",
+		"name": "GF - Mapeamento e Monitoramento",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "17661205"
+	},
+	"item": [
+		{
+			"name": "Itens",
+			"item": [
+				{
+					"name": "Criar Item",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-api-key",
+								"value": "INSERIR_codigo_x_api_key",
+								"type": "text"
+							},
+							{
+								"key": "access_token",
+								"value": "INSERIR_codigo_token",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"empresaId\": \"INSERIR_codigo_empresaId\",\r\n  \"codigo\": \"0001X\",\r\n  \"descricao\": \"MEU PRODUTO\",\r\n  \"codigoNcm\": \"84082020\",\r\n  \"ex\": \"\",\r\n  \"cest\": \"0102900\",\r\n  \"origemNacional\": true,\r\n  \"tributado4\": true,\r\n  \"controleUsuario\": \"\"\r\n}"
+						},
+						"url": {
+							"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens",
+							"protocol": "https",
+							"host": [
+								"gestor-svc-app",
+								"iob",
+								"com",
+								"br"
+							],
+							"path": [
+								"gestor-fiscal",
+								"v1",
+								"itens"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Listar Itens",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-api-key",
+								"value": "INSERIR_codigo_x_api_key",
+								"type": "text"
+							},
+							{
+								"key": "access_token",
+								"value": "INSERIR_codigo_token",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_empresaId/venda?_offset=1&_limit=20",
+							"protocol": "https",
+							"host": [
+								"gestor-svc-app",
+								"iob",
+								"com",
+								"br"
+							],
+							"path": [
+								"gestor-fiscal",
+								"v1",
+								"itens",
+								"INSERIR_codigo_empresaId",
+								"venda"
+							],
+							"query": [
+								{
+									"key": "_offset",
+									"value": "1"
+								},
+								{
+									"key": "_limit",
+									"value": "20"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Atualizar Item",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-api-key",
+								"value": "INSERIR_codigo_x_api_key",
+								"type": "text"
+							},
+							{
+								"key": "access_token",
+								"value": "INSERIR_codigo_token",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"descricao\": \"ALTERANDO DESCRICAO DO ITEM\",\r\n    \"ex\": \"\",\r\n    \"cest\": \"\",\r\n    \"origemNacional\": true,\r\n    \"tributado4\": true,\r\n    \"controleUsuario\": \"\"\r\n }"
+						},
+						"url": {
+							"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item",
+							"protocol": "https",
+							"host": [
+								"gestor-svc-app",
+								"iob",
+								"com",
+								"br"
+							],
+							"path": [
+								"gestor-fiscal",
+								"v1",
+								"itens",
+								"INSERIR_codigo_id_item"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Deletar Item",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-api-key",
+								"value": "INSERIR_codigo_x_api_key",
+								"type": "text"
+							},
+							{
+								"key": "access_token",
+								"value": "INSERIR_codigo_token",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item",
+							"protocol": "https",
+							"host": [
+								"gestor-svc-app",
+								"iob",
+								"com",
+								"br"
+							],
+							"path": [
+								"gestor-fiscal",
+								"v1",
+								"itens",
+								"INSERIR_codigo_id_item"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Mapeamento",
+			"item": [
+				{
+					"name": "ICMS",
+					"item": [
+						{
+							"name": "ICMS-PRÓPRIO",
+							"item": [
+								{
+									"name": "Alíquota Interna ou Interestadual + FCP",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item/icms-aliquotas?empresa_id=INSERIR_codigo_empresaId&uf=RJ&estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"itens",
+												"INSERIR_codigo_id_item",
+												"icms-aliquotas"
+											],
+											"query": [
+												{
+													"key": "empresa_id",
+													"value": "INSERIR_codigo_empresaId"
+												},
+												{
+													"key": "uf",
+													"value": "RJ"
+												},
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								}
+							]
+						},
+						{
+							"name": "ICMS-ST",
+							"item": [
+								{
+									"name": "Percentual de MVA",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item/icms-aliquotas/mva?empresa_id=INSERIR_codigo_empresaId&uf=RJ&estabelecimento=varejista&destinacao=comercializacao-saidas&aliquota_interestadual=7&aliquota_interna=17&aliquota_fcp=2",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"itens",
+												"INSERIR_codigo_id_item",
+												"icms-aliquotas",
+												"mva"
+											],
+											"query": [
+												{
+													"key": "empresa_id",
+													"value": "INSERIR_codigo_empresaId"
+												},
+												{
+													"key": "uf",
+													"value": "RJ"
+												},
+												{
+													"key": "estabelecimento",
+													"value": "varejista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												},
+												{
+													"key": "aliquota_interestadual",
+													"value": "7"
+												},
+												{
+													"key": "aliquota_interna",
+													"value": "17"
+												},
+												{
+													"key": "aliquota_fcp",
+													"value": "2"
+												}
+											]
+										}
+									},
+									"response": []
+								}
+							]
+						},
+						{
+							"name": "Benefícios Fiscais",
+							"item": [
+								{
+									"name": "Base de Cálculo Reduzida",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/beneficios/reducaobasecalculo/INSERIR_codigo_id_item/INSERIR_codigo_empresaId/RJ?estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"beneficios",
+												"reducaobasecalculo",
+												"INSERIR_codigo_id_item",
+												"INSERIR_codigo_empresaId",
+												"RJ"
+											],
+											"query": [
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Diferimento",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/beneficios/diferimento/INSERIR_codigo_id_item/INSERIR_codigo_empresaId/RJ?estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"beneficios",
+												"diferimento",
+												"INSERIR_codigo_id_item",
+												"INSERIR_codigo_empresaId",
+												"RJ"
+											],
+											"query": [
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Isenção",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/beneficios/isencao/INSERIR_codigo_id_item/INSERIR_codigo_empresaId/RJ?estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"beneficios",
+												"isencao",
+												"INSERIR_codigo_id_item",
+												"INSERIR_codigo_empresaId",
+												"RJ"
+											],
+											"query": [
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Suspensão",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/beneficios/suspensao/INSERIR_codigo_id_item/INSERIR_codigo_empresaId/RJ?estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"beneficios",
+												"suspensao",
+												"INSERIR_codigo_id_item",
+												"INSERIR_codigo_empresaId",
+												"RJ"
+											],
+											"query": [
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Não Incidência e Imunidade",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/beneficios/naoincidencia/INSERIR_codigo_id_item/INSERIR_codigo_empresaId/RJ?estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"beneficios",
+												"naoincidencia",
+												"INSERIR_codigo_id_item",
+												"INSERIR_codigo_empresaId",
+												"RJ"
+											],
+											"query": [
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								}
+							]
+						},
+						{
+							"name": "Outros",
+							"item": [
+								{
+									"name": "CST e CFOP",
+									"request": {
+										"method": "GET",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											},
+											{
+												"key": "x-api-key",
+												"value": "INSERIR_codigo_x_api_key",
+												"type": "text"
+											},
+											{
+												"key": "access_token",
+												"value": "INSERIR_codigo_token",
+												"type": "text"
+											}
+										],
+										"url": {
+											"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item/icms-aliquotas/cst-cfop?empresa_id=INSERIR_codigo_empresaId&uf=SP&estabelecimento=atacadista&destinacao=comercializacao-saidas",
+											"protocol": "https",
+											"host": [
+												"gestor-svc-app",
+												"iob",
+												"com",
+												"br"
+											],
+											"path": [
+												"gestor-fiscal",
+												"v1",
+												"itens",
+												"INSERIR_codigo_id_item",
+												"icms-aliquotas",
+												"cst-cfop"
+											],
+											"query": [
+												{
+													"key": "empresa_id",
+													"value": "INSERIR_codigo_empresaId"
+												},
+												{
+													"key": "uf",
+													"value": "SP"
+												},
+												{
+													"key": "estabelecimento",
+													"value": "atacadista"
+												},
+												{
+													"key": "destinacao",
+													"value": "comercializacao-saidas"
+												}
+											]
+										}
+									},
+									"response": []
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "IPI",
+					"item": [
+						{
+							"name": "Alíquota de IPI",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "x-api-key",
+										"value": "INSERIR_codigo_x_api_key",
+										"type": "text"
+									},
+									{
+										"key": "access_token",
+										"value": "INSERIR_codigo_token",
+										"type": "text"
+									}
+								],
+								"url": {
+									"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item/ipi-aliquotas?empresa_id=INSERIR_codigo_empresaId&uf=RJ&estabelecimento=atacadista&destinacao=comercializacao-saidas",
+									"protocol": "https",
+									"host": [
+										"gestor-svc-app",
+										"iob",
+										"com",
+										"br"
+									],
+									"path": [
+										"gestor-fiscal",
+										"v1",
+										"itens",
+										"INSERIR_codigo_id_item",
+										"ipi-aliquotas"
+									],
+									"query": [
+										{
+											"key": "empresa_id",
+											"value": "INSERIR_codigo_empresaId"
+										},
+										{
+											"key": "uf",
+											"value": "RJ"
+										},
+										{
+											"key": "estabelecimento",
+											"value": "atacadista"
+										},
+										{
+											"key": "destinacao",
+											"value": "comercializacao-saidas"
+										}
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "PIS e COFINS",
+					"item": [
+						{
+							"name": "Alíquota de PIS e COFINS",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "x-api-key",
+										"value": "INSERIR_codigo_x_api_key",
+										"type": "text"
+									},
+									{
+										"key": "access_token",
+										"value": "INSERIR_codigo_token",
+										"type": "text"
+									}
+								],
+								"url": {
+									"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item/piscofins-aliquotas?empresa_id=INSERIR_codigo_empresaId&uf=SP&estabelecimento=atacadista&destinacao=comercializacao-saidas",
+									"protocol": "https",
+									"host": [
+										"gestor-svc-app",
+										"iob",
+										"com",
+										"br"
+									],
+									"path": [
+										"gestor-fiscal",
+										"v1",
+										"itens",
+										"INSERIR_codigo_id_item",
+										"piscofins-aliquotas"
+									],
+									"query": [
+										{
+											"key": "empresa_id",
+											"value": "INSERIR_codigo_empresaId"
+										},
+										{
+											"key": "uf",
+											"value": "SP"
+										},
+										{
+											"key": "estabelecimento",
+											"value": "atacadista"
+										},
+										{
+											"key": "destinacao",
+											"value": "comercializacao-saidas"
+										}
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CST",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									},
+									{
+										"key": "x-api-key",
+										"value": "INSERIR_codigo_x_api_key",
+										"type": "text"
+									},
+									{
+										"key": "access_token",
+										"value": "INSERIR_codigo_token",
+										"type": "text"
+									}
+								],
+								"url": {
+									"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/itens/INSERIR_codigo_id_item/pis-cofins/cst?empresa_id=INSERIR_codigo_empresaId&uf=RJ&estabelecimento=atacadista&destinacao=comercializacao-saidas",
+									"protocol": "https",
+									"host": [
+										"gestor-svc-app",
+										"iob",
+										"com",
+										"br"
+									],
+									"path": [
+										"gestor-fiscal",
+										"v1",
+										"itens",
+										"INSERIR_codigo_id_item",
+										"pis-cofins",
+										"cst"
+									],
+									"query": [
+										{
+											"key": "empresa_id",
+											"value": "INSERIR_codigo_empresaId"
+										},
+										{
+											"key": "uf",
+											"value": "RJ"
+										},
+										{
+											"key": "estabelecimento",
+											"value": "atacadista"
+										},
+										{
+											"key": "destinacao",
+											"value": "comercializacao-saidas"
+										}
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Monitoramento",
+			"item": [
+				{
+					"name": "Alterações - Não visualizadas",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "x-api-key",
+								"value": "INSERIR_codigo_x_api_key",
+								"type": "text"
+							},
+							{
+								"key": "access_token",
+								"value": "INSERIR_codigo_token",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/monitoramento/INSERIR_codigo_empresaId?Visualizados=false&_offset=1&_limit=5",
+							"protocol": "https",
+							"host": [
+								"gestor-svc-app",
+								"iob",
+								"com",
+								"br"
+							],
+							"path": [
+								"gestor-fiscal",
+								"v1",
+								"monitoramento",
+								"INSERIR_codigo_empresaId"
+							],
+							"query": [
+								{
+									"key": "Visualizados",
+									"value": "false"
+								},
+								{
+									"key": "_offset",
+									"value": "1"
+								},
+								{
+									"key": "_limit",
+									"value": "5"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

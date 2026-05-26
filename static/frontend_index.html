@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JK Sistema de Gestão</title>
+    <script>
+        (function () {
+            const ua = navigator.userAgent || '';
+            const mobileUa = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(ua);
+            const compactScreen = window.matchMedia('(max-width: 860px)').matches;
+            const touch = (navigator.maxTouchPoints || 0) > 0;
+            window.__JK_MOBILE_LOGIN__ = mobileUa || (touch && compactScreen);
+        })();
+    </script>
+    <style>
+        :root {
+            --card-bg: rgba(8, 24, 53, 0.82);
+            --card-border: rgba(255, 255, 255, 0.18);
+            --text: #f6f9ff;
+            --muted: #dbe6ff;
+            --input-bg: rgba(255, 255, 255, 0.12);
+            --input-border: rgba(255, 255, 255, 0.26);
+            --accent: #00c2ff;
+            --accent-hover: #00a7db;
+            --danger: #ff9a9a;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: 'Trebuchet MS', 'Verdana', sans-serif;
+            color: var(--text);
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            background: #061125;
+        }
+
+        .bg-video {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: -2;
+            transition: filter 0.45s ease, transform 0.45s ease, opacity 0.45s ease;
+        }
+
+        .bg-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            background: radial-gradient(circle at 20% 20%, rgba(0, 194, 255, 0.2), rgba(4, 11, 31, 0.86) 45%),
+                        linear-gradient(140deg, rgba(5, 18, 43, 0.72), rgba(1, 8, 21, 0.9));
+            transition: opacity 0.45s ease;
+        }
+
+        .login-container {
+            width: min(92vw, 440px);
+            border-radius: 22px;
+            padding: 34px 28px 28px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(8px);
+            text-align: left;
+            animation: reveal .7s ease-out;
+            transition: opacity 0.45s ease, transform 0.45s ease, filter 0.45s ease;
+        }
+
+        .login-container.authenticating {
+            transform: scale(0.995);
+            box-shadow: 0 22px 58px rgba(0, 0, 0, 0.55);
+        }
+
+        body.transitioning-to-intro .login-container {
+            opacity: 0;
+            transform: translateY(18px) scale(0.97);
+            filter: blur(8px);
+        }
+
+        body.transitioning-to-intro .bg-video {
+            filter: blur(10px) brightness(0.35);
+            transform: scale(1.04);
+        }
+
+        body.transitioning-to-intro .bg-overlay {
+            opacity: 0.2;
+        }
+
+        body.transitioning-from-intro .intro-screen video {
+            opacity: 0.12;
+            filter: blur(12px) brightness(0.4);
+            transform: scale(1.04);
+        }
+
+        body.transitioning-from-intro .intro-skip {
+            opacity: 0;
+            transform: translateY(-8px);
+        }
+
+        body.handoff-to-dashboard .bg-video,
+        body.handoff-to-dashboard .bg-overlay,
+        body.handoff-to-dashboard .login-container {
+            opacity: 0;
+            visibility: hidden;
+        }
+
+        body.handoff-to-dashboard .intro-screen {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: none;
+            background: #000;
+        }
+
+        body.handoff-to-dashboard .intro-screen::after {
+            opacity: 1;
+        }
+
+        body.handoff-to-dashboard .intro-screen video {
+            opacity: 0;
+            filter: blur(16px) brightness(0.2);
+            transform: scale(1.05);
+        }
+
+        body.handoff-to-dashboard .intro-skip {
+            opacity: 0;
+            transform: translateY(-8px);
+        }
+
+        @keyframes reveal {
+            from { opacity: 0; transform: translateY(18px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 18px;
+        }
+
+        .brand img {
+            max-width: 190px;
+            width: 68%;
+            height: auto;
+            filter: drop-shadow(0 7px 12px rgba(0, 0, 0, 0.45));
+        }
+
+        h1 {
+            margin: 4px 0 4px;
+            font-size: 1.58rem;
+            letter-spacing: 0.3px;
+            text-align: center;
+        }
+
+        .subtitle {
+            margin: 0 0 22px;
+            color: var(--muted);
+            text-align: center;
+            font-size: 0.95rem;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 14px;
+            margin: 8px 0;
+            border: 1px solid var(--input-border);
+            border-radius: 11px;
+            background: var(--input-bg);
+            color: var(--text);
+            font-size: 0.96rem;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        input::placeholder { color: rgba(232, 240, 255, 0.72); }
+
+        input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(0, 194, 255, 0.22);
+        }
+
+        .login-container.authenticating input {
+            opacity: 0.72;
+        }
+
+        button {
+            width: 100%;
+            margin-top: 10px;
+            padding: 12px;
+            background: linear-gradient(100deg, var(--accent), #32d6ff);
+            color: #04233d;
+            border: none;
+            border-radius: 11px;
+            cursor: pointer;
+            font-size: 0.98rem;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            transition: transform 0.16s ease, filter 0.16s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        button:hover {
+            filter: brightness(0.93);
+            transform: translateY(-1px);
+            background: linear-gradient(100deg, var(--accent-hover), #23c9f2);
+        }
+
+        button:disabled {
+            cursor: wait;
+            filter: saturate(0.88);
+            transform: none;
+        }
+
+        .button-label {
+            transition: opacity 0.2s ease;
+        }
+
+        .button-loader {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .button-loader::before {
+            content: "";
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid rgba(4, 35, 61, 0.25);
+            border-top-color: #04233d;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .button-loader-text {
+            font-size: 0.9rem;
+            font-weight: 800;
+            color: #04233d;
+        }
+
+        .login-container.authenticating button .button-label {
+            opacity: 0;
+        }
+
+        .login-container.authenticating button .button-loader {
+            opacity: 1;
+        }
+
+        .auth-status {
+            margin-top: 10px;
+            min-height: 18px;
+            text-align: center;
+            font-size: 0.88rem;
+            color: rgba(240, 247, 255, 0.82);
+            opacity: 0;
+            transform: translateY(4px);
+            transition: opacity 0.22s ease, transform 0.22s ease;
+        }
+
+        .login-container.authenticating .auth-status {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error {
+            color: var(--danger);
+            margin-top: 11px;
+            font-size: 0.9rem;
+            display: none;
+            text-align: center;
+            min-height: 20px;
+        }
+
+        .intro-screen {
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 60;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition: opacity 0.45s ease;
+        }
+
+        .intro-screen::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: #000;
+            opacity: 0;
+            transition: opacity 0.42s ease;
+            pointer-events: none;
+        }
+
+        .intro-screen.active {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+        }
+
+        .intro-screen.closing {
+            opacity: 0;
+        }
+
+        body.transitioning-from-intro .intro-screen::after {
+            opacity: 0.88;
+        }
+
+        .intro-screen video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: opacity 0.42s ease, filter 0.42s ease, transform 0.42s ease;
+        }
+
+        .intro-skip {
+            position: absolute;
+            top: 18px;
+            right: 18px;
+            width: auto;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.42);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.42);
+            font-size: 0.86rem;
+            font-weight: 700;
+            letter-spacing: 0;
+            transition: opacity 0.24s ease, transform 0.24s ease, background 0.2s ease;
+        }
+
+        .intro-skip:hover {
+            background: rgba(0, 0, 0, 0.62);
+        }
+
+        @media (max-width: 520px) {
+            .login-container {
+                padding: 28px 20px 24px;
+                border-radius: 18px;
+            }
+
+            h1 { font-size: 1.34rem; }
+            .brand img { width: 62%; }
+        }
+
+        body.modo-mobile {
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 14px 10px;
+            place-items: start center;
+        }
+
+        body.modo-mobile .bg-video {
+            object-fit: contain;
+            object-position: center center;
+            opacity: 0.7;
+            filter: saturate(0.8) brightness(0.78);
+            transform: none !important;
+        }
+
+        body.modo-mobile .login-container {
+            margin-top: 8vh;
+            width: min(96vw, 460px);
+            padding: 24px 16px 18px;
+            border-radius: 16px;
+        }
+
+        body.modo-mobile h1 { font-size: 1.22rem; }
+        body.modo-mobile .subtitle { font-size: 0.9rem; margin-bottom: 14px; }
+        body.modo-mobile input { font-size: 16px; }
+        body.modo-mobile button { min-height: 46px; }
+        body.modo-mobile .intro-skip {
+            top: auto;
+            right: auto;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            padding: 11px 16px;
+            font-size: 0.9rem;
+        }
+
+        /* No celular, mostra o vídeo inteiro da apresentação sem cortar. */
+        body.modo-mobile .intro-screen {
+            display: grid;
+            place-items: center;
+            background: #fff;
+        }
+
+        body.modo-mobile .intro-screen video {
+            width: 100vw;
+            height: 100vh;
+            max-width: 100vw;
+            max-height: 100vh;
+            object-fit: contain;
+            object-position: center center;
+            background: #fff;
+            transform: none !important;
+        }
+
+        body.modo-mobile.transitioning-to-intro .bg-video,
+        body.modo-mobile.transitioning-from-intro .intro-screen video,
+        body.modo-mobile.handoff-to-dashboard .intro-screen video {
+            transform: none !important;
+        }
+
+        /* Retrato (celular): garante quadro completo do vídeo sem cortes,
+           mesmo quando classes de transição alteram scale/filter. */
+        @media (orientation: portrait) and (max-width: 900px) {
+            .bg-video,
+            .intro-screen video {
+                object-fit: contain !important;
+                object-position: center center !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                max-width: 100vw !important;
+                max-height: 100vh !important;
+                transform: none !important;
+            }
+
+            body.transitioning-to-intro .bg-video,
+            body.transitioning-from-intro .intro-screen video,
+            body.handoff-to-dashboard .intro-screen video {
+                transform: none !important;
+                filter: none !important;
+            }
+
+            .intro-screen,
+            .bg-video {
+                background: #fff !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <video class="bg-video" autoplay muted loop playsinline>
+        <source src="../img/video.mp4" type="video/mp4">
+    </video>
+    <div class="bg-overlay" aria-hidden="true"></div>
+
+    <div class="intro-screen" id="intro-screen" aria-hidden="true">
+        <video id="intro-video" playsinline preload="auto" muted>
+            <source src="../img/video.mp4" type="video/mp4">
+        </video>
+        <button class="intro-skip" onclick="pularApresentacao()">Pular apresentação</button>
+    </div>
+
+    <div class="login-container">
+        <div class="brand">
+            <img src="../img/Logo Trend.png" alt="Trend Minas">
+        </div>
+        <h1>JK Sistema de Gestão</h1>
+        <p class="subtitle">Acesse sua conta para continuar</p>
+        <input type="text" id="username" placeholder="Usuário">
+        <input type="password" id="password" placeholder="Senha">
+        <button id="login-button" onclick="fazerLogin()">
+            <span class="button-label">ENTRAR</span>
+            <span class="button-loader" aria-hidden="true">
+                <span class="button-loader-text">Autenticando...</span>
+            </span>
+        </button>
+        <div class="auth-status" id="auth-status">Validando credenciais e preparando seu acesso</div>
+        <p class="error" id="error-msg"></p>
+    </div>
+
+    <script>
+        if (window.__JK_MOBILE_LOGIN__) {
+            document.body.classList.add('modo-mobile');
+        }
+
+        (function entrarComSessaoSalva() {
+            try {
+                const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+                const token = localStorage.getItem('access_token');
+                if (userData && (token || userData.client_id)) {
+                    window.location.replace('dashboard.html');
+                }
+            } catch (_err) {}
+        })();
+
+        let finalizarApresentacao = null;
+
+        function setAutenticando(ativo) {
+            const container = document.querySelector('.login-container');
+            const button = document.getElementById('login-button');
+            const username = document.getElementById('username');
+            const password = document.getElementById('password');
+
+            if (!container || !button || !username || !password) {
+                return;
+            }
+
+            container.classList.toggle('authenticating', ativo);
+            button.disabled = ativo;
+            username.disabled = ativo;
+            password.disabled = ativo;
+        }
+
+        function esperar(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        function pularApresentacao() {
+            if (typeof finalizarApresentacao === 'function') {
+                finalizarApresentacao();
+            }
+        }
+
+        function mostrarApresentacaoAntesDeEntrar() {
+            return new Promise((resolve) => {
+                const body = document.body;
+                const introScreen = document.getElementById('intro-screen');
+                const introVideo = document.getElementById('intro-video');
+                const modoMobile = !!window.__JK_MOBILE_LOGIN__;
+                if (!introScreen || !introVideo) {
+                    resolve();
+                    return;
+                }
+
+                let finalizado = false;
+                const iniciar = async () => {
+                    body.classList.add('transitioning-to-intro');
+                    await esperar(modoMobile ? 260 : 420);
+                    introScreen.classList.remove('closing');
+                    introScreen.classList.add('active');
+                    introScreen.setAttribute('aria-hidden', 'false');
+                    introVideo.currentTime = 0;
+
+                    const tentativaPlay = introVideo.play();
+                    if (tentativaPlay && typeof tentativaPlay.catch === 'function') {
+                        tentativaPlay.catch(concluir);
+                    }
+                };
+
+                const concluir = async () => {
+                    if (finalizado) return;
+                    finalizado = true;
+                    clearTimeout(timeoutId);
+                    body.classList.add('transitioning-from-intro');
+                    await esperar(modoMobile ? 560 : 920);
+                    introScreen.classList.add('closing');
+                    await esperar(modoMobile ? 180 : 320);
+                    introVideo.pause();
+                    introScreen.classList.remove('closing');
+                    introScreen.classList.add('active');
+                    introScreen.setAttribute('aria-hidden', 'false');
+                    body.classList.remove('transitioning-from-intro');
+                    body.classList.add('handoff-to-dashboard');
+                    await esperar(modoMobile ? 80 : 120);
+                    finalizarApresentacao = null;
+                    resolve();
+                };
+
+                finalizarApresentacao = concluir;
+                introVideo.addEventListener('ended', concluir, { once: true });
+                introVideo.addEventListener('error', concluir, { once: true });
+
+                const timeoutId = setTimeout(concluir, modoMobile ? 7000 : 19000);
+                iniciar();
+            });
+        }
+
+        function obterMachineIdNavegador() {
+            const key = 'jk_machine_id';
+            let saved = localStorage.getItem(key);
+            if (saved) return saved;
+
+            const seed = [
+                navigator.userAgent || '',
+                navigator.language || '',
+                navigator.platform || '',
+                (window.screen ? `${window.screen.width}x${window.screen.height}` : ''),
+                (Intl.DateTimeFormat().resolvedOptions().timeZone || ''),
+                Math.random().toString(36).slice(2),
+                Date.now().toString(36)
+            ].join('|');
+
+            let hash = 0;
+            for (let i = 0; i < seed.length; i++) {
+                hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+                hash |= 0;
+            }
+            saved = 'browser-' + Math.abs(hash).toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+            localStorage.setItem(key, saved);
+            return saved;
+        }
+
+        async function obterIdentificacaoMaquina() {
+            if (window.electronAPI) {
+                try {
+                    if (typeof window.electronAPI.getMachineInfo === 'function') {
+                        const info = await window.electronAPI.getMachineInfo();
+                        if (info && (info.machineId || info.hostname || info.mac)) {
+                            return info.machineId || [info.hostname, info.mac, info.adapter].filter(Boolean).join(' | ');
+                        }
+                    }
+                    if (typeof window.electronAPI.getMac === 'function') {
+                        const mac = await window.electronAPI.getMac();
+                        if (mac) return 'mac:' + mac;
+                    }
+                } catch (e) {
+                    console.error('Erro ao obter dados da máquina pelo Electron:', e);
+                }
+            }
+
+            const browserId = obterMachineIdNavegador();
+            const plataforma = (navigator.platform || navigator.userAgent || 'NAVEGADOR').toString().trim();
+            return `browser:${plataforma} | id:${browserId}`;
+        }
+
+        async function fazerLogin() {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            const errorMsg = document.getElementById('error-msg');
+            
+            errorMsg.style.display = 'none'; // Limpa erro anterior
+            
+            if (!user || !pass) { errorMsg.textContent = "Preencha todos os campos."; errorMsg.style.display = 'block'; return; }
+            
+            // Verificação se o usuário abriu o arquivo direto da pasta
+            if (window.location.protocol === 'file:') {
+                alert("⚠️ ERRO DE ACESSO\n\nVocê abriu o arquivo incorretamente.\nNão clique duas vezes no HTML.\n\nUse o aplicativo instalado ou o endereço correto do sistema.");
+                return;
+            }
+            
+            let machineId = await obterIdentificacaoMaquina();
+
+            try {
+                setAutenticando(true);
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: user, password: pass, machine_id: machineId })
+                });
+                
+                // Tratamento de erros HTTP (ex: 500 Internal Server Error)
+                if (!response.ok) {
+                    let errorDetail = "Erro no servidor (" + response.status + ")";
+                    try { 
+                        const errJson = await response.json(); 
+                        if (errJson.detail) {
+                            // Se for lista de erros (Pydantic), junta as mensagens
+                            if (Array.isArray(errJson.detail)) {
+                                errorDetail = errJson.detail.map(e => e.msg).join(", ");
+                            } else {
+                                errorDetail = typeof errJson.detail === 'object' ? JSON.stringify(errJson.detail) : errJson.detail;
+                            }
+                        }
+                    } catch(e){}
+                    throw new Error(errorDetail);
+                }
+
+                const data = await response.json();
+                if (data.success) {
+                    localStorage.setItem('user_data', JSON.stringify(data.user_data));
+                    if (data.access_token) {
+                        localStorage.setItem('access_token', data.access_token);
+                    } else {
+                        localStorage.removeItem('access_token');
+                        console.warn('Servidor não retornou access_token; usando modo legado com X-Client-ID.');
+                    }
+                    localStorage.setItem('permissions', JSON.stringify(data.permissions || {}));
+                    await mostrarApresentacaoAntesDeEntrar();
+                    window.location.href = 'dashboard.html';
+                } else {
+                    setAutenticando(false);
+                    errorMsg.textContent = data.message || "Credenciais inválidas ou erro desconhecido.";
+                    errorMsg.style.display = 'block';
+                }
+            } catch (e) { 
+                setAutenticando(false);
+                console.error(e);
+                errorMsg.textContent = e.message === "Failed to fetch" ? "Erro de conexão. O servidor está rodando?" : e.message; 
+                errorMsg.style.display = 'block'; 
+            }
+        }
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+
+            const username = document.getElementById('username');
+            const password = document.getElementById('password');
+            if (!username || !password) return;
+
+            const target = event.target;
+            if (target !== username && target !== password) return;
+
+            event.preventDefault();
+            fazerLogin();
+        });
+    </script>
+</body>
+</html>

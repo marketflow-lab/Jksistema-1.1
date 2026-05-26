@@ -1,0 +1,1119 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>JK Sistema - Renovação Fixa</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #1e1e2e; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 98%; margin: 0 auto; text-align: center; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        .btn-back { background-color: #444; color: white; padding: 10px 20px; border-radius: 5px; border: none; cursor: pointer; }
+        .card { background-color: #25252e; padding: 30px; border-radius: 12px; border: 1px solid #444; margin-bottom: 20px; }
+        .api-card { text-align: left; border-color: #00b89466; background: #202634; }
+        .api-card h3 { margin-top: 0; text-align: center; }
+        .api-card p { color: #b8c7df; text-align: center; margin-bottom: 22px; }
+        .campaign-summary-panel { border: 1px solid #35536f; background: #151d2b; border-radius: 8px; margin-bottom: 22px; overflow: hidden; }
+        .campaign-summary-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid #35536f; color: #dce8ff; }
+        .campaign-summary-title { font-size: 1.05em; font-weight: 800; }
+        .campaign-summary-subtitle { color: #9eb8d7; font-size: .92em; margin-top: 4px; }
+        .campaign-table-wrapper { overflow: visible; }
+        .campaign-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .campaign-table th, .campaign-table td { padding: 11px 12px; border-bottom: 1px solid #2d425a; text-align: left; vertical-align: middle; }
+        .campaign-table th { background: #102033; color: #9fd7ff; font-size: .9em; position: sticky; top: 0; z-index: 1; }
+        .campaign-table tr { cursor: pointer; }
+        .campaign-table tr:hover { background: #20304a; }
+        .campaign-table tr.selected { background: #123c55; outline: 1px solid #31c7ff; }
+        .campaign-name { font-weight: 800; color: #fff; }
+        .campaign-id { color: #9eb8d7; font-size: .86em; margin-top: 3px; }
+        .campaign-badge { display: inline-flex; align-items: center; border: 1px solid #49627e; border-radius: 999px; padding: 4px 9px; color: #dce8ff; background: #1d2a3d; font-weight: 700; font-size: .86em; }
+        .campaign-count { font-weight: 900; color: #8ff7d7; }
+        .campaign-empty { padding: 18px; color: #9eb8d7; text-align: center; }
+        .campaign-schedule-cell { width: 82px; text-align: center !important; }
+        .campaign-schedule-checkbox { width: 18px; height: 18px; accent-color: #00b894; cursor: pointer; }
+        .campaign-schedule-checkbox:disabled { cursor: wait; opacity: .6; }
+        .campaign-actions-cell { width: 190px; text-align: right !important; }
+        .campaign-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+        .btn-row { background: #1f8fd1; color: #fff; border: 1px solid #4facfe; border-radius: 7px; padding: 8px 10px; cursor: pointer; font-weight: 800; font-size: .82em; }
+        .btn-row:hover { background: #28a5f0; }
+        .btn-row-danger { background: #6b2431; border-color: #d85b6a; }
+        .btn-row-danger:hover { background: #8d2c3d; }
+        .api-grid { display: grid; grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.6fr) minmax(220px, 1fr); gap: 14px; align-items: end; }
+        .field { display: flex; flex-direction: column; gap: 6px; color: #dce8ff; font-weight: 700; }
+        .field select, .field input { background: #151d2b; color: #fff; border: 1px solid #49627e; border-radius: 7px; padding: 11px; min-height: 42px; }
+        .api-actions { display: flex; gap: 12px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
+        .btn-action { background: #34495e; color: white; padding: 12px 18px; border-radius: 7px; border: 1px solid #6b85a3; cursor: pointer; font-weight: 700; }
+        .btn-action:hover { background: #3e5872; }
+        .btn-danger { background: #7b2838; border-color: #d85b6a; }
+        .btn-danger:hover { background: #963448; }
+        .btn-api { width: auto; margin-top: 0; padding: 12px 22px; }
+        .period-popover[hidden] { display: none; }
+        .period-popover { position: fixed; z-index: 5000; width: min(420px, calc(100vw - 28px)); background: #101b2b; border: 1px solid #4facfe; border-radius: 10px; box-shadow: 0 18px 50px rgba(0, 0, 0, .45); padding: 14px; text-align: left; }
+        .period-popover::before { content: ""; position: absolute; top: -8px; left: 28px; width: 14px; height: 14px; background: #101b2b; border-left: 1px solid #4facfe; border-top: 1px solid #4facfe; transform: rotate(45deg); }
+        .period-popover-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+        .period-popover-title { color: #fff; font-weight: 900; line-height: 1.25; }
+        .period-popover-subtitle { color: #9eb8d7; font-size: .85em; margin-top: 3px; }
+        .period-popover-close { width: 30px; height: 30px; border-radius: 7px; border: 1px solid #49627e; background: #16263a; color: #dce8ff; cursor: pointer; font-weight: 900; }
+        .period-mode-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+        .period-mode-btn { border: 1px solid #35536f; background: #151d2b; color: #b8d4ff; border-radius: 8px; padding: 10px; cursor: pointer; text-align: left; font-weight: 800; }
+        .period-mode-btn strong { display: block; color: #fff; margin-bottom: 4px; }
+        .period-mode-btn.active { border-color: #31c7ff; background: #123c55; }
+        .period-mode-btn:disabled { opacity: .48; cursor: not-allowed; }
+        .period-calendar { border: 1px solid #2d425a; border-radius: 9px; background: #0d1725; padding: 10px; }
+        .period-calendar-header { display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .period-calendar-month { text-align: center; color: #dce8ff; font-weight: 900; }
+        .period-nav-btn { height: 32px; border-radius: 7px; border: 1px solid #49627e; background: #16263a; color: #dce8ff; cursor: pointer; font-weight: 900; }
+        .period-weekdays, .period-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+        .period-weekdays span { text-align: center; color: #8cb3db; font-size: .78em; font-weight: 900; padding: 4px 0; }
+        .period-day { aspect-ratio: 1; min-height: 34px; border: 1px solid #263a52; border-radius: 8px; background: #142238; color: #dce8ff; cursor: pointer; font-weight: 800; }
+        .period-day:hover { border-color: #31c7ff; background: #17405c; }
+        .period-day.is-empty { visibility: hidden; pointer-events: none; }
+        .period-day.is-selected { border-color: #00d1ff; background: #1f8fd1; color: #fff; }
+        .period-day.is-range { background: #123c55; border-color: #2b77a5; }
+        .period-day.is-today { box-shadow: inset 0 0 0 2px #66f0b8; }
+        .period-popover-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+        .period-hint { color: #9eb8d7; font-size: .86em; margin-top: 10px; line-height: 1.35; }
+        .sync-panel { margin-top: 18px; border: 1px solid #35536f; background: #151d2b; border-radius: 8px; padding: 16px; }
+        .sync-title { color: #dce8ff; font-weight: 900; margin-bottom: 6px; }
+        .sync-hint { color: #9eb8d7; font-size: .92em; margin-bottom: 14px; }
+        .sync-grid { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
+        .schedule-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: #dce8ff; font-weight: 700; }
+        .schedule-row input { width: 18px; height: 18px; accent-color: #00b894; }
+        .schedule-hint { margin-top: 7px; color: #9eb8d7; font-size: .92em; }
+        .status-box { margin-top: 14px; padding: 12px 14px; border-radius: 8px; border: 1px solid #49627e; background: #151d2b; color: #b8d4ff; display: none; }
+        .status-box.ok { display: block; border-color: #00b894; color: #8ff7d7; }
+        .status-box.error { display: block; border-color: #ff7675; color: #ffb3b3; }
+        .status-box.info { display: block; border-color: #4facfe; color: #b8d4ff; }
+        .sync-progress { display: none; margin-top: 14px; padding: 12px 14px; border: 1px solid #4facfe; border-radius: 8px; background: #0f1a2a; }
+        .sync-progress.show { display: block; }
+        .sync-progress.error { border-color: #ff7675; }
+        .sync-progress.ok { border-color: #00b894; }
+        .sync-progress-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: #b8d4ff; font-weight: 800; }
+        .sync-progress.error .sync-progress-row { color: #ffb3b3; }
+        .sync-progress.ok .sync-progress-row { color: #8ff7d7; }
+        .sync-progress-track { height: 11px; border-radius: 999px; overflow: hidden; background: #0a1220; border: 1px solid #24425f; }
+        .sync-progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #27d3ff, #66f0b8); transition: width .25s ease; }
+        .campaign-info { margin-top: 12px; color: #b8c7df; font-size: .95em; }
+        .btn-process { background-color: #00b894; color: white; padding: 15px 30px; font-size: 1.1em; border: none; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 20px; }
+        .btn-process:hover { background-color: #00a884; }
+        .btn-process.btn-api { width: auto; margin-top: 0; padding: 12px 18px; font-size: 1em; border-radius: 7px; border: 1px solid #00d1a2; }
+        @media (max-width: 900px) {
+            .api-grid { grid-template-columns: 1fr; }
+            .period-popover { left: 14px !important; right: 14px; width: auto; }
+            .api-actions { align-items: stretch; }
+            .btn-api, .btn-action, .btn-row { width: 100%; }
+            .campaign-actions-cell { width: auto; text-align: left !important; }
+            .campaign-actions { justify-content: stretch; }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+    <script src="/ncm-sync.js"></script>
+    <script src="/global-status.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h2>🔄 Renovação de Campanha Fixa</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn-back" onclick="window.location.href='dashboard.html'">🏠 Home</button>
+            <button class="btn-back" onclick="window.location.href='dashboard.html'">⬅️ Voltar</button>
+        </div>
+    </div>
+
+    <div class="card api-card">
+        <div class="campaign-summary-panel">
+            <div class="campaign-summary-header">
+                <div>
+                    <div class="campaign-summary-title">Campanhas criadas pelo usuario</div>
+                    <div class="campaign-summary-subtitle" id="renovacao-lista-resumo">Selecione uma loja para carregar as campanhas.</div>
+                </div>
+            </div>
+            <div id="renovacao-campanhas-lista" class="campaign-empty">Selecione uma loja para ver as campanhas criadas.</div>
+        </div>
+        <div class="api-grid">
+            <label class="field">
+                Loja
+                <select id="renovacao-loja" onchange="carregarCampanhasRenovacao()">
+                    <option value="">Carregando lojas...</option>
+                </select>
+            </label>
+            <label class="field">
+                Campanha de origem
+                <select id="renovacao-campanha" onchange="selecionarCampanhaRenovacao()">
+                    <option value="">Selecione uma loja</option>
+                </select>
+            </label>
+            <label class="field">
+                Nome da nova campanha
+                <input type="text" id="renovacao-nome" placeholder="Digite o novo nome">
+            </label>
+        </div>
+        <div class="api-actions">
+            <button class="btn-action" onclick="carregarCampanhasRenovacao()">Atualizar campanhas</button>
+            <button class="btn-process btn-api" id="btn-criar-renovacao" onclick="criarCampanhaMesSeguinte()">Criar campanha do mes seguinte</button>
+        </div>
+        <div id="renovacao-periodo-popover" class="period-popover" hidden>
+            <div class="period-popover-header">
+                <div>
+                    <div class="period-popover-title" id="renovacao-periodo-titulo">Alterar periodo</div>
+                    <div class="period-popover-subtitle" id="renovacao-periodo-subtitulo"></div>
+                </div>
+                <button type="button" class="period-popover-close" onclick="fecharPopoverPeriodoRenovacao()">X</button>
+            </div>
+            <div class="period-mode-row">
+                <button type="button" class="period-mode-btn" id="renovacao-periodo-modo-inicio" onclick="selecionarCampoPeriodoRenovacao('inicio')">
+                    <strong>Inicio</strong>
+                    <span id="renovacao-periodo-valor-inicio">--/--/----</span>
+                </button>
+                <button type="button" class="period-mode-btn" id="renovacao-periodo-modo-fim" onclick="selecionarCampoPeriodoRenovacao('fim')">
+                    <strong>Fim</strong>
+                    <span id="renovacao-periodo-valor-fim">--/--/----</span>
+                </button>
+            </div>
+            <div class="period-calendar">
+                <div class="period-calendar-header">
+                    <button type="button" class="period-nav-btn" onclick="mudarMesPeriodoRenovacao(-1)">‹</button>
+                    <div class="period-calendar-month" id="renovacao-periodo-mes"></div>
+                    <button type="button" class="period-nav-btn" onclick="mudarMesPeriodoRenovacao(1)">›</button>
+                </div>
+                <div class="period-weekdays">
+                    <span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span>
+                </div>
+                <div class="period-days" id="renovacao-periodo-dias"></div>
+            </div>
+            <div class="period-hint" id="renovacao-periodo-hint"></div>
+            <div class="period-popover-actions">
+                <button type="button" class="btn-action" onclick="fecharPopoverPeriodoRenovacao()">Cancelar</button>
+                <button type="button" class="btn-action" id="btn-salvar-periodo-renovacao" onclick="alterarPeriodoCampanhaRenovacao()">Salvar periodo</button>
+            </div>
+        </div>
+        <div class="sync-panel">
+            <div class="sync-title">Sincronizar promoção</div>
+            <div class="sync-hint">Copia todos os MLBs ativos ou programados da campanha de origem para a campanha nova, mantendo a mesma porcentagem de desconto da campanha antiga.</div>
+            <div class="api-grid sync-grid">
+                <label class="field">
+                    Promoção a sincronizar / origem
+                    <select id="renovacao-sync-origem" onchange="atualizarCampanhasDestinoRenovacao()">
+                        <option value="">Selecione uma loja</option>
+                    </select>
+                </label>
+                <label class="field">
+                    Campanha nova / destino
+                    <select id="renovacao-campanha-destino">
+                        <option value="">Selecione uma loja</option>
+                    </select>
+                </label>
+            </div>
+            <div class="api-actions">
+                <button class="btn-process btn-api" id="btn-sincronizar-renovacao" onclick="sincronizarPromocaoRenovacao()">Sincronizar promoção</button>
+            </div>
+            <div id="renovacao-sync-progress" class="sync-progress">
+                <div class="sync-progress-row">
+                    <span id="renovacao-sync-progress-text">Preparando sincronizacao...</span>
+                    <span id="renovacao-sync-progress-percent">0%</span>
+                </div>
+                <div class="sync-progress-track">
+                    <div id="renovacao-sync-progress-fill" class="sync-progress-fill"></div>
+                </div>
+            </div>
+        </div>
+        <div id="renovacao-campanha-info" class="campaign-info"></div>
+        <div id="renovacao-api-status" class="status-box"></div>
+    </div>
+
+</div>
+
+<script>
+    let campanhasRenovacao = [];
+    let renovacaoNomeSugeridoAtual = '';
+    let renovacaoSyncPolling = null;
+    let renovacaoPeriodoState = {
+        campanhaId: '',
+        campo: 'fim',
+        inicio: '',
+        fim: '',
+        mesAno: null,
+        mesMes: null
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        carregarLojasRenovacao();
+        const popoverPeriodo = document.getElementById('renovacao-periodo-popover');
+        if (popoverPeriodo) {
+            popoverPeriodo.addEventListener('click', (event) => event.stopPropagation());
+        }
+        document.addEventListener('click', fecharPopoverPeriodoAoClicarFora);
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') fecharPopoverPeriodoRenovacao();
+        });
+    });
+
+    function setRenovacaoApiStatus(texto, tipo = 'info') {
+        const box = document.getElementById('renovacao-api-status');
+        if (!box) return;
+        box.textContent = texto || '';
+        box.className = `status-box ${tipo}`;
+        box.style.display = texto ? 'block' : 'none';
+    }
+
+    function setRenovacaoSyncProgress(texto, percentual = 0, tipo = 'info') {
+        const box = document.getElementById('renovacao-sync-progress');
+        const label = document.getElementById('renovacao-sync-progress-text');
+        const percentLabel = document.getElementById('renovacao-sync-progress-percent');
+        const fill = document.getElementById('renovacao-sync-progress-fill');
+        const pct = Math.max(0, Math.min(100, Number(percentual || 0)));
+        if (box) box.className = `sync-progress show ${tipo || 'info'}`;
+        if (label) label.textContent = texto || 'Processando sincronizacao...';
+        if (percentLabel) percentLabel.textContent = `${Math.round(pct)}%`;
+        if (fill) fill.style.width = `${pct}%`;
+    }
+
+    function pararPollingRenovacaoSync() {
+        if (renovacaoSyncPolling) {
+            clearInterval(renovacaoSyncPolling);
+            renovacaoSyncPolling = null;
+        }
+    }
+
+    function resetarBotaoSincronizacaoRenovacao(botao) {
+        if (!botao) return;
+        botao.disabled = false;
+        botao.textContent = 'Sincronizar promoção';
+    }
+
+    function nomeLojaRenovacao(loja) {
+        if (typeof loja === 'string') return loja;
+        return loja?.nome || loja?.name || '';
+    }
+
+    async function carregarLojasRenovacao() {
+        const select = document.getElementById('renovacao-loja');
+        if (!select) return;
+        select.innerHTML = '<option value="">Carregando lojas...</option>';
+        try {
+            const response = await fetch('/api/lojas', { headers: { ...obterAuthHeaders() } });
+            if (!response.ok) throw new Error('Nao foi possivel carregar as lojas.');
+            const lojas = await response.json();
+            const nomes = (Array.isArray(lojas) ? lojas : []).map(nomeLojaRenovacao).filter(Boolean);
+            select.innerHTML = nomes.length
+                ? nomes.map((nome) => `<option value="${escapeHtml(nome)}">${escapeHtml(nome)}</option>`).join('')
+                : '<option value="">Nenhuma loja cadastrada</option>';
+            if (nomes.length) carregarCampanhasRenovacao();
+        } catch (error) {
+            select.innerHTML = '<option value="">Erro ao carregar lojas</option>';
+            setRenovacaoApiStatus(error.message || 'Erro ao carregar lojas.', 'error');
+        }
+    }
+
+    async function carregarCampanhasRenovacao() {
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        const selectCampanha = document.getElementById('renovacao-campanha');
+        const selectSyncOrigem = document.getElementById('renovacao-sync-origem');
+        const selectDestino = document.getElementById('renovacao-campanha-destino');
+        const info = document.getElementById('renovacao-campanha-info');
+        renderizarCampanhasRenovacao([], loja ? 'Carregando campanhas criadas...' : 'Selecione uma loja para ver as campanhas criadas.');
+        campanhasRenovacao = [];
+        renovacaoNomeSugeridoAtual = '';
+        if (!selectCampanha) return;
+        if (info) info.textContent = '';
+        if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Selecione uma loja</option>';
+        if (selectDestino) selectDestino.innerHTML = '<option value="">Selecione uma loja</option>';
+        document.getElementById('renovacao-nome').value = '';
+        fecharPopoverPeriodoRenovacao();
+        if (!loja) {
+            selectCampanha.innerHTML = '<option value="">Selecione uma loja</option>';
+            if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Selecione uma loja</option>';
+            if (selectDestino) selectDestino.innerHTML = '<option value="">Selecione uma loja</option>';
+            renderizarCampanhasRenovacao([], 'Selecione uma loja para ver as campanhas criadas.');
+            return;
+        }
+        selectCampanha.innerHTML = '<option value="">Carregando campanhas...</option>';
+        if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Carregando campanhas...</option>';
+        if (selectDestino) selectDestino.innerHTML = '<option value="">Carregando campanhas...</option>';
+        setRenovacaoApiStatus('Buscando campanhas criadas pelo usuario...', 'info');
+        try {
+            const response = await fetch(`/api/renovacao/campanhas-usuario?loja=${encodeURIComponent(loja)}`, {
+                headers: { ...obterAuthHeaders() }
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Nao foi possivel listar as campanhas.');
+            campanhasRenovacao = Array.isArray(result.campaigns) ? result.campaigns : [];
+            if (!campanhasRenovacao.length) {
+                selectCampanha.innerHTML = '<option value="">Nenhuma campanha do vendedor encontrada</option>';
+                if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Nenhuma campanha disponivel</option>';
+                if (selectDestino) selectDestino.innerHTML = '<option value="">Nenhuma campanha disponivel</option>';
+                renderizarCampanhasRenovacao([], 'Nenhuma campanha criada pelo usuario foi encontrada nesta loja.');
+                setRenovacaoApiStatus('Nenhuma campanha do vendedor foi encontrada para esta loja.', 'info');
+                return;
+            }
+            selectCampanha.innerHTML = campanhasRenovacao.map((campanha) => {
+                const status = campanha.status ? ` - ${campanha.status}` : '';
+                const ativos = temNumeroRenovacao(campanha.active_count) ? ` | Ativos: ${campanha.active_count}` : '';
+                const programadosValor = campanha.programmed_count ?? campanha.scheduled_count;
+                const programados = temNumeroRenovacao(programadosValor) ? ` | Programados: ${programadosValor}` : '';
+                return `<option value="${escapeHtml(campanha.id)}">${escapeHtml(campanha.name || campanha.id)}${escapeHtml(status)} (${escapeHtml(campanha.id)})${escapeHtml(ativos)}${escapeHtml(programados)}</option>`;
+            }).join('');
+            if (selectSyncOrigem) {
+                selectSyncOrigem.innerHTML = '<option value="">Selecione a promoção antiga</option>' + campanhasRenovacao.map((campanha) => {
+                    return `<option value="${escapeHtml(campanha.id)}">${escapeHtml(rotuloOpcaoCampanhaRenovacao(campanha))}</option>`;
+                }).join('');
+                selectSyncOrigem.value = selectCampanha.value || '';
+            }
+            renderizarCampanhasRenovacao(campanhasRenovacao);
+            selecionarCampanhaRenovacao();
+            atualizarCampanhasDestinoRenovacao();
+            setRenovacaoApiStatus(`${campanhasRenovacao.length} campanha(s) encontrada(s).`, 'ok');
+        } catch (error) {
+            selectCampanha.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
+            if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
+            if (selectDestino) selectDestino.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
+            renderizarCampanhasRenovacao([], error.message || 'Erro ao listar campanhas.');
+            setRenovacaoApiStatus(error.message || 'Erro ao listar campanhas.', 'error');
+        }
+    }
+
+    function renderizarCampanhasRenovacao(campanhas, mensagem = '') {
+        const lista = document.getElementById('renovacao-campanhas-lista');
+        const resumo = document.getElementById('renovacao-lista-resumo');
+        if (!lista) return;
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        if (!Array.isArray(campanhas) || !campanhas.length) {
+            lista.className = 'campaign-empty';
+            lista.innerHTML = escapeHtml(mensagem || 'Nenhuma campanha para exibir.');
+            if (resumo) resumo.textContent = loja ? 'Sem campanhas criadas nesta loja.' : 'Selecione uma loja para carregar as campanhas.';
+            return;
+        }
+
+        const totalAtivos = campanhas.reduce((total, campanha) => total + numeroRenovacao(campanha.active_count), 0);
+        const totalProgramados = campanhas.reduce((total, campanha) => total + numeroRenovacao(campanha.programmed_count ?? campanha.scheduled_count), 0);
+        if (resumo) {
+            resumo.textContent = `${campanhas.length} campanha(s) em ${loja || 'loja selecionada'} | Ativos: ${formatarNumeroRenovacao(totalAtivos)} | Programados: ${formatarNumeroRenovacao(totalProgramados)}`;
+        }
+
+        lista.className = 'campaign-table-wrapper';
+        lista.innerHTML = `
+            <table class="campaign-table">
+                <thead>
+                    <tr>
+                        <th class="campaign-schedule-cell">Renovar</th>
+                        <th>Campanha</th>
+                        <th>Status</th>
+                        <th>Periodo</th>
+                        <th>Ativos</th>
+                        <th>Programados</th>
+                        <th class="campaign-actions-cell">Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${campanhas.map((campanha) => {
+                        const periodo = [formatarDataCurta(campanha.start_date), formatarDataCurta(campanha.finish_date)].filter(Boolean).join(' ate ') || '-';
+                        const programados = campanha.programmed_count ?? campanha.scheduled_count;
+                        const agendado = Boolean(campanha.auto_renew_enabled || campanha.agendamento_enabled || campanha.agendamento?.enabled);
+                        return `
+                            <tr data-campanha-id="${escapeHtml(campanha.id)}">
+                                <td class="campaign-schedule-cell">
+                                    <input type="checkbox" class="campaign-schedule-checkbox" data-campanha-id="${escapeHtml(campanha.id)}" ${agendado ? 'checked' : ''} title="Renovar esta campanha no fim do mês">
+                                </td>
+                                <td>
+                                    <div class="campaign-name">${escapeHtml(campanha.name || campanha.title || campanha.id)}</div>
+                                    <div class="campaign-id">${escapeHtml(campanha.id || '')}</div>
+                                </td>
+                                <td><span class="campaign-badge">${escapeHtml(rotuloStatusCampanhaRenovacao(campanha.status))}</span></td>
+                                <td>${escapeHtml(periodo)}</td>
+                                <td class="campaign-count">${escapeHtml(formatarNumeroRenovacao(campanha.active_count))}</td>
+                                <td class="campaign-count">${escapeHtml(formatarNumeroRenovacao(programados))}</td>
+                                <td class="campaign-actions-cell">
+                                    <div class="campaign-actions">
+                                        <button type="button" class="btn-row" onclick="prepararAlterarPeriodoRenovacao(event, '${escapeHtml(campanha.id)}')">Periodo</button>
+                                        <button type="button" class="btn-row btn-row-danger" onclick="deletarCampanhaRenovacao(event, '${escapeHtml(campanha.id)}')">Deletar</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+        lista.querySelectorAll('[data-campanha-id]').forEach((linha) => {
+            linha.addEventListener('click', () => {
+                const select = document.getElementById('renovacao-campanha');
+                if (select) {
+                    select.value = linha.dataset.campanhaId || '';
+                    selecionarCampanhaRenovacao();
+                }
+            });
+        });
+        lista.querySelectorAll('.campaign-schedule-checkbox').forEach((checkbox) => {
+            checkbox.addEventListener('click', (event) => event.stopPropagation());
+            checkbox.addEventListener('change', salvarAgendamentoLinhaRenovacao);
+        });
+        marcarCampanhaSelecionadaRenovacao();
+    }
+
+    async function salvarAgendamentoLinhaRenovacao(event) {
+        const checkbox = event.currentTarget;
+        const campanhaId = checkbox?.dataset?.campanhaId || '';
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        const campanha = campanhasRenovacao.find((item) => item.id === campanhaId) || {};
+        const marcado = Boolean(checkbox.checked);
+        if (!loja || !campanhaId) {
+            checkbox.checked = !marcado;
+            setRenovacaoApiStatus('Selecione uma loja e uma campanha para agendar.', 'error');
+            return;
+        }
+        checkbox.disabled = true;
+        try {
+            const response = await fetch('/api/renovacao/agendamento', {
+                method: 'PUT',
+                headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    loja,
+                    campanha_id: campanhaId,
+                    nome: gerarNomeCampanhaProximoMes(campanha),
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN',
+                    enabled: marcado
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Erro ao salvar agendamento.');
+            campanha.auto_renew_enabled = marcado;
+            campanha.agendamento = result.agendamento || { enabled: marcado };
+            const nomeCampanha = campanha.name || campanha.title || campanhaId;
+            setRenovacaoApiStatus(marcado ? `Agendamento ativado para "${nomeCampanha}".` : `Agendamento desativado para "${nomeCampanha}".`, marcado ? 'ok' : 'info');
+        } catch (error) {
+            checkbox.checked = !marcado;
+            setRenovacaoApiStatus(error.message || 'Erro ao salvar agendamento.', 'error');
+        } finally {
+            checkbox.disabled = false;
+        }
+    }
+
+    function marcarCampanhaSelecionadaRenovacao() {
+        const campanhaId = document.getElementById('renovacao-campanha')?.value || '';
+        document.querySelectorAll('#renovacao-campanhas-lista [data-campanha-id]').forEach((linha) => {
+            linha.classList.toggle('selected', linha.dataset.campanhaId === campanhaId);
+        });
+    }
+
+    function rotuloOpcaoCampanhaRenovacao(campanha) {
+        const status = campanha.status ? ` - ${campanha.status}` : '';
+        const ativos = temNumeroRenovacao(campanha.active_count) ? ` | Ativos: ${campanha.active_count}` : '';
+        const programadosValor = campanha.programmed_count ?? campanha.scheduled_count;
+        const programados = temNumeroRenovacao(programadosValor) ? ` | Programados: ${programadosValor}` : '';
+        return `${campanha.name || campanha.id}${status} (${campanha.id})${ativos}${programados}`;
+    }
+
+    function atualizarCampanhasDestinoRenovacao() {
+        const selectDestino = document.getElementById('renovacao-campanha-destino');
+        if (!selectDestino) return;
+        const origemId = document.getElementById('renovacao-sync-origem')?.value || document.getElementById('renovacao-campanha')?.value || '';
+        const valorAtual = selectDestino.value;
+        const destinos = campanhasRenovacao.filter((campanha) => String(campanha.id || '') !== String(origemId || ''));
+        if (!destinos.length) {
+            selectDestino.innerHTML = '<option value="">Nenhuma campanha nova disponivel</option>';
+            return;
+        }
+        selectDestino.innerHTML = '<option value="">Selecione a campanha nova</option>' + destinos.map((campanha) => {
+            return `<option value="${escapeHtml(campanha.id)}">${escapeHtml(rotuloOpcaoCampanhaRenovacao(campanha))}</option>`;
+        }).join('');
+        if (valorAtual && destinos.some((campanha) => String(campanha.id || '') === String(valorAtual))) {
+            selectDestino.value = valorAtual;
+        }
+    }
+
+    function obterCampanhaSelecionadaRenovacao(campanhaId = '') {
+        const id = campanhaId || document.getElementById('renovacao-campanha')?.value || '';
+        return campanhasRenovacao.find((item) => String(item.id || '') === String(id || '')) || null;
+    }
+
+    function dataInputRenovacao(valor) {
+        if (!valor) return '';
+        const texto = String(valor).slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(texto) ? texto : '';
+    }
+
+    function textoDataPeriodoRenovacao(valor) {
+        return valor ? formatarDataCurta(valor) : '--/--/----';
+    }
+
+    function campanhaPermiteAlterarInicioRenovacao(campanha) {
+        const status = String(campanha?.status || '').toLowerCase();
+        return !['started', 'active'].includes(status);
+    }
+
+    function fecharPopoverPeriodoRenovacao() {
+        const popover = document.getElementById('renovacao-periodo-popover');
+        if (popover) popover.hidden = true;
+    }
+
+    function fecharPopoverPeriodoAoClicarFora(event) {
+        const popover = document.getElementById('renovacao-periodo-popover');
+        if (!popover || popover.hidden) return;
+        const caminho = typeof event.composedPath === 'function' ? event.composedPath() : [];
+        if (caminho.includes(popover)) return;
+        if (popover.contains(event.target)) return;
+        if (event.target.closest?.('.btn-row')) return;
+        fecharPopoverPeriodoRenovacao();
+    }
+
+    function posicionarPopoverPeriodoRenovacao(anchorEl) {
+        const popover = document.getElementById('renovacao-periodo-popover');
+        if (!popover || !anchorEl) return;
+        popover.hidden = false;
+        const rect = anchorEl.getBoundingClientRect();
+        const margem = 14;
+        const largura = popover.offsetWidth || 420;
+        const altura = popover.offsetHeight || 430;
+        let left = Math.max(margem, Math.min(rect.left, window.innerWidth - largura - margem));
+        let top = rect.bottom + 12;
+        if (top + altura > window.innerHeight - margem) {
+            top = Math.max(margem, rect.top - altura - 12);
+        }
+        popover.style.left = `${left}px`;
+        popover.style.top = `${top}px`;
+    }
+
+    function preencherPeriodoCampanhaRenovacao(campanha) {
+        const popover = document.getElementById('renovacao-periodo-popover');
+        if (!popover || popover.hidden || !campanha || String(campanha.id || '') !== String(renovacaoPeriodoState.campanhaId || '')) {
+            return;
+        }
+        renovacaoPeriodoState.inicio = dataInputRenovacao(campanha.start_date);
+        renovacaoPeriodoState.fim = dataInputRenovacao(campanha.finish_date);
+        renderizarPopoverPeriodoRenovacao();
+    }
+
+    function abrirPopoverPeriodoRenovacao(anchorEl, campanhaId) {
+        const campanha = obterCampanhaSelecionadaRenovacao(campanhaId);
+        if (!campanha) {
+            setRenovacaoApiStatus('Selecione uma campanha para alterar o periodo.', 'error');
+            return;
+        }
+        const inicio = dataInputRenovacao(campanha.start_date);
+        const fim = dataInputRenovacao(campanha.finish_date);
+        const dataBase = parseDataRenovacao(fim || inicio) || new Date();
+        renovacaoPeriodoState = {
+            campanhaId: String(campanha.id || ''),
+            campo: 'fim',
+            inicio,
+            fim,
+            mesAno: dataBase.getFullYear(),
+            mesMes: dataBase.getMonth()
+        };
+        renderizarPopoverPeriodoRenovacao();
+        posicionarPopoverPeriodoRenovacao(anchorEl);
+    }
+
+    function prepararAlterarPeriodoRenovacao(event, campanhaId) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        const select = document.getElementById('renovacao-campanha');
+        if (select && campanhaId) {
+            select.value = campanhaId;
+            selecionarCampanhaRenovacao();
+        }
+        abrirPopoverPeriodoRenovacao(event?.currentTarget, campanhaId);
+    }
+
+    function selecionarCampoPeriodoRenovacao(campo) {
+        const campanha = obterCampanhaSelecionadaRenovacao(renovacaoPeriodoState.campanhaId);
+        if (campo === 'inicio' && !campanhaPermiteAlterarInicioRenovacao(campanha)) return;
+        renovacaoPeriodoState.campo = campo === 'inicio' ? 'inicio' : 'fim';
+        const dataBase = parseDataRenovacao(renovacaoPeriodoState[renovacaoPeriodoState.campo]);
+        if (dataBase) {
+            renovacaoPeriodoState.mesAno = dataBase.getFullYear();
+            renovacaoPeriodoState.mesMes = dataBase.getMonth();
+        }
+        renderizarPopoverPeriodoRenovacao();
+    }
+
+    function mudarMesPeriodoRenovacao(offset) {
+        const ano = Number.isFinite(Number(renovacaoPeriodoState.mesAno)) ? Number(renovacaoPeriodoState.mesAno) : new Date().getFullYear();
+        const mes = Number.isFinite(Number(renovacaoPeriodoState.mesMes)) ? Number(renovacaoPeriodoState.mesMes) : new Date().getMonth();
+        const data = new Date(ano, mes + Number(offset || 0), 1, 12, 0, 0, 0);
+        renovacaoPeriodoState.mesAno = data.getFullYear();
+        renovacaoPeriodoState.mesMes = data.getMonth();
+        renderizarPopoverPeriodoRenovacao();
+    }
+
+    function selecionarDiaPeriodoRenovacao(iso) {
+        const campanha = obterCampanhaSelecionadaRenovacao(renovacaoPeriodoState.campanhaId);
+        const campo = renovacaoPeriodoState.campo === 'inicio' && campanhaPermiteAlterarInicioRenovacao(campanha) ? 'inicio' : 'fim';
+        renovacaoPeriodoState[campo] = iso;
+        if (campo === 'inicio' && renovacaoPeriodoState.fim && renovacaoPeriodoState.fim < iso) {
+            renovacaoPeriodoState.fim = iso;
+        }
+        renderizarPopoverPeriodoRenovacao();
+    }
+
+    function renderizarPopoverPeriodoRenovacao() {
+        const campanha = obterCampanhaSelecionadaRenovacao(renovacaoPeriodoState.campanhaId);
+        if (!campanha) return;
+        const podeInicio = campanhaPermiteAlterarInicioRenovacao(campanha);
+        if (!podeInicio && renovacaoPeriodoState.campo === 'inicio') renovacaoPeriodoState.campo = 'fim';
+        const titulo = document.getElementById('renovacao-periodo-titulo');
+        const subtitulo = document.getElementById('renovacao-periodo-subtitulo');
+        const valorInicio = document.getElementById('renovacao-periodo-valor-inicio');
+        const valorFim = document.getElementById('renovacao-periodo-valor-fim');
+        const modoInicio = document.getElementById('renovacao-periodo-modo-inicio');
+        const modoFim = document.getElementById('renovacao-periodo-modo-fim');
+        const hint = document.getElementById('renovacao-periodo-hint');
+        const nome = campanha.name || campanha.title || campanha.id;
+        if (titulo) titulo.textContent = 'Alterar periodo';
+        if (subtitulo) subtitulo.textContent = nome;
+        if (valorInicio) valorInicio.textContent = textoDataPeriodoRenovacao(renovacaoPeriodoState.inicio);
+        if (valorFim) valorFim.textContent = textoDataPeriodoRenovacao(renovacaoPeriodoState.fim);
+        if (modoInicio) {
+            modoInicio.disabled = !podeInicio;
+            modoInicio.classList.toggle('active', renovacaoPeriodoState.campo === 'inicio');
+        }
+        if (modoFim) modoFim.classList.toggle('active', renovacaoPeriodoState.campo === 'fim');
+        if (hint) {
+            hint.textContent = podeInicio
+                ? 'Escolha se deseja alterar o inicio ou o fim e clique no dia no calendario.'
+                : 'Campanha ativa: o Mercado Livre permite alterar apenas a data final.';
+        }
+
+        const ano = Number.isFinite(Number(renovacaoPeriodoState.mesAno)) ? Number(renovacaoPeriodoState.mesAno) : new Date().getFullYear();
+        const mes = Number.isFinite(Number(renovacaoPeriodoState.mesMes)) ? Number(renovacaoPeriodoState.mesMes) : new Date().getMonth();
+        const mesEl = document.getElementById('renovacao-periodo-mes');
+        const diasEl = document.getElementById('renovacao-periodo-dias');
+        if (mesEl) mesEl.textContent = `${MESES_RENOVACAO[mes] || ''} ${ano}`;
+        if (!diasEl) return;
+        const primeiroDiaSemana = new Date(ano, mes, 1).getDay();
+        const totalDias = new Date(ano, mes + 1, 0).getDate();
+        const hojeIso = dataInputRenovacao(new Date().toISOString());
+        const inicio = renovacaoPeriodoState.inicio;
+        const fim = renovacaoPeriodoState.fim;
+        let html = '';
+        for (let i = 0; i < primeiroDiaSemana; i++) {
+            html += '<button type="button" class="period-day is-empty" tabindex="-1"></button>';
+        }
+        for (let dia = 1; dia <= totalDias; dia++) {
+            const iso = `${ano}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+            const selecionado = iso === renovacaoPeriodoState[renovacaoPeriodoState.campo];
+            const emFaixa = inicio && fim && iso >= inicio && iso <= fim;
+            const classes = [
+                'period-day',
+                selecionado ? 'is-selected' : '',
+                emFaixa && !selecionado ? 'is-range' : '',
+                iso === hojeIso ? 'is-today' : ''
+            ].filter(Boolean).join(' ');
+            html += `<button type="button" class="${classes}" onclick="selecionarDiaPeriodoRenovacao('${iso}')">${dia}</button>`;
+        }
+        diasEl.innerHTML = html;
+    }
+
+    async function alterarPeriodoCampanhaRenovacao(event, campanhaId = '') {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        const campanha = obterCampanhaSelecionadaRenovacao(campanhaId || renovacaoPeriodoState.campanhaId);
+        const podeInicio = campanhaPermiteAlterarInicioRenovacao(campanha);
+        const inicio = podeInicio ? renovacaoPeriodoState.inicio : '';
+        const fim = renovacaoPeriodoState.fim || '';
+        const botao = event?.currentTarget || document.getElementById('btn-salvar-periodo-renovacao');
+        if (!loja || !campanha) {
+            setRenovacaoApiStatus('Selecione a loja e a campanha para alterar o periodo.', 'error');
+            return;
+        }
+        if (!inicio && !fim) {
+            setRenovacaoApiStatus('Informe a data inicial ou final da campanha.', 'error');
+            return;
+        }
+        if (inicio && fim && new Date(`${fim}T23:59:59`) <= new Date(`${inicio}T00:00:00`)) {
+            setRenovacaoApiStatus('A data final precisa ser maior que a data inicial.', 'error');
+            return;
+        }
+        const nome = campanha.name || campanha.title || campanha.id;
+        if (!confirm(`Alterar o periodo da campanha "${nome}"?`)) return;
+        const textoOriginalBotao = botao?.textContent || 'Salvar periodo';
+        if (botao) {
+            botao.disabled = true;
+            botao.textContent = 'Alterando...';
+        }
+        setRenovacaoApiStatus('Alterando periodo da campanha no Mercado Livre...', 'info');
+        try {
+            const response = await fetch('/api/renovacao/campanha-periodo', {
+                method: 'PUT',
+                headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    loja,
+                    campanha_id: campanha.id,
+                    start_date: inicio || null,
+                    finish_date: fim || null,
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN'
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Erro ao alterar periodo da campanha.');
+            setRenovacaoApiStatus(`Periodo da campanha "${nome}" alterado com sucesso.`, 'ok');
+            fecharPopoverPeriodoRenovacao();
+            await carregarCampanhasRenovacao();
+        } catch (error) {
+            setRenovacaoApiStatus(error.message || 'Erro ao alterar periodo da campanha.', 'error');
+        } finally {
+            if (botao) {
+                botao.disabled = false;
+                botao.textContent = textoOriginalBotao;
+            }
+        }
+    }
+
+    async function deletarCampanhaRenovacao(event, campanhaId = '') {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        if (campanhaId) {
+            const select = document.getElementById('renovacao-campanha');
+            if (select) select.value = campanhaId;
+        }
+        const campanha = obterCampanhaSelecionadaRenovacao(campanhaId);
+        const botao = event?.currentTarget || null;
+        if (!loja || !campanha) {
+            setRenovacaoApiStatus('Selecione a loja e a campanha para deletar.', 'error');
+            return;
+        }
+        const nome = campanha.name || campanha.title || campanha.id;
+        if (!confirm(`Deletar a campanha "${nome}" do Mercado Livre? Essa acao nao pode ser desfeita pelo sistema.`)) return;
+        const textoOriginalBotao = botao?.textContent || 'Deletar';
+        if (botao) {
+            botao.disabled = true;
+            botao.textContent = 'Deletando...';
+        }
+        setRenovacaoApiStatus('Deletando campanha no Mercado Livre...', 'info');
+        try {
+            const response = await fetch('/api/renovacao/campanha', {
+                method: 'DELETE',
+                headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    loja,
+                    campanha_id: campanha.id,
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN'
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Erro ao deletar campanha.');
+            setRenovacaoApiStatus(`Campanha "${nome}" deletada com sucesso.`, 'ok');
+            fecharPopoverPeriodoRenovacao();
+            await carregarCampanhasRenovacao();
+        } catch (error) {
+            setRenovacaoApiStatus(error.message || 'Erro ao deletar campanha.', 'error');
+        } finally {
+            if (botao) {
+                botao.disabled = false;
+                botao.textContent = textoOriginalBotao;
+            }
+        }
+    }
+
+    function selecionarCampanhaRenovacao() {
+        const campanhaId = document.getElementById('renovacao-campanha')?.value || '';
+        const campanha = obterCampanhaSelecionadaRenovacao(campanhaId);
+        const nomeInput = document.getElementById('renovacao-nome');
+        const syncOrigem = document.getElementById('renovacao-sync-origem');
+        const info = document.getElementById('renovacao-campanha-info');
+        if (!campanha) {
+            if (info) info.textContent = '';
+            preencherPeriodoCampanhaRenovacao(null);
+            marcarCampanhaSelecionadaRenovacao();
+            atualizarCampanhasDestinoRenovacao();
+            return;
+        }
+        preencherPeriodoCampanhaRenovacao(campanha);
+        if (nomeInput) {
+            const sugestao = gerarNomeCampanhaProximoMes(campanha);
+            const valorAtual = nomeInput.value.trim();
+            if (!valorAtual || valorAtual === renovacaoNomeSugeridoAtual) {
+                nomeInput.value = sugestao;
+                renovacaoNomeSugeridoAtual = sugestao;
+            }
+        }
+        if (info) {
+            const periodo = [formatarDataCurta(campanha.start_date), formatarDataCurta(campanha.finish_date)].filter(Boolean).join(' ate ');
+            const programadosValor = campanha.programmed_count ?? campanha.scheduled_count;
+            const contagens = [
+                temNumeroRenovacao(campanha.active_count) ? `Ativos: ${campanha.active_count}` : '',
+                temNumeroRenovacao(programadosValor) ? `Programados: ${programadosValor}` : ''
+            ].filter(Boolean).join(' | ');
+            info.textContent = [contagens, periodo ? `Periodo atual: ${periodo}` : ''].filter(Boolean).join(' - ');
+        }
+        if (syncOrigem && (!syncOrigem.value || !campanhasRenovacao.some((item) => item.id === syncOrigem.value))) {
+            syncOrigem.value = campanhaId;
+        }
+        marcarCampanhaSelecionadaRenovacao();
+        atualizarCampanhasDestinoRenovacao();
+    }
+
+    async function criarCampanhaMesSeguinte() {
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        const campanhaId = document.getElementById('renovacao-campanha')?.value || '';
+        const nome = document.getElementById('renovacao-nome')?.value.trim() || '';
+        const campanha = campanhasRenovacao.find((item) => item.id === campanhaId) || {};
+        const botao = document.getElementById('btn-criar-renovacao');
+        if (!loja || !campanhaId || !nome) {
+            setRenovacaoApiStatus('Selecione a loja, a campanha e informe o nome da nova campanha.', 'error');
+            return;
+        }
+        if (!confirm(`Criar a campanha "${nome}" copiando os MLBs e descontos de "${campanha.name || campanhaId}"?`)) {
+            return;
+        }
+        botao.disabled = true;
+        botao.textContent = 'Criando campanha...';
+        setRenovacaoApiStatus('Criando campanha e copiando os anuncios. Isso pode levar alguns minutos.', 'info');
+        try {
+            const response = await fetch('/api/renovacao/criar-proximo-mes', {
+                method: 'POST',
+                headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    loja,
+                    campanha_id: campanhaId,
+                    nome,
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN'
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Erro ao criar campanha.');
+            const nova = result.nova_campanha || {};
+            const falhas = result.falhas_total ? ` ${result.falhas_total} item(ns) tiveram falha.` : '';
+            const acao = result.campanha_existente ? 'Campanha já existia; MLBs conferidos' : 'Campanha criada';
+            setRenovacaoApiStatus(`${acao}: ${nova.nome || nome} (${nova.id}). Já presentes: ${result.mlbs_ja_presentes || 0}. Incluídos: ${result.incluidos}/${result.total_origem}.${falhas}`, result.falhas_total ? 'info' : 'ok');
+            carregarCampanhasRenovacao();
+        } catch (error) {
+            setRenovacaoApiStatus(error.message || 'Erro ao criar campanha.', 'error');
+        } finally {
+            botao.disabled = false;
+            botao.textContent = 'Criar campanha do mes seguinte';
+        }
+    }
+
+    async function acompanharSincronizacaoRenovacao(jobId, botao, destinoNome) {
+        pararPollingRenovacaoSync();
+        const consultar = async () => {
+            const response = await fetch(`/api/renovacao/sincronizar-promocao/progresso/${encodeURIComponent(jobId)}`, {
+                headers: { ...obterAuthHeaders() }
+            });
+            const job = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(job.detail || 'Erro ao consultar progresso da sincronizacao.');
+            const status = job.status || 'running';
+            const percentual = Number(job.percentual ?? job.progress ?? 0);
+            const mensagem = job.mensagem || 'Sincronizando promocao...';
+            const tipo = status === 'error' ? 'error' : (status === 'done' ? 'ok' : 'info');
+            setRenovacaoSyncProgress(mensagem, percentual, tipo);
+            setRenovacaoApiStatus(mensagem, tipo);
+            if (status === 'done') {
+                pararPollingRenovacaoSync();
+                const result = job.result || {};
+                const falhas = result.falhas_total ? ` ${result.falhas_total} item(ns) tiveram falha.` : '';
+                const destinoRetorno = result.campanha_destino || {};
+                const mensagemFinal = `Sincronizacao concluida para ${destinoRetorno.nome || destinoNome}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Incluidos: ${result.incluidos || 0}/${result.total_origem || 0}.${falhas}`;
+                setRenovacaoSyncProgress(mensagemFinal, 100, result.falhas_total ? 'info' : 'ok');
+                await carregarCampanhasRenovacao();
+                setRenovacaoApiStatus(mensagemFinal, result.falhas_total ? 'info' : 'ok');
+                resetarBotaoSincronizacaoRenovacao(botao);
+                return true;
+            }
+            if (status === 'error') {
+                pararPollingRenovacaoSync();
+                const erro = job.error || mensagem || 'Erro ao sincronizar promocao.';
+                setRenovacaoSyncProgress(erro, 100, 'error');
+                setRenovacaoApiStatus(erro, 'error');
+                resetarBotaoSincronizacaoRenovacao(botao);
+                return true;
+            }
+            return false;
+        };
+
+        try {
+            const finalizado = await consultar();
+            if (finalizado) return;
+        } catch (error) {
+            pararPollingRenovacaoSync();
+            setRenovacaoSyncProgress(error.message || 'Erro ao acompanhar sincronizacao.', 100, 'error');
+            setRenovacaoApiStatus(error.message || 'Erro ao acompanhar sincronizacao.', 'error');
+            resetarBotaoSincronizacaoRenovacao(botao);
+            return;
+        }
+
+        renovacaoSyncPolling = setInterval(async () => {
+            try {
+                await consultar();
+            } catch (error) {
+                pararPollingRenovacaoSync();
+                setRenovacaoSyncProgress(error.message || 'Erro ao acompanhar sincronizacao.', 100, 'error');
+                setRenovacaoApiStatus(error.message || 'Erro ao acompanhar sincronizacao.', 'error');
+                resetarBotaoSincronizacaoRenovacao(botao);
+            }
+        }, 1000);
+    }
+
+    async function sincronizarPromocaoRenovacao() {
+        const loja = document.getElementById('renovacao-loja')?.value || '';
+        const origemId = document.getElementById('renovacao-sync-origem')?.value || '';
+        const destinoId = document.getElementById('renovacao-campanha-destino')?.value || '';
+        const origem = campanhasRenovacao.find((item) => item.id === origemId) || {};
+        const destino = campanhasRenovacao.find((item) => item.id === destinoId) || {};
+        const botao = document.getElementById('btn-sincronizar-renovacao');
+        if (!loja || !origemId || !destinoId) {
+            setRenovacaoApiStatus('Selecione a loja, a campanha de origem e a campanha nova.', 'error');
+            return;
+        }
+        if (origemId === destinoId) {
+            setRenovacaoApiStatus('A campanha de origem e a campanha nova devem ser diferentes.', 'error');
+            return;
+        }
+        const origemNome = origem.name || origem.title || origemId;
+        const destinoNome = destino.name || destino.title || destinoId;
+        if (!confirm(`Sincronizar os MLBs de "${origemNome}" para "${destinoNome}" mantendo a mesma porcentagem de desconto?`)) {
+            return;
+        }
+        botao.disabled = true;
+        botao.textContent = 'Sincronizando...';
+        setRenovacaoSyncProgress('Iniciando sincronizacao da promocao...', 0, 'info');
+        setRenovacaoApiStatus('Iniciando sincronizacao da promocao...', 'info');
+        try {
+            const response = await fetch('/api/renovacao/sincronizar-promocao/iniciar', {
+                method: 'POST',
+                headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    loja,
+                    campanha_origem_id: origemId,
+                    campanha_destino_id: destinoId,
+                    promotion_type_origem: origem.promotion_type || origem.type || 'SELLER_CAMPAIGN',
+                    promotion_type_destino: destino.promotion_type || destino.type || 'SELLER_CAMPAIGN'
+                })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || !result.job_id) throw new Error(result.detail || 'Erro ao iniciar sincronizacao.');
+            setRenovacaoSyncProgress('Sincronizacao iniciada. Preparando leitura das campanhas...', 3, 'info');
+            await acompanharSincronizacaoRenovacao(result.job_id, botao, destinoNome);
+        } catch (error) {
+            pararPollingRenovacaoSync();
+            setRenovacaoSyncProgress(error.message || 'Erro ao sincronizar promocao.', 100, 'error');
+            setRenovacaoApiStatus(error.message || 'Erro ao sincronizar promocao.', 'error');
+            resetarBotaoSincronizacaoRenovacao(botao);
+        }
+    }
+
+    function formatarDataCurta(valor) {
+        if (!valor) return '';
+        const texto = String(valor).slice(0, 10);
+        const partes = texto.split('-');
+        if (partes.length !== 3) return texto;
+        return `${partes[2]}/${partes[1]}/${partes[0]}`;
+    }
+
+    const MESES_RENOVACAO = [
+        'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+        'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+
+    function parseDataRenovacao(valor) {
+        if (!valor) return null;
+        const texto = String(valor).slice(0, 10);
+        const partes = texto.split('-').map((parte) => Number(parte));
+        if (partes.length === 3 && partes.every(Number.isFinite)) {
+            return new Date(partes[0], partes[1] - 1, partes[2], 12, 0, 0, 0);
+        }
+        const data = new Date(valor);
+        return Number.isNaN(data.getTime()) ? null : data;
+    }
+
+    function adicionarMesesRenovacao(data, meses) {
+        const base = new Date(data.getTime());
+        const dia = base.getDate();
+        const destino = new Date(base.getFullYear(), base.getMonth() + meses, 1, 12, 0, 0, 0);
+        const ultimoDia = new Date(destino.getFullYear(), destino.getMonth() + 1, 0).getDate();
+        destino.setDate(Math.min(dia, ultimoDia));
+        return destino;
+    }
+
+    function compararSomenteData(a, b) {
+        const da = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+        const db = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime();
+        return da - db;
+    }
+
+    function inicioProximaCampanhaRenovacao(campanha) {
+        const inicioOrigem = parseDataRenovacao(campanha?.start_date) || new Date(Date.now() + 24 * 60 * 60 * 1000);
+        let proximoInicio = adicionarMesesRenovacao(inicioOrigem, 1);
+        const hoje = new Date();
+        while (compararSomenteData(proximoInicio, hoje) < 0) {
+            proximoInicio = adicionarMesesRenovacao(proximoInicio, 1);
+        }
+        if (compararSomenteData(proximoInicio, hoje) === 0) {
+            proximoInicio = new Date(hoje.getTime() + 24 * 60 * 60 * 1000);
+        }
+        return proximoInicio;
+    }
+
+    function gerarNomeCampanhaProximoMes(campanha) {
+        const inicio = inicioProximaCampanhaRenovacao(campanha || {});
+        const mesNome = MESES_RENOVACAO[inicio.getMonth()] || '';
+        let base = String(campanha?.name || campanha?.title || 'Promo').trim();
+        base = base.replace(/\s*-\s*(started|pending|programmed|active|finished|ended).*$/i, '').trim();
+        base = base.replace(/\s*\([^)]*\)\s*$/, '').trim();
+
+        const mesesRegex = /(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)/i;
+        if (mesesRegex.test(base)) {
+            return base.replace(mesesRegex, mesNome);
+        }
+        if (/\b(0?[1-9]|1[0-2])\/\d{2,4}\b/.test(base)) {
+            return base.replace(/\b(0?[1-9]|1[0-2])\/\d{2,4}\b/, mesNome);
+        }
+        if (!base || /^promo$/i.test(base)) {
+            return `Promo ${mesNome}`.trim();
+        }
+        return `${base} ${mesNome}`.trim();
+    }
+
+    function temNumeroRenovacao(valor) {
+        return valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor));
+    }
+
+    function numeroRenovacao(valor) {
+        return temNumeroRenovacao(valor) ? Number(valor) : 0;
+    }
+
+    function formatarNumeroRenovacao(valor) {
+        if (!temNumeroRenovacao(valor)) return '-';
+        return Number(valor).toLocaleString('pt-BR');
+    }
+
+    function rotuloStatusCampanhaRenovacao(status) {
+        const chave = String(status || '').toLowerCase();
+        const mapa = {
+            started: 'Ativa',
+            active: 'Ativa',
+            pending: 'Programada',
+            programmed: 'Programada',
+            scheduled: 'Programada',
+            finished: 'Finalizada',
+            ended: 'Finalizada',
+            paused: 'Pausada',
+            cancelled: 'Cancelada',
+            canceled: 'Cancelada'
+        };
+        return mapa[chave] || status || 'Sem status';
+    }
+
+    function escapeHtml(valor) {
+        return String(valor ?? '').replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        }[char]));
+    }
+
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>

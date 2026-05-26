@@ -1,0 +1,18 @@
+[
+    {
+        "nome": "Dona Nina",
+        "integracoes": {
+            "criacao": {
+                "data": "2026-05-05 15:07:42.178911"
+            },
+            "bling": {
+                "id": "096d7cd950320e0b81d24e0ee14d0e0cd782b6eb",
+                "secret": "846960ed38465dd829438dfa75efae063d1cb250f5ef684f1dd169ebc064",
+                "access_token": "9e305d103481b60c253ecf22e82dae50c2080c8b",
+                "refresh_token": "cb631a579ad1249478f6bcf2888d4a7cce205a95",
+                "connected": true,
+                "updated_at": "1778061935.1786199"
+            }
+        }
+    }
+]

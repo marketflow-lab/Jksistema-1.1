@@ -1,0 +1,30 @@
+{
+  "JK Peças": {
+    "responder_automaticamente": true,
+    "solicitar_aprovacao": true,
+    "habilitar_pos_venda_automatico": false,
+    "intervalo_minutos": 5,
+    "updated_at": "2026-05-25T16:53:39"
+  },
+  "Uai Mineirinho": {
+    "responder_automaticamente": true,
+    "solicitar_aprovacao": true,
+    "habilitar_pos_venda_automatico": false,
+    "intervalo_minutos": 5,
+    "updated_at": "2026-05-25T13:00:12"
+  },
+  "Carlos José": {
+    "responder_automaticamente": true,
+    "solicitar_aprovacao": true,
+    "habilitar_pos_venda_automatico": false,
+    "intervalo_minutos": 10,
+    "updated_at": "2026-05-25T17:15:36"
+  },
+  "Deckas": {
+    "responder_automaticamente": true,
+    "solicitar_aprovacao": true,
+    "habilitar_pos_venda_automatico": false,
+    "intervalo_minutos": 10,
+    "updated_at": "2026-05-26T09:51:34"
+  }
+}

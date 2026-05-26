@@ -1,0 +1,977 @@
+{
+  "pesquisas": {
+    "jkpecas::001": {
+      "loja": "JK Peças",
+      "sku": "001",
+      "produto": "Cebolão Radiador Cebolinha Honda Cb500 Shadow Hornet Cbr900",
+      "pesquisa_1": "Cebolão sensor de temperatura Honda Cb500 2002",
+      "pesquisa_2": "37760-mt2-003",
+      "pesquisa_3": "sensor cebolinha do radiador HONDA CBR 1100",
+      "updated_at": "2026-05-26T12:56:08"
+    },
+    "jkpecas::002": {
+      "loja": "JK Peças",
+      "sku": "002",
+      "produto": "Tampa Portinhola Tanque Combustivel Ford Focus 2009-2013",
+      "pesquisa_1": "Tampa Portinhola Tanque Combustivel Ford Focus 2011",
+      "pesquisa_2": "Tampa Tanque de Combustivel Ford Focus 2012",
+      "pesquisa_3": "tampinha gasolina focus 2009",
+      "updated_at": "2026-05-21T12:42:20"
+    },
+    "jkpecas::005": {
+      "loja": "JK Peças",
+      "sku": "005",
+      "produto": "Sensor Pressão Flauta Turbo Ford Ranger 3.0 Troller T4",
+      "pesquisa_1": "Sensor Pressão Flauta Ford Ranger 2008",
+      "pesquisa_2": "Original",
+      "pesquisa_3": "sensor pressao rail troller t4 2008",
+      "updated_at": "2026-05-21T11:32:48"
+    },
+    "jkpecas::008": {
+      "loja": "JK Peças",
+      "sku": "008",
+      "produto": "Base Para Antena Carros Ford Focus Mondeo Ka Fiesta Preto",
+      "pesquisa_1": "Base antena Ford Focus 2008",
+      "pesquisa_2": "Base antena Ford Focus 20012",
+      "pesquisa_3": "base antena Ford Fiesta Street sedan 2002primeira geração",
+      "updated_at": "2026-05-21T12:44:06"
+    },
+    "jkpecas::100": {
+      "loja": "JK Peças",
+      "sku": "100",
+      "produto": "Cabo Auxiliar Para Radio Original Do Fiat Punto Promoção",
+      "pesquisa_1": "Cabo Auxiliar Rádio Original Fiat Punto 2012",
+      "pesquisa_2": "Cabo Auxiliar Som Original Fiat Punto",
+      "pesquisa_3": "Cabo aux som do Punto",
+      "updated_at": "2026-05-21T11:34:32"
+    },
+    "jkpecas::1017": {
+      "loja": "JK Peças",
+      "sku": "1017",
+      "produto": "Jogo 4x Calota Central Roda Bmw X1 320i 328i 68mm Original",
+      "pesquisa_1": "Calota Central Roda Bmw X1 2015",
+      "pesquisa_2": "68mm",
+      "pesquisa_3": "calotinha roda bmw 328i",
+      "updated_at": "2026-05-21T11:34:32"
+    },
+    "jkpecas::103": {
+      "loja": "JK Peças",
+      "sku": "103",
+      "produto": "Mini Bomba D'água 22w 5m 800l/h 24v Dc Solar/bateria/convers",
+      "pesquisa_1": "Mini Bomba D'água 24v DC Solar",
+      "pesquisa_2": "24v 800l/h",
+      "pesquisa_3": "bomba dagua pra placa solar",
+      "updated_at": "2026-05-21T11:37:25"
+    },
+    "jkpecas::105": {
+      "loja": "JK Peças",
+      "sku": "105",
+      "produto": "Boia Sensor Nivel Combustível Honda Crv 2007 A 2011 Gasolina",
+      "pesquisa_1": "Boia Sensor Nivel Combustível Honda Crv 2009",
+      "pesquisa_2": "2007/2008/2009/2010/2011",
+      "pesquisa_3": "Boia tanque CRV 2009",
+      "updated_at": "2026-05-21T11:37:25"
+    },
+    "jkpecas::1055": {
+      "loja": "JK Peças",
+      "sku": "1055",
+      "produto": "Modulo Ventoinha Passat Jetta Golf Tiguan Audi 1k0959455",
+      "pesquisa_1": "Modulo Ventoinha Volkswagen Jetta 2009",
+      "pesquisa_2": "1k0959455",
+      "pesquisa_3": "central ventoinha tiguan",
+      "updated_at": "2026-05-21T11:37:25"
+    },
+    "jkpecas::107": {
+      "loja": "JK Peças",
+      "sku": "107",
+      "produto": "Manopla Cromada Voyage / Gol / Saveiro G5 E G6 Original Preto",
+      "pesquisa_1": "Manopla Cromada Volkswagen Gol 2014",
+      "pesquisa_2": "Bola Cambio Gol G5 G6",
+      "pesquisa_3": "bola do cambio saveiro 2014",
+      "updated_at": "2026-05-21T11:39:29"
+    },
+    "jkpecas::107-1": {
+      "loja": "JK Peças",
+      "sku": "107-1",
+      "produto": "Manopla Bola Câmbio Manual 6 Amarok 2011 2012 2013 2014 2015 Preto",
+      "pesquisa_1": "Manopla Bola Câmbio Volkswagen Amarok 2011",
+      "pesquisa_2": "Manopla Câmbio Amarok 6 Marchas",
+      "pesquisa_3": "bola de cambio amarok 2014",
+      "updated_at": "2026-05-21T11:39:29"
+    },
+    "jkpecas::1119": {
+      "loja": "JK Peças",
+      "sku": "1119",
+      "produto": "Jogo Velas Iridium Para Santa Fé 3.5 V6 285 Cv 2009/2011",
+      "pesquisa_1": "Jogo Velas Iridium Hyundai Santa Fé 2010",
+      "pesquisa_2": "2009/2011",
+      "pesquisa_3": "vela iridium santa fe 3.5 2010",
+      "updated_at": "2026-05-21T11:39:29"
+    },
+    "jkpecas::1131": {
+      "loja": "JK Peças",
+      "sku": "1131",
+      "produto": "Amortecedor A Gás Caçamba Chevrolet S10 Lt Ltz 2013 2022",
+      "pesquisa_1": "Amortecedor a gás caçamba Chevrolet S10 2013",
+      "pesquisa_2": "Mola a Gás Caçamba S10",
+      "pesquisa_3": "Pistão tampa caçamba S10 2018",
+      "updated_at": "2026-05-21T11:42:18"
+    },
+    "jkpecas::1133": {
+      "loja": "JK Peças",
+      "sku": "1133",
+      "produto": "Reservatório Carvão Ativo Canister Jetta 2.0 Audi Tfsi",
+      "pesquisa_1": "Reservatório Carvão Ativo Canister Volkswagen Jetta 2013",
+      "pesquisa_2": "Canister Audi Tfsi",
+      "pesquisa_3": "Canister Audi A3 2015",
+      "updated_at": "2026-05-21T11:42:18"
+    },
+    "jkpecas::1143": {
+      "loja": "JK Peças",
+      "sku": "1143",
+      "produto": "Sensor De Pressão Map Coletor Bosch Renault Master 2.5 04/12",
+      "pesquisa_1": "Sensor de Pressão Map Coletor Renault Master 2010",
+      "pesquisa_2": "Sensor Coletor Master 2.5",
+      "pesquisa_3": "sensor map master 2010",
+      "updated_at": "2026-05-21T11:42:18"
+    },
+    "jkpecas::115": {
+      "loja": "JK Peças",
+      "sku": "115",
+      "produto": "Mangueira Tubo Saída Calor Tbi Sonic Cruze Tracker 12/16",
+      "pesquisa_1": "Mangueira Tubo Saída Calor Tbi Chevrolet Cruze 2014",
+      "pesquisa_2": "Original",
+      "pesquisa_3": "mangueirinha tbi tracker 2015",
+      "updated_at": "2026-05-21T11:43:42"
+    },
+    "jkpecas::116": {
+      "loja": "JK Peças",
+      "sku": "116",
+      "produto": "Mangueira Retorno Reservatório Água Cruze 1.8 55579102",
+      "pesquisa_1": "Mangueira Retorno Reservatório Água Chevrolet Cruze 2012",
+      "pesquisa_2": "Original",
+      "pesquisa_3": "Mangueira retorno agua Tracker 2015",
+      "updated_at": "2026-05-21T11:43:42"
+    },
+    "jkpecas::12": {
+      "loja": "JK Peças",
+      "sku": "12",
+      "produto": "Bomba Combustivel Gasolina Honda Vt Shadow 600 1996 À 2005",
+      "pesquisa_1": "Bomba Combustivel hadow 600 2001",
+      "pesquisa_2": "Bomba Gasolina Shadow 600",
+      "pesquisa_3": "bomba gasolina shadow 600 2001",
+      "updated_at": "2026-05-21T12:44:22"
+    },
+    "jkpecas::120": {
+      "loja": "JK Peças",
+      "sku": "120",
+      "produto": "Junta Da Válvula Vtec New Civic 2007 2008 2009 2010",
+      "pesquisa_1": "Junta Válvula Vtec Honda New Civic 2007",
+      "pesquisa_2": "15825-P2M-005",
+      "pesquisa_3": "junta solenoide vtec civic 2003",
+      "updated_at": "2026-05-21T11:45:52"
+    },
+    "jkpecas::124": {
+      "loja": "JK Peças",
+      "sku": "124",
+      "produto": "Aparelho Anti Latido Cão Repelente Ultrassônico Cachorro Pet Preto",
+      "pesquisa_1": "Aparelho Anti Latido Ultrassônico Cachorro",
+      "pesquisa_2": "Adestrador Anti Latido",
+      "pesquisa_3": "Apito adestrar cachorro",
+      "updated_at": "2026-05-21T11:45:52"
+    },
+    "jkpecas::124-1": {
+      "loja": "JK Peças",
+      "sku": "124-1",
+      "produto": "Aparelho Anti Latido Ultrasonico Apito Adestramento Cães Amarelo",
+      "pesquisa_1": "Aparelho Anti Latido Ultrasonico Olyuen",
+      "pesquisa_2": "Apito Adestramento Cães",
+      "pesquisa_3": "aparelho pra parar latido de cachorro",
+      "updated_at": "2026-05-21T11:45:52"
+    },
+    "jkpecas::126": {
+      "loja": "JK Peças",
+      "sku": "126",
+      "produto": "Vibrador Recarregável U C Clitóris Casal Usb Tipo We-vibe Violeta-escuro",
+      "pesquisa_1": "Produto não automotivo",
+      "pesquisa_2": "Vibrador Tipo We-vibe",
+      "pesquisa_3": "vibrador casal tipo we vibe",
+      "updated_at": "2026-05-21T11:48:26"
+    },
+    "jkpecas::129": {
+      "loja": "JK Peças",
+      "sku": "129",
+      "produto": "Scanner Detector Tubo Cano Água Pvc Parede Madeira Fio Metal",
+      "pesquisa_1": "Scanner Detector Fio Metal Parede",
+      "pesquisa_2": "Detector de Cano Parede",
+      "pesquisa_3": "Aparelho pra achar cano na parede",
+      "updated_at": "2026-05-21T11:48:26"
+    },
+    "jkpecas::129-3": {
+      "loja": "JK Peças",
+      "sku": "129-3",
+      "produto": "Scanner Detector Parede Tubo Cano Pvc Água Madeira Fio Metal",
+      "pesquisa_1": "Scanner detector de parede",
+      "pesquisa_2": "Detector de Materiais",
+      "pesquisa_3": "aparelho achar cano parede",
+      "updated_at": "2026-05-21T11:48:26"
+    },
+    "jkpecas::134": {
+      "loja": "JK Peças",
+      "sku": "134",
+      "produto": "Mangueira Retorno Bico Injetor Sprinter 311 415 515 2012-19",
+      "pesquisa_1": "Mangueira Retorno Bico Injetor Mercedes Sprinter 311 2015",
+      "pesquisa_2": "2012-19",
+      "pesquisa_3": "mangueira retorno bico sprinter 415 2015",
+      "updated_at": "2026-05-21T11:49:42"
+    },
+    "jkpecas::135": {
+      "loja": "JK Peças",
+      "sku": "135",
+      "produto": "Boia Sensor Nivel Combustível Honda Crv 2007 A 2011 Gasolina",
+      "pesquisa_1": "Boia Sensor Nivel Combustível Honda Crv 2008",
+      "pesquisa_2": "2007/2008/2009/2010/2011",
+      "pesquisa_3": "boia do tanque crv 2009",
+      "updated_at": "2026-05-21T11:49:42"
+    },
+    "jkpecas::137": {
+      "loja": "JK Peças",
+      "sku": "137",
+      "produto": "Valvula Reguladora Pressao Rail Flauta Bosch 1110010028",
+      "pesquisa_1": "Valvula Reguladora Pressao Rail Ford F350 2015",
+      "pesquisa_2": "10.160",
+      "pesquisa_3": "valvula ponta flauta delivery 9.160 2015",
+      "updated_at": "2026-05-21T11:49:42"
+    },
+    "jkpecas::139": {
+      "loja": "JK Peças",
+      "sku": "139",
+      "produto": "Sensor Map Cummins Bosch 0281002576",
+      "pesquisa_1": "Sensor Map Ford Cargo 815 2008",
+      "pesquisa_2": "0281002576",
+      "pesquisa_3": "Sensor de pressão motor Cummins",
+      "updated_at": "2026-05-21T11:51:48"
+    },
+    "jkpecas::141": {
+      "loja": "JK Peças",
+      "sku": "141",
+      "produto": "Hub Usb-c 8 Em 1 Com Hdmi 4k E Rj45 Para Macbook Pro Dell Cinza",
+      "pesquisa_1": "Bomba Combustivel Honda Shadow 600 1999",
+      "pesquisa_2": "Hub USB-C HDMI RJ45",
+      "pesquisa_3": "bomba gasolina shadow 600",
+      "updated_at": "2026-05-21T11:51:48"
+    },
+    "jkpecas::1461": {
+      "loja": "JK Peças",
+      "sku": "1461",
+      "produto": "Torneira De Combustível / Gasolina Cb500 Todas - 1º Linha",
+      "pesquisa_1": "Torneira de Combustível Honda CB500 1998",
+      "pesquisa_2": "Torneira Gasolina Cb500",
+      "pesquisa_3": "registro gasolina cb 500 2001",
+      "updated_at": "2026-05-21T11:51:48"
+    },
+    "jkpecas::147-K4": {
+      "loja": "JK Peças",
+      "sku": "147-K4",
+      "produto": "Jogo 4 Vela Captiva 2.4 2011 A 2016 185cv 12620540 Original",
+      "pesquisa_1": "Jogo 4 Vela Chevrolet Captiva 2012",
+      "pesquisa_2": "2011/2016",
+      "pesquisa_3": "Jogo vela Captiva Sport 2014",
+      "updated_at": "2026-05-21T11:53:30"
+    },
+    "jkpecas::1477": {
+      "loja": "JK Peças",
+      "sku": "1477",
+      "produto": "Torneira Registro Combustivel Suzuki Gsxf 750 Gsx750f Até 97",
+      "pesquisa_1": "Torneira Registro Combustivel Suzuki Gsxf 750 1997",
+      "pesquisa_2": "Gsxf 750",
+      "pesquisa_3": "Torneira gasolina Katana 750 1996",
+      "updated_at": "2026-05-21T11:53:30"
+    },
+    "jkpecas::1489": {
+      "loja": "JK Peças",
+      "sku": "1489",
+      "produto": "Seta Retrovisor Sequencial Led Ford Focus Mk2mk3 2008 A 2018 Dourado-escuro",
+      "pesquisa_1": "Seta Retrovisor Ford Focus 2012",
+      "pesquisa_2": "Mk2mk3",
+      "pesquisa_3": "Pisca retrovisor Focus 2010",
+      "updated_at": "2026-05-21T11:53:30"
+    },
+    "jkpecas::149-K4": {
+      "loja": "JK Peças",
+      "sku": "149-K4",
+      "produto": "Jogo Vela Iridium Ngk Lzfr6ai Airtrek Grandis 2.4",
+      "pesquisa_1": "Vela Iridium Mitsubishi Airtrek 2007",
+      "pesquisa_2": "Lzfr6ai",
+      "pesquisa_3": "velas iridium grandis 2.4",
+      "updated_at": "2026-05-21T11:55:57"
+    },
+    "jkpecas::1497": {
+      "loja": "JK Peças",
+      "sku": "1497",
+      "produto": "Receptor Transmissor Veicular Com Bluetooth Fm Mp3 Usb Pendr",
+      "pesquisa_1": "Receptor Transmissor Veicular Volkswagen Gol 2012",
+      "pesquisa_2": "Receptor Bluetooth Automotivo",
+      "pesquisa_3": "Aparelho bluetooth para Gol 2009",
+      "updated_at": "2026-05-21T11:55:57"
+    },
+    "jkpecas::1499": {
+      "loja": "JK Peças",
+      "sku": "1499",
+      "produto": "Tampa Corrente Completa Orig Volkswagen Jetta Tiguan Tsi",
+      "pesquisa_1": "Tampa Corrente Volkswagen Jetta 2012",
+      "pesquisa_2": "Tampa da Corrente Tsi",
+      "pesquisa_3": "tampa do comando jetta tsi",
+      "updated_at": "2026-05-21T11:55:57"
+    },
+    "jkpecas::150": {
+      "loja": "JK Peças",
+      "sku": "150",
+      "produto": "Tampa Reservatório Água Radiador Cobalt Onix Prisma S10 Spin",
+      "pesquisa_1": "Tampa reservatório água radiador Chevrolet Cobalt 2014",
+      "pesquisa_2": "13502353",
+      "pesquisa_3": "tampinha da agua s10 2013",
+      "updated_at": "2026-05-21T11:57:33"
+    },
+    "jkpecas::1505": {
+      "loja": "JK Peças",
+      "sku": "1505",
+      "produto": "Valvula Reguladora Sprinter 415 515 311 Original A6510740084",
+      "pesquisa_1": "Valvula Reguladora Mercedes-Benz Sprinter 415 2013",
+      "pesquisa_2": "A6510740084",
+      "pesquisa_3": "Regulador de pressão Sprinter 515 2013",
+      "updated_at": "2026-05-21T11:57:33"
+    },
+    "jkpecas::1509": {
+      "loja": "JK Peças",
+      "sku": "1509",
+      "produto": "",
+      "pesquisa_1": "Comutador Partida Ignição Hyundai Hb20 2014",
+      "pesquisa_2": "Miolo Ignição Hb20",
+      "pesquisa_3": "Miolo da chave HB20",
+      "updated_at": "2026-05-21T11:57:33"
+    },
+    "jkpecas::151": {
+      "loja": "JK Peças",
+      "sku": "151",
+      "produto": "Vela De Ignicao Bosch Zr5tpp33-s 12120037580 Bmw",
+      "pesquisa_1": "Vela De Ignicao Bmw 320i 2015",
+      "pesquisa_2": "12120037580",
+      "pesquisa_3": "vela bmw",
+      "updated_at": "2026-05-21T11:58:52"
+    },
+    "jkpecas::151-K6": {
+      "loja": "JK Peças",
+      "sku": "151-K6",
+      "produto": "Jogo Vela Ignicao Bmw X3 X4 X5 X6 35i M 135i 335i 2010 6uni",
+      "pesquisa_1": "Jogo Vela Ignicao Bmw 335i 2010",
+      "pesquisa_2": "F20/F21",
+      "pesquisa_3": "jogo vela bmw 535i 2011",
+      "updated_at": "2026-05-21T11:58:52"
+    },
+    "jkpecas::152": {
+      "loja": "JK Peças",
+      "sku": "152",
+      "produto": "Vela Ignição Pfr5n11 Platinun 1 Unidade",
+      "pesquisa_1": "Vela Ignição Nissan Sentra 2008",
+      "pesquisa_2": "Pfr5n11",
+      "pesquisa_3": "vela do civic 2005",
+      "updated_at": "2026-05-21T11:58:52"
+    },
+    "jkpecas::152-K6": {
+      "loja": "JK Peças",
+      "sku": "152-K6",
+      "produto": "Jogo Velas Iridium Para Santa Fé 3.5 V6 285 Cv 2009/2011",
+      "pesquisa_1": "Velas Iridium Hyundai Santa Fé 2010",
+      "pesquisa_2": "PFR5N-11",
+      "pesquisa_3": "vela sportage v6 2008",
+      "updated_at": "2026-05-21T12:00:20"
+    },
+    "jkpecas::153": {
+      "loja": "JK Peças",
+      "sku": "153",
+      "produto": "Bomba Combustível P/ Ford Focus 2.0 16v Duratec 2009 Gasoli",
+      "pesquisa_1": "Bomba Combustível Ford Focus 2009",
+      "pesquisa_2": "canbus",
+      "pesquisa_3": "bomba gasolina focus 2009",
+      "updated_at": "2026-05-21T12:00:20"
+    },
+    "jkpecas::154": {
+      "loja": "JK Peças",
+      "sku": "154",
+      "produto": "Sensor Map/ Pressão Turbina Mitsubishi L200 2.5 Diesel",
+      "pesquisa_1": "Sensor Map Mitsubishi L200 Sport 2008",
+      "pesquisa_2": "Sensor Pressão Turbina L200",
+      "pesquisa_3": "sensor map pajero sport 2011",
+      "updated_at": "2026-05-21T12:00:20"
+    },
+    "jkpecas::155": {
+      "loja": "JK Peças",
+      "sku": "155",
+      "produto": "Conversor De Tensão Mercedes W205 C180 C200 C250 2059053414 Preto",
+      "pesquisa_1": "Conversor De Tensão Mercedes C180 2015",
+      "pesquisa_2": "2059053414",
+      "pesquisa_3": "conversor voltagem mercedes c250",
+      "updated_at": "2026-05-21T12:02:49"
+    },
+    "jkpecas::1567": {
+      "loja": "JK Peças",
+      "sku": "1567",
+      "produto": "Esquadro Digital Laser Grau Laser Nível Horizontal Vertical",
+      "pesquisa_1": "Esquadro Digital Laser Nível Horizontal Vertical",
+      "pesquisa_2": "Nível a Laser 90 Graus",
+      "pesquisa_3": "Laser de pedreiro",
+      "updated_at": "2026-05-21T12:02:49"
+    },
+    "jkpecas::1569": {
+      "loja": "JK Peças",
+      "sku": "1569",
+      "produto": "Sensor Nível Boia Combustível Ix35 Gasolina 2010/ Sportage",
+      "pesquisa_1": "Sensor Nível Boia Combustível Hyundai Ix35 2010",
+      "pesquisa_2": "Sensor Nível Ix35 Sportage",
+      "pesquisa_3": "Boia tanque Sportage 2011",
+      "updated_at": "2026-05-21T12:02:49"
+    },
+    "jkpecas::158": {
+      "loja": "JK Peças",
+      "sku": "158",
+      "produto": "Sensor Pressao Rail Flauta Master 2.5 0281002908 0281002734",
+      "pesquisa_1": "Sensor Pressao Rail Flauta Renault Master 2005",
+      "pesquisa_2": "2005/2008",
+      "pesquisa_3": "sensor flauta s10 2007",
+      "updated_at": "2026-05-21T12:04:36"
+    },
+    "jkpecas::1583": {
+      "loja": "JK Peças",
+      "sku": "1583",
+      "produto": "Botão Freio Mão Estacionamento Honda Hrv 2016 2017 2018 2019",
+      "pesquisa_1": "Botão Freio Mão Estacionamento Honda Hrv 2016",
+      "pesquisa_2": "Botão Estacionamento Hrv",
+      "pesquisa_3": "botão freio de mão hrv 2017",
+      "updated_at": "2026-05-21T12:04:36"
+    },
+    "jkpecas::1589": {
+      "loja": "JK Peças",
+      "sku": "1589",
+      "produto": "Display Tela Lcd Velocímetro Painel Ford Focus Titanium Cinza",
+      "pesquisa_1": "Display Tela Lcd Painel Ford Focus Titanium 2015",
+      "pesquisa_2": "Display Painel Focus Titanium",
+      "pesquisa_3": "Visor computador de bordo Focus",
+      "updated_at": "2026-05-21T12:04:36"
+    },
+    "jkpecas::159": {
+      "loja": "JK Peças",
+      "sku": "159",
+      "produto": "Vibrador Recarregável U C Clitóris Casal Usb Tipo We-vibe Violeta-escuro",
+      "pesquisa_1": "Não aplicável",
+      "pesquisa_2": "Tipo We-vibe",
+      "pesquisa_3": "Vibrador casal tipo we vibe",
+      "updated_at": "2026-05-21T12:07:59"
+    },
+    "jkpecas::1591": {
+      "loja": "JK Peças",
+      "sku": "1591",
+      "produto": "Lanterna De Freio E Pisca Moto Custom Cafe Racer Fita 48 Led Vermelho",
+      "pesquisa_1": "Lanterna Freio Pisca Fita Led Harley Davidson Sportster 883 2009",
+      "pesquisa_2": "Rabo de Luz Led Moto",
+      "pesquisa_3": "Fita led cafe racer",
+      "updated_at": "2026-05-21T12:07:59"
+    },
+    "jkpecas::1593": {
+      "loja": "JK Peças",
+      "sku": "1593",
+      "produto": "Comando Botão Vidro Eletrico Citroen C4 Vtr 2 Portas 06 A 09",
+      "pesquisa_1": "Comando Botão Vidro Eletrico Citroen C4 Vtr 2008",
+      "pesquisa_2": "Comando Vidro C4 Vtr",
+      "pesquisa_3": "interruptor vidro c4 vtr 2008",
+      "updated_at": "2026-05-21T12:07:59"
+    },
+    "jkpecas::1595": {
+      "loja": "JK Peças",
+      "sku": "1595",
+      "produto": "Reator Farol Lampada Xenon D3s Mercedes Benz A2229003300 Q02",
+      "pesquisa_1": "Reator Farol Xenon Mercedes Benz Classe S 2015",
+      "pesquisa_2": "A2229003300",
+      "pesquisa_3": "Reator xenon Mercedes",
+      "updated_at": "2026-05-21T12:09:30"
+    },
+    "jkpecas::1599": {
+      "loja": "JK Peças",
+      "sku": "1599",
+      "produto": "Tampa Esguicho Farol Bmw 320i 318i E90 2009 2010 2011 2012",
+      "pesquisa_1": "Tampa Esguicho Farol Bmw 320i 2009",
+      "pesquisa_2": "E90",
+      "pesquisa_3": "tampinha esguicho farol bmw 318i 2011",
+      "updated_at": "2026-05-21T12:09:30"
+    },
+    "jkpecas::16": {
+      "loja": "JK Peças",
+      "sku": "16",
+      "produto": "Cebolão Interruptor Ventoinha Honda Civic 1.7 2001 2002 2003",
+      "pesquisa_1": "Cebolão Interruptor Ventoinha Honda Fit 2004",
+      "pesquisa_2": "cebolinha radiador civic 2002",
+      "pesquisa_3": "cebolão civic 2003",
+      "updated_at": "2026-05-26T13:08:52"
+    },
+    "jkpecas::160": {
+      "loja": "JK Peças",
+      "sku": "160",
+      "produto": "Ponteira De Escapamento Inox Honda Civic G10 2017 18 19 20",
+      "pesquisa_1": "Ponteira de Escapamento Honda Civic 2017",
+      "pesquisa_2": "Ponteira Inox Civic G10",
+      "pesquisa_3": "Ponta escape Civic 2018",
+      "updated_at": "2026-05-21T12:11:27"
+    },
+    "jkpecas::160-K": {
+      "loja": "JK Peças",
+      "sku": "160-K",
+      "produto": "Par Ponteira De Escape  Honda Civic Touring Turbo G10",
+      "pesquisa_1": "Ponteira De Escape Honda Civic Touring 2016",
+      "pesquisa_2": "Civic Touring Turbo",
+      "pesquisa_3": "Saida de escape Civic 2017",
+      "updated_at": "2026-05-21T12:11:27"
+    },
+    "jkpecas::1603": {
+      "loja": "JK Peças",
+      "sku": "1603",
+      "produto": "Resistência Ventoinha Peugeot Citroen 307 408 Ds3 C3 C4 308",
+      "pesquisa_1": "Resistência Ventoinha Peugeot 307 2008",
+      "pesquisa_2": "Resistor do Eletroventilador",
+      "pesquisa_3": "Resistência do ventilador Peugeot 408",
+      "updated_at": "2026-05-21T12:11:27"
+    },
+    "jkpecas::1605": {
+      "loja": "JK Peças",
+      "sku": "1605",
+      "produto": "Reator Led Xenon Mercedes A200 Cla200 A2189009303 Nov",
+      "pesquisa_1": "Reator Led Xenon Mercedes A200 2015",
+      "pesquisa_2": "A2189009303",
+      "pesquisa_3": "Centralina do farol CLA200",
+      "updated_at": "2026-05-21T12:12:54"
+    },
+    "jkpecas::161": {
+      "loja": "JK Peças",
+      "sku": "161",
+      "produto": "Suporte Tampa Tanque Ford Focus 2009-2019",
+      "pesquisa_1": "Suporte Tampa Tanque Ford Focus 2015",
+      "pesquisa_2": "2009-2019",
+      "pesquisa_3": "Apoio tampa combustivel Focus 2010",
+      "updated_at": "2026-05-21T12:12:54"
+    },
+    "jkpecas::1617": {
+      "loja": "JK Peças",
+      "sku": "1617",
+      "produto": "Botão Alavanca Câmbio Automático Honda Accord 1998-2002",
+      "pesquisa_1": "Botão Alavanca Câmbio Automático Honda Accord 2000",
+      "pesquisa_2": "1998-2002",
+      "pesquisa_3": "Botão da alavanca Accord 1999",
+      "updated_at": "2026-05-21T12:12:54"
+    },
+    "jkpecas::1627": {
+      "loja": "JK Peças",
+      "sku": "1627",
+      "produto": "Sensor Pressao Oleo Cherokee Sport 4.0l De 97 À 00 2 Pinos",
+      "pesquisa_1": "Sensor Pressao Oleo Jeep Cherokee Sport 1998",
+      "pesquisa_2": "Sensor Pressao Oleo 2 Pinos",
+      "pesquisa_3": "cebolinha oleo cherokee 99",
+      "updated_at": "2026-05-21T12:15:14"
+    },
+    "jkpecas::1629": {
+      "loja": "JK Peças",
+      "sku": "1629",
+      "produto": "Selim Banco Acento Aranha Tipo Fibra De Carbono Speed Ou Mtb Cinza",
+      "pesquisa_1": "Selim banco Mtb Caloi Elite 2022",
+      "pesquisa_2": "Selim Vazado Carbono",
+      "pesquisa_3": "Banco aranha mtb",
+      "updated_at": "2026-05-21T12:15:14"
+    },
+    "jkpecas::163": {
+      "loja": "JK Peças",
+      "sku": "163",
+      "produto": "Piloto Automático Controle De Velocidade Focus Mk2,5",
+      "pesquisa_1": "Piloto Automático Ford Focus 2011",
+      "pesquisa_2": "2009-2013",
+      "pesquisa_3": "comando piloto automatico focus 2010",
+      "updated_at": "2026-05-21T12:15:14"
+    },
+    "jkpecas::1631": {
+      "loja": "JK Peças",
+      "sku": "1631",
+      "produto": "Olho De Gato Refletor Para-choque Traseiro Bmw 320i",
+      "pesquisa_1": "Olho de gato parachoque traseiro Bmw 320i 2015",
+      "pesquisa_2": "letor",
+      "pesquisa_3": "lanterna parachoque bmw 320i",
+      "updated_at": "2026-05-21T12:17:47"
+    },
+    "jkpecas::1635": {
+      "loja": "JK Peças",
+      "sku": "1635",
+      "produto": "Bico Aspersor Nebulizador 1/2 Latão Metal Regul",
+      "pesquisa_1": "Bico Aspersor Nebulizador Latão Regulável 1/2",
+      "pesquisa_2": "Bico Nebulizador 1/2",
+      "pesquisa_3": "esguicho de metal pra jardim",
+      "updated_at": "2026-05-21T12:17:47"
+    },
+    "jkpecas::1659": {
+      "loja": "JK Peças",
+      "sku": "1659",
+      "produto": "Esteira Do Câmbio Automático Jetta Bora Polo Mk4 Tiptronic",
+      "pesquisa_1": "Esteira do Câmbio Automático Volkswagen Jetta 2009",
+      "pesquisa_2": "Mk4",
+      "pesquisa_3": "Acabamento da alavanca Bora 2008",
+      "updated_at": "2026-05-21T12:17:47"
+    },
+    "jkpecas::1661": {
+      "loja": "JK Peças",
+      "sku": "1661",
+      "produto": "Suporte Adaptador Celular Gps Para Bmw R 1250 R 1200 Gs Preto",
+      "pesquisa_1": "Suporte Adaptador Celular Gps Bmw R 1200 Gs 2018",
+      "pesquisa_2": "Suporte Celular Bmw R1200 Gs",
+      "pesquisa_3": "porta celular gs 1200",
+      "updated_at": "2026-05-21T12:19:42"
+    },
+    "jkpecas::167": {
+      "loja": "JK Peças",
+      "sku": "167",
+      "produto": "Extensor Válvula Bico Pneu 90o Bike Moto Carro Adaptador Prateado",
+      "pesquisa_1": "Extensor bico pneu 90 graus Toyota Hilux 2019",
+      "pesquisa_2": "Bico Pneu 90 Graus",
+      "pesquisa_3": "bico torto pra encher pneu de moto",
+      "updated_at": "2026-05-21T12:19:42"
+    },
+    "jkpecas::167-1": {
+      "loja": "JK Peças",
+      "sku": "167-1",
+      "produto": "Extensor Válvula Bico Pneu 45 Graus Silver Moto Adaptador Prateado",
+      "pesquisa_1": "Extensor Válvula Bico Pneu Honda CG 160 2022",
+      "pesquisa_2": "Adaptador Bico Pneu 45 Graus",
+      "pesquisa_3": "Bico torto pneu moto",
+      "updated_at": "2026-05-21T12:19:42"
+    },
+    "jkpecas::167-1K": {
+      "loja": "JK Peças",
+      "sku": "167-1K",
+      "produto": "Par Alongador Bico Do Pneu Válvula Moto Carro Bike 45 Graus",
+      "pesquisa_1": "Alongador Válvula Pneu Honda CG 160 2019",
+      "pesquisa_2": "Bico Válvula 45 Graus",
+      "pesquisa_3": "Pito torto pneu moto",
+      "updated_at": "2026-05-21T12:22:06"
+    },
+    "jkpecas::167-2": {
+      "loja": "JK Peças",
+      "sku": "167-2",
+      "produto": "Extensor Válvula Bico 135° Silver Para Bicicleta Prateado",
+      "pesquisa_1": "Extensor Válvula Bico 135° Caloi 10 2022",
+      "pesquisa_2": "Bico 135 Graus",
+      "pesquisa_3": "bico curvo pra encher pneu bike",
+      "updated_at": "2026-05-21T12:22:06"
+    },
+    "jkpecas::167-2K": {
+      "loja": "JK Peças",
+      "sku": "167-2K",
+      "produto": "Par Extensor Válvula Bico 135 Graus Silver Moto Adaptador Prateado",
+      "pesquisa_1": "Extensor Válvula Bico Honda CG 160 2022",
+      "pesquisa_2": "Extensor Bico 135 Graus",
+      "pesquisa_3": "pito curvo pneu moto",
+      "updated_at": "2026-05-21T12:22:06"
+    },
+    "jkpecas::167-K": {
+      "loja": "JK Peças",
+      "sku": "167-K",
+      "produto": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto Adaptador Prateado",
+      "pesquisa_1": "Extensor válvula bico pneu Honda CG 160 2022",
+      "pesquisa_2": "Adaptador Válvula 90 Graus",
+      "pesquisa_3": "bico torto pra carro",
+      "updated_at": "2026-05-21T12:24:18"
+    },
+    "jkpecas::1687": {
+      "loja": "JK Peças",
+      "sku": "1687",
+      "produto": "",
+      "pesquisa_1": "Atuador Marcha Lenta Toyota Corolla 1995",
+      "pesquisa_2": "Motor Passo Marcha Lenta Corolla Camry",
+      "pesquisa_3": "Motor de passo Camry 1994",
+      "updated_at": "2026-05-21T12:24:18"
+    },
+    "jkpecas::169-K": {
+      "loja": "JK Peças",
+      "sku": "169-K",
+      "produto": "Válvula Bico Esportivo Pneu Moto 90 Graus Alumínio (par)",
+      "pesquisa_1": "Válvula bico pneu Honda Hornet 2012",
+      "pesquisa_2": "11.3mm",
+      "pesquisa_3": "pito 90 graus pneu kawasaki",
+      "updated_at": "2026-05-21T12:24:18"
+    },
+    "jkpecas::1691": {
+      "loja": "JK Peças",
+      "sku": "1691",
+      "produto": "Tampa Combustível Land Rover - Range Rover E Discovery 3 4",
+      "pesquisa_1": "Tampa Combustível Land Rover Discovery 3 2008",
+      "pesquisa_2": "Tampa Tanque Land Rover",
+      "pesquisa_3": "tampa do tanque discovery 4",
+      "updated_at": "2026-05-21T12:26:09"
+    },
+    "jkpecas::170-K4": {
+      "loja": "JK Peças",
+      "sku": "170-K4",
+      "produto": "Jogo De Velas Ignição Original Toyota Corolla 2002/08 4un",
+      "pesquisa_1": "Jogo De Velas Ignição Toyota Corolla 2005",
+      "pesquisa_2": "erente",
+      "pesquisa_3": "kit vela fielder 2006",
+      "updated_at": "2026-05-21T12:26:09"
+    },
+    "jkpecas::1701": {
+      "loja": "JK Peças",
+      "sku": "1701",
+      "produto": "Sensor Velocidade Completo Pinhão Frontier 2.8 Até 2007",
+      "pesquisa_1": "Sensor Velocidade Pinhão Nissan Frontier 2007",
+      "pesquisa_2": "Pinhão Sensor Velocidade Frontier",
+      "pesquisa_3": "Pinhão sensor velocidade frontier 2006",
+      "updated_at": "2026-05-21T12:26:09"
+    },
+    "jkpecas::1713": {
+      "loja": "JK Peças",
+      "sku": "1713",
+      "produto": "Capa Cromada Maçaneta 4 Portas E Tampa Mala Dodge Ram 2500",
+      "pesquisa_1": "Capa Cromada Maçaneta Dodge Ram 2500 2018",
+      "pesquisa_2": "Aplique Maçaneta Cromado Ram 2500",
+      "pesquisa_3": "puxador cromado ram 2500",
+      "updated_at": "2026-05-21T12:28:09"
+    },
+    "jkpecas::1717": {
+      "loja": "JK Peças",
+      "sku": "1717",
+      "produto": "Moldura Aplique Friso Retrovisor Cromado Jeep Compass",
+      "pesquisa_1": "Aplique retrovisor Jeep Compass 2021",
+      "pesquisa_2": "Capa Retrovisor Cromada Jeep Compass",
+      "pesquisa_3": "capa retrovisor cromada compass 2019",
+      "updated_at": "2026-05-21T12:28:09"
+    },
+    "jkpecas::173": {
+      "loja": "JK Peças",
+      "sku": "173",
+      "produto": "Modulo Ventoinha Passat Jetta Golf Tiguan Audi 1k0959455",
+      "pesquisa_1": "Modulo Ventoinha Volkswagen Passat 2008",
+      "pesquisa_2": "original",
+      "pesquisa_3": "Central ventoinha Tiguan 2012",
+      "updated_at": "2026-05-21T12:28:09"
+    },
+    "jkpecas::1733": {
+      "loja": "JK Peças",
+      "sku": "1733",
+      "produto": "Cebolinha Direção Hidarulica Azera Sonata 57535 3k00",
+      "pesquisa_1": "Cebolinha Direção Hidráulica Hyundai Azera 2008",
+      "pesquisa_2": "575353k00",
+      "pesquisa_3": "Cebolinha do Azera",
+      "updated_at": "2026-05-21T12:30:26"
+    },
+    "jkpecas::1737": {
+      "loja": "JK Peças",
+      "sku": "1737",
+      "produto": "Fluxo De Ar Renault Master 2.5 16v Diesel De 2009 A 2015",
+      "pesquisa_1": "Fluxo De Ar Renault Master 2012",
+      "pesquisa_2": "Sensor MAF Master 2.5",
+      "pesquisa_3": "Sensor MAF Master 2.5 2012",
+      "updated_at": "2026-05-21T12:30:26"
+    },
+    "jkpecas::1743": {
+      "loja": "JK Peças",
+      "sku": "1743",
+      "produto": "Emblema Logo Estrela Capo Mercedes-benz 44mm Cinza",
+      "pesquisa_1": "Emblema Estrela Capo Mercedes-Benz C180 2014",
+      "pesquisa_2": "Estrela Capo Mercedes 44mm",
+      "pesquisa_3": "mira capo mercedes",
+      "updated_at": "2026-05-21T12:30:26"
+    },
+    "jkpecas::1747": {
+      "loja": "JK Peças",
+      "sku": "1747",
+      "produto": "Interruptor Botão Vidro Sprinter 311 415 515 Direito Passage",
+      "pesquisa_1": "Interruptor Botão Vidro Mercedes-Benz Sprinter 415 2015",
+      "pesquisa_2": "Botão Vidro Sprinter Passageiro",
+      "pesquisa_3": "botao vidro eletrico sprinter 415",
+      "updated_at": "2026-05-21T12:32:56"
+    },
+    "jkpecas::1749": {
+      "loja": "JK Peças",
+      "sku": "1749",
+      "produto": "Snow Foam Esguicho Shampoozeira Lavagem Cera Reservatório",
+      "pesquisa_1": "Snow Foam Esguicho Shampoozeira",
+      "pesquisa_2": "Canhão de Espuma",
+      "pesquisa_3": "Canhão de espuma automotivo",
+      "updated_at": "2026-05-21T12:32:56"
+    },
+    "jkpecas::1753": {
+      "loja": "JK Peças",
+      "sku": "1753",
+      "produto": "Bomba Filtro Combustivel Land Rover Evoque Nova Gasolina Com Filtro",
+      "pesquisa_1": "Bomba Filtro Combustivel Land Rover Evoque 2015",
+      "pesquisa_2": "Bomba Combustivel Land Rover Evoque",
+      "pesquisa_3": "bomba gasolina evoque 2015",
+      "updated_at": "2026-05-21T12:32:56"
+    },
+    "jkpecas::176": {
+      "loja": "JK Peças",
+      "sku": "176",
+      "produto": "",
+      "pesquisa_1": "Sensor De Pressão Combustível Ford Ranger 2013",
+      "pesquisa_2": "85pp40-02",
+      "pesquisa_3": "sensor pressao combustivel transit 2013",
+      "updated_at": "2026-05-21T12:34:15"
+    },
+    "jkpecas::1773": {
+      "loja": "JK Peças",
+      "sku": "1773",
+      "produto": "Esteira Do Câmbio Automático Volvo C30 V50 S40 C70 - 8699465 Preto",
+      "pesquisa_1": "Esteira Câmbio Automático Volvo C30 2010",
+      "pesquisa_2": "8699465",
+      "pesquisa_3": "Acabamento cambio volvo v50",
+      "updated_at": "2026-05-21T12:34:15"
+    },
+    "jkpecas::18": {
+      "loja": "JK Peças",
+      "sku": "18",
+      "produto": "Bomba Combustível P/ Ford Focus 2.0 16v Duratec 2009 Gasoli",
+      "pesquisa_1": "Bomba Combustível Ford Focus 2009",
+      "pesquisa_2": "2008/2009",
+      "pesquisa_3": "bomba gasolina focus 2008",
+      "updated_at": "2026-05-21T12:34:15"
+    },
+    "jkpecas::181": {
+      "loja": "JK Peças",
+      "sku": "181",
+      "produto": "Seta Retrovisor Sequencial Led Ford Focus Mk2mk3 2008 A 2018 Dourado-escuro",
+      "pesquisa_1": "Seta Retrovisor Ford Focus 2008",
+      "pesquisa_2": "Original",
+      "pesquisa_3": "pisca espelho focus ghia 2010",
+      "updated_at": "2026-05-21T12:35:51"
+    },
+    "jkpecas::1865": {
+      "loja": "JK Peças",
+      "sku": "1865",
+      "produto": "Comando Do Vidro Elétrico P/ Ford Ranger 2012 2013 2014 2015",
+      "pesquisa_1": "Comando Do Vidro Elétrico Ford Ranger 2012",
+      "pesquisa_2": "Botão Vidro Elétrico Ranger",
+      "pesquisa_3": "botoeira vidro ranger 2013",
+      "updated_at": "2026-05-21T12:35:51"
+    },
+    "jkpecas::187": {
+      "loja": "JK Peças",
+      "sku": "187",
+      "produto": "Sensor De Pressão Map Coletor Bosch Renault Master 2.5 04/12",
+      "pesquisa_1": "Sensor Pressão Map Coletor Renault Master 2008",
+      "pesquisa_2": "0281002573",
+      "pesquisa_3": "sensor map master van curta 2007",
+      "updated_at": "2026-05-21T12:35:51"
+    },
+    "jkpecas::1885": {
+      "loja": "JK Peças",
+      "sku": "1885",
+      "produto": "Válvula De Vácuo Coletor De Admissão Cruze Sonic Tracker Gm",
+      "pesquisa_1": "Válvula de vácuo coletor de admissão Chevrolet Cruze 2014",
+      "pesquisa_2": "Valvula Coletor Admissao Gm",
+      "pesquisa_3": "valvula vacuo tracker",
+      "updated_at": "2026-05-21T12:37:53"
+    },
+    "jkpecas::1887": {
+      "loja": "JK Peças",
+      "sku": "1887",
+      "produto": "",
+      "pesquisa_1": "Retentor do Comando de Válvulas Chevrolet Cruze 2014",
+      "pesquisa_2": "Retentor Comando Válvulas Sonic",
+      "pesquisa_3": "Retentor comando valvula tracker",
+      "updated_at": "2026-05-21T12:37:53"
+    },
+    "jkpecas::1889": {
+      "loja": "JK Peças",
+      "sku": "1889",
+      "produto": "Mangueira Filtro De Ar Mercedes A200 Cla200 Gla200 2013/2018",
+      "pesquisa_1": "Mangueira Filtro De Ar Mercedes A200 2015",
+      "pesquisa_2": "2013/2018",
+      "pesquisa_3": "mangote filtro ar gla200 2016",
+      "updated_at": "2026-05-21T12:37:53"
+    },
+    "carlosjose::251": {
+      "loja": "Carlos José",
+      "sku": "251",
+      "produto": "Bico Aspersor Nebulizador 1/2 Latão Metal Regul",
+      "pesquisa_1": "Bico Aspersor Nebulizador Irrigação Pulverização Regulável",
+      "pesquisa_2": "Bico Aspersor Nebulizador 1/2 Latão Metal Regulável",
+      "pesquisa_3": "Bico Aspersor Nebulizador 1/2 Latão Metal Regul",
+      "updated_at": "2026-05-21T15:33:32"
+    },
+    "carlosjose::252-2": {
+      "loja": "Carlos José",
+      "sku": "252-2",
+      "produto": "Tampa Esguicho Lavador De Farol Focus Esquerdo 2012-2015 Esquerdo",
+      "pesquisa_1": "646210",
+      "pesquisa_2": "Tampa Esguicho Lavador Farol Ford Focus 2014 Esquerdo",
+      "pesquisa_3": "Tampa Lavador Esguicho Farol Esquerdo Focus 2014 A 2015",
+      "updated_at": "2026-05-21T16:24:48"
+    },
+    "uaimineirinho::256": {
+      "loja": "Uai Mineirinho",
+      "sku": "256",
+      "produto": "Prg Snow Foam Esguicho 1l Shampoo Para Veículos",
+      "pesquisa_1": "Snow Foam Esguicho Shampoozeira Lavagem Cera Reservatório",
+      "pesquisa_2": "Esguicho Ducha Banho Cavalo Cachorro Gatos Carro Pet Plantas",
+      "pesquisa_3": "Esguicho Snow Foam Prg Com Reservatório Para Lavagem",
+      "updated_at": "2026-05-22T07:15:37"
+    },
+    "uaimineirinho::257-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "257-1",
+      "produto": "Botão Vidro Elétrico Simples Mercedes-benz Sprinter 415 515",
+      "pesquisa_1": "Botão Vidro Elétrico Simples Mercedes-benz Sprinter 415 515",
+      "pesquisa_2": "Botão Comando Vidro Mercedes Sprinter 415 2015 A 2019",
+      "pesquisa_3": "9065450913",
+      "updated_at": "2026-05-22T07:48:43"
+    },
+    "uaimineirinho::273": {
+      "loja": "Uai Mineirinho",
+      "sku": "273",
+      "produto": "Comando Botão Vidro Eletrico Ford Ranger 2012 2013 2014 2015",
+      "pesquisa_1": "Comando Botão Vidro Elétrico Abs Ford Ranger 2012-2015",
+      "pesquisa_2": "Comando Botão Vidro Eletrico Ford Ranger 2012 2013 2014 2015",
+      "pesquisa_3": "Botao Ranger Interruptor Vidro Eletrico Comando Cabine Dupla",
+      "updated_at": "2026-05-22T07:59:45"
+    },
+    "uaimineirinho::280": {
+      "loja": "Uai Mineirinho",
+      "sku": "280",
+      "produto": "Retentor Comando Válvulas Cruze 1.8 2012 2013 2014 2015 2016",
+      "pesquisa_1": "55563374",
+      "pesquisa_2": "Par Retentor Comando Válvulas Cruze Sonic Tracker 55563374",
+      "pesquisa_3": "Retentor Comando Válvulas Cruze Tracker 1.8 Sonic 1.6 Ecotec",
+      "updated_at": "2026-05-25T08:17:59"
+    },
+    "uaimineirinho::285": {
+      "loja": "Uai Mineirinho",
+      "sku": "285",
+      "produto": "Comando Vidro Eletrico Para Kia Sorento 2010 A 2014",
+      "pesquisa_1": "Botão Vidro Elétrico Comando Sorento Interruptor (2 Auto)",
+      "pesquisa_2": "Comando Botão Vidro Elétrico Kia Sorento 2011 2012 2013 2014",
+      "pesquisa_3": "935702p010 93570-2p010",
+      "updated_at": "2026-05-25T09:19:16"
+    },
+    "uaimineirinho::294": {
+      "loja": "Uai Mineirinho",
+      "sku": "294",
+      "produto": "Tubo Cano Óleo Retorno Turbina Peugeot Thp 308 408 508 3008",
+      "pesquisa_1": "Tubo Cano Óleo Retorno Turbina Peugeot Thp 308 408 508 3008",
+      "pesquisa_2": "Tubo Retorno Óleo Turbina Peugeot 308 408 508 3008",
+      "pesquisa_3": "Tubo Cano Óleo Retorno Turbina Peugeot Thp 308 408 508 3008",
+      "updated_at": "2026-05-25T10:39:05"
+    },
+    "uaimineirinho::307-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "307-1",
+      "produto": "Carcaça Válvula Termostática 308, 3008 408 C4 Ds3 1.6 Thp",
+      "pesquisa_1": "Carcaça Termostática Ds3 Ds4 Ds5 3008 308 4008 C4 1 6 Thp",
+      "pesquisa_2": "Carcaça Válvula Termostática 308 3008 408 C4 Ds3 1 6 Thp",
+      "pesquisa_3": "Carcaça Termostática Ds3 Ds4 Ds5 3008 308 4008 C4 1 6 Thp",
+      "updated_at": "2026-05-25T16:20:00"
+    }
+  },
+  "updated_at": "2026-05-26T13:08:52"
+}

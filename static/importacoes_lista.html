@@ -1,0 +1,2159 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detalhe da Lista - Importações</title>
+    <script src="/auth.js?v=20260417e"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0e1117;
+            color: #e5e5e5;
+        }
+        .container {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .topbar {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr 1fr 1fr auto;
+            gap: 12px;
+            margin-bottom: 18px;
+            align-items: center;
+        }
+        .fx-box, .clock-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-height: 68px;
+            padding: 10px 14px;
+            border-radius: 13px;
+            border: 1px solid #2a3f5c;
+            background: linear-gradient(180deg, rgba(13,24,43,0.9), rgba(10,19,35,0.95));
+            box-shadow: inset 0 1px 0 rgba(185,226,255,0.1), 0 14px 28px rgba(0,0,0,0.3);
+        }
+        .fx-box {
+            border-color: rgba(99,187,255,0.55);
+            background: linear-gradient(180deg, rgba(14,33,59,0.92), rgba(10,22,40,0.96));
+        }
+        .clock-box {
+            border-color: rgba(255,166,94,0.52);
+            background: linear-gradient(180deg, rgba(56,34,19,0.9), rgba(33,22,14,0.95));
+        }
+        .clock-box.brasilia {
+            border-color: rgba(104,214,142,0.54);
+            background: linear-gradient(180deg, rgba(19,60,36,0.9), rgba(13,40,25,0.95));
+        }
+        .fx-label { color: #9ecfff; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
+        .clock-label { color: #ffca9f; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
+        .clock-box.brasilia .clock-label { color: #9be9b6; }
+        .clock-value { color: #ffc68f; font-size: 1.65rem; font-weight: 800; line-height: 1; }
+        .clock-box.brasilia .clock-value { color: #7bffab; }
+        .fx-value { color: #9dd6ff; font-size: 1.7rem; font-weight: 800; line-height: 1; }
+        .fx-time { color: #d2e6ff; font-size: 0.9rem; font-weight: 700; }
+        /* mantém compatibilidade chip legado */
+        .fx-chip { display: none; }
+        h1 {
+            margin: 0;
+            color: #9bd1ff;
+            font-size: 1.45rem;
+        }
+        .btn {
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1c1f2b;
+            color: #e5e5e5;
+            padding: 8px 12px;
+            cursor: pointer;
+            text-decoration: none;
+            font-weight: 700;
+        }
+        .btn:hover {
+            border-color: #4facfe;
+            color: #9bd1ff;
+        }
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, #63bbff, #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            z-index: 1200;
+        }
+        .back-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+            color: #fff;
+        }
+        .card {
+            background: #161925;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .meta {
+            display: flex;
+            gap: 8px 16px;
+            flex-wrap: wrap;
+            color: #b9c9df;
+            margin-bottom: 12px;
+            font-size: 0.92rem;
+        }
+        .status {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            background: #4a2f1a;
+            border: 1px solid #c9833f;
+            color: #ffd2a8;
+            font-weight: 700;
+            font-size: 0.78rem;
+        }
+        .resumo-topo {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+            gap: 3px;
+            margin-bottom: 6px;
+        }
+        .resumo-card {
+            border-radius: 8px;
+            border: 1px solid #35557f;
+            background: #15253f;
+            padding: 4px 6px;
+            min-height: 42px;
+        }
+        .resumo-card.editavel {
+            cursor: text;
+        }
+        .resumo-card.card-cotacao {
+            border-color: #1d8f52;
+            background: linear-gradient(180deg, #14663c, #0e4c2d);
+        }
+        .resumo-card .label {
+            color: #cad9f2;
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 0.45px;
+            margin-bottom: 1px;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+        .resumo-card .value {
+            color: #fff;
+            font-size: 0.9rem;
+            font-weight: 800;
+            white-space: nowrap;
+            line-height: 1.1;
+            overflow: hidden;
+            text-overflow: clip;
+        }
+        .resumo-card .value-sub {
+            display: block;
+            margin-top: 4px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: #d6ebff;
+            opacity: 0.95;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: clip;
+        }
+        .resumo-card .value.editavel-valor {
+            padding: 4px 2px;
+            border-radius: 6px;
+            border: 1px dashed transparent;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .resumo-card.editavel:hover .value.editavel-valor {
+            border-color: rgba(103, 180, 255, 0.35);
+            background: rgba(11, 27, 45, 0.38);
+        }
+        .resumo-select {
+            width: 100%;
+            border: 1px solid #4a6b96;
+            border-radius: 6px;
+            background: #0f1b2d;
+            color: #e5f1ff;
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding: 3px 6px;
+            outline: none;
+        }
+        .resumo-select:focus {
+            border-color: #67b4ff;
+        }
+        .resumo-input {
+            width: 100%;
+            border: 1px solid #4a6b96;
+            border-radius: 6px;
+            background: #0f1b2d;
+            color: #e5f1ff;
+            font-size: 0.84rem;
+            font-weight: 700;
+            padding: 4px 6px;
+            outline: none;
+        }
+        .resumo-input:focus {
+            border-color: #67b4ff;
+            box-shadow: 0 0 0 2px rgba(103, 180, 255, 0.16);
+        }
+        .table-wrap {
+            width: 100%;
+            overflow: auto;
+            border: 1px solid #2f3d56;
+            border-radius: 10px;
+        }
+        table {
+            width: max-content;
+            min-width: 100%;
+            border-collapse: collapse;
+            background: #121b2a;
+            table-layout: auto;
+        }
+        thead th {
+            position: sticky;
+            top: 0;
+            background: #1b2a3f;
+            color: #cfe6ff;
+            text-align: center;
+            font-size: 0.84rem;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            padding: 10px;
+            border-bottom: 1px solid #304867;
+            vertical-align: middle;
+            white-space: normal;
+            word-break: normal;
+            overflow-wrap: anywhere;
+            hyphens: auto;
+        }
+        tbody td {
+            padding: 10px;
+            border-bottom: 1px solid #223149;
+            vertical-align: middle;
+            min-width: 12px;
+        }
+        tbody tr:hover {
+            background: #17263b;
+        }
+        tbody tr.jk-row-clickable:hover {
+            background: #1b314d;
+        }
+        .num {
+            text-align: right;
+            white-space: nowrap;
+        }
+        .num-center {
+            text-align: center;
+            white-space: nowrap;
+        }
+        .cell-sub-money {
+            display: block;
+            margin-top: 2px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: #c7ddf7;
+            line-height: 1.1;
+        }
+        .totais-row td {
+            background: #17273e;
+            border-top: 1px solid #3b5578;
+            border-bottom: 1px solid #3b5578;
+            font-weight: 800;
+            color: #d9ecff;
+        }
+        .totais-row td.totais-label {
+            color: #9bd1ff;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .sku {
+            color: #9bd1ff;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .sku-link {
+            color: #9bd1ff;
+            font-weight: 700;
+            text-decoration: none;
+            border-bottom: 1px dashed transparent;
+        }
+        .sku-link:hover {
+            color: #cbe8ff;
+            border-bottom-color: #9bd1ff;
+        }
+        .foto {
+            width: 50px;
+            height: 50px;
+            border-radius: 8px;
+            object-fit: cover;
+            background: #0f1726;
+            border: 1px solid #2f3d56;
+            display: block;
+        }
+        .foto-empty {
+            color: #8ea2be;
+            font-size: 0.82rem;
+        }
+        .btn-excluir-sku {
+            border: 1px solid #8f3a3a;
+            border-radius: 7px;
+            background: linear-gradient(180deg, #542323, #3f1c1c);
+            color: #ffd5d5;
+            font-size: 0.76rem;
+            font-weight: 800;
+            padding: 6px 8px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .btn-excluir-sku:hover {
+            border-color: #d16a6a;
+            filter: brightness(1.06);
+        }
+        .btn-excluir-sku:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+        .erro {
+            border: 1px solid #6b2e2e;
+            background: #2a1717;
+            color: #ffb8b8;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 12px;
+            display: none;
+        }
+        .empty {
+            padding: 14px;
+            border-radius: 10px;
+            border: 1px dashed #33445f;
+            color: #9bb0cc;
+            text-align: center;
+        }
+        .total-box {
+            margin-top: 12px;
+            text-align: right;
+            color: #ffd2a8;
+            font-size: 1.02rem;
+            font-weight: 800;
+        }
+        .add-sku-box {
+            margin-top: 14px;
+            border: 1px solid #2f3d56;
+            border-radius: 10px;
+            background: #101a2a;
+            padding: 10px;
+        }
+        .add-sku-title {
+            color: #cfe6ff;
+            font-size: 0.9rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .add-sku-grid {
+            display: grid;
+            grid-template-columns: 1.4fr 1fr 1fr auto;
+            gap: 8px;
+            align-items: end;
+        }
+        .add-sku-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .add-sku-field label {
+            color: #a8c0dd;
+            font-size: 0.78rem;
+            font-weight: 700;
+        }
+        .add-sku-field input {
+            border: 1px solid #3a4e6d;
+            border-radius: 7px;
+            background: #0c1522;
+            color: #e5f1ff;
+            padding: 7px 9px;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .add-sku-field input:focus {
+            border-color: #67b4ff;
+            box-shadow: 0 0 0 2px rgba(103, 180, 255, 0.16);
+        }
+        .add-sku-field-hint {
+            color: #8fb2d8;
+            font-size: 0.74rem;
+            margin-top: 3px;
+        }
+        .btn-add-sku {
+            border: 1px solid #2f7d58;
+            border-radius: 8px;
+            background: linear-gradient(180deg, #1b5f42, #154a33);
+            color: #d8ffe9;
+            font-size: 0.86rem;
+            font-weight: 800;
+            padding: 8px 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .btn-add-sku:hover {
+            border-color: #57b987;
+            filter: brightness(1.06);
+        }
+        .btn-add-sku:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+        .add-sku-status {
+            margin-top: 8px;
+            color: #9ed9b9;
+            font-size: 0.8rem;
+            min-height: 18px;
+        }
+        .th-content {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            min-height: 36px;
+            padding: 0 12px 0 0;
+            user-select: none;
+            white-space: normal;
+            word-break: normal;
+            overflow-wrap: anywhere;
+            hyphens: auto;
+        }
+        .th-label {
+            display: block;
+            width: 100%;
+            white-space: normal;
+            word-break: normal;
+            overflow-wrap: anywhere;
+            hyphens: auto;
+        }
+        .th-resizer {
+            position: absolute;
+            top: -10px;
+            right: -6px;
+            width: 14px;
+            height: calc(100% + 20px);
+            cursor: col-resize;
+            border-right: 2px solid rgba(79, 172, 254, 0.45);
+            z-index: 3;
+        }
+        .th-resizer:hover {
+            background: rgba(79, 172, 254, 0.18);
+            border-right-color: #4facfe;
+        }
+        thead th.th-draggable {
+            cursor: grab;
+        }
+        thead th.th-draggable.dragging {
+            opacity: 0.45;
+        }
+        thead th.th-draggable.drag-over {
+            box-shadow: inset -3px 0 0 #4facfe;
+        }
+        @media (max-width: 760px) {
+            .container {
+                padding: 14px;
+            }
+            h1 {
+                font-size: 1.16rem;
+            }
+            .fx-chip {
+                width: 100%;
+                margin-left: 0;
+                justify-content: space-between;
+            }
+            .resumo-topo {
+                grid-template-columns: 1fr;
+            }
+            .back-btn {
+                width: auto;
+                min-height: 44px;
+                font-size: 1rem;
+                padding: 0 13px;
+                top: 12px;
+                right: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="topbar">
+            <h1 id="titulo">Lista de Importação</h1>
+            <div class="fx-box">
+                <div>
+                    <div class="fx-label">Dólar x Real (USD/BRL)</div>
+                    <div id="fxValue" class="fx-value">Carregando...</div>
+                </div>
+                <div id="fxTime" class="fx-time">--:--:--</div>
+            </div>
+            <div class="clock-box brasilia">
+                <div>
+                    <div class="clock-label">Horário de Brasília</div>
+                    <div id="clockBrasilia" class="clock-value">--:--:--</div>
+                </div>
+            </div>
+            <div class="clock-box">
+                <div>
+                    <div class="clock-label">Horário em Pequim</div>
+                    <div id="clockBeijing" class="clock-value">--:--:--</div>
+                </div>
+            </div>
+            <a class="back-btn" id="btnVoltar" href="importacoes.html">Voltar</a>
+        </div>
+
+        <div id="erro" class="erro"></div>
+
+        <div class="card">
+            <div id="meta" class="meta"></div>
+            <div id="resumoTopo" class="resumo-topo"></div>
+            <div class="table-wrap">
+                <table>
+                    <colgroup id="tCols"></colgroup>
+                    <thead id="tHead"></thead>
+                    <tbody id="tbodyLista">
+                        <tr><td colspan="12" class="empty">Carregando itens...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="totalGeral" class="total-box"></div>
+            <div class="add-sku-box">
+                <div class="add-sku-title">Incluir SKU no pedido</div>
+                <div class="add-sku-grid">
+                    <div class="add-sku-field">
+                        <label for="manualSku">SKU</label>
+                        <input id="manualSku" type="text" placeholder="Ex.: 12345" autocomplete="off">
+                    </div>
+                    <div class="add-sku-field">
+                        <label for="manualQtd">Quantidade</label>
+                        <input id="manualQtd" type="number" min="1" step="1" value="1">
+                    </div>
+                    <div class="add-sku-field">
+                        <label for="manualValor">Valor unitário (USD)</label>
+                        <input id="manualValor" type="number" min="0.01" step="0.01" placeholder="0.00">
+                    </div>
+                    <button id="btnAddSkuManual" type="button" class="btn-add-sku">Incluir SKU</button>
+                    <div class="add-sku-field">
+                        <label for="btnAddSkuLista">Incluir SKUs por arquivo</label>
+                        <button id="btnAddSkuLista" type="button" class="btn-add-sku">Incluir Lista por Arquivo</button>
+                        <div class="add-sku-field-hint">Use o mesmo Excel padrão do módulo principal de Importações.</div>
+                    </div>
+                </div>
+                <div id="addSkuStatus" class="add-sku-status"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        if (!verificarSessao()) {
+            // verificarSessao já redireciona quando não há token.
+        }
+
+        function getListaIdDaUrl() {
+            const p = new URLSearchParams(window.location.search);
+            return String(p.get('lista_id') || '').trim();
+        }
+
+        (function() {
+            const p = new URLSearchParams(window.location.search);
+            const fromEmb = p.get('from_embarque');
+            if (fromEmb) {
+                const btn = document.getElementById('btnVoltar');
+                if (btn) btn.href = 'importacoes.html?embarque_id=' + encodeURIComponent(fromEmb);
+            }
+        })();
+
+        function escaparHtml(v) {
+            return String(v || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function normTxt(v) {
+            return String(v || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim();
+        }
+
+        function ehUrlAbsoluta(v) {
+            const s = String(v || '').trim().toLowerCase();
+            return s.startsWith('http://') || s.startsWith('https://') || s.startsWith('//');
+        }
+
+        function obterUrlFoto(valor) {
+            const foto = String(valor || '').trim();
+            if (!foto) return '';
+            if (ehUrlAbsoluta(foto)) return foto;
+            const nomeArquivo = foto.split('/').pop();
+            if (!nomeArquivo) return '';
+            return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
+        }
+
+        function formatarNumero(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+        }
+
+        function formatarM3(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+        }
+
+        function formatarUSD(v) {
+            return Number(v || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+        }
+
+        function formatarMoedaBR(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        }
+
+        function formatarBRL(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        }
+
+        let cotacaoDolarTopo = 0;
+        let ultimaListaCarregada = null;
+        let ultimosItensCarregados = [];
+        let faturamentoVendas12m = null;
+        let faturamentoVendasCarregando = false;
+        const FATURAMENTO_REFRESH_MS = 120000;
+
+        function atualizarFxTopo(valorTxt, horaTxt) {
+            const elV = document.getElementById('fxValue');
+            const elT = document.getElementById('fxTime');
+            if (elV) elV.textContent = String(valorTxt || '-');
+            if (elT && horaTxt) elT.textContent = horaTxt;
+        }
+
+        function atualizarFxCompraTopo(valor) {
+            // legado — mantido para compatibilidade com renderResumoTopo
+        }
+
+        function atualizarHorarioBrasilia() {
+            const el = document.getElementById('clockBrasilia');
+            if (!el) return;
+            try {
+                el.textContent = new Intl.DateTimeFormat('pt-BR', {
+                    timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+                }).format(new Date());
+            } catch (_e) { el.textContent = '--:--:--'; }
+        }
+
+        function atualizarHorarioPequim() {
+            const el = document.getElementById('clockBeijing');
+            if (!el) return;
+            try {
+                el.textContent = new Intl.DateTimeFormat('pt-BR', {
+                    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+                }).format(new Date());
+            } catch (_e) { el.textContent = '--:--:--'; }
+        }
+
+        async function carregarFxTopo() {
+            try {
+                const resp = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL', {
+                    method: 'GET',
+                    cache: 'no-store'
+                });
+                if (!resp.ok) throw new Error('falha cotação');
+                const data = await resp.json();
+                const usd = data && (data.USDBRL || data['USD-BRL']);
+                const bid = Number(usd && (usd.bid || usd.ask || usd.high || usd.low) || 0);
+                cotacaoDolarTopo = bid > 0 ? Number(bid.toFixed(2)) : 0;
+                const hora = usd && usd.create_date ? String(usd.create_date).slice(11, 19) : '';
+                atualizarFxTopo(bid > 0 ? formatarBRL(bid) : '-', hora);
+
+                // Se o detalhe já tiver sido carregado, reaplica os cards do resumo com fallback de câmbio.
+                if (ultimaListaCarregada && Array.isArray(ultimosItensCarregados) && ultimosItensCarregados.length) {
+                    renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+                }
+            } catch (_e) {
+                cotacaoDolarTopo = 0;
+                atualizarFxTopo('-');
+            }
+        }
+
+        async function carregarFaturamentoVendas12m() {
+            if (faturamentoVendasCarregando) return;
+            faturamentoVendasCarregando = true;
+            try {
+                const params = new URLSearchParams({ periodo: '1a', intervalo: 'mes' });
+                const resp = await fetch('/api/vendas/grafico?' + params.toString(), {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store'
+                });
+                if (!resp.ok) throw new Error('Falha ao carregar faturamento do módulo Vendas.');
+
+                const data = await resp.json();
+                const vendas = Array.isArray(data && data.valores_vendas) ? data.valores_vendas : [];
+                const devolucoes = Array.isArray(data && data.valores_devolucoes) ? data.valores_devolucoes : [];
+
+                const totalVendas = vendas.reduce((acc, v) => acc + Number(v || 0), 0);
+                const totalDevolucoes = devolucoes.reduce((acc, v) => acc + Number(v || 0), 0);
+                faturamentoVendas12m = totalVendas - totalDevolucoes;
+
+                if (ultimaListaCarregada) {
+                    renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+                }
+            } catch (_e) {
+                // Mantém o último valor conhecido em caso de falha transitória.
+            } finally {
+                faturamentoVendasCarregando = false;
+            }
+        }
+
+        function calcularFaixaImpostoPorFaturamento(faturamento) {
+            const f = Number(faturamento || 0);
+            if (!Number.isFinite(f)) return '-';
+
+            if (f <= 180000) return formatarPct(4);
+            if (f <= 360000) return formatarPct(7.3);
+            if (f <= 720000) return formatarPct(9.5);
+            if (f <= 1800000) return formatarPct(10.7);
+            if (f <= 3600000) return formatarPct(14.3);
+            return formatarPct(19);
+        }
+
+        function formatarPct(v) {
+            const n = Number(v || 0);
+            if (!Number.isFinite(n)) return '-';
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+        }
+
+        function obterCampo(item, chaves, valorPadrao) {
+            const lista = Array.isArray(chaves) ? chaves : [chaves];
+            for (const chave of lista) {
+                if (Object.prototype.hasOwnProperty.call(item || {}, chave)) {
+                    const v = item[chave];
+                    if (v !== null && v !== undefined && String(v).trim() !== '') return v;
+                }
+            }
+            return valorPadrao;
+        }
+
+        function valorNumerico(v) {
+            if (v === null || v === undefined) return 0;
+            if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+            let s = String(v).trim();
+            if (!s) return 0;
+            s = s.replace(/\s+/g, '').replace(/R\$/gi, '').replace(/US\$/gi, '').replace(/\$/g, '');
+            const hasComma = s.includes(',');
+            const hasDot = s.includes('.');
+            if (hasComma && hasDot) {
+                const lastComma = s.lastIndexOf(',');
+                const lastDot = s.lastIndexOf('.');
+                if (lastComma > lastDot) {
+                    s = s.replace(/\./g, '').replace(',', '.');
+                } else {
+                    s = s.replace(/,/g, '');
+                }
+            } else if (hasComma) {
+                s = s.replace(',', '.');
+            }
+            const n = Number(s);
+            return Number.isFinite(n) ? n : 0;
+        }
+
+        function normalizarSkuComparacao(v) {
+            let sku = String(v || '').trim().toUpperCase();
+            if (!sku) return '';
+            sku = sku.replace(/\s+/g, '').replace(/\.0+$/, '');
+            const meses = {
+                JAN: '1', FEV: '2', MAR: '3', ABR: '4', MAI: '5', JUN: '6',
+                JUL: '7', AGO: '8', SET: '9', OUT: '10', NOV: '11', DEZ: '12'
+            };
+            sku = sku.replace(/-([A-Z]{3})\b/g, (_m, mes) => '-' + (meses[mes] || mes));
+            return sku;
+        }
+
+        const mapaM3IndividualSku = new Map();
+        let mapaM3IndividualCarregado = false;
+
+        function registrarM3IndividualPorSku(skuRaw, m3Val) {
+            const m3 = valorNumerico(m3Val);
+            if (m3 <= 0) return;
+
+            const skuNorm = normalizarSkuComparacao(skuRaw);
+            if (!skuNorm) return;
+
+            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
+            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
+
+            if (!mapaM3IndividualSku.has(skuNorm)) mapaM3IndividualSku.set(skuNorm, m3);
+            if (chaveCompacta && !mapaM3IndividualSku.has(chaveCompacta)) mapaM3IndividualSku.set(chaveCompacta, m3);
+            if (chaveNumSoft && !mapaM3IndividualSku.has(chaveNumSoft)) mapaM3IndividualSku.set(chaveNumSoft, m3);
+        }
+
+        function obterM3IndividualDoItem(item) {
+            const direto = obterCampo(item, ['M³ individual', 'M3 individual', 'm3 individual', 'cg_m³ individual', 'cg_m3 individual'], '');
+            const m3Direto = valorNumerico(direto);
+            if (m3Direto > 0) return m3Direto;
+
+            const sku = String((item && item.SKU) || '').trim();
+            const skuNorm = normalizarSkuComparacao(sku);
+            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
+            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
+
+            return (
+                mapaM3IndividualSku.get(skuNorm)
+                || mapaM3IndividualSku.get(chaveCompacta)
+                || mapaM3IndividualSku.get(chaveNumSoft)
+                || 0
+            );
+        }
+
+        function obterM3TotalItem(item) {
+            const qtd = valorNumerico(item && item.Quantidade);
+            const m3Individual = obterM3IndividualDoItem(item);
+            if (m3Individual > 0 && qtd > 0) {
+                const totalCalc = m3Individual * qtd;
+                return Number.isFinite(totalCalc) ? totalCalc : 0;
+            }
+            const totalDireto = valorNumerico(obterCampo(item, ['M³', 'M3', 'm3'], 0));
+            return Number.isFinite(totalDireto) ? totalDireto : 0;
+        }
+
+        async function carregarMapaM3Individual() {
+            if (mapaM3IndividualCarregado) return;
+            try {
+                const resp = await fetch('/api/cadastro/produtos', {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() }
+                });
+                if (!resp.ok) return;
+                const lista = await resp.json().catch(() => ([]));
+                (Array.isArray(lista) ? lista : []).forEach((p) => {
+                    const sku = p && p.sku;
+                    const m3 = p && (p['cg_m³ individual'] || p['cg_m3 individual'] || p['m³ individual'] || p['m3 individual'] || p.m3);
+                    registrarM3IndividualPorSku(sku, m3);
+                });
+                mapaM3IndividualCarregado = true;
+            } catch (_e) {
+                // Se falhar, mantém fallback para M3 direto do item.
+            }
+        }
+
+        function obterValorResumo(lista, itens, aliases, fallback = '-') {
+            const alvos = (aliases || []).map((a) => normTxt(a)).filter(Boolean);
+            if (!alvos.length) return fallback;
+
+            const buscarNoObjeto = (obj) => {
+                if (!obj || typeof obj !== 'object') return '';
+                for (const k of Object.keys(obj)) {
+                    const nk = normTxt(k);
+                    if (!nk) continue;
+                    const bate = alvos.some((a) => nk === a || nk.includes(a) || a.includes(nk));
+                    if (!bate) continue;
+                    const v = obj[k];
+                    if (v !== null && v !== undefined && String(v).trim() !== '') {
+                        return String(v).trim();
+                    }
+                }
+                return '';
+            };
+
+            const vLista = buscarNoObjeto(lista);
+            if (vLista) return vLista;
+
+            const arr = Array.isArray(itens) ? itens : [];
+            for (const item of arr) {
+                const v = buscarNoObjeto(item);
+                if (v) return v;
+            }
+            return fallback;
+        }
+
+        function obterValorPorAliasNormalizado(item, aliases, fallback = '') {
+            const obj = item && typeof item === 'object' ? item : null;
+            if (!obj) return fallback;
+            const alvos = (aliases || []).map((a) => normTxt(a)).filter(Boolean);
+            if (!alvos.length) return fallback;
+
+            for (const k of Object.keys(obj)) {
+                const nk = normTxt(k);
+                if (!nk) continue;
+                const bate = alvos.some((a) => nk === a || nk.includes(a) || a.includes(nk));
+                if (!bate) continue;
+                const v = obj[k];
+                if (v !== null && v !== undefined && String(v).trim() !== '') {
+                    return v;
+                }
+            }
+            return fallback;
+        }
+
+        function mediaPercentualItens(itens, aliases) {
+            const dados = Array.isArray(itens) ? itens : [];
+            if (!dados.length) return 0;
+
+            let soma = 0;
+            dados.forEach((item) => {
+                const bruto = obterCampo(item || {}, aliases || [], 0);
+                const texto = String(bruto ?? '').replace('%', '').trim();
+                soma += valorNumerico(texto);
+            });
+
+            return soma / dados.length;
+        }
+
+        function somarFreteInternacionalItensUsd(itens) {
+            const dados = Array.isArray(itens) ? itens : [];
+            return dados.reduce((acc, item) => {
+                const freteItemUsd = Number(obterCampo(item || {}, ['Frete Internacional'], 0) || 0);
+                return acc + (Number.isFinite(freteItemUsd) ? freteItemUsd : 0);
+            }, 0);
+        }
+
+        function calcularTaxaSiscomexPorTotalNcm(totalNcm) {
+            const o31 = Math.max(0, Number(totalNcm) || 0);
+            if (o31 === 0) return 115.67;
+            if (o31 <= 2) return 115.67 + (o31 * 38.56);
+            if (o31 <= 5) return 192.79 + ((o31 - 2) * 30.85);
+            if (o31 <= 10) return 285.34 + ((o31 - 5) * 23.14);
+            if (o31 <= 20) return 401.04 + ((o31 - 10) * 15.42);
+            if (o31 <= 50) return 555.24 + ((o31 - 20) * 7.71);
+            return 786.54 + ((o31 - 50) * 3.86);
+        }
+
+        const LS_RESUMO_EDITAVEL_KEY = 'importacoes_lista_resumo_editavel';
+        const RESUMO_CARDS_EDITAVEIS = {
+            'Nº Invoice': 'numero_invoice',
+            'Nº Invoice': 'numero_invoice',
+            'N° Invoice': 'numero_invoice',
+            'Valor por M³': 'valor_por_m3',
+            'Valor por M³': 'valor_por_m3',
+            'Capatazia': 'capatazia',
+            'Armazenagem': 'armazenagem',
+            'Pick-up Origem': 'pickup_origem',
+            'Taxas de Origem': 'taxas_origem',
+            'BL Fee': 'bl_fee',
+            'Desconsolidação': 'desconsolidacao',
+            'Desconsolidação': 'desconsolidacao',
+            'Handling': 'handling',
+            'Honorários Trading': 'honorarios_trading',
+            'Honorários Trading': 'honorarios_trading',
+            'Transporte Rodoviário': 'transporte_rodoviario',
+            'Transporte Rodoviário': 'transporte_rodoviario',
+            'Desembaraço': 'desembaraco',
+            'Desembaraço': 'desembaraco',
+            'Expediente': 'expediente',
+        };
+
+        const RESUMO_CARDS_FORMATO = {
+            numero_invoice: 'TEXT',
+            valor_por_m3: 'USD'
+        };
+
+        function carregarResumoEditavel(listaId) {
+            if (!listaId) return {};
+            try {
+                const bruto = JSON.parse(localStorage.getItem(LS_RESUMO_EDITAVEL_KEY) || '{}') || {};
+                const porLista = bruto[listaId];
+                return (porLista && typeof porLista === 'object') ? porLista : {};
+            } catch (_e) {
+                return {};
+            }
+        }
+
+        function salvarResumoEditavel(listaId, campo, valor) {
+            if (!listaId || !campo) return;
+            try {
+                const bruto = JSON.parse(localStorage.getItem(LS_RESUMO_EDITAVEL_KEY) || '{}') || {};
+                if (!bruto[listaId] || typeof bruto[listaId] !== 'object') {
+                    bruto[listaId] = {};
+                }
+                bruto[listaId][campo] = String(valor || '').trim();
+                localStorage.setItem(LS_RESUMO_EDITAVEL_KEY, JSON.stringify(bruto));
+            } catch (_e) {
+                // Ignora falha de persistência local.
+            }
+        }
+
+        function obterFormatoCardEditavel(editKey) {
+            return RESUMO_CARDS_FORMATO[editKey] || 'BRL';
+        }
+
+        function formatarMoedaEditavel(valor, formato) {
+            const txt = String(valor || '').trim();
+            if (!txt) return '';
+            if (formato === 'TEXT') return txt;
+            const n = valorNumerico(txt);
+            if (!Number.isFinite(n)) return '';
+            return (formato === 'USD') ? formatarUSD(n) : formatarBRL(n);
+        }
+
+        function ajustarTextoValorParaCaber(valorEl, minPx = 8.5) {
+            if (!valorEl) return;
+            if (valorEl.querySelector('input, select, textarea')) return;
+            const texto = String(valorEl.textContent || '').trim();
+            if (!texto) return;
+
+            const estilo = window.getComputedStyle(valorEl);
+            const basePx = Number(valorEl.dataset.baseFontPx || parseFloat(estilo.fontSize) || 14);
+            if (!Number.isFinite(basePx) || basePx <= 0) return;
+
+            const card = valorEl.closest('.resumo-card');
+            const larguraLimite = Math.max(24, (card ? card.clientWidth : valorEl.clientWidth) - 12);
+
+            valorEl.dataset.baseFontPx = String(basePx);
+            valorEl.style.fontSize = basePx + 'px';
+
+            // Mede largura real do texto em linha única para ajustar a fonte de forma confiável.
+            const medidor = document.createElement('span');
+            medidor.textContent = texto;
+            medidor.style.position = 'fixed';
+            medidor.style.left = '-99999px';
+            medidor.style.top = '-99999px';
+            medidor.style.visibility = 'hidden';
+            medidor.style.whiteSpace = 'nowrap';
+            medidor.style.fontFamily = estilo.fontFamily;
+            medidor.style.fontWeight = estilo.fontWeight;
+            medidor.style.letterSpacing = estilo.letterSpacing;
+            document.body.appendChild(medidor);
+
+            let atual = basePx;
+            let tentativas = 0;
+            medidor.style.fontSize = atual + 'px';
+            while (medidor.offsetWidth > larguraLimite && atual > minPx && tentativas < 24) {
+                atual -= 0.5;
+                valorEl.style.fontSize = atual + 'px';
+                medidor.style.fontSize = atual + 'px';
+                tentativas += 1;
+            }
+
+            medidor.remove();
+        }
+
+        function ajustarTamanhoValoresResumo() {
+            const cards = document.querySelectorAll('.resumo-card .value, .resumo-card .value-sub');
+            cards.forEach((el) => ajustarTextoValorParaCaber(el));
+        }
+
+        function formatarNumeroEditavelBR(valor) {
+            const txt = String(valor || '').trim();
+            if (!txt) return '';
+            const n = valorNumerico(txt);
+            if (!Number.isFinite(n)) return '';
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function iniciarEdicaoCardResumo(card, listaId) {
+            if (!card || card.dataset.editando === '1') return;
+            const editKey = String(card.getAttribute('data-edit-key') || '').trim();
+            if (!editKey || !listaId) return;
+            const formato = obterFormatoCardEditavel(editKey);
+
+            const valueEl = card.querySelector('.value');
+            if (!valueEl) return;
+
+            const textoAtual = String(valueEl.getAttribute('data-valor') || valueEl.textContent || '').trim();
+            const input = document.createElement('input');
+            input.className = 'resumo-input';
+            input.inputMode = (formato === 'TEXT') ? 'text' : 'decimal';
+            input.value = (formato === 'TEXT') ? textoAtual : formatarNumeroEditavelBR(textoAtual);
+            input.placeholder = (formato === 'TEXT')
+                ? 'Informe o número da invoice'
+                : (formato === 'USD' ? 'US$ 0,00' : 'R$ 0,00');
+
+            card.dataset.editando = '1';
+            valueEl.innerHTML = '';
+            valueEl.appendChild(input);
+            input.focus();
+            input.select();
+
+            const finalizar = (salvar) => {
+                if (card.dataset.editando !== '1') return;
+                card.dataset.editando = '0';
+
+                let valorFinal = textoAtual;
+                if (salvar) {
+                    valorFinal = (formato === 'TEXT')
+                        ? String(input.value || '').trim()
+                        : formatarMoedaEditavel(input.value || '', formato);
+                    salvarResumoEditavel(listaId, editKey, valorFinal);
+                }
+
+                const textoExibicao = (valorFinal && valorFinal.trim()) ? valorFinal : '-';
+                valueEl.textContent = textoExibicao;
+                valueEl.setAttribute('data-valor', valorFinal || '');
+            };
+
+            input.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    finalizar(true);
+                } else if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    finalizar(false);
+                }
+            });
+            input.addEventListener('blur', () => finalizar(true));
+        }
+
+        function renderResumoTopo(lista, itens) {
+            const el = document.getElementById('resumoTopo');
+            if (!el) return;
+
+            const dados = Array.isArray(itens) ? itens : [];
+            const listaId = String((lista && lista.id) || getListaIdDaUrl() || '').trim();
+            const resumoEditavel = carregarResumoEditavel(listaId);
+            const totalUsd = dados.reduce((acc, item) => {
+                const qtd = valorNumerico(item && item.Quantidade);
+                const total = valorNumerico(item && item['Valor total']);
+                const unit = valorNumerico(item && item['Valor unidade']);
+                return acc + (total > 0 ? total : (qtd * unit));
+            }, 0);
+            const totalM3 = dados.reduce((acc, item) => {
+                const m3Item = obterM3TotalItem(item);
+                return acc + (Number.isFinite(m3Item) ? m3Item : 0);
+            }, 0);
+            const valorPorM3Calculado = totalM3 > 0 ? (totalUsd / totalM3) : 0;
+            const valorPorM3Editado = valorNumerico((resumoEditavel && resumoEditavel.valor_por_m3) || '');
+            const valorPorM3 = (valorPorM3Editado > 0) ? valorPorM3Editado : valorPorM3Calculado;
+            const ncmSet = new Set(
+                dados
+                    .map((item) => String((item && item.NCM) || '').replace(/\D/g, ''))
+                    .filter(Boolean)
+            );
+            const totalNcm = ncmSet.size;
+
+            const modalidadeBase = String(lista && (lista.modalidade || lista.tipo_frete || lista.transporte) || '').trim() || 'Marítimo';
+            const LS_MODALIDADE_KEY = 'importacoes_lista_modalidade';
+
+            let modalidadesSalvas = {};
+            try {
+                modalidadesSalvas = JSON.parse(localStorage.getItem(LS_MODALIDADE_KEY) || '{}') || {};
+            } catch (_e) {
+                modalidadesSalvas = {};
+            }
+
+            const modalidadeSalva = listaId ? String(modalidadesSalvas[listaId] || '').trim() : '';
+            const modalidadeNormalizada = modalidadeSalva === 'Marítimo'
+                ? 'Marítimo'
+                : modalidadeSalva === 'Aéreo'
+                    ? 'Aéreo'
+                    : modalidadeSalva;
+            const modalidade = (modalidadeNormalizada === 'Marítimo' || modalidadeNormalizada === 'Aéreo')
+                ? modalidadeNormalizada
+                : (/aer/i.test(modalidadeBase) ? 'Aéreo' : 'Marítimo');
+            const invoice = String(lista && (lista.invoice || lista.numero_invoice || lista.nr_invoice) || '').trim() || '-';
+            const faixaImposto = (faturamentoVendas12m !== null)
+                ? calcularFaixaImpostoPorFaturamento(faturamentoVendas12m)
+                : '-';
+            const dolarHoje = valorNumerico(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+            const dolarHojeCalc = dolarHoje > 0 ? Number(dolarHoje.toFixed(2)) : 0;
+            const dolarBaseCalc = dolarHojeCalc > 0 ? dolarHojeCalc : cotacaoDolarTopo;
+            atualizarFxCompraTopo(dolarHoje);
+            const vmleUsd = totalUsd > 0 ? formatarUSD(totalUsd) : '-';
+            const vmleBrlNum = (totalUsd > 0 && dolarBaseCalc > 0)
+                ? (totalUsd * dolarBaseCalc)
+                : 0;
+            const vmleBrl = vmleBrlNum > 0
+                ? formatarMoedaBR(vmleBrlNum)
+                : '-';
+            const freteInternacionalNum = somarFreteInternacionalItensUsd(dados);
+            const freteInternacionalBrlNum = (freteInternacionalNum > 0 && dolarBaseCalc > 0)
+                ? (freteInternacionalNum * dolarBaseCalc)
+                : 0;
+            const freteInternacional = freteInternacionalBrlNum > 0
+                ? formatarMoedaBR(freteInternacionalBrlNum)
+                : '-';
+            const seguroInternacionalBruto = obterValorResumo(lista, dados, ['Seguro Internacional 0,28%', 'Seguro Internacional']);
+            const seguroInternacionalBrlNum = (totalUsd > 0 && freteInternacionalNum > 0 && dolarBaseCalc > 0)
+                ? (((totalUsd + freteInternacionalNum) * 0.0028) * dolarBaseCalc)
+                : valorNumerico(seguroInternacionalBruto);
+            const seguroInternacional = seguroInternacionalBrlNum > 0
+                ? formatarMoedaBR(seguroInternacionalBrlNum)
+                : seguroInternacionalBruto;
+            const vmld = obterValorResumo(lista, dados, ['VMLD']);
+            const totaisImpostos = dados.reduce((acc, item) => {
+                const qtd = valorNumerico(item && item.Quantidade);
+                const valorUnit = valorNumerico(item && item['Valor unidade']);
+                const valorTotal = valorNumerico(item && item['Valor total']) || (qtd * valorUnit);
+                const freteItemUsd = valorNumerico(obterCampo(item || {}, ['Frete Internacional'], 0));
+
+                const iiPct = valorNumerico(obterCampo(item || {}, ['II', 'ii'], 0));
+                const ipiPct = valorNumerico(obterCampo(item || {}, ['IPI', 'ipi'], 0));
+                const pisPct = valorNumerico(obterCampo(item || {}, ['PIS', 'pis'], 0));
+                const cofinsPct = valorNumerico(obterCampo(item || {}, ['COFINS', 'cofins'], 0));
+                const icmsPct = valorNumerico(obterCampo(item || {}, ['ICMS', 'icms'], 0));
+
+                const valorProdutoBrl = (valorTotal > 0 && dolarBaseCalc > 0) ? (valorTotal * dolarBaseCalc) : 0;
+                const baseTributosBrl = (valorTotal > 0 && freteItemUsd >= 0 && dolarBaseCalc > 0)
+                    ? ((valorTotal + freteItemUsd) * dolarBaseCalc)
+                    : 0;
+
+                const iiBrl = (baseTributosBrl > 0 && iiPct > 0) ? (baseTributosBrl * (iiPct / 100)) : 0;
+                const baseIpiBrl = valorProdutoBrl + iiBrl;
+                const ipiBrl = (baseIpiBrl > 0 && ipiPct > 0) ? (baseIpiBrl * (ipiPct / 100)) : 0;
+                const pisBrl = (baseTributosBrl > 0 && pisPct > 0) ? (baseTributosBrl * (pisPct / 100)) : 0;
+                const cofinsBrl = (baseTributosBrl > 0 && cofinsPct > 0) ? (baseTributosBrl * (cofinsPct / 100)) : 0;
+                const icmsBrl = (baseTributosBrl > 0 && icmsPct > 0) ? (baseTributosBrl * (icmsPct / 100)) : 0;
+
+                acc.totalBaseTributos += baseTributosBrl;
+                acc.totalBaseIpi += baseIpiBrl;
+                acc.iiPctSoma += iiPct;
+                acc.ipiPctSoma += ipiPct;
+                acc.pisPctSoma += pisPct;
+                acc.cofinsPctSoma += cofinsPct;
+                acc.icmsPctSoma += icmsPct;
+                acc.iiBrl += iiBrl;
+                acc.ipiBrl += ipiBrl;
+                acc.pisBrl += pisBrl;
+                acc.cofinsBrl += cofinsBrl;
+                acc.icmsBrl += icmsBrl;
+                return acc;
+            }, {
+                totalBaseTributos: 0,
+                totalBaseIpi: 0,
+                iiPctSoma: 0,
+                ipiPctSoma: 0,
+                pisPctSoma: 0,
+                cofinsPctSoma: 0,
+                icmsPctSoma: 0,
+                iiBrl: 0,
+                ipiBrl: 0,
+                pisBrl: 0,
+                cofinsBrl: 0,
+                icmsBrl: 0,
+            });
+
+            const mediaIi = mediaPercentualItens(dados, ['II', 'ii']);
+            const mediaIpi = mediaPercentualItens(dados, ['IPI', 'ipi']);
+            const mediaPis = mediaPercentualItens(dados, ['PIS', 'pis']);
+            const mediaCofins = mediaPercentualItens(dados, ['COFINS', 'cofins', 'Cofins']);
+            const mediaIcms = mediaPercentualItens(dados, ['ICMS', 'icms']);
+
+            const iiResumo = formatarPct(mediaIi);
+            const ipiResumo = formatarPct(mediaIpi);
+            const pisResumo = formatarPct(mediaPis);
+            const cofinsResumo = formatarPct(mediaCofins);
+            const icmsResumo = formatarPct(mediaIcms);
+
+            const iiValorResumo = totaisImpostos.iiBrl > 0 ? formatarMoedaBR(totaisImpostos.iiBrl) : '-';
+            const ipiValorResumo = totaisImpostos.ipiBrl > 0 ? formatarMoedaBR(totaisImpostos.ipiBrl) : '-';
+            const pisValorResumo = totaisImpostos.pisBrl > 0 ? formatarMoedaBR(totaisImpostos.pisBrl) : '-';
+            const cofinsValorResumo = totaisImpostos.cofinsBrl > 0 ? formatarMoedaBR(totaisImpostos.cofinsBrl) : '-';
+            const icmsValorResumo = totaisImpostos.icmsBrl > 0 ? formatarMoedaBR(totaisImpostos.icmsBrl) : '-';
+            const armazenagem = obterValorResumo(lista, dados, ['Armazenagem']);
+            const pickupOrigem = obterValorResumo(lista, dados, ['Pick-up Origem', 'Pickup Origem']);
+            const taxasOrigem = obterValorResumo(lista, dados, ['Taxas de Origem']);
+            const capatazia = obterValorResumo(lista, dados, ['Capatazia']);
+            const blFee = obterValorResumo(lista, dados, ['BL Fee']);
+            const handling = obterValorResumo(lista, dados, ['Handling']);
+            const honorariosTradingBase = vmleBrlNum + freteInternacionalBrlNum + (Number.isFinite(seguroInternacionalBrlNum) ? seguroInternacionalBrlNum : 0);
+            const honorariosTrading = honorariosTradingBase > 0
+                ? formatarMoedaBR(honorariosTradingBase * 0.03)
+                : obterValorResumo(lista, dados, ['Honorários Trading', 'Honorarios Trading']);
+            const transporteRodoviario = obterValorResumo(lista, dados, ['Transporte Rodoviário', 'Transporte Rodoviario']);
+            const desembaraco = obterValorResumo(lista, dados, ['Desembaraço', 'Desembaraco']);
+            const expediente = obterValorResumo(lista, dados, ['Expediente']);
+            const taxaSiscomex = formatarMoedaBR(calcularTaxaSiscomexPorTotalNcm(totalNcm));
+            const afrmm = (freteInternacionalNum > 0 && dolarBaseCalc > 0)
+                ? formatarMoedaBR((freteInternacionalNum * 0.08) * dolarBaseCalc)
+                : '-';
+
+            const cards = [
+                { label: 'Modalidade', value: modalidade },
+                { label: 'Nº Invoice', value: invoice, editable: true },
+                { label: 'Faturamento', value: (faturamentoVendas12m !== null ? formatarMoedaBR(faturamentoVendas12m) : 'Carregando...') },
+                { label: 'Faixa de Imposto', value: faixaImposto },
+                { label: 'M³ Total', value: formatarM3(totalM3) },
+                { label: 'Valor por M³', value: formatarUSD(valorPorM3), editable: true },
+                { label: 'VMLE', value: vmleUsd, valueExtra: vmleBrl },
+                { label: 'Frete Internacional', value: freteInternacional },
+                { label: 'Seguro Internacional 0,28%', value: seguroInternacional },
+                { label: 'Cotação na Compra', value: dolarHoje > 0 ? formatarMoedaBR(dolarHoje) : '-' },
+                { label: 'VMLD', value: vmld },
+                { label: 'II', value: iiResumo, valueExtra: iiValorResumo },
+                { label: 'IPI', value: ipiResumo, valueExtra: ipiValorResumo },
+                { label: 'PIS', value: pisResumo, valueExtra: pisValorResumo },
+                { label: 'COFINS', value: cofinsResumo, valueExtra: cofinsValorResumo },
+                { label: 'ICMS', value: icmsResumo, valueExtra: icmsValorResumo },
+                { label: 'Armazenagem', value: armazenagem, editable: true },
+                { label: 'Pick-up Origem', value: pickupOrigem, editable: true },
+                { label: 'Taxas de Origem', value: taxasOrigem, editable: true },
+                { label: 'Capatazia', value: capatazia, editable: true },
+                { label: 'BL Fee', value: blFee, editable: true },
+                { label: 'Desconsolidação', value: '', editable: true },
+                { label: 'Handling', value: handling, editable: true },
+                { label: 'Honorários Trading', value: honorariosTrading },
+                { label: 'Transporte Rodoviário', value: transporteRodoviario, editable: true },
+                { label: 'Desembaraço', value: desembaraco, editable: true },
+                { label: 'Expediente', value: expediente, editable: true },
+                { label: 'Taxa Siscomex', value: taxaSiscomex },
+                { label: 'AFRMM', value: afrmm },
+                { label: 'Total NCM', value: totalNcm.toLocaleString('pt-BR') },
+            ];
+
+            el.innerHTML = cards.map((c) => {
+                const classeExtra = c.label === 'Cotação na Compra' ? ' card-cotacao' : '';
+                const editKey = RESUMO_CARDS_EDITAVEIS[c.label] || '';
+                const formatoEditavel = obterFormatoCardEditavel(editKey);
+                const valorSalvo = editKey ? String(resumoEditavel[editKey] || '').trim() : '';
+                const valorBase = (valorSalvo || String(c.value || ''));
+                const valorHtml = c.label === 'Modalidade'
+                    ? (
+                        '<select id="resumoModalidadeSelect" class="resumo-select">' +
+                        '<option value="Marítimo"' + (c.value === 'Marítimo' ? ' selected' : '') + '>Marítimo</option>' +
+                        '<option value="Aéreo"' + (c.value === 'Aéreo' ? ' selected' : '') + '>Aéreo</option>' +
+                        '</select>'
+                    )
+                    : (c.editable && editKey
+                        ? ('<div class="value editavel-valor" data-valor="' + escaparHtml(valorBase === '-' ? '' : formatarMoedaEditavel(valorBase, formatoEditavel)) + '">' + escaparHtml(valorBase === '-' ? '-' : formatarMoedaEditavel(valorBase, formatoEditavel)) + '</div>')
+                        : (escaparHtml(c.value) + (c.valueExtra ? '<span class="value-sub">' + escaparHtml(c.valueExtra) + '</span>' : '')));
+                return (
+                '<div class="resumo-card' + classeExtra + (c.editable && editKey ? ' editavel' : '') + '"' + (c.editable && editKey ? (' data-edit-key="' + escaparHtml(editKey) + '"') : '') + '>' +
+                    '<div class="label">' + escaparHtml(c.label) + '</div>' +
+                    (c.editable && editKey ? valorHtml : ('<div class="value">' + valorHtml + '</div>')) +
+                '</div>'
+                );
+            }).join('');
+
+            requestAnimationFrame(() => {
+                ajustarTamanhoValoresResumo();
+                setTimeout(() => ajustarTamanhoValoresResumo(), 80);
+            });
+
+            const selModalidade = document.getElementById('resumoModalidadeSelect');
+            if (selModalidade) {
+                selModalidade.addEventListener('change', () => {
+                    const escolhido = String(selModalidade.value || '').trim();
+                    if (!listaId || !escolhido) return;
+                    let mapa = {};
+                    try {
+                        mapa = JSON.parse(localStorage.getItem(LS_MODALIDADE_KEY) || '{}') || {};
+                    } catch (_e) {
+                        mapa = {};
+                    }
+                    mapa[listaId] = escolhido;
+                    try {
+                        localStorage.setItem(LS_MODALIDADE_KEY, JSON.stringify(mapa));
+                    } catch (_e) {
+                        // ignora falha de persistência local
+                    }
+                });
+            }
+
+            el.querySelectorAll('.resumo-card.editavel[data-edit-key]').forEach((card) => {
+                card.addEventListener('dblclick', () => iniciarEdicaoCardResumo(card, listaId));
+            });
+        }
+
+        let resizeResumoTimer = null;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeResumoTimer);
+            resizeResumoTimer = setTimeout(() => ajustarTamanhoValoresResumo(), 120);
+        });
+
+        const tHead = document.getElementById('tHead');
+        const tCols = document.getElementById('tCols');
+        const LS_LARGURAS_KEY = 'importacoes_lista_larguras_colunas';
+        const LS_ORDEM_COLUNAS_KEY = 'importacoes_lista_ordem_colunas_v1';
+        const largurasColunas = JSON.parse(localStorage.getItem(LS_LARGURAS_KEY) || '{}');
+        let preferenciasColunasCarregadas = false;
+        const colunasTabela = [
+            { key: 'sku', label: 'SKU', width: 110 },
+            { key: 'foto', label: 'Foto', width: 90 },
+            { key: 'quantidade', label: 'Quantidade', width: 110 },
+            { key: 'm3', label: 'M³', width: 100 },
+            { key: 'ii', label: 'II', width: 90 },
+            { key: 'ipi', label: 'IPI', width: 90 },
+            { key: 'pis', label: 'PIS', width: 90 },
+            { key: 'cofins', label: 'COFINS', width: 100 },
+            { key: 'icms', label: 'ICMS', width: 95 },
+            { key: 'valor_usd', label: 'Valor em dólar', width: 145 },
+            { key: 'frete_internacional', label: 'Frete Internacional', width: 170 },
+            { key: 'valor_unit_brl', label: 'Valor Unitário R$', width: 155 },
+            { key: 'valor_total_usd', label: 'Total em Dólar', width: 170 },
+            { key: 'acao', label: 'Ação', width: 130 }
+        ];
+        let colunaArrastadaKey = '';
+
+        function carregarOrdemColunasSalva() {
+            try {
+                const salvo = JSON.parse(localStorage.getItem(LS_ORDEM_COLUNAS_KEY) || '[]');
+                return Array.isArray(salvo) ? salvo.map((v) => String(v || '').trim()).filter(Boolean) : [];
+            } catch (_e) {
+                return [];
+            }
+        }
+
+        function salvarOrdemColunas() {
+            try {
+                localStorage.setItem(LS_ORDEM_COLUNAS_KEY, JSON.stringify(colunasTabela.map((c) => c.key)));
+            } catch (_e) {
+                // Ignora falha de persistência local.
+            }
+            salvarPreferenciasColunasServidor();
+        }
+
+        function aplicarOrdemColunasSalva() {
+            const ordem = carregarOrdemColunasSalva();
+            if (!ordem.length) return;
+            const mapa = new Map(colunasTabela.map((c) => [c.key, c]));
+            const ordenadas = [];
+            ordem.forEach((k) => {
+                const col = mapa.get(k);
+                if (col) {
+                    ordenadas.push(col);
+                    mapa.delete(k);
+                }
+            });
+            mapa.forEach((col) => ordenadas.push(col));
+            colunasTabela.splice(0, colunasTabela.length, ...ordenadas);
+        }
+
+        function moverColuna(origemKey, destinoKey) {
+            const from = colunasTabela.findIndex((c) => c.key === origemKey);
+            const to = colunasTabela.findIndex((c) => c.key === destinoKey);
+            if (from < 0 || to < 0 || from === to) return;
+            const [col] = colunasTabela.splice(from, 1);
+            colunasTabela.splice(to, 0, col);
+            salvarOrdemColunas();
+        }
+
+        aplicarOrdemColunasSalva();
+
+        function salvarLarguras() {
+            try {
+                localStorage.setItem(LS_LARGURAS_KEY, JSON.stringify(largurasColunas));
+            } catch (e) {
+                console.warn('Não foi possível salvar larguras das colunas.', e);
+            }
+            salvarPreferenciasColunasServidor();
+        }
+
+        function _aplicarPreferenciasColunasNoEstado(ordemColunas, largurasColunasSrv) {
+            const ordem = Array.isArray(ordemColunas)
+                ? ordemColunas.map((v) => String(v || '').trim()).filter(Boolean)
+                : [];
+
+            if (ordem.length) {
+                const mapa = new Map(colunasTabela.map((c) => [c.key, c]));
+                const ordenadas = [];
+                ordem.forEach((k) => {
+                    const col = mapa.get(k);
+                    if (col) {
+                        ordenadas.push(col);
+                        mapa.delete(k);
+                    }
+                });
+                mapa.forEach((col) => ordenadas.push(col));
+                colunasTabela.splice(0, colunasTabela.length, ...ordenadas);
+                try {
+                    localStorage.setItem(LS_ORDEM_COLUNAS_KEY, JSON.stringify(colunasTabela.map((c) => c.key)));
+                } catch (_e) {}
+            }
+
+            if (largurasColunasSrv && typeof largurasColunasSrv === 'object') {
+                Object.keys(largurasColunasSrv).forEach((k) => {
+                    const key = String(k || '').trim();
+                    const w = parseInt(largurasColunasSrv[k], 10);
+                    if (key && Number.isFinite(w) && w > 0) {
+                        largurasColunas[key] = w;
+                    }
+                });
+                try {
+                    localStorage.setItem(LS_LARGURAS_KEY, JSON.stringify(largurasColunas));
+                } catch (_e) {}
+            }
+        }
+
+        async function carregarPreferenciasColunasServidor() {
+            if (preferenciasColunasCarregadas) return;
+            preferenciasColunasCarregadas = true;
+            try {
+                const resp = await fetch('/api/medias-compras/listas-pedidos/preferencias-colunas', {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store'
+                });
+                if (!resp.ok) return;
+                const data = await resp.json().catch(() => ({}));
+                _aplicarPreferenciasColunasNoEstado(data && data.ordem_colunas, data && data.larguras_colunas);
+            } catch (_e) {
+                // Fallback localStorage já cobre a UI.
+            }
+        }
+
+        async function salvarPreferenciasColunasServidor() {
+            try {
+                await fetch('/api/medias-compras/listas-pedidos/preferencias-colunas', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                    body: JSON.stringify({
+                        ordem_colunas: colunasTabela.map((c) => c.key),
+                        larguras_colunas: largurasColunas,
+                    })
+                });
+            } catch (_e) {
+                // Mantém localStorage como fallback.
+            }
+        }
+
+        function obterLarguraColuna(coluna) {
+            const width = parseInt(largurasColunas[coluna.key], 10);
+            return Number.isFinite(width) ? width : coluna.width;
+        }
+
+        function aplicarLarguraColuna(idx, coluna, width, salvar = false) {
+            const largura = Math.max(12, parseInt(width, 10) || coluna.width || 140);
+            largurasColunas[coluna.key] = largura;
+            if (salvar) salvarLarguras();
+
+            const colEl = tCols.children[idx];
+            if (colEl) colEl.style.width = `${largura}px`;
+
+            const th = tHead.querySelector(`tr th:nth-child(${idx + 1})`);
+            if (th) {
+                th.style.width = `${largura}px`;
+                th.style.minWidth = `${largura}px`;
+                th.style.maxWidth = `${largura}px`;
+            }
+
+            const linhas = document.querySelectorAll('#tbodyLista tr');
+            linhas.forEach((linha) => {
+                const td = linha.children[idx];
+                if (td) {
+                    td.style.width = `${largura}px`;
+                    td.style.minWidth = `${largura}px`;
+                    td.style.maxWidth = `${largura}px`;
+                }
+            });
+        }
+
+        function iniciarResizeColuna(event, idx, coluna) {
+            event.preventDefault();
+            const startX = event.clientX;
+            const startWidth = obterLarguraColuna(coluna);
+
+            function onMove(e) {
+                const delta = e.clientX - startX;
+                aplicarLarguraColuna(idx, coluna, startWidth + delta);
+            }
+
+            function onUp() {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                salvarLarguras();
+            }
+
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        }
+
+        function renderCabecalho() {
+            if (!tHead || !tCols) return;
+            tHead.innerHTML = '';
+            tCols.innerHTML = '';
+
+            const tr = document.createElement('tr');
+            colunasTabela.forEach((coluna, idx) => {
+                const largura = obterLarguraColuna(coluna);
+
+                const colEl = document.createElement('col');
+                colEl.style.width = `${largura}px`;
+                tCols.appendChild(colEl);
+
+                const th = document.createElement('th');
+                th.style.width = `${largura}px`;
+                th.style.minWidth = `${largura}px`;
+                th.style.maxWidth = `${largura}px`;
+                th.classList.add('th-draggable');
+                th.setAttribute('draggable', 'true');
+                th.dataset.colKey = coluna.key;
+
+                const content = document.createElement('div');
+                content.className = 'th-content';
+
+                const label = document.createElement('span');
+                label.className = 'th-label';
+                label.textContent = coluna.label;
+                content.appendChild(label);
+
+                const resizer = document.createElement('div');
+                resizer.className = 'th-resizer';
+                resizer.addEventListener('mousedown', (ev) => iniciarResizeColuna(ev, idx, coluna));
+                content.appendChild(resizer);
+
+                th.appendChild(content);
+
+                th.addEventListener('dragstart', (ev) => {
+                    if (ev.target && ev.target.closest && ev.target.closest('.th-resizer')) {
+                        ev.preventDefault();
+                        return;
+                    }
+                    colunaArrastadaKey = coluna.key;
+                    th.classList.add('dragging');
+                    if (ev.dataTransfer) {
+                        ev.dataTransfer.effectAllowed = 'move';
+                        try {
+                            ev.dataTransfer.setData('text/plain', coluna.key);
+                        } catch (_e) {
+                            // alguns browsers ignoram setData vazio
+                        }
+                    }
+                });
+
+                th.addEventListener('dragover', (ev) => {
+                    if (!colunaArrastadaKey || colunaArrastadaKey === coluna.key) return;
+                    ev.preventDefault();
+                    th.classList.add('drag-over');
+                });
+
+                th.addEventListener('dragleave', () => {
+                    th.classList.remove('drag-over');
+                });
+
+                th.addEventListener('drop', (ev) => {
+                    ev.preventDefault();
+                    th.classList.remove('drag-over');
+                    const origem = colunaArrastadaKey;
+                    if (!origem || origem === coluna.key) return;
+                    moverColuna(origem, coluna.key);
+                    renderCabecalho();
+                    renderItens(ultimosItensCarregados, ultimaListaCarregada || {});
+                });
+
+                th.addEventListener('dragend', () => {
+                    colunaArrastadaKey = '';
+                    tHead.querySelectorAll('th.drag-over, th.dragging').forEach((el) => {
+                        el.classList.remove('drag-over', 'dragging');
+                    });
+                });
+
+                tr.appendChild(th);
+            });
+
+            tHead.appendChild(tr);
+        }
+
+        function setErro(msg) {
+            const el = document.getElementById('erro');
+            if (!el) return;
+            const texto = String(msg || '').trim();
+            el.textContent = texto;
+            el.style.display = texto ? 'block' : 'none';
+        }
+
+        function setStatusInclusaoSku(msg, ehErro) {
+            const el = document.getElementById('addSkuStatus');
+            if (!el) return;
+            const txt = String(msg || '').trim();
+            el.textContent = txt;
+            el.style.color = ehErro ? '#ffb8b8' : '#9ed9b9';
+        }
+
+        async function enviarInclusaoSku(listaId, sku, quantidade, valorUnitario) {
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/adicionar-sku', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders(),
+                },
+                body: JSON.stringify({
+                    sku,
+                    quantidade,
+                    valor_unitario: valorUnitario,
+                })
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao incluir SKU na lista.');
+            }
+        }
+
+        async function incluirSkuManual() {
+            const listaId = getListaIdDaUrl();
+            if (!listaId) {
+                setErro('Lista não informada.');
+                return;
+            }
+
+            const inSku = document.getElementById('manualSku');
+            const inQtd = document.getElementById('manualQtd');
+            const inValor = document.getElementById('manualValor');
+            const btn = document.getElementById('btnAddSkuManual');
+
+            const sku = String(inSku && inSku.value || '').trim();
+            const quantidade = Number(inQtd && inQtd.value || 0);
+            const valorUnitario = Number(inValor && inValor.value || 0);
+
+            if (!sku) {
+                setStatusInclusaoSku('Informe o SKU.', true);
+                return;
+            }
+            if (!Number.isFinite(quantidade) || quantidade <= 0) {
+                setStatusInclusaoSku('Informe uma quantidade maior que zero.', true);
+                return;
+            }
+            if (!Number.isFinite(valorUnitario) || valorUnitario <= 0) {
+                setStatusInclusaoSku('Informe um valor unitário maior que zero.', true);
+                return;
+            }
+
+            const txtOriginal = btn ? btn.textContent : '';
+            try {
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Incluindo...';
+                }
+                setStatusInclusaoSku('Incluindo SKU na lista...', false);
+
+                await enviarInclusaoSku(listaId, sku, quantidade, valorUnitario);
+
+                inSku.value = '';
+                inQtd.value = '1';
+                inValor.value = '';
+                setErro('');
+                setStatusInclusaoSku('SKU incluído com sucesso.', false);
+                await carregarDetalheLista();
+                if (inSku && typeof inSku.focus === 'function') inSku.focus();
+            } catch (e) {
+                const msg = String(e && e.message || 'Erro ao incluir SKU na lista.');
+                setStatusInclusaoSku(msg, true);
+                setErro(msg);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = txtOriginal || 'Incluir SKU';
+                }
+            }
+        }
+
+        async function incluirSkuPorLista() {
+            const listaId = getListaIdDaUrl();
+            if (!listaId) {
+                setErro('Lista não informada.');
+                return;
+            }
+            const btn = document.getElementById('btnAddSkuLista');
+
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.xlsx,.xlsm,.xltx,.xltm';
+
+            const txtOriginal = btn ? btn.textContent : '';
+
+            input.addEventListener('change', async () => {
+                const file = input.files && input.files[0] ? input.files[0] : null;
+                if (!file) return;
+
+                try {
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.textContent = 'Importando...';
+                    }
+
+                    const enviarArquivo = async (confirmarInclusoes) => {
+                        const fd = new FormData();
+                        fd.append('file', file);
+                        fd.append('confirmar_inclusoes', confirmarInclusoes ? '1' : '0');
+                        const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/importar-excel-precos', {
+                            method: 'POST',
+                            headers: { ...obterAuthHeaders() },
+                            body: fd
+                        });
+                        if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({}));
+                            throw new Error(err.detail || 'Falha ao importar Excel para a lista atual.');
+                        }
+                        return resp.json();
+                    };
+
+                    setStatusInclusaoSku('Importando arquivo "' + String(file.name || '') + '"...', false);
+                    let data = await enviarArquivo(false);
+
+                    if (data && data.requer_confirmacao) {
+                        const resumo = data.resumo_pendencias || {};
+                        const pendencias = Array.isArray(data.pendencias) ? data.pendencias : [];
+                        const exemplos = pendencias.slice(0, 8).map((p) => {
+                            const skuTxt = String(p.sku || '');
+                            if (p.tipo === 'sku_novo') return '- SKU novo: ' + skuTxt;
+                            if (p.tipo === 'titulo_diferente') return '- Título diferente no SKU ' + skuTxt;
+                            return '- Divergência no SKU ' + skuTxt;
+                        }).join('\n');
+
+                        const mensagemConfirmacao =
+                            'O arquivo possui divergências e precisa da sua confirmação para incluir:\n\n' +
+                            '- SKUs novos: ' + String(resumo.total_sku_novo || 0) + '\n' +
+                            '- Títulos diferentes: ' + String(resumo.total_titulo_diferente || 0) + '\n' +
+                            (exemplos ? ('\nExemplos:\n' + exemplos + '\n') : '\n') +
+                            '\nDeseja continuar e incluir mesmo assim?';
+
+                        const confirmar = window.confirm(mensagemConfirmacao);
+                        if (!confirmar) {
+                            setStatusInclusaoSku('Importação cancelada pelo usuário após validação de divergências.', true);
+                            return;
+                        }
+
+                        data = await enviarArquivo(true);
+                    }
+
+                    await carregarDetalheLista();
+
+                    const skusIncluidos = Array.isArray(data && data.skus_incluidos) ? data.skus_incluidos.filter(Boolean) : [];
+                    const sufixoSkusIncluidos = skusIncluidos.length
+                        ? ' | SKUs incluídos: ' + skusIncluidos.join(', ')
+                        : '';
+                    const msgSucesso =
+                        'Importação concluída. SKUs atualizados: ' + String(data && data.total_skus_atualizados || 0) +
+                        ' | Quantidades atualizadas: ' + String(data && data.total_quantidades_atualizadas || 0) +
+                        ' | SKUs incluídos: ' + String(data && data.total_skus_incluidos || 0) +
+                        sufixoSkusIncluidos;
+                    setErro('');
+                    setStatusInclusaoSku(msgSucesso, false);
+                } catch (e) {
+                    const msg = String(e && e.message || 'Erro ao importar arquivo para incluir SKUs.');
+                    setErro(msg);
+                    setStatusInclusaoSku(msg, true);
+                } finally {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = txtOriginal || 'Incluir Lista por Arquivo';
+                    }
+                }
+            });
+
+            input.click();
+        }
+
+        async function excluirSkuDaLista(sku, btn) {
+            const listaId = getListaIdDaUrl();
+            if (!listaId) {
+                setErro('Lista não informada.');
+                return;
+            }
+
+            const skuTxt = String(sku || '').trim();
+            if (!skuTxt) {
+                setErro('SKU inválido para exclusão.');
+                return;
+            }
+
+            const confirmar = window.confirm('Deseja excluir o SKU ' + skuTxt + ' deste pedido?');
+            if (!confirmar) return;
+
+            const txtOriginal = btn ? btn.textContent : '';
+            try {
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Excluindo...';
+                }
+
+                const skuRef = normalizarSkuComparacao(skuTxt);
+                const itensAtuais = Array.isArray(ultimosItensCarregados) ? ultimosItensCarregados : [];
+                const itensRestantes = itensAtuais.filter((it) => normalizarSkuComparacao(it && it.SKU) !== skuRef);
+
+                if (itensRestantes.length === itensAtuais.length) {
+                    throw new Error('SKU não encontrado na lista atual.');
+                }
+
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...obterAuthHeaders(),
+                    },
+                    body: JSON.stringify({ itens: itensRestantes })
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Falha ao excluir SKU da lista.');
+                }
+
+                setErro('');
+                await carregarDetalheLista();
+            } catch (e) {
+                setErro(e.message || 'Erro ao excluir SKU do pedido.');
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = txtOriginal || 'Excluir SKU';
+                }
+            }
+        }
+
+        function renderItens(itens, lista) {
+            const tbody = document.getElementById('tbodyLista');
+            const totalGeralEl = document.getElementById('totalGeral');
+            const listaIdAtual = getListaIdDaUrl();
+            if (!tbody) return;
+
+            const dolarCompra = valorNumerico(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+            const dolarBase = dolarCompra > 0 ? dolarCompra : cotacaoDolarTopo;
+
+            const dados = Array.isArray(itens) ? itens : [];
+            if (!dados.length) {
+                tbody.innerHTML = '<tr><td colspan="' + colunasTabela.length + '" class="empty">Esta lista não possui itens.</td></tr>';
+                colunasTabela.forEach((coluna, idx) => aplicarLarguraColuna(idx, coluna, obterLarguraColuna(coluna)));
+                if (totalGeralEl) totalGeralEl.textContent = 'Total geral: ' + formatarUSD(0);
+                return;
+            }
+
+            let totalGeral = 0;
+            let totalQuantidade = 0;
+            let totalM3 = 0;
+            tbody.innerHTML = '';
+
+            dados.forEach((item) => {
+                const sku = String(item.SKU || '').trim();
+                const fotoUrl = obterUrlFoto(item.Foto || '');
+                const qtd = Number(item.Quantidade || 0);
+                const m3 = obterM3TotalItem(item);
+                const ii = Number(obterCampo(item, ['II', 'ii'], 0) || 0);
+                const ipi = Number(obterCampo(item, ['IPI', 'ipi'], 0) || 0);
+                const pis = Number(obterCampo(item, ['PIS', 'pis'], 0) || 0);
+                const cofins = Number(obterCampo(item, ['COFINS', 'cofins'], 0) || 0);
+                const icms = Number(obterCampo(item, ['ICMS', 'icms'], 0) || 0);
+                const valorUnit = Number(item['Valor unidade'] || 0);
+                const freteInternacionalItemUsd = Number(obterCampo(item, ['Frete Internacional'], 0) || 0);
+                const freteInternacionalItemBrl = (freteInternacionalItemUsd > 0 && dolarBase > 0)
+                    ? (freteInternacionalItemUsd * dolarBase)
+                    : 0;
+                const valorUnitRs = Number(obterCampo(item, ['Valor Unitário R$', 'Valor Unitario R$', 'Valor unitário R$', 'Valor unitario r$', 'Valor unitário em real', 'Valor unitario em real'], 0) || 0);
+                const valorTotal = Number(item['Valor total'] || (qtd * valorUnit));
+                const valorProdutoBrl = (valorTotal > 0 && dolarBase > 0) ? (valorTotal * dolarBase) : 0;
+                const baseTributosBrl = (valorTotal > 0 && freteInternacionalItemUsd >= 0 && dolarBase > 0)
+                    ? ((valorTotal + freteInternacionalItemUsd) * dolarBase)
+                    : 0;
+                const iiBrl = (baseTributosBrl > 0 && ii > 0) ? (baseTributosBrl * (ii / 100)) : 0;
+                const baseIpiBrl = valorProdutoBrl + iiBrl;
+                const ipiBrl = (baseIpiBrl > 0 && ipi > 0) ? (baseIpiBrl * (ipi / 100)) : 0;
+                const pisBrl = (baseTributosBrl > 0 && pis > 0) ? (baseTributosBrl * (pis / 100)) : 0;
+                const cofinsBrl = (baseTributosBrl > 0 && cofins > 0) ? (baseTributosBrl * (cofins / 100)) : 0;
+                totalGeral += valorTotal;
+                totalQuantidade += qtd;
+                totalM3 += m3;
+
+                const tr = document.createElement('tr');
+                const skuHref = sku
+                    ? 'importacoes_sku.html?lista_id=' + encodeURIComponent(listaIdAtual) + '&sku=' + encodeURIComponent(sku)
+                    : '';
+                if (skuHref) {
+                    tr.classList.add('jk-row-clickable');
+                    tr.setAttribute('role', 'link');
+                    tr.setAttribute('tabindex', '0');
+                    const abrirLinha = () => {
+                        window.location.href = skuHref;
+                    };
+                    tr.addEventListener('click', (ev) => {
+                        const alvo = ev.target;
+                        if (alvo && alvo.closest && alvo.closest('a')) return;
+                        abrirLinha();
+                    });
+                    tr.addEventListener('keydown', (ev) => {
+                        if (ev.key === 'Enter' || ev.key === ' ') {
+                            ev.preventDefault();
+                            abrirLinha();
+                        }
+                    });
+                }
+                const celulas = {
+                    sku: (skuHref
+                        ? '<a class="sku-link" href="' + skuHref + '">' + escaparHtml(sku) + '</a>'
+                        : escaparHtml(sku || '-')),
+                    foto: (fotoUrl
+                        ? '<img class="foto" src="' + escaparHtml(fotoUrl) + '" alt="Foto ' + escaparHtml(sku || '') + '" loading="lazy">'
+                        : '<span class="foto-empty">Sem foto</span>'),
+                    quantidade: formatarNumero(qtd),
+                    m3: formatarM3(m3),
+                    ii: formatarPct(ii) + '<span class="cell-sub-money">' + formatarBRL(iiBrl) + '</span>',
+                    ipi: formatarPct(ipi) + '<span class="cell-sub-money">' + formatarBRL(ipiBrl) + '</span>',
+                    pis: formatarPct(pis) + '<span class="cell-sub-money">' + formatarBRL(pisBrl) + '</span>',
+                    cofins: formatarPct(cofins) + '<span class="cell-sub-money">' + formatarBRL(cofinsBrl) + '</span>',
+                    icms: formatarPct(icms),
+                    valor_usd: formatarUSD(valorUnit),
+                    frete_internacional: formatarBRL(freteInternacionalItemBrl),
+                    valor_unit_brl: formatarBRL(valorUnitRs),
+                    valor_total_usd: formatarUSD(valorTotal),
+                    acao: sku
+                        ? '<button type="button" class="btn-excluir-sku" data-excluir-sku="' + escaparHtml(sku) + '">Excluir SKU</button>'
+                        : '-',
+                };
+
+                const classes = {
+                    sku: 'sku',
+                    quantidade: 'num-center',
+                    m3: 'num-center',
+                    ii: 'num-center',
+                    ipi: 'num-center',
+                    pis: 'num-center',
+                    cofins: 'num-center',
+                    icms: 'num-center',
+                    valor_usd: 'num',
+                    frete_internacional: 'num',
+                    valor_unit_brl: 'num',
+                    valor_total_usd: 'num',
+                    acao: 'num-center',
+                };
+
+                tr.innerHTML = colunasTabela.map((col) => {
+                    const klass = classes[col.key] ? (' class="' + classes[col.key] + '"') : '';
+                    const conteudo = Object.prototype.hasOwnProperty.call(celulas, col.key) ? celulas[col.key] : '';
+                    return '<td' + klass + '>' + conteudo + '</td>';
+                }).join('');
+
+                const btnExcluir = tr.querySelector('[data-excluir-sku]');
+                if (btnExcluir) {
+                    btnExcluir.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        const skuExcluir = btnExcluir.getAttribute('data-excluir-sku') || '';
+                        excluirSkuDaLista(skuExcluir, btnExcluir);
+                    });
+                }
+                tbody.appendChild(tr);
+            });
+
+            const trTotais = document.createElement('tr');
+            trTotais.className = 'totais-row';
+            trTotais.innerHTML = colunasTabela.map((col) => {
+                let conteudo = '';
+                let klass = '';
+
+                if (col.key === 'sku') {
+                    conteudo = 'Totais';
+                    klass = 'sku totais-label';
+                } else if (col.key === 'quantidade') {
+                    conteudo = formatarNumero(totalQuantidade);
+                    klass = 'num-center';
+                } else if (col.key === 'm3') {
+                    conteudo = formatarM3(totalM3);
+                    klass = 'num-center';
+                } else if (col.key === 'valor_total_usd') {
+                    conteudo = formatarUSD(totalGeral);
+                    klass = 'num';
+                }
+
+                return '<td' + (klass ? ' class="' + klass + '"' : '') + '>' + conteudo + '</td>';
+            }).join('');
+            tbody.appendChild(trTotais);
+
+            colunasTabela.forEach((coluna, idx) => aplicarLarguraColuna(idx, coluna, obterLarguraColuna(coluna)));
+
+            if (totalGeralEl) totalGeralEl.textContent = 'Total geral: ' + formatarUSD(totalGeral);
+        }
+
+        function renderMeta(lista) {
+            const titulo = document.getElementById('titulo');
+            const meta = document.getElementById('meta');
+            const nome = String(lista.nome_lista || 'Sem nome').trim();
+            const status = String(lista.status || '').trim() || 'Sem status';
+            const totalItens = Number(lista.total_itens || 0);
+            const totalQtd = Number(lista.total_quantidade || 0);
+            const atualizada = String(lista.updated_at || lista.created_at || '').trim();
+
+            if (titulo) {
+                titulo.textContent = 'Importações - ' + nome;
+            }
+
+            if (meta) {
+                meta.innerHTML =
+                    '<span><strong>Lista:</strong> ' + escaparHtml(nome) + '</span>' +
+                    '<span><strong>Status:</strong> <span class="status">' + escaparHtml(status) + '</span></span>' +
+                    '<span><strong>Itens:</strong> ' + formatarNumero(totalItens) + '</span>' +
+                    '<span><strong>Quantidade total:</strong> ' + formatarNumero(totalQtd) + '</span>' +
+                    '<span><strong>Atualizada em:</strong> ' + escaparHtml(atualizada || '-') + '</span>';
+            }
+        }
+
+        async function carregarDetalheLista() {
+            try {
+                setErro('');
+                const listaId = getListaIdDaUrl();
+                if (!listaId) {
+                    throw new Error('Lista não informada.');
+                }
+
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() }
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Falha ao carregar detalhes da lista.');
+                }
+
+                const data = await resp.json();
+                const lista = data && data.lista ? data.lista : {};
+                const itens = lista.itens || [];
+                ultimaListaCarregada = lista;
+                ultimosItensCarregados = Array.isArray(itens) ? itens : [];
+                carregarFaturamentoVendas12m();
+                await carregarPreferenciasColunasServidor();
+                renderCabecalho();
+                await carregarMapaM3Individual();
+                renderMeta(lista);
+                renderResumoTopo(lista, itens);
+                renderItens(itens, lista);
+            } catch (e) {
+                setErro(e.message || 'Erro ao carregar lista de importação.');
+                renderResumoTopo({}, []);
+                renderItens([], {});
+            }
+        }
+
+        renderCabecalho();
+        carregarFxTopo();
+        atualizarHorarioBrasilia();
+        setInterval(atualizarHorarioBrasilia, 1000);
+        atualizarHorarioPequim();
+        setInterval(atualizarHorarioPequim, 1000);
+        carregarDetalheLista();
+        setInterval(carregarFaturamentoVendas12m, FATURAMENTO_REFRESH_MS);
+
+        const btnAddSkuManual = document.getElementById('btnAddSkuManual');
+        if (btnAddSkuManual) {
+            btnAddSkuManual.addEventListener('click', incluirSkuManual);
+        }
+        const btnAddSkuLista = document.getElementById('btnAddSkuLista');
+        if (btnAddSkuLista) {
+            btnAddSkuLista.addEventListener('click', incluirSkuPorLista);
+        }
+        const manualSku = document.getElementById('manualSku');
+        const manualQtd = document.getElementById('manualQtd');
+        const manualValor = document.getElementById('manualValor');
+        [manualSku, manualQtd, manualValor].forEach((el) => {
+            if (!el) return;
+            el.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    incluirSkuManual();
+                }
+            });
+        });
+    </script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

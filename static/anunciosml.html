@@ -1,0 +1,1624 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anuncios ML - JK Sistema</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .container { max-width: none; width: 100%; margin: 0; }
+        .header {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+            min-height: 42px;
+        }
+        .header h1 {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            margin: 0;
+            text-align: center;
+            width: max-content;
+        }
+        .back-btn {
+            display: inline-block;
+            padding: 8px 14px;
+            background: #4facfe;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+        }
+        .back-btn:hover { background: #0073e6; }
+        .card {
+            background: #fff;
+            padding: 18px;
+            border-radius: 10px;
+            box-shadow: 0 3px 8px rgba(0,0,0,0.08);
+            margin-bottom: 18px;
+        }
+        h1 { margin-top: 0; }
+        .row { display: flex; gap: 16px; flex-wrap: wrap; }
+        .row > * { flex: 1; min-width: 200px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 10px 14px;
+            background: #4facfe;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #0073e6; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 0.95rem;
+        }
+        th, td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+        }
+        #anunciosTable {
+            table-layout: fixed;
+        }
+        #anunciosTable td[data-col="promocao"] {
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            max-width: 0;
+        }
+        th { background: #f0f5ff; }
+        .status { font-weight: bold; }
+        .status.active { color: #1f7a1f; }
+        .status.paused { color: #b05b00; }
+        .error { color: #c62828; margin-top: 8px; }
+        .success { color: #2e7d32; margin-top: 8px; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            margin-right: 4px;
+            background: #eef3ff;
+            color: #3056d3;
+        }
+        .badge.catalog { background: #fff3cd; color: #8a6d3b; }
+        .badge.up { background: #d1ecf1; color: #0c5460; }
+        .price-old {
+            display: block;
+            text-decoration: line-through;
+            color: #888;
+            font-size: 0.82rem;
+        }
+        .tabs { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+        .tab-btn { background: #e9eef7; color: #333; }
+        .tab-btn.active { background: #4facfe; color: #fff; }
+        .tab { display: none; }
+        .tab.active { display: block; }
+        
+        /* Estilos para promoção */
+        td button {
+            padding: 6px 10px;
+            font-size: 0.9rem;
+            min-width: auto;
+        }
+        .campanha-table tbody tr {
+            cursor: pointer;
+        }
+        .campanha-table tbody td {
+            text-align: center;
+        }
+        .promo-subtabs {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 0;
+        }
+        .promo-subtab-btn {
+            background: transparent;
+            color: #555;
+            font-weight: 600;
+            border: none;
+            border-bottom: 3px solid transparent;
+            border-radius: 0;
+            padding: 8px 16px;
+            margin-bottom: -2px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        .promo-subtab-btn:hover { color: #3366cc; background: transparent; }
+        .promo-subtab-btn.active {
+            color: #3366cc;
+            border-bottom-color: #3366cc;
+            background: transparent;
+        }
+        .promo-subtab-content { display: none; }
+        .promo-subtab-content.active { display: block; }
+        .campaign-selected {
+            background: #eef7ff;
+            outline: 2px solid #4facfe;
+            outline-offset: -2px;
+        }
+        .promo-campaign-name {
+            display: block;
+            max-width: 180px;
+            color: #3157b7;
+            font-size: 0.78rem;
+            font-weight: 700;
+            line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 3px;
+        }
+        .promo-discount {
+            display: block;
+        }
+        h3 {
+            color: #333;
+            margin-top: 10px;
+            margin-bottom: 12px;
+        }
+        .table-wrap {
+            width: 100%;
+            overflow-x: auto;
+        }
+        #anunciosTable th[data-col]:not([data-col="titulo"]),
+        #anunciosTable td[data-col]:not([data-col="titulo"]) {
+            text-align: center !important;
+            vertical-align: middle;
+        }
+        #anunciosTable th {
+            position: relative;
+            user-select: none;
+            white-space: nowrap;
+        }
+        #anunciosTable th.col-dragging { opacity: 0.45; }
+        #anunciosTable th.col-drag-over { outline: 2px dashed #4facfe; background: #e8f3ff; }
+        .col-resize-handle {
+            position: absolute;
+            right: 0; top: 0;
+            width: 6px; height: 100%;
+            cursor: col-resize;
+            z-index: 2;
+        }
+        .col-resize-handle:hover { background: rgba(79,172,254,0.5); }
+        .col-reset-btn {
+            background: transparent;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 3px 10px;
+            font-size: 0.8rem;
+            color: #777;
+            cursor: pointer;
+        }
+        .col-reset-btn:hover { background: #f0f5ff; border-color: #4facfe; color: #3057d3; }
+        .pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 12px 0;
+            flex-wrap: wrap;
+        }
+        .pagination-controls {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pagination-controls button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+        .page-number.active {
+            background: #ece7f7;
+            color: #5a35b5;
+        }
+        .page-number {
+            min-width: 38px;
+        }
+        .badge.classic { background: #e8f0fe; color: #2b5bb3; }
+        .badge.premium { background: #fff3cd; color: #a36a00; border: 1px solid #f0c36d; }
+        .variation-row td {
+            background: #fafbff;
+            padding: 12px 16px;
+        }
+        .variations-box {
+            border-left: 4px solid #4facfe;
+            background: #f7faff;
+            border-radius: 8px;
+            padding: 10px 12px;
+        }
+        .variations-title {
+            font-weight: 700;
+            color: #3157b7;
+            margin-bottom: 8px;
+        }
+        .variation-item {
+            display: grid;
+            grid-template-columns: minmax(220px, 2fr) 1fr 1fr 1fr;
+            gap: 10px;
+            padding: 6px 0;
+            border-top: 1px solid #e5ecff;
+            font-size: 0.9rem;
+        }
+        .variation-item:first-of-type {
+            border-top: none;
+        }
+        .variation-name {
+            font-weight: 600;
+        }
+        .item-thumb {
+            width: 54px;
+            height: 54px;
+            object-fit: contain;
+            border-radius: 8px;
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            padding: 3px;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .item-thumb:hover { opacity: 0.8; }
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255,255,255,0.88);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .loading-overlay.hidden {
+            display: none;
+        }
+        .loading-card {
+            position: relative;
+            text-align: center;
+            background: #fff;
+            padding: 40px 46px;
+            border-radius: 20px;
+            box-shadow: 0 14px 40px rgba(0,0,0,0.16);
+            overflow: hidden;
+        }
+        .loading-card::before {
+            content: "";
+            position: absolute;
+            inset: -3px;
+            border-radius: 22px;
+            background: conic-gradient(
+                from 0deg,
+                transparent 0deg,
+                transparent 55deg,
+                #79e6ff 95deg,
+                #b8f4ff 125deg,
+                transparent 165deg,
+                transparent 360deg
+            );
+            animation: neonSpin 1.2s linear infinite;
+            filter: blur(4px);
+        }
+        .loading-card::after {
+            content: "";
+            position: absolute;
+            inset: 4px;
+            border-radius: 16px;
+            background: #fff;
+            box-shadow: inset 0 0 18px rgba(121,230,255,0.22);
+        }
+        .loading-logo,
+        .loading-text {
+            position: relative;
+            z-index: 1;
+        }
+        .loading-logo {
+            width: 240px;
+            max-width: 60vw;
+            height: auto;
+            object-fit: contain;
+            animation: pulseLogo 1s ease-in-out infinite;
+        }
+        .loading-text {
+            margin-top: 14px;
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: #214e9b;
+        }
+        @keyframes pulseLogo {
+            0% { transform: scale(0.88) rotate(0deg); opacity: 0.65; }
+            50% { transform: scale(1.12) rotate(1deg); opacity: 1; }
+            100% { transform: scale(0.88) rotate(0deg); opacity: 0.65; }
+        }
+        @keyframes neonSpin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-card">
+            <img class="loading-logo" src="img/Logo Trend2.png" alt="Carregando">
+            <div id="loadingText" class="loading-text">Carregando anúncios...</div>
+            <div id="loadingTimer" style="margin-top:6px;font-size:0.82rem;color:#7a9cc8;position:relative;z-index:1;"></div>
+            <button id="btnCancelarRequisicao" onclick="cancelarRequisicaoAtual()" style="margin-top:14px;padding:6px 22px;border:1.5px solid #c0d4f0;border-radius:8px;background:#f3f7ff;color:#214e9b;font-size:0.9rem;cursor:pointer;position:relative;z-index:1;display:none;">Cancelar</button>
+        </div>
+    </div>
+    <div class="container">
+        <div class="header">
+            <h1> Anuncios Mercado Livre</h1>
+            <a class="back-btn" href="/dashboard.html"> Voltar</a>
+        </div>
+
+        <div class="card">
+            <div class="row">
+                <div>
+                    <label for="lojaSelect">Loja</label>
+                    <select id="lojaSelect"></select>
+                </div>
+                <div>
+                    <label for="filtroSku">Filtrar por SKU</label>
+                    <input id="filtroSku" type="text" placeholder="Digite o SKU...">
+                </div>
+                <div>
+                    <label>&nbsp;</label>
+                    <button id="btnBuscarSku" type="button"> Buscar</button>
+                </div>
+                <div>
+                    <label>&nbsp;</label>
+                    <button id="btnRefresh"> Atualizar anuncios</button>
+                </div>
+            </div>
+            <div id="lojaMsg" class="error"></div>
+        </div>
+
+        <div class="card">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="tab-anuncios">Anuncios</button>
+                <button class="tab-btn" data-tab="tab-promocao">Promoções</button>
+            </div>
+
+            <div id="tab-anuncios" class="tab active">
+                <div id="anunciosMsg"></div>
+                <div class="pagination-bar">
+                    <div class="pagination-info" data-role="pageInfo">0 anúncios</div>
+                    <div class="pagination-controls">
+                        <button class="page-nav" data-action="first" type="button">«</button>
+                        <button class="page-nav" data-action="prev" type="button">Voltar</button>
+                        <div class="pagination-numbers" data-role="pageNumbers"></div>
+                        <button class="page-nav" data-action="next" type="button">Avançar</button>
+                        <button class="page-nav" data-action="last" type="button">»</button>
+                    </div>
+                </div>
+                <div style="text-align:right; margin-bottom:4px;">
+                    <button id="btnResetColunas" class="col-reset-btn" type="button" title="Restaurar ordem e largura padrão das colunas">↺ Restaurar colunas</button>
+                </div>
+                <div class="table-wrap">
+                    <table id="anunciosTable">
+                        <colgroup></colgroup>
+                        <thead><tr></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="pagination-bar">
+                    <div class="pagination-info" data-role="pageInfo">0 anúncios</div>
+                    <div class="pagination-controls">
+                        <button class="page-nav" data-action="first" type="button">«</button>
+                        <button class="page-nav" data-action="prev" type="button">Voltar</button>
+                        <div class="pagination-numbers" data-role="pageNumbers"></div>
+                        <button class="page-nav" data-action="next" type="button">Avançar</button>
+                        <button class="page-nav" data-action="last" type="button">»</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-preco" class="tab">
+                <div class="row">
+                    <div>
+                        <label>ID do anuncio</label>
+                        <input id="precoItemId" placeholder="MLB...">
+                    </div>
+                    <div>
+                        <label>Novo preco</label>
+                        <input id="precoValor" type="number" step="0.01" min="0">
+                    </div>
+                    <div>
+                        <label>&nbsp;</label>
+                        <button id="btnAtualizarPreco">Atualizar preco</button>
+                    </div>
+                </div>
+                <div id="precoMsg"></div>
+            </div>
+
+            <div id="tab-estoque" class="tab">
+                <div class="row">
+                    <div>
+                        <label>ID do anuncio</label>
+                        <input id="estoqueItemId" placeholder="MLB...">
+                    </div>
+                    <div>
+                        <label>Quantidade</label>
+                        <input id="estoqueQtd" type="number" step="1" min="0">
+                    </div>
+                    <div>
+                        <label>&nbsp;</label>
+                        <button id="btnAtualizarEstoque">Atualizar estoque</button>
+                    </div>
+                </div>
+                <div id="estoqueMsg"></div>
+            </div>
+
+            <div id="tab-status" class="tab">
+                <div class="row">
+                    <div>
+                        <label>ID do anuncio</label>
+                        <input id="statusItemId" placeholder="MLB...">
+                    </div>
+                    <div>
+                        <label>Status</label>
+                        <select id="statusValor">
+                            <option value="active">Ativo</option>
+                            <option value="paused">Pausado</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>&nbsp;</label>
+                        <button id="btnAtualizarStatus">Atualizar status</button>
+                    </div>
+                </div>
+                <div id="statusMsg"></div>
+            </div>
+
+            <div id="tab-promocao" class="tab">
+                <div class="row" style="margin-bottom:12px;align-items:flex-end;">
+                    <div>
+                        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                            <div style="background:#eef7ff;border:1px solid #cfe4ff;border-radius:10px;padding:10px 14px;min-width:120px;">
+                                <div id="campanhasAtivasCount" style="font-size:1.2rem;font-weight:700;">0</div>
+                                <div>Campanhas ativas</div>
+                            </div>
+                            <div style="background:#fff8e8;border:1px solid #ffe1a6;border-radius:10px;padding:10px 14px;min-width:120px;">
+                                <div id="campanhasSugeridasCount" style="font-size:1.2rem;font-weight:700;">0</div>
+                                <div>Sugeridas</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="flex:0;">
+                        <button id="btnCarregarCampanhas">Atualizar campanhas ML</button>
+                    </div>
+                </div>
+                <div id="campanhasMsg"></div>
+
+                <div class="promo-subtabs">
+                    <button class="promo-subtab-btn active" data-promo-tab="sugeridas">Sugeridas</button>
+                    <button class="promo-subtab-btn" data-promo-tab="eventos">Eventos comerciais</button>
+                    <button class="promo-subtab-btn" data-promo-tab="tarifas">Menos tarifas de venda</button>
+                    <button class="promo-subtab-btn" data-promo-tab="relampago">Oferta do dia e relâmpago</button>
+                    <button class="promo-subtab-btn" data-promo-tab="criadas">Criadas por você</button>
+                </div>
+
+                <div id="promo-tab-sugeridas" class="promo-subtab-content active">
+                    <table id="campanhasSugeridasTable" class="campanha-table">
+                        <thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Status</th><th>Anúncios ativos</th><th>Data início</th><th>Data fim</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="promo-tab-eventos" class="promo-subtab-content">
+                    <table id="campanhasEventosTable" class="campanha-table">
+                        <thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Status</th><th>Anúncios ativos</th><th>Data início</th><th>Data fim</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="promo-tab-tarifas" class="promo-subtab-content">
+                    <table id="campanhasTarifasTable" class="campanha-table">
+                        <thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Status</th><th>Anúncios ativos</th><th>Data início</th><th>Data fim</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="promo-tab-relampago" class="promo-subtab-content">
+                    <table id="campanhasRelampagTable" class="campanha-table">
+                        <thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Status</th><th>Anúncios ativos</th><th>Data início</th><th>Data fim</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="promo-tab-criadas" class="promo-subtab-content">
+                    <table id="campanhasAtivasTable" class="campanha-table">
+                        <thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Status</th><th>Anúncios ativos</th><th>Data início</th><th>Data fim</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+            </div>
+
+            <div id="tab-vendas" class="tab">
+                <div class="row">
+                    <div>
+                        <label>Data inicio</label>
+                        <input id="vendasData" type="date">
+                    </div>
+                    <div>
+                        <label>&nbsp;</label>
+                        <button id="btnCarregarVendas">Carregar vendas</button>
+                    </div>
+                </div>
+                <div id="vendasMsg"></div>
+                <table id="vendasTable">
+                    <thead>
+                        <tr>
+                            <th>ID Ordem</th>
+                            <th>Data</th>
+                            <th>Status</th>
+                            <th>Total</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const lojaSelect = document.getElementById('lojaSelect');
+        const lojaMsg = document.getElementById('lojaMsg');
+        const anunciosMsg = document.getElementById('anunciosMsg');
+        const anunciosTableBody = document.querySelector('#anunciosTable tbody');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+        const loadingTimer = document.getElementById('loadingTimer');
+        const btnCancelarRequisicao = document.getElementById('btnCancelarRequisicao');
+
+        // Controle global de cancelamento
+        let _abortController = null;
+        let _loadingTimerInterval = null;
+        let _loadingTimerStart = null;
+
+        function cancelarRequisicaoAtual() {
+            if (_abortController) {
+                _abortController.abort();
+                _abortController = null;
+            }
+            hideLoader();
+        }
+        const vendasTableBody = document.querySelector('#vendasTable tbody');
+        const pageInfoEls = document.querySelectorAll('[data-role="pageInfo"]');
+        const pageNumberContainers = document.querySelectorAll('[data-role="pageNumbers"]');
+
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabs = document.querySelectorAll('.tab');
+
+        tabButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                tabButtons.forEach(b => b.classList.remove('active'));
+                tabs.forEach(t => t.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById(btn.dataset.tab).classList.add('active');
+                if (btn.dataset.tab === 'tab-promocao') {
+                    carregarCampanhasPromocao();
+                }
+            });
+        });
+
+        function getClientId() {
+            const userDataStr = localStorage.getItem('user_data');
+            if (!userDataStr) return null;
+            const userData = JSON.parse(userDataStr);
+            return userData.client_id;
+        }
+
+        async function apiFetch(url, options = {}, timeoutMs = 120000) {
+            const clientId = getClientId();
+            if (!clientId) {
+                window.location.href = '/frontend_index.html';
+                throw new Error('Sem client_id');
+            }
+            const headers = {
+                ...obterAuthHeaders(),
+                ...(options.headers || {})
+            };
+            if (options.body && !headers['Content-Type']) {
+                headers['Content-Type'] = 'application/json';
+            }
+            // AbortController com timeout
+            _abortController = new AbortController();
+            const timeoutId = setTimeout(() => _abortController && _abortController.abort(), timeoutMs);
+            try {
+                const resp = await fetch(url, { ...options, headers, signal: _abortController.signal });
+                clearTimeout(timeoutId);
+                if (!resp.ok) {
+                    let msg = 'Erro na API (' + resp.status + ')';
+                    try {
+                        const err = await resp.json();
+                        msg = err.detail || JSON.stringify(err);
+                    } catch (e) {}
+                    throw new Error(msg);
+                }
+                const ct = resp.headers.get('content-type') || '';
+                if (ct.includes('application/json')) return resp.json();
+                return {};
+            } catch (e) {
+                clearTimeout(timeoutId);
+                if (e.name === 'AbortError') throw new Error('Requisição cancelada ou tempo esgotado.');
+                throw e;
+            } finally {
+                _abortController = null;
+            }
+        }
+
+        async function carregarLojas() {
+            try {
+                const lojas = await apiFetch('/api/lojas');
+                const filtradas = lojas.filter(l => (l.integracoes || {}).mercadolivre && (l.integracoes.mercadolivre.access_token));
+                lojaSelect.innerHTML = '';
+                if (!filtradas.length) {
+                    lojaMsg.textContent = 'Nenhuma loja com Mercado Livre conectado.';
+                    return;
+                }
+                lojaMsg.textContent = '';
+                filtradas.forEach(l => {
+                    const opt = document.createElement('option');
+                    opt.value = l.nome;
+                    opt.textContent = l.nome;
+                    lojaSelect.appendChild(opt);
+                });
+                lojaSelect.selectedIndex = 0;
+                await atualizarAnuncios(1);
+            } catch (e) {
+                lojaMsg.textContent = e.message;
+            }
+        }
+
+        let anunciosOriginais = [];
+        let anunciosCache = [];
+        let filtroSkuTimeout = null;
+        let paginaAtualAnuncios = 1;
+        const limitePaginaAnuncios = 20;
+        let totalAnuncios = 0;
+        let campanhasPromocaoMap = {};
+        let campanhasPromocaoDetalhesMap = {};
+        let campanhasPromocaoPromise = null;
+        let enriquecimentoPromocoesToken = 0;
+
+        // ── Cache frontend ────────────────────────────────────────────────────
+        // Anúncios: chave = "loja|offset|sku", valor = data retornado pela API
+        const _cacheAnuncios = new Map();
+        // Campanhas: chave = loja, valor = data retornado pela API
+        const _cacheCampanhas = new Map();
+
+        // ── Preferências de colunas por usuário ──────────────────────────────
+        const ML_COLS = [
+            { key: 'id',            label: 'ID',             defaultWidth: 90,  minWidth: 60  },
+            { key: 'foto',          label: 'Foto',           defaultWidth: 70,  minWidth: 50  },
+            { key: 'sku',           label: 'SKU',            defaultWidth: 120, minWidth: 70  },
+            { key: 'titulo',        label: 'Titulo',         defaultWidth: 280, minWidth: 120 },
+            { key: 'tipo',          label: 'Tipo',           defaultWidth: 100, minWidth: 60  },
+            { key: 'preco',         label: 'Preço',          defaultWidth: 100, minWidth: 60  },
+            { key: 'custo_anuncio', label: 'Custo Anúncio',  defaultWidth: 120, minWidth: 80  },
+            { key: 'custo_frete',   label: 'Custo Frete ML', defaultWidth: 120, minWidth: 80  },
+            { key: 'promocao',      label: 'Promoção',       defaultWidth: 130, minWidth: 80  },
+            { key: 'estoque',       label: 'Estoque',        defaultWidth: 85,  minWidth: 50  },
+            { key: 'vendidas',      label: 'Vendidas',       defaultWidth: 85,  minWidth: 50  },
+            { key: 'status',        label: 'Status',         defaultWidth: 100, minWidth: 60  },
+        ];
+        const ML_COLS_DEFAULT_ORDER = ML_COLS.map(c => c.key);
+        let _colPrefs = { order: [...ML_COLS_DEFAULT_ORDER], widths: {} };
+
+        function _colPrefsKey() {
+            const cid = getClientId();
+            return 'ml_col_prefs_' + (cid || 'default');
+        }
+        function _loadColPrefs() {
+            try {
+                const raw = localStorage.getItem(_colPrefsKey());
+                if (!raw) return;
+                const p = JSON.parse(raw);
+                const validOrder = Array.isArray(p.order)
+                    && p.order.length === ML_COLS_DEFAULT_ORDER.length
+                    && ML_COLS_DEFAULT_ORDER.every(k => p.order.includes(k));
+                if (validOrder) _colPrefs.order = p.order;
+                if (p.widths && typeof p.widths === 'object') _colPrefs.widths = p.widths;
+            } catch (e) {}
+        }
+        function _saveColPrefs() {
+            try { localStorage.setItem(_colPrefsKey(), JSON.stringify(_colPrefs)); } catch (e) {}
+        }
+        function _colWidth(key) {
+            const col = ML_COLS.find(c => c.key === key);
+            return _colPrefs.widths[key] || (col ? col.defaultWidth : 100);
+        }
+        function _buildTableHeader() {
+            const table = document.getElementById('anunciosTable');
+            const cg = table.querySelector('colgroup');
+            cg.innerHTML = _colPrefs.order.map(k =>
+                '<col data-col="' + k + '" style="width:' + _colWidth(k) + 'px">'
+            ).join('');
+            const theadTr = table.querySelector('thead tr');
+            theadTr.innerHTML = _colPrefs.order.map(k => {
+                const col = ML_COLS.find(c => c.key === k);
+                var w = _colWidth(k);
+                return '<th data-col="' + k + '" draggable="true" style="width:' + w + 'px;min-width:' + w + 'px;">' + (col ? col.label : k) +
+                    '<div class="col-resize-handle" data-col="' + k + '"></div></th>';
+            }).join('');
+            // Drag & drop para reordenar
+            let _dragFromKey = null;
+            theadTr.querySelectorAll('th[data-col]').forEach(function(th) {
+                th.addEventListener('dragstart', function(e) {
+                    _dragFromKey = th.dataset.col;
+                    e.dataTransfer.effectAllowed = 'move';
+                    th.classList.add('col-dragging');
+                });
+                th.addEventListener('dragend', function() {
+                    _dragFromKey = null;
+                    th.classList.remove('col-dragging');
+                    theadTr.querySelectorAll('th').forEach(function(t) { t.classList.remove('col-drag-over'); });
+                });
+                th.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    theadTr.querySelectorAll('th').forEach(function(t) { t.classList.remove('col-drag-over'); });
+                    if (_dragFromKey && _dragFromKey !== th.dataset.col) th.classList.add('col-drag-over');
+                });
+                th.addEventListener('dragleave', function() { th.classList.remove('col-drag-over'); });
+                th.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    th.classList.remove('col-drag-over');
+                    if (!_dragFromKey || _dragFromKey === th.dataset.col) return;
+                    var fromIdx = _colPrefs.order.indexOf(_dragFromKey);
+                    var toIdx   = _colPrefs.order.indexOf(th.dataset.col);
+                    if (fromIdx < 0 || toIdx < 0) return;
+                    _colPrefs.order.splice(fromIdx, 1);
+                    _colPrefs.order.splice(toIdx, 0, _dragFromKey);
+                    _saveColPrefs();
+                    _buildTableHeader();
+                    if (anunciosCache.length) renderAnuncios({ results: anunciosCache, total: totalAnuncios }, false, false);
+                });
+            });
+            // Resize de colunas por arrastar borda direita do th
+            theadTr.querySelectorAll('.col-resize-handle').forEach(function(handle) {
+                handle.addEventListener('mousedown', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var key = handle.dataset.col;
+                    var startX = e.clientX;
+                    var startW = _colWidth(key);
+                    var minW = (ML_COLS.find(function(c) { return c.key === key; }) || {}).minWidth || 40;
+                    var cgCol = cg.querySelector('col[data-col="' + key + '"]');
+                    var thEl = theadTr.querySelector('th[data-col="' + key + '"]');
+                    function onMove(mv) {
+                        var newW = Math.max(minW, startW + mv.clientX - startX);
+                        _colPrefs.widths[key] = newW;
+                        if (cgCol) cgCol.style.width = newW + 'px';
+                        if (thEl) { thEl.style.width = newW + 'px'; thEl.style.minWidth = newW + 'px'; }
+                    }
+                    function onUp() {
+                        document.removeEventListener('mousemove', onMove);
+                        document.removeEventListener('mouseup', onUp);
+                        _saveColPrefs();
+                    }
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                });
+            });
+        }
+
+        function _chavePaginaAnuncios(loja, offset, sku) {
+            return `${loja}|${offset}|${sku || ''}`;
+        }
+
+        function limparCacheFrontend(loja) {
+            // Remove entradas da loja específica (ou tudo se loja não informada)
+            if (loja) {
+                for (const k of [..._cacheAnuncios.keys()]) {
+                    if (k.startsWith(loja + '|')) _cacheAnuncios.delete(k);
+                }
+                _cacheCampanhas.delete(loja);
+            } else {
+                _cacheAnuncios.clear();
+                _cacheCampanhas.clear();
+            }
+        }
+
+        function showLoader(texto = 'Carregando anúncios...', podeCancelar = false) {
+            loadingText.textContent = texto;
+            loadingOverlay.classList.remove('hidden');
+            // Timer visual
+            _loadingTimerStart = Date.now();
+            loadingTimer.textContent = '';
+            clearInterval(_loadingTimerInterval);
+            _loadingTimerInterval = setInterval(() => {
+                const seg = Math.floor((Date.now() - _loadingTimerStart) / 1000);
+                loadingTimer.textContent = seg > 0 ? `${seg}s` : '';
+                // Mostra botão cancelar após 5s
+                if (seg >= 5 && podeCancelar) {
+                    btnCancelarRequisicao.style.display = '';
+                }
+            }, 500);
+            btnCancelarRequisicao.style.display = 'none';
+        }
+
+        function hideLoader() {
+            loadingOverlay.classList.add('hidden');
+            clearInterval(_loadingTimerInterval);
+            loadingTimer.textContent = '';
+            btnCancelarRequisicao.style.display = 'none';
+        }
+
+        const STATUS_PT = {
+            'started':   'Ativa',
+            'active':    'Ativa',
+            'paused':    'Pausada',
+            'closed':    'Encerrada',
+            'inactive':  'Inativa',
+            'pending':   'Pendente',
+            'candidate': 'Elegível',
+            'eligible':  'Elegível',
+            'suggested': 'Sugerida',
+            'scheduled': 'Agendada',
+            'finished':  'Finalizada',
+            'expired':   'Expirada',
+            'draft':     'Rascunho',
+            'under_review': 'Em revisão',
+            'not_yet_active': 'Ainda não ativa',
+        };
+        const TIPO_CAMPANHA_PT = {
+            'deal':            'Evento comercial',
+            'smart':           'Menos tarifas de venda',
+            'lightning_deal':  'Oferta relâmpago',
+            'lightning':       'Oferta relâmpago',
+            'flash':           'Oferta relâmpago',
+            'day_deal':        'Oferta do dia',
+            'seller_campaign': 'Criada por você',
+        };
+        function traduzirStatus(status) {
+            const key = String(status || '').toLowerCase().trim();
+            return STATUS_PT[key] || (key ? key.charAt(0).toUpperCase() + key.slice(1) : '-');
+        }
+        function traduzirTipoCampanha(tipo) {
+            const key = String(tipo || '').toLowerCase().trim();
+            return TIPO_CAMPANHA_PT[key] || tipo || '-';
+        }
+
+        function escapeHtml(valor) {
+            return String(valor ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[ch]));
+        }
+
+        function nomesCampanhasDoAnuncio(item) {
+            const ids = [
+                ...(Array.isArray(item.deal_ids) ? item.deal_ids : []),
+                item.promotion_id
+            ]
+                .map(id => String(id || '').trim())
+                .filter(Boolean);
+
+            const nomes = ids
+                .map(id => campanhasPromocaoMap[String(id).toLowerCase()])
+                .filter(Boolean);
+
+            return [...new Set(nomes)];
+        }
+
+        function detalheCampanhaPorId(id) {
+            const chave = String(id || '').toLowerCase();
+            const nome = campanhasPromocaoMap[chave];
+            const detalhe = campanhasPromocaoDetalhesMap[chave] || {};
+            if (!nome && !detalhe.name) return null;
+            return {
+                id: id,
+                name: detalhe.name || nome,
+                status: detalhe.status || '',
+                type: detalhe.type || ''
+            };
+        }
+
+        function detalhesCampanhasDoAnuncio(item) {
+            const detalhes = [];
+            const vistos = new Set();
+            const adicionar = promo => {
+                if (!promo) return;
+                const id = String(promo.id || promo.promotion_id || promo.deal_id || promo.campaign_id || '').trim();
+                const chave = id.toLowerCase() || String(promo.name || '').trim().toLowerCase();
+                if (!chave || vistos.has(chave)) return;
+                vistos.add(chave);
+                detalhes.push({
+                    id,
+                    name: promo.name || campanhasPromocaoMap[id.toLowerCase()] || id,
+                    status: promo.status || '',
+                    type: promo.type || ''
+                });
+            };
+
+            (Array.isArray(item.promotion_details) ? item.promotion_details : []).forEach(adicionar);
+            [
+                ...(Array.isArray(item.deal_ids) ? item.deal_ids : []),
+                item.promotion_id
+            ]
+                .map(id => String(id || '').trim())
+                .filter(Boolean)
+                .forEach(id => adicionar(detalheCampanhaPorId(id)));
+
+            return detalhes;
+        }
+
+        function statusCampanhaPromocaoLabel(status) {
+            const key = String(status || '').toLowerCase();
+            if (['started', 'active'].includes(key)) return 'Ativa';
+            if (['programmed', 'scheduled', 'pending'].includes(key)) return 'Programada';
+            return status || 'Sem status';
+        }
+
+        function campanhaPromocaoEhAtivaOuProgramada(status) {
+            const key = String(status || '').toLowerCase();
+            return !key || ['started', 'active', 'programmed', 'scheduled', 'pending'].includes(key);
+        }
+
+        function tooltipPromocoesAnuncio(item) {
+            const detalhes = detalhesCampanhasDoAnuncio(item).filter(p => campanhaPromocaoEhAtivaOuProgramada(p.status));
+            if (!detalhes.length) return '';
+            return detalhes
+                .map(p => {
+                    const tipo = p.type ? ` - ${p.type}` : '';
+                    return `${p.name || p.id} (${statusCampanhaPromocaoLabel(p.status)}${tipo})`;
+                })
+                .join('\n');
+        }
+
+        function renderPromocaoAnuncio(item, hasPromo, discount) {
+            if (!hasPromo) return '-';
+            const nomes = nomesCampanhasDoAnuncio(item);
+            const nomesHtml = nomes.length
+                ? `<span class="promo-campaign-name" title="${escapeHtml(nomes.join(' / '))}">${escapeHtml(nomes.join(' / '))}</span>`
+                : '';
+            return `${nomesHtml}<span class="promo-discount">🔥 ${Number(discount || 0).toFixed(1)}%</span>`;
+        }
+
+        async function garantirCampanhasPromocaoMap() {
+            const loja = lojaSelect.value;
+            if (!loja) return {};
+            if (Object.keys(campanhasPromocaoMap).length) return campanhasPromocaoMap;
+            if (campanhasPromocaoPromise) return campanhasPromocaoPromise;
+
+            campanhasPromocaoPromise = apiFetch(`/api/mercadolivre/promocoes?loja=${encodeURIComponent(loja)}`)
+                .then(data => {
+                    const campanhas = data.campaigns || [
+                        ...(data.active_campaigns || []),
+                        ...(data.suggested_campaigns || [])
+                    ];
+                    campanhasPromocaoMap = {};
+                    campanhasPromocaoDetalhesMap = {};
+                    campanhas.forEach(c => {
+                        if (c && c.id) {
+                            const chave = String(c.id).toLowerCase();
+                            campanhasPromocaoMap[chave] = c.name || c.id;
+                            campanhasPromocaoDetalhesMap[chave] = c;
+                        }
+                    });
+                    return campanhasPromocaoMap;
+                })
+                .catch(e => {
+                    console.warn('Erro ao carregar nomes de campanhas:', e);
+                    return campanhasPromocaoMap;
+                })
+                .finally(() => {
+                    campanhasPromocaoPromise = null;
+                });
+
+            return campanhasPromocaoPromise;
+        }
+
+        function atualizarItensComPromocoes(itemsMap) {
+            if (!itemsMap) return false;
+            let alterou = false;
+            [anunciosCache, anunciosOriginais].forEach(lista => {
+                (lista || []).forEach(item => {
+                    const itemId = String(item.id || '').trim();
+                    const info = itemsMap[itemId];
+                    if (!info) return;
+                    const atuais = Array.isArray(item.deal_ids) ? item.deal_ids.map(id => String(id)) : [];
+                    const promotionIds = Array.isArray(info.promotion_ids) ? info.promotion_ids.map(id => String(id)) : [];
+                    const unidos = [...new Set([...atuais, ...promotionIds])];
+                    if (Array.isArray(info.promotions) && info.promotions.length) {
+                        item.promotion_details = info.promotions;
+                        info.promotions.forEach(promo => {
+                            if (!promo || !promo.id) return;
+                            const chave = String(promo.id).toLowerCase();
+                            if (promo.name) campanhasPromocaoMap[chave] = promo.name;
+                            campanhasPromocaoDetalhesMap[chave] = {
+                                ...(campanhasPromocaoDetalhesMap[chave] || {}),
+                                ...promo
+                            };
+                        });
+                        alterou = true;
+                    }
+                    if (unidos.length !== atuais.length) {
+                        item.deal_ids = unidos;
+                        if (!item.promotion_id) item.promotion_id = unidos[0];
+                        alterou = true;
+                    }
+                });
+            });
+            return alterou;
+        }
+
+        async function enriquecerPromocoesAnuncios(results) {
+            const token = ++enriquecimentoPromocoesToken;
+            const itensPromo = (results || [])
+                .filter(item => item && item.has_promotion);
+            if (!itensPromo.length) return;
+
+            await garantirCampanhasPromocaoMap();
+            if (token !== enriquecimentoPromocoesToken) return;
+
+            let alterou = false;
+            const itemIds = itensPromo
+                .map(item => String(item.id || '').trim())
+                .filter(Boolean);
+
+            if (itemIds.length) {
+                try {
+                    const data = await apiFetch('/api/mercadolivre/promocoes/itens-ids', {
+                        method: 'POST',
+                        body: JSON.stringify({ loja: lojaSelect.value, item_ids: itemIds })
+                    });
+                    alterou = atualizarItensComPromocoes(data.items || {});
+                } catch (e) {
+                    console.warn('Erro ao enriquecer promoções dos anúncios:', e);
+                }
+            } else {
+                alterou = true;
+            }
+
+            if (token === enriquecimentoPromocoesToken && alterou) {
+                renderAnuncios({ results: anunciosCache, total: totalAnuncios }, false, false);
+            } else if (token === enriquecimentoPromocoesToken && Object.keys(campanhasPromocaoMap).length) {
+                renderAnuncios({ results: anunciosCache, total: totalAnuncios }, false, false);
+            }
+        }
+
+        function atualizarControlesPaginacao(qtdAtual = 0) {
+            const totalPaginas = Math.max(1, Math.ceil((totalAnuncios || 0) / limitePaginaAnuncios));
+            pageInfoEls.forEach(el => {
+                el.textContent = `${totalAnuncios || 0} anúncios • Página ${paginaAtualAnuncios} de ${totalPaginas}`;
+            });
+
+            let inicio = Math.max(1, paginaAtualAnuncios - 2);
+            let fim = Math.min(totalPaginas, inicio + 4);
+            inicio = Math.max(1, fim - 4);
+
+            const botoes = [];
+            for (let pagina = inicio; pagina <= fim; pagina++) {
+                botoes.push(`<button type="button" class="page-number ${pagina === paginaAtualAnuncios ? 'active' : ''}" data-page="${pagina}">${pagina}</button>`);
+            }
+
+            pageNumberContainers.forEach(el => {
+                el.innerHTML = botoes.join('');
+            });
+
+            document.querySelectorAll('.page-number').forEach(btn => {
+                btn.addEventListener('click', () => atualizarAnuncios(Number(btn.dataset.page)));
+            });
+
+            document.querySelectorAll('.page-nav').forEach(btn => {
+                const action = btn.dataset.action;
+                const semItens = qtdAtual === 0;
+                if (action === 'first' || action === 'prev') {
+                    btn.disabled = paginaAtualAnuncios <= 1 || semItens;
+                } else {
+                    btn.disabled = paginaAtualAnuncios >= totalPaginas || semItens;
+                }
+            });
+        }
+
+        function renderAnuncios(data, atualizarOriginais = true, agendarEnriquecimento = true) {
+            anunciosTableBody.innerHTML = '';
+            const results = data.results || [];
+            if (typeof data.total === 'number') {
+                totalAnuncios = data.total;
+            }
+            if (atualizarOriginais) {
+                anunciosOriginais = results;
+            }
+            anunciosCache = results;
+            atualizarControlesPaginacao(results.length);
+            if (!results.length) {
+                anunciosMsg.textContent = 'Nenhum anuncio encontrado.';
+                return;
+            }
+            anunciosMsg.textContent = '';
+            results.forEach(item => {
+                const tr = document.createElement('tr');
+                const status = (item.status || '').toLowerCase();
+                
+                const sku = item.sku_display || item.sku || '-';
+                const thumbImg = item.thumbnail ? `<img class="item-thumb" src="${item.thumbnail}" alt="${item.title || 'Item'}">` : null;
+                const thumbLink = item.permalink || '';
+                const thumb = thumbImg ? `<a href="${escapeHtml(thumbLink)}" target="_blank" rel="noopener noreferrer" title="Abrir anúncio no Mercado Livre">${thumbImg}</a>` : '-';
+                const hasPromo = item.has_promotion || false;
+                const discount = item.discount_pct || 0;
+                const promoDisplay = renderPromocaoAnuncio(item, hasPromo, discount);
+                const promoClass = hasPromo ? 'status active' : '';
+                const promoTitle = hasPromo ? tooltipPromocoesAnuncio(item) : '';
+                const isCatalog = !!item.catalog_listing;
+                const isUP = !!(item.user_product_id || item.family_name);
+                const tipo = item.listing_type_name || (item.listing_type_id === 'gold_pro' ? 'Premium' : 'Clássico');
+                const tipoBadgeClass = tipo.toLowerCase().includes('premium') ? 'premium' : 'classic';
+                const adCostText = item.ad_cost_text || '-';
+                const feeTitle = item.fee_breakdown || adCostText;
+                const shippingText = item.shipping_text || '-';
+                const shippingTitle = item.shipping_breakdown || shippingText;
+                const badges = [
+                    isCatalog ? '<span class="badge catalog">Catálogo</span>' : '',
+                    isUP ? '<span class="badge up">UP</span>' : ''
+                ].join(' ');
+                const familyLine = item.family_name ? `<div style="font-size:0.8rem;color:#666;">Família: ${item.family_name}</div>` : '';
+                const variacoes = Array.isArray(item.variations) ? item.variations : [];
+                const priceDisplay = item.price !== undefined
+                    ? `${item.original_price && Number(item.original_price) > Number(item.price) ? `<span class="price-old">R$ ${Number(item.original_price).toFixed(2)}</span>` : ''}R$ ${Number(item.price).toFixed(2)}`
+                    : '-';
+                
+                const _cellMap = {
+                    id:            '<td data-col="id">' + (item.id || item) + '</td>',
+                    foto:          '<td data-col="foto">' + thumb + '</td>',
+                    sku:           '<td data-col="sku">' + sku + '</td>',
+                    titulo:        '<td data-col="titulo" style="max-width:' + _colWidth('titulo') + 'px;overflow:hidden;text-overflow:ellipsis;"><div>' + badges + '</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (item.title || '-') + '</div>' + familyLine + '</td>',
+                    tipo:          '<td data-col="tipo"><span class="badge ' + tipoBadgeClass + '">' + tipo + '</span></td>',
+                    preco:         '<td data-col="preco">' + priceDisplay + '</td>',
+                    custo_anuncio: '<td data-col="custo_anuncio" title="' + feeTitle + '">' + adCostText + '</td>',
+                    custo_frete:   '<td data-col="custo_frete" title="' + shippingTitle + '">' + shippingText + '</td>',
+                    promocao:      '<td data-col="promocao" class="' + promoClass + '" title="' + escapeHtml(promoTitle) + '">' + promoDisplay + '</td>',
+                    estoque:       '<td data-col="estoque">' + (item.available_quantity !== undefined ? item.available_quantity : '-') + '</td>',
+                    vendidas:      '<td data-col="vendidas">' + (item.sold_quantity !== undefined ? item.sold_quantity : '-') + '</td>',
+                    status:        '<td data-col="status" class="status ' + status + '">' + traduzirStatus(item.status) + '</td>',
+                };
+                tr.innerHTML = _colPrefs.order.map(function(k) { return _cellMap[k] || '<td data-col="' + k + '">-</td>'; }).join('');
+                anunciosTableBody.appendChild(tr);
+
+                if (variacoes.length) {
+                    const subTr = document.createElement('tr');
+                    subTr.className = 'variation-row';
+                    const variacoesHtml = variacoes.map(v => `
+                        <div class="variation-item">
+                            <div class="variation-name">${v.title || '-'}${v.id ? ` <span style="color:#777;font-weight:400;">#${v.id}</span>` : ''}</div>
+                            <div><strong>SKU variação:</strong> ${v.sku || '-'}</div>
+                            <div><strong>Preço:</strong> ${v.price !== undefined && v.price !== null ? 'R$ ' + Number(v.price).toFixed(2) : '-'}</div>
+                            <div><strong>Estoque:</strong> ${v.available_quantity ?? 0} • <strong>Vendidas:</strong> ${v.sold_quantity ?? 0}</div>
+                        </div>
+                    `).join('');
+                    subTr.innerHTML = '<td colspan="' + _colPrefs.order.length + '"><div class="variations-box"><div class="variations-title"></div>' + variacoesHtml + '</div></td>';
+                    anunciosTableBody.appendChild(subTr);
+                }
+            });
+            if (agendarEnriquecimento) {
+                setTimeout(() => enriquecerPromocoesAnuncios(results), 0);
+            }
+        }
+
+        function filtrarPorSKU() {
+            const filtro = document.getElementById('filtroSku').value.toLowerCase().trim();
+            clearTimeout(filtroSkuTimeout);
+
+            paginaAtualAnuncios = 1;
+            if (!filtro) {
+                atualizarAnuncios(1);
+                return;
+            }
+
+            const base = anunciosOriginais || [];
+            const filtrados = base.filter(item => {
+                const sku = (item.sku || '').toLowerCase();
+                const skuDisplay = (item.sku_display || '').toLowerCase();
+                const titulo = (item.title || '').toLowerCase();
+                return sku.includes(filtro) || skuDisplay.includes(filtro) || titulo.includes(filtro);
+            });
+
+            renderAnuncios({ results: filtrados, total: filtrados.length || totalAnuncios }, false);
+            anunciosMsg.textContent = 'Buscando SKU...';
+            filtroSkuTimeout = setTimeout(() => atualizarAnuncios(1), 50);
+        }
+
+        document.getElementById('filtroSku').addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                filtrarPorSKU();
+            }
+        });
+        document.getElementById('btnBuscarSku').addEventListener('click', filtrarPorSKU);
+
+        async function atualizarAnuncios(pagina = 1) {
+            const loja = lojaSelect.value;
+            if (!loja) return;
+            paginaAtualAnuncios = Math.max(1, Number(pagina) || 1);
+            const filtroSku = document.getElementById('filtroSku').value.trim();
+            const offset = (paginaAtualAnuncios - 1) * limitePaginaAnuncios;
+
+            // Verifica cache frontend
+            const chaveCache = _chavePaginaAnuncios(loja, offset, filtroSku);
+            const dadosCache = _cacheAnuncios.get(chaveCache);
+            if (dadosCache) {
+                renderAnuncios(dadosCache, true);
+                anunciosMsg.textContent = `Página ${paginaAtualAnuncios} (cache)`;
+                return;
+            }
+
+            anunciosMsg.textContent = filtroSku ? 'Buscando SKU...' : `Carregando página ${paginaAtualAnuncios}...`;
+            showLoader(anunciosMsg.textContent, true);
+            try {
+                const params = new URLSearchParams({
+                    loja,
+                    offset: String(offset),
+                    limit: String(limitePaginaAnuncios)
+                });
+                if (filtroSku) params.set('sku', filtroSku);
+                const data = await apiFetch(`/api/mercadolivre/anuncios?${params.toString()}`);
+                _cacheAnuncios.set(chaveCache, data);
+                renderAnuncios(data, true);
+                if (filtroSku && !(data.results || []).length) {
+                    anunciosMsg.textContent = `Nenhum anúncio encontrado para o SKU "${filtroSku}".`;
+                }
+            } catch (e) {
+                anunciosMsg.textContent = e.message;
+            } finally {
+                hideLoader();
+            }
+        }
+
+        document.querySelectorAll('.page-nav').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const totalPaginas = Math.max(1, Math.ceil((totalAnuncios || 0) / limitePaginaAnuncios));
+                const action = btn.dataset.action;
+                if (action === 'first') atualizarAnuncios(1);
+                if (action === 'prev') atualizarAnuncios(Math.max(1, paginaAtualAnuncios - 1));
+                if (action === 'next') atualizarAnuncios(Math.min(totalPaginas, paginaAtualAnuncios + 1));
+                if (action === 'last') atualizarAnuncios(totalPaginas);
+            });
+        });
+        lojaSelect.addEventListener('change', async () => {
+            campanhasPromocaoMap = {};
+            campanhasPromocaoDetalhesMap = {};
+            campanhasPromocaoPromise = null;
+            enriquecimentoPromocoesToken++;
+            limparCacheFrontend(/* tudo */ );
+            await atualizarAnuncios(1);
+            if (document.getElementById('tab-promocao').classList.contains('active')) {
+                await carregarCampanhasPromocao();
+            }
+        });
+        document.getElementById('btnRefresh').addEventListener('click', async () => {
+            const loja = lojaSelect.value;
+            if (!loja) return;
+            limparCacheFrontend(loja);
+            try {
+                await apiFetch(`/api/mercadolivre/cache/invalidar?loja=${encodeURIComponent(loja)}`, { method: 'POST' });
+            } catch (e) { /* ignora erros de invalidação */ }
+            atualizarAnuncios(1);
+        });
+
+        document.getElementById('btnAtualizarPreco').addEventListener('click', async () => {
+            const loja = lojaSelect.value;
+            const itemId = document.getElementById('precoItemId').value.trim();
+            const novoPreco = parseFloat(document.getElementById('precoValor').value);
+            const msg = document.getElementById('precoMsg');
+            msg.textContent = '';
+            if (!itemId || isNaN(novoPreco)) {
+                msg.textContent = 'Preencha ID e preco.';
+                msg.className = 'error';
+                return;
+            }
+            try {
+                const data = await apiFetch('/api/mercadolivre/preco', {
+                    method: 'POST',
+                    body: JSON.stringify({ loja, item_id: itemId, novo_preco: novoPreco })
+                });
+                msg.textContent = data.message || 'Preco processado.';
+                msg.className = data.success === false ? 'error' : 'success';
+            } catch (e) {
+                msg.textContent = e.message;
+                msg.className = 'error';
+            }
+        });
+
+        document.getElementById('btnAtualizarEstoque').addEventListener('click', async () => {
+            const loja = lojaSelect.value;
+            const itemId = document.getElementById('estoqueItemId').value.trim();
+            const qtd = parseInt(document.getElementById('estoqueQtd').value, 10);
+            const msg = document.getElementById('estoqueMsg');
+            msg.textContent = '';
+            if (!itemId || isNaN(qtd)) {
+                msg.textContent = 'Preencha ID e quantidade.';
+                msg.className = 'error';
+                return;
+            }
+            try {
+                await apiFetch('/api/mercadolivre/estoque', {
+                    method: 'POST',
+                    body: JSON.stringify({ loja, item_id: itemId, quantidade: qtd })
+                });
+                msg.textContent = 'Estoque atualizado.';
+                msg.className = 'success';
+            } catch (e) {
+                msg.textContent = e.message;
+                msg.className = 'error';
+            }
+        });
+
+        document.getElementById('btnAtualizarStatus').addEventListener('click', async () => {
+            const loja = lojaSelect.value;
+            const itemId = document.getElementById('statusItemId').value.trim();
+            const status = document.getElementById('statusValor').value;
+            const msg = document.getElementById('statusMsg');
+            msg.textContent = '';
+            if (!itemId) {
+                msg.textContent = 'Preencha o ID.';
+                msg.className = 'error';
+                return;
+            }
+            try {
+                await apiFetch('/api/mercadolivre/status', {
+                    method: 'POST',
+                    body: JSON.stringify({ loja, item_id: itemId, status })
+                });
+                msg.textContent = 'Status atualizado.';
+                msg.className = 'success';
+            } catch (e) {
+                msg.textContent = e.message;
+                msg.className = 'error';
+            }
+        });
+
+        document.getElementById('btnCarregarVendas').addEventListener('click', async () => {
+            const loja = lojaSelect.value;
+            const dataInicio = document.getElementById('vendasData').value;
+            const msg = document.getElementById('vendasMsg');
+            msg.textContent = 'Carregando...';
+            try {
+                const url = `/api/mercadolivre/vendas?loja=${encodeURIComponent(loja)}&limit=100${dataInicio ? `&data_inicio=${dataInicio}` : ''}`;
+                const data = await apiFetch(url);
+                const vendas = data.results || [];
+                vendasTableBody.innerHTML = '';
+                vendas.forEach(v => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${v.id || '-'}</td>
+                        <td>${(v.date_created || '').slice(0, 10)}</td>
+                        <td>${traduzirStatus(v.status)}</td>
+                        <td>${v.total_amount !== undefined ? 'R$ ' + Number(v.total_amount).toFixed(2) : '-'}</td>
+                    `;
+                    vendasTableBody.appendChild(tr);
+                });
+                msg.textContent = `Encontradas ${vendas.length} vendas.`;
+                msg.className = 'success';
+            } catch (e) {
+                msg.textContent = e.message;
+                msg.className = 'error';
+            }
+        });
+
+        function renderCampanhasTabela(tbody, campanhas, vazioTexto) {
+            tbody.innerHTML = '';
+            if (!campanhas.length) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td colspan="7">${vazioTexto}</td>`;
+                tbody.appendChild(tr);
+                return;
+            }
+            campanhas.forEach(c => {
+                const tr = document.createElement('tr');
+                const status = String(c.status || '-').toLowerCase();
+                const statusClass = ['started', 'active'].includes(status) ? 'active' : '';
+                tr.title = 'Clique duas vezes para abrir os anúncios desta campanha';
+                tr.innerHTML = `
+                    <td>${c.id || '-'}</td>
+                    <td>${c.name || '-'}</td>
+                    <td>${traduzirTipoCampanha(c.type)}</td>
+                    <td class="status ${statusClass}">${traduzirStatus(c.status)}</td>
+                    <td class="campaign-active-count" data-campaign-id="${String(c.id || '').toLowerCase()}">...</td>
+                    <td>${String(c.start_date || '').slice(0, 10) || '-'}</td>
+                    <td>${String(c.finish_date || '').slice(0, 10) || '-'}</td>
+                `;
+                tr.addEventListener('click', () => {
+                    document
+                        .querySelectorAll('.campanha-table tbody tr')
+                        .forEach(row => row.classList.remove('campaign-selected'));
+                    tr.classList.add('campaign-selected');
+                });
+                tr.addEventListener('dblclick', () => abrirPaginaAnunciosCampanha(c));
+                tbody.appendChild(tr);
+            });
+        }
+
+        function abrirPaginaAnunciosCampanha(campanha) {
+            const loja = lojaSelect.value;
+            const params = new URLSearchParams({
+                loja,
+                campaign_id: campanha.id || '',
+                campaign_name: campanha.name || campanha.id || 'Campanha',
+                campaign_status: campanha.status || '',
+                campaign_type: campanha.type || ''
+            });
+            window.location.href = `anunciosml_campanha.html?${params.toString()}`;
+        }
+
+        async function carregarContagensCampanhas(campanhas) {
+            const loja = lojaSelect.value;
+            const idsCampanhas = new Set((campanhas || [])
+                .map(c => String(c?.id || '').toLowerCase())
+                .filter(Boolean));
+
+            if (!loja || !idsCampanhas.size) return;
+
+            document.querySelectorAll('.campaign-active-count').forEach(el => {
+                el.textContent = '...';
+            });
+
+            try {
+                const data = await apiFetch(`/api/mercadolivre/promocoes/contagens?loja=${encodeURIComponent(loja)}`);
+                const counts = data.counts || {};
+                document.querySelectorAll('.campaign-active-count').forEach(el => {
+                    const campaignId = String(el.dataset.campaignId || '').toLowerCase();
+                    el.textContent = String(counts[campaignId] || 0);
+                });
+            } catch (e) {
+                document.querySelectorAll('.campaign-active-count').forEach(el => {
+                    el.textContent = '-';
+                });
+                console.warn('Erro ao carregar contagens de campanhas:', e);
+            }
+        }
+
+        function classificarCampanhas(campanhas) {
+            const sugeridas = [], eventos = [], tarifas = [], relampago = [], criadas = [];
+            campanhas.forEach(c => {
+                const tipo = (c.type || '').toUpperCase().trim();
+                // Sugeridas: todas com produtos elegíveis, independente do tipo (igual ao ML)
+                if (c.categoria === 'sugerida') {
+                    sugeridas.push(c);
+                }
+                // Também distribui por tipo (uma campanha pode aparecer em ambas as abas)
+                if (tipo === 'DEAL') {
+                    eventos.push(c);
+                } else if (tipo === 'SMART') {
+                    tarifas.push(c);
+                } else if (tipo === 'LIGHTNING_DEAL' || tipo === 'LIGHTNING' || tipo === 'FLASH' || tipo === 'DAY_DEAL') {
+                    relampago.push(c);
+                } else if (tipo === 'SELLER_CAMPAIGN') {
+                    criadas.push(c);
+                }
+            });
+            return { sugeridas, eventos, tarifas, relampago, criadas };
+        }
+
+        async function carregarCampanhasPromocao() {
+            const loja = lojaSelect.value;
+            if (!loja) return;
+
+            const msg = document.getElementById('campanhasMsg');
+            const countAtivas = document.getElementById('campanhasAtivasCount');
+            const countSugeridas = document.getElementById('campanhasSugeridasCount');
+
+            // Verifica cache frontend de campanhas
+            const dadosCachecamp = _cacheCampanhas.get(loja);
+            if (dadosCachecamp) {
+                _aplicarDadosCampanhas(dadosCachecamp, msg, countAtivas, countSugeridas);
+                return;
+            }
+
+            msg.textContent = 'Carregando campanhas...';
+            msg.className = '';
+            try {
+                const data = await apiFetch(`/api/mercadolivre/promocoes?loja=${encodeURIComponent(loja)}`);
+                _cacheCampanhas.set(loja, data);
+                _aplicarDadosCampanhas(data, msg, countAtivas, countSugeridas);
+            } catch (e) {
+                campanhasPromocaoMap = {};
+                campanhasPromocaoDetalhesMap = {};
+                countAtivas.textContent = '0';
+                countSugeridas.textContent = '0';
+                ['#campanhasSugeridasTable tbody','#campanhasEventosTable tbody','#campanhasTarifasTable tbody','#campanhasRelampagTable tbody','#campanhasAtivasTable tbody'].forEach(sel => {
+                    const el = document.querySelector(sel);
+                    if (el) renderCampanhasTabela(el, [], 'Erro ao carregar campanhas.');
+                });
+                msg.textContent = e.message;
+                msg.className = 'error';
+            }
+        }
+
+        function _aplicarDadosCampanhas(data, msg, countAtivas, countSugeridas) {
+            const campanhas = data.campaigns || [...(data.active_campaigns || []), ...(data.suggested_campaigns || [])];
+            campanhasPromocaoMap = {};
+            campanhasPromocaoDetalhesMap = {};
+            campanhas.forEach(c => {
+                if (c && c.id) {
+                    const chave = String(c.id).toLowerCase();
+                    campanhasPromocaoMap[chave] = c.name || c.id;
+                    campanhasPromocaoDetalhesMap[chave] = c;
+                }
+            });
+
+            const grupos = classificarCampanhas(campanhas);
+            const ativas = campanhas.filter(c => c.categoria !== 'sugerida');
+            countAtivas.textContent = String(ativas.length);
+            countSugeridas.textContent = String(grupos.sugeridas.length);
+
+            renderCampanhasTabela(document.querySelector('#campanhasSugeridasTable tbody'), grupos.sugeridas, 'Nenhuma campanha sugerida pelo Mercado Livre.');
+            renderCampanhasTabela(document.querySelector('#campanhasEventosTable tbody'), grupos.eventos, 'Nenhum evento comercial no momento.');
+            renderCampanhasTabela(document.querySelector('#campanhasTarifasTable tbody'), grupos.tarifas, 'Nenhuma campanha de tarifas reduzidas no momento.');
+            renderCampanhasTabela(document.querySelector('#campanhasRelampagTable tbody'), grupos.relampago, 'Nenhuma oferta do dia ou relâmpago no momento.');
+            renderCampanhasTabela(document.querySelector('#campanhasAtivasTable tbody'), grupos.criadas, 'Nenhuma campanha criada por você no momento.');
+
+            msg.textContent = `${campanhas.length} campanha(s) carregada(s).`;
+            msg.className = 'success';
+            carregarContagensCampanhas(campanhas);
+            if (anunciosCache.length) {
+                renderAnuncios({ results: anunciosCache, total: totalAnuncios }, false);
+            }
+        }
+
+        document.getElementById('btnCarregarCampanhas').addEventListener('click', async () => {
+            const loja = lojaSelect.value;
+            if (!loja) return;
+            limparCacheFrontend(loja);
+            try {
+                await apiFetch(`/api/mercadolivre/cache/invalidar?loja=${encodeURIComponent(loja)}`, { method: 'POST' });
+            } catch (e) { /* ignora */ }
+            carregarCampanhasPromocao();
+        });
+
+        document.querySelectorAll('.promo-subtab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.promo-subtab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.promo-subtab-content').forEach(t => t.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById('promo-tab-' + btn.dataset.promoTab).classList.add('active');
+            });
+        });
+
+        _loadColPrefs();
+        _buildTableHeader();
+        document.getElementById('btnResetColunas').addEventListener('click', function() {
+            _colPrefs = { order: ML_COLS_DEFAULT_ORDER.slice(), widths: {} };
+            _saveColPrefs();
+            _buildTableHeader();
+            if (anunciosCache.length) renderAnuncios({ results: anunciosCache, total: totalAnuncios }, false, false);
+        });
+
+        carregarLojas();
+    </script>
+<script src="/table_columns.js"></script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+

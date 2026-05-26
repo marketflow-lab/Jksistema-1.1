@@ -1,0 +1,37 @@
+{
+    "Multimarcas": {
+        "Bling": {
+            "status": false,
+            "client_id": "638fbd4bd0126877a182a941fc28030028453df2",
+            "client_secret": "9d6c955e2356cf8b94775b67d3ff34577b2ffefc815fced6e47f1c2da81d",
+            "access_token": "a731cb7c17c6dd68094892ad32b66f184b434e18",
+            "refresh_token": "84c59639e9eebe0cca49f4a5653ab80c0cdd4010",
+            "updated_at": "1768192950.5062914"
+        },
+        "Mercado Livre": {
+            "status": false
+        },
+        "Mercado Turbo": {
+            "status": false
+        }
+    },
+    "Deckas": {
+        "Bling": {
+            "status": true,
+            "client_id": "8b064f8ee198c3ce2fe001b5864e719832944ad5",
+            "client_secret": "3d4ed439da48a53127658873a13c1116c202206c1bdc298207039fc5d018",
+            "access_token": "936af0d9fa3d73ae84cfba5f8b405c6f72e3f02a",
+            "refresh_token": "83394b1170c39170d04dcae8989fd5b0418383cd",
+            "updated_at": "1769686196.4136841"
+        },
+        "Mercado Livre": {
+            "status": true,
+            "app_id": "2030250326260024",
+            "secret_key": "kej95GS42x9rYyvXa4HsNOgLAJcZtu7d"
+        },
+        "Mercado Turbo": {
+            "status": true,
+            "token": "MT-MzE2ZTI4NTc5ODliZWY2Mzk3Njk5MTUyMTMyNWI4Njk2ODI1MmRmMGUyMzAxZDE3ZGNhOGMwNjA0NDMyMjg3MQ==-3358547"
+        }
+    }
+}

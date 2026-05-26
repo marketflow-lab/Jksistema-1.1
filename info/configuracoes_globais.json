@@ -1,0 +1,8 @@
+{
+  "auto_sync_estoque_janela_minutos": 30,
+  "ia_modelo_padrao": "vertex:gemini-2.5-flash",
+  "ia_modelo_perguntas": "vertex:gemini-2.5-pro",
+  "ia_modelo_chat": "vertex:gemini-2.5-flash",
+  "ia_modelo_favoritos": "vertex:gemini-2.5-pro",
+  "ia_favoritos_usar_imagem": false
+}

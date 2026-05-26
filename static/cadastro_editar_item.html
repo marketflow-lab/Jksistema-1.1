@@ -1,0 +1,693 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editar Item do Cadastro - JK Sistema</title>
+    <style>
+        :root {
+            --bg: #0b101b;
+            --bg-soft: #121a2b;
+            --panel: #1a2236;
+            --line: #26314b;
+            --text: #e7ecf7;
+            --muted: #9eb0d1;
+            --accent: #4facfe;
+            --success: #28a745;
+            --danger: #ff6b6b;
+        }
+        body {
+            margin: 0;
+            padding: 20px;
+            color: var(--text);
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background:
+                radial-gradient(900px 500px at 10% -10%, rgba(79, 172, 254, 0.15), transparent 60%),
+                radial-gradient(800px 450px at 95% -20%, rgba(40, 167, 69, 0.12), transparent 58%),
+                var(--bg);
+        }
+        .container { max-width: 1180px; margin: 0 auto; }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+        .back-btn {
+            padding: 8px 14px;
+            background: linear-gradient(135deg, #5bb5ff, #3b95df);
+            color: #fff;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 700;
+            box-shadow: 0 6px 20px rgba(45, 126, 198, 0.35);
+        }
+        .back-btn:hover { filter: brightness(1.05); }
+        h1 { margin: 0; letter-spacing: 0.2px; }
+        .subtitle { margin: 0 0 14px; color: var(--muted); font-size: 0.95rem; }
+        .status {
+            margin: 10px 0 16px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: rgba(18, 26, 43, 0.85);
+            border: 1px solid var(--line);
+            min-height: 20px;
+        }
+        .loading { color:#9bd1ff; }
+        .error { color: var(--danger); }
+        .success { color:#80ed99; }
+        .card {
+            background: linear-gradient(180deg, rgba(28, 35, 55, 0.95), rgba(24, 32, 51, 0.92));
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 12px 26px rgba(4, 8, 14, 0.35);
+        }
+        .section-title {
+            margin: 0 0 10px;
+            font-size: 0.95rem;
+            color: #b8c9e8;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+        }
+        .foto-tools { margin-bottom:14px; padding:12px; border:1px dashed #35507a; border-radius:10px; background:#121a2c; }
+        .foto-tools h3 { margin:0 0 10px; color:#9bd1ff; font-size:1rem; }
+        .foto-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+        .foto-paste { margin-top:10px; padding:10px; border:1px solid #35507a; border-radius:8px; background:#0f1422; color:#b8c5df; transition: border-color .15s ease, background .15s ease; }
+        .foto-paste:focus { outline: none; border-color: #5bb5ff; background: #121b2f; }
+        .foto-preview { margin-top:10px; }
+        .foto-preview img { width:92px; height:92px; object-fit:cover; border-radius:8px; border:1px solid #33415f; background:#0e1117; }
+        .foto-preview a { color:#9bd1ff; text-decoration:none; }
+        .foto-preview a:hover { text-decoration:underline; }
+        .form-grid { display:flex; flex-direction:column; gap:12px; }
+        .grupo-campos {
+            border: 1px solid #2a3551;
+            border-radius: 10px;
+            padding: 12px;
+            background: rgba(14, 21, 36, 0.72);
+        }
+        .grupo-titulo {
+            margin: 0 0 10px;
+            color: #9bd1ff;
+            font-size: 0.82rem;
+            text-transform: uppercase;
+            letter-spacing: 0.45px;
+            font-weight: 700;
+        }
+        .grupo-grid { display:grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap:12px; }
+        .field { display:flex; flex-direction:column; gap:6px; }
+        .field.full { grid-column: 1 / -1; }
+        .mlb-editor { border:1px solid #2f3f61; border-radius:8px; padding:10px; background:#0f1628; }
+        .mlb-head { display:grid; grid-template-columns: 180px 1fr 70px; gap:8px; margin-bottom:6px; color:#9fb7de; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.4px; }
+        .mlb-rows { display:flex; flex-direction:column; gap:8px; }
+        .mlb-row { display:grid; grid-template-columns: 180px 1fr 70px; gap:8px; align-items:center; }
+        .mlb-row input { width:100%; box-sizing:border-box; }
+        .mlb-del { border:1px solid #4a2f3b; background:#2b1820; color:#ff9cae; border-radius:8px; height:38px; cursor:pointer; font-weight:700; }
+        .mlb-del:hover { background:#3a1f29; }
+        .mlb-add { margin-top:10px; border:1px solid #2d5a3d; background:#123024; color:#8ef0b0; border-radius:8px; padding:8px 12px; cursor:pointer; font-weight:700; }
+        .mlb-add:hover { background:#17402f; }
+        .field label { color:#c8d7ea; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.4px; }
+        input, textarea {
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #33415f;
+            background: #0f1525;
+            color: #e5e5e5;
+            transition: border-color .15s ease, box-shadow .15s ease;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #5bb5ff;
+            box-shadow: 0 0 0 3px rgba(91, 181, 255, 0.16);
+        }
+        textarea { min-height: 110px; resize:vertical; }
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+            padding-top: 10px;
+            border-top: 1px solid #2a3551;
+        }
+        .btn { padding:10px 14px; border-radius:8px; border:1px solid transparent; cursor:pointer; font-weight:700; }
+        .btn-primary { background:#28a745; color:#fff; }
+        .btn-primary:hover { background:#20913a; }
+        @media (max-width: 900px) {
+            body { padding: 14px; }
+            .grupo-grid { grid-template-columns:1fr; }
+            .card { padding: 12px; }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1> Edição de SKU</h1>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
+            <a class="back-btn" href="/cadastro_editar.html">Voltar</a>
+        </div>
+    </div>
+    <p class="subtitle">Atualize os campos do produto e confirme em Salvar alterações.</p>
+
+    <div id="status" class="status"></div>
+
+    <div class="card">
+        <h2 class="section-title">Imagem</h2>
+        <div class="foto-tools">
+            <h3>Imagem do SKU (enviar ou colar)</h3>
+            <div class="foto-row">
+                <input id="fotoFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+                <button id="btnEnviarFoto" class="btn btn-primary" type="button">Enviar imagem</button>
+            </div>
+            <div id="fotoPaste" class="foto-paste" tabindex="0">Clique aqui e cole a imagem com Ctrl+V.</div>
+            <div id="fotoPreview" class="foto-preview"></div>
+        </div>
+
+        <h2 class="section-title">Dados do Produto</h2>
+        <form id="formEditarItem">
+            <div id="formGrid" class="form-grid"></div>
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">Salvar alterações</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    const statusEl = document.getElementById('status');
+    const fotoFile = document.getElementById('fotoFile');
+    const btnEnviarFoto = document.getElementById('btnEnviarFoto');
+    const fotoPaste = document.getElementById('fotoPaste');
+    const fotoPreview = document.getElementById('fotoPreview');
+    const formEditarItem = document.getElementById('formEditarItem');
+    const formGrid = document.getElementById('formGrid');
+
+    let skuOriginal = '';
+    let colunasCadastro = [];
+    let produtoAtual = null;
+    let fotoPendenteDataUrl = '';
+    let fotoPendenteFilename = '';
+
+    function setStatus(msg, cls) {
+        statusEl.className = 'status ' + (cls || '');
+        statusEl.textContent = msg || '';
+    }
+
+    function ordemCampos(campos) {
+        const prioridade = ['sku', 'nome', 'categoria', 'marca', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
+        const score = (c) => {
+            const i = prioridade.indexOf(c);
+            return i === -1 ? 999 : i;
+        };
+        return [...campos].sort((a, b) => {
+            const sa = score(a);
+            const sb = score(b);
+            if (sa !== sb) return sa - sb;
+            return a.localeCompare(b);
+        });
+    }
+
+    function numericParaBRL(valor) {
+        const v = String(valor || '').trim();
+        if (!v) return '';
+        const num = parseFloat(v);
+        if (isNaN(num)) return v;
+        return 'R$ ' + num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function brlParaNumeric(valor) {
+        const v = String(valor || '').replace(/R\$\s?/gi, '').replace(/\./g, '').replace(',', '.').trim();
+        if (!v) return '';
+        const num = parseFloat(v);
+        return isNaN(num) ? v : num.toFixed(2);
+    }
+
+    function aplicarMascaraMoeda(input) {
+        input.addEventListener('input', function () {
+            const pos = this.selectionStart;
+            let digits = this.value.replace(/\D/g, '');
+            if (!digits) { this.value = ''; return; }
+            let centavos = parseInt(digits, 10);
+            const reais = Math.floor(centavos / 100);
+            const dec = centavos % 100;
+            this.value = 'R$ ' + reais.toLocaleString('pt-BR') + ',' + String(dec).padStart(2, '0');
+        });
+    }
+
+    function formatarNomeCampo(chave) {
+        return String(chave || '')
+            .replace(/^cg_/i, '')
+            .replace(/_/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function criarCampo(chave, valor) {
+        const field = document.createElement('div');
+        field.className = 'field' + (String(chave).includes('descricao') || String(chave).includes('link') ? ' full' : '');
+
+        const label = document.createElement('label');
+        label.setAttribute('for', `f_${chave}`);
+        label.textContent = formatarNomeCampo(chave);
+
+        const v = String(valor || '');
+        let input;
+        if (v.length > 120 || String(chave).includes('descricao')) {
+            input = document.createElement('textarea');
+        } else {
+            input = document.createElement('input');
+            input.type = 'text';
+        }
+        input.id = `f_${chave}`;
+        input.name = chave;
+        if (chave === 'custo') {
+            input.value = numericParaBRL(v);
+            input.setAttribute('data-tipo', 'moeda');
+            aplicarMascaraMoeda(input);
+        } else {
+            input.value = v;
+        }
+
+        field.appendChild(label);
+        field.appendChild(input);
+        return field;
+    }
+
+    function obterGrupoCampo(chave) {
+        const c = String(chave || '').trim().toLowerCase();
+        if (!c) return 'outros';
+
+        if (['sku', 'nome', 'produto', 'produto_bling', 'categoria', 'marca'].includes(c)) return 'identificacao';
+        if (['fabricante', 'fornecedor', 'modelo', 'linha'].includes(c) || c.includes('fabricante') || c.includes('fornecedor')) return 'fabricante';
+        if (['ncm', 'cest', 'imposto'].includes(c)) return 'fiscal';
+        if (['custo', 'preco'].includes(c)) return 'precos';
+        if (['mlb_ids', 'custos_frete_mlb', 'mlb_principal', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'modalidades_mlb', 'gtins_mlb'].includes(c)) return 'anuncios';
+        if (['descricao', 'foto', 'link', 'url'].includes(c) || c.includes('descricao') || c.includes('link') || c.includes('url')) return 'identificacao';
+        if (['updated_at', 'created_at', 'data_atualizacao', 'data_criacao'].includes(c) || c.endsWith('_at') || c.startsWith('data_')) return 'datas';
+
+        return 'outros';
+    }
+
+    function criarGrupoCampos(titulo) {
+        const section = document.createElement('section');
+        section.className = 'grupo-campos';
+
+        const heading = document.createElement('h3');
+        heading.className = 'grupo-titulo';
+        heading.textContent = titulo;
+
+        const grid = document.createElement('div');
+        grid.className = 'grupo-grid';
+
+        section.appendChild(heading);
+        section.appendChild(grid);
+        return { section, grid };
+    }
+
+    function criarLinhaMlb(mlb = '', frete = '') {
+        const row = document.createElement('div');
+        row.className = 'mlb-row';
+
+        const inFrete = document.createElement('input');
+        inFrete.type = 'text';
+        inFrete.className = 'mlb-frete';
+        inFrete.placeholder = 'Frete';
+        inFrete.value = String(frete || '');
+
+        const inMlb = document.createElement('input');
+        inMlb.type = 'text';
+        inMlb.className = 'mlb-id';
+        inMlb.placeholder = 'MLB123456789';
+        inMlb.value = String(mlb || '');
+
+        const btnDel = document.createElement('button');
+        btnDel.type = 'button';
+        btnDel.className = 'mlb-del';
+        btnDel.textContent = '?';
+        btnDel.addEventListener('click', () => {
+            row.remove();
+        });
+
+        row.appendChild(inFrete);
+        row.appendChild(inMlb);
+        row.appendChild(btnDel);
+        return row;
+    }
+
+    function criarEditorMlb(produto) {
+        const field = document.createElement('div');
+        field.className = 'field full';
+
+        const label = document.createElement('label');
+        label.textContent = 'mlb_ids (frete separado)';
+        field.appendChild(label);
+
+        const box = document.createElement('div');
+        box.className = 'mlb-editor';
+
+        const head = document.createElement('div');
+        head.className = 'mlb-head';
+        head.innerHTML = '<div>Frete</div><div>MLB</div><div>Ação</div>';
+        box.appendChild(head);
+
+        const rows = document.createElement('div');
+        rows.className = 'mlb-rows';
+        rows.id = 'mlbRows';
+
+        const ids = String(produto?.mlb_ids || '')
+            .split('|')
+            .map(s => s.trim())
+            .filter(Boolean);
+        const fretes = String(produto?.custos_frete_mlb || '')
+            .split('|')
+            .map(s => s.trim());
+
+        if (!ids.length) {
+            rows.appendChild(criarLinhaMlb('', ''));
+        } else {
+            ids.forEach((id, i) => {
+                rows.appendChild(criarLinhaMlb(id, fretes[i] || ''));
+            });
+        }
+
+        box.appendChild(rows);
+
+        const btnAdd = document.createElement('button');
+        btnAdd.type = 'button';
+        btnAdd.className = 'mlb-add';
+        btnAdd.textContent = '+ Adicionar MLB';
+        btnAdd.addEventListener('click', () => rows.appendChild(criarLinhaMlb('', '')));
+        box.appendChild(btnAdd);
+
+        field.appendChild(box);
+        return field;
+    }
+
+    function extrairMlbFreteEditor() {
+        const rows = Array.from(formGrid.querySelectorAll('.mlb-row'));
+        const ids = [];
+        const fretes = [];
+        for (const row of rows) {
+            const id = String((row.querySelector('.mlb-id') || {}).value || '').trim();
+            const frete = String((row.querySelector('.mlb-frete') || {}).value || '').trim();
+            if (!id) continue;
+            ids.push(id);
+            fretes.push(frete || '-');
+        }
+        return {
+            mlb_ids: ids.join('|'),
+            custos_frete_mlb: fretes.join('|')
+        };
+    }
+
+    function renderFormulario(produto) {
+        formGrid.innerHTML = '';
+        if (!produto) return;
+
+        const camposBase = colunasCadastro.length ? [...colunasCadastro] : [];
+        Object.keys(produto).forEach(c => {
+            if (!camposBase.includes(c)) camposBase.push(c);
+        });
+
+        const grupos = {
+            identificacao: criarGrupoCampos('Dados do Produto'),
+            fabricante: criarGrupoCampos('Informações do fabricante'),
+            fiscal: criarGrupoCampos('Dados fiscais'),
+            precos: criarGrupoCampos('Custos e preços'),
+            anuncios: criarGrupoCampos('Anúncios e marketplaces'),
+            datas: criarGrupoCampos('Datas e controle'),
+            outros: criarGrupoCampos('Outras características')
+        };
+
+        let temEditorMlb = false;
+        const camposOrdenados = ordemCampos(camposBase);
+        camposOrdenados.forEach(c => {
+            if (c === 'custos_frete_mlb' && camposOrdenados.includes('mlb_ids')) return;
+
+            const grupoNome = obterGrupoCampo(c);
+            const grupo = grupos[grupoNome] || grupos.outros;
+
+            if (c === 'mlb_ids') {
+                grupo.grid.appendChild(criarEditorMlb(produto));
+                temEditorMlb = true;
+                return;
+            }
+            grupo.grid.appendChild(criarCampo(c, produto[c] || ''));
+        });
+
+        const ordemGrupos = ['identificacao', 'fabricante', 'fiscal', 'precos', 'anuncios', 'datas', 'outros'];
+        ordemGrupos.forEach((nome) => {
+            const grupo = grupos[nome];
+            if (!grupo) return;
+            if (nome === 'anuncios' && temEditorMlb) {
+                formGrid.appendChild(grupo.section);
+                return;
+            }
+            if (grupo.grid.children.length > 0) {
+                formGrid.appendChild(grupo.section);
+            }
+        });
+        atualizarPreviewFoto();
+    }
+
+    function obterInputFoto() {
+        return formGrid.querySelector('input[name="foto"], textarea[name="foto"]');
+    }
+
+    function obterUrlFoto(valor) {
+        const v = String(valor || '').trim();
+        if (!v) return '';
+        if (/^https?:\/\//i.test(v)) return v;
+        const nomeArquivo = v.split('/').pop();
+        if (!nomeArquivo) return '';
+        return `/api/cadastro/foto-arquivo/${encodeURIComponent(nomeArquivo)}`;
+    }
+
+    function atualizarPreviewFoto() {
+        if (fotoPendenteDataUrl) {
+            fotoPreview.innerHTML = `<img src="${fotoPendenteDataUrl}" alt="Prévia da imagem pendente"><div style="margin-top:6px;color:#9bd1ff;">Imagem pendente. Será salva ao clicar em Salvar alterações.</div>`;
+            return;
+        }
+
+        const inputFoto = obterInputFoto();
+        if (!inputFoto) {
+            fotoPreview.innerHTML = '<span style="color:#9aa7be;">Campo foto não disponível para este cadastro.</span>';
+            return;
+        }
+        const url = obterUrlFoto(inputFoto.value || '');
+        if (!url) {
+            fotoPreview.innerHTML = '<span style="color:#9aa7be;">Sem imagem vinculada.</span>';
+            return;
+        }
+        fotoPreview.innerHTML = `<a href="${url}" target="_blank" rel="noopener noreferrer"><img src="${url}" alt="Prévia da imagem"></a>`;
+    }
+
+    function lerArquivoComoDataUrl(file) {
+        return new Promise((resolve, reject) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(String(fr.result || ''));
+            fr.onerror = () => reject(new Error('Falha ao ler imagem.'));
+            fr.readAsDataURL(file);
+        });
+    }
+
+    async function prepararImagemPendente(fileOrBlob, nomeArquivo) {
+        if (!skuOriginal) {
+            setStatus('SKU invêlido para anexar imagem.', 'error');
+            return;
+        }
+
+        const file = fileOrBlob instanceof File
+            ? fileOrBlob
+            : new File([fileOrBlob], nomeArquivo || `${skuOriginal}.png`, { type: fileOrBlob.type || 'image/png' });
+
+        try {
+            fotoPendenteDataUrl = await lerArquivoComoDataUrl(file);
+            fotoPendenteFilename = file.name || `${skuOriginal}.png`;
+            atualizarPreviewFoto();
+            setStatus('Imagem anexada. Ela será salva somente ao clicar em Salvar alterações.', 'success');
+        } catch (e) {
+            setStatus(`Erro ao preparar imagem: ${e.message}`, 'error');
+        }
+    }
+
+    async function carregarColunasCadastro() {
+        try {
+            const resp = await fetch('/api/cadastro/colunas', { headers: obterAuthHeaders() });
+            if (!resp.ok) {
+                colunasCadastro = [];
+                return;
+            }
+            const payload = await resp.json();
+            colunasCadastro = Array.isArray(payload.colunas) ? payload.colunas : [];
+        } catch (_e) {
+            colunasCadastro = [];
+        }
+    }
+
+    function carregarProdutoDoStorage() {
+        try {
+            const rawItem = localStorage.getItem('cadastro_editar_item');
+            if (rawItem) {
+                const obj = JSON.parse(rawItem);
+                if (obj && String(obj.sku || '').trim().toLowerCase() === skuOriginal.toLowerCase()) {
+                    return obj;
+                }
+            }
+
+            const rawLista = localStorage.getItem('cadastro_editar_lista');
+            if (rawLista) {
+                const lista = JSON.parse(rawLista);
+                if (Array.isArray(lista)) {
+                    const found = lista.find(p => String(p?.sku || '').trim().toLowerCase() === skuOriginal.toLowerCase());
+                    if (found) return found;
+                }
+            }
+        } catch (_e) {
+            // Ignora falhas de leitura do storage.
+        }
+        return null;
+    }
+
+    async function carregarProduto() {
+        if (!skuOriginal) throw new Error('SKU não informado.');
+
+        // Primeiro tenta pelo storage vindo da tela de seleção.
+        const localStorageItem = carregarProdutoDoStorage();
+        if (localStorageItem) {
+            produtoAtual = { ...localStorageItem };
+        }
+
+        // Depois tenta lista do backend (opcional, pode não existir em versões antigas).
+        try {
+            const respLista = await fetch('/api/cadastro/produtos', { headers: obterAuthHeaders() });
+            if (respLista.ok) {
+                const lista = await respLista.json();
+                const local = (lista || []).find(p => String(p?.sku || '').trim().toLowerCase() === skuOriginal.toLowerCase());
+                if (local) produtoAtual = { ...local };
+            }
+        } catch (_e) {
+            // Mantém fallback local.
+        }
+
+        // Depois tenta enriquecimento pelo endpoint específico.
+        try {
+            const resp = await fetch(`/api/cadastro/produto?sku=${encodeURIComponent(skuOriginal)}`, { headers: obterAuthHeaders() });
+            if (resp.ok) {
+                const payload = await resp.json();
+                if (payload?.produto) {
+                    const produtoDetalhado = payload.produto || {};
+                    produtoAtual = { ...(produtoAtual || {}), ...produtoDetalhado };
+                }
+            }
+        } catch (_e) {
+            // Mantém dados locais.
+        }
+
+        if (!produtoAtual) throw new Error('SKU não encontrado. Volte à lista e selecione novamente.');
+    }
+
+    async function iniciarTela() {
+        setStatus('Carregando dados do SKU...', 'loading');
+        try {
+            const params = new URLSearchParams(window.location.search);
+            skuOriginal = String(params.get('sku') || localStorage.getItem('cadastro_editar_sku') || '').trim();
+            if (!skuOriginal) throw new Error('SKU não informado na URL.');
+
+            await carregarColunasCadastro();
+            await carregarProduto();
+            renderFormulario(produtoAtual);
+            setStatus(`SKU carregado: ${skuOriginal}`, 'success');
+        } catch (e) {
+            setStatus(`Erro ao carregar SKU: ${e.message}`, 'error');
+        }
+    }
+
+    async function salvarAlteracoes(ev) {
+        ev.preventDefault();
+        if (!skuOriginal) {
+            setStatus('SKU original invêlido.', 'error');
+            return;
+        }
+
+        const data = {};
+        const els = formGrid.querySelectorAll('input[name], textarea[name]');
+        els.forEach(el => {
+            if (el.getAttribute('data-tipo') === 'moeda') {
+                data[el.name] = brlParaNumeric(el.value);
+            } else {
+                data[el.name] = el.value || '';
+            }
+        });
+
+        const parsedMlb = extrairMlbFreteEditor();
+        data.mlb_ids = parsedMlb.mlb_ids;
+        data.custos_frete_mlb = parsedMlb.custos_frete_mlb;
+
+        if (fotoPendenteDataUrl) {
+            data.__foto_data_url = fotoPendenteDataUrl;
+            data.__foto_filename = fotoPendenteFilename || `${skuOriginal}.png`;
+        }
+
+        setStatus('Salvando alterações...', 'loading');
+        try {
+            const resp = await fetch(`/api/cadastro/produto?sku_original=${encodeURIComponent(skuOriginal)}`, {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(data)
+            });
+            const payload = await resp.json();
+            if (!resp.ok) throw new Error(payload?.detail || `HTTP ${resp.status}`);
+
+            const skuNovo = String(payload.sku || data.sku || skuOriginal).trim();
+            skuOriginal = skuNovo;
+            if (payload?.foto) {
+                const inputFoto = obterInputFoto();
+                if (inputFoto) inputFoto.value = payload.foto;
+            }
+            fotoPendenteDataUrl = '';
+            fotoPendenteFilename = '';
+            atualizarPreviewFoto();
+            setStatus(`Alterações salvas com sucesso: ${skuNovo}`, 'success');
+            window.location.href = '/cadastro_editar.html';
+        } catch (e) {
+            setStatus(`Erro ao salvar SKU: ${e.message}`, 'error');
+        }
+    }
+
+    formEditarItem.addEventListener('submit', salvarAlteracoes);
+    btnEnviarFoto.addEventListener('click', async () => {
+        const file = fotoFile.files && fotoFile.files[0];
+        if (!file) {
+            setStatus('Selecione uma imagem para enviar.', 'error');
+            return;
+        }
+        await prepararImagemPendente(file, file.name);
+    });
+
+    fotoPaste.addEventListener('paste', async (ev) => {
+        const items = (ev.clipboardData && ev.clipboardData.items) ? ev.clipboardData.items : [];
+        for (const item of items) {
+            if (item.type && item.type.startsWith('image/')) {
+                ev.preventDefault();
+                const blob = item.getAsFile();
+                if (blob) {
+                    await prepararImagemPendente(blob, `${skuOriginal || 'sku'}.png`);
+                }
+                return;
+            }
+        }
+    });
+
+    fotoPaste.addEventListener('click', () => fotoPaste.focus());
+
+    if (verificarSessao()) {
+        iniciarTela();
+    }
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+
+
+
+
+

@@ -1,0 +1,263 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>JK Sistema - Promoção ML</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #1e1e2e; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 10px; flex-wrap: wrap; }
+        .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        button { padding: 10px 20px; border-radius: 5px; border: none; cursor: pointer; font-weight: bold; }
+        .btn-back {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, #63bbff, #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            z-index: 1200;
+        }
+        .btn-back:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+            color: #fff;
+        }
+        .nav-actions .btn-back {
+            position: static;
+            top: auto;
+            right: auto;
+        }
+        .btn-primary { background-color: #4facfe; color: white; width: 100%; margin-top: 10px; }
+        .btn-primary:hover { background-color: #007bff; }
+        .upload-area { background-color: #25252e; padding: 20px; border-radius: 10px; border: 2px dashed #444; text-align: center; margin-bottom: 20px; }
+        input[type=file] { display: none; }
+        .custom-file-upload { border: 1px solid #ccc; display: inline-block; padding: 6px 12px; cursor: pointer; background: #333; border-radius: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background-color: #25252e; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #444; }
+        th { background-color: #333; }
+        tr:hover { background-color: #2a2a35; }
+        .status-ok { color: #00ff00; }
+        .status-no { color: #ff4444; }
+        #loading { display: none; text-align: center; margin: 20px; font-size: 1.2em; color: #4facfe; }
+        @media (max-width: 980px) {
+            .btn-back {
+                top: 12px;
+                right: 12px;
+                min-height: 48px;
+            }
+        }
+        @media (max-width: 760px) {
+            .btn-back {
+                width: auto;
+                min-height: 44px;
+                font-size: 1rem;
+                padding: 0 13px;
+            }
+        }
+    </style>
+    <script src="/auth.js"></script>
+    <script src="/ncm-sync.js"></script>
+    <script src="/global-status.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h2>📈 Análise de Promoção</h2>
+        <div class="nav-actions">
+            <button class="btn-back" onclick="window.location.href='dashboard.html'">🏠 Home</button>
+            <button class="btn-back" onclick="window.location.href='dashboard.html'">Voltar</button>
+        </div>
+    </div>
+
+    <div class="upload-area">
+        <h3>1. Gerar Análise Automática</h3>
+        <p>Sem planilhas: a análise usa anúncios ativos da loja e custos do cadastro do sistema.</p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:760px;margin:0 auto;">
+            <div style="text-align:left;">
+                <label for="loja-select" style="display:block;margin-bottom:6px;color:#b8c3d7;">Loja</label>
+                <select id="loja-select" style="width:100%;padding:10px;border-radius:6px;background:#333;color:#fff;border:1px solid #555;"></select>
+            </div>
+            <div style="text-align:left;">
+                <label for="margem-minima" style="display:block;margin-bottom:6px;color:#b8c3d7;">Margem mínima (%)</label>
+                <input id="margem-minima" type="number" min="0" step="0.1" value="15" style="width:100%;padding:10px;border-radius:6px;background:#333;color:#fff;border:1px solid #555;" />
+            </div>
+        </div>
+
+        <button class="btn-primary" onclick="processarPromo()">🚀 PROCESSAR ANÁLISE</button>
+    </div>
+
+    <div id="loading">⏳ Processando análise automática da loja... Aguarde...</div>
+
+    <div id="result-area" style="display:none;">
+        <h3>Resultado da Análise</h3>
+        <div id="planilha-download" style="margin: 8px 0 14px 0;"></div>
+        <div style="overflow-x: auto;">
+            <table id="tabela-analise">
+                <thead>
+                    <tr>
+                        <th>MLB</th>
+                        <th>SKU</th>
+                        <th>Título</th>
+                        <th>Situação</th>
+                        <th>Desconto</th>
+                        <th>Custo</th>
+                        <th>M 21 Fixa</th>
+                        <th>M ML</th>
+                        <th>Margem %</th>
+                        <th>Decisão</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        carregarLojas();
+    });
+
+    async function carregarLojas() {
+        const userData = JSON.parse(localStorage.getItem('user_data') || '{}');
+        const clientId = userData.client_id;
+        const select = document.getElementById('loja-select');
+        select.innerHTML = '<option value="">Carregando...</option>';
+
+        if (!clientId) {
+            select.innerHTML = '<option value="">Sessão inválida</option>';
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/lojas', {
+                headers: { 'X-Client-ID': clientId }
+            });
+            const lojas = await resp.json();
+            if (!Array.isArray(lojas) || !lojas.length) {
+                select.innerHTML = '<option value="">Nenhuma loja cadastrada</option>';
+                return;
+            }
+
+            select.innerHTML = '';
+            lojas.forEach(loja => {
+                const nome = (loja && loja.nome) ? loja.nome : '';
+                if (!nome) return;
+                const opt = document.createElement('option');
+                opt.value = nome;
+                opt.textContent = nome;
+                select.appendChild(opt);
+            });
+        } catch (e) {
+            select.innerHTML = '<option value="">Erro ao carregar lojas</option>';
+        }
+    }
+
+    async function processarPromo() {
+        const loja = document.getElementById('loja-select').value;
+        const margemMinima = parseFloat(document.getElementById('margem-minima').value || '15');
+        if (!loja) {
+            alert('Selecione uma loja.');
+            return;
+        }
+
+        const userData = JSON.parse(localStorage.getItem('user_data') || '{}');
+        const clientId = userData.client_id;
+        if (!clientId) {
+            alert("Sessão sem cliente identificado. Faça login novamente.");
+            return;
+        }
+
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('result-area').style.display = 'none';
+
+        try {
+            const query = new URLSearchParams({
+                loja,
+                margem_minima: String(isNaN(margemMinima) ? 15 : margemMinima),
+                limit: '200'
+            });
+
+            const response = await fetch(`/api/promo/analise?${query.toString()}`, {
+                method: 'GET',
+                headers: {
+                    'X-Client-ID': clientId
+                }
+            });
+
+            const result = await response.json();
+            document.getElementById('loading').style.display = 'none';
+
+            if (result.success) {
+                const box = document.getElementById('planilha-download');
+                if (result.planilha_gerada) {
+                    const href = `/api/promo/planilha/${encodeURIComponent(result.planilha_gerada)}`;
+                    box.innerHTML = `<a href="${href}" target="_blank" style="color:#7bcfff;font-weight:700;text-decoration:none;">⬇️ Baixar planilha completa (${result.planilha_gerada})</a>`;
+                } else {
+                    box.innerHTML = '';
+                }
+                renderTable(result.data);
+            } else {
+                alert("Erro ao processar: " + (result.detail || result.message || "Erro desconhecido"));
+            }
+        } catch (error) {
+            document.getElementById('loading').style.display = 'none';
+            alert("Erro de conexão com o servidor.");
+            console.error(error);
+        }
+    }
+
+    function renderTable(data) {
+        const tbody = document.querySelector('#tabela-analise tbody');
+        tbody.innerHTML = '';
+        
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            // Lógica de cor baseada na decisão
+            let decisaoClass = "";
+            let decisaoTexto = row["Participar ou não"];
+            if (decisaoTexto && decisaoTexto.toLowerCase().includes("participar") && !decisaoTexto.toLowerCase().includes("não")) {
+                decisaoClass = "status-ok";
+                decisaoTexto = "✅ " + decisaoTexto;
+            } else if (decisaoTexto && decisaoTexto.toLowerCase().includes("não")) {
+                decisaoClass = "status-no";
+                decisaoTexto = "🔻 " + decisaoTexto;
+            }
+
+            tr.innerHTML = `
+                <td>${row.MLB}</td>
+                <td>${row.SKU}</td>
+                <td>${row['Título']}</td>
+                <td>${row['Situação']}</td>
+                <td>${row['Desconto'] || ''}</td>
+                <td>${row['Custo'] || ''}</td>
+                <td>${row['M 21 Fixa']}</td>
+                <td>${row['M ML']}</td>
+                <td>${row['Margem %'] || ''}</td>
+                <td class="${decisaoClass}"><b>${decisaoTexto}</b></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        document.getElementById('result-area').style.display = 'block';
+    }
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+

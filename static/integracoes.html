@@ -1,0 +1,477 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Central de Integrações - JK Sistema</title>
+    <script src="/auth.js?v=20260417d"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; display: flex; gap: 20px; }
+        .sidebar { flex: 1; background-color: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; }
+        .main-content { flex: 3; background-color: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; }
+        h1, h2, h3 { color: #fff; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .back-btn { display: inline-block; margin-bottom: 15px; padding: 8px 14px; background: #4facfe; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; }
+        .back-btn:hover { background: #0073e6; }
+        .tabs { display: flex; border-bottom: 1px solid #333; margin-bottom: 20px; }
+        .tab-button { background: none; border: none; color: #aaa; padding: 10px 15px; cursor: pointer; font-size: 16px; border-bottom: 2px solid transparent; }
+        .tab-button.active { color: #4facfe; border-bottom: 2px solid #4facfe; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        label { display: block; margin-top: 15px; color: #ccc; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 8px; background-color: #333; border: 1px solid #555; border-radius: 4px; color: #fff; box-sizing: border-box; }
+        button { background-color: #4facfe; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; margin-top: 20px; font-weight: bold; }
+        button:hover { background-color: #0073e6; }
+        .disconnect-btn { background-color: #8b2631; margin-left: 8px; }
+        .disconnect-btn:hover { background-color: #b83240; }
+        .integration-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .integration-actions button { margin-top: 20px; }
+        .store-list { list-style: none; padding: 0; }
+        .store-list li { padding: 10px; cursor: pointer; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .store-list li:hover { background-color: #333; }
+        .store-list li.selected { background-color: #4facfe; color: white; }
+        .status { padding: 4px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .status.connected { background-color: #28a745; color: white; }
+        .status.disconnected { background-color: #dc3545; color: white; }
+        .delete-btn { background: #dc3545; font-size: 10px; padding: 2px 6px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="sidebar">
+            <h2>Lojas</h2>
+            <ul id="store-list" class="store-list"></ul>
+            <hr>
+            <h3>Nova Loja</h3>
+            <input type="text" id="new-store-name" placeholder="Nome da nova loja">
+            <button id="add-store-btn">Criar Loja</button>
+        </div>
+
+        <div class="main-content">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <a class="back-btn" href="/dashboard.html">Home</a>
+                <a class="back-btn" href="/dashboard.html">Voltar</a>
+            </div>
+            <h1 id="store-title">Selecione uma loja</h1>
+            
+            <div id="integrations-panel" class="hidden">
+                <div class="tabs">
+                    <button class="tab-button active" data-tab="bling">Bling</button>
+                    <button class="tab-button" data-tab="mercadolivre">Mercado Livre</button>
+                    <button class="tab-button" data-tab="mercadoturbo">Turbo</button>
+                </div>
+
+                <div id="tab-bling" class="tab-content active">
+                    <h3>Configuração Bling <span id="bling-status" class="status"></span></h3>
+                    <form id="form-bling">
+                        <label for="bling-client-id">Client ID</label>
+                        <input type="text" id="bling-client-id" name="client_id">
+                        <label for="bling-client-secret">Client Secret</label>
+                        <input type="password" id="bling-client-secret" name="client_secret">
+                        <div class="integration-actions">
+                            <button type="submit">Autenticar Bling</button>
+                            <button id="disconnect-bling-btn" class="disconnect-btn" type="button">Desconectar Bling</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="tab-mercadolivre" class="tab-content">
+                    <h3>Configuração Mercado Livre <span id="ml-status" class="status"></span></h3>
+                     <p id="ml-user-id"></p>
+                    <form id="form-ml">
+                        <label for="ml-app-id">App ID</label>
+                        <input type="text" id="ml-app-id" name="app_id">
+                        <label for="ml-client-secret">Client Secret</label>
+                        <input type="password" id="ml-client-secret" name="client_secret">
+                        <div class="integration-actions">
+                            <button type="submit">Autenticar Mercado Livre</button>
+                            <button id="disconnect-ml-btn" class="disconnect-btn" type="button">Desconectar Mercado Livre</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="tab-mercadoturbo" class="tab-content">
+                    <h3>Configuração Mercado Turbo <span id="turbo-status" class="status"></span></h3>
+                    <form id="form-turbo">
+                        <label for="turbo-token">Token Turbo</label>
+                        <input type="password" id="turbo-token" name="token">
+                        <div class="integration-actions">
+                            <button type="submit">Salvar Token</button>
+                            <button id="disconnect-turbo-btn" class="disconnect-btn" type="button">Desconectar Turbo</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            if (typeof verificarSessao === 'function' && !verificarSessao()) {
+                return;
+            }
+
+            const storeList = document.getElementById('store-list');
+            const addStoreBtn = document.getElementById('add-store-btn');
+            const newStoreInput = document.getElementById('new-store-name');
+            const storeTitle = document.getElementById('store-title');
+            const integrationsPanel = document.getElementById('integrations-panel');
+
+            const tabs = document.querySelectorAll('.tab-button');
+            const tabContents = document.querySelectorAll('.tab-content');
+
+            const formBling = document.getElementById('form-bling');
+            const formML = document.getElementById('form-ml');
+            const formTurbo = document.getElementById('form-turbo');
+            const disconnectBlingBtn = document.getElementById('disconnect-bling-btn');
+            const disconnectMLBtn = document.getElementById('disconnect-ml-btn');
+            const disconnectTurboBtn = document.getElementById('disconnect-turbo-btn');
+            
+            let stores = [];
+            let selectedStore = null;
+
+            async function apiFetch(url, options = {}) {
+                const userDataStr = localStorage.getItem('user_data');
+                if (!userDataStr) {
+                    alert('Sessão expirada. Por favor, faça o login novamente.');
+                    window.location.href = '/frontend_index.html';
+                    throw new Error('Usuário não autenticado.');
+                }
+                const userData = JSON.parse(userDataStr);
+                const clientId = userData.client_id;
+
+                if (!clientId) {
+                    alert('ID do cliente não encontrado. Por favor, faça o login novamente.');
+                    window.location.href = '/frontend_index.html';
+                    throw new Error('ID do cliente não encontrado na sessão.');
+                }
+
+                const headers = typeof obterAuthHeaders === 'function'
+                    ? obterAuthHeaders({ ...options.headers, 'X-Client-ID': clientId })
+                    : { ...options.headers, 'X-Client-ID': clientId };
+                
+                if (options.body && !headers['Content-Type']) {
+                    headers['Content-Type'] = 'application/json';
+                }
+
+                const finalOptions = { ...options, headers };
+                const response = await fetch(url, finalOptions);
+
+                if (!response.ok) {
+                    let errorDetail = `Erro na API (${response.status})`;
+                    try {
+                        const errJson = await response.json();
+                        errorDetail = errJson.detail || JSON.stringify(errJson);
+                    } catch (e) {
+                    }
+                    throw new Error(errorDetail);
+                }
+
+                if (response.redirected) {
+                    window.location.href = response.url;
+                    return {};
+                }
+
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    return response.json();
+                }
+                return {};
+            }
+
+            const api = {
+                getStores: () => apiFetch('/api/lojas'),
+                getStore: (name) => apiFetch(`/api/lojas/${name}`),
+                createStore: (name) => apiFetch('/api/lojas', {
+                    method: 'POST',
+                    body: JSON.stringify({ nome: name })
+                }),
+                deleteStore: (name) => apiFetch(`/api/lojas/${name}`, { method: 'DELETE' }),
+                saveTurbo: (loja, token) => apiFetch(`/api/integracoes/${loja}/turbo`, {
+                    method: 'POST',
+                    body: JSON.stringify({ token: token })
+                }),
+                disconnectIntegration: (loja, servico) => apiFetch(`/api/integracoes/${encodeURIComponent(loja)}/${encodeURIComponent(servico)}`, {
+                    method: 'DELETE'
+                })
+            };
+
+            function renderStores() {
+                storeList.innerHTML = '';
+                stores.forEach(store => {
+                    const li = document.createElement('li');
+                    li.dataset.storeName = store.nome;
+                    if (selectedStore && selectedStore.nome === store.nome) {
+                        li.classList.add('selected');
+                    }
+                    
+                    const storeNameSpan = document.createElement('span');
+                    storeNameSpan.textContent = store.nome;
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.textContent = 'X';
+                    deleteBtn.classList.add('delete-btn');
+                    deleteBtn.dataset.storeName = store.nome;
+                    
+                    li.appendChild(storeNameSpan);
+                    li.appendChild(deleteBtn);
+                    storeList.appendChild(li);
+                });
+            }
+
+            function updateStatus(elementId, isConnected) {
+                const el = document.getElementById(elementId);
+                if(isConnected) {
+                    el.textContent = 'Conectado';
+                    el.className = 'status connected';
+                } else {
+                    el.textContent = 'Desconectado';
+                    el.className = 'status disconnected';
+                }
+            }
+
+            async function selectStore(name) {
+                if (!name) {
+                    selectedStore = null;
+                    storeTitle.textContent = 'Selecione uma loja';
+                    integrationsPanel.classList.add('hidden');
+                    renderStores();
+                    return;
+                }
+
+                try {
+                    const storeData = await api.getStore(name);
+                    selectedStore = storeData;
+                    storeTitle.textContent = `Configurando: ${selectedStore.nome}`;
+                    integrationsPanel.classList.remove('hidden');
+
+                    formBling.reset();
+                    formML.reset();
+                    formTurbo.reset();
+                    document.getElementById('ml-user-id').textContent = '';
+
+                    const integracoes = selectedStore.integracoes || {};
+                    const blingCfg = integracoes.bling || {};
+                    const mlCfg = integracoes.mercadolivre || {};
+                    const turboCfg = integracoes.mercadoturbo || {};
+
+                    document.getElementById('bling-client-id').value = blingCfg.id || '';
+                    document.getElementById('bling-client-secret').value = blingCfg.secret || '';
+                    updateStatus('bling-status', blingCfg.connected);
+                    
+                    document.getElementById('ml-app-id').value = mlCfg.id || mlCfg.app_id || mlCfg.client_id || '';
+                    document.getElementById('ml-client-secret').value = mlCfg.secret || mlCfg.client_secret || '';
+                    const mlCamposFaltando = [];
+                    if (!(mlCfg.id || mlCfg.app_id || mlCfg.client_id)) mlCamposFaltando.push('app_id');
+                    if (!(mlCfg.secret || mlCfg.client_secret)) mlCamposFaltando.push('client_secret');
+                    if (!mlCfg.access_token) mlCamposFaltando.push('access_token');
+                    if (!mlCfg.refresh_token) mlCamposFaltando.push('refresh_token');
+                    const mlOAuthCompleto = mlCamposFaltando.length === 0;
+                    updateStatus('ml-status', mlOAuthCompleto);
+                    if(mlOAuthCompleto && mlCfg.user_id) {
+                        document.getElementById('ml-user-id').textContent = `(ID do Usuário: ${mlCfg.user_id})`;
+                    } else if (mlCfg.connected && !mlOAuthCompleto) {
+                        document.getElementById('ml-user-id').textContent = `(OAuth incompleto: faltando ${mlCamposFaltando.join(', ')})`;
+                    }
+
+                    document.getElementById('turbo-token').value = turboCfg.token || '';
+                    updateStatus('turbo-status', turboCfg.connected);
+                    
+                    renderStores();
+
+                } catch (error) {
+                    console.error('Erro ao buscar dados da loja:', error);
+                    alert('Não foi possível carregar os dados da loja.');
+                }
+            }
+
+            storeList.addEventListener('click', (e) => {
+                if (e.target.closest('li')) {
+                    const storeName = e.target.closest('li').dataset.storeName;
+                    if(e.target.classList.contains('delete-btn')) {
+                        handleDeleteStore(storeName);
+                    } else {
+                        selectStore(storeName);
+                    }
+                }
+            });
+
+            addStoreBtn.addEventListener('click', async () => {
+                const newName = newStoreInput.value.trim();
+                if (newName) {
+                    try {
+                        const result = await api.createStore(newName);
+                        if (result.success) {
+                            newStoreInput.value = '';
+                            await loadStores();
+                            selectStore(newName);
+                        } else {
+                            alert(`Erro: ${result.detail}`);
+                        }
+                    } catch (error) {
+                        alert('Erro ao criar loja.');
+                    }
+                }
+            });
+            
+            async function handleDeleteStore(name) {
+                if (confirm(`Tem certeza que deseja excluir a loja "${name}"?`)) {
+                    try {
+                        const result = await api.deleteStore(name);
+                        if (result.success) {
+                            await loadStores();
+                            if (selectedStore && selectedStore.nome === name) {
+                                selectStore(null);
+                            } else {
+                                renderStores();
+                            }
+                        } else {
+                            alert(`Erro: ${result.detail}`);
+                        }
+                    } catch (error) {
+                        alert('Erro ao excluir loja.');
+                    }
+                }
+            }
+
+            async function handleDisconnectIntegration(servico, label) {
+                if (!selectedStore || !selectedStore.nome) {
+                    alert('Selecione uma loja primeiro.');
+                    return;
+                }
+                if (!confirm(`Desconectar ${label} da loja "${selectedStore.nome}"? Os tokens e credenciais salvos serao removidos.`)) {
+                    return;
+                }
+                try {
+                    const result = await api.disconnectIntegration(selectedStore.nome, servico);
+                    if (result && result.success) {
+                        alert(`${label} desconectado com sucesso.`);
+                        await selectStore(selectedStore.nome);
+                    } else {
+                        alert('Nao foi possivel desconectar a integracao.');
+                    }
+                } catch (error) {
+                    alert(`Erro ao desconectar ${label}: ${error.message || error}`);
+                }
+            }
+
+            tabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    tabContents.forEach(c => c.classList.remove('active'));
+                    document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+                });
+            });
+            
+            formBling.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const clientId = document.getElementById('bling-client-id').value;
+                const clientSecret = document.getElementById('bling-client-secret').value;
+                if (!clientId || !clientSecret) {
+                    alert('Preencha o Client ID e o Client Secret do Bling.');
+                    return;
+                }
+                const payload = {
+                    loja: selectedStore.nome,
+                    client_id: clientId,
+                    client_secret: clientSecret
+                };
+                
+                try {
+                    const result = await apiFetch('/api/integracoes/bling/start', {
+                        method: 'POST',
+                        body: JSON.stringify(payload)
+                    });
+                    if (result && result.url) {
+                        window.location.href = result.url;
+                    } else {
+                        alert('Não foi possível obter o link de autorização do Bling.');
+                    }
+                } catch(err) {
+                    alert(`Erro ao iniciar autenticação Bling: ${err.message}`);
+                }
+            });
+
+            formML.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const appId = document.getElementById('ml-app-id').value;
+                const clientSecret = document.getElementById('ml-client-secret').value;
+                if (!appId || !clientSecret) {
+                    alert('Preencha o App ID e o Client Secret do Mercado Livre.');
+                    return;
+                }
+                const payload = {
+                    loja: selectedStore.nome,
+                    client_id: appId,
+                    client_secret: clientSecret
+                };
+
+                try {
+                    const result = await apiFetch('/api/integracoes/mercadolivre/start', {
+                        method: 'POST',
+                        body: JSON.stringify(payload)
+                    });
+                    if (result && result.url) {
+                        window.location.href = result.url;
+                    } else {
+                        alert('Não foi possível obter o link de autorização do Mercado Livre.');
+                    }
+                } catch(err) {
+                    alert(`Erro ao iniciar autenticação Mercado Livre: ${err.message}`);
+                }
+            });
+
+            disconnectBlingBtn.addEventListener('click', () => handleDisconnectIntegration('bling', 'Bling'));
+            disconnectMLBtn.addEventListener('click', () => handleDisconnectIntegration('mercadolivre', 'Mercado Livre'));
+            disconnectTurboBtn.addEventListener('click', () => handleDisconnectIntegration('turbo', 'Mercado Turbo'));
+            
+            formTurbo.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const token = document.getElementById('turbo-token').value;
+                 try {
+                    const result = await api.saveTurbo(selectedStore.nome, token);
+                    if(result.success) {
+                        alert('Token do Mercado Turbo salvo com sucesso!');
+                        await selectStore(selectedStore.nome);
+                    } else {
+                        alert(`Erro ao salvar: ${result.detail}`);
+                    }
+                } catch(err) {
+                    alert('Erro de comunicação ao salvar o token.');
+                }
+            });
+
+            async function loadStores() {
+                try {
+                    stores = await api.getStores();
+                    renderStores();
+                } catch (error) {
+                    console.error('Erro ao carregar lojas:', error);
+                    storeList.innerHTML = '<li>Erro ao carregar lojas.</li>';
+                }
+            }
+            
+            function checkUrlParams() {
+                const params = new URLSearchParams(window.location.search);
+                const status = params.get('status');
+                const msg = params.get('msg');
+                if (status === 'success') {
+                    alert('Integração conectada com sucesso!');
+                } else if (status === 'error') {
+                    alert(`Falha na integração: ${msg || 'Ocorreu um erro.'}`);
+                }
+                if(status) {
+                    window.history.replaceState({}, document.title, "/integracoes.html");
+                }
+            }
+
+            loadStores();
+            checkUrlParams();
+        });
+    </script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>

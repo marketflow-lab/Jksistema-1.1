@@ -1,0 +1,364 @@
+﻿<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detalhes da Devolução - SKU</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 {
+            color: #333;
+            font-size: 24px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        .sku-banner {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+        }
+        .sku-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .sku-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 25px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 18px;
+        }
+        .info-col {
+            flex: 1;
+            min-width: 200px;
+        }
+        .info-label {
+            color: #666;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        .info-value {
+            color: #333;
+            font-size: 16px;
+            font-weight: 500;
+        }
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+        }
+        .card-label {
+            color: #666;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        .card-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .status-bar {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 12px 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+            font-size: 14px;
+            color: #666;
+        }
+        .table-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        thead {
+            background: #f8f9fa;
+            border-bottom: 2px solid #e9ecef;
+        }
+        th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 12px;
+        }
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #e9ecef;
+            color: #333;
+        }
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+        .empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .sku-info {
+                flex-direction: column;
+            }
+            th, td {
+                padding: 10px;
+                font-size: 12px;
+            }
+            .card-value {
+                font-size: 20px;
+            }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📦 Detalhes da Devolução</h1>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="navegarComTransicao('/dashboard.html')">🏠 Home</button>
+                <button class="btn btn-secondary" onclick="voltarDevolucoes()">← Voltar</button>
+            </div>
+        </div>
+
+        <div class="sku-banner" id="skuBanner">
+            <div class="sku-info">
+                <div class="sku-badge" id="skuBadge">Carregando...</div>
+                <div class="info-col">
+                    <div class="info-label">Descrição do Produto</div>
+                    <div class="info-value" id="descricaoSku">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="summary-cards">
+            <div class="card">
+                <div class="card-label">Total de Devoluções</div>
+                <div class="card-value" id="totalDevol">0</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Quantidade Total</div>
+                <div class="card-value" id="totalQtd">0</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Valor Total Devolvido</div>
+                <div class="card-value" id="valorTotal">R$ 0,00</div>
+            </div>
+        </div>
+
+        <div class="status-bar" id="statusBar" style="display: none;"></div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Nota Fiscal</th>
+                        <th>Data de Emissão</th>
+                        <th>Quantidade</th>
+                        <th>Valor Unitário</th>
+                        <th>Valor Total</th>
+                        <th>Fornecedor</th>
+                    </tr>
+                </thead>
+                <tbody id="tabelaCorpo">
+                    <tr class="empty">
+                        <td colspan="6">Carregando...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const sku = urlParams.get('sku');
+        const dataInicio = urlParams.get('data_inicio');
+        const dataFim = urlParams.get('data_fim');
+        let itensDevolvidos = [];
+
+        function formatarData(dataString) {
+            if (!dataString) return '';
+            const partes = dataString.split('-');
+            return `${partes[2]}/${partes[1]}/${partes[0]}`;
+        }
+
+        function formatarMoeda(valor) {
+            return new Intl.NumberFormat('pt-BR', {
+                style: 'currency',
+                currency: 'BRL'
+            }).format(valor || 0);
+        }
+
+        function formatarQuantidade(qtd) {
+            return Number(qtd || 0).toLocaleString('pt-BR', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 2
+            });
+        }
+
+        async function carregarDetalhes() {
+            if (!sku) {
+                alert('SKU não especificado');
+                window.history.back();
+                return;
+            }
+
+            const statusBar = document.getElementById('statusBar');
+            statusBar.innerHTML = '⏳ Carregando detalhes...';
+            statusBar.style.display = 'block';
+
+            try {
+                const clientId = JSON.parse(localStorage.getItem('user_data') || '{}').client_id;
+                let url = `/api/notas-entrada/sku/${encodeURIComponent(sku)}`;
+                if (dataInicio && dataFim) {
+                    url += `?data_inicio=${dataInicio}&data_fim=${dataFim}`;
+                }
+
+                const response = await fetch(url, {
+                    headers: {
+                        'X-Client-ID': clientId
+                    }
+                });
+
+                if (!response.ok) throw new Error('Erro ao carregar detalhes');
+
+                itensDevolvidos = await response.json();
+                renderizarDetalhes();
+                statusBar.style.display = 'none';
+            } catch (erro) {
+                statusBar.innerHTML = `❌ Erro: ${erro.message}`;
+                console.error('Erro:', erro);
+            }
+        }
+
+        function renderizarDetalhes() {
+            // Atualizar badge e nome do SKU
+            document.getElementById('skuBadge').textContent = sku;
+
+            if (!itensDevolvidos || itensDevolvidos.length === 0) {
+                document.getElementById('tabelaCorpo').innerHTML = '<tr class="empty"><td colspan="6">Nenhuma devolução encontrada para este SKU.</td></tr>';
+                document.getElementById('totalDevol').textContent = '0';
+                document.getElementById('totalQtd').textContent = '0';
+                document.getElementById('valorTotal').textContent = 'R$ 0,00';
+                document.getElementById('descricaoSku').textContent = '-';
+                return;
+            }
+
+            // Usar a primeira descrição disponível
+            const descricao = itensDevolvidos[0].descricao || '-';
+            document.getElementById('descricaoSku').textContent = descricao;
+
+            // Calcular totais
+            let totalQuantidade = 0;
+            let totalValor = 0;
+
+            let html = '';
+            itensDevolvidos.forEach(item => {
+                const qtd = item.quantidade || 0;
+                const valUnit = item.valor_unitario || 0;
+                const valTotal = item.valor_total || 0;
+
+                totalQuantidade += qtd;
+                totalValor += valTotal;
+
+                html += `
+                    <tr>
+                        <td>${item.numero_nota || '-'}</td>
+                        <td>${formatarData(item.data_emissao) || '-'}</td>
+                        <td>${formatarQuantidade(qtd)}</td>
+                        <td>${formatarMoeda(valUnit)}</td>
+                        <td>${formatarMoeda(valTotal)}</td>
+                        <td>${item.fornecedor || '-'}</td>
+                    </tr>
+                `;
+            });
+
+            document.getElementById('tabelaCorpo').innerHTML = html;
+            document.getElementById('totalDevol').textContent = itensDevolvidos.length;
+            document.getElementById('totalQtd').textContent = formatarQuantidade(totalQuantidade);
+            document.getElementById('valorTotal').textContent = formatarMoeda(totalValor);
+        }
+
+        function voltarDevolucoes() {
+            let url = '/devolucoes.html';
+            if (dataInicio && dataFim) {
+                url += `?data_inicio=${dataInicio}&data_fim=${dataFim}`;
+            }
+            navegarComTransicao(url);
+        }
+
+        // Inicializar
+        carregarDetalhes();
+
+    </script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+

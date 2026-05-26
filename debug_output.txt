@@ -1,0 +1,177 @@
+﻿
+================================================================================
+DEBUG: ESTRUTURA DA API BLING - DETALHES DE NF-e DE ENTRADA
+================================================================================
+
+[OK] Nota selecionada: 002435 (ID Bling: 24956418453)
+[OK] Token obtido
+
+================================================================================
+Buscando detalhes da NF 002435 na API do Bling...
+================================================================================
+
+[OK] Resposta recebida com sucesso!
+
+================================================================================
+ESTRUTURA COMPLETA DA RESPOSTA:
+================================================================================
+
+{
+  "id": 24956418453,
+  "tipo": 0,
+  "situacao": 5,
+  "numero": "002435",
+  "dataEmissao": "2026-01-29 18:28:52",
+  "dataOperacao": "2026-01-29 00:00:00",
+  "chaveAcesso": "31260134303648000159550120000024351249564188",
+  "contato": {
+    "id": 17908021863,
+    "nome": "Carlos Roberto Garcia",
+    "numeroDocumento": "04272760807",
+    "ie": "",
+    "rg": "",
+    "telefone": "",
+    "email": "",
+    "endereco": {
+      "endereco": "Rua Raimundo Fernandes Vaz",
+      "numero": "116",
+      "complemento": "casa Referencia: obs. atras da praca do Pereque mirim",
+      "bairro": "Loteamento Recanto Pereque",
+      "cep": "11668335",
+      "municipio": "Caraguatatuba",
+      "uf": "SP"
+    }
+  },
+  "naturezaOperacao": {
+    "id": 15101927315
+  },
+  "loja": {
+    "id": 203597895
+  },
+  "serie": 12,
+  "valorNota": 146.64,
+  "valorFrete": 0,
+  "xml": "https://www.bling.com.br/relatorios/nfe.xml.php?chaveAcesso=31260134303648000159550120000024351249564188&s&signature=29613ecc57ac149d1507bdea64ac1c560894ecaae029f8ddf51ffef2d1c76d91",
+  "linkDanfe": "https://www.bling.com.br/doc.view.php?id=50ee7cc3168b21b0b7a8673ed585d4666992b738f76011528b3c523c2d388257",
+  "linkPDF": "https://www.bling.com.br/doc.view.php?PDF=true&id=50ee7cc3168b21b0b7a8673ed585d4666992b738f76011528b3c523c2d388257",
+  "optanteSimplesNacional": false,
+  "numeroPedidoLoja": "",
+  "vendedor": {
+    "id": 0
+  },
+  "transporte": {
+    "fretePorConta": 2,
+    "transportador": {
+      "nome": "EBAZAR.COM.BR LTDA",
+      "numeroDocumento": "03007331012239"
+    },
+    "volumes": [],
+    "etiqueta": {
+      "nome": "",
+      "endereco": "",
+      "numero": "",
+      "complemento": "",
+      "municipio": "",
+      "uf": "",
+      "cep": "",
+      "bairro": ""
+    }
+  },
+  "itens": [
+    {
+      "codigo": "411",
+      "descricao": "Carburador PZ19 CB0005G",
+      "unidade": "UN",
+      "quantidade": 1,
+      "valor": 146.64,
+      "valorTotal": 146.64,
+      "tipo": "P",
+      "pesoBruto": 0,
+      "pesoLiquido": 0,
+      "numeroPedidoCompra": "200001477612096",
+      "classificacaoFiscal": "8409.91.18",
+      "cest": "0103000",
+      "codigoServico": "",
+      "origem": 2,
+      "informacoesAdicionais": "Total aproximado de tributos: R$ [APROX_TRIB]. Fonte IBPT.",
+      "gtin": "7895141628274",
+      "cfop": "2202",
+      "impostos": {
+        "valorAproximadoTotalTributos": 66.44,
+        "icms": {
+          "st": 0,
+          "origem": 2,
+          "modalidade": 3,
+          "aliquota": 4,
+          "valor": 5.87
+        }
+      },
+      "documentoReferenciado": {
+        "chaveAcesso": "",
+        "numeroItem": ""
+      }
+    }
+  ],
+  "parcelas": [
+    {
+      "data": "2026-01-29",
+      "valor": 146.64,
+      "observacoes": "DevoluþÒo de mercadorias",
+      "caut": "",
+      "formaPagamento": {
+        "id": 1771666
+      }
+    }
+  ]
+}
+
+================================================================================
+AN┴LISE DOS ITENS:
+================================================================================
+
+Total de itens encontrados: 1
+
+--- Item 1 ---
+  Estrutura completa do item:
+{
+    "codigo": "411",
+    "descricao": "Carburador PZ19 CB0005G",
+    "unidade": "UN",
+    "quantidade": 1,
+    "valor": 146.64,
+    "valorTotal": 146.64,
+    "tipo": "P",
+    "pesoBruto": 0,
+    "pesoLiquido": 0,
+    "numeroPedidoCompra": "200001477612096",
+    "classificacaoFiscal": "8409.91.18",
+    "cest": "0103000",
+    "codigoServico": "",
+    "origem": 2,
+    "informacoesAdicionais": "Total aproximado de tributos: R$ [APROX_TRIB]. Fonte IBPT.",
+    "gtin": "7895141628274",
+    "cfop": "2202",
+    "impostos": {
+        "valorAproximadoTotalTributos": 66.44,
+        "icms": {
+            "st": 0,
+            "origem": 2,
+            "modalidade": 3,
+            "aliquota": 4,
+            "valor": 5.87
+        }
+    },
+    "documentoReferenciado": {
+        "chaveAcesso": "",
+        "numeroItem": ""
+    }
+}
+
+  Campo 'produto':
+    Tipo: <class 'NoneType'>
+    Valor: None
+
+================================================================================
+[OK] Debug completo
+================================================================================
+

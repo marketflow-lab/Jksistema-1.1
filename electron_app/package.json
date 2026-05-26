@@ -1,0 +1,68 @@
+{
+  "name": "jk-sistema-desktop",
+  "version": "1.0.4",
+  "description": "Cliente desktop para JK Sistema",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "author": "JK",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+  },
+  "build": {
+    "directories": {
+      "output": "dist-client-setup"
+    },
+    "appId": "com.jksistema.cliente",
+    "productName": "JK Sistema Cliente",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "client-config.json",
+      "CONFIGURAR_SERVIDOR.md"
+    ],
+    "extraResources": [
+      {
+        "from": "../electron_shell.html",
+        "to": "electron_shell.html"
+      },
+      {
+        "from": "../electron_tab_preload.js",
+        "to": "electron_tab_preload.js"
+      },
+      {
+        "from": "../extensoes_chrome",
+        "to": "extensoes_chrome"
+      },
+      {
+        "from": "client-config.json",
+        "to": "client-config.json"
+      },
+      {
+        "from": "CONFIGURAR_SERVIDOR.md",
+        "to": "CONFIGURAR_SERVIDOR.md"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico",
+      "artifactName": "JK-Sistema-Cliente-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "JK Sistema Cliente"
+    }
+  }
+}

@@ -1,0 +1,1168 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de Etiquetas - JK Sistema</title>
+    <style>
+        html, body { min-height: 100%; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f4f4f9; }
+        .container { width: 100%; min-height: 100vh; box-sizing: border-box; background: white; padding: 18px 24px 24px; border-radius: 0; box-shadow: none; }
+        h1 { color: #333; text-align: center; margin: 4px 0 18px; }
+        .nav-top-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+        .back-btn {
+            display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: 0 16px;
+            background: linear-gradient(105deg, #63bbff, #7bcfff); color: #ffffff; text-decoration: none;
+            border-radius: 11px; font-size: 1.12rem; font-weight: 800; border: 1px solid rgba(255,255,255,0.35);
+            box-shadow: 0 14px 26px rgba(33,152,255,0.36); transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed; top: 16px; right: 18px; z-index: 1200; margin-bottom: 0;
+        }
+        .back-btn:hover { transform: translateY(-2px); filter: brightness(0.96); color: #fff; }
+        .nav-top-actions .back-btn { position: static; top: auto; right: auto; }
+        .section-title { font-size: 1.2rem; color: #4facfe; margin-bottom: 15px; border-bottom: 2px solid #f0f0f0; padding-bottom: 5px; text-align: center; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid #e5e7eb; justify-content: center; }
+        .tab-button { border: none; background: transparent; color: #555; padding: 12px 14px; font-weight: 800; cursor: pointer; border-bottom: 3px solid transparent; min-height: 44px; }
+        .tab-button.active { color: #007bff; border-bottom-color: #4facfe; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+        .radio-group { display: flex; gap: 30px; margin-bottom: 25px; justify-content: center; }
+        .radio-option { display: flex; align-items: center; cursor: pointer; font-size: 1.1rem; white-space: nowrap; }
+        .radio-option input { margin-right: 10px; transform: scale(1.2); }
+        .file-area { background: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px dashed #ccc; margin-bottom: 20px; }
+        .file-input-group { margin-bottom: 15px; }
+        .file-input-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        input[type="file"], input[type="text"], input[type="number"], textarea, select {
+            width: 100%; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 6px;
+            padding: 10px; font: inherit; background: #fff;
+        }
+        textarea { resize: vertical; min-height: 68px; }
+        button.primary { width: 100%; padding: 15px; background: #4facfe; color: white; border: none; border-radius: 5px; font-size: 1.1rem; font-weight: bold; cursor: pointer; transition: background 0.3s; }
+        button.primary:hover { background: #007bff; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .result-section { margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; display: none; }
+        .metrics { display: flex; justify-content: center; gap: 20px; margin-bottom: 25px; }
+        .metric-box { background: #f0f8ff; padding: 15px 25px; border-radius: 8px; text-align: center; border: 1px solid #b8daff; min-width: 120px; }
+        .metric-label { font-size: 0.9rem; color: #666; }
+        .metric-val { font-size: 2rem; font-weight: bold; color: #007bff; margin-top: 5px; }
+        .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .avulsa-actions { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 15px; margin-bottom: 18px; align-items: stretch; }
+        .btn-download { padding: 12px; background: #28a745; color: white; text-align: center; text-decoration: none; border-radius: 5px; font-weight: bold; cursor: pointer; border: none; display: block; }
+        .btn-download:hover { background: #218838; }
+        .btn-secondary { background: #17a2b8; }
+        .btn-secondary:hover { background: #138496; }
+        .btn-light { background: #eef6ff; color: #007bff; border: 1px solid #b8daff; }
+        .btn-light:hover { background: #dcebff; }
+        .btn-danger { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
+        .loader { display: none; text-align: center; margin: 20px 0; color: #666; }
+        .error-msg { color: red; text-align: center; margin-top: 10px; display: none; }
+        .success-msg { color: #166534; text-align: center; margin-top: 10px; display: none; }
+        .avulsa-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .qrcode-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 15px; align-items: end; }
+        .qrcode-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 18px 0; }
+        .qrcode-preview-wrap { margin: 0 auto 18px; max-width: 980px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; overflow: hidden; }
+        .qrcode-preview-head { padding: 10px 14px; background: #eef6ff; color: #1e3a8a; font-weight: 900; border-bottom: 1px solid #cbd5e1; }
+        .qrcode-preview-frame { width: 100%; max-height: min(68vh, 680px); object-fit: contain; background: #fff; display: block; }
+        .format-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+        .format-option { display: flex; align-items: center; gap: 10px; background: #f9f9f9; border: 1px solid #d1d5db; border-radius: 8px; padding: 14px; font-weight: 800; cursor: pointer; }
+        .format-option input { transform: scale(1.15); }
+        .excel-wrap { overflow-x: auto; overflow-y: visible; margin-bottom: 16px; border: 1px solid #9ca3af; background: #fff; }
+        .excel-table { width: 100%; min-width: 780px; border-collapse: collapse; table-layout: fixed; font-family: Arial, sans-serif; font-size: 15px; }
+        .excel-table th { background: #0b4b9d; color: #fff; border: 1px solid #001f4d; padding: 4px 6px; height: 24px; text-align: center; font-weight: 800; }
+        .excel-table td { border: 1px solid #8ca5bd; height: 26px; padding: 2px 6px; outline: none; background: #fff; white-space: nowrap; overflow: hidden; text-align: center; vertical-align: middle; }
+        .excel-table td:focus { box-shadow: inset 0 0 0 2px #22c55e; background: #f0fdf4; }
+        .excel-table td.cell-selected { background: #dbeafe; box-shadow: inset 0 0 0 1px #2563eb; }
+        .excel-table td.cell-anchor { box-shadow: inset 0 0 0 2px #1d4ed8; }
+        .excel-table td.fill-source { box-shadow: inset 0 0 0 2px #2563eb; }
+        .excel-table td.fill-target { outline: 1px dashed #555; outline-offset: -1px; }
+        .label-editor-wrap { display: none; gap: 18px; flex-wrap: wrap; justify-content: center; margin-bottom: 18px; }
+        .editor-toolbar { display: none; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center; margin-bottom: 14px; padding: 10px; border: 1px solid #d1d5db; background: #f8fafc; }
+        .editor-toolbar select, .editor-toolbar input { width: auto; min-height: 36px; padding: 6px 8px; }
+        .editor-tool { min-width: 38px; min-height: 36px; border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; font-weight: 800; cursor: pointer; }
+        .label-editor-item { position: relative; width: min(720px, 100%); }
+        .label-card-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2; }
+        .label-card-actions button { min-height: 30px; padding: 5px 9px; border: 1px solid #94a3b8; border-radius: 6px; background: rgba(255,255,255,0.95); color: #0f172a; font-weight: 800; cursor: pointer; box-shadow: 0 1px 4px rgba(15,23,42,0.14); }
+        .label-card-actions .danger { border-color: #dc2626; color: #b91c1c; }
+        .label-editor-card { width: min(720px, 100%); aspect-ratio: 15 / 8; border: 1px solid #9ca3af; background: #fff; padding: 18px; box-sizing: border-box; outline: none; overflow: hidden; font-family: Arial, sans-serif; font-size: 36px; line-height: 1.35; text-align: center; }
+        .label-editor-card.active { box-shadow: 0 0 0 3px #60a5fa; }
+        .pdf-choice-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(15, 23, 42, 0.46); z-index: 50; }
+        .pdf-choice-modal { width: min(560px, 100%); background: #fff; border-radius: 8px; padding: 22px; box-shadow: 0 18px 46px rgba(15, 23, 42, 0.28); }
+        .pdf-choice-title { margin: 0 0 16px; text-align: center; color: #1f2937; font-weight: 900; font-size: 1.15rem; }
+        .pdf-choice-options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+        .pdf-choice-option { min-height: 96px; border: 2px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #0f172a; font-weight: 900; cursor: pointer; }
+        .pdf-choice-option span { display: block; margin-top: 6px; font-size: 0.9rem; color: #475569; font-weight: 700; }
+        .pdf-choice-cancel { width: 100%; margin-top: 12px; min-height: 40px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; font-weight: 800; cursor: pointer; }
+        .avulsa-item { background: #f9f9f9; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+        .avulsa-item-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+        .avulsa-item-title { font-weight: 800; color: #333; }
+        .small-button { padding: 8px 10px; border-radius: 6px; font-weight: 800; cursor: pointer; }
+        .full-row { grid-column: 1 / -1; }
+        @media (max-width: 980px) { .back-btn { top: 12px; right: 12px; min-height: 48px; } }
+        @media (max-width: 760px) {
+            .container { padding: 14px; }
+            .back-btn { width: auto; min-height: 44px; font-size: 1rem; padding: 0 13px; }
+            .radio-group, .tabs { overflow-x: auto; justify-content: center; }
+            .avulsa-grid, .actions, .avulsa-actions, .format-options, .qrcode-grid, .qrcode-actions { grid-template-columns: 1fr; }
+            .excel-wrap { overflow-x: auto; overflow-y: visible; }
+        }
+    </style>
+    <script src="/auth.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div class="nav-top-actions">
+        <a href="dashboard.html" class="back-btn">Home</a>
+        <a href="dashboard.html" class="back-btn">Voltar</a>
+    </div>
+    <h1>Gerador de Etiquetas</h1>
+
+    <div class="tabs">
+        <button class="tab-button active" type="button" id="tab-processador" onclick="selecionarAbaEtiquetas('processador')">Etiquetas de Envio</button>
+        <button class="tab-button" type="button" id="tab-avulsa" onclick="selecionarAbaEtiquetas('avulsa')">Impressão avulsa</button>
+        <button class="tab-button" type="button" id="tab-qrcode" onclick="selecionarAbaEtiquetas('qrcode')">QR Code com link</button>
+    </div>
+
+    <div class="tab-panel active" id="panel-processador">
+        <div class="section-title">1. Selecione a Loja</div>
+        <div class="radio-group">
+            <label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"> Mercado Livre</label>
+            <label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"> Shopee</label>
+            <label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"> TikTok</label>
+            <label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"> Amazon</label>
+        </div>
+
+        <div class="section-title">2. Upload dos Arquivos</div>
+        <div class="file-area">
+            <div class="file-input-group" id="group-file-1">
+                <label id="label-file-1">Arquivo de Etiquetas (PDF)</label>
+                <input type="file" id="file-etiquetas" accept=".pdf">
+            </div>
+            <div class="file-input-group" id="group-file-2" style="display: none;">
+                <label>Lista de Picking (Obrigatório para TikTok)</label>
+                <input type="file" id="file-lista" accept=".pdf">
+            </div>
+            <div class="file-input-group" id="group-file-nf" style="display: none;">
+                <label>Arquivo de Nota Fiscal (Obrigatório para Amazon)</label>
+                <input type="file" id="file-nf" accept=".pdf,.xml">
+            </div>
+        </div>
+
+        <button class="primary" onclick="processarEtiquetas()" id="btn-processar">PROCESSAR ETIQUETAS</button>
+        <div class="loader" id="loader">Processando... aguarde...</div>
+        <p class="error-msg" id="error-msg"></p>
+
+        <div class="result-section" id="result-section">
+            <div class="section-title">Resultados</div>
+            <div class="metrics">
+                <div class="metric-box">
+                    <div class="metric-label">Etiquetas Geradas</div>
+                    <div class="metric-val" id="qtd-etiquetas">0</div>
+                </div>
+            </div>
+            <div class="actions">
+                <a href="#" class="btn-download" id="btn-download-etiquetas" style="display:none" target="_blank">Baixar Etiquetas</a>
+                <a href="#" class="btn-download btn-secondary" id="btn-download-lista" style="display:none" target="_blank">Baixar Lista/Manifesto</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-panel" id="panel-avulsa">
+        <div class="section-title">Impressão avulsa</div>
+        <div class="format-options">
+            <label class="format-option">
+                <input type="radio" name="formato-avulsa" value="grande" checked onchange="atualizarFormatoAvulsa()">
+                Etiqueta Grande 15x8cm
+            </label>
+            <label class="format-option">
+                <input type="radio" name="formato-avulsa" value="pequena" onchange="atualizarFormatoAvulsa()">
+                Etiqueta Pequena 8x2,5cm
+            </label>
+            <label class="format-option">
+                <input type="radio" name="formato-avulsa" value="editor" onchange="atualizarFormatoAvulsa()">
+                Preencher na etiqueta
+            </label>
+        </div>
+        <div class="avulsa-actions">
+            <button class="btn-download btn-light" id="btn-add-avulsa" type="button" onclick="adicionarEntradaAvulsa()">+ Adicionar linha</button>
+            <button class="btn-download btn-secondary" type="button" onclick="limparEntradasAvulsas()">Limpar</button>
+            <button class="primary" onclick="gerarImpressaoAvulsa()" id="btn-avulsa">GERAR PDF AVULSO</button>
+        </div>
+        <div class="loader" id="loader-avulsa">Gerando PDF... aguarde...</div>
+        <p class="error-msg" id="error-avulsa"></p>
+        <p class="success-msg" id="success-avulsa"></p>
+        <div class="result-section" id="result-avulsa"></div>
+        <div class="editor-toolbar" id="editor-toolbar">
+            <select id="editor-font" onmousedown="salvarSelecaoEditor()" onchange="aplicarComandoEditor('fontName', this.value)">
+                <option value="Arial">Arial</option>
+                <option value="Times New Roman">Times</option>
+                <option value="Courier New">Courier</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Georgia">Georgia</option>
+            </select>
+            <input id="editor-size" type="number" min="8" max="96" value="36" onfocus="salvarSelecaoEditor()" onchange="aplicarTamanhoEditor(this.value)">
+            <button class="editor-tool" type="button" onmousedown="event.preventDefault()" onclick="aplicarComandoEditor('bold')">B</button>
+            <button class="editor-tool" type="button" onmousedown="event.preventDefault()" onclick="aplicarComandoEditor('italic')">I</button>
+            <button class="editor-tool" type="button" onmousedown="event.preventDefault()" onclick="aplicarComandoEditor('underline')">U</button>
+            <button class="editor-tool" type="button" onclick="aplicarComandoEditor('justifyLeft')">⟸</button>
+            <button class="editor-tool" type="button" onclick="aplicarComandoEditor('justifyCenter')">≡</button>
+            <button class="editor-tool" type="button" onclick="aplicarComandoEditor('justifyRight')">⟹</button>
+        </div>
+        <div class="label-editor-wrap" id="label-editor-wrap"></div>
+        <div class="excel-wrap" id="avulsa-grade-wrap">
+            <table class="excel-table" id="avulsa-grade">
+                <thead>
+                    <tr>
+                        <th>Sequencia</th>
+                        <th>SKU</th>
+                        <th>Quantidade</th>
+                        <th>Caixa</th>
+                        <th>Torre</th>
+                        <th>Paletes</th>
+                        <th>Corredor</th>
+                        <th>Conta</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div id="avulsa-items"></div>
+    </div>
+
+    <div class="tab-panel" id="panel-qrcode">
+        <div class="section-title">Gerar QR Code com link</div>
+        <div class="file-area">
+            <div class="qrcode-grid">
+                <div class="file-input-group full-row">
+                    <label>Link do QR Code</label>
+                    <input type="text" id="qrcode-link" placeholder="https://www.exemplo.com.br/produto" autocomplete="off">
+                </div>
+                <div class="file-input-group">
+                    <label>Título opcional</label>
+                    <input type="text" id="qrcode-titulo" maxlength="120" placeholder="Texto que aparece na etiqueta">
+                </div>
+                <div class="file-input-group">
+                    <label>Quantidade</label>
+                    <input type="number" id="qrcode-quantidade" min="1" max="500" value="1">
+                </div>
+                <div class="file-input-group">
+                    <label>Impressão</label>
+                    <select id="qrcode-layout">
+                        <option value="grade_15x8" selected>Vários QR na etiqueta 15x10</option>
+                        <option value="grade_8x25">Vários QR na etiqueta 8x2,5 (até 2)</option>
+                        <option value="individual">Uma etiqueta por página</option>
+                        <option value="a4">Folha A4 com várias etiquetas</option>
+                    </select>
+                </div>
+                <div class="file-input-group full-row">
+                    <label>Formato</label>
+                    <div class="format-options" style="margin-bottom:0;">
+                        <label class="format-option">
+                            <input type="radio" name="formato-qrcode" value="grande" checked onchange="atualizarLayoutQrCode()">
+                            Grande 15x10cm
+                        </label>
+                        <label class="format-option">
+                            <input type="radio" name="formato-qrcode" value="pequena" onchange="atualizarLayoutQrCode()">
+                            Pequena 8x2,5cm
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="qrcode-actions">
+                <button class="btn-download btn-light" type="button" onclick="limparQrCodeLink()">Limpar</button>
+                <button class="primary" type="button" onclick="gerarQrCodeLink()" id="btn-qrcode">GERAR QR CODE</button>
+            </div>
+            <div class="loader" id="loader-qrcode">Gerando QR Code... aguarde...</div>
+            <p class="error-msg" id="error-qrcode"></p>
+            <p class="success-msg" id="success-qrcode"></p>
+            <div class="result-section" id="result-qrcode">
+                <div class="metrics">
+                    <div class="metric-box">
+                        <div class="metric-label">Etiquetas Geradas</div>
+                        <div class="metric-val" id="qtd-qrcode">0</div>
+                    </div>
+                </div>
+                <div class="qrcode-preview-wrap">
+                    <div class="qrcode-preview-head">Pré-visualização</div>
+                    <img class="qrcode-preview-frame" id="qrcode-preview-frame" alt="Pré-visualização do PDF de QR Code">
+                </div>
+                <div class="actions">
+                    <a href="#" class="btn-download" id="btn-download-qrcode">Baixar PDF</a>
+                    <button class="btn-download btn-secondary" type="button" id="btn-open-qrcode">Abrir prévia em nova aba</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="pdf-choice-backdrop" id="pdf-choice-backdrop">
+    <div class="pdf-choice-modal">
+        <p class="pdf-choice-title">Escolha o formato do PDF</p>
+        <div class="pdf-choice-options">
+            <button class="pdf-choice-option" type="button" data-pdf-choice="grande">
+                Etiqueta Grande
+                <span>15x10cm</span>
+            </button>
+            <button class="pdf-choice-option" type="button" data-pdf-choice="pequena">
+                Etiqueta Pequena
+                <span>8x2,5cm</span>
+            </button>
+        </div>
+        <button class="pdf-choice-cancel" type="button" data-pdf-choice="">Cancelar</button>
+    </div>
+</div>
+
+<script>
+    let contadorItensAvulsos = 0;
+    let fillDragAvulsa = null;
+    let selecaoGradeAvulsa = null;
+    let arrasteSelecaoAvulsa = null;
+    let etiquetaVisualAtiva = null;
+    let selecaoEditorAvulsa = null;
+    let qrcodePreviewUrl = null;
+    let qrcodePreviewFileId = null;
+    const colunasGradeAvulsa = ['Sequencia', 'SKU', 'Quantidade', 'Caixa', 'Torre', 'Paletes', 'Corredor', 'Conta'];
+
+    function selecionarAbaEtiquetas(aba) {
+        const abas = ['processador', 'avulsa', 'qrcode'];
+        abas.forEach((nome) => {
+            const ativa = aba === nome;
+            document.getElementById(`tab-${nome}`)?.classList.toggle('active', ativa);
+            document.getElementById(`panel-${nome}`)?.classList.toggle('active', ativa);
+        });
+        if (aba === 'avulsa') atualizarFormatoAvulsa();
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[char]));
+    }
+
+    function adicionarItemAvulso(item = {}) {
+        contadorItensAvulsos += 1;
+        const wrap = document.createElement('div');
+        wrap.className = 'avulsa-item';
+        wrap.innerHTML = `
+            <div class="avulsa-item-head">
+                <div class="avulsa-item-title">Item ${contadorItensAvulsos}</div>
+                <button class="small-button btn-danger" type="button" onclick="removerItemAvulso(this)">Remover</button>
+            </div>
+            <div class="avulsa-grid">
+                <div class="file-input-group">
+                    <label>SKU / Código</label>
+                    <input type="text" class="avulsa-sku" maxlength="60" value="${escapeHtml(item.sku || '')}">
+                </div>
+                <div class="file-input-group">
+                    <label>Quantidade de etiquetas</label>
+                    <input type="number" class="avulsa-quantidade" min="1" max="500" value="${item.quantidade || 1}">
+                </div>
+                <div class="file-input-group full-row">
+                    <label>Descrição</label>
+                    <textarea class="avulsa-descricao" maxlength="220">${escapeHtml(item.descricao || '')}</textarea>
+                </div>
+            </div>
+        `;
+        document.getElementById('avulsa-items').appendChild(wrap);
+    }
+
+    function criarLinhaGradeAvulsa(valores = {}) {
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        const tr = document.createElement('tr');
+        colunasGradeAvulsa.forEach((coluna) => {
+            const td = document.createElement('td');
+            td.contentEditable = 'true';
+            td.dataset.col = coluna;
+            td.spellcheck = false;
+            td.textContent = valores[coluna] ?? '';
+            td.addEventListener('keydown', navegarGradeAvulsa);
+            td.addEventListener('paste', colarNaGradeAvulsa);
+            td.addEventListener('mousemove', prepararAlcaPreenchimentoAvulsa);
+            td.addEventListener('mousedown', iniciarArrastePreenchimentoAvulsa);
+            td.addEventListener('mousedown', iniciarSelecaoGradeAvulsa);
+            td.addEventListener('mouseenter', atualizarArrastePreenchimentoAvulsa);
+            td.addEventListener('mouseenter', atualizarSelecaoGradeAvulsa);
+            td.addEventListener('focus', () => {
+                if (!selecaoGradeAvulsa) selecionarIntervaloGradeAvulsa(td, td);
+            });
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    }
+
+    function garantirLinhasGradeAvulsa(qtd = 30) {
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        while (tbody.children.length < qtd) criarLinhaGradeAvulsa();
+    }
+
+    function adicionarEntradaAvulsa() {
+        const formato = document.querySelector('input[name="formato-avulsa"]:checked')?.value || 'grande';
+        if (formato === 'editor') {
+            adicionarEtiquetaVisualAvulsa();
+            return;
+        }
+        criarLinhaGradeAvulsa();
+        const ultima = document.querySelector('#avulsa-grade tbody tr:last-child td');
+        if (ultima) ultima.focus();
+    }
+
+    function atualizarFormatoAvulsa() {
+        const formato = document.querySelector('input[name="formato-avulsa"]:checked')?.value || 'grande';
+        const isEditor = formato === 'editor';
+        document.getElementById('avulsa-grade-wrap').style.display = isEditor ? 'none' : 'block';
+        document.getElementById('label-editor-wrap').style.display = isEditor ? 'flex' : 'none';
+        document.getElementById('editor-toolbar').style.display = isEditor ? 'flex' : 'none';
+        document.getElementById('avulsa-items').style.display = 'none';
+        document.getElementById('btn-add-avulsa').textContent = isEditor ? '+ Adicionar etiqueta' : '+ Adicionar linha';
+        if (isEditor) {
+            if (!document.querySelector('.label-editor-card')) adicionarEtiquetaVisualAvulsa();
+        } else {
+            garantirLinhasGradeAvulsa();
+        }
+    }
+
+    function limparGradeAvulsa() {
+        document.querySelector('#avulsa-grade tbody').innerHTML = '';
+        limparMarcacaoPreenchimentoAvulsa();
+        garantirLinhasGradeAvulsa();
+    }
+
+    function removerItemAvulso(btn) {
+        btn.closest('.avulsa-item').remove();
+        if (document.querySelectorAll('.avulsa-item').length === 0) adicionarItemAvulso();
+    }
+
+    function limparItensAvulsos() {
+        document.getElementById('avulsa-items').innerHTML = '';
+        document.getElementById('result-avulsa').style.display = 'none';
+        document.getElementById('error-avulsa').style.display = 'none';
+        document.getElementById('success-avulsa').style.display = 'none';
+        adicionarItemAvulso();
+    }
+
+    function limparEntradasAvulsas() {
+        document.getElementById('result-avulsa').style.display = 'none';
+        document.getElementById('error-avulsa').style.display = 'none';
+        document.getElementById('success-avulsa').style.display = 'none';
+        const formato = document.querySelector('input[name="formato-avulsa"]:checked')?.value || 'grande';
+        if (formato === 'editor') {
+            document.getElementById('label-editor-wrap').innerHTML = '';
+            adicionarEtiquetaVisualAvulsa();
+        } else {
+            limparGradeAvulsa();
+        }
+    }
+
+    function navegarGradeAvulsa(ev) {
+        if (ev.key === 'Delete' || ev.key === 'Backspace') {
+            const selecionadas = obterCelulasSelecionadasAvulsa();
+            if (selecionadas.length > 1) {
+                ev.preventDefault();
+                selecionadas.forEach((cell) => { cell.textContent = ''; });
+                return;
+            }
+        }
+        if ((ev.ctrlKey || ev.metaKey) && ['c', 'C', 'v', 'V'].includes(ev.key)) return;
+        const teclas = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Tab'];
+        if (!teclas.includes(ev.key)) return;
+        const td = ev.currentTarget;
+        const tr = td.parentElement;
+        const rowIndex = Array.from(tr.parentElement.children).indexOf(tr);
+        const colIndex = Array.from(tr.children).indexOf(td);
+        let nextRow = rowIndex;
+        let nextCol = colIndex;
+        if (ev.key === 'ArrowUp') nextRow -= 1;
+        if (ev.key === 'ArrowDown' || ev.key === 'Enter') nextRow += 1;
+        if (ev.key === 'ArrowLeft') nextCol -= 1;
+        if (ev.key === 'ArrowRight' || ev.key === 'Tab') nextCol += ev.shiftKey ? -1 : 1;
+        if (nextCol >= colunasGradeAvulsa.length) {
+            nextCol = 0;
+            nextRow += 1;
+        }
+        if (nextCol < 0) {
+            nextCol = colunasGradeAvulsa.length - 1;
+            nextRow -= 1;
+        }
+        if (nextRow < 0) return;
+        while (nextRow >= tr.parentElement.children.length) criarLinhaGradeAvulsa();
+        ev.preventDefault();
+        const destino = tr.parentElement.children[nextRow].children[nextCol];
+        destino.focus();
+        selecionarIntervaloGradeAvulsa(destino, destino);
+    }
+
+    function colarNaGradeAvulsa(ev) {
+        const texto = ev.clipboardData?.getData('text/plain');
+        if (!texto) return;
+        ev.preventDefault();
+        const td = obterCelulaInicialColagemAvulsa(ev.currentTarget);
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        const rowStart = Array.from(tbody.children).indexOf(td.parentElement);
+        const colStart = Array.from(td.parentElement.children).indexOf(td);
+        const linhas = texto.replace(/\r/g, '').split('\n').filter((linha, idx, arr) => linha.length || idx < arr.length - 1);
+        const matriz = linhas.map((linha) => linha.split('\t'));
+        const celulasSelecionadas = obterCelulasSelecionadasAvulsa();
+        if (matriz.length === 1 && matriz[0].length === 1 && celulasSelecionadas.length > 1) {
+            celulasSelecionadas.forEach((cell) => { cell.textContent = matriz[0][0]; });
+            return;
+        }
+        matriz.forEach((linha, r) => {
+            while (rowStart + r >= tbody.children.length) criarLinhaGradeAvulsa();
+            linha.forEach((valor, c) => {
+                const cell = tbody.children[rowStart + r]?.children[colStart + c];
+                if (cell) cell.textContent = valor;
+            });
+        });
+    }
+
+    function todasCelulasGradeAvulsa() {
+        return Array.from(document.querySelectorAll('#avulsa-grade tbody td'));
+    }
+
+    function obterCelulasSelecionadasAvulsa() {
+        return todasCelulasGradeAvulsa().filter((td) => td.classList.contains('cell-selected') || td.classList.contains('cell-anchor'));
+    }
+
+    function limparSelecaoGradeAvulsa() {
+        todasCelulasGradeAvulsa().forEach((td) => td.classList.remove('cell-selected', 'cell-anchor'));
+        selecaoGradeAvulsa = null;
+    }
+
+    function selecionarIntervaloGradeAvulsa(inicio, fim, manter = false) {
+        if (!manter) {
+            todasCelulasGradeAvulsa().forEach((td) => td.classList.remove('cell-selected', 'cell-anchor'));
+        }
+        const posInicio = posicaoCelulaAvulsa(inicio);
+        const posFim = posicaoCelulaAvulsa(fim);
+        const rowMin = Math.min(posInicio.rowIndex, posFim.rowIndex);
+        const rowMax = Math.max(posInicio.rowIndex, posFim.rowIndex);
+        const colMin = Math.min(posInicio.colIndex, posFim.colIndex);
+        const colMax = Math.max(posInicio.colIndex, posFim.colIndex);
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        for (let r = rowMin; r <= rowMax; r += 1) {
+            for (let c = colMin; c <= colMax; c += 1) {
+                tbody.children[r]?.children[c]?.classList.add('cell-selected');
+            }
+        }
+        inicio.classList.add('cell-anchor');
+        selecaoGradeAvulsa = { inicio, fim, rowMin, rowMax, colMin, colMax };
+    }
+
+    function alternarCelulaSelecionadaAvulsa(cell) {
+        const selecionada = cell.classList.contains('cell-selected') || cell.classList.contains('cell-anchor');
+        cell.classList.toggle('cell-selected', !selecionada);
+        cell.classList.toggle('cell-anchor', !selecionada);
+        recalcularSelecaoGradeAvulsa(cell);
+    }
+
+    function recalcularSelecaoGradeAvulsa(anchor = null) {
+        const selecionadas = obterCelulasSelecionadasAvulsa();
+        if (!selecionadas.length) {
+            selecaoGradeAvulsa = null;
+            return;
+        }
+        const posicoes = selecionadas.map(posicaoCelulaAvulsa);
+        const rows = posicoes.map((pos) => pos.rowIndex);
+        const cols = posicoes.map((pos) => pos.colIndex);
+        selecaoGradeAvulsa = {
+            inicio: anchor || selecionadas[0],
+            fim: selecionadas[selecionadas.length - 1],
+            rowMin: Math.min(...rows),
+            rowMax: Math.max(...rows),
+            colMin: Math.min(...cols),
+            colMax: Math.max(...cols)
+        };
+    }
+
+    function iniciarSelecaoGradeAvulsa(ev) {
+        if (fillDragAvulsa || estaNaAlcaPreenchimentoAvulsa(ev, ev.currentTarget)) return;
+        const cell = ev.currentTarget;
+        if (ev.ctrlKey || ev.metaKey) {
+            alternarCelulaSelecionadaAvulsa(cell);
+            return;
+        }
+        const anchor = ev.shiftKey && selecaoGradeAvulsa?.inicio ? selecaoGradeAvulsa.inicio : cell;
+        selecionarIntervaloGradeAvulsa(anchor, cell);
+        arrasteSelecaoAvulsa = { inicio: anchor };
+    }
+
+    function atualizarSelecaoGradeAvulsa(ev) {
+        if (!arrasteSelecaoAvulsa || fillDragAvulsa) return;
+        selecionarIntervaloGradeAvulsa(arrasteSelecaoAvulsa.inicio, ev.currentTarget);
+    }
+
+    function finalizarSelecaoGradeAvulsa() {
+        arrasteSelecaoAvulsa = null;
+    }
+
+    function obterCelulaInicialColagemAvulsa(fallback) {
+        if (!selecaoGradeAvulsa) return fallback;
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        return tbody.children[selecaoGradeAvulsa.rowMin]?.children[selecaoGradeAvulsa.colMin] || fallback;
+    }
+
+    function textoSelecionadoGradeAvulsa() {
+        if (!selecaoGradeAvulsa) return '';
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        const linhas = [];
+        for (let r = selecaoGradeAvulsa.rowMin; r <= selecaoGradeAvulsa.rowMax; r += 1) {
+            const valores = [];
+            for (let c = selecaoGradeAvulsa.colMin; c <= selecaoGradeAvulsa.colMax; c += 1) {
+                valores.push(tbody.children[r]?.children[c]?.textContent || '');
+            }
+            linhas.push(valores.join('\t'));
+        }
+        return linhas.join('\n');
+    }
+
+    document.addEventListener('copy', (ev) => {
+        const selecionadas = obterCelulasSelecionadasAvulsa();
+        if (!selecionadas.length || !document.activeElement?.closest?.('#avulsa-grade')) return;
+        ev.preventDefault();
+        ev.clipboardData.setData('text/plain', textoSelecionadoGradeAvulsa());
+    });
+
+    function estaNaAlcaPreenchimentoAvulsa(ev, cell) {
+        const rect = cell.getBoundingClientRect();
+        return (rect.right - ev.clientX) <= 8 && (rect.bottom - ev.clientY) <= 8;
+    }
+
+    function prepararAlcaPreenchimentoAvulsa(ev) {
+        ev.currentTarget.style.cursor = estaNaAlcaPreenchimentoAvulsa(ev, ev.currentTarget) ? 'crosshair' : 'text';
+    }
+
+    function posicaoCelulaAvulsa(cell) {
+        const row = cell.parentElement;
+        return {
+            rowIndex: Array.from(row.parentElement.children).indexOf(row),
+            colIndex: Array.from(row.children).indexOf(cell)
+        };
+    }
+
+    function iniciarArrastePreenchimentoAvulsa(ev) {
+        const cell = ev.currentTarget;
+        if (!estaNaAlcaPreenchimentoAvulsa(ev, cell)) return;
+        const pos = posicaoCelulaAvulsa(cell);
+        fillDragAvulsa = {
+            cell,
+            rowIndex: pos.rowIndex,
+            colIndex: pos.colIndex,
+            targetRowIndex: pos.rowIndex
+        };
+        cell.classList.add('fill-source');
+        ev.preventDefault();
+    }
+
+    function atualizarArrastePreenchimentoAvulsa(ev) {
+        if (!fillDragAvulsa) return;
+        const cell = ev.currentTarget;
+        const pos = posicaoCelulaAvulsa(cell);
+        if (pos.colIndex !== fillDragAvulsa.colIndex || pos.rowIndex < fillDragAvulsa.rowIndex) return;
+        fillDragAvulsa.targetRowIndex = pos.rowIndex;
+        marcarFaixaPreenchimentoAvulsa();
+    }
+
+    function limparMarcacaoPreenchimentoAvulsa() {
+        document.querySelectorAll('#avulsa-grade td.fill-source, #avulsa-grade td.fill-target').forEach((td) => {
+            td.classList.remove('fill-source', 'fill-target');
+        });
+    }
+
+    function marcarFaixaPreenchimentoAvulsa() {
+        limparMarcacaoPreenchimentoAvulsa();
+        if (!fillDragAvulsa) return;
+        fillDragAvulsa.cell.classList.add('fill-source');
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        for (let r = fillDragAvulsa.rowIndex + 1; r <= fillDragAvulsa.targetRowIndex; r += 1) {
+            tbody.children[r]?.children[fillDragAvulsa.colIndex]?.classList.add('fill-target');
+        }
+    }
+
+    function numeroDaCelulaAvulsa(valor) {
+        const texto = String(valor || '').trim().replace(',', '.');
+        if (!texto || !/^-?\d+(\.\d+)?$/.test(texto)) return null;
+        return Number(texto);
+    }
+
+    function formatarNumeroPreenchimentoAvulsa(numero, referencia) {
+        const ref = String(referencia || '');
+        if (ref.includes(',')) return String(numero).replace('.', ',');
+        return Number.isInteger(numero) ? String(numero) : String(Number(numero.toFixed(6)));
+    }
+
+    function aplicarPreenchimentoAvulsa() {
+        if (!fillDragAvulsa) return;
+        const { rowIndex, colIndex, targetRowIndex, cell } = fillDragAvulsa;
+        const tbody = document.querySelector('#avulsa-grade tbody');
+        const valorBase = cell.textContent.trim();
+        if (targetRowIndex <= rowIndex || !valorBase) {
+            fillDragAvulsa = null;
+            limparMarcacaoPreenchimentoAvulsa();
+            return;
+        }
+
+        const valorAtual = numeroDaCelulaAvulsa(valorBase);
+        const celulaAnterior = rowIndex > 0 ? tbody.children[rowIndex - 1]?.children[colIndex] : null;
+        const valorAnterior = numeroDaCelulaAvulsa(celulaAnterior?.textContent);
+        const temSequencia = valorAtual !== null && valorAnterior !== null;
+        const passo = temSequencia ? valorAtual - valorAnterior : 0;
+
+        for (let r = rowIndex + 1; r <= targetRowIndex; r += 1) {
+            const destino = tbody.children[r]?.children[colIndex];
+            if (!destino) continue;
+            destino.textContent = temSequencia
+                ? formatarNumeroPreenchimentoAvulsa(valorAtual + (passo * (r - rowIndex)), valorBase)
+                : valorBase;
+        }
+        fillDragAvulsa = null;
+        limparMarcacaoPreenchimentoAvulsa();
+    }
+
+    document.addEventListener('mouseup', () => {
+        aplicarPreenchimentoAvulsa();
+        finalizarSelecaoGradeAvulsa();
+    });
+
+    function coletarItensGradeAvulsa() {
+        return Array.from(document.querySelectorAll('#avulsa-grade tbody tr')).map((tr) => {
+            const dados = {};
+            Array.from(tr.children).forEach((td) => {
+                dados[td.dataset.col] = td.textContent.trim();
+            });
+            return dados;
+        }).filter((dados) => colunasGradeAvulsa.some((coluna) => coluna !== 'Sequencia' && dados[coluna]));
+    }
+
+    function montarItensGrandeAvulsa() {
+        return coletarItensGradeAvulsa().map((dados) => {
+            const partes = colunasGradeAvulsa
+                .filter((coluna) => coluna !== 'SKU' && coluna !== 'Quantidade' && dados[coluna])
+                .map((coluna) => `${coluna}: ${dados[coluna]}`);
+            return {
+                layout_planilha: true,
+                sequencia: dados.Sequencia || '',
+                sku: dados.SKU || '',
+                descricao: partes.join(' | '),
+                quantidade: Number(dados.Quantidade || 1) || 1,
+                caixa: dados.Caixa || '',
+                torre: dados.Torre || '',
+                paletes: dados.Paletes || '',
+                corredor: dados.Corredor || '',
+                conta: dados.Conta || ''
+            };
+        });
+    }
+
+    function adicionarEtiquetaVisualAvulsa(dados = {}) {
+        const wrap = document.getElementById('label-editor-wrap');
+        const item = document.createElement('div');
+        item.className = 'label-editor-item';
+        const actions = document.createElement('div');
+        actions.className = 'label-card-actions';
+        actions.innerHTML = '<button type="button" onmousedown="event.preventDefault()" onclick="duplicarEtiquetaVisual(this)">Duplicar</button><button class="danger" type="button" onmousedown="event.preventDefault()" onclick="deletarEtiquetaVisual(this)">Deletar</button>';
+        const card = document.createElement('div');
+        card.className = 'label-editor-card';
+        card.contentEditable = 'true';
+        card.innerHTML = dados.html || '<div><b>SKU: 460</b></div><div><u>1293</u> &nbsp; QTD:10</div><div>T18 P1 C5 CX1</div><div>Peças</div>';
+        card.addEventListener('focus', () => ativarEtiquetaVisual(card));
+        card.addEventListener('mousedown', () => ativarEtiquetaVisual(card));
+        card.addEventListener('keyup', salvarSelecaoEditor);
+        card.addEventListener('mouseup', salvarSelecaoEditor);
+        item.appendChild(actions);
+        item.appendChild(card);
+        wrap.appendChild(item);
+        ativarEtiquetaVisual(card);
+    }
+
+    function montarItensEditorAvulsa() {
+        return Array.from(document.querySelectorAll('.label-editor-card'))
+            .map((card) => card.innerHTML.trim())
+            .filter(Boolean);
+    }
+
+    function ativarEtiquetaVisual(card) {
+        document.querySelectorAll('.label-editor-card.active').forEach((el) => el.classList.remove('active'));
+        etiquetaVisualAtiva = card;
+        card.classList.add('active');
+        salvarSelecaoEditor();
+    }
+
+    function selecaoEstaNoEditor(range) {
+        if (!range || !range.commonAncestorContainer) return false;
+        const node = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement;
+        return !!node?.closest('.label-editor-card');
+    }
+
+    function salvarSelecaoEditor() {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return;
+        const range = selection.getRangeAt(0);
+        const node = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement;
+        const card = node?.closest('.label-editor-card');
+        if (!card) return;
+        etiquetaVisualAtiva = card;
+        selecaoEditorAvulsa = range.cloneRange();
+    }
+
+    function restaurarSelecaoEditor() {
+        if (!etiquetaVisualAtiva) return false;
+        etiquetaVisualAtiva.focus();
+        const selection = window.getSelection();
+        if (!selection) return false;
+        selection.removeAllRanges();
+        if (selecaoEstaNoEditor(selecaoEditorAvulsa)) {
+            selection.addRange(selecaoEditorAvulsa);
+            return true;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(etiquetaVisualAtiva);
+        range.collapse(false);
+        selection.addRange(range);
+        selecaoEditorAvulsa = range.cloneRange();
+        return true;
+    }
+
+    function aplicarComandoEditor(comando, valor = null) {
+        restaurarSelecaoEditor();
+        document.execCommand(comando, false, valor);
+        salvarSelecaoEditor();
+    }
+
+    function aplicarTamanhoEditor(tamanho) {
+        const px = `${Math.max(8, Math.min(96, Number(tamanho) || 36))}px`;
+        restaurarSelecaoEditor();
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount && !selection.getRangeAt(0).collapsed) {
+            document.execCommand('fontSize', false, '7');
+        } else if (etiquetaVisualAtiva) {
+            etiquetaVisualAtiva.style.fontSize = px;
+            Array.from(etiquetaVisualAtiva.children).forEach((el) => { el.style.fontSize = px; });
+        }
+        document.querySelectorAll('#label-editor-wrap font[size="7"]').forEach((el) => {
+            el.removeAttribute('size');
+            el.style.fontSize = px;
+        });
+        salvarSelecaoEditor();
+    }
+
+    function duplicarEtiquetaVisual(btn) {
+        const card = btn?.closest('.label-editor-item')?.querySelector('.label-editor-card') || etiquetaVisualAtiva;
+        if (!card) return;
+        adicionarEtiquetaVisualAvulsa({ html: card.innerHTML });
+    }
+
+    function deletarEtiquetaVisual(btn) {
+        const alvo = btn?.closest('.label-editor-item')?.querySelector('.label-editor-card') || etiquetaVisualAtiva || document.querySelector('.label-editor-card.active');
+        if (!alvo) return;
+        alvo.closest('.label-editor-item')?.remove();
+        etiquetaVisualAtiva = document.querySelector('.label-editor-card');
+        if (etiquetaVisualAtiva) ativarEtiquetaVisual(etiquetaVisualAtiva);
+        if (!document.querySelector('.label-editor-card')) adicionarEtiquetaVisualAvulsa();
+    }
+
+    function deletarEtiquetaVisualAtiva() {
+        deletarEtiquetaVisual(null);
+    }
+
+    function toggleInputs() {
+        const loja = document.querySelector('input[name="loja"]:checked').value;
+        const group1 = document.getElementById('group-file-1');
+        const group2 = document.getElementById('group-file-2');
+        const groupNf = document.getElementById('group-file-nf');
+        const label1 = document.getElementById('label-file-1');
+        if (loja === 'TikTok') {
+            group1.style.display = 'block';
+            group2.style.display = 'block';
+            groupNf.style.display = 'none';
+            label1.textContent = 'Arquivo de Etiquetas (PDF)';
+        } else if (loja === 'Amazon') {
+            group1.style.display = 'none';
+            group2.style.display = 'none';
+            groupNf.style.display = 'block';
+            label1.textContent = '';
+            document.getElementById('file-etiquetas').value = '';
+        } else {
+            group1.style.display = 'block';
+            group2.style.display = 'none';
+            groupNf.style.display = 'none';
+            label1.textContent = 'Importar arquivo PDF (Etiquetas/Lista)';
+        }
+        document.getElementById('result-section').style.display = 'none';
+    }
+
+    async function obterArquivoProtegidoBlob(fileId) {
+        const token = localStorage.getItem('access_token');
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const resp = await fetch(`/api/etiquetas/download/${fileId}`, { headers });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || 'Erro ao baixar arquivo.');
+        }
+        return await resp.blob();
+    }
+
+    async function obterPreviewProtegidoBlob(fileId) {
+        const token = localStorage.getItem('access_token');
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const resp = await fetch(`/api/etiquetas/preview/${fileId}`, { headers });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || 'Erro ao gerar pré-visualização.');
+        }
+        return await resp.blob();
+    }
+
+    async function baixarArquivoProtegido(fileId, nomeArquivo) {
+        const blob = await obterArquivoProtegidoBlob(fileId);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nomeArquivo;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+    }
+
+    async function abrirPdfProtegido(fileId) {
+        const blob = await obterArquivoProtegidoBlob(fileId);
+        const url = window.URL.createObjectURL(blob);
+        window.open(url, '_blank', 'noopener');
+        setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+    }
+
+    async function processarEtiquetas() {
+        const loja = document.querySelector('input[name="loja"]:checked').value;
+        const fileEtiquetas = document.getElementById('file-etiquetas').files[0];
+        const fileLista = document.getElementById('file-lista').files[0];
+        const fileNf = document.getElementById('file-nf').files[0];
+        const btn = document.getElementById('btn-processar');
+        const loader = document.getElementById('loader');
+        const errorMsg = document.getElementById('error-msg');
+        const resultSection = document.getElementById('result-section');
+        errorMsg.style.display = 'none';
+        if (loja !== 'Amazon' && !fileEtiquetas) return alert('Selecione o arquivo principal.');
+        if (loja === 'TikTok' && !fileLista) return alert('Para TikTok, a Lista de Picking é obrigatória.');
+        if (loja === 'Amazon' && !fileNf) return alert('Para Amazon, o arquivo de Nota Fiscal é obrigatório.');
+
+        const formData = new FormData();
+        formData.append('store', loja);
+        if (fileEtiquetas) formData.append('file_etiquetas', fileEtiquetas);
+        if (fileLista) formData.append('file_lista', fileLista);
+        if (fileNf) formData.append('file_nota_fiscal', fileNf);
+        btn.disabled = true;
+        loader.style.display = 'block';
+        resultSection.style.display = 'none';
+
+        try {
+            const token = localStorage.getItem('access_token');
+            const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+            const response = await fetch('/api/etiquetas/processar', { method: 'POST', headers, body: formData });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Erro ao processar');
+            if (!data.success) throw new Error(data.message || 'Erro desconhecido.');
+            document.getElementById('qtd-etiquetas').textContent = data.qtd;
+            const btnEt = document.getElementById('btn-download-etiquetas');
+            const btnLi = document.getElementById('btn-download-lista');
+            if (data.id_etiquetas) {
+                btnEt.onclick = async (ev) => { ev.preventDefault(); await baixarArquivoProtegido(data.id_etiquetas, 'etiquetas_processadas.pdf'); };
+                btnEt.style.display = 'block';
+            } else {
+                btnEt.style.display = 'none';
+            }
+            if (data.id_lista) {
+                btnLi.onclick = async (ev) => { ev.preventDefault(); await baixarArquivoProtegido(data.id_lista, 'lista_processada.pdf'); };
+                btnLi.style.display = 'block';
+            } else {
+                btnLi.style.display = 'none';
+            }
+            resultSection.style.display = 'block';
+        } catch (e) {
+            console.error(e);
+            errorMsg.textContent = 'Erro: ' + e.message;
+            errorMsg.style.display = 'block';
+        } finally {
+            btn.disabled = false;
+            loader.style.display = 'none';
+        }
+    }
+
+    async function gerarImpressaoAvulsa() {
+        const btn = document.getElementById('btn-avulsa');
+        const loader = document.getElementById('loader-avulsa');
+        const errorMsg = document.getElementById('error-avulsa');
+        const successMsg = document.getElementById('success-avulsa');
+        const resultSection = document.getElementById('result-avulsa');
+        const formato = document.querySelector('input[name="formato-avulsa"]:checked')?.value || 'grande';
+        const itens = formato === 'editor' ? montarItensEditorAvulsa() : montarItensGrandeAvulsa();
+        const formatoPdf = formato === 'editor' ? await escolherTamanhoPdfEditor() : formato;
+        if (!formatoPdf) return;
+        errorMsg.style.display = 'none';
+        successMsg.style.display = 'none';
+        resultSection.style.display = 'none';
+        if (!itens.length) return alert('Informe pelo menos um item para imprimir.');
+        btn.disabled = true;
+        loader.style.display = 'block';
+
+        try {
+            const token = localStorage.getItem('access_token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const url = formato === 'editor' ? '/api/etiquetas/impressao-editor' : '/api/etiquetas/impressao-avulsa';
+            const body = formato === 'editor'
+                ? JSON.stringify({ tamanho: formatoPdf, etiquetas: itens })
+                : JSON.stringify({ formato: formatoPdf, itens });
+            const response = await fetch(url, {
+                method: 'POST',
+                headers,
+                body
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.detail || data.message || 'Erro ao gerar PDF avulso.');
+            await abrirPdfProtegido(data.id_etiquetas);
+            successMsg.textContent = 'PDF avulso aberto em uma nova aba.';
+            successMsg.style.display = 'block';
+        } catch (e) {
+            console.error(e);
+            errorMsg.textContent = 'Erro: ' + e.message;
+            errorMsg.style.display = 'block';
+        } finally {
+            btn.disabled = false;
+            loader.style.display = 'none';
+        }
+    }
+
+    function limparQrCodeLink() {
+        document.getElementById('qrcode-link').value = '';
+        document.getElementById('qrcode-titulo').value = '';
+        document.getElementById('qrcode-quantidade').value = '1';
+        document.getElementById('qrcode-layout').value = 'grade_15x8';
+        document.querySelector('input[name="formato-qrcode"][value="grande"]').checked = true;
+        atualizarLayoutQrCode();
+        limparPreviewQrCode();
+        document.getElementById('error-qrcode').style.display = 'none';
+        document.getElementById('success-qrcode').style.display = 'none';
+        document.getElementById('result-qrcode').style.display = 'none';
+    }
+
+    function atualizarLayoutQrCode() {
+        const tamanho = document.querySelector('input[name="formato-qrcode"]:checked')?.value || 'grande';
+        const select = document.getElementById('qrcode-layout');
+        const opcaoGradeGrande = select.querySelector('option[value="grade_15x8"]');
+        const opcaoGradePequena = select.querySelector('option[value="grade_8x25"]');
+        const usaGrande = tamanho === 'grande';
+        opcaoGradeGrande.disabled = !usaGrande;
+        opcaoGradePequena.disabled = usaGrande;
+        if (usaGrande && select.value === 'grade_8x25') select.value = 'grade_15x8';
+        if (!usaGrande && select.value === 'grade_15x8') select.value = 'grade_8x25';
+    }
+
+    function limparPreviewQrCode() {
+        if (qrcodePreviewUrl) {
+            window.URL.revokeObjectURL(qrcodePreviewUrl);
+            qrcodePreviewUrl = null;
+        }
+        qrcodePreviewFileId = null;
+        const frame = document.getElementById('qrcode-preview-frame');
+        if (frame) frame.removeAttribute('src');
+    }
+
+    async function mostrarPreviewQrCode(fileId) {
+        limparPreviewQrCode();
+        const blob = await obterPreviewProtegidoBlob(fileId);
+        qrcodePreviewUrl = window.URL.createObjectURL(blob);
+        qrcodePreviewFileId = fileId;
+        document.getElementById('qrcode-preview-frame').src = qrcodePreviewUrl;
+    }
+
+    async function gerarQrCodeLink() {
+        const btn = document.getElementById('btn-qrcode');
+        const loader = document.getElementById('loader-qrcode');
+        const errorMsg = document.getElementById('error-qrcode');
+        const successMsg = document.getElementById('success-qrcode');
+        const resultSection = document.getElementById('result-qrcode');
+        const link = document.getElementById('qrcode-link').value.trim();
+        const titulo = document.getElementById('qrcode-titulo').value.trim();
+        const quantidade = Number(document.getElementById('qrcode-quantidade').value || 1);
+        const tamanho = document.querySelector('input[name="formato-qrcode"]:checked')?.value || 'grande';
+        const layout = document.getElementById('qrcode-layout').value || 'a4';
+
+        errorMsg.style.display = 'none';
+        successMsg.style.display = 'none';
+        resultSection.style.display = 'none';
+        limparPreviewQrCode();
+        if (!link) return alert('Informe o link para gerar o QR Code.');
+
+        btn.disabled = true;
+        loader.style.display = 'block';
+        try {
+            const token = localStorage.getItem('access_token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const response = await fetch('/api/etiquetas/qrcode-link', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ link, titulo, quantidade, tamanho, layout })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.detail || data.message || 'Erro ao gerar QR Code.');
+            document.getElementById('qtd-qrcode').textContent = data.qtd || quantidade || 1;
+            const btnDownload = document.getElementById('btn-download-qrcode');
+            const btnOpen = document.getElementById('btn-open-qrcode');
+            await mostrarPreviewQrCode(data.id_etiquetas);
+            btnDownload.onclick = async (ev) => {
+                ev.preventDefault();
+                await baixarArquivoProtegido(qrcodePreviewFileId || data.id_etiquetas, 'qrcode_link.pdf');
+            };
+            btnOpen.onclick = (ev) => {
+                ev.preventDefault();
+                if (qrcodePreviewUrl) window.open(qrcodePreviewUrl, '_blank', 'noopener');
+            };
+            resultSection.style.display = 'block';
+            successMsg.textContent = 'Pré-visualização gerada. Confira antes de baixar.';
+            successMsg.style.display = 'block';
+        } catch (e) {
+            console.error(e);
+            errorMsg.textContent = 'Erro: ' + e.message;
+            errorMsg.style.display = 'block';
+        } finally {
+            btn.disabled = false;
+            loader.style.display = 'none';
+        }
+    }
+
+    async function escolherTamanhoPdfEditor() {
+        const backdrop = document.getElementById('pdf-choice-backdrop');
+        backdrop.style.display = 'flex';
+        return new Promise((resolve) => {
+            const escolher = (ev) => {
+                const botao = ev.target.closest('[data-pdf-choice]');
+                if (!botao) return;
+                backdrop.style.display = 'none';
+                backdrop.removeEventListener('click', escolher);
+                document.removeEventListener('keydown', cancelar);
+                resolve(botao.dataset.pdfChoice || '');
+            };
+            const cancelar = (ev) => {
+                if (ev.key !== 'Escape') return;
+                backdrop.style.display = 'none';
+                backdrop.removeEventListener('click', escolher);
+                document.removeEventListener('keydown', cancelar);
+                resolve('');
+            };
+            backdrop.addEventListener('click', escolher);
+            document.addEventListener('keydown', cancelar);
+        });
+    }
+
+    adicionarItemAvulso();
+    garantirLinhasGradeAvulsa();
+    atualizarFormatoAvulsa();
+    atualizarLayoutQrCode();
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>

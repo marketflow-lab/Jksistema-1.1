@@ -1,0 +1,889 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configurações - JK Sistema</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; }
+        body {
+            padding: 20px;
+            background: #0e1117;
+            color: #e5e5e5;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            overflow-y: auto;
+        }
+        .container { max-width: 1240px; margin: 0 auto; }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+        .back-btn, .tab-btn, button {
+            padding: 8px 14px;
+            background: #4facfe;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            border: none;
+            cursor: pointer;
+        }
+        .back-btn:hover, .tab-btn:hover, button:hover { background: #0073e6; }
+        h1 { margin: 0; }
+        .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+        .tab-btn { background: #172233; color: #d7eaff; border: 1px solid #2b4564; }
+        .tab-btn.active { background: #4facfe; color: #06213e; }
+        .tabs .btn-save-top { min-height: 33px; padding: 8px 14px; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+        .card {
+            background: #1c1f2b;
+            border: 1px solid #222;
+            border-radius: 10px;
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+        .card h2 { margin-top: 0; color: #9bd1ff; }
+        .row { display: grid; grid-template-columns: 1fr 180px; gap: 12px; align-items: end; }
+        .label { color: #c7ddf5; font-size: 0.95rem; margin-bottom: 6px; display: block; }
+        input[type="number"], input[type="text"], input[type="password"], select {
+            width: 100%;
+            padding: 9px 10px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            background: #11141d;
+            color: #e5e5e5;
+        }
+        select { min-height: 38px; }
+        .actions { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn-save { background: #28a745; }
+        .btn-save:hover { background: #218838; }
+        .btn-refresh { background: #6c757d; }
+        .btn-refresh:hover { background: #5b636a; }
+        .btn-danger { background: #ff6b6b; }
+        .btn-danger:hover { background: #d9534f; }
+        .btn-warning { background: #ffb84d; color: #2f2100; }
+        .btn-warning:hover { background: #e3a33f; }
+        .status {
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #222;
+            background: #161925;
+            min-height: 20px;
+        }
+        .status.loading { color: #9bd1ff; border-color: #4facfe; background: #0a1428; }
+        .status.success { color: #66bb6a; border-color: #1b5e20; background: #0f2e0d; }
+        .status.error { color: #ff6b6b; border-color: #c62828; background: #28010d; }
+        .hint { color: #9fb3c8; font-size: 0.9rem; margin-top: 8px; }
+        .users-layout {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 16px;
+            align-items: start;
+        }
+        .user-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .user-item {
+            border: 1px solid #2a3a4f;
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: #121a28;
+            cursor: pointer;
+            transition: 0.2s ease;
+        }
+        .user-item:hover, .user-item.active {
+            border-color: #4facfe;
+            background: #15263d;
+        }
+        .user-item .name { font-weight: 700; color: #dff0ff; }
+        .user-item .meta { color: #9fb3c8; font-size: 12px; margin-top: 4px; }
+        .detail-box {
+            background: #121a28;
+            border: 1px solid #2a3a4f;
+            border-radius: 10px;
+            padding: 14px;
+        }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .ia-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+        .checkbox-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;
+        }
+        .check-item {
+            display: flex; align-items: center; gap: 8px; background: #0c1625; border: 1px solid #22344b;
+            border-radius: 10px; padding: 8px 10px; font-size: 13px;
+        }
+        .check-item input { width: auto; margin: 0; }
+        .hidden { display: none !important; }
+        .small { color: #9fb3c8; font-size: 12px; }
+        @media (max-width: 900px) {
+            .users-layout, .row, .grid-2, .ia-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>⚙️ Configurações</h1>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
+            <a class="back-btn" href="/dashboard.html">⬅️ Voltar</a>
+        </div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="estoque">Estoque</button>
+        <button id="tabUsuariosBtn" class="tab-btn hidden" data-tab="usuarios">Usuários</button>
+        <button id="btnSalvarTopo" class="btn-save btn-save-top" type="button">💾 Salvar</button>
+    </div>
+
+    <div id="tab-estoque" class="tab-panel active">
+        <div class="card">
+            <h2>Estoque</h2>
+            <div class="row">
+                <div>
+                    <label class="label" for="janelaAutoSync">Janela para pular auto-atualização automática ao entrar no módulo (minutos)</label>
+                    <input id="janelaAutoSync" type="number" min="1" max="1440" step="1" value="30">
+                    <div class="hint">Se a última atualização da loja for mais recente que esse valor, o auto-sync não será disparado.</div>
+                </div>
+                <div></div>
+            </div>
+
+            <div class="actions">
+                <button id="btnRecarregar" class="btn-refresh">🔄 Recarregar</button>
+            </div>
+
+            <div id="status" class="status"></div>
+        </div>
+
+        <div id="cardIaPadrao" class="card hidden">
+            <h2>IA padrão por função</h2>
+            <div class="ia-grid">
+                <div>
+                    <label class="label" for="iaModeloPadrao">IA padrão geral</label>
+                    <select id="iaModeloPadrao">
+                        <option value="vertex:gemini-2.5-pro">Vertex Gemini 2.5 Pro</option>
+                    </select>
+                    <div class="hint">Usada como fallback quando uma função não tiver modelo próprio configurado.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaModeloPerguntas">IA que responde perguntas</label>
+                    <select id="iaModeloPerguntas">
+                        <option value="vertex:gemini-2.5-pro">Vertex Gemini 2.5 Pro</option>
+                    </select>
+                    <div class="hint">Usada nas respostas de perguntas e pós-venda do Mercado Livre.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaModeloChat">IA do chat lateral</label>
+                    <select id="iaModeloChat">
+                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
+                    </select>
+                    <div class="hint">Usada pelo assistente do sistema e pelas conversas no sidebar.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaModeloFavoritos">IA que ajuda a fazer favoritos</label>
+                    <select id="iaModeloFavoritos">
+                        <option value="vertex:gemini-2.5-pro">Vertex Gemini 2.5 Pro</option>
+                    </select>
+                    <label class="check-item" style="margin-top: 10px;">
+                        <input id="iaFavoritosUsarImagem" type="checkbox">
+                        <span>Usar imagem para comparar os anúncios</span>
+                    </label>
+                    <div class="hint">Quando ativo, essa preferência fica salva para a IA de Favoritos usar imagem na comparação dos anúncios.</div>
+                </div>
+                <div style="grid-column: 1 / -1;">
+                    <label class="label">IAs ativas no sistema (global)</label>
+                    <div class="checkbox-grid">
+                        <label class="check-item">
+                            <input id="iaOpenaiAtiva" type="checkbox">
+                            <span>OpenAI ativa</span>
+                        </label>
+                        <label class="check-item">
+                            <input id="iaDeepseekAtiva" type="checkbox">
+                            <span>DeepSeek ativa</span>
+                        </label>
+                        <label class="check-item">
+                            <input id="iaGeminiAtiva" type="checkbox">
+                            <span>Gemini API ativa</span>
+                        </label>
+                        <label class="check-item">
+                            <input id="iaVertexAtiva" type="checkbox">
+                            <span>Vertex AI ativa</span>
+                        </label>
+                    </div>
+                    <div class="hint">Quando uma IA for desativada aqui, ela deixa de ser usada em todo o sistema ate ser reativada.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-usuarios" class="tab-panel">
+        <div id="cardAdminUsuarios" class="card hidden">
+            <h2>Usuários cadastrados</h2>
+            <div class="hint">A lista fica à esquerda. Clique em um usuário para abrir as opções de edição, senha, bloqueio e exclusão.</div>
+
+            <div class="users-layout">
+                <div>
+                    <div class="actions">
+                        <button id="btnAtualizarUsuarios" class="btn-refresh">🔄 Atualizar lista</button>
+                        <button id="btnNovoUsuario">➕ Novo usuário</button>
+                    </div>
+                    <div id="usersList" class="user-list"></div>
+                </div>
+
+                <div class="detail-box">
+                    <div id="userEmptyState" class="small">Selecione um usuário da lista para visualizar e editar as opções.</div>
+
+                    <div id="userDetailPanel" class="hidden">
+                        <h3 id="formTitle">Editar usuário</h3>
+                        <div id="userNumberBadge" style="display:none; margin-bottom:10px;">
+                            <span id="userNumberDisplay" style="background:#172233; border:1px solid #2b4564; border-radius:6px; padding:4px 12px; color:#9bd1ff; font-weight:bold; font-size:0.95rem; font-family:monospace;"></span>
+                        </div>
+
+                        <label class="label">Usuário</label>
+                        <input id="username" type="text" placeholder="Ex.: admin">
+
+                        <label class="label">Nome</label>
+                        <input id="name" type="text" placeholder="Nome exibido">
+
+                        <div class="grid-2">
+                            <div>
+                                <label class="label">Cliente</label>
+                                <input id="clientId" type="text" value="default">
+                            </div>
+                            <div>
+                                <label class="label">Validade</label>
+                                <input id="validUntil" type="text" placeholder="15/04/2026">
+                            </div>
+                        </div>
+
+                        <div class="grid-2">
+                            <div>
+                                <label class="label">Senha</label>
+                                <input id="password" type="password" placeholder="Informe para criar ou trocar">
+                            </div>
+                            <div>
+                                <label class="label">Máquina principal</label>
+                                <input id="machineId" type="text" placeholder="Gerado no primeiro login">
+                            </div>
+                        </div>
+
+                        <div class="grid-2">
+                            <div>
+                                <label class="label">Limite de máquinas</label>
+                                <input id="maxMachines" type="number" min="0" value="1" placeholder="1">
+                            </div>
+                            <div>
+                                <label class="label">Observação</label>
+                                <input value="0 = ilimitado" disabled>
+                            </div>
+                        </div>
+
+                        <label class="check-item" style="margin: 10px 0;">
+                            <input id="active" type="checkbox" checked>
+                            <span>Usuário ativo</span>
+                        </label>
+
+                        <label class="label">Permissões</label>
+                        <div id="permissionsGrid" class="checkbox-grid"></div>
+
+                        <div class="actions">
+                            <button id="btnSalvarUsuario">💾 Salvar usuário</button>
+                            <button id="btnTrocarSenha" class="btn-warning">🔐 Trocar senha</button>
+                            <button id="btnResetarDispositivos" class="btn-warning">📱 Resetar dispositivos</button>
+                            <button id="btnAlternarStatus" class="btn-refresh">⛔ Desativar</button>
+                            <button id="btnExcluirUsuario" class="btn-danger">🗑️ Excluir</button>
+                            <button id="btnCancelarEdicao" class="btn-refresh">Limpar</button>
+                        </div>
+
+                        <div id="userStatus" class="status"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    if (!verificarSessao()) {
+        // verificarSessao já redireciona quando não há sessão.
+    }
+
+    const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
+    const canManageUsers = permissions.full === true;
+
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+        });
+    });
+
+    const inputJanela = document.getElementById('janelaAutoSync');
+    const selectIaModelo = document.getElementById('iaModeloPadrao');
+    const selectIaModeloPerguntas = document.getElementById('iaModeloPerguntas');
+    const selectIaModeloChat = document.getElementById('iaModeloChat');
+    const selectIaModeloFavoritos = document.getElementById('iaModeloFavoritos');
+    const checkIaFavoritosUsarImagem = document.getElementById('iaFavoritosUsarImagem');
+    const checkIaOpenaiAtiva = document.getElementById('iaOpenaiAtiva');
+    const checkIaDeepseekAtiva = document.getElementById('iaDeepseekAtiva');
+    const checkIaGeminiAtiva = document.getElementById('iaGeminiAtiva');
+    const checkIaVertexAtiva = document.getElementById('iaVertexAtiva');
+    const cardIaPadrao = document.getElementById('cardIaPadrao');
+    const btnSalvarTopo = document.getElementById('btnSalvarTopo');
+    const btnRecarregar = document.getElementById('btnRecarregar');
+    const statusEl = document.getElementById('status');
+
+    const tabUsuariosBtn = document.getElementById('tabUsuariosBtn');
+    const cardAdminUsuarios = document.getElementById('cardAdminUsuarios');
+    const usersList = document.getElementById('usersList');
+    const userEmptyState = document.getElementById('userEmptyState');
+    const userDetailPanel = document.getElementById('userDetailPanel');
+    const userStatus = document.getElementById('userStatus');
+
+    const formTitle = document.getElementById('formTitle');
+    const usernameInput = document.getElementById('username');
+    const nameInput = document.getElementById('name');
+    const clientIdInput = document.getElementById('clientId');
+    const validUntilInput = document.getElementById('validUntil');
+    const passwordInput = document.getElementById('password');
+    const machineIdInput = document.getElementById('machineId');
+    const maxMachinesInput = document.getElementById('maxMachines');
+    const activeInput = document.getElementById('active');
+    const permissionsGrid = document.getElementById('permissionsGrid');
+
+    const btnAtualizarUsuarios = document.getElementById('btnAtualizarUsuarios');
+    const btnNovoUsuario = document.getElementById('btnNovoUsuario');
+    const btnSalvarUsuario = document.getElementById('btnSalvarUsuario');
+    const btnTrocarSenha = document.getElementById('btnTrocarSenha');
+    const btnResetarDispositivos = document.getElementById('btnResetarDispositivos');
+    const btnAlternarStatus = document.getElementById('btnAlternarStatus');
+    const btnExcluirUsuario = document.getElementById('btnExcluirUsuario');
+    const btnCancelarEdicao = document.getElementById('btnCancelarEdicao');
+
+    const permissionKeys = [
+        'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
+        'etiquetas', 'favoritos', 'anuncios_ml', 'medias_compras',
+        'cadastro', 'impostos', 'simulador', 'configuracoes', 'importacoes', 'full'
+    ];
+
+    let usuariosCache = [];
+    let currentUser = null;
+    let hiddenPermissionsState = { full: false, configuracoes: false };
+
+    if (canManageUsers) {
+        tabUsuariosBtn.classList.remove('hidden');
+        cardAdminUsuarios.classList.remove('hidden');
+        cardIaPadrao.classList.remove('hidden');
+    }
+
+    function setStatus(texto, tipo = '') {
+        statusEl.className = 'status' + (tipo ? ` ${tipo}` : '');
+        statusEl.textContent = texto || '';
+    }
+
+    function setUserStatus(texto, tipo = '') {
+        userStatus.className = 'status' + (tipo ? ` ${tipo}` : '');
+        userStatus.textContent = texto || '';
+    }
+
+    function setLoading(loading) {
+        btnSalvarTopo.disabled = loading;
+        btnRecarregar.disabled = loading;
+    }
+
+    function nomeModeloIALimpo(modelo) {
+        const nomesFixos = {
+            'gpt-5.4-nano': 'Nano',
+            'gpt-5.4-mini': 'Mini',
+            'gpt-5.4': 'GPT-5.4',
+            'gpt-5.5': 'GPT-5.5',
+            'deepseek-v4-flash': 'DS V4 Flash',
+            'deepseek-v4-pro': 'DS V4 Pro',
+        };
+        const nome = String(modelo?.name || '').trim();
+        if (nomesFixos[nome]) return nomesFixos[nome];
+        return String(modelo?.display_name || modelo?.name || nome).replace(/[�]/g, '').trim();
+    }
+
+    function adicionarOpcaoModeloIA(grupo, modelo, selecionado) {
+        if (!grupo || !modelo) return;
+        const nome = String(modelo.name || '').trim();
+        if (!nome) return;
+        const opt = document.createElement('option');
+        opt.value = nome;
+        opt.textContent = nomeModeloIALimpo(modelo);
+        if (nome === selecionado) opt.selected = true;
+        grupo.appendChild(opt);
+    }
+
+    function preencherSelectModeloIA(selectEl, grupos, selecionado, fallbackValue = 'vertex:gemini-2.5-pro') {
+        if (!selectEl) return;
+        const modeloSelecionado = String(selecionado || fallbackValue).trim();
+        selectEl.innerHTML = '';
+        let contemSelecionado = false;
+        grupos.forEach(grupoInfo => {
+            const itens = Array.isArray(grupoInfo.itens) ? grupoInfo.itens : [];
+            if (!itens.length) return;
+            const grupo = document.createElement('optgroup');
+            grupo.label = grupoInfo.label;
+            itens.forEach(modelo => {
+                if (String(modelo.name || '').trim() === modeloSelecionado) contemSelecionado = true;
+                adicionarOpcaoModeloIA(grupo, modelo, modeloSelecionado);
+            });
+            selectEl.appendChild(grupo);
+        });
+
+        if (!contemSelecionado && modeloSelecionado) {
+            const opt = document.createElement('option');
+            opt.value = modeloSelecionado;
+            opt.textContent = modeloSelecionado;
+            opt.selected = true;
+            selectEl.insertBefore(opt, selectEl.firstChild);
+        }
+        if (!selectEl.value) selectEl.value = fallbackValue;
+    }
+
+    async function carregarModelosIA(selecionados = {}) {
+        const fallback = [
+            { label: 'Vertex AI', itens: [
+                { name: 'vertex:gemini-2.5-pro', display_name: 'Vertex Gemini 2.5 Pro' },
+                { name: 'vertex:gemini-2.5-flash', display_name: 'Vertex Gemini 2.5 Flash' },
+            ]},
+            { label: 'OpenAI', itens: [
+                { name: 'gpt-5.4-nano', display_name: 'GPT-5.4 Nano' },
+                { name: 'gpt-5.4-mini', display_name: 'GPT-5.4 Mini' },
+            ]},
+        ];
+
+        let grupos = fallback;
+        try {
+            const resp = await fetch('/api/ia/modelos', { headers: obterAuthHeaders(), cache: 'no-store' });
+            if (resp.ok) {
+                const data = await resp.json();
+                grupos = [
+                    { label: 'Vertex AI', itens: data.vertex || [] },
+                    { label: 'Gemini API', itens: data.gemini || [] },
+                    { label: 'OpenAI', itens: data.openai || [] },
+                    { label: 'DeepSeek', itens: data.deepseek || [] },
+                ];
+            }
+        } catch (e) {}
+
+        const cfg = typeof selecionados === 'string' ? { padrao: selecionados } : (selecionados || {});
+        preencherSelectModeloIA(selectIaModelo, grupos, cfg.padrao || 'vertex:gemini-2.5-pro', 'vertex:gemini-2.5-pro');
+        preencherSelectModeloIA(selectIaModeloPerguntas, grupos, cfg.perguntas || cfg.padrao || 'vertex:gemini-2.5-pro', 'vertex:gemini-2.5-pro');
+        preencherSelectModeloIA(selectIaModeloChat, grupos, cfg.chat || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
+        preencherSelectModeloIA(selectIaModeloFavoritos, grupos, cfg.favoritos || cfg.padrao || 'vertex:gemini-2.5-pro', 'vertex:gemini-2.5-pro');
+    }
+
+    function labelPermissao(key) {
+        const map = {
+            analise_promo: 'Análise Promo', renovacao_fixa: 'Renovação', vendas: 'Vendas', estoque: 'Estoque',
+            integracao: 'Integrações', etiquetas: 'Etiquetas', full: 'Administrador', favoritos: 'Favoritos',
+            anuncios_ml: 'Anúncios ML', medias_compras: 'Médias/Compras', cadastro: 'Cadastro', impostos: 'Impostos',
+            simulador: 'Simulador', configuracoes: 'Configurações', importacoes: 'Importações'
+        };
+        return map[key] || key;
+    }
+
+    function normalizarDataSistema(valor) {
+        const texto = String(valor || '').trim();
+        if (!texto) return '';
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(texto)) return texto;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+            const [ano, mes, dia] = texto.split('-');
+            return `${dia}/${mes}/${ano}`;
+        }
+        return texto;
+    }
+
+    function renderPermissionGrid() {
+        permissionsGrid.innerHTML = permissionKeys.map(key => `
+            <label class="check-item">
+                <input type="checkbox" data-permission="${key}">
+                <span>${labelPermissao(key)}</span>
+            </label>
+        `).join('');
+
+        const fullBox = permissionsGrid.querySelector('[data-permission="full"]');
+        fullBox.addEventListener('change', () => {
+            const on = fullBox.checked;
+            permissionsGrid.querySelectorAll('[data-permission]').forEach(cb => {
+                if (cb !== fullBox) cb.checked = on;
+            });
+        });
+    }
+
+    function obterPermissoesFormulario() {
+        const out = { ...hiddenPermissionsState };
+        permissionsGrid.querySelectorAll('[data-permission]').forEach(cb => {
+            out[cb.dataset.permission] = !!cb.checked;
+        });
+        return out;
+    }
+
+    function aplicarPermissoesFormulario(perms) {
+        const payload = perms || {};
+        hiddenPermissionsState = {
+            full: !!payload.full,
+            configuracoes: !!payload.configuracoes
+        };
+        permissionsGrid.querySelectorAll('[data-permission]').forEach(cb => {
+            cb.checked = !!payload[cb.dataset.permission];
+        });
+    }
+
+    function mostrarPainelUsuario(show) {
+        userEmptyState.classList.toggle('hidden', show);
+        userDetailPanel.classList.toggle('hidden', !show);
+    }
+
+    function proximoNumeroCliente() {
+        if (!usuariosCache.length) return '000001';
+        let max = 0;
+        usuariosCache.forEach(u => {
+            const n = parseInt(u.client_id, 10);
+            if (!isNaN(n) && n > max) max = n;
+        });
+        return String(max + 1).padStart(6, '0');
+    }
+
+    function limparFormularioUsuario(mostrar = false) {
+        currentUser = null;
+        hiddenPermissionsState = { full: false, configuracoes: false };
+        formTitle.textContent = 'Novo usuário';
+        usernameInput.disabled = false;
+        usernameInput.value = '';
+        nameInput.value = '';
+        clientIdInput.value = proximoNumeroCliente();
+        validUntilInput.value = '';
+        passwordInput.value = '';
+        machineIdInput.value = '';
+        maxMachinesInput.value = 1;
+        activeInput.checked = true;
+        aplicarPermissoesFormulario({});
+        const nbEl = document.getElementById('userNumberBadge');
+        if (nbEl) nbEl.style.display = 'none';
+        btnAlternarStatus.textContent = '⛔ Desativar';
+        setUserStatus('');
+        mostrarPainelUsuario(mostrar);
+        renderListaUsuarios(usuariosCache);
+    }
+
+    function resumoPermissoes(perms) {
+        const ativos = Object.entries(perms || {}).filter(([, v]) => v).map(([k]) => labelPermissao(k));
+        return ativos.length ? ativos.join(', ') : 'Sem permissões';
+    }
+
+    function renderListaUsuarios(users) {
+        usersList.innerHTML = '';
+        if (!users.length) {
+            usersList.innerHTML = '<div class="small">Nenhum usuário cadastrado.</div>';
+            return;
+        }
+
+        users.forEach(user => {
+            const item = document.createElement('div');
+            item.className = 'user-item' + (currentUser === user.username ? ' active' : '');
+            const numFormatado = String(user.client_id || '').padStart(6, '0');
+            item.innerHTML = `
+                <div class="name">#${numFormatado} — ${user.username}</div>
+                <div class="meta">${user.name || ''} • ${user.active ? 'Ativo' : 'Inativo'} • Dispositivos: ${user.machine_count || 0}/${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div>
+            `;
+            item.addEventListener('click', () => preencherFormularioUsuario(user));
+            usersList.appendChild(item);
+        });
+    }
+
+    function preencherFormularioUsuario(user) {
+        currentUser = user.username;
+        formTitle.textContent = 'Usuário: ' + user.username;
+        usernameInput.disabled = false;
+        usernameInput.value = user.username || '';
+        nameInput.value = user.name || '';
+        clientIdInput.value = user.client_id || 'default';
+        validUntilInput.value = normalizarDataSistema(user.valid_until || '');
+        passwordInput.value = '';
+        machineIdInput.value = user.machine_id || '';
+        maxMachinesInput.value = Number.isFinite(Number(user.max_machines)) ? Number(user.max_machines) : 1;
+        activeInput.checked = !!user.active;
+        aplicarPermissoesFormulario(user.permissions || {});
+        const numEl = document.getElementById('userNumberDisplay');
+        const numBadge = document.getElementById('userNumberBadge');
+        if (numEl && numBadge) {
+            const clientNum = user.client_id ? String(user.client_id).padStart(6, '0') : null;
+            if (clientNum) {
+                numEl.textContent = 'Nº do Cliente: ' + clientNum;
+                numBadge.style.display = 'block';
+            } else {
+                numBadge.style.display = 'none';
+            }
+        }
+        btnAlternarStatus.textContent = user.active ? '⛔ Desativar' : '✅ Ativar';
+        mostrarPainelUsuario(true);
+        setUserStatus('Usuário carregado.', 'success');
+        renderListaUsuarios(usuariosCache);
+    }
+
+    async function carregarConfiguracoes() {
+        setLoading(true);
+        setStatus('Carregando configurações...', 'loading');
+        try {
+            const resp = await fetch('/api/configuracoes', { headers: obterAuthHeaders(), cache: 'no-store' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const cfg = await resp.json();
+            const janela = Number(cfg && cfg.auto_sync_estoque_janela_minutos);
+            inputJanela.value = (Number.isFinite(janela) && janela >= 1) ? Math.round(janela) : 30;
+            const modeloIA = String(cfg && cfg.ia_modelo_padrao || 'vertex:gemini-2.5-pro').trim();
+            const modeloPerguntas = String(cfg && cfg.ia_modelo_perguntas || modeloIA).trim();
+            const modeloChat = String(cfg && cfg.ia_modelo_chat || modeloIA || 'vertex:gemini-2.5-flash').trim();
+            const modeloFavoritos = String(cfg && cfg.ia_modelo_favoritos || modeloIA).trim();
+            await carregarModelosIA({
+                padrao: modeloIA,
+                perguntas: modeloPerguntas,
+                chat: modeloChat,
+                favoritos: modeloFavoritos
+            });
+            if (selectIaModelo) selectIaModelo.value = modeloIA;
+            if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
+            if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
+            if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
+            if (checkIaFavoritosUsarImagem) checkIaFavoritosUsarImagem.checked = !!(cfg && cfg.ia_favoritos_usar_imagem);
+            if (checkIaOpenaiAtiva) checkIaOpenaiAtiva.checked = (cfg?.ia_openai_ativa !== false);
+            if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (cfg?.ia_deepseek_ativa !== false);
+            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = (cfg?.ia_gemini_ativa !== false);
+            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (cfg?.ia_vertex_ativa !== false);
+            setStatus('Configurações carregadas.', 'success');
+        } catch (e) {
+            setStatus(`Erro ao carregar configurações: ${e.message}`, 'error');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function salvarConfiguracoes() {
+        const valor = Number(inputJanela.value);
+        if (!Number.isFinite(valor) || valor < 1 || valor > 1440) {
+            setStatus('Informe um valor entre 1 e 1440 minutos.', 'error');
+            return;
+        }
+
+        setLoading(true);
+        setStatus('Salvando configurações...', 'loading');
+        try {
+            const resp = await fetch('/api/configuracoes', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                body: JSON.stringify({
+                    auto_sync_estoque_janela_minutos: Math.round(valor),
+                    ia_modelo_padrao: selectIaModelo ? String(selectIaModelo.value || 'vertex:gemini-2.5-pro').trim() : 'vertex:gemini-2.5-pro',
+                    ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-pro').trim() : 'vertex:gemini-2.5-pro',
+                    ia_modelo_chat: selectIaModeloChat ? String(selectIaModeloChat.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_modelo_favoritos: selectIaModeloFavoritos ? String(selectIaModeloFavoritos.value || 'vertex:gemini-2.5-pro').trim() : 'vertex:gemini-2.5-pro',
+                    ia_favoritos_usar_imagem: checkIaFavoritosUsarImagem ? !!checkIaFavoritosUsarImagem.checked : false,
+                    ia_openai_ativa: checkIaOpenaiAtiva ? !!checkIaOpenaiAtiva.checked : true,
+                    ia_deepseek_ativa: checkIaDeepseekAtiva ? !!checkIaDeepseekAtiva.checked : true,
+                    ia_gemini_ativa: checkIaGeminiAtiva ? !!checkIaGeminiAtiva.checked : true,
+                    ia_vertex_ativa: checkIaVertexAtiva ? !!checkIaVertexAtiva.checked : true
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+            const salvo = Number(data?.configuracoes?.auto_sync_estoque_janela_minutos || Math.round(valor));
+            const modeloSalvo = String(data?.configuracoes?.ia_modelo_padrao || '').trim();
+            const modeloPerguntasSalvo = String(data?.configuracoes?.ia_modelo_perguntas || modeloSalvo).trim();
+            const modeloChatSalvo = String(data?.configuracoes?.ia_modelo_chat || modeloSalvo).trim();
+            const modeloFavoritosSalvo = String(data?.configuracoes?.ia_modelo_favoritos || modeloSalvo).trim();
+            inputJanela.value = salvo;
+            if (modeloSalvo && selectIaModelo) selectIaModelo.value = modeloSalvo;
+            if (modeloPerguntasSalvo && selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntasSalvo;
+            if (modeloChatSalvo && selectIaModeloChat) selectIaModeloChat.value = modeloChatSalvo;
+            if (modeloFavoritosSalvo && selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritosSalvo;
+            if (checkIaFavoritosUsarImagem) checkIaFavoritosUsarImagem.checked = !!data?.configuracoes?.ia_favoritos_usar_imagem;
+            if (checkIaOpenaiAtiva) checkIaOpenaiAtiva.checked = (data?.configuracoes?.ia_openai_ativa !== false);
+            if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (data?.configuracoes?.ia_deepseek_ativa !== false);
+            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = (data?.configuracoes?.ia_gemini_ativa !== false);
+            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (data?.configuracoes?.ia_vertex_ativa !== false);
+            setStatus(`Configuração salva com sucesso (${salvo} min). IA perguntas: ${modeloPerguntasSalvo || 'padrão'}; chat: ${modeloChatSalvo || 'padrão'}; favoritos: ${modeloFavoritosSalvo || 'padrão'}.`, 'success');
+        } catch (e) {
+            setStatus(`Erro ao salvar configurações: ${e.message}`, 'error');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function carregarUsuarios() {
+        if (!canManageUsers) return;
+        setUserStatus('Carregando usuários...', 'loading');
+        const resp = await fetch('/api/admin/users', { headers: obterAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+            setUserStatus(data.detail || data.message || 'Erro ao carregar usuários.', 'error');
+            return;
+        }
+        usuariosCache = data.users || [];
+        renderListaUsuarios(usuariosCache);
+        setUserStatus('Lista atualizada.', 'success');
+    }
+
+    async function salvarUsuario() {
+        const payload = {
+            username: usernameInput.value.trim(),
+            original_username: currentUser,
+            password: passwordInput.value,
+            name: nameInput.value.trim(),
+            client_id: clientIdInput.value.trim() || 'default',
+            valid_until: normalizarDataSistema(validUntilInput.value),
+            machine_id: machineIdInput.value.trim(),
+            max_machines: Number(maxMachinesInput.value || 1),
+            active: activeInput.checked,
+            permissions: obterPermissoesFormulario()
+        };
+
+        if (payload.valid_until && !/^\d{2}\/\d{2}\/\d{4}$/.test(payload.valid_until)) {
+            setUserStatus('Use a data no formato 15/04/2026.', 'error');
+            return;
+        }
+
+        if (!payload.username) {
+            setUserStatus('Informe o usuário.', 'error');
+            return;
+        }
+        if (!Number.isFinite(payload.max_machines) || payload.max_machines < 0) {
+            setUserStatus('Informe um limite de máquinas válido.', 'error');
+            return;
+        }
+        if (!currentUser && !payload.password) {
+            setUserStatus('Informe a senha para o novo usuário.', 'error');
+            return;
+        }
+
+        setUserStatus('Salvando usuário...', 'loading');
+        const resp = await fetch('/api/admin/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+            setUserStatus(data.detail || data.message || 'Erro ao salvar usuário.', 'error');
+            return;
+        }
+        await carregarUsuarios();
+        const salvo = data.user || null;
+        if (salvo) preencherFormularioUsuario(salvo);
+        passwordInput.value = '';
+        setUserStatus(data.message || 'Usuário salvo com sucesso.', 'success');
+    }
+
+    async function trocarSenhaUsuario() {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+        if (!username || !password) {
+            setUserStatus('Informe a nova senha no campo senha.', 'error');
+            return;
+        }
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username) + '/password', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+            body: JSON.stringify({ password })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            setUserStatus(data.detail || data.message || 'Erro ao trocar senha.', 'error');
+            return;
+        }
+        passwordInput.value = '';
+        setUserStatus(data.message || 'Senha atualizada.', 'success');
+    }
+
+    async function resetarDispositivosUsuario() {
+        const username = usernameInput.value.trim();
+        if (!username) {
+            setUserStatus('Selecione um usuário.', 'error');
+            return;
+        }
+        if (!confirm('Deseja resetar os dispositivos vinculados de ' + username + '?')) return;
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username) + '/reset-devices', {
+            method: 'PUT',
+            headers: obterAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            setUserStatus(data.detail || data.message || 'Erro ao resetar dispositivos.', 'error');
+            return;
+        }
+        await carregarUsuarios();
+        const atualizado = (data.user || null);
+        if (atualizado) preencherFormularioUsuario(atualizado);
+        setUserStatus(data.message || 'Dispositivos resetados.', 'success');
+    }
+
+    async function alternarStatusUsuario() {
+        const username = usernameInput.value.trim();
+        if (!username) {
+            setUserStatus('Selecione um usuário.', 'error');
+            return;
+        }
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username) + '/status', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+            body: JSON.stringify({ active: !activeInput.checked })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            setUserStatus(data.detail || data.message || 'Erro ao alterar status.', 'error');
+            return;
+        }
+        await carregarUsuarios();
+        const atualizado = (data.user || null);
+        if (atualizado) preencherFormularioUsuario(atualizado);
+        setUserStatus(data.message || 'Status atualizado.', 'success');
+    }
+
+    async function excluirUsuario() {
+        const username = usernameInput.value.trim();
+        if (!username) {
+            setUserStatus('Selecione um usuário.', 'error');
+            return;
+        }
+        if (!confirm('Deseja realmente excluir o usuário ' + username + '?')) return;
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username), {
+            method: 'DELETE',
+            headers: obterAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            setUserStatus(data.detail || data.message || 'Erro ao excluir usuário.', 'error');
+            return;
+        }
+        await carregarUsuarios();
+        limparFormularioUsuario(false);
+        setUserStatus(data.message || 'Usuário removido.', 'success');
+    }
+
+    btnSalvarTopo.addEventListener('click', salvarConfiguracoes);
+    btnRecarregar.addEventListener('click', carregarConfiguracoes);
+    btnAtualizarUsuarios.addEventListener('click', carregarUsuarios);
+    btnNovoUsuario.addEventListener('click', () => limparFormularioUsuario(true));
+    btnSalvarUsuario.addEventListener('click', salvarUsuario);
+    btnTrocarSenha.addEventListener('click', trocarSenhaUsuario);
+    btnResetarDispositivos.addEventListener('click', resetarDispositivosUsuario);
+    btnAlternarStatus.addEventListener('click', alternarStatusUsuario);
+    btnExcluirUsuario.addEventListener('click', excluirUsuario);
+    btnCancelarEdicao.addEventListener('click', () => limparFormularioUsuario(false));
+
+    renderPermissionGrid();
+    limparFormularioUsuario(false);
+    carregarConfiguracoes();
+    if (canManageUsers) carregarUsuarios();
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>

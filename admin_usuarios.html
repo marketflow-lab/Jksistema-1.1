@@ -1,0 +1,504 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Administração de Usuários - JK Sistema</title>
+    <script src="/auth.js?v=20260417c"></script>
+    <style>
+        :root {
+            --bg: #09111f;
+            --panel: #101a2a;
+            --panel-2: #162338;
+            --text: #ebf4ff;
+            --muted: #b5c8e4;
+            --border: #29415f;
+            --accent: #4facfe;
+            --success: #33c37d;
+            --warning: #ffb84d;
+            --danger: #ff6b6b;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        body {
+            font-family: Segoe UI, Arial, sans-serif;
+            background: linear-gradient(160deg, #08101c, #10203a 60%, #08101c);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 16px;
+        }
+        .wrap { max-width: 1280px; height: calc(100vh - 32px); margin: 0 auto; display: flex; flex-direction: column; }
+        .topbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+        }
+        h1 { margin: 0; color: #9bd1ff; }
+        .subtitle { color: var(--muted); margin-top: 6px; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .layout { display: grid; grid-template-columns: 420px 1fr; gap: 18px; flex: 1; min-height: 0; }
+        .panel {
+            background: rgba(16, 26, 42, 0.95);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 14px 28px rgba(0,0,0,0.28);
+            overflow: hidden;
+        }
+        label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--muted); }
+        input {
+            width: 100%; padding: 10px 12px; margin-bottom: 12px; border-radius: 10px;
+            border: 1px solid var(--border); background: #0c1625; color: var(--text);
+        }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .checkbox-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;
+            max-height: none; overflow: hidden; padding-right: 0;
+        }
+        .check-item {
+            display: flex; align-items: center; gap: 8px; background: #0c1625; border: 1px solid #22344b;
+            border-radius: 10px; padding: 8px 10px; font-size: 13px;
+        }
+        .check-item input { width: auto; margin: 0; }
+        button {
+            border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 700;
+        }
+        .btn-primary { background: var(--accent); color: #04213f; }
+        .btn-muted { background: #22344b; color: #fff; }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-success { background: var(--success); color: #062716; }
+        .btn-warning { background: var(--warning); color: #3a2400; }
+        .form-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .status-box {
+            margin-top: 10px; min-height: 22px; color: #bfe4ff; font-size: 14px;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 8px; border-bottom: 1px solid #21354f; text-align: left; font-size: 13px; vertical-align: top; }
+        th { color: #9bd1ff; }
+        .pill {
+            display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700;
+        }
+        .pill.on { background: rgba(51,195,125,0.18); color: #7df0b2; }
+        .pill.off { background: rgba(255,107,107,0.16); color: #ffb1b1; }
+        .table-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+        .table-actions button { padding: 7px 9px; font-size: 12px; }
+        .small { color: var(--muted); font-size: 12px; }
+        @media (max-width: 980px) {
+            .layout { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="topbar">
+        <div>
+            <h1>👤 Administração de Usuários</h1>
+            <div class="subtitle">Crie usuários, troque senhas e altere permissões do sistema.</div>
+        </div>
+        <div class="actions">
+            <button class="btn-muted" onclick="navegarComTransicao('/configuracoes.html')">Voltar às configurações</button>
+            <button class="btn-primary" onclick="carregarUsuarios()">Atualizar lista</button>
+        </div>
+    </div>
+
+    <div class="layout">
+        <div class="panel">
+            <h3 id="formTitle">Novo usuário</h3>
+            <label>Usuário</label>
+            <input id="username" placeholder="Ex.: admin">
+
+            <label>Nome</label>
+            <input id="name" placeholder="Nome exibido">
+
+            <div class="grid-2">
+                <div>
+                    <label>Senha</label>
+                    <input id="password" type="password" placeholder="Obrigatória ao criar">
+                </div>
+                <div>
+                    <label>Cliente</label>
+                    <input id="clientId" value="default" placeholder="default">
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div>
+                    <label>Validade</label>
+                    <input id="validUntil" placeholder="15/04/2026">
+                </div>
+                <div>
+                    <label>Máquina principal</label>
+                    <input id="machineId" placeholder="Opcional">
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div>
+                    <label>Limite de máquinas</label>
+                    <input id="maxMachines" type="number" min="0" value="1" placeholder="1">
+                </div>
+                <div>
+                    <label>Observação</label>
+                    <input value="0 = ilimitado" disabled>
+                </div>
+            </div>
+
+            <div class="check-item" style="margin-bottom:10px;">
+                <input id="active" type="checkbox" checked>
+                <span>Usuário ativo</span>
+            </div>
+
+            <label>Permissões</label>
+            <div id="permissionsGrid" class="checkbox-grid"></div>
+
+            <div class="form-actions">
+                <button class="btn-primary" onclick="salvarUsuario()">Salvar usuário</button>
+                <button class="btn-muted" onclick="limparFormulario()">Limpar</button>
+            </div>
+            <div id="statusBox" class="status-box"></div>
+        </div>
+
+        <div class="panel">
+            <h3>Usuários cadastrados</h3>
+            <div class="small" style="margin-bottom:10px;">Somente administradores com acesso full podem ver esta tela.</div>
+            <div style="overflow:hidden;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Usuário</th>
+                            <th>Nome</th>
+                            <th>Cliente</th>
+                            <th>Status</th>
+                            <th>Permissões</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    if (!verificarSessao()) {
+        throw new Error('Sessão ausente');
+    }
+
+    const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
+    if (permissions.full !== true) {
+        alert('Acesso permitido apenas para administrador.');
+        navegarComTransicao('/dashboard.html');
+    }
+
+    const permissionKeys = [
+        'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
+        'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras',
+        'cadastro', 'impostos', 'configuracoes', 'importacoes', 'full'
+    ];
+
+    let usuariosCache = [];
+    let editandoUsuario = null;
+    let hiddenPermissionsState = { full: false, configuracoes: false };
+
+    function labelPermissao(key) {
+        const map = {
+            analise_promo: 'Análise Promo',
+            renovacao_fixa: 'Renovação',
+            vendas: 'Vendas',
+            estoque: 'Estoque',
+            integracao: 'Integrações',
+            etiquetas: 'Etiquetas',
+            full: 'Administrador',
+            favoritos: 'Favoritos',
+            perguntas_pos_venda: 'Perguntas e pós venda',
+            anuncios_ml: 'Anúncios ML',
+            medias_compras: 'Médias/Compras',
+            cadastro: 'Cadastro',
+            impostos: 'Impostos',
+            configuracoes: 'Configurações',
+            importacoes: 'Importações'
+        };
+        return map[key] || key;
+    }
+
+    function renderPermissionGrid() {
+        const el = document.getElementById('permissionsGrid');
+        el.innerHTML = permissionKeys.map(key => `
+            <label class="check-item">
+                <input type="checkbox" data-permission="${key}">
+                <span>${labelPermissao(key)}</span>
+            </label>
+        `).join('');
+
+        const fullBox = el.querySelector('[data-permission="full"]');
+        fullBox.addEventListener('change', () => {
+            const on = fullBox.checked;
+            el.querySelectorAll('[data-permission]').forEach(cb => {
+                if (cb !== fullBox) cb.checked = on;
+            });
+        });
+    }
+
+    function obterPermissoesFormulario() {
+        const out = { ...hiddenPermissionsState };
+        document.querySelectorAll('[data-permission]').forEach(cb => {
+            out[cb.dataset.permission] = !!cb.checked;
+        });
+        return out;
+    }
+
+    function aplicarPermissoesFormulario(perms) {
+        const payload = perms || {};
+        hiddenPermissionsState = {
+            full: !!payload.full,
+            configuracoes: !!payload.configuracoes
+        };
+        document.querySelectorAll('[data-permission]').forEach(cb => {
+            cb.checked = !!payload[cb.dataset.permission];
+        });
+    }
+
+    function setStatus(msg, erro) {
+        const box = document.getElementById('statusBox');
+        box.textContent = msg || '';
+        box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
+    }
+
+    function normalizarDataSistema(valor) {
+        const texto = String(valor || '').trim();
+        if (!texto) return '';
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(texto)) return texto;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+            const [ano, mes, dia] = texto.split('-');
+            return `${dia}/${mes}/${ano}`;
+        }
+        return texto;
+    }
+
+    function limparFormulario() {
+        editandoUsuario = null;
+        hiddenPermissionsState = { full: false, configuracoes: false };
+        document.getElementById('formTitle').textContent = 'Novo usuário';
+        document.getElementById('username').value = '';
+        document.getElementById('username').disabled = false;
+        document.getElementById('name').value = '';
+        document.getElementById('password').value = '';
+        document.getElementById('clientId').value = 'default';
+        document.getElementById('validUntil').value = '';
+        document.getElementById('machineId').value = '';
+        document.getElementById('maxMachines').value = 1;
+        document.getElementById('active').checked = true;
+        aplicarPermissoesFormulario({});
+        setStatus('');
+    }
+
+    function resumoPermissoes(perms) {
+        const ativos = Object.entries(perms || {}).filter(([, v]) => v).map(([k]) => labelPermissao(k));
+        return ativos.length ? ativos.join(', ') : 'Sem permissões';
+    }
+
+    function preencherFormulario(user) {
+        editandoUsuario = user.username;
+        document.getElementById('formTitle').textContent = 'Editando: ' + user.username;
+        document.getElementById('username').value = user.username || '';
+        document.getElementById('username').disabled = false;
+        document.getElementById('name').value = user.name || '';
+        document.getElementById('password').value = '';
+        document.getElementById('clientId').value = user.client_id || 'default';
+        document.getElementById('validUntil').value = normalizarDataSistema(user.valid_until || '');
+        document.getElementById('machineId').value = user.machine_id || '';
+        document.getElementById('maxMachines').value = Number.isFinite(Number(user.max_machines)) ? Number(user.max_machines) : 1;
+        document.getElementById('active').checked = !!user.active;
+        aplicarPermissoesFormulario(user.permissions || {});
+        setStatus('Usuário carregado para edição.');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function renderTabela(users) {
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = '';
+        if (!users.length) {
+            tbody.innerHTML = '<tr><td colspan="6">Nenhum usuário cadastrado.</td></tr>';
+            return;
+        }
+
+        users.forEach(user => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><strong>${user.username}</strong></td>
+                <td>${user.name || ''}</td>
+                <td>${user.client_id || ''}</td>
+                <td><span class="pill ${user.active ? 'on' : 'off'}">${user.active ? 'Ativo' : 'Inativo'}</span></td>
+                <td>${resumoPermissoes(user.permissions || {})}<div class="small">Dispositivos: ${user.machine_count || 0} / ${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div></td>
+                <td>
+                    <div class="table-actions"></div>
+                </td>
+            `;
+            const acoes = tr.querySelector('.table-actions');
+
+            const btnEditar = document.createElement('button');
+            btnEditar.className = 'btn-primary';
+            btnEditar.textContent = 'Editar';
+            btnEditar.onclick = () => preencherFormulario(user);
+
+            const btnSenha = document.createElement('button');
+            btnSenha.className = 'btn-warning';
+            btnSenha.textContent = 'Senha';
+            btnSenha.onclick = () => alterarSenha(user.username);
+
+            const btnStatus = document.createElement('button');
+            btnStatus.className = user.active ? 'btn-muted' : 'btn-success';
+            btnStatus.textContent = user.active ? 'Desativar' : 'Ativar';
+            btnStatus.onclick = () => alterarStatus(user.username, !user.active);
+
+            const btnResetar = document.createElement('button');
+            btnResetar.className = 'btn-warning';
+            btnResetar.textContent = 'Reset disp.';
+            btnResetar.onclick = () => resetarDispositivos(user.username);
+
+            const btnExcluir = document.createElement('button');
+            btnExcluir.className = 'btn-danger';
+            btnExcluir.textContent = 'Excluir';
+            btnExcluir.onclick = () => excluirUsuario(user.username);
+
+            acoes.innerHTML = '';
+            acoes.appendChild(btnEditar);
+            acoes.appendChild(btnSenha);
+            acoes.appendChild(btnStatus);
+            acoes.appendChild(btnResetar);
+            acoes.appendChild(btnExcluir);
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function carregarUsuarios() {
+        setStatus('Carregando usuários...');
+        const resp = await fetch('/api/admin/users', { headers: obterAuthHeaders() });
+        const data = await resp.json();
+        if (!resp.ok || data.success === false) {
+            setStatus(data.detail || data.message || 'Erro ao carregar usuários.', true);
+            return;
+        }
+        usuariosCache = data.users || [];
+        renderTabela(usuariosCache);
+        setStatus('Lista atualizada.');
+    }
+
+    async function salvarUsuario() {
+        const payload = {
+            username: document.getElementById('username').value.trim(),
+            original_username: editandoUsuario,
+            password: document.getElementById('password').value,
+            name: document.getElementById('name').value.trim(),
+            client_id: document.getElementById('clientId').value.trim() || 'default',
+            valid_until: normalizarDataSistema(document.getElementById('validUntil').value.trim()),
+            machine_id: document.getElementById('machineId').value.trim(),
+            max_machines: Number(document.getElementById('maxMachines').value || 1),
+            active: document.getElementById('active').checked,
+            permissions: obterPermissoesFormulario()
+        };
+
+        if (payload.valid_until && !/^\d{2}\/\d{2}\/\d{4}$/.test(payload.valid_until)) {
+            setStatus('Use a data no formato 15/04/2026.', true);
+            return;
+        }
+
+        if (!payload.username) {
+            setStatus('Informe o usuário.', true);
+            return;
+        }
+        if (!Number.isFinite(payload.max_machines) || payload.max_machines < 0) {
+            setStatus('Informe um limite de máquinas válido.', true);
+            return;
+        }
+        if (!editandoUsuario && !payload.password) {
+            setStatus('Informe a senha para o novo usuário.', true);
+            return;
+        }
+
+        setStatus('Salvando usuário...');
+        const resp = await fetch('/api/admin/users', {
+            method: 'POST',
+            headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.success === false) {
+            setStatus(data.detail || data.message || 'Erro ao salvar usuário.', true);
+            return;
+        }
+        limparFormulario();
+        await carregarUsuarios();
+        setStatus(data.message || 'Usuário salvo com sucesso.');
+    }
+
+    async function alterarSenha(username) {
+        const senha = prompt('Digite a nova senha para ' + username + ':');
+        if (!senha) return;
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username) + '/password', {
+            method: 'PUT',
+            headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ password: senha })
+        });
+        const data = await resp.json();
+        setStatus(data.message || (resp.ok ? 'Senha atualizada.' : 'Erro ao atualizar senha.'), !resp.ok);
+    }
+
+    async function alterarStatus(username, active) {
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username) + '/status', {
+            method: 'PUT',
+            headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ active })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            setStatus(data.detail || data.message || 'Erro ao alterar status.', true);
+            return;
+        }
+        await carregarUsuarios();
+        setStatus(data.message || 'Status atualizado.');
+    }
+
+    async function resetarDispositivos(username) {
+        if (!confirm('Deseja resetar os dispositivos vinculados de ' + username + '?')) return;
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username) + '/reset-devices', {
+            method: 'PUT',
+            headers: obterAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            setStatus(data.detail || data.message || 'Erro ao resetar dispositivos.', true);
+            return;
+        }
+        await carregarUsuarios();
+        setStatus(data.message || 'Dispositivos resetados.');
+    }
+
+    async function excluirUsuario(username) {
+        if (!confirm('Deseja realmente excluir o usuário ' + username + '?')) return;
+        const resp = await fetch('/api/admin/users/' + encodeURIComponent(username), {
+            method: 'DELETE',
+            headers: obterAuthHeaders()
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            setStatus(data.detail || data.message || 'Erro ao excluir usuário.', true);
+            return;
+        }
+        await carregarUsuarios();
+        if (editandoUsuario === username) limparFormulario();
+        setStatus(data.message || 'Usuário removido.');
+    }
+
+    renderPermissionGrid();
+    limparFormulario();
+    carregarUsuarios();
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+

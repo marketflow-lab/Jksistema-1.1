@@ -1,0 +1,1941 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Importações - JK Sistema</title>
+    <script src="/auth.js?v=20260417e"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+
+        :root {
+            --bg-a: #04070f;
+            --bg-b: #0a1322;
+            --bg-c: #0d1d34;
+            --panel: rgba(13, 24, 43, 0.86);
+            --panel-strong: rgba(13, 24, 43, 0.96);
+            --border: rgba(104, 168, 255, 0.34);
+            --text: #eaf3ff;
+            --muted: #9cb7d7;
+            --accent: #63bbff;
+            --accent-strong: #1ca2ff;
+            --badge: #7ecbff;
+            --warm-bg: rgba(109, 62, 24, 0.66);
+            --warm-border: #e3924a;
+            --warm-text: #ffd8b5;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Outfit', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 8% -4%, rgba(99, 187, 255, 0.28), transparent 34%),
+                radial-gradient(circle at 95% 12%, rgba(55, 178, 255, 0.18), transparent 28%),
+                linear-gradient(120deg, var(--bg-a), var(--bg-b) 48%, var(--bg-c));
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(99, 187, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99, 187, 255, 0.03) 1px, transparent 1px);
+            background-size: 26px 26px;
+            mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 84%);
+        }
+
+        .container {
+            max-width: 1160px;
+            margin: 0 auto;
+            padding: 24px 26px 34px;
+        }
+
+        .topbar {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr 1fr 1fr auto;
+            gap: 12px;
+            margin-bottom: 18px;
+            align-items: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(2rem, 3.5vw, 2.8rem);
+            line-height: 1;
+            color: #8ecfff;
+            letter-spacing: 0.3px;
+            text-shadow: 0 8px 30px rgba(28, 162, 255, 0.32);
+        }
+
+        .fx-box,
+        .clock-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-height: 68px;
+            padding: 10px 14px;
+            border-radius: 13px;
+            border: 1px solid var(--border);
+            background: linear-gradient(180deg, rgba(13, 24, 43, 0.9), rgba(10, 19, 35, 0.95));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.1), 0 14px 28px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(8px);
+        }
+
+        .fx-box {
+            border-color: rgba(99, 187, 255, 0.55);
+            background: linear-gradient(180deg, rgba(14, 33, 59, 0.92), rgba(10, 22, 40, 0.96));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(99, 187, 255, 0.18);
+        }
+
+        .clock-box {
+            border-color: rgba(255, 166, 94, 0.52);
+            background: linear-gradient(180deg, rgba(56, 34, 19, 0.9), rgba(33, 22, 14, 0.95));
+            box-shadow: inset 0 1px 0 rgba(255, 214, 180, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 166, 94, 0.16);
+        }
+
+        .clock-box.brasilia {
+            border-color: rgba(104, 214, 142, 0.54);
+            background: linear-gradient(180deg, rgba(19, 60, 36, 0.9), rgba(13, 40, 25, 0.95));
+            box-shadow: inset 0 1px 0 rgba(186, 255, 210, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(104, 214, 142, 0.16);
+        }
+
+        .clock-label,
+        .fx-label {
+            color: var(--muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 2px;
+        }
+
+        .fx-label {
+            color: #9ecfff;
+        }
+
+        .clock-label {
+            color: #ffca9f;
+        }
+
+        .clock-value {
+            color: #ffc68f;
+            font-size: 1.65rem;
+            font-weight: 800;
+            line-height: 1;
+            text-shadow: 0 0 16px rgba(255, 170, 104, 0.24);
+        }
+
+        .clock-box.brasilia .clock-label {
+            color: #9be9b6;
+        }
+
+        .clock-box.brasilia .clock-value {
+            color: #7bffab;
+            text-shadow: 0 0 16px rgba(98, 255, 152, 0.24);
+        }
+
+        .fx-value {
+            color: #9dd6ff;
+            font-size: 1.7rem;
+            font-weight: 800;
+            line-height: 1;
+            text-shadow: 0 0 16px rgba(99, 187, 255, 0.22);
+        }
+
+        .fx-time {
+            color: #d2e6ff;
+            font-size: 0.9rem;
+            font-weight: 700;
+        }
+
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, var(--accent), #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            z-index: 1200;
+        }
+
+        .back-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+            color: #fff;
+        }
+
+        .card {
+            position: relative;
+            background: linear-gradient(180deg, rgba(17, 27, 46, 0.94), rgba(12, 21, 37, 0.96));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 18px;
+            box-shadow: 0 20px 42px rgba(0, 0, 0, 0.34);
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: linear-gradient(100deg, rgba(99, 187, 255, 0.13), transparent 36%);
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+            position: relative;
+            z-index: 1;
+        }
+
+        .btn {
+            border: 1px solid rgba(126, 203, 255, 0.36);
+            border-radius: 11px;
+            background: linear-gradient(180deg, rgba(26, 37, 62, 0.95), rgba(18, 30, 52, 0.98));
+            color: #eaf3ff;
+            padding: 10px 14px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: 0.15px;
+            transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+            box-shadow: 0 10px 22px rgba(28, 162, 255, 0.24);
+            color: #dff0ff;
+        }
+
+        .badge {
+            display: inline-block;
+            margin-top: 0;
+            padding: 6px 13px;
+            border-radius: 999px;
+            border: 1px solid rgba(126, 203, 255, 0.46);
+            background: rgba(32, 60, 89, 0.78);
+            color: var(--badge);
+            font-size: 0.95rem;
+            font-weight: 700;
+        }
+
+        .muted {
+            color: var(--muted);
+            font-size: 1.08rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .lista-wrap {
+            display: grid;
+            gap: 14px;
+            margin-top: 14px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .lista-item {
+            border: 1px solid rgba(87, 154, 230, 0.55);
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(11, 34, 68, 0.92), rgba(9, 26, 51, 0.98));
+            padding: 16px;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+
+        .lista-item::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(180deg, #7ed3ff, #1ca2ff);
+            box-shadow: 0 0 18px rgba(28, 162, 255, 0.55);
+        }
+
+        .lista-item:hover {
+            transform: translateY(-3px) scale(1.01);
+            border-color: #8ad2ff;
+            box-shadow: 0 16px 30px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(126, 203, 255, 0.28);
+        }
+
+        .linha-topo {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+
+        .acoes-direita {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+        }
+
+        .nome-lista {
+            font-weight: 800;
+            color: #f0f7ff;
+            font-size: 1.65rem;
+        }
+
+        .nome-lista-input {
+            width: min(100%, 460px);
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(126, 203, 255, 0.6);
+            background: rgba(8, 18, 35, 0.96);
+            color: #f0f7ff;
+            font-size: 1.08rem;
+            font-weight: 700;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(28, 162, 255, 0.22);
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 999px;
+            background: var(--warm-bg);
+            border: 1px solid var(--warm-border);
+            color: var(--warm-text);
+            font-size: 0.95rem;
+            font-weight: 700;
+            box-shadow: 0 0 0 1px rgba(227, 146, 74, 0.18);
+        }
+
+        .meta {
+            color: #c8dcf5;
+            font-size: 1.04rem;
+            line-height: 1.35;
+        }
+
+        .meta-resumo {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 8px 0 4px;
+        }
+
+        .meta-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-size: 0.93rem;
+            font-weight: 600;
+            border: 1px solid rgba(126, 203, 255, 0.28);
+            background: rgba(14, 30, 56, 0.85);
+            color: #c8dcf5;
+        }
+
+        .meta-pill strong {
+            color: #f0f7ff;
+            font-weight: 800;
+        }
+
+        .meta-invoice {
+            border-color: rgba(255, 214, 150, 0.38);
+            background: rgba(56, 38, 14, 0.8);
+        }
+
+        .meta-invoice strong { color: #ffd89a; }
+
+        .meta-m3 {
+            border-color: rgba(145, 237, 183, 0.35);
+            background: rgba(14, 48, 30, 0.82);
+        }
+
+        .meta-m3 strong { color: #a6ffcc; }
+
+        .meta-usd {
+            border-color: rgba(99, 187, 255, 0.38);
+            background: rgba(10, 30, 58, 0.85);
+        }
+
+        .meta-usd strong { color: #9dd6ff; }
+
+        .meta-brl {
+            border-color: rgba(178, 255, 140, 0.35);
+            background: rgba(14, 44, 18, 0.82);
+        }
+
+        .meta-brl strong { color: #c6ffa0; }
+
+        .meta-bl {
+            border-color: rgba(130, 220, 255, 0.4);
+            background: rgba(8, 38, 58, 0.88);
+        }
+
+        .meta-bl strong { color: #7ee8ff; }
+
+        .meta-container {
+            border-color: rgba(200, 160, 255, 0.4);
+            background: rgba(36, 18, 58, 0.88);
+        }
+
+        .meta-container strong { color: #d4aaff; }
+
+        .meta-linha-invoice {
+            margin-bottom: 2px;
+        }
+
+        .btn-cancelar {
+            border: 1px solid rgba(255, 141, 141, 0.7);
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(82, 25, 25, 0.96), rgba(56, 18, 18, 0.98));
+            color: #ffd9d9;
+            font-size: 0.9rem;
+            font-weight: 700;
+            padding: 7px 11px;
+            cursor: pointer;
+            transition: transform 0.15s ease, filter 0.15s ease, border-color 0.15s ease;
+        }
+
+        .btn-importar-pedido {
+            border: 1px solid rgba(145, 237, 183, 0.72);
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(20, 83, 53, 0.95), rgba(15, 60, 39, 0.98));
+            color: #d8ffe9;
+            font-size: 0.9rem;
+            font-weight: 700;
+            padding: 7px 11px;
+            cursor: pointer;
+            transition: transform 0.15s ease, filter 0.15s ease, border-color 0.15s ease;
+        }
+
+        .btn-importar-pedido:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.06);
+            border-color: rgba(178, 255, 210, 0.95);
+        }
+
+        .btn-cancelar:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.05);
+            border-color: rgba(255, 170, 170, 0.95);
+        }
+
+        .btn-importar-pedido:disabled,
+        .btn-cancelar:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+
+        .empty {
+            padding: 16px;
+            border-radius: 12px;
+            border: 1px dashed rgba(126, 203, 255, 0.45);
+            color: var(--muted);
+            text-align: center;
+            background: rgba(18, 33, 58, 0.62);
+        }
+
+        p {
+            color: #c4ccda;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 980px) {
+            .topbar {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            h1 {
+                grid-column: 1 / -1;
+            }
+
+            .back-btn {
+                min-height: 48px;
+                top: 12px;
+                right: 12px;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .container {
+                padding: 18px 14px 24px;
+            }
+
+            .topbar {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+
+            .toolbar {
+                gap: 8px;
+            }
+
+            .btn,
+            .badge,
+            .back-btn {
+                width: 100%;
+                text-align: center;
+                justify-content: center;
+            }
+
+            .back-btn {
+                width: auto;
+                min-height: 44px;
+                font-size: 1rem;
+                padding: 0 13px;
+            }
+
+            .nome-lista {
+                font-size: 1.35rem;
+            }
+        }
+
+        /* ─── Embarques ─────────────────────────────────────── */
+        .secao-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 20px 0 10px;
+            padding-bottom: 7px;
+            border-bottom: 1px solid var(--border);
+            position: relative;
+            z-index: 1;
+        }
+        .secao-titulo {
+            font-size: 1.0rem;
+            font-weight: 800;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .embarque-item {
+            border: 1px solid rgba(255, 193, 100, 0.5);
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(56, 38, 14, 0.88), rgba(38, 26, 10, 0.96));
+            padding: 16px;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .embarque-item::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(180deg, #ffd080, #e3924a);
+            box-shadow: 0 0 18px rgba(227, 146, 74, 0.55);
+        }
+        .embarque-item:hover {
+            transform: translateY(-3px) scale(1.01);
+            border-color: #ffd080;
+            box-shadow: 0 16px 30px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 193, 100, 0.28);
+        }
+        .embarque-nome {
+            font-weight: 800;
+            color: #ffe8b8;
+            font-size: 1.45rem;
+        }
+        .btn-embarque-org {
+            border: 1px solid rgba(255, 193, 100, 0.55);
+            border-radius: 11px;
+            background: linear-gradient(180deg, rgba(72, 47, 12, 0.95), rgba(50, 33, 9, 0.98));
+            color: #ffe8b8;
+            padding: 10px 14px;
+            cursor: pointer;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: 0.15px;
+            transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+        .btn-embarque-org:hover {
+            transform: translateY(-2px);
+            border-color: #ffc064;
+            box-shadow: 0 10px 22px rgba(227, 146, 74, 0.28);
+        }
+        .btn-embarque-editar {
+            border: 1px solid rgba(255, 193, 100, 0.46);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(64, 42, 11, 0.92), rgba(44, 30, 8, 0.96));
+            color: #ffd9a0;
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding: 5px 10px;
+            cursor: pointer;
+            transition: transform 0.15s, filter 0.15s;
+        }
+        .btn-embarque-editar:hover { transform: translateY(-1px); filter: brightness(1.1); }
+        .btn-embarque-del {
+            border: 1px solid rgba(255, 141, 141, 0.5);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(82, 25, 25, 0.9), rgba(56, 18, 18, 0.95));
+            color: #ffd9d9;
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding: 5px 10px;
+            cursor: pointer;
+            transition: transform 0.15s, filter 0.15s;
+        }
+        .btn-embarque-del:hover { transform: translateY(-1px); filter: brightness(1.1); }
+        .btn-embarque-rastrear {
+            border: 1px solid rgba(99, 220, 255, 0.46);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(10, 45, 70, 0.92), rgba(6, 30, 50, 0.96));
+            color: #a0e8ff;
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding: 5px 10px;
+            cursor: pointer;
+            transition: transform 0.15s, filter 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .btn-embarque-rastrear:hover { transform: translateY(-1px); filter: brightness(1.15); }
+        .embarque-detalhe-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 0;
+            margin-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 193, 100, 0.3);
+            flex-wrap: wrap;
+            position: relative;
+            z-index: 1;
+        }
+        .embarque-detalhe-titulo {
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: #ffe8b8;
+        }
+        .btn-back-embarque {
+            border: 1px solid rgba(126, 203, 255, 0.36);
+            border-radius: 9px;
+            background: linear-gradient(180deg, rgba(26, 37, 62, 0.95), rgba(18, 30, 52, 0.98));
+            color: #eaf3ff;
+            padding: 8px 13px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 700;
+            transition: transform 0.15s, border-color 0.15s;
+        }
+        .btn-back-embarque:hover { transform: translateY(-1px); border-color: var(--accent); }
+        /* Cards de resumo do embarque */
+        .emb-resumo-topo {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+            gap: 3px;
+            margin-bottom: 12px;
+        }
+        .emb-resumo-card {
+            border-radius: 8px;
+            border: 1px solid #35557f;
+            background: #15253f;
+            padding: 4px 6px;
+            min-height: 42px;
+        }
+        .emb-resumo-card.emb-card-cotacao {
+            border-color: #1d8f52;
+            background: linear-gradient(180deg, #14663c, #0e4c2d);
+        }
+        .emb-resumo-card .emb-label {
+            color: #cad9f2;
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 0.45px;
+            margin-bottom: 1px;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+        .emb-resumo-card .emb-value {
+            color: #fff;
+            font-size: 0.9rem;
+            font-weight: 800;
+            white-space: nowrap;
+            line-height: 1.1;
+            overflow: hidden;
+            text-overflow: clip;
+        }
+        .emb-resumo-card .emb-value-sub {
+            display: block;
+            margin-top: 4px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: #d6ebff;
+            opacity: 0.95;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: clip;
+        }
+        .emb-cards-loading {
+            color: #88a8cc;
+            font-size: 0.82rem;
+            padding: 6px 0;
+        }
+        .embarque-invoice-line {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 0 12px;
+            border-bottom: 1px solid rgba(255,193,100,0.2);
+            margin-bottom: 12px;
+        }
+        .embarque-invoice-line:empty { display: none; }
+        .emb-inv-label {
+            color: #ffd2a8;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 700;
+            margin-right: 4px;
+        }
+        .emb-inv-pill {
+            background: rgba(255,193,100,0.12);
+            border: 1px solid rgba(255,193,100,0.45);
+            border-radius: 20px;
+            padding: 4px 12px;
+            color: #ffe8b8;
+            font-size: 0.84rem;
+            font-weight: 700;
+        }
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 8, 0.72);
+            backdrop-filter: blur(4px);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.aberto { display: flex; }
+        .modal-box {
+            background: linear-gradient(160deg, rgba(14, 26, 50, 0.98), rgba(9, 18, 36, 0.99));
+            border: 1px solid rgba(99, 187, 255, 0.38);
+            border-radius: 18px;
+            padding: 26px 28px 24px;
+            max-width: 560px;
+            width: 92%;
+            max-height: 82vh;
+            overflow-y: auto;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55);
+        }
+        .modal-titulo {
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: #ffe8b8;
+            margin: 0 0 16px;
+        }
+        .modal-label {
+            display: block;
+            color: var(--muted);
+            font-size: 0.88rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 5px;
+        }
+        .modal-input {
+            width: 100%;
+            padding: 9px 12px;
+            border-radius: 9px;
+            border: 1px solid rgba(126, 203, 255, 0.45);
+            background: rgba(8, 16, 30, 0.96);
+            color: #f0f7ff;
+            font-size: 1rem;
+            font-weight: 600;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(28, 162, 255, 0.12);
+            margin-bottom: 14px;
+            box-sizing: border-box;
+        }
+        .modal-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(28, 162, 255, 0.25);
+        }
+        .modal-lista-check {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            max-height: 280px;
+            overflow-y: auto;
+            margin-bottom: 16px;
+            padding: 2px;
+        }
+        .check-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 9px;
+            padding: 9px 11px;
+            border-radius: 9px;
+            border: 1px solid rgba(87, 154, 230, 0.35);
+            background: rgba(11, 22, 42, 0.85);
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .check-item:hover {
+            border-color: rgba(126, 203, 255, 0.6);
+            background: rgba(16, 32, 62, 0.9);
+        }
+        .check-item input[type="checkbox"] {
+            margin-top: 2px;
+            accent-color: var(--accent);
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+        .check-item-nome {
+            color: #d8ebff;
+            font-size: 0.98rem;
+            font-weight: 700;
+        }
+        .check-item-meta {
+            color: var(--muted);
+            font-size: 0.82rem;
+            margin-top: 1px;
+        }
+        .modal-acoes {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        .btn-modal-confirmar {
+            border: 1px solid rgba(145, 237, 183, 0.65);
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(20, 83, 53, 0.95), rgba(15, 60, 39, 0.98));
+            color: #d8ffe9;
+            font-size: 0.98rem;
+            font-weight: 700;
+            padding: 9px 18px;
+            cursor: pointer;
+            transition: transform 0.15s, filter 0.15s;
+        }
+        .btn-modal-confirmar:hover { transform: translateY(-1px); filter: brightness(1.06); }
+        .btn-modal-fechar {
+            border: 1px solid rgba(126, 203, 255, 0.36);
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(26, 37, 62, 0.95), rgba(18, 30, 52, 0.98));
+            color: #eaf3ff;
+            font-size: 0.98rem;
+            font-weight: 700;
+            padding: 9px 18px;
+            cursor: pointer;
+            transition: transform 0.15s, filter 0.15s;
+        }
+        .btn-modal-fechar:hover { transform: translateY(-1px); filter: brightness(1.06); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="topbar">
+            <h1>Importações</h1>
+            <div class="fx-box">
+                <div>
+                    <div class="fx-label">Dólar x Real (USD/BRL)</div>
+                    <div id="fxValue" class="fx-value">Carregando...</div>
+                </div>
+                <div id="fxTime" class="fx-time">--:--:--</div>
+            </div>
+            <div class="clock-box brasilia">
+                <div>
+                    <div class="clock-label">Horário de Brasília</div>
+                    <div id="clockBrasilia" class="clock-value">--:--:--</div>
+                </div>
+            </div>
+            <div class="clock-box">
+                <div>
+                    <div class="clock-label">Horário em Pequim</div>
+                    <div id="clockBeijing" class="clock-value">--:--:--</div>
+                </div>
+            </div>
+            <a class="back-btn" href="/dashboard.html">Voltar</a>
+        </div>
+
+        <div class="card">
+            <div class="toolbar">
+                <button class="btn" id="btnAtualizar" type="button">Atualizar listas</button>
+                <button class="btn" id="btnImportarPedidoMenu" type="button">Importar pedido por arquivo</button>
+                <a class="btn" href="medias_compras.html">Abrir Médias e Pedidos</a>
+                <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
+                <span class="badge">Status monitorado: Analisando orçamento</span>
+            </div>
+            <div id="status" class="muted">Carregando listas...</div>
+
+            <!-- Vista: detalhe de embarque -->
+            <div id="embarqueDetalheView" style="display:none">
+                <div class="embarque-detalhe-bar">
+                    <button type="button" class="btn-back-embarque" id="btnVoltarEmbarque">← Voltar</button>
+                    <span class="embarque-detalhe-titulo" id="embarqueDetalheTitulo"></span>
+                </div>
+                <div id="embarqueInvoiceLine" class="embarque-invoice-line"></div>
+                <div id="embarqueDetalheMeta" style="display:none;"></div>
+                <div id="embarqueDetalheCards" class="emb-resumo-topo" style="margin-bottom:14px;"></div>
+                <div id="embarqueDetalheListas" class="lista-wrap"></div>
+            </div>
+
+            <!-- Vista principal -->
+            <div id="vistaMain">
+                <div class="secao-header">
+                    <span class="secao-titulo">Embarques</span>
+                    <span id="badgeEmbarques" class="badge" style="font-size:0.82rem;padding:4px 10px;">0</span>
+                </div>
+                <div id="embarquesWrap" class="lista-wrap">
+                    <div class="empty">Nenhum embarque criado. Clique em “Organizar Embarque” para criar.</div>
+                </div>
+                <div class="secao-header" style="margin-top:22px;">
+                    <span class="secao-titulo">Listas de Pedidos</span>
+                </div>
+                <div id="listaWrap" class="lista-wrap"></div>
+            </div>
+
+            <!-- Modal Organizar Embarque -->
+            <div class="modal-overlay" id="modalEmbarque" role="dialog" aria-modal="true" aria-labelledby="modalEmbarqueTitulo">
+                <div class="modal-box">
+                    <h2 class="modal-titulo" id="modalEmbarqueTitulo">Organizar Embarque</h2>
+                    <label class="modal-label" for="inputNomeEmbarque">Nome do embarque</label>
+                    <input type="text" class="modal-input" id="inputNomeEmbarque" placeholder="Ex.: Embarque Abril 2026" maxlength="120" />
+                    <label class="modal-label" for="inputBlEmbarque">Número do BL</label>
+                    <input type="text" class="modal-input" id="inputBlEmbarque" placeholder="Ex.: COSU6123456789" maxlength="80" />
+                    <label class="modal-label" for="inputContainerEmbarque">Número do Container</label>
+                    <input type="text" class="modal-input" id="inputContainerEmbarque" placeholder="Ex.: TCKU3456789" maxlength="80" />
+                    <label class="modal-label">Listas a incluir no embarque</label>
+                    <div class="modal-lista-check" id="modalListasCheck">
+                        <div class="muted">Carregando listas...</div>
+                    </div>
+                    <div class="modal-acoes">
+                        <button type="button" class="btn-modal-fechar" id="btnModalFechar">Cancelar</button>
+                        <button type="button" class="btn-modal-confirmar" id="btnModalConfirmar">Salvar Embarque</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        if (!verificarSessao()) {
+            // verificarSessao já redireciona quando não há token.
+        }
+
+        let cotacaoDolarAtual = 0;
+        let todasListasCache = [];
+        let _embarqueEditandoId = null;
+
+        function formatarDataHoraLocal(isoTexto) {
+            const d = new Date(isoTexto || '');
+            if (Number.isNaN(d.getTime())) return String(isoTexto || '');
+            return d.toLocaleString('pt-BR');
+        }
+
+        function numero(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+        }
+
+        function formatarMoedaBRL(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        }
+
+        function formatarUSD(v) {
+            return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function formatarM3(v) {
+            const n = Number(v || 0);
+            if (!n) return '-';
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' m³';
+        }
+
+        function carregarInvoiceLocal(listaId) {
+            if (!listaId) return '';
+            try {
+                const bruto = JSON.parse(localStorage.getItem('importacoes_lista_resumo_editavel') || '{}') || {};
+                const porLista = bruto[String(listaId)];
+                return (porLista && typeof porLista === 'object') ? String(porLista.numero_invoice || '').trim() : '';
+            } catch (_e) {
+                return '';
+            }
+        }
+
+        function setFx(valorTexto, horaTexto) {
+            const elValor = document.getElementById('fxValue');
+            const elHora = document.getElementById('fxTime');
+            if (elValor) elValor.textContent = valorTexto || '--';
+            if (elHora) elHora.textContent = horaTexto || '--:--:--';
+        }
+
+        async function carregarCotacaoDolar() {
+            try {
+                const ctrl = new AbortController();
+                const to = setTimeout(() => ctrl.abort(), 8000);
+                const resp = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL', {
+                    method: 'GET',
+                    cache: 'no-store',
+                    signal: ctrl.signal
+                });
+                clearTimeout(to);
+                if (!resp.ok) {
+                    throw new Error('Falha ao consultar cotação');
+                }
+
+                const data = await resp.json();
+                const bid = Number(data && data.USDBRL ? data.USDBRL.bid : NaN);
+                if (!Number.isFinite(bid) || bid <= 0) {
+                    throw new Error('Cotação inválida');
+                }
+
+                const agora = new Date();
+                cotacaoDolarAtual = bid;
+                setFx(formatarMoedaBRL(bid), agora.toLocaleTimeString('pt-BR'));
+            } catch (_e) {
+                setFx('Indisponível', new Date().toLocaleTimeString('pt-BR'));
+            }
+        }
+
+        function atualizarHorarioPequim() {
+            const el = document.getElementById('clockBeijing');
+            if (!el) return;
+            try {
+                const agora = new Date();
+                const horaPequim = new Intl.DateTimeFormat('pt-BR', {
+                    timeZone: 'Asia/Shanghai',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false,
+                }).format(agora);
+                el.textContent = horaPequim;
+            } catch (_e) {
+                el.textContent = '--:--:--';
+            }
+        }
+
+        function atualizarHorarioBrasilia() {
+            const el = document.getElementById('clockBrasilia');
+            if (!el) return;
+            try {
+                const agora = new Date();
+                const horaBrasilia = new Intl.DateTimeFormat('pt-BR', {
+                    timeZone: 'America/Sao_Paulo',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false,
+                }).format(agora);
+                el.textContent = horaBrasilia;
+            } catch (_e) {
+                el.textContent = '--:--:--';
+            }
+        }
+
+        function setStatus(msg) {
+            const el = document.getElementById('status');
+            if (el) el.textContent = msg || '';
+        }
+
+        function marcarStatusCanceladoLocal(listaId) {
+            if (!listaId) return;
+            const chave = 'jk_lista_status_cancelado_override';
+            let mapa = {};
+            try {
+                mapa = JSON.parse(localStorage.getItem(chave) || '{}');
+            } catch (_e) {
+                mapa = {};
+            }
+            mapa[String(listaId)] = true;
+            localStorage.setItem(chave, JSON.stringify(mapa));
+        }
+
+        async function cancelarPedidoLista(listaId, nomeLista, btn) {
+            if (!listaId) return;
+
+            const confirmar = window.confirm('Deseja cancelar o pedido da lista "' + String(nomeLista || 'Sem nome') + '"?');
+            if (!confirmar) return;
+
+            const textoOriginal = btn ? btn.textContent : '';
+            try {
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Cancelando...';
+                }
+
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/status', {
+                    method: 'PATCH',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ status: 'Pedido cancelado' })
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Não foi possível cancelar o pedido.');
+                }
+
+                const retorno = await resp.json().catch(() => ({}));
+                const statusRetornado = String(retorno && retorno.lista ? retorno.lista.status || '' : '').trim();
+                if (statusRetornado !== 'Pedido cancelado') {
+                    marcarStatusCanceladoLocal(listaId);
+                }
+
+                window.location.href = 'medias_compras.html';
+            } catch (e) {
+                setStatus(e.message || 'Erro ao cancelar pedido.');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = textoOriginal || 'Cancelar pedido';
+                }
+            }
+        }
+
+        async function atualizarNomeLista(listaId, nomeLista) {
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                method: 'PUT',
+                headers: {
+                    ...obterAuthHeaders(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ nome_lista: nomeLista })
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Não foi possível atualizar o nome da lista.');
+            }
+
+            return resp.json().catch(() => ({}));
+        }
+
+        async function importarPedidoPorExcel(btn) {
+
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.xlsx,.xlsm,.xltx,.xltm';
+
+            input.addEventListener('change', async () => {
+                const file = input.files && input.files[0] ? input.files[0] : null;
+                if (!file) return;
+
+                const textoOriginal = btn ? btn.textContent : '';
+                try {
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.textContent = 'Importando...';
+                    }
+
+                    const fd = new FormData();
+                    fd.append('file', file);
+
+                    setStatus('Importando arquivo "' + String(file.name || '') + '" e criando nova lista...');
+                    const resp = await fetch('/api/medias-compras/listas-pedidos/importar-excel', {
+                        method: 'POST',
+                        headers: { ...obterAuthHeaders() },
+                        body: fd
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const detalhe = String(err.detail || '').trim();
+                        throw new Error(detalhe || 'Falha ao importar Excel e criar lista.');
+                    }
+
+                    const data = await resp.json();
+                    const listaCriada = data.lista || {};
+                    const msgSucesso =
+                        'Lista criada com sucesso: ' + String(listaCriada.nome_lista || 'Sem nome') +
+                        ' | Itens: ' + numero(listaCriada.total_itens || 0) +
+                        ' | Quantidade total: ' + numero(listaCriada.total_quantidade || 0);
+                    setStatus(msgSucesso);
+                    window.alert(msgSucesso);
+
+                    await carregarListasImportacoes();
+                } catch (e) {
+                    const msgErro = String((e && e.message) || 'Erro ao importar pedido por Excel.').trim();
+                    setStatus(msgErro);
+                    window.alert(
+                        'Não foi possível incluir a lista pelo arquivo.\n\n' +
+                        msgErro +
+                        '\n\nDica: preencha o preço de cada produto (Valor unidade ou Valor total) antes de importar.'
+                    );
+                } finally {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = textoOriginal || 'Importar pedido por arquivo';
+                    }
+                }
+            });
+
+            input.click();
+        }
+
+
+        function renderListas(listas) {
+            const box = document.getElementById('listaWrap');
+            if (!box) return;
+            box.innerHTML = '';
+
+            if (!listas.length) {
+                box.innerHTML = '<div class="empty">Nenhuma lista com status Analisando orçamento.</div>';
+                return;
+            }
+
+            listas.forEach((l) => {
+                const el = document.createElement('div');
+                el.className = 'lista-item';
+                const listaId = String(l.id || '').trim();
+                const nomeLista = String(l.nome_lista || 'Sem nome');
+                el.setAttribute('role', 'button');
+                el.setAttribute('tabindex', '0');
+                el.innerHTML =
+                    '<div class="linha-topo">' +
+                        '<div class="nome-lista">' + nomeLista + '</div>' +
+                        '<div class="acoes-direita">' +
+                            '<span class="status">Analisando orçamento</span>' +
+                            '<button type="button" class="btn-cancelar">Cancelar pedido</button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
+                    '<div class="meta-resumo">' +
+                        '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (carregarInvoiceLocal(listaId) || (l.numero_invoice ? String(l.numero_invoice) : '-')) + '</strong></span>' +
+                        '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
+                        '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
+                        '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                    '</div>' +
+                    '<div class="meta">Atualizada em: ' + formatarDataHoraLocal(l.updated_at || l.created_at || '') + '</div>';
+                const btnCancelar = el.querySelector('.btn-cancelar');
+                if (btnCancelar) {
+                    btnCancelar.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        cancelarPedidoLista(listaId, nomeLista, btnCancelar);
+                    });
+                }
+                if (listaId) {
+                    const abrirDetalhe = (ev) => {
+                        if (el.dataset.editandoNome === '1') return;
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input')) {
+                            return;
+                        }
+                        window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
+                    };
+                    el.addEventListener('click', abrirDetalhe);
+                    el.addEventListener('keydown', (ev) => {
+                        if (ev.key === 'Enter' || ev.key === ' ') {
+                            ev.preventDefault();
+                            abrirDetalhe();
+                        }
+                    });
+                }
+
+                const nomeEl = el.querySelector('.nome-lista');
+                if (nomeEl && listaId) {
+                    nomeEl.title = 'Dê dois cliques para editar o nome da lista';
+                    nomeEl.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                    });
+                    nomeEl.addEventListener('dblclick', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        if (el.dataset.editandoNome === '1') return;
+
+                        const nomeAtual = String(nomeEl.textContent || '').trim();
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.className = 'nome-lista-input';
+                        input.maxLength = 120;
+                        input.value = nomeAtual;
+
+                        el.dataset.editandoNome = '1';
+                        nomeEl.replaceWith(input);
+                        input.focus();
+                        input.select();
+
+                        const encerrarEdicao = () => {
+                            if (el.dataset.editandoNome !== '1') return;
+                            el.dataset.editandoNome = '0';
+                            input.replaceWith(nomeEl);
+                        };
+
+                        const salvar = async () => {
+                            const novoNome = String(input.value || '').trim();
+                            if (!novoNome) {
+                                setStatus('O nome da lista não pode ficar vazio.');
+                                input.focus();
+                                return;
+                            }
+
+                            if (novoNome === nomeAtual) {
+                                encerrarEdicao();
+                                return;
+                            }
+
+                            input.disabled = true;
+                            try {
+                                await atualizarNomeLista(listaId, novoNome);
+                                nomeEl.textContent = novoNome;
+                                setStatus('Nome da lista atualizado com sucesso.');
+                                encerrarEdicao();
+                            } catch (e) {
+                                setStatus(e.message || 'Erro ao atualizar nome da lista.');
+                                input.disabled = false;
+                                input.focus();
+                            }
+                        };
+
+                        input.addEventListener('click', (eventoInput) => {
+                            eventoInput.stopPropagation();
+                        });
+
+                        input.addEventListener('keydown', (eventoInput) => {
+                            eventoInput.stopPropagation();
+                            if (eventoInput.key === 'Enter') {
+                                eventoInput.preventDefault();
+                                salvar();
+                            } else if (eventoInput.key === 'Escape') {
+                                eventoInput.preventDefault();
+                                encerrarEdicao();
+                            }
+                        });
+
+                        input.addEventListener('blur', () => {
+                            if (!input.disabled) {
+                                salvar();
+                            }
+                        });
+                    });
+                }
+                box.appendChild(el);
+            });
+        }
+
+        async function carregarListasImportacoes() {
+            try {
+                setStatus('Carregando listas...');
+                const resp = await fetch('/api/medias-compras/listas-pedidos', {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() }
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Falha ao carregar listas.');
+                }
+
+                const data = await resp.json();
+                const todas = Array.isArray(data.listas) ? data.listas : [];
+                const filtradas = todas.filter(l => String(l.status || '').trim() === 'Analisando orçamento');
+                todasListasCache = filtradas;
+                renderListas(filtradas);
+                renderEmbarques(filtradas);
+                setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s).');
+            } catch (e) {
+                setStatus(e.message || 'Erro ao carregar listas para importações.');
+                todasListasCache = [];
+                renderListas([]);
+                renderEmbarques([]);
+            }
+        }
+
+
+        // ─── Embarques ─────────────────────────────────────────────────────────────
+
+        /* ------- helpers para calcular cards do embarque ------- */
+        function embNormTxt(v) {
+            return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        }
+        function embValorNumerico(v) {
+            if (v === null || v === undefined) return 0;
+            if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+            let s = String(v).trim().replace(/\s+/g, '').replace(/R\$/gi, '').replace(/US\$/gi, '');
+            if (!s) return 0;
+            const hasComma = s.includes(',');
+            const hasDot = s.includes('.');
+            if (hasComma && hasDot) {
+                s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+            } else if (hasComma) {
+                s = s.replace(',', '.');
+            }
+            const n = Number(s);
+            return Number.isFinite(n) ? n : 0;
+        }
+        function embObterCampo(item, chaves, pad) {
+            for (const k of (Array.isArray(chaves) ? chaves : [chaves])) {
+                if (Object.prototype.hasOwnProperty.call(item || {}, k)) {
+                    const v = item[k];
+                    if (v !== null && v !== undefined && String(v).trim() !== '') return v;
+                }
+            }
+            return pad;
+        }
+        function embObterM3TotalItem(item) {
+            const direto = embObterCampo(item, ['M³ individual','M3 individual','m3 individual'], '');
+            const m3ind = embValorNumerico(direto);
+            const qtd = embValorNumerico(item && item.Quantidade);
+            if (m3ind > 0 && qtd > 0) return m3ind * qtd;
+            return embValorNumerico(embObterCampo(item, ['M³','M3','m3'], 0));
+        }
+        function embSomarFrete(itens) {
+            return (itens || []).reduce((s, it) => s + Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0), 0);
+        }
+        function embMediaPct(itens, aliases) {
+            if (!itens || !itens.length) return 0;
+            let soma = 0;
+            itens.forEach(it => {
+                soma += embValorNumerico(String(embObterCampo(it || {}, aliases, 0) ?? '').replace('%','').trim());
+            });
+            return soma / itens.length;
+        }
+        function embFormatarPct(v) {
+            const n = Number(v || 0);
+            if (!Number.isFinite(n)) return '-';
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+        }
+        function embCalcTaxaSiscomex(totalNcm) {
+            const n = Math.max(0, Number(totalNcm) || 0);
+            if (n === 0) return 115.67;
+            if (n <= 2) return 115.67 + n * 38.56;
+            if (n <= 5) return 192.79 + (n - 2) * 30.85;
+            if (n <= 10) return 285.34 + (n - 5) * 23.14;
+            if (n <= 20) return 401.04 + (n - 10) * 15.42;
+            if (n <= 50) return 555.24 + (n - 20) * 7.71;
+            return 786.54 + (n - 50) * 3.86;
+        }
+        function embObterValorResumo(lista, itens, aliases, fallback) {
+            fallback = fallback !== undefined ? fallback : '-';
+            const alvos = (aliases || []).map(embNormTxt).filter(Boolean);
+            if (!alvos.length) return fallback;
+            function busca(obj) {
+                if (!obj || typeof obj !== 'object') return '';
+                for (const k of Object.keys(obj)) {
+                    const nk = embNormTxt(k);
+                    if (!nk) continue;
+                    if (alvos.some(a => nk === a || nk.includes(a) || a.includes(nk))) {
+                        const v = obj[k];
+                        if (v !== null && v !== undefined && String(v).trim() !== '') return String(v).trim();
+                    }
+                }
+                return '';
+            }
+            const vL = busca(lista);
+            if (vL) return vL;
+            for (const it of (itens || [])) { const v = busca(it); if (v) return v; }
+            return fallback;
+        }
+
+        function renderCardsEmbarque(todosItens, invoiceStr, cotacao, listaIds) {
+            var el = document.getElementById('embarqueDetalheCards');
+            if (!el) return;
+            var dados = Array.isArray(todosItens) ? todosItens : [];
+            var dolar = Number(cotacao || cotacaoDolarAtual || 0);
+
+            var totalUsd = dados.reduce(function(s, it) {
+                var qtd = embValorNumerico(it && it.Quantidade);
+                var vt = embValorNumerico(it && it['Valor total']);
+                var vu = embValorNumerico(it && it['Valor unidade']);
+                return s + (vt > 0 ? vt : qtd * vu);
+            }, 0);
+            var totalM3 = dados.reduce(function(s, it) { return s + embObterM3TotalItem(it); }, 0);
+            var valorPorM3 = totalM3 > 0 ? (totalUsd / totalM3) : 0;
+            var ncmSet = new Set(dados.map(function(it) { return String((it && it.NCM) || '').replace(/\D/g, ''); }).filter(Boolean));
+            var totalNcm = ncmSet.size;
+
+            var vmleUsd = totalUsd > 0 ? formatarUSD(totalUsd) : '-';
+            var vmleBrlNum = (totalUsd > 0 && dolar > 0) ? (totalUsd * dolar) : 0;
+            var vmleBrl = vmleBrlNum > 0 ? formatarMoedaBRL(vmleBrlNum) : '-';
+            var freteNum = embSomarFrete(dados);
+            var freteBrlNum = (freteNum > 0 && dolar > 0) ? (freteNum * dolar) : 0;
+            var frete = freteBrlNum > 0 ? formatarMoedaBRL(freteBrlNum) : '-';
+            var seguroNum = (totalUsd > 0 && freteNum > 0 && dolar > 0)
+                ? (((totalUsd + freteNum) * 0.0028) * dolar) : 0;
+            var seguro = seguroNum > 0 ? formatarMoedaBRL(seguroNum) : '-';
+            var afrmm = (freteNum > 0 && dolar > 0) ? formatarMoedaBRL(freteNum * 0.08 * dolar) : '-';
+            var taxaSis = formatarMoedaBRL(embCalcTaxaSiscomex(totalNcm));
+
+            var totTrib = dados.reduce(function(acc, it) {
+                var qtd = embValorNumerico(it && it.Quantidade);
+                var vt = embValorNumerico(it && it['Valor total']);
+                var vu = embValorNumerico(it && it['Valor unidade']);
+                var valorUsd = vt > 0 ? vt : qtd * vu;
+                var freteIt = Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0);
+                var baseBrl = (valorUsd > 0 && dolar > 0) ? (valorUsd + freteIt) * dolar : 0;
+                var prodBrl = (valorUsd > 0 && dolar > 0) ? valorUsd * dolar : 0;
+                var iiPct = embValorNumerico(embObterCampo(it || {}, ['II','ii'], 0));
+                var ipiPct = embValorNumerico(embObterCampo(it || {}, ['IPI','ipi'], 0));
+                var pisPct = embValorNumerico(embObterCampo(it || {}, ['PIS','pis'], 0));
+                var cofPct = embValorNumerico(embObterCampo(it || {}, ['COFINS','cofins','Cofins'], 0));
+                var icmsPct = embValorNumerico(embObterCampo(it || {}, ['ICMS','icms'], 0));
+                var iiBrl = baseBrl > 0 && iiPct > 0 ? baseBrl * (iiPct / 100) : 0;
+                var baseIpi = prodBrl + iiBrl;
+                acc.ii += iiBrl;
+                acc.ipi += (baseIpi > 0 && ipiPct > 0) ? baseIpi * (ipiPct / 100) : 0;
+                acc.pis += baseBrl > 0 && pisPct > 0 ? baseBrl * (pisPct / 100) : 0;
+                acc.cofins += baseBrl > 0 && cofPct > 0 ? baseBrl * (cofPct / 100) : 0;
+                acc.icms += baseBrl > 0 && icmsPct > 0 ? baseBrl * (icmsPct / 100) : 0;
+                return acc;
+            }, { ii: 0, ipi: 0, pis: 0, cofins: 0, icms: 0 });
+
+            var mIi = embMediaPct(dados, ['II','ii']);
+            var mIpi = embMediaPct(dados, ['IPI','ipi']);
+            var mPis = embMediaPct(dados, ['PIS','pis']);
+            var mCof = embMediaPct(dados, ['COFINS','cofins','Cofins']);
+            var mIcms = embMediaPct(dados, ['ICMS','icms']);
+
+            // Lê campos editáveis do localStorage para cada lista do embarque e soma
+            function lerCusto(chave) {
+                try {
+                    var tudo = JSON.parse(localStorage.getItem('importacoes_lista_resumo_editavel') || '{}') || {};
+                    var soma = 0;
+                    (listaIds || []).forEach(function(id) {
+                        var d = tudo[String(id)];
+                        if (d && typeof d === 'object') soma += embValorNumerico(d[chave] || '');
+                    });
+                    return soma > 0 ? formatarMoedaBRL(soma) : '-';
+                } catch (_e) { return '-'; }
+            }
+
+            var honorariosTrading = (vmleBrlNum > 0 || freteBrlNum > 0 || seguroNum > 0)
+                ? formatarMoedaBRL((vmleBrlNum + freteBrlNum + seguroNum) * 0.03)
+                : '-';
+
+            var cards = [
+                { label: 'Modalidade', value: 'Misto' },
+                { label: 'Nº Invoice', value: invoiceStr || '-' },
+                { label: 'Faturamento', value: '-' },
+                { label: 'Faixa de Imposto', value: '-' },
+                { label: 'M³ Total', value: formatarM3(totalM3) },
+                { label: 'Valor por M³', value: valorPorM3 > 0 ? formatarUSD(valorPorM3) : '-' },
+                { label: 'VMLE', value: vmleUsd, sub: vmleBrl },
+                { label: 'Frete Internacional', value: frete },
+                { label: 'Seguro Internacional 0,28%', value: seguro },
+                { label: 'Cotação na Compra', value: dolar > 0 ? formatarMoedaBRL(dolar) : '-', cotacao: true },
+                { label: 'VMLD', value: '-' },
+                { label: 'II', value: embFormatarPct(mIi), sub: totTrib.ii > 0 ? formatarMoedaBRL(totTrib.ii) : '-' },
+                { label: 'IPI', value: embFormatarPct(mIpi), sub: totTrib.ipi > 0 ? formatarMoedaBRL(totTrib.ipi) : '-' },
+                { label: 'PIS', value: embFormatarPct(mPis), sub: totTrib.pis > 0 ? formatarMoedaBRL(totTrib.pis) : '-' },
+                { label: 'COFINS', value: embFormatarPct(mCof), sub: totTrib.cofins > 0 ? formatarMoedaBRL(totTrib.cofins) : '-' },
+                { label: 'ICMS', value: embFormatarPct(mIcms), sub: totTrib.icms > 0 ? formatarMoedaBRL(totTrib.icms) : '-' },
+                { label: 'Armazenagem', value: lerCusto('armazenagem') },
+                { label: 'Pick-up Origem', value: lerCusto('pickup_origem') },
+                { label: 'Taxas de Origem', value: lerCusto('taxas_origem') },
+                { label: 'Capatazia', value: lerCusto('capatazia') },
+                { label: 'BL Fee', value: lerCusto('bl_fee') },
+                { label: 'Desconsolidação', value: lerCusto('desconsolidacao') },
+                { label: 'Handling', value: lerCusto('handling') },
+                { label: 'Honorários Trading', value: honorariosTrading },
+                { label: 'Transporte Rodoviário', value: lerCusto('transporte_rodoviario') },
+                { label: 'Desembaraço', value: lerCusto('desembaraco') },
+                { label: 'Expediente', value: lerCusto('expediente') },
+                { label: 'Taxa Siscomex', value: taxaSis },
+                { label: 'AFRMM', value: afrmm },
+                { label: 'Total NCM', value: totalNcm > 0 ? totalNcm.toLocaleString('pt-BR') : '-' },
+            ];
+            el.innerHTML = cards.map(function(c) {
+                return '<div class="emb-resumo-card' + (c.cotacao ? ' emb-card-cotacao' : '') + '">' +
+                    '<div class="emb-label">' + c.label + '</div>' +
+                    '<div class="emb-value">' + c.value + (c.sub ? '<span class="emb-value-sub">' + c.sub + '</span>' : '') + '</div>' +
+                '</div>';
+            }).join('');
+        }
+        /* ------- fim helpers cards embarque ------- */
+
+        function carregarEmbarques() {
+            try { return JSON.parse(localStorage.getItem('jk_embarques_importacoes') || '[]'); }
+            catch (_e) { return []; }
+        }
+
+        function salvarEmbarquesStorage(arr) {
+            localStorage.setItem('jk_embarques_importacoes', JSON.stringify(arr || []));
+        }
+
+        function gerarIdEmbarque() {
+            return 'emb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        }
+
+        function calcularTotaisEmbarque(listaIds, todasListas) {
+            var ids = new Set((listaIds || []).map(function(x) { return String(x); }));
+            var listas = todasListas.filter(function(l) { return ids.has(String(l.id || '')); });
+            return {
+                totalM3: listas.reduce(function(s, l) { return s + (Number(l.total_m3) || 0); }, 0),
+                totalUsd: listas.reduce(function(s, l) { return s + (Number(l.total_usd) || 0); }, 0),
+                totalQtd: listas.reduce(function(s, l) { return s + (Number(l.total_quantidade) || 0); }, 0),
+                qtdListas: listas.length,
+                listas: listas
+            };
+        }
+
+        function renderEmbarques(todasListas) {
+            var box = document.getElementById('embarquesWrap');
+            var badge = document.getElementById('badgeEmbarques');
+            if (!box) return;
+            var embarques = carregarEmbarques();
+            if (badge) badge.textContent = embarques.length;
+            if (!embarques.length) {
+                box.innerHTML = '<div class="empty">Nenhum embarque criado. Clique em “Organizar Embarque” para criar.</div>';
+                return;
+            }
+            box.innerHTML = '';
+            embarques.forEach(function(emb) {
+                var totais = calcularTotaisEmbarque(emb.lista_ids, todasListas);
+                var el = document.createElement('div');
+                el.className = 'embarque-item';
+                el.setAttribute('role', 'button');
+                el.setAttribute('tabindex', '0');
+                el.innerHTML =
+                    '<div class="linha-topo">' +
+                        '<div class="embarque-nome">' + (emb.nome || 'Embarque sem nome') + '</div>' +
+                        '<div class="acoes-direita">' +
+                            '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear">&#128506; Rastrear</button>' +
+                            '<button type="button" class="btn-embarque-editar" data-acao="editar">Editar</button>' +
+                            '<button type="button" class="btn-embarque-del" data-acao="excluir">Excluir</button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="meta">' + totais.qtdListas + ' lista(s)&nbsp;&nbsp;|&nbsp;&nbsp;Qtd total: ' + numero(totais.totalQtd) + '</div>' +
+                    (function() {
+                            var pills = totais.listas.map(function(l) {
+                                var inv = (carregarInvoiceLocal(String(l.id || '')) || String(l.numero_invoice || '')).trim();
+                                var label = inv || String(l.nome_lista || 'Sem nome');
+                                return '<span class="meta-pill meta-invoice"><strong>' + label + '</strong></span>';
+                            });
+                            return pills.length ? '<div class="meta-resumo meta-linha-invoice"><span class="emb-inv-label">N\u00b0 Invoice:</span>' + pills.join('') + '</div>' : '';
+                        })() +
+                    '<div class="meta-resumo">' +
+                        (emb.numero_bl ? '<span class="meta-pill meta-bl">BL: <strong>' + emb.numero_bl + '</strong></span>' : '') +
+                        (emb.numero_container ? '<span class="meta-pill meta-container">Container: <strong>' + emb.numero_container + '</strong></span>' : '') +
+                        '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(totais.totalM3) + '</strong></span>' +
+                        '<span class="meta-pill meta-usd">Total $: <strong>' + (totais.totalUsd > 0 ? formatarUSD(totais.totalUsd) : '-') + '</strong></span>' +
+                        '<span class="meta-pill meta-brl">Total R$: <strong>' + (totais.totalUsd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(totais.totalUsd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                    '</div>';
+                el.addEventListener('click', function(ev) {
+                    var acao = ev.target.closest('[data-acao]');
+                    if (acao) {
+                        ev.stopPropagation();
+                        var tipo = acao.dataset.acao;
+                        if (tipo === 'rastrear') {
+                            var bl = emb.numero_bl ? emb.numero_bl.trim() : '';
+                            var ct = emb.numero_container ? emb.numero_container.trim() : '';
+                            var termo = bl || ct;
+                            if (termo) {
+                                window.open('https://www.google.com/search?q=rastreamento+carga+' + encodeURIComponent(termo), '_blank', 'noopener');
+                            } else {
+                                alert('Preencha o N\u00famero do BL ou do Container no embarque para rastrear.');
+                            }
+                        } else if (tipo === 'editar') {
+                            abrirModalEmbarque(emb.id, todasListas);
+                        } else if (tipo === 'excluir') {
+                            if (window.confirm('Excluir embarque "' + (emb.nome || 'Embarque') + '"? As listas não serão excluídas.')) {
+                                var novos = carregarEmbarques().filter(function(e) { return e.id !== emb.id; });
+                                salvarEmbarquesStorage(novos);
+                                renderEmbarques(todasListasCache);
+                            }
+                        }
+                        return;
+                    }
+                    abrirDetalheEmbarque(emb, todasListas);
+                });
+                el.addEventListener('keydown', function(ev) {
+                    if ((ev.key === 'Enter' || ev.key === ' ') && !ev.target.closest('button')) {
+                        ev.preventDefault();
+                        abrirDetalheEmbarque(emb, todasListas);
+                    }
+                });
+                box.appendChild(el);
+            });
+        }
+
+        function abrirDetalheEmbarque(embarque, todasListas) {
+            var view = document.getElementById('embarqueDetalheView');
+            var main = document.getElementById('vistaMain');
+            var titulo = document.getElementById('embarqueDetalheTitulo');
+            var metaDiv = document.getElementById('embarqueDetalheMeta');
+            var cardsDiv = document.getElementById('embarqueDetalheCards');
+            var listasBox = document.getElementById('embarqueDetalheListas');
+            if (!view || !main || !listasBox) return;
+            var totais = calcularTotaisEmbarque(embarque.lista_ids, todasListas);
+            if (titulo) titulo.textContent = embarque.nome || 'Embarque sem nome';
+
+            // Monta lista de identificadores: Invoice ou nome da lista como fallback
+            var identificadores = totais.listas.map(function(l) {
+                var listaId = String(l.id || '');
+                var invoice = (carregarInvoiceLocal(listaId) || String(l.numero_invoice || '')).trim();
+                return invoice || String(l.nome_lista || 'Sem nome');
+            });
+
+            // Linha exclusiva dos N° de Invoice
+            var invLine = document.getElementById('embarqueInvoiceLine');
+            if (invLine) {
+                if (identificadores.length) {
+                    invLine.innerHTML = '<span class="emb-inv-label">N° Invoice:</span>' +
+                        identificadores.map(function(id) {
+                            return '<span class="emb-inv-pill">' + id + '</span>';
+                        }).join('');
+                } else {
+                    invLine.innerHTML = '';
+                }
+            }
+
+            if (metaDiv) metaDiv.innerHTML = '';
+
+            // Mostra placeholder enquanto carrega
+            if (cardsDiv) cardsDiv.innerHTML = '<span class="emb-cards-loading">Carregando resumo...</span>';
+
+            // Busca itens de todas as listas e renderiza o card grid
+            var invoiceStr = identificadores.join(', ');
+            var _listaIds = embarque.lista_ids || [];
+            if (totais.listas.length > 0) {
+                var promises = totais.listas.map(function(l) {
+                    var listaId = String(l.id || '');
+                    if (!listaId) return Promise.resolve([]);
+                    return fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                        method: 'GET',
+                        headers: Object.assign({}, obterAuthHeaders())
+                    }).then(function(r) {
+                        return r.ok ? r.json() : { lista: { itens: [] } };
+                    }).then(function(d) {
+                        return Array.isArray(d && d.lista && d.lista.itens) ? d.lista.itens : [];
+                    }).catch(function() { return []; });
+                });
+                Promise.all(promises).then(function(resultados) {
+                    var todosItens = [].concat.apply([], resultados);
+                    renderCardsEmbarque(todosItens, invoiceStr, cotacaoDolarAtual, _listaIds);
+                });
+            } else {
+                if (cardsDiv) cardsDiv.innerHTML = '';
+            }
+
+            listasBox.innerHTML = '';
+            if (!totais.listas.length) {
+                listasBox.innerHTML = '<div class="empty">Nenhuma lista encontrada neste embarque.</div>';
+            } else {
+                totais.listas.forEach(function(l) {
+                    var listaId = String(l.id || '');
+                    var nomeLista = String(l.nome_lista || 'Sem nome');
+                    var elL = document.createElement('div');
+                    elL.className = 'lista-item';
+                    elL.setAttribute('role', 'button');
+                    elL.setAttribute('tabindex', '0');
+                    elL.innerHTML =
+                        '<div class="linha-topo"><div class="nome-lista">' + nomeLista + '</div>' +
+                        '<div class="acoes-direita"><span class="status">Analisando orçamento</span></div></div>' +
+                        '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
+                        '<div class="meta-resumo">' +
+                            '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (carregarInvoiceLocal(listaId) || (l.numero_invoice ? String(l.numero_invoice) : '-')) + '</strong></span>' +
+                            '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
+                            '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
+                            '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                        '</div>';
+                    if (listaId) {
+                        var embarqueId = embarque.id || '';
+                        var ir = function() { window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId) + (embarqueId ? '&from_embarque=' + encodeURIComponent(embarqueId) : ''); };
+                        elL.addEventListener('click', ir);
+                        elL.addEventListener('keydown', function(ev) {
+                            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ir(); }
+                        });
+                    }
+                    listasBox.appendChild(elL);
+                });
+            }
+            main.style.display = 'none';
+            view.style.display = '';
+        }
+
+        function fecharDetalheEmbarque() {
+            var view = document.getElementById('embarqueDetalheView');
+            var main = document.getElementById('vistaMain');
+            var invLine = document.getElementById('embarqueInvoiceLine');
+            if (view) view.style.display = 'none';
+            if (main) main.style.display = '';
+            if (invLine) invLine.innerHTML = '';
+        }
+
+        function abrirModalEmbarque(embarqueId, todasListas) {
+            _embarqueEditandoId = embarqueId || null;
+            var modal = document.getElementById('modalEmbarque');
+            var inputNome = document.getElementById('inputNomeEmbarque');
+            var listaCheck = document.getElementById('modalListasCheck');
+            var inputBl = document.getElementById('inputBlEmbarque');
+            var inputContainer = document.getElementById('inputContainerEmbarque');
+            var tituloEl = document.getElementById('modalEmbarqueTitulo');
+            if (!modal || !inputNome || !listaCheck) return;
+            var embarqueAtual = embarqueId
+                ? (carregarEmbarques().find(function(e) { return e.id === embarqueId; }) || null)
+                : null;
+            var idsAtivos = new Set((embarqueAtual ? embarqueAtual.lista_ids : []).map(String));
+            if (tituloEl) tituloEl.textContent = embarqueAtual ? 'Editar Embarque' : 'Organizar Embarque';
+            inputNome.value = embarqueAtual ? (embarqueAtual.nome || '') : '';
+            if (inputBl) inputBl.value = embarqueAtual ? (embarqueAtual.numero_bl || '') : '';
+            if (inputContainer) inputContainer.value = embarqueAtual ? (embarqueAtual.numero_container || '') : '';
+            listaCheck.innerHTML = '';
+            if (!todasListas || !todasListas.length) {
+                listaCheck.innerHTML = '<div class="muted">Nenhuma lista disponível.</div>';
+            } else {
+                todasListas.forEach(function(l) {
+                    var listaId = String(l.id || '');
+                    var div = document.createElement('label');
+                    div.className = 'check-item';
+                    div.innerHTML =
+                        '<input type="checkbox" value="' + listaId + '"' + (idsAtivos.has(listaId) ? ' checked' : '') + ' />' +
+                        '<div>' +
+                            '<div class="check-item-nome">' + (l.nome_lista || 'Sem nome') + '</div>' +
+                            '<div class="check-item-meta">Itens: ' + numero(l.total_itens || 0) + ' | Qtd: ' + numero(l.total_quantidade || 0) + (l.total_usd > 0 ? ' | ' + formatarUSD(l.total_usd) : '') + '</div>' +
+                        '</div>';
+                    listaCheck.appendChild(div);
+                });
+            }
+            modal.classList.add('aberto');
+            inputNome.focus();
+        }
+
+        function fecharModalEmbarque() {
+            var modal = document.getElementById('modalEmbarque');
+            if (modal) modal.classList.remove('aberto');
+            _embarqueEditandoId = null;
+        }
+
+        function salvarModalEmbarque() {
+            var inputNome = document.getElementById('inputNomeEmbarque');
+            var inputBl = document.getElementById('inputBlEmbarque');
+            var inputContainer = document.getElementById('inputContainerEmbarque');
+            var listaCheck = document.getElementById('modalListasCheck');
+            if (!inputNome || !listaCheck) return;
+            var nome = String(inputNome.value || '').trim();
+            var bl = inputBl ? String(inputBl.value || '').trim() : '';
+            var container = inputContainer ? String(inputContainer.value || '').trim() : '';
+            if (!nome) {
+                setStatus('Informe o nome do embarque.');
+                inputNome.focus();
+                return;
+            }
+            var checkboxes = listaCheck.querySelectorAll('input[type="checkbox"]:checked');
+            var ids = Array.from(checkboxes).map(function(cb) { return String(cb.value); });
+            if (!ids.length) {
+                setStatus('Selecione ao menos uma lista para o embarque.');
+                return;
+            }
+            var embarques = carregarEmbarques();
+            if (_embarqueEditandoId) {
+                var idx = embarques.findIndex(function(e) { return e.id === _embarqueEditandoId; });
+                if (idx >= 0) {
+                    embarques[idx].nome = nome;
+                    embarques[idx].numero_bl = bl;
+                    embarques[idx].numero_container = container;
+                    embarques[idx].lista_ids = ids;
+                    embarques[idx].updated_at = new Date().toISOString();
+                }
+            } else {
+                embarques.push({
+                    id: gerarIdEmbarque(),
+                    nome: nome,
+                    numero_bl: bl,
+                    numero_container: container,
+                    lista_ids: ids,
+                    created_at: new Date().toISOString()
+                });
+            }
+            salvarEmbarquesStorage(embarques);
+            fecharModalEmbarque();
+            renderEmbarques(todasListasCache);
+            setStatus('Embarque "' + nome + '" salvo com sucesso.');
+        }
+
+        // ─── Button wiring ─────────────────────────────────────────────────────────
+
+        const btnAtualizar = document.getElementById('btnAtualizar');
+        if (btnAtualizar) {
+            btnAtualizar.addEventListener('click', carregarListasImportacoes);
+        }
+
+        const btnImportarPedidoMenu = document.getElementById('btnImportarPedidoMenu');
+        if (btnImportarPedidoMenu) {
+            btnImportarPedidoMenu.addEventListener('click', () => {
+                importarPedidoPorExcel(btnImportarPedidoMenu);
+            });
+        }
+
+        const btnOrganizarEmbarque = document.getElementById('btnOrganizarEmbarque');
+        if (btnOrganizarEmbarque) {
+            btnOrganizarEmbarque.addEventListener('click', function() {
+                abrirModalEmbarque(null, todasListasCache);
+            });
+        }
+
+        const btnModalConfirmar = document.getElementById('btnModalConfirmar');
+        if (btnModalConfirmar) {
+            btnModalConfirmar.addEventListener('click', salvarModalEmbarque);
+        }
+
+        const btnModalFechar = document.getElementById('btnModalFechar');
+        if (btnModalFechar) {
+            btnModalFechar.addEventListener('click', fecharModalEmbarque);
+        }
+
+        const modalOverlay = document.getElementById('modalEmbarque');
+        if (modalOverlay) {
+            modalOverlay.addEventListener('click', function(ev) {
+                if (ev.target === modalOverlay) fecharModalEmbarque();
+            });
+        }
+
+        const btnVoltarEmbarque = document.getElementById('btnVoltarEmbarque');
+        if (btnVoltarEmbarque) {
+            btnVoltarEmbarque.addEventListener('click', fecharDetalheEmbarque);
+        }
+
+        document.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Escape') fecharModalEmbarque();
+        });
+
+        carregarCotacaoDolar();
+        setInterval(carregarCotacaoDolar, 30000);
+        atualizarHorarioBrasilia();
+        setInterval(atualizarHorarioBrasilia, 1000);
+        atualizarHorarioPequim();
+        setInterval(atualizarHorarioPequim, 1000);
+        carregarListasImportacoes().then(function() {
+            var params = new URLSearchParams(window.location.search);
+            var openEmbId = params.get('embarque_id');
+            if (openEmbId) {
+                var emb = carregarEmbarques().find(function(e) { return String(e.id) === String(openEmbId); });
+                if (emb) abrirDetalheEmbarque(emb, todasListasCache);
+            }
+        });
+    </script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+
+
+
+
+

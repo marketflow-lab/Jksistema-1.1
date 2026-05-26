@@ -1,0 +1,185 @@
+{
+	"info": {
+		"_postman_id": "74bb06a5-f872-4ae7-9f5c-01116869363a",
+		"name": "GF - Empresas",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "17661205"
+	},
+	"item": [
+		{
+			"name": "Criar Empresa",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					},
+					{
+						"key": "x-api-key",
+						"value": "INSERIR_codigo_x_api_key"
+					},
+					{
+						"key": "access_token",
+						"value": "INSERIR_codigo_token",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"cnpj\": \"00000000000191\",\r\n    \"razaoSocial\": \"DEMONSTRAÇÃO\",\r\n    \"nomeFantasia\": \"DEMONSTRAÇÃO\",\r\n    \"inscricaoEstadual\": \"1234\",\r\n    \"uf\": \"SP\",\r\n    \"estabelecimento\": \"Indústria\",\r\n    \"tributacao\": \"Lucro Real\",\r\n    \"indicadorAtividade\": \"Industrial ou equiparado a industrial\",\r\n    \"tipoRegimeSubstituicaoTributaria\": \"Substituto\"   \r\n }"
+				},
+				"url": {
+					"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/empresas",
+					"protocol": "https",
+					"host": [
+						"gestor-svc-app",
+						"iob",
+						"com",
+						"br"
+					],
+					"path": [
+						"gestor-fiscal",
+						"v1",
+						"empresas"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Listar Empresas",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					},
+					{
+						"key": "x-api-key",
+						"value": "INSERIR_codigo_x_api_key",
+						"type": "text"
+					},
+					{
+						"key": "access_token",
+						"value": "INSERIR_codigo_token",
+						"type": "text"
+					}
+				],
+				"url": {
+					"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/empresas?_offset=1&_limit=5",
+					"protocol": "https",
+					"host": [
+						"gestor-svc-app",
+						"iob",
+						"com",
+						"br"
+					],
+					"path": [
+						"gestor-fiscal",
+						"v1",
+						"empresas"
+					],
+					"query": [
+						{
+							"key": "_offset",
+							"value": "1"
+						},
+						{
+							"key": "_limit",
+							"value": "5"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Atualizar Empresa",
+			"request": {
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					},
+					{
+						"key": "x-api-key",
+						"value": "INSERIR_codigo_x_api_key",
+						"type": "text"
+					},
+					{
+						"key": "access_token",
+						"value": "INSERIR_codigo_token",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"cnpj\": \"00000000000191\",\r\n    \"razaoSocial\": \"ALTERANDO O NOME DE RAZAO SOCIAL\",\r\n    \"nomeFantasia\": \"ALTERANDO O NOME DE RAZAO SOCIAL\",\r\n    \"inscricaoEstadual\": \"1234\",\r\n    \"uf\": \"SP\",\r\n    \"estabelecimento\": \"Indústria\",\r\n    \"tributacao\": \"Lucro Real\",\r\n    \"indicadorAtividade\": \"Industrial ou equiparado a industrial\",\r\n    \"tipoRegimeSubstituicaoTributaria\": \"Substituto\",\r\n    \"ativo\": true\r\n}"
+				},
+				"url": {
+					"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/empresas/INSERIR_codigo_empresaId",
+					"protocol": "https",
+					"host": [
+						"gestor-svc-app",
+						"iob",
+						"com",
+						"br"
+					],
+					"path": [
+						"gestor-fiscal",
+						"v1",
+						"empresas",
+						"INSERIR_codigo_empresaId"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Deletar Empresa",
+			"request": {
+				"method": "DELETE",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					},
+					{
+						"key": "x-api-key",
+						"value": "INSERIR_codigo_x_api_key",
+						"type": "text"
+					},
+					{
+						"key": "access_token",
+						"value": "INSERIR_codigo_token",
+						"type": "text"
+					}
+				],
+				"url": {
+					"raw": "https://gestor-svc-app.iob.com.br/gestor-fiscal/v1/empresas/INSERIR_codigo_empresaId",
+					"protocol": "https",
+					"host": [
+						"gestor-svc-app",
+						"iob",
+						"com",
+						"br"
+					],
+					"path": [
+						"gestor-fiscal",
+						"v1",
+						"empresas",
+						"INSERIR_codigo_empresaId"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}

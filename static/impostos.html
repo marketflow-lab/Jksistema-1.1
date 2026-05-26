@@ -1,0 +1,2181 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impostos - JK Sistema</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0e1117;
+            color: #e5e5e5;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        body::-webkit-scrollbar { display: none; }
+        .container {
+            width: calc(100vw - 40px);
+            max-width: none;
+            margin: 0 auto;
+        }
+        .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+        .tab-btn {
+            border: 1px solid #2f3d56;
+            border-radius: 999px;
+            background: #101927;
+            color: #cfe3ff;
+            padding: 8px 14px;
+            cursor: pointer;
+            font-weight: 700;
+        }
+        .tab-btn.active {
+            background: #1f3656;
+            border-color: #4facfe;
+            color: #ffffff;
+        }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
+        h1 { margin: 0; }
+        .back-btn {
+            padding: 8px 14px;
+            background: #4facfe;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+            border: none;
+            cursor: pointer;
+        }
+        .back-btn:hover { background: #0073e6; }
+        .status {
+            margin-bottom: 14px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #222;
+            background: #161925;
+            min-height: 20px;
+        }
+        .status.loading { color: #9bd1ff; border-color: #4facfe; background: #0a1428; }
+        .status.success { color: #66bb6a; border-color: #1b5e20; background: #0f2e0d; }
+        .status.error { color: #ff6b6b; border-color: #c62828; background: #28010d; }
+        .grid { display: grid; grid-template-columns: 420px 1fr; gap: 14px; }
+        .card {
+            background: #1c1f2b;
+            border: 1px solid #222;
+            border-radius: 10px;
+            padding: 14px;
+        }
+        .card h2 { margin-top: 0; color: #9bd1ff; }
+        .field { margin-bottom: 10px; }
+        .field label { display: block; font-size: 0.9rem; color: #c7ddf5; margin-bottom: 6px; }
+        .field input, .field textarea, .field select {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 9px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            background: #11141d;
+            color: #e5e5e5;
+        }
+        .field textarea { min-height: 70px; resize: vertical; }
+        .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+        .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .btn {
+            border: none;
+            border-radius: 6px;
+            padding: 9px 12px;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn:disabled { opacity: 0.55; cursor: default; }
+        .btn-primary { background: #28a745; }
+        .btn-primary:hover { background: #218838; }
+        .btn-secondary { background: #6c757d; }
+        .btn-secondary:hover { background: #5b636a; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #bd2130; }
+        .btn-accent { background: #007bff; }
+        .btn-accent:hover { background: #0069d9; }
+        .table-wrap {
+            overflow: auto;
+            border-radius: 8px;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .table-wrap::-webkit-scrollbar { display: none; }
+        table {
+            width: max-content;
+            min-width: 100%;
+            border-collapse: collapse;
+            background: #1c1f2b;
+            border: 1px solid #222;
+        }
+        th, td {
+            padding: 8px;
+            border-bottom: 1px solid #222;
+            text-align: left;
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+        th {
+            background: #161925;
+            color: #9bd1ff;
+            position: sticky;
+            top: 82px;
+            z-index: 5;
+        }
+        #panelNcm .table-wrap,
+        #panelConvenioMG .table-wrap,
+        #panelRegras .table-wrap {
+            overflow-y: auto;
+            overflow-x: hidden;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        #panelNcm .table-wrap::-webkit-scrollbar,
+        #panelConvenioMG .table-wrap::-webkit-scrollbar,
+        #panelRegras .table-wrap::-webkit-scrollbar { display: none; }
+        #panelNcm table,
+        #panelConvenioMG table,
+        #panelRegras table {
+            width: 100%;
+            min-width: 0;
+            table-layout: fixed;
+        }
+        #panelNcm th,
+        #panelNcm td,
+        #panelConvenioMG th,
+        #panelConvenioMG td,
+        #panelRegras th,
+        #panelRegras td {
+            white-space: normal;
+            word-break: break-word;
+        }
+        #panelConvenioMG .table-wrap,
+        #panelRegras .table-wrap {
+            overflow: visible;
+            max-height: none;
+        }
+        #panelSiscomex .table-wrap th,
+        #panelConsultaSku .table-wrap th {
+            top: 0;
+            z-index: 2;
+        }
+        .muted { color: #9fb3c8; font-size: 0.88rem; }
+        .resumo {
+            margin-top: 12px;
+            display: grid;
+            grid-template-columns: repeat(5, minmax(160px, 1fr));
+            gap: 8px;
+        }
+        .resumo .kpi {
+            background: #11141d;
+            border: 1px solid #2a3242;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .kpi .label { font-size: 0.8rem; color: #9fb3c8; }
+        .kpi .value { font-size: 1.02rem; color: #d6e6f8; font-weight: 700; margin-top: 2px; }
+        @media (max-width: 1100px) {
+            .grid { grid-template-columns: 1fr; }
+            .resumo { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+    <script src="/auth.js?v=20260417f"></script>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>💸 Módulo Impostos</h1>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
+            <a class="back-btn" href="/dashboard.html">⬅️ Voltar</a>
+        </div>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="tabs">
+        <button id="tabRegras" class="tab-btn active" type="button">Regras e Simulação</button>
+        <button id="tabNcm" class="tab-btn" type="button">NCM</button>
+        <button id="tabConvenioMG" class="tab-btn" type="button">Convênio MG</button>
+        <button id="tabSiscomex" class="tab-btn" type="button">Siscomex TTCE</button>
+        <button id="tabConsultaSku" class="tab-btn" type="button">🔍 Consulta por SKU</button>
+    </div>
+
+    <section id="panelRegras" class="tab-panel active">
+    <div class="grid">
+        <div class="card">
+            <h2>Regra por NCM/CEST</h2>
+            <div class="field row-2">
+                <div>
+                    <label for="ncm">NCM *</label>
+                    <input id="ncm" type="text" maxlength="12" placeholder="Ex: 85176249">
+                </div>
+                <div>
+                    <label for="cest">CEST</label>
+                    <input id="cest" type="text" maxlength="12" placeholder="Ex: 2103800">
+                </div>
+            </div>
+            <div class="field">
+                <label for="descricao">Descrição</label>
+                <input id="descricao" type="text" placeholder="Nome da regra fiscal">
+            </div>
+            <div class="field row-3">
+                <div>
+                    <label for="aliqFed">Alíquota Federal (%)</label>
+                    <input id="aliqFed" type="number" step="0.01" min="0" value="0">
+                </div>
+                <div>
+                    <label for="aliqEst">Alíquota Estadual (%)</label>
+                    <input id="aliqEst" type="number" step="0.01" min="0" value="0">
+                </div>
+                <div>
+                    <label for="aliqMun">Alíquota Municipal (%)</label>
+                    <input id="aliqMun" type="number" step="0.01" min="0" value="0">
+                </div>
+            </div>
+            <div class="field">
+                <label for="observacoes">Observações</label>
+                <textarea id="observacoes" placeholder="Observações sobre tributação"></textarea>
+            </div>
+            <div class="actions">
+                <button id="btnSalvarRegra" class="btn btn-primary">Salvar regra</button>
+                <button id="btnLimparForm" class="btn btn-secondary">Limpar</button>
+            </div>
+            <div class="muted" style="margin-top:8px;">Se NCM+CEST já existir, a regra será atualizada.</div>
+        </div>
+
+        <div class="card">
+            <h2>Regras cadastradas</h2>
+            <div class="table-wrap" style="margin-top: 10px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>NCM</th>
+                            <th>CEST</th>
+                            <th>Descrição</th>
+                            <th>Fed.</th>
+                            <th>Est.</th>
+                            <th>Mun.</th>
+                            <th>Total</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbRegras"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+        <h2>Simulação de Impostos no Cadastro</h2>
+        <div class="actions" style="margin-bottom:10px;">
+            <div class="field" style="margin:0; max-width:220px;">
+                <label for="reservaPercentual">Reserva adicional (%)</label>
+                <input id="reservaPercentual" type="number" min="0" step="0.01" value="0">
+            </div>
+            <button id="btnSimular" class="btn btn-accent">Recalcular simulação</button>
+            <button id="btnAplicar" class="btn btn-primary">Aplicar coluna imposto no cadastro</button>
+        </div>
+
+        <div id="resumo" class="resumo"></div>
+
+        <div class="table-wrap" style="max-height: 55vh; margin-top:10px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>SKU</th>
+                        <th>Nome</th>
+                        <th>NCM</th>
+                        <th>CEST</th>
+                        <th>CEST Ref. NCM</th>
+                        <th>Âmbito de Aplicação</th>
+                        <th>Vínculo Conv. MG</th>
+                        <th>NBM/SH (Conv. MG)</th>
+                        <th>CEST (Conv. MG)</th>
+                        <th>MVA (Conv. MG)</th>
+                        <th>ST MG</th>
+                        <th>ST PB</th>
+                    </tr>
+                </thead>
+                <tbody id="tbProdutos"></tbody>
+            </table>
+        </div>
+    </div>
+    </section>
+
+    <section id="panelNcm" class="tab-panel">
+        <div class="card">
+            <h2>Base NCM (II, IPI, PIS, COFINS)</h2>
+            <div class="actions" style="margin-bottom: 10px;">
+                <input id="ncmSearch" type="text" placeholder="Buscar por NCM, descrição ou CEST" style="min-width: 280px;">
+                <button id="btnBuscarNcm" class="btn btn-accent" type="button">Buscar</button>
+                <button id="btnImportarNcm" class="btn btn-primary" type="button">Importar NCM.xlsx</button>
+            </div>
+            <div id="statusNcm" class="muted">Carregando base NCM...</div>
+            <div class="actions" style="margin-top: 10px;">
+                <button id="btnNcmPrevTop" class="btn btn-secondary" type="button">Anterior</button>
+                <button id="btnNcmNextTop" class="btn btn-secondary" type="button">Próxima</button>
+                <span id="ncmPageInfoTop" class="muted"></span>
+            </div>
+            <div class="table-wrap" style="margin-top: 10px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>NCM</th>
+                            <th>Descrição</th>
+                            <th>CEST</th>
+                            <th>II (%)</th>
+                            <th>IPI (%)</th>
+                            <th>PIS (%)</th>
+                            <th>COFINS (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbNcm"></tbody>
+                </table>
+            </div>
+            <div class="actions" style="margin-top: 10px;">
+                <button id="btnNcmPrev" class="btn btn-secondary" type="button">Anterior</button>
+                <button id="btnNcmNext" class="btn btn-secondary" type="button">Próxima</button>
+                <span id="ncmPageInfo" class="muted"></span>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+            <h2>Consulta NCM via API Siscomex TTCE</h2>
+            <div class="field row-2">
+                <div>
+                    <label for="siscomexLojaConsulta">Loja vinculada</label>
+                    <select id="siscomexLojaConsulta"></select>
+                </div>
+                <div>
+                    <label for="siscomexPerfilConsulta">Perfil do usuário</label>
+                    <input id="siscomexPerfilConsulta" type="text" placeholder="Usuário/perfil para escopo da configuração">
+                </div>
+            </div>
+            <!-- Busca por SKU para preencher NCM automaticamente -->
+            <div style="background:#11141d; border:1px solid #2a3a50; border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+                <div style="font-size:0.85em; color:#9fb3c8; margin-bottom:6px;">🔍 Preencher NCM automaticamente pelo SKU do produto</div>
+                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                    <div style="flex:1; min-width:160px;">
+                        <label for="siscomexSkuBusca" style="display:block; font-size:0.85em; color:#c7ddf5; margin-bottom:4px;">SKU do produto</label>
+                        <input id="siscomexSkuBusca" type="text" placeholder="Ex: SC-001" style="width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5;">
+                    </div>
+                    <button id="btnBuscarSkuTtce" class="btn btn-accent" type="button" style="white-space:nowrap;">Buscar SKU</button>
+                </div>
+                <div id="siscomexSkuInfo" style="margin-top:6px; font-size:0.82em; color:#9fb3c8; min-height:18px;"></div>
+            </div>
+            <div class="field row-3">
+                <div>
+                    <label for="siscomexNcm">NCM</label>
+                    <input id="siscomexNcm" type="text" maxlength="12" placeholder="Ex: 95045000">
+                </div>
+                <div>
+                    <label for="siscomexCodigoPais">País de origem</label>
+                    <input id="siscomexCodigoPais" type="text" list="siscomexPaisesList" value="741 - China" readonly>
+                </div>
+                <div>
+                    <label for="siscomexDataFatoGerador">Data fato gerador</label>
+                    <input id="siscomexDataFatoGerador" type="date">
+                </div>
+            </div>
+            <div class="field row-2">
+                <div>
+                    <label for="siscomexTipoOperacao">Tipo operação</label>
+                    <select id="siscomexTipoOperacao" disabled>
+                        <option value="I">Importação</option>
+                        <option value="E">Exportação</option>
+                        <option value="F">Frete</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="siscomexFundamentos">Fundamentos opcionais</label>
+                    <textarea id="siscomexFundamentos" placeholder='JSON opcional. Ex: [{"codigoTributo":1,"codigoRegime":1,"codigoFundamentoLegal":9}]'></textarea>
+                </div>
+            </div>
+            <div class="actions">
+                <button id="btnConsultarSiscomex" class="btn btn-accent" type="button">Consultar TTCE</button>
+            </div>
+            <div id="statusSiscomexConsulta" class="muted" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+            <h2>Resultado TTCE por Tributo</h2>
+            <div id="siscomexResumo" class="resumo"></div>
+            <!-- Decisão automática por tributo -->
+            <div id="siscomexDecisaoTributos" style="display:none; margin-top:14px;">
+                <div style="margin-bottom:8px; font-size:0.93em; color:#9fb3c8;">Situação padrão para <strong id="siscomexDecisaoRegimeLabel">Simples Nacional</strong> — importação para revenda via trading, sem benefícios especiais habilitados:</div>
+                <div id="siscomexCardsTributo" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:10px; margin-bottom:12px;"></div>
+                <div style="font-size:0.82em; color:#6b8599; margin-top:4px;">Para aplicar um benefício (isenção, suspensão, redução) consulte o detalhe abaixo e confirme com seu contador se a operação se enquadra.</div>
+            </div>
+            <!-- Fundamentos opcionais disponíveis agrupados por tributo -->
+            <div id="siscomexFundamentosDetalhado" style="display:none; margin-top:14px;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+                    <strong style="color:#a8c7fa;">Fundamentos opcionais disponíveis</strong>
+                    <span style="font-size:0.82em; color:#9fb3c8;">(filtre para ver benefícios aplicáveis)</span>
+                    <select id="filtroTributoSiscomex" style="margin-left:auto;">
+                        <option value="">Todos os tributos</option>
+                        <option value="1">II — Imposto de Importação</option>
+                        <option value="2">IPI</option>
+                        <option value="6">PIS Importação</option>
+                        <option value="7">Cofins Importação</option>
+                    </select>
+                    <select id="filtroRegimeSiscomex">
+                        <option value="">Todos os regimes</option>
+                        <option value="1">Recolhimento Integral</option>
+                        <option value="2">Imunidade</option>
+                        <option value="3">Isenção</option>
+                        <option value="4">Redução</option>
+                        <option value="5">Suspensão</option>
+                        <option value="6">Não Incidência</option>
+                        <option value="10">Susp. c/ pagamento proporcional</option>
+                    </select>
+                </div>
+                <div class="table-wrap" style="max-height: 40vh;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Tributo</th>
+                                <th>Regime</th>
+                                <th>Cód.</th>
+                                <th>Fundamento legal</th>
+                                <th>Atrib. extras</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbSiscomexTratamentos"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="field" style="margin-top:12px;">
+                <label for="siscomexRawResposta">Retorno bruto (JSON)</label>
+                <textarea id="siscomexRawResposta" readonly style="min-height:180px; font-family: Consolas, monospace;"></textarea>
+            </div>
+        </div>
+    </section>
+
+    <section id="panelConvenioMG" class="tab-panel">
+        <div class="card">
+            <h2>Convênio MG (Base CEST)</h2>
+            <div class="actions" style="margin-bottom: 10px;">
+                <input id="convenioMgSearch" type="text" placeholder="Buscar por CEST, NBM/SH, descrição ou item" style="min-width: 280px;">
+                <button id="btnBuscarConvenioMG" class="btn btn-accent" type="button">Buscar</button>
+                <button id="btnImportarConvenioMG" class="btn btn-primary" type="button">Importar NCM1.xlsx</button>
+            </div>
+            <div id="statusConvenioMG" class="muted">Carregando base Convênio MG...</div>
+            <div class="actions" style="margin-top: 10px;">
+                <button id="btnConvenioMGPrevTop" class="btn btn-secondary" type="button">Anterior</button>
+                <button id="btnConvenioMGNextTop" class="btn btn-secondary" type="button">Próxima</button>
+                <span id="convenioMgPageInfoTop" class="muted"></span>
+            </div>
+            <div class="table-wrap" style="max-height: 55vh; margin-top: 10px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>CEST</th>
+                            <th>Descrição</th>
+                            <th>NBM/SH</th>
+                            <th>Ã‚mbito</th>
+                            <th>MVA (%)</th>
+                            <th>ST Minas</th>
+                            <th>ST Paraíba</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbConvenioMG"></tbody>
+                </table>
+            </div>
+            <div class="actions" style="margin-top: 10px;">
+                <button id="btnConvenioMGPrev" class="btn btn-secondary" type="button">Anterior</button>
+                <button id="btnConvenioMGNext" class="btn btn-secondary" type="button">Próxima</button>
+                <span id="convenioMgPageInfo" class="muted"></span>
+            </div>
+        </div>
+    </section>
+
+    <section id="panelSiscomex" class="tab-panel">
+        <div class="card">
+            <h2>Configuração Siscomex vinculada por loja e perfil</h2>
+            <div class="field row-2">
+                <div>
+                    <label for="siscomexLojaVinculada">Loja vinculada</label>
+                    <select id="siscomexLojaVinculada"></select>
+                </div>
+                <div>
+                    <label for="siscomexPerfilUsuario">Perfil do usuário</label>
+                    <input id="siscomexPerfilUsuario" type="text" placeholder="Usuário/perfil para escopo da configuração">
+                </div>
+            </div>
+            <div class="field row-2">
+                <div>
+                    <label for="siscomexAmbiente">Ambiente</label>
+                    <select id="siscomexAmbiente">
+                        <option value="val">Validação</option>
+                        <option value="prod">Produção</option>
+                        <option value="hom">Homologação</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="siscomexRegimeTributario">Regime tributário da empresa</label>
+                    <select id="siscomexRegimeTributario">
+                        <option value="simples">Simples Nacional</option>
+                        <option value="presumido">Lucro Presumido</option>
+                        <option value="real">Lucro Real</option>
+                    </select>
+                </div>
+            </div>
+            <input id="siscomexRoleType" type="hidden" value="IMPEXP">
+            <div class="field row-2">
+                <div>
+                    <label for="siscomexCodigoPaisPadrao">País de origem padrão</label>
+                    <input id="siscomexCodigoPaisPadrao" type="text" list="siscomexPaisesList" value="741 - China" readonly>
+                </div>
+                <div>
+                    <label for="siscomexTipoOperacaoPadrao">Tipo de operação padrão</label>
+                    <select id="siscomexTipoOperacaoPadrao" disabled>
+                        <option value="I">Importação</option>
+                        <option value="E">Exportação</option>
+                        <option value="F">Frete</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <label for="siscomexClientId">Client-Id</label>
+                <input id="siscomexClientId" type="text" placeholder="Chave de identificação">
+            </div>
+            <div class="field">
+                <label for="siscomexClientSecret">Client-Secret</label>
+                <input id="siscomexClientSecret" type="password" placeholder="Chave secreta">
+            </div>
+            <div class="field row-2">
+                <div>
+                    <label for="siscomexAuthHeaderType">Authorization</label>
+                    <select id="siscomexAuthHeaderType">
+                        <option value="bearer">Bearer token</option>
+                        <option value="token">Token token</option>
+                        <option value="raw">Token bruto</option>
+                    </select>
+                </div>
+                <div style="display:flex; align-items:end;">
+                    <label style="display:flex; gap:8px; align-items:center; margin:0; cursor:pointer;">
+                        <input id="siscomexPersistirSecret" type="checkbox" checked style="width:auto;">
+                        Persistir segredo no tenant
+                    </label>
+                </div>
+            </div>
+            <div class="actions">
+                <button id="btnSalvarSiscomexConfig" class="btn btn-primary" type="button">Salvar configuração</button>
+                <button id="btnTestarSiscomex" class="btn btn-secondary" type="button">Testar autenticação</button>
+            </div>
+            <div id="statusSiscomexConfig" class="muted" style="margin-top:10px;"></div>
+            <div class="muted" style="margin-top:10px;">Esta aba mantém apenas o vínculo de credenciais por loja e perfil. A consulta de NCM via API fica na aba NCM.</div>
+        </div>
+    </section>
+
+    <section id="panelConsultaSku" class="tab-panel">
+        <div class="card">
+            <h2>🔍 Consulta por SKU — Dados do produto + Alíquotas TTCE</h2>
+            <!-- Credenciais Siscomex -->
+            <div style="background:#11141d; border:1px solid #2a3a50; border-radius:8px; padding:10px 12px; margin-bottom:12px;">
+                <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:6px;">Credenciais Siscomex usadas na consulta</div>
+                <div class="field row-2" style="margin-bottom:0;">
+                    <div>
+                        <label for="skuTabLojaVinculada" style="display:block; font-size:0.85em; color:#c7ddf5; margin-bottom:4px;">Loja vinculada</label>
+                        <select id="skuTabLojaVinculada" style="width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5;"></select>
+                    </div>
+                    <div>
+                        <label for="skuTabPerfil" style="display:block; font-size:0.85em; color:#c7ddf5; margin-bottom:4px;">Perfil do usuário</label>
+                        <input id="skuTabPerfil" type="text" placeholder="Perfil para escopo da configuração" style="width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5;">
+                    </div>
+                </div>
+            </div>
+            <!-- Busca por SKU -->
+            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+                <div style="flex:1; min-width:200px;">
+                    <label for="consultaSkuInput" style="display:block; font-size:0.9rem; color:#c7ddf5; margin-bottom:6px;">SKU do produto</label>
+                    <input id="consultaSkuInput" type="text" placeholder="Digite o SKU do produto" style="width:100%; box-sizing:border-box; padding:9px; border-radius:6px; border:1px solid #333; background:#11141d; color:#e5e5e5;">
+                </div>
+                <button id="btnConsultarSku" class="btn btn-accent" type="button">Buscar produto e alíquotas</button>
+            </div>
+            <div id="consultaSkuStatus" class="muted" style="margin-bottom:10px; min-height:18px;"></div>
+
+            <!-- Resultado do produto + TTCE -->
+            <div id="consultaSkuResultado" style="display:none;">
+                <!-- KPIs do produto -->
+                <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:6px; font-weight:600; letter-spacing:0.03em;">DADOS DO PRODUTO</div>
+                <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap:8px; margin-bottom:14px;" id="consultaSkuKpis"></div>
+
+                <!-- Decisão TTCE por tributo -->
+                <div id="skuTtceDecisao" style="display:none; margin-top:4px;">
+                    <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:6px; font-weight:600; letter-spacing:0.03em;">ALÍQUOTAS TTCE — <span id="skuTtceRegimeLabel" style="color:#a8c7fa;"></span></div>
+                    <div id="skuTtceCards" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:10px; margin-bottom:8px;"></div>
+                    <div style="font-size:0.78em; color:#6b8599; margin-bottom:12px;">Para aplicar um benefício (isenção, suspensão, redução) consulte o detalhe abaixo.</div>
+                </div>
+
+                <!-- Status TTCE -->
+                <div id="skuTtceStatus" class="muted" style="min-height:18px; margin-bottom:8px;"></div>
+
+                <!-- Fundamentos opcionais disponíveis -->
+                <div id="skuTtceFundamentos" style="display:none; margin-top:6px;">
+                    <div style="margin-bottom:6px;">
+                        <strong style="color:#a8c7fa; font-size:0.92em;">Fundamentos opcionais disponíveis</strong>
+                    </div>
+                    <div style="display:flex; gap:8px; justify-content:flex-end; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+                        <select id="skuFiltroTributo" style="padding:5px 8px; border-radius:5px; border:1px solid #333; background:#11141d; color:#e5e5e5; font-size:0.85em;">
+                            <option value="">Todos os tributos</option>
+                            <option value="1">II — Imposto de Importação</option>
+                            <option value="2">IPI</option>
+                            <option value="6">PIS Importação</option>
+                            <option value="7">Cofins Importação</option>
+                        </select>
+                        <select id="skuFiltroRegime" style="padding:5px 8px; border-radius:5px; border:1px solid #333; background:#11141d; color:#e5e5e5; font-size:0.85em;">
+                            <option value="">Todos os regimes</option>
+                            <option value="1">Recolhimento Integral</option>
+                            <option value="2">Imunidade</option>
+                            <option value="3">Isenção</option>
+                            <option value="4">Redução</option>
+                            <option value="5">Suspensão</option>
+                            <option value="6">Não Incidência</option>
+                            <option value="10">Susp. Proporcional</option>
+                        </select>
+                    </div>
+                    <div class="table-wrap" style="max-height: 35vh;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Tributo</th>
+                                    <th>Regime</th>
+                                    <th>Cód.</th>
+                                    <th>Fundamento legal</th>
+                                    <th>Atrib. extras</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbSkuTtceFundamentos"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Detalhes do produto colapsável -->
+                <details style="margin-top:14px;">
+                    <summary style="cursor:pointer; color:#9bd1ff; font-size:0.88em; padding:6px 0;">Ver todos os campos do produto cadastrado</summary>
+                    <div class="table-wrap" style="margin-top:8px; max-height:35vh;">
+                        <table>
+                            <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+                            <tbody id="tbConsultaSkuDetalhes"></tbody>
+                        </table>
+                    </div>
+                </details>
+            </div>
+            <div id="consultaSkuVazio" style="color:#9fb3c8; padding:20px 0; text-align:center; display:none;">Produto não encontrado para o SKU informado.</div>
+        </div>
+    </section>
+</div>
+
+<datalist id="siscomexPaisesList"></datalist>
+
+<script>
+    if (!verificarSessao()) {
+        // verificarSessao já redireciona.
+    }
+
+    const statusEl = document.getElementById('status');
+    const tbRegras = document.getElementById('tbRegras');
+    const tbProdutos = document.getElementById('tbProdutos');
+    const resumoEl = document.getElementById('resumo');
+
+    const ncmEl = document.getElementById('ncm');
+    const cestEl = document.getElementById('cest');
+    const descricaoEl = document.getElementById('descricao');
+    const aliqFedEl = document.getElementById('aliqFed');
+    const aliqEstEl = document.getElementById('aliqEst');
+    const aliqMunEl = document.getElementById('aliqMun');
+    const observacoesEl = document.getElementById('observacoes');
+    const reservaEl = document.getElementById('reservaPercentual');
+    const statusNcmEl = document.getElementById('statusNcm');
+    const tbNcm = document.getElementById('tbNcm');
+    const ncmSearchEl = document.getElementById('ncmSearch');
+    const btnBuscarNcm = document.getElementById('btnBuscarNcm');
+    const btnImportarNcm = document.getElementById('btnImportarNcm');
+    const btnNcmPrev = document.getElementById('btnNcmPrev');
+    const btnNcmNext = document.getElementById('btnNcmNext');
+    const ncmPageInfoEl = document.getElementById('ncmPageInfo');
+    const btnNcmPrevTop = document.getElementById('btnNcmPrevTop');
+    const btnNcmNextTop = document.getElementById('btnNcmNextTop');
+    const ncmPageInfoTopEl = document.getElementById('ncmPageInfoTop');
+    const tabRegras = document.getElementById('tabRegras');
+    const tabNcm = document.getElementById('tabNcm');
+    const tabConvenioMG = document.getElementById('tabConvenioMG');
+    const tabSiscomex = document.getElementById('tabSiscomex');
+    const panelRegras = document.getElementById('panelRegras');
+    const panelNcm = document.getElementById('panelNcm');
+    const panelConvenioMG = document.getElementById('panelConvenioMG');
+    const panelSiscomex = document.getElementById('panelSiscomex');
+    const statusConvenioMGEl = document.getElementById('statusConvenioMG');
+    const tbConvenioMG = document.getElementById('tbConvenioMG');
+    const convenioMgSearchEl = document.getElementById('convenioMgSearch');
+    const btnBuscarConvenioMG = document.getElementById('btnBuscarConvenioMG');
+    const btnImportarConvenioMG = document.getElementById('btnImportarConvenioMG');
+    const btnConvenioMGPrev = document.getElementById('btnConvenioMGPrev');
+    const btnConvenioMGNext = document.getElementById('btnConvenioMGNext');
+    const convenioMgPageInfoEl = document.getElementById('convenioMgPageInfo');
+    const btnConvenioMGPrevTop = document.getElementById('btnConvenioMGPrevTop');
+    const btnConvenioMGNextTop = document.getElementById('btnConvenioMGNextTop');
+    const convenioMgPageInfoTopEl = document.getElementById('convenioMgPageInfoTop');
+    const siscomexLojaVinculadaEl = document.getElementById('siscomexLojaVinculada');
+    const siscomexPerfilUsuarioEl = document.getElementById('siscomexPerfilUsuario');
+    const siscomexAmbienteEl = document.getElementById('siscomexAmbiente');
+    const siscomexRegimeTributarioEl = document.getElementById('siscomexRegimeTributario');
+    const siscomexCodigoPaisPadraoEl = document.getElementById('siscomexCodigoPaisPadrao');
+    const siscomexTipoOperacaoPadraoEl = document.getElementById('siscomexTipoOperacaoPadrao');
+    const siscomexRoleTypeEl = document.getElementById('siscomexRoleType');
+    const siscomexClientIdEl = document.getElementById('siscomexClientId');
+    const siscomexClientSecretEl = document.getElementById('siscomexClientSecret');
+    const siscomexAuthHeaderTypeEl = document.getElementById('siscomexAuthHeaderType');
+    const siscomexPersistirSecretEl = document.getElementById('siscomexPersistirSecret');
+    const statusSiscomexConfigEl = document.getElementById('statusSiscomexConfig');
+    const btnSalvarSiscomexConfig = document.getElementById('btnSalvarSiscomexConfig');
+    const btnTestarSiscomex = document.getElementById('btnTestarSiscomex');
+    const siscomexLojaConsultaEl = document.getElementById('siscomexLojaConsulta');
+    const siscomexPerfilConsultaEl = document.getElementById('siscomexPerfilConsulta');
+    const siscomexNcmEl = document.getElementById('siscomexNcm');
+    const siscomexCodigoPaisEl = document.getElementById('siscomexCodigoPais');
+    const siscomexDataFatoGeradorEl = document.getElementById('siscomexDataFatoGerador');
+    const siscomexTipoOperacaoEl = document.getElementById('siscomexTipoOperacao');
+    const siscomexFundamentosEl = document.getElementById('siscomexFundamentos');
+    const btnConsultarSiscomex = document.getElementById('btnConsultarSiscomex');
+    const statusSiscomexConsultaEl = document.getElementById('statusSiscomexConsulta');
+    const siscomexResumoEl = document.getElementById('siscomexResumo');
+    const tbSiscomexTratamentos = document.getElementById('tbSiscomexTratamentos');
+    const siscomexRawRespostaEl = document.getElementById('siscomexRawResposta');
+    const siscomexDecisaoEl = document.getElementById('siscomexDecisaoTributos');
+    const siscomexDecisaoRegimeLabelEl = document.getElementById('siscomexDecisaoRegimeLabel');
+    const siscomexCardsTributoEl = document.getElementById('siscomexCardsTributo');
+    const siscomexFundamentosDetalhadoEl = document.getElementById('siscomexFundamentosDetalhado');
+    const filtroTributoEl = document.getElementById('filtroTributoSiscomex');
+    const filtroRegimeEl = document.getElementById('filtroRegimeSiscomex');
+    const siscomexPaisesListEl = document.getElementById('siscomexPaisesList');
+    const consultaSkuInputEl = document.getElementById('consultaSkuInput');
+    const btnConsultarSku = document.getElementById('btnConsultarSku');
+    const btnConsultarSkuTtce = null; // removido — TTCE agora é automático
+    const consultaSkuStatusEl = document.getElementById('consultaSkuStatus');
+    const consultaSkuResultadoEl = document.getElementById('consultaSkuResultado');
+    const consultaSkuVazioEl = document.getElementById('consultaSkuVazio');
+    const consultaSkuKpisEl = document.getElementById('consultaSkuKpis');
+    const tbConsultaSkuDetalhes = document.getElementById('tbConsultaSkuDetalhes');
+    const tabConsultaSku = document.getElementById('tabConsultaSku');
+    const panelConsultaSku = document.getElementById('panelConsultaSku');
+    const skuTabLojaVinculadaEl = document.getElementById('skuTabLojaVinculada');
+    const skuTabPerfilEl = document.getElementById('skuTabPerfil');
+    const skuTtceDecisaoEl = document.getElementById('skuTtceDecisao');
+    const skuTtceRegimeLabelEl = document.getElementById('skuTtceRegimeLabel');
+    const skuTtceCardsEl = document.getElementById('skuTtceCards');
+    const skuTtceStatusEl = document.getElementById('skuTtceStatus');
+    const skuTtceFundamentosEl = document.getElementById('skuTtceFundamentos');
+    const tbSkuTtceFundamentos = document.getElementById('tbSkuTtceFundamentos');
+    const skuFiltroTributoEl = document.getElementById('skuFiltroTributo');
+    const skuFiltroRegimeEl = document.getElementById('skuFiltroRegime');
+    const siscomexSkuBuscaEl = document.getElementById('siscomexSkuBusca');
+    const btnBuscarSkuTtce = document.getElementById('btnBuscarSkuTtce');
+    const siscomexSkuInfoEl = document.getElementById('siscomexSkuInfo');
+
+    let _consultaSkuAtual = null;
+    let _skuTtceFundamentosCache = [];
+
+    const SISCOMEX_PAISES_SUGESTAO = [
+        { codigo: '23', nome: 'Brasil' },
+        { codigo: '31', nome: 'Argentina' },
+        { codigo: '37', nome: 'Chile' },
+        { codigo: '63', nome: 'Colombia' },
+        { codigo: '81', nome: 'Equador' },
+        { codigo: '87', nome: 'Paraguai' },
+        { codigo: '93', nome: 'Uruguai' },
+        { codigo: '97', nome: 'Venezuela' },
+        { codigo: '160', nome: 'Mexico' },
+        { codigo: '249', nome: 'Estados Unidos' },
+        { codigo: '263', nome: 'Canada' },
+        { codigo: '275', nome: 'Cuba' },
+        { codigo: '361', nome: 'Espanha' },
+        { codigo: '365', nome: 'Franca' },
+        { codigo: '386', nome: 'Alemanha' },
+        { codigo: '399', nome: 'Italia' },
+        { codigo: '412', nome: 'Portugal' },
+        { codigo: '426', nome: 'Reino Unido' },
+        { codigo: '438', nome: 'Irlanda' },
+        { codigo: '440', nome: 'Belgica' },
+        { codigo: '442', nome: 'Luxemburgo' },
+        { codigo: '445', nome: 'Paises Baixos' },
+        { codigo: '455', nome: 'Suica' },
+        { codigo: '461', nome: 'Austria' },
+        { codigo: '467', nome: 'Polonia' },
+        { codigo: '469', nome: 'Republica Tcheca' },
+        { codigo: '472', nome: 'Hungria' },
+        { codigo: '474', nome: 'Romenia' },
+        { codigo: '476', nome: 'Bulgaria' },
+        { codigo: '493', nome: 'Grecia' },
+        { codigo: '511', nome: 'Ucrania' },
+        { codigo: '514', nome: 'Russia' },
+        { codigo: '573', nome: 'Turquia' },
+        { codigo: '586', nome: 'Arabia Saudita' },
+        { codigo: '607', nome: 'Israel' },
+        { codigo: '625', nome: 'Emirados Arabes Unidos' },
+        { codigo: '628', nome: 'Qatar' },
+        { codigo: '640', nome: 'Egito' },
+        { codigo: '660', nome: 'Africa do Sul' },
+        { codigo: '670', nome: 'Nigeria' },
+        { codigo: '685', nome: 'India' },
+        { codigo: '690', nome: 'Paquistao' },
+        { codigo: '698', nome: 'Bangladesh' },
+        { codigo: '700', nome: 'Sri Lanka' },
+        { codigo: '705', nome: 'Tailândia' },
+        { codigo: '706', nome: 'Vietna' },
+        { codigo: '710', nome: 'Malasia' },
+        { codigo: '715', nome: 'Singapura' },
+        { codigo: '720', nome: 'Filipinas' },
+        { codigo: '728', nome: 'Indonesia' },
+        { codigo: '730', nome: 'Coreia do Sul' },
+        { codigo: '731', nome: 'Coreia do Norte' },
+        { codigo: '735', nome: 'Japao' },
+        { codigo: '741', nome: 'China' },
+        { codigo: '743', nome: 'Hong Kong' },
+        { codigo: '744', nome: 'Macau' },
+        { codigo: '748', nome: 'Taiwan' },
+        { codigo: '756', nome: 'Australia' },
+        { codigo: '758', nome: 'Nova Zelandia' }
+    ];
+
+    const btnSalvarRegra = document.getElementById('btnSalvarRegra');
+    const btnLimparForm = document.getElementById('btnLimparForm');
+    const btnSimular = document.getElementById('btnSimular');
+    const btnAplicar = document.getElementById('btnAplicar');
+
+    const ncmState = {
+        search: '',
+        limit: 50,
+        offset: 0,
+        total: 0,
+    };
+
+    const convenioMgState = {
+        search: '',
+        limit: 50,
+        offset: 0,
+        total: 0,
+    };
+
+    let regraEditandoId = '';
+
+    function setStatus(msg, tipo = '') {
+        statusEl.className = 'status' + (tipo ? ` ${tipo}` : '');
+        statusEl.textContent = msg || '';
+    }
+
+    function setStatusNcm(msg) {
+        if (statusNcmEl) statusNcmEl.textContent = msg || '';
+    }
+
+    function ativarAba(alvo) {
+        const isNcm = alvo === 'ncm';
+        const isConvenioMG = alvo === 'convenio-mg';
+        const isSiscomex = alvo === 'siscomex';
+        const isConsultaSku = alvo === 'consulta-sku';
+        tabRegras.classList.toggle('active', !isNcm && !isConvenioMG && !isSiscomex && !isConsultaSku);
+        tabNcm.classList.toggle('active', isNcm);
+        tabConvenioMG.classList.toggle('active', isConvenioMG);
+        tabSiscomex.classList.toggle('active', isSiscomex);
+        tabConsultaSku.classList.toggle('active', isConsultaSku);
+        panelRegras.classList.toggle('active', !isNcm && !isConvenioMG && !isSiscomex && !isConsultaSku);
+        panelNcm.classList.toggle('active', isNcm);
+        panelConvenioMG.classList.toggle('active', isConvenioMG);
+        panelSiscomex.classList.toggle('active', isSiscomex);
+        panelConsultaSku.classList.toggle('active', isConsultaSku);
+    }
+
+    function formatarMoeda(v) {
+        const n = Number(v || 0);
+        return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function formatarPct(v, casas = 2) {
+        const n = Number(v || 0);
+        return `${n.toFixed(casas)}%`;
+    }
+
+    function escaparHtml(v) {
+        return String(v || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function normalizarTextoBusca(valor) {
+        return String(valor || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .trim();
+    }
+
+    function formatarOpcaoPais(codigo, nome) {
+        return `${String(codigo || '').trim()} - ${String(nome || '').trim()}`.trim();
+    }
+
+    function preencherDatalistPaises() {
+        if (!siscomexPaisesListEl) return;
+        siscomexPaisesListEl.innerHTML = SISCOMEX_PAISES_SUGESTAO
+            .map((item) => `<option value="${escaparHtml(formatarOpcaoPais(item.codigo, item.nome))}"></option>`)
+            .join('');
+    }
+
+    function extrairCodigoPais(valor) {
+        const texto = String(valor || '').trim();
+        if (!texto) return 0;
+
+        const m = texto.match(/^(\d{1,4})/);
+        if (m) {
+            const n = Number(m[1]);
+            return Number.isFinite(n) && n > 0 ? n : 0;
+        }
+
+        const alvo = normalizarTextoBusca(texto);
+        const encontrado = SISCOMEX_PAISES_SUGESTAO.find((item) => normalizarTextoBusca(item.nome) === alvo);
+        if (encontrado) {
+            const n = Number(encontrado.codigo);
+            return Number.isFinite(n) && n > 0 ? n : 0;
+        }
+        return 0;
+    }
+
+    function codigoPaisParaTexto(codigo) {
+        const cod = String(codigo || '').trim();
+        if (!cod) return '';
+        const encontrado = SISCOMEX_PAISES_SUGESTAO.find((item) => String(item.codigo) === cod);
+        return encontrado ? formatarOpcaoPais(encontrado.codigo, encontrado.nome) : cod;
+    }
+
+    function dataAtualIsoLocal() {
+        const d = new Date();
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const dia = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dia}`;
+    }
+
+    function aplicarPadroesSiscomexImportacaoChina() {
+        if (siscomexCodigoPaisEl) siscomexCodigoPaisEl.value = codigoPaisParaTexto('741') || '741 - China';
+        if (siscomexCodigoPaisPadraoEl) siscomexCodigoPaisPadraoEl.value = codigoPaisParaTexto('741') || '741 - China';
+        if (siscomexTipoOperacaoEl) siscomexTipoOperacaoEl.value = 'I';
+        if (siscomexTipoOperacaoPadraoEl) siscomexTipoOperacaoPadraoEl.value = 'I';
+        if (siscomexDataFatoGeradorEl) siscomexDataFatoGeradorEl.value = dataAtualIsoLocal();
+    }
+
+    function formatarNcmVisual(ncm, ncmOriginal = '') {
+        const original = String(ncmOriginal || '').trim();
+        if (original && /\./.test(original)) {
+            return original;
+        }
+
+        const digitos = String(ncm || '').replace(/\D/g, '');
+        if (digitos.length === 8) {
+            return `${digitos.slice(0, 4)}.${digitos.slice(4, 6)}.${digitos.slice(6, 8)}`;
+        }
+        return String(ncm || '').trim();
+    }
+
+    function formatarCestVisual(cest, cestOriginal = '') {
+        const original = String(cestOriginal || '').trim();
+        if (original && /\./.test(original)) {
+            return original;
+        }
+
+        const digitos = String(cest || '').replace(/\D/g, '');
+        if (digitos.length === 7) {
+            return `${digitos.slice(0, 2)}.${digitos.slice(2, 5)}.${digitos.slice(5, 7)}`;
+        }
+        return String(cest || '').trim();
+    }
+
+    function formatarNbmShVisual(nbmSh, nbmShOriginal = '') {
+        const original = String(nbmShOriginal || '').trim();
+        if (original && /\./.test(original)) {
+            return original;
+        }
+        const digitos = String(nbmSh || '').replace(/\D/g, '');
+        if (digitos.length === 8) {
+            return `${digitos.slice(0, 4)}.${digitos.slice(4, 6)}.${digitos.slice(6, 8)}`;
+        }
+        return String(nbmSh || '').trim();
+    }
+
+    function renderNcm(itens) {
+        const lista = Array.isArray(itens) ? itens : [];
+        if (!lista.length) {
+            tbNcm.innerHTML = '<tr><td colspan="7" style="color:#9fb3c8;">Nenhum NCM encontrado.</td></tr>';
+            return;
+        }
+
+        tbNcm.innerHTML = lista.map((r) => {
+            const desc = r.descricao_completa || r.descricao || '';
+            const ncmFormatado = formatarNcmVisual(r.ncm, r.ncm_original);
+            return `
+                <tr>
+                    <td>${escaparHtml(ncmFormatado || '')}</td>
+                    <td>${escaparHtml(desc || '')}</td>
+                    <td>${escaparHtml(r.cest || '')}</td>
+                    <td>${formatarPct(r.ii || 0, 4)}</td>
+                    <td>${formatarPct(r.ipi || 0, 4)}</td>
+                    <td>${formatarPct(r.pis || 0, 4)}</td>
+                    <td>${formatarPct(r.cofins || 0, 4)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function atualizarPaginacaoNcm() {
+        const inicio = ncmState.total === 0 ? 0 : (ncmState.offset + 1);
+        const fim = Math.min(ncmState.offset + ncmState.limit, ncmState.total);
+        if (ncmPageInfoEl) {
+            ncmPageInfoEl.textContent = `Exibindo ${inicio} - ${fim} de ${ncmState.total}`;
+        }
+        if (ncmPageInfoTopEl) {
+            ncmPageInfoTopEl.textContent = `Exibindo ${inicio} - ${fim} de ${ncmState.total}`;
+        }
+        if (btnNcmPrev) btnNcmPrev.disabled = ncmState.offset <= 0;
+        if (btnNcmNext) btnNcmNext.disabled = (ncmState.offset + ncmState.limit) >= ncmState.total;
+        if (btnNcmPrevTop) btnNcmPrevTop.disabled = ncmState.offset <= 0;
+        if (btnNcmNextTop) btnNcmNextTop.disabled = (ncmState.offset + ncmState.limit) >= ncmState.total;
+    }
+
+    async function carregarNcm() {
+        try {
+            setStatusNcm('Carregando base NCM...');
+            const qs = new URLSearchParams({
+                search: ncmState.search,
+                limit: String(ncmState.limit),
+                offset: String(ncmState.offset),
+            });
+            const resp = await fetch('/api/impostos/ncm?' + qs.toString(), {
+                method: 'GET',
+                headers: obterAuthHeaders(),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            ncmState.total = Number(data.total || 0);
+            renderNcm(data.itens || []);
+            atualizarPaginacaoNcm();
+            setStatusNcm('Base NCM carregada.');
+        } catch (e) {
+            setStatusNcm(`Erro ao carregar NCM: ${e.message}`);
+            renderNcm([]);
+            atualizarPaginacaoNcm();
+        }
+    }
+
+    async function importarNcm() {
+        try {
+            setStatusNcm('Importando NCM.xlsx para o banco...');
+            const resp = await fetch('/api/impostos/ncm/importar-excel', {
+                method: 'POST',
+                headers: obterAuthHeaders(),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            ncmState.offset = 0;
+            setStatusNcm(`Importação concluída. Registros importados: ${Number(data.importados || 0).toLocaleString('pt-BR')}`);
+            await carregarNcm();
+        } catch (e) {
+            setStatusNcm(`Erro ao importar NCM.xlsx: ${e.message}`);
+        }
+    }
+
+    function setStatusConvenioMG(msg) {
+        if (statusConvenioMGEl) statusConvenioMGEl.textContent = msg || '';
+    }
+
+    function setStatusSiscomexConfig(msg) {
+        if (statusSiscomexConfigEl) statusSiscomexConfigEl.textContent = msg || '';
+    }
+
+    function setStatusSiscomexConsulta(msg) {
+        if (statusSiscomexConsultaEl) statusSiscomexConsultaEl.textContent = msg || '';
+    }
+
+    function obterUsuarioLogado() {
+        try {
+            const user = JSON.parse(localStorage.getItem('user_data') || 'null') || {};
+            return String(user.username || '').trim().toLowerCase();
+        } catch (_e) {
+            return '';
+        }
+    }
+
+    function valorLojaEscopo(el) {
+        if (!el) return '';
+        const valor = String(el.value || '').trim();
+        return valor === '__geral__' ? '' : valor;
+    }
+
+    function payloadEscopoConfiguracao() {
+        return {
+            loja_vinculada: valorLojaEscopo(siscomexLojaVinculadaEl),
+            perfil_usuario: String(siscomexPerfilUsuarioEl?.value || '').trim().toLowerCase() || obterUsuarioLogado(),
+        };
+    }
+
+    function payloadEscopoConsulta() {
+        const lojaConsulta = valorLojaEscopo(siscomexLojaConsultaEl);
+        const lojaConfig = valorLojaEscopo(siscomexLojaVinculadaEl);
+        const perfilConsulta = String(siscomexPerfilConsultaEl?.value || '').trim().toLowerCase();
+        const perfilConfig = String(siscomexPerfilUsuarioEl?.value || '').trim().toLowerCase();
+        return {
+            loja_vinculada: lojaConsulta || lojaConfig,
+            perfil_usuario: perfilConsulta || perfilConfig || obterUsuarioLogado(),
+        };
+    }
+
+    async function carregarLojasSiscomex() {
+        const usuario = obterUsuarioLogado();
+        if (siscomexPerfilUsuarioEl && !String(siscomexPerfilUsuarioEl.value || '').trim()) {
+            siscomexPerfilUsuarioEl.value = usuario;
+        }
+        if (siscomexPerfilConsultaEl && !String(siscomexPerfilConsultaEl.value || '').trim()) {
+            siscomexPerfilConsultaEl.value = usuario;
+        }
+        if (skuTabPerfilEl && !String(skuTabPerfilEl.value || '').trim()) {
+            skuTabPerfilEl.value = usuario;
+        }
+
+        const selecionadaConfig = valorLojaEscopo(siscomexLojaVinculadaEl);
+        const selecionadaConsulta = valorLojaEscopo(siscomexLojaConsultaEl);
+        const selecionadaSkuTab = valorLojaEscopo(skuTabLojaVinculadaEl);
+        let nomesLojas = [];
+
+        try {
+            const resp = await fetch('/api/lojas', { headers: obterAuthHeaders() });
+            const data = await resp.json().catch(() => ([]));
+            if (resp.ok && Array.isArray(data)) {
+                nomesLojas = data
+                    .map((l) => String(l?.nome || '').trim())
+                    .filter(Boolean)
+                    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+            }
+        } catch (_e) {}
+
+        const opcoes = [{ value: '__geral__', label: 'Sem loja (configuração geral do perfil)' }]
+            .concat(nomesLojas.map((nome) => ({ value: nome, label: nome })));
+
+        [siscomexLojaVinculadaEl, siscomexLojaConsultaEl, skuTabLojaVinculadaEl].forEach((el) => {
+            if (!el) return;
+            let selecionada = selecionadaConfig;
+            if (el === siscomexLojaConsultaEl) selecionada = selecionadaConsulta;
+            if (el === skuTabLojaVinculadaEl) selecionada = selecionadaSkuTab;
+            el.innerHTML = opcoes.map((o) => `<option value="${escaparHtml(o.value)}">${escaparHtml(o.label)}</option>`).join('');
+            const alvo = selecionada || '__geral__';
+            el.value = opcoes.some((o) => o.value === alvo) ? alvo : '__geral__';
+        });
+    }
+
+    function renderResumoSiscomex(resumo) {
+        const dados = resumo || {};
+        const nTrat = Number(dados.qt_tratamentos || 0);
+        const nFund = Number(dados.qt_fundamentos_opcionais || 0);
+        const nTrib = Number((dados.tributos_identificados || []).length || 0);
+        const itens = [
+            { label: 'Tratamentos obrigatórios', value: nTrat.toLocaleString('pt-BR') },
+            { label: 'Fund. opcionais', value: nFund.toLocaleString('pt-BR') },
+            { label: 'Tributos', value: nTrib.toLocaleString('pt-BR') },
+        ];
+        siscomexResumoEl.innerHTML = itens.map(k => `
+            <div class="kpi">
+                <div class="label">${k.label}</div>
+                <div class="value">${k.value}</div>
+            </div>
+        `).join('');
+    }
+
+    let _siscomexFundamentosCache = [];
+
+    function _corDoRegime(codRegime) {
+        const mapa = { '1': '#e87e4e', '2': '#9f7aea', '3': '#38a169', '4': '#3182ce', '5': '#d69e2e', '6': '#718096', '10': '#b7791f' };
+        return mapa[String(codRegime)] || '#718096';
+    }
+    function _nomeRegime(codRegime) {
+        const mapa = { '1': 'Recolhimento Integral', '2': 'Imunidade', '3': 'Isenção', '4': 'Redução', '5': 'Suspensão', '6': 'Não Incidência', '10': 'Susp. Proporcional' };
+        return mapa[String(codRegime)] || 'Regime ' + codRegime;
+    }
+
+    function renderDecisaoPorTributo(payload) {
+        const fundamentos = Array.isArray(payload?.fundamentosOpcionaisDisponiveis) ? payload.fundamentosOpcionaisDisponiveis : [];
+        _siscomexFundamentosCache = fundamentos;
+
+        // Decisão automática: perfil revenda sem benefícios especiais = Recolhimento Integral
+        const tributosPadrao = [
+            { cod: '1', nome: 'II', descricao: 'Imposto de Importação' },
+            { cod: '2', nome: 'IPI', descricao: 'IPI' },
+            { cod: '6', nome: 'PIS-Imp', descricao: 'PIS Importação' },
+            { cod: '7', nome: 'Cofins-Imp', descricao: 'Cofins Importação' },
+        ];
+        const regimeLbl = {
+            simples: 'Simples Nacional',
+            presumido: 'Lucro Presumido',
+            real: 'Lucro Real',
+        };
+        const regimeAtual = String(siscomexRegimeTributarioEl?.value || 'simples');
+        if (siscomexDecisaoRegimeLabelEl) siscomexDecisaoRegimeLabelEl.textContent = regimeLbl[regimeAtual] || regimeAtual;
+
+        if (siscomexCardsTributoEl) {
+            siscomexCardsTributoEl.innerHTML = tributosPadrao.map(t => {
+                const beneficios = fundamentos.filter(f => String(f?.tributo?.codigo) === t.cod && String(f?.regime?.codigo) !== '1');
+                const temBeneficio = beneficios.length > 0;
+                const cor = _corDoRegime('1');
+                return `<div style="background:#1a2535; border:1px solid #2a3a50; border-radius:8px; padding:12px 14px;">
+                    <div style="font-size:1.1em; font-weight:700; color:#a8c7fa;">${t.nome}</div>
+                    <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:8px;">${t.descricao}</div>
+                    <div style="display:inline-block; background:${cor}22; color:${cor}; border:1px solid ${cor}55; border-radius:4px; padding:3px 9px; font-size:0.82em; font-weight:600; margin-bottom:8px;">Recolhimento Integral</div>
+                    <div style="font-size:0.78em; color:#6b8599;">Regime padrão para revenda sem benefício especial</div>
+                    ${temBeneficio ? `<div style="font-size:0.78em; color:#68d391; margin-top:6px;">▲ ${beneficios.length} possível(is) benefício(s) disponível(is) na tabela abaixo</div>` : ''}
+                </div>`;
+            }).join('');
+        }
+
+        if (siscomexDecisaoEl) siscomexDecisaoEl.style.display = fundamentos.length > 0 ? '' : 'none';
+
+        renderFundamentosTabela();
+        if (siscomexFundamentosDetalhadoEl) siscomexFundamentosDetalhadoEl.style.display = fundamentos.length > 0 ? '' : 'none';
+    }
+
+    function renderFundamentosTabela() {
+        const filtroTrib = String(filtroTributoEl?.value || '');
+        const filtroReg = String(filtroRegimeEl?.value || '');
+        const lista = _siscomexFundamentosCache.filter(f => {
+            if (filtroTrib && String(f?.tributo?.codigo) !== filtroTrib) return false;
+            if (filtroReg && String(f?.regime?.codigo) !== filtroReg) return false;
+            return true;
+        });
+        if (!tbSiscomexTratamentos) return;
+        if (!lista.length) {
+            tbSiscomexTratamentos.innerHTML = '<tr><td colspan="5" style="color:#9fb3c8;">Nenhum fundamento para os filtros selecionados.</td></tr>';
+            return;
+        }
+        const corRegimeMap = { '1': '#e87e4e', '2': '#9f7aea', '3': '#38a169', '4': '#3182ce', '5': '#d69e2e', '6': '#718096', '10': '#b7791f' };
+        tbSiscomexTratamentos.innerHTML = lista.map((item) => {
+            const tributo = item?.tributo?.nome || item?.tributo?.codigo || '';
+            const codRegime = String(item?.regime?.codigo || '');
+            const regime = item?.regime?.nome || _nomeRegime(codRegime);
+            const corReg = corRegimeMap[codRegime] || '#718096';
+            const codFund = item?.fundamentoLegal?.codigo || '';
+            const fundamento = item?.fundamentoLegal?.nome || '';
+            const atrib = item?.possuiAtributosAdicionais === 'S'
+                ? '<span style="background:#d69e2e33; color:#d69e2e; border:1px solid #d69e2e55; border-radius:3px; padding:1px 6px; font-size:0.78em;">Sim ⚠️</span>'
+                : '<span style="color:#6b8599; font-size:0.78em;">Não</span>';
+            return `<tr>
+                <td>${escaparHtml(tributo)}</td>
+                <td><span style="color:${corReg}; font-weight:600;">${escaparHtml(regime)}</span></td>
+                <td style="font-size:0.82em; color:#9fb3c8;">${escaparHtml(codFund)}</td>
+                <td style="max-width:340px; font-size:0.82em;">${escaparHtml(fundamento)}</td>
+                <td>${atrib}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderTratamentosSiscomex(payload) {
+        renderDecisaoPorTributo(payload);
+    }
+
+    async function carregarConfigSiscomex() {
+        try {
+            setStatusSiscomexConfig('Carregando configuração Siscomex...');
+            const escopo = payloadEscopoConfiguracao();
+            const qs = new URLSearchParams({
+                loja_vinculada: escopo.loja_vinculada,
+                perfil_usuario: escopo.perfil_usuario,
+            });
+            const resp = await fetch('/api/impostos/siscomex/config?' + qs.toString(), {
+                method: 'GET',
+                headers: obterAuthHeaders(),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            const cfg = data.config || {};
+            siscomexAmbienteEl.value = cfg.ambiente || 'prod';
+            siscomexRegimeTributarioEl.value = cfg.regime_tributario || 'simples';
+            siscomexCodigoPaisPadraoEl.value = codigoPaisParaTexto('741') || '741 - China';
+            siscomexTipoOperacaoPadraoEl.value = 'I';
+            siscomexRoleTypeEl.value = cfg.role_type || 'IMPEXP';
+            siscomexClientIdEl.value = cfg.client_id || '';
+            siscomexClientSecretEl.value = '';
+            siscomexAuthHeaderTypeEl.value = cfg.authorization_header_type || 'bearer';
+
+            aplicarPadroesSiscomexImportacaoChina();
+            if (siscomexLojaConsultaEl && siscomexLojaVinculadaEl) {
+                siscomexLojaConsultaEl.value = siscomexLojaVinculadaEl.value;
+            }
+            if (siscomexPerfilConsultaEl && siscomexPerfilUsuarioEl) {
+                siscomexPerfilConsultaEl.value = String(siscomexPerfilUsuarioEl.value || '').trim().toLowerCase();
+            }
+            const lojaInfo = cfg.loja_vinculada || 'Sem loja';
+            const perfilInfo = cfg.perfil_usuario || escopo.perfil_usuario || obterUsuarioLogado() || 'sem perfil';
+            setStatusSiscomexConfig(
+                cfg.configurada
+                    ? `Configuração carregada para loja "${lojaInfo}" e perfil "${perfilInfo}".`
+                    : `Siscomex ainda não configurado para loja "${lojaInfo}" e perfil "${perfilInfo}".`
+            );
+        } catch (e) {
+            setStatusSiscomexConfig(`Erro ao carregar configuração Siscomex: ${e.message}`);
+        }
+    }
+
+    async function salvarConfigSiscomex() {
+        try {
+            setStatusSiscomexConfig('Salvando configuração Siscomex...');
+            const escopo = payloadEscopoConfiguracao();
+            const resp = await fetch('/api/impostos/siscomex/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({
+                    loja_vinculada: escopo.loja_vinculada,
+                    perfil_usuario: escopo.perfil_usuario,
+                    ambiente: String(siscomexAmbienteEl.value || 'val').trim(),
+                    codigo_pais_padrao: 741,
+                    tipo_operacao_padrao: 'I',
+                    role_type: String(siscomexRoleTypeEl.value || 'IMPEXP').trim().toUpperCase(),
+                    client_id: String(siscomexClientIdEl.value || '').trim(),
+                    client_secret: String(siscomexClientSecretEl.value || '').trim(),
+                    authorization_header_type: String(siscomexAuthHeaderTypeEl.value || 'raw').trim(),
+                    regime_tributario: String(siscomexRegimeTributarioEl.value || 'simples').trim(),
+                    persistir_secret: Boolean(siscomexPersistirSecretEl.checked),
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            if (!String(siscomexClientSecretEl.value || '').trim()) {
+                siscomexClientSecretEl.value = '';
+            }
+            setStatusSiscomexConfig('Configuração Siscomex salva para o vínculo selecionado.');
+        } catch (e) {
+            setStatusSiscomexConfig(`Erro ao salvar configuração Siscomex: ${e.message}`);
+        }
+    }
+
+    async function testarSiscomex() {
+        try {
+            setStatusSiscomexConfig('Testando autenticação Siscomex...');
+            const escopo = payloadEscopoConfiguracao();
+            const resp = await fetch('/api/impostos/siscomex/testar', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders(),
+                },
+                body: JSON.stringify(escopo),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            setStatusSiscomexConfig(`Autenticação OK. Token: ${data?.auth?.token_recebido ? 'sim' : 'não'} | CSRF: ${data?.auth?.csrf_recebido ? 'sim' : 'não'}`);
+        } catch (e) {
+            setStatusSiscomexConfig(`Falha na autenticação Siscomex: ${e.message}`);
+        }
+    }
+
+    async function consultarSiscomex() {
+        try {
+            aplicarPadroesSiscomexImportacaoChina();
+            setStatusSiscomexConsulta('Consultando TTCE...');
+            const escopo = payloadEscopoConsulta();
+            let fundamentosOpcionais = [];
+            const fundamentosTexto = String(siscomexFundamentosEl.value || '').trim();
+            if (fundamentosTexto) {
+                fundamentosOpcionais = JSON.parse(fundamentosTexto);
+                if (!Array.isArray(fundamentosOpcionais)) {
+                    throw new Error('Fundamentos opcionais devem ser um array JSON.');
+                }
+            }
+
+            const resp = await fetch('/api/impostos/siscomex/consultar', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({
+                    loja_vinculada: escopo.loja_vinculada,
+                    perfil_usuario: escopo.perfil_usuario,
+                    ncm: String(siscomexNcmEl.value || '').trim(),
+                    codigoPais: 741,
+                    dataFatoGerador: dataAtualIsoLocal(),
+                    tipoOperacao: 'I',
+                    fundamentosOpcionais,
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            renderResumoSiscomex(data.resumo || {});
+            renderTratamentosSiscomex(data.retorno || {});
+            siscomexRawRespostaEl.value = JSON.stringify(data.retorno || {}, null, 2);
+            setStatusSiscomexConsulta('Consulta TTCE concluída.');
+        } catch (e) {
+            renderResumoSiscomex({});
+            tbSiscomexTratamentos.innerHTML = '<tr><td colspan="5" style="color:#ff9e9e;">Falha ao consultar TTCE.</td></tr>';
+            siscomexRawRespostaEl.value = '';
+            setStatusSiscomexConsulta(`Erro ao consultar TTCE: ${e.message}`);
+        }
+    }
+
+    function renderConvenioMG(itens) {
+        const lista = Array.isArray(itens) ? itens : [];
+        if (!lista.length) {
+            tbConvenioMG.innerHTML = '<tr><td colspan="7" style="color:#9fb3c8;">Nenhum registro encontrado.</td></tr>';
+            return;
+        }
+
+        tbConvenioMG.innerHTML = lista.map((r) => {
+            const cestFmt = formatarCestVisual(r.cest, r.cest_original);
+            const nbmFmt = formatarNbmShVisual(r.nbm_sh, r.nbm_sh_original);
+            return `
+                <tr>
+                    <td>${escaparHtml(cestFmt || '')}</td>
+                    <td>${escaparHtml(r.descricao || '')}</td>
+                    <td>${escaparHtml(nbmFmt || '')}</td>
+                    <td>${escaparHtml(r.ambito_aplicacao || '')}</td>
+                    <td>${formatarPct(r.mva || 0, 2)}</td>
+                    <td>${escaparHtml(r.st_minas || '')}</td>
+                    <td>${escaparHtml(r.st_paraiba || '')}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function atualizarPaginacaoConvenioMG() {
+        const inicio = convenioMgState.total === 0 ? 0 : (convenioMgState.offset + 1);
+        const fim = Math.min(convenioMgState.offset + convenioMgState.limit, convenioMgState.total);
+        if (convenioMgPageInfoEl) {
+            convenioMgPageInfoEl.textContent = `Exibindo ${inicio} - ${fim} de ${convenioMgState.total}`;
+        }
+        if (convenioMgPageInfoTopEl) {
+            convenioMgPageInfoTopEl.textContent = `Exibindo ${inicio} - ${fim} de ${convenioMgState.total}`;
+        }
+        if (btnConvenioMGPrev) btnConvenioMGPrev.disabled = convenioMgState.offset <= 0;
+        if (btnConvenioMGNext) btnConvenioMGNext.disabled = (convenioMgState.offset + convenioMgState.limit) >= convenioMgState.total;
+        if (btnConvenioMGPrevTop) btnConvenioMGPrevTop.disabled = convenioMgState.offset <= 0;
+        if (btnConvenioMGNextTop) btnConvenioMGNextTop.disabled = (convenioMgState.offset + convenioMgState.limit) >= convenioMgState.total;
+    }
+
+    async function carregarConvenioMG() {
+        try {
+            setStatusConvenioMG('Carregando base Convênio MG...');
+            const qs = new URLSearchParams({
+                search: convenioMgState.search,
+                limit: String(convenioMgState.limit),
+                offset: String(convenioMgState.offset),
+            });
+            const resp = await fetch('/api/impostos/convenio-mg?' + qs.toString(), {
+                method: 'GET',
+                headers: obterAuthHeaders(),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            convenioMgState.total = Number(data.total || 0);
+            renderConvenioMG(data.itens || []);
+            atualizarPaginacaoConvenioMG();
+            setStatusConvenioMG('Base Convênio MG carregada.');
+        } catch (e) {
+            setStatusConvenioMG(`Erro ao carregar Convênio MG: ${e.message}`);
+            renderConvenioMG([]);
+            atualizarPaginacaoConvenioMG();
+        }
+    }
+
+    async function importarConvenioMG() {
+        try {
+            setStatusConvenioMG('Importando NCM1.xlsx para o banco...');
+            const resp = await fetch('/api/impostos/convenio-mg/importar-excel', {
+                method: 'POST',
+                headers: obterAuthHeaders(),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            convenioMgState.offset = 0;
+            setStatusConvenioMG(`Importação concluída. Registros importados: ${Number(data.importados || 0).toLocaleString('pt-BR')}`);
+            await carregarConvenioMG();
+        } catch (e) {
+            setStatusConvenioMG(`Erro ao importar NCM1.xlsx: ${e.message}`);
+        }
+    }
+
+    function limparForm() {
+        regraEditandoId = '';
+        ncmEl.value = '';
+        cestEl.value = '';
+        descricaoEl.value = '';
+        aliqFedEl.value = '0';
+        aliqEstEl.value = '0';
+        aliqMunEl.value = '0';
+        observacoesEl.value = '';
+        btnSalvarRegra.textContent = 'Salvar regra';
+    }
+
+    function bloquearAcoes(bloquear) {
+        btnSalvarRegra.disabled = bloquear;
+        btnLimparForm.disabled = bloquear;
+        btnSimular.disabled = bloquear;
+        btnAplicar.disabled = bloquear;
+    }
+
+    async function carregarRegras() {
+        const resp = await fetch('/api/impostos/regras', { headers: obterAuthHeaders() });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const regras = await resp.json();
+
+        tbRegras.innerHTML = '';
+        if (!regras.length) {
+            tbRegras.innerHTML = '<tr><td colspan="8" style="color:#9fb3c8;">Nenhuma regra cadastrada.</td></tr>';
+            return regras;
+        }
+
+        const frag = document.createDocumentFragment();
+        regras.forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${r.ncm || ''}</td>
+                <td>${r.cest || ''}</td>
+                <td>${r.descricao || ''}</td>
+                <td>${formatarPct(r.aliquota_federal || 0, 2)}</td>
+                <td>${formatarPct(r.aliquota_estadual || 0, 2)}</td>
+                <td>${formatarPct(r.aliquota_municipal || 0, 2)}</td>
+                <td><strong>${formatarPct(r.aliquota_total || 0, 2)}</strong></td>
+                <td>
+                    <button class="btn btn-secondary" data-action="editar">Editar</button>
+                    <button class="btn btn-danger" data-action="excluir">Excluir</button>
+                </td>
+            `;
+
+            tr.querySelector('[data-action="editar"]').addEventListener('click', () => {
+                regraEditandoId = r.id || '';
+                ncmEl.value = r.ncm || '';
+                cestEl.value = r.cest || '';
+                descricaoEl.value = r.descricao || '';
+                aliqFedEl.value = Number(r.aliquota_federal || 0);
+                aliqEstEl.value = Number(r.aliquota_estadual || 0);
+                aliqMunEl.value = Number(r.aliquota_municipal || 0);
+                observacoesEl.value = r.observacoes || '';
+                btnSalvarRegra.textContent = 'Atualizar regra';
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+
+            tr.querySelector('[data-action="excluir"]').addEventListener('click', async () => {
+                if (!confirm('Confirma excluir esta regra?')) return;
+                try {
+                    bloquearAcoes(true);
+                    setStatus('Excluindo regra...', 'loading');
+                    const delResp = await fetch(`/api/impostos/regras/${encodeURIComponent(r.id)}`, {
+                        method: 'DELETE',
+                        headers: obterAuthHeaders()
+                    });
+                    const data = await delResp.json().catch(() => ({}));
+                    if (!delResp.ok) throw new Error(data.detail || `HTTP ${delResp.status}`);
+                    setStatus('Regra excluída com sucesso.', 'success');
+                    await carregarTudo();
+                } catch (e) {
+                    setStatus(`Erro ao excluir regra: ${e.message}`, 'error');
+                } finally {
+                    bloquearAcoes(false);
+                }
+            });
+
+            frag.appendChild(tr);
+        });
+        tbRegras.appendChild(frag);
+        return regras;
+    }
+
+    function renderResumo(resumo) {
+        const dados = resumo || {};
+        const itens = [
+            { label: 'Qtd. Produtos', value: Number(dados.qtd_produtos || 0).toLocaleString('pt-BR') },
+            { label: 'Com Regra Fiscal', value: Number(dados.qtd_com_regra || 0).toLocaleString('pt-BR') },
+            { label: 'Com Vínculo Conv. MG', value: Number(dados.qtd_com_convenio || 0).toLocaleString('pt-BR') },
+            { label: 'Faturamento', value: formatarMoeda(dados.faturamento_total || 0) },
+            { label: 'Imposto Estimado', value: formatarMoeda(dados.imposto_total_estimado || 0) },
+            { label: 'Margem Líquida Est.', value: formatarMoeda(dados.margem_liquida_total || 0) }
+        ];
+        resumoEl.innerHTML = itens.map(k => `
+            <div class="kpi">
+                <div class="label">${k.label}</div>
+                <div class="value">${k.value}</div>
+            </div>
+        `).join('');
+    }
+
+    async function carregarSimulacao() {
+        const reserva = Number(reservaEl.value || 0);
+        const resp = await fetch('/api/impostos/simular', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...obterAuthHeaders()
+            },
+            body: JSON.stringify({ reserva_percentual: Math.max(0, reserva) })
+        });
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || `HTTP ${resp.status}`);
+        }
+        const payload = await resp.json();
+
+        renderResumo(payload.resumo || {});
+
+        const produtos = payload.produtos || [];
+        tbProdutos.innerHTML = '';
+        if (!produtos.length) {
+            tbProdutos.innerHTML = '<tr><td colspan="18" style="color:#9fb3c8;">Nenhum produto encontrado no cadastro.</td></tr>';
+            return;
+        }
+
+        const frag = document.createDocumentFragment();
+        produtos.forEach(p => {
+            const tr = document.createElement('tr');
+            const vinculoConv = p.convenio_mg_vinculado
+                ? 'Sim'
+                : 'Não';
+            tr.innerHTML = `
+                <td>${p.sku || ''}</td>
+                <td>${p.nome || ''}</td>
+                <td>${p.ncm || ''}</td>
+                <td>${p.cest || ''}</td>
+                <td>${p.cest_ncm_referencia || ''}</td>
+                <td>${p.convenio_mg_ambito_aplicacao || ''}</td>
+                <td>${vinculoConv}</td>
+                <td>${p.convenio_mg_nbm_sh || ''}</td>
+                <td>${p.convenio_mg_cest || ''}</td>
+                <td>${p.convenio_mg_mva || ''}</td>
+                <td>${p.convenio_mg_st_minas || ''}</td>
+                <td>${p.convenio_mg_st_paraiba || ''}</td>
+            `;
+            frag.appendChild(tr);
+        });
+        tbProdutos.appendChild(frag);
+    }
+
+    async function salvarRegra() {
+        const ncm = String(ncmEl.value || '').replace(/\D/g, '');
+        if (!ncm) {
+            setStatus('Informe o NCM para salvar a regra.', 'error');
+            return;
+        }
+
+        const payload = {
+            id: regraEditandoId || null,
+            ncm,
+            cest: String(cestEl.value || '').replace(/\D/g, ''),
+            descricao: String(descricaoEl.value || '').trim(),
+            aliquota_federal: Number(aliqFedEl.value || 0),
+            aliquota_estadual: Number(aliqEstEl.value || 0),
+            aliquota_municipal: Number(aliqMunEl.value || 0),
+            observacoes: String(observacoesEl.value || '').trim()
+        };
+
+        try {
+            bloquearAcoes(true);
+            setStatus('Salvando regra...', 'loading');
+            const resp = await fetch('/api/impostos/regras', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify(payload)
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            setStatus('Regra salva com sucesso.', 'success');
+            limparForm();
+            await carregarTudo();
+        } catch (e) {
+            setStatus(`Erro ao salvar regra: ${e.message}`, 'error');
+        } finally {
+            bloquearAcoes(false);
+        }
+    }
+
+    async function aplicarNoCadastro() {
+        try {
+            bloquearAcoes(true);
+            setStatus('Aplicando alíquotas na coluna imposto do cadastro...', 'loading');
+            const resp = await fetch('/api/impostos/aplicar-cadastro', {
+                method: 'POST',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            setStatus(`Aplicação concluída. Atualizados: ${data.atualizados || 0}. Preservados: ${data.preservados || 0}.`, 'success');
+            await carregarSimulacao();
+        } catch (e) {
+            setStatus(`Erro ao aplicar impostos no cadastro: ${e.message}`, 'error');
+        } finally {
+            bloquearAcoes(false);
+        }
+    }
+
+    async function carregarTudo() {
+        try {
+            setStatus('Carregando módulo de impostos...', 'loading');
+            await carregarRegras();
+            await carregarSimulacao();
+            setStatus('Módulo de impostos carregado.', 'success');
+        } catch (e) {
+            setStatus(`Erro ao carregar dados: ${e.message}`, 'error');
+        }
+    }
+
+    // ── Busca de SKU para preencher NCM no TTCE ────────────────────────────────
+    async function buscarSkuParaTtce() {
+        const sku = String(siscomexSkuBuscaEl?.value || '').trim();
+        if (!sku) {
+            if (siscomexSkuInfoEl) siscomexSkuInfoEl.textContent = 'Informe o SKU.';
+            return;
+        }
+        if (siscomexSkuInfoEl) siscomexSkuInfoEl.textContent = 'Buscando produto...';
+        try {
+            const resp = await fetch(`/api/cadastro/produto/${encodeURIComponent(sku)}`, {
+                headers: obterAuthHeaders(),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            const produto = data.produto || {};
+            const ncm = String(produto.ncm || '').replace(/\D/g, '');
+            const cest = String(produto.cest || '').replace(/\D/g, '');
+            const nome = String(produto.nome || produto.titulo || produto.descricao || '').trim();
+
+            if (ncm && siscomexNcmEl) siscomexNcmEl.value = ncm;
+            if (siscomexSkuInfoEl) {
+                siscomexSkuInfoEl.style.color = '#66bb6a';
+                siscomexSkuInfoEl.textContent = `✔ ${nome || sku} — NCM: ${ncm || '—'} | CEST: ${cest || '—'}`;
+            }
+        } catch (e) {
+            if (siscomexSkuInfoEl) {
+                siscomexSkuInfoEl.style.color = '#ff6b6b';
+                siscomexSkuInfoEl.textContent = `Produto não encontrado: ${e.message}`;
+            }
+        }
+    }
+
+    // ── Aba Consulta por SKU ────────────────────────────────────────────────────
+    const CAMPOS_DESTAQUE_SKU = ['sku', 'nome', 'titulo', 'ncm', 'cest', 'preco', 'custo', 'imposto'];
+
+    function _renderSkuFundamentosTabela() {
+        const filtroTrib = String(skuFiltroTributoEl?.value || '');
+        const filtroReg = String(skuFiltroRegimeEl?.value || '');
+        const lista = _skuTtceFundamentosCache.filter(f => {
+            if (filtroTrib && String(f?.tributo?.codigo) !== filtroTrib) return false;
+            if (filtroReg && String(f?.regime?.codigo) !== filtroReg) return false;
+            return true;
+        });
+        if (!tbSkuTtceFundamentos) return;
+        if (!lista.length) {
+            tbSkuTtceFundamentos.innerHTML = '<tr><td colspan="5" style="color:#9fb3c8;">Nenhum fundamento para os filtros selecionados.</td></tr>';
+            return;
+        }
+        const corRegimeMap = { '1': '#e87e4e', '2': '#9f7aea', '3': '#38a169', '4': '#3182ce', '5': '#d69e2e', '6': '#718096', '10': '#b7791f' };
+        tbSkuTtceFundamentos.innerHTML = lista.map((item) => {
+            const tributo = item?.tributo?.nome || item?.tributo?.codigo || '';
+            const codRegime = String(item?.regime?.codigo || '');
+            const regime = item?.regime?.nome || _nomeRegime(codRegime);
+            const corReg = corRegimeMap[codRegime] || '#718096';
+            const codFund = item?.fundamentoLegal?.codigo || '';
+            const fundamento = item?.fundamentoLegal?.nome || '';
+            const atrib = item?.possuiAtributosAdicionais === 'S'
+                ? '<span style="background:#d69e2e33; color:#d69e2e; border:1px solid #d69e2e55; border-radius:3px; padding:1px 6px; font-size:0.78em;">Sim ⚠️</span>'
+                : '<span style="color:#6b8599; font-size:0.78em;">Não</span>';
+            return `<tr>
+                <td>${escaparHtml(tributo)}</td>
+                <td><span style="color:${corReg}; font-weight:600;">${escaparHtml(regime)}</span></td>
+                <td style="font-size:0.82em; color:#9fb3c8;">${escaparHtml(codFund)}</td>
+                <td style="max-width:340px; font-size:0.82em;">${escaparHtml(fundamento)}</td>
+                <td>${atrib}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderConsultaSkuTtce(aliquotasData) {
+        const aliquotas = aliquotasData.aliquotas || {};
+        const regime = (aliquotasData.escopo || {}).regime_tributario || 'simples';
+        const monofasico = aliquotasData.monofasico || {};
+        const ttce = aliquotasData.ttce || {};
+        const fundamentos = Array.isArray((ttce.retorno || {}).fundamentosOpcionaisDisponiveis)
+            ? ttce.retorno.fundamentosOpcionaisDisponiveis : [];
+        _skuTtceFundamentosCache = fundamentos;
+
+        const regimeLbl = { simples: 'Simples Nacional', presumido: 'Lucro Presumido', real: 'Lucro Real' };
+        if (skuTtceRegimeLabelEl) skuTtceRegimeLabelEl.textContent = regimeLbl[regime] || regime || 'Regime não identificado';
+
+        const tributosConfig = [
+            { chave: 'ii',     nome: 'II',          descricao: 'Imposto de Importação', fonte: 'Base local atualizável' },
+            { chave: 'ipi',    nome: 'IPI',         descricao: 'IPI',                   fonte: 'Base local atualizável' },
+            { chave: 'pis',    nome: 'PIS-Imp',     descricao: 'PIS Importação',        fonte: 'Base local atualizável' },
+            { chave: 'cofins', nome: 'Cofins-Imp',  descricao: 'Cofins Importação',     fonte: 'Base local atualizável' },
+        ];
+
+        if (skuTtceCardsEl) {
+            skuTtceCardsEl.innerHTML = tributosConfig.map(t => {
+                const info = aliquotas[t.chave] || {};
+                const pct = info.percentual != null ? info.percentual : null;
+                const erro = info.erro;
+                const cor = _corDoRegime('1');
+                const fonteInfo = info.fonte || t.fonte;
+                const isPisCofinsTributo = (t.chave === 'pis' || t.chave === 'cofins');
+                const produtoMonofasico = String(monofasico.status || '').toLowerCase() === 'sim';
+                // Na importação PIS/COFINS são sempre tributados; monofásico é apenas informativo
+                const monofasicoRevenda = false;
+                const pctDisplay = pct != null
+                    ? `<div style="font-size:1.5em; font-weight:800; color:#ffffff; margin:8px 0 4px;">${Number(pct).toFixed(2).replace('.', ',')}%</div>`
+                    : `<div style="font-size:0.85em; color:#e87e4e; margin:8px 0 4px;">${erro ? 'Não disponível' : '—'}</div>`;
+                const erroTip = erro ? `<div style="font-size:0.75em; color:#e87e4e; margin-top:4px;" title="${escaparHtml(erro)}">⚠ ${escaparHtml(erro)}</div>` : '';
+                const infoMonofasicoTag = (isPisCofinsTributo && produtoMonofasico)
+                    ? `<div style="display:inline-block; background:#2b6cb022; color:#90cdf4; border:1px solid #2b6cb055; border-radius:4px; padding:2px 8px; font-size:0.78em; font-weight:600; margin-bottom:4px; margin-left:2px;" title="Produto monofásico: na revenda interna PIS/COFINS são diferenciados, mas na importação são sempre devidos.">Produto monofásico ⓘ</div>`
+                    : '';
+                const regimeTag = (pct == null && !!erro)
+                    ? `<div style="display:inline-block; background:#d69e2e22; color:#d69e2e; border:1px solid #d69e2e55; border-radius:4px; padding:2px 8px; font-size:0.78em; font-weight:600; margin-bottom:4px;">Indisponível na fonte oficial</div>`
+                    : pct === 0 && t.chave !== 'ii' && t.chave !== 'ipi'
+                    ? `<div style="display:inline-block; background:#38a16922; color:#38a169; border:1px solid #38a16955; border-radius:4px; padding:2px 8px; font-size:0.78em; font-weight:600; margin-bottom:4px;">Isento (${regimeLbl[regime] || regime})</div>`
+                    : `<div style="display:inline-block; background:${cor}22; color:${cor}; border:1px solid ${cor}55; border-radius:4px; padding:2px 8px; font-size:0.78em; font-weight:600; margin-bottom:4px;">Recolhimento Integral</div>`;
+                return `<div style="background:#1a2535; border:1px solid #2a3a50; border-radius:8px; padding:12px 14px;">
+                    <div style="font-size:1.1em; font-weight:700; color:#a8c7fa;">${t.nome}</div>
+                    <div style="font-size:0.8em; color:#9fb3c8; margin-bottom:4px;">${t.descricao}</div>
+                    ${pctDisplay}
+                    ${regimeTag}${infoMonofasicoTag}
+                    <div style="font-size:0.74em; color:#6b8599; margin-top:2px;">Fonte: ${escaparHtml(String(fonteInfo))}</div>
+                    ${erroTip}
+                </div>`;
+            }).join('');
+        }
+
+        if (skuTtceDecisaoEl) skuTtceDecisaoEl.style.display = '';
+        if (skuTtceFundamentosEl) skuTtceFundamentosEl.style.display = fundamentos.length > 0 ? '' : 'none';
+
+        if (skuTtceStatusEl) {
+            const st = String(monofasico.status || '').toLowerCase();
+            const lbl = st === 'sim' ? 'Sim' : (st === 'nao' ? 'Não' : 'Indeterminado');
+            const cor = st === 'sim' ? '#38a169' : (st === 'nao' ? '#e87e4e' : '#d69e2e');
+            const motivo = String(monofasico.motivo || '').trim();
+            const cadeia = String(monofasico.posicao_cadeia || (aliquotasData.escopo || {}).posicao_cadeia || '').trim();
+            const complemento = cadeia ? ` • Operação: ${escaparHtml(cadeia)}` : '';
+            skuTtceStatusEl.innerHTML = `Monofásico: <strong style="color:${cor};">${escaparHtml(lbl)}</strong>${complemento}${motivo ? ` — ${escaparHtml(motivo)}` : ''}`;
+            skuTtceStatusEl.style.color = '#9fb3c8';
+        }
+
+        _renderSkuFundamentosTabela();
+    }
+
+    function renderConsultaSkuResultado(produto) {
+        _consultaSkuAtual = produto;
+
+        const kpisConfig = [
+            { campo: 'sku',   label: 'SKU' },
+            { campo: 'nome',  label: 'Nome', fallback: 'titulo' },
+            { campo: 'ncm',   label: 'NCM' },
+            { campo: 'cest',  label: 'CEST' },
+            { campo: 'preco', label: 'Preço', prefix: 'R$ ' },
+            { campo: 'custo', label: 'Custo', prefix: 'R$ ' },
+        ];
+
+        consultaSkuKpisEl.innerHTML = kpisConfig.map(k => {
+            const val = produto[k.campo] || (k.fallback ? produto[k.fallback] : '') || '—';
+            const display = (val !== '—' && k.prefix) ? k.prefix + val : val;
+            return `<div class="kpi"><div class="label">${k.label}</div><div class="value">${escaparHtml(display)}</div></div>`;
+        }).join('');
+
+        // Tabela detalhada
+        const camposOrdenados = [
+            ...CAMPOS_DESTAQUE_SKU,
+            ...Object.keys(produto).filter(k => !CAMPOS_DESTAQUE_SKU.includes(k)),
+        ];
+        tbConsultaSkuDetalhes.innerHTML = camposOrdenados
+            .filter(k => produto[k] !== undefined)
+            .map(k => {
+                const val = String(produto[k] ?? '');
+                if (!val) return '';
+                return `<tr>
+                    <td style="color:#9bd1ff; font-size:0.85em; white-space:nowrap; width:200px;">${escaparHtml(k)}</td>
+                    <td style="word-break:break-all; font-size:0.88em;">${escaparHtml(val)}</td>
+                </tr>`;
+            }).join('');
+
+        consultaSkuResultadoEl.style.display = '';
+        consultaSkuVazioEl.style.display = 'none';
+        // Resetar TTCE até consultar
+        if (skuTtceDecisaoEl) skuTtceDecisaoEl.style.display = 'none';
+        if (skuTtceFundamentosEl) skuTtceFundamentosEl.style.display = 'none';
+        if (skuTtceStatusEl) { skuTtceStatusEl.textContent = ''; skuTtceStatusEl.style.color = ''; }
+    }
+
+    async function consultarSkuApi() {
+        const sku = String(consultaSkuInputEl?.value || '').trim();
+        if (!sku) {
+            consultaSkuStatusEl.textContent = 'Informe o SKU para buscar.';
+            return;
+        }
+
+        consultaSkuStatusEl.textContent = 'Buscando produto...';
+        consultaSkuStatusEl.style.color = '#9bd1ff';
+        consultaSkuResultadoEl.style.display = 'none';
+        consultaSkuVazioEl.style.display = 'none';
+        _consultaSkuAtual = null;
+        _skuTtceFundamentosCache = [];
+
+        // 1. Buscar produto
+        let produto = null;
+        try {
+            const resp = await fetch(`/api/cadastro/produto/${encodeURIComponent(sku)}`, {
+                headers: obterAuthHeaders(),
+            });
+            if (resp.status === 404) {
+                consultaSkuStatusEl.textContent = '';
+                consultaSkuVazioEl.style.display = '';
+                return;
+            }
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+            produto = data.produto || {};
+        } catch (e) {
+            consultaSkuStatusEl.textContent = `Erro ao buscar produto: ${e.message}`;
+            consultaSkuStatusEl.style.color = '#ff6b6b';
+            return;
+        }
+
+        renderConsultaSkuResultado(produto);
+        consultaSkuStatusEl.textContent = 'Produto encontrado. Consultando alíquotas na base local atualizável e validando regime no TTCE...';
+        consultaSkuStatusEl.style.color = '#9bd1ff';
+
+        // 2. Consultar alíquotas na base local atualizável e validar tratamento no TTCE.
+        const ncm = String(produto.ncm || '').replace(/\D/g, '');
+        if (!ncm || ncm.length !== 8) {
+            consultaSkuStatusEl.textContent = 'Produto encontrado. NCM ausente ou inválido — consulta de alíquotas não realizada.';
+            consultaSkuStatusEl.style.color = '#d69e2e';
+            if (skuTtceStatusEl) { skuTtceStatusEl.textContent = 'NCM ausente ou inválido (necessário 8 dígitos).'; skuTtceStatusEl.style.color = '#d69e2e'; }
+            return;
+        }
+
+        const lojaVinculada = valorLojaEscopo(skuTabLojaVinculadaEl);
+        const perfil = String(skuTabPerfilEl?.value || '').trim().toLowerCase() || obterUsuarioLogado();
+
+        try {
+            const resp = await fetch('/api/impostos/siscomex/aliquotas-completas', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                body: JSON.stringify({
+                    loja_vinculada: lojaVinculada,
+                    perfil_usuario: perfil,
+                    ncm,
+                }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+            renderConsultaSkuTtce(data);
+            const regime = (data.escopo || {}).regime_tributario || '';
+            const ncmFmt = data.ncm || ncm;
+            const modoFonte = (data.escopo || {}).modo_fonte || '';
+            const modoFonteLabel = modoFonte === 'base_local_atualizavel_com_ttce' ? 'base local + TTCE' : 'base local';
+            const errosAliquotas = Object.values(data.aliquotas || {}).map(x => x && x.erro).filter(Boolean);
+            const avisoTtce = String((data.ttce || {}).erro || '').trim();
+            if (errosAliquotas.length || avisoTtce) {
+                consultaSkuStatusEl.textContent = `Alíquotas carregadas com aviso — NCM ${ncmFmt}, China, importação, data atual.`;
+                consultaSkuStatusEl.style.color = '#d69e2e';
+            } else {
+                consultaSkuStatusEl.textContent = `Alíquotas carregadas — NCM ${ncmFmt}, regime ${regime || '—'} (${modoFonteLabel}).`;
+                consultaSkuStatusEl.style.color = '#66bb6a';
+            }
+            if (skuTtceStatusEl) {
+                const monof = data.monofasico || {};
+                const st = String(monof.status || '').toLowerCase();
+                const lbl = st === 'sim' ? 'Monofásico: Sim' : (st === 'nao' ? 'Monofásico: Não' : 'Monofásico: Indeterminado');
+                const base = data.base_local || {};
+                const origem = String(base.origem || '').includes('fonte_gratuita')
+                    ? 'Base local atualizada agora'
+                    : 'Base local';
+                skuTtceStatusEl.textContent = avisoTtce
+                    ? `${origem}. ${lbl} | Validação TTCE pendente: ${avisoTtce}`
+                    : `${origem}. TTCE/Siscomex validado com sucesso. (${lbl})`;
+                skuTtceStatusEl.style.color = avisoTtce ? '#d69e2e' : '#66bb6a';
+            }
+        } catch (e) {
+            consultaSkuStatusEl.textContent = `Produto encontrado. Falha na consulta de alíquotas: ${e.message}`;
+            consultaSkuStatusEl.style.color = '#d69e2e';
+            if (skuTtceStatusEl) { skuTtceStatusEl.textContent = `Erro: ${e.message}`; skuTtceStatusEl.style.color = '#ff6b6b'; }
+        }
+    }
+
+    function irParaTtceComSku() {
+        if (!_consultaSkuAtual) return;
+        const ncm = String(_consultaSkuAtual.ncm || '').replace(/\D/g, '');
+        if (!ncm) return;
+        if (siscomexSkuBuscaEl) siscomexSkuBuscaEl.value = String(_consultaSkuAtual.sku || '');
+        if (siscomexNcmEl) siscomexNcmEl.value = ncm;
+        if (siscomexSkuInfoEl) {
+            const nome = _consultaSkuAtual.nome || _consultaSkuAtual.titulo || '';
+            const cest = String(_consultaSkuAtual.cest || '').replace(/\D/g, '');
+            siscomexSkuInfoEl.style.color = '#66bb6a';
+            siscomexSkuInfoEl.textContent = `✔ ${nome || _consultaSkuAtual.sku} — NCM: ${ncm} | CEST: ${cest || '—'}`;
+        }
+        tabNcm.click();
+    }
+
+    btnSalvarRegra.addEventListener('click', salvarRegra);
+    btnLimparForm.addEventListener('click', limparForm);
+    tabRegras.addEventListener('click', () => ativarAba('regras'));
+    tabNcm.addEventListener('click', async () => {
+        ativarAba('ncm');
+        await carregarNcm();
+    });
+    tabConvenioMG.addEventListener('click', async () => {
+        ativarAba('convenio-mg');
+        await carregarConvenioMG();
+    });
+    tabSiscomex.addEventListener('click', async () => {
+        ativarAba('siscomex');
+        await carregarLojasSiscomex();
+        await carregarConfigSiscomex();
+    });
+    tabConsultaSku.addEventListener('click', async () => {
+        ativarAba('consulta-sku');
+        await carregarLojasSiscomex();
+    });
+    if (btnBuscarSkuTtce) {
+        btnBuscarSkuTtce.addEventListener('click', buscarSkuParaTtce);
+    }
+    if (siscomexSkuBuscaEl) {
+        siscomexSkuBuscaEl.addEventListener('keydown', async (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); await buscarSkuParaTtce(); }
+        });
+    }
+    if (btnConsultarSku) btnConsultarSku.addEventListener('click', consultarSkuApi);
+    if (consultaSkuInputEl) {
+        consultaSkuInputEl.addEventListener('keydown', async (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); await consultarSkuApi(); }
+        });
+    }
+    if (btnConsultarSkuTtce) btnConsultarSkuTtce.addEventListener('click', irParaTtceComSku);
+    btnBuscarNcm.addEventListener('click', async () => {
+        ncmState.search = String(ncmSearchEl.value || '').trim();
+        ncmState.offset = 0;
+        await carregarNcm();
+    });
+    ncmSearchEl.addEventListener('keydown', async (ev) => {
+        if (ev.key === 'Enter') {
+            ev.preventDefault();
+            ncmState.search = String(ncmSearchEl.value || '').trim();
+            ncmState.offset = 0;
+            await carregarNcm();
+        }
+    });
+    btnImportarNcm.addEventListener('click', importarNcm);
+    btnNcmPrev.addEventListener('click', async () => {
+        ncmState.offset = Math.max(0, ncmState.offset - ncmState.limit);
+        await carregarNcm();
+    });
+    btnNcmNext.addEventListener('click', async () => {
+        ncmState.offset = ncmState.offset + ncmState.limit;
+        await carregarNcm();
+    });
+    btnNcmPrevTop.addEventListener('click', async () => {
+        ncmState.offset = Math.max(0, ncmState.offset - ncmState.limit);
+        await carregarNcm();
+    });
+    btnNcmNextTop.addEventListener('click', async () => {
+        ncmState.offset = ncmState.offset + ncmState.limit;
+        await carregarNcm();
+    });
+    btnBuscarConvenioMG.addEventListener('click', async () => {
+        convenioMgState.search = String(convenioMgSearchEl.value || '').trim();
+        convenioMgState.offset = 0;
+        await carregarConvenioMG();
+    });
+    convenioMgSearchEl.addEventListener('keydown', async (ev) => {
+        if (ev.key === 'Enter') {
+            ev.preventDefault();
+            convenioMgState.search = String(convenioMgSearchEl.value || '').trim();
+            convenioMgState.offset = 0;
+            await carregarConvenioMG();
+        }
+    });
+    btnImportarConvenioMG.addEventListener('click', importarConvenioMG);
+    btnConvenioMGPrev.addEventListener('click', async () => {
+        convenioMgState.offset = Math.max(0, convenioMgState.offset - convenioMgState.limit);
+        await carregarConvenioMG();
+    });
+    btnConvenioMGNext.addEventListener('click', async () => {
+        convenioMgState.offset = convenioMgState.offset + convenioMgState.limit;
+        await carregarConvenioMG();
+    });
+    btnConvenioMGPrevTop.addEventListener('click', async () => {
+        convenioMgState.offset = Math.max(0, convenioMgState.offset - convenioMgState.limit);
+        await carregarConvenioMG();
+    });
+    btnConvenioMGNextTop.addEventListener('click', async () => {
+        convenioMgState.offset = convenioMgState.offset + convenioMgState.limit;
+        await carregarConvenioMG();
+    });
+    btnSimular.addEventListener('click', async () => {
+        try {
+            bloquearAcoes(true);
+            setStatus('Recalculando simulação...', 'loading');
+            await carregarSimulacao();
+            setStatus('Simulação atualizada.', 'success');
+        } catch (e) {
+            setStatus(`Erro na simulação: ${e.message}`, 'error');
+        } finally {
+            bloquearAcoes(false);
+        }
+    });
+    btnAplicar.addEventListener('click', aplicarNoCadastro);
+    btnSalvarSiscomexConfig.addEventListener('click', salvarConfigSiscomex);
+    btnTestarSiscomex.addEventListener('click', testarSiscomex);
+    btnConsultarSiscomex.addEventListener('click', consultarSiscomex);
+    if (filtroTributoEl) filtroTributoEl.addEventListener('change', renderFundamentosTabela);
+    if (filtroRegimeEl) filtroRegimeEl.addEventListener('change', renderFundamentosTabela);
+    if (skuFiltroTributoEl) skuFiltroTributoEl.addEventListener('change', _renderSkuFundamentosTabela);
+    if (skuFiltroRegimeEl) skuFiltroRegimeEl.addEventListener('change', _renderSkuFundamentosTabela);
+    siscomexLojaVinculadaEl.addEventListener('change', async () => {
+        if (siscomexLojaConsultaEl) siscomexLojaConsultaEl.value = siscomexLojaVinculadaEl.value;
+        await carregarConfigSiscomex();
+    });
+    siscomexPerfilUsuarioEl.addEventListener('change', async () => {
+        if (siscomexPerfilConsultaEl && !String(siscomexPerfilConsultaEl.value || '').trim()) {
+            siscomexPerfilConsultaEl.value = String(siscomexPerfilUsuarioEl.value || '').trim().toLowerCase();
+        }
+        await carregarConfigSiscomex();
+    });
+
+    limparForm();
+    preencherDatalistPaises();
+    aplicarPadroesSiscomexImportacaoChina();
+    carregarTudo();
+    carregarLojasSiscomex();
+    atualizarPaginacaoNcm();
+    atualizarPaginacaoConvenioMG();
+    renderResumoSiscomex({});
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

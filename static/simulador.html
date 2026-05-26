@@ -1,0 +1,2138 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador - JK Sistema</title>
+    <script>
+        (function () {
+            const params = new URLSearchParams(window.location.search);
+            const forcarDesktop = params.get('desktop') === '1';
+            const modoMobileParam = params.get('mobile') === '1';
+            const ua = navigator.userAgent || '';
+            const dispositivoMovel = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(ua);
+            const telaCompacta = window.matchMedia('(max-width: 900px)').matches;
+            const touch = (navigator.maxTouchPoints || 0) > 0;
+            const deveModoMobile = !forcarDesktop && (modoMobileParam || ((dispositivoMovel || touch) && telaCompacta));
+
+            // Entra automaticamente no modo mobile para celulares/tablets.
+            if (deveModoMobile && !modoMobileParam) {
+                params.set('mobile', '1');
+                const qs = params.toString();
+                const url = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+                window.location.replace(url);
+                return;
+            }
+
+            window.__SIMULADOR_MODO_MOBILE__ = deveModoMobile;
+        })();
+    </script>
+    <script src="/auth.js?v=20260417f"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+
+        :root {
+            --bg-a: #04070f;
+            --bg-b: #0a1322;
+            --bg-c: #0d1d34;
+            --panel: rgba(13, 24, 43, 0.86);
+            --border: rgba(104, 168, 255, 0.34);
+            --text: #eaf3ff;
+            --muted: #9cb7d7;
+            --accent: #63bbff;
+            --accent-strong: #1ca2ff;
+            --green: #6fe6b0;
+            --green-bg: rgba(19, 60, 36, 0.9);
+            --orange: #ffc68f;
+            --orange-bg: rgba(56, 34, 19, 0.9);
+            --danger: #ff8b8b;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: 'Outfit', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 8% -4%, rgba(99, 187, 255, 0.28), transparent 34%),
+                radial-gradient(circle at 95% 12%, rgba(55, 178, 255, 0.18), transparent 28%),
+                linear-gradient(120deg, var(--bg-a), var(--bg-b) 48%, var(--bg-c));
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(99, 187, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99, 187, 255, 0.03) 1px, transparent 1px);
+            background-size: 26px 26px;
+            mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 84%);
+        }
+
+        .container {
+            max-width: 1160px;
+            margin: 0 auto;
+            padding: 24px 26px 34px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .topbar {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr auto;
+            gap: 12px;
+            margin-bottom: 18px;
+            align-items: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(2rem, 3.5vw, 2.8rem);
+            line-height: 1;
+            color: #8ecfff;
+            letter-spacing: 0.3px;
+            text-shadow: 0 8px 30px rgba(28, 162, 255, 0.32);
+        }
+
+        .info-box {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-height: 68px;
+            padding: 10px 14px;
+            border-radius: 13px;
+            border: 1px solid var(--border);
+            background: linear-gradient(180deg, rgba(13, 24, 43, 0.9), rgba(10, 19, 35, 0.95));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.1), 0 14px 28px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(8px);
+        }
+
+        .info-box.green {
+            border-color: rgba(104, 214, 142, 0.54);
+            background: linear-gradient(180deg, var(--green-bg), rgba(13, 40, 25, 0.95));
+            box-shadow: inset 0 1px 0 rgba(186, 255, 210, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(104, 214, 142, 0.16);
+        }
+
+        .info-box.orange {
+            border-color: rgba(255, 166, 94, 0.52);
+            background: linear-gradient(180deg, var(--orange-bg), rgba(33, 22, 14, 0.95));
+            box-shadow: inset 0 1px 0 rgba(255, 214, 180, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 166, 94, 0.16);
+        }
+
+        .info-label {
+            color: var(--muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 2px;
+        }
+
+        .info-value {
+            color: #9dd6ff;
+            font-size: 1.52rem;
+            font-weight: 800;
+            line-height: 1;
+            text-shadow: 0 0 16px rgba(99, 187, 255, 0.22);
+        }
+
+        .info-time {
+            color: #d2e6ff;
+            font-size: 0.86rem;
+            font-weight: 700;
+            margin-top: 5px;
+        }
+
+        .info-box.green .info-label { color: #9be9b6; }
+        .info-box.green .info-value { color: #7bffab; }
+        .info-box.orange .info-label { color: #ffca9f; }
+        .info-box.orange .info-value { color: var(--orange); }
+
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            text-decoration: none;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, var(--accent), #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+        }
+
+        .back-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+            color: #fff;
+        }
+
+        body.historico-aberto .back-btn,
+        body.historico-aberto .home-btn {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        body.historico-aberto .jk-nav-card-group {
+            opacity: 0 !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+        }
+
+        .card {
+            position: relative;
+            background: linear-gradient(180deg, rgba(17, 27, 46, 0.94), rgba(12, 21, 37, 0.96));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 18px;
+            box-shadow: 0 20px 42px rgba(0, 0, 0, 0.34);
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: linear-gradient(100deg, rgba(99, 187, 255, 0.13), transparent 36%);
+        }
+
+        .card > * { position: relative; z-index: 1; }
+
+        .toolbar-card {
+            border: 1px solid rgba(126, 203, 255, 0.25);
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(17, 30, 52, 0.92), rgba(10, 20, 36, 0.95));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.08), 0 12px 24px rgba(0, 0, 0, 0.24);
+            padding: 14px;
+            margin-bottom: 14px;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            border: 1px solid rgba(126, 203, 255, 0.36);
+            border-radius: 11px;
+            background: linear-gradient(180deg, rgba(26, 37, 62, 0.95), rgba(18, 30, 52, 0.98));
+            color: #eaf3ff;
+            padding: 10px 14px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: 0.15px;
+            transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+            box-shadow: 0 10px 22px rgba(28, 162, 255, 0.24);
+            color: #dff0ff;
+        }
+
+        .btn-primary {
+            color: #06251d;
+            border-color: rgba(145, 237, 183, 0.65);
+            background: linear-gradient(180deg, rgba(117, 245, 180, 0.96), rgba(77, 215, 150, 0.96));
+        }
+
+        .btn:disabled { opacity: 0.58; cursor: default; transform: none; }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 13px;
+            border-radius: 999px;
+            border: 1px solid rgba(126, 203, 255, 0.46);
+            background: rgba(32, 60, 89, 0.78);
+            color: #7ecbff;
+            font-size: 0.95rem;
+            font-weight: 700;
+        }
+
+        .status {
+            color: var(--muted);
+            font-size: 1.08rem;
+            margin-bottom: 0;
+        }
+
+        .status.ok { color: #9df4c0; }
+        .status.warn { color: var(--orange); }
+        .status.error { color: var(--danger); }
+
+        .secao-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 0 0 12px;
+            padding: 0 2px;
+        }
+
+        .secao-titulo {
+            color: #cfe8ff;
+            font-size: 1.18rem;
+            font-weight: 800;
+        }
+
+        .sim-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(220px, 1fr));
+            gap: 14px;
+        }
+
+        .form-actions-card {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            border: 1px solid rgba(145, 237, 183, 0.36);
+            border-radius: 14px;
+            background:
+                radial-gradient(circle at 100% 0%, rgba(145, 237, 183, 0.16), transparent 46%),
+                linear-gradient(180deg, rgba(16, 49, 40, 0.92), rgba(9, 28, 28, 0.96));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.08), 0 12px 24px rgba(0, 0, 0, 0.22);
+            padding: 14px;
+            margin-top: 14px;
+        }
+
+        .section-card {
+            --card-a: rgba(17, 30, 52, 0.92);
+            --card-b: rgba(10, 20, 36, 0.96);
+            --card-border: rgba(126, 203, 255, 0.28);
+            --card-glow: rgba(99, 187, 255, 0.16);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            background:
+                radial-gradient(circle at 100% 0%, var(--card-glow), transparent 42%),
+                linear-gradient(180deg, var(--card-a), var(--card-b));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.08), 0 16px 34px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.02);
+            padding: 18px;
+            margin-top: 14px;
+        }
+
+        .section-card.dados {
+            --card-a: rgba(18, 38, 68, 0.94);
+            --card-b: rgba(9, 23, 43, 0.97);
+            --card-border: rgba(99, 187, 255, 0.45);
+            --card-glow: rgba(99, 187, 255, 0.18);
+        }
+
+        .section-card.resultado {
+            --card-a: rgba(20, 47, 40, 0.94);
+            --card-b: rgba(9, 28, 28, 0.97);
+            --card-border: rgba(111, 230, 176, 0.42);
+            --card-glow: rgba(111, 230, 176, 0.18);
+        }
+
+        .input-card,
+        .result-card,
+        .ncm-card,
+        .empty {
+            --tile-a: rgba(17, 30, 52, 0.92);
+            --tile-b: rgba(10, 20, 36, 0.95);
+            --tile-border: rgba(126, 203, 255, 0.25);
+            --tile-glow: rgba(99, 187, 255, 0.12);
+            border: 1px solid var(--tile-border);
+            border-radius: 14px;
+            background:
+                radial-gradient(circle at 100% 0%, var(--tile-glow), transparent 46%),
+                linear-gradient(180deg, var(--tile-a), var(--tile-b));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.08), 0 12px 24px rgba(0, 0, 0, 0.24);
+            padding: 14px;
+        }
+
+        .input-card.ncm-card-color {
+            --tile-a: rgba(20, 50, 84, 0.94);
+            --tile-b: rgba(10, 27, 51, 0.96);
+            --tile-border: rgba(99, 187, 255, 0.45);
+            --tile-glow: rgba(99, 187, 255, 0.22);
+        }
+
+        .input-card.valor-card-color {
+            --tile-a: rgba(58, 42, 19, 0.94);
+            --tile-b: rgba(34, 25, 14, 0.96);
+            --tile-border: rgba(255, 193, 112, 0.42);
+            --tile-glow: rgba(255, 193, 112, 0.18);
+        }
+
+        .input-card.qtd-card-color {
+            --tile-a: rgba(26, 68, 44, 0.94);
+            --tile-b: rgba(12, 41, 28, 0.96);
+            --tile-border: rgba(111, 230, 176, 0.42);
+            --tile-glow: rgba(111, 230, 176, 0.18);
+        }
+
+        .input-card.cubagem-card-color {
+            --tile-a: rgba(44, 42, 86, 0.94);
+            --tile-b: rgba(25, 24, 53, 0.96);
+            --tile-border: rgba(166, 151, 255, 0.42);
+            --tile-glow: rgba(166, 151, 255, 0.18);
+        }
+
+        .cubagem-toggle {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 9px;
+        }
+        .cubagem-toggle button {
+            flex: 1;
+            padding: 5px 8px;
+            border-radius: 8px;
+            border: 1px solid rgba(166, 151, 255, 0.35);
+            background: rgba(25, 24, 53, 0.7);
+            color: #c3b8ff;
+            font: inherit;
+            font-size: 0.78rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .cubagem-toggle button.ativo {
+            background: rgba(166, 151, 255, 0.28);
+            border-color: rgba(166, 151, 255, 0.75);
+            color: #e2daff;
+        }
+        .cubagem-dims {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 6px;
+            margin-bottom: 7px;
+        }
+        .cubagem-dims input {
+            min-height: 38px;
+            font-size: 0.9rem !important;
+            padding: 6px 8px !important;
+            text-align: center;
+        }
+        .cubagem-dims-label {
+            color: var(--muted);
+            font-size: 0.72rem;
+            text-align: center;
+            margin-top: 2px;
+            letter-spacing: 0.5px;
+        }
+        .cubagem-resultado {
+            margin-top: 6px;
+            font-size: 0.82rem;
+            color: #c3b8ff;
+            font-weight: 700;
+            min-height: 16px;
+        }
+
+        .input-card.cotacao-card-color {
+            --tile-a: rgba(56, 34, 19, 0.94);
+            --tile-b: rgba(33, 22, 14, 0.96);
+            --tile-border: rgba(255, 166, 94, 0.46);
+            --tile-glow: rgba(255, 166, 94, 0.18);
+        }
+
+        .input-card.frete-card-color {
+            --tile-a: rgba(19, 62, 69, 0.94);
+            --tile-b: rgba(10, 36, 43, 0.96);
+            --tile-border: rgba(94, 221, 235, 0.4);
+            --tile-glow: rgba(94, 221, 235, 0.16);
+        }
+
+        .input-card.proporcao-card-color {
+            --tile-a: rgba(52, 39, 20, 0.94);
+            --tile-b: rgba(31, 23, 11, 0.96);
+            --tile-border: rgba(255, 207, 126, 0.42);
+            --tile-glow: rgba(255, 207, 126, 0.16);
+        }
+
+        .input-card label,
+        .result-label {
+            display: block;
+            color: #a8c7e7;
+            font-size: 0.82rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+
+        .input-card input {
+            width: 100%;
+            min-height: 44px;
+            border: 1px solid rgba(126, 203, 255, 0.22);
+            border-radius: 11px;
+            background: rgba(4, 10, 20, 0.72);
+            color: #f4fbff;
+            padding: 10px 12px;
+            font: inherit;
+            font-size: 1.02rem;
+            outline: none;
+        }
+
+        .input-card input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(99, 187, 255, 0.16);
+        }
+
+        .result-main {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(220px, 1fr));
+            gap: 14px;
+        }
+
+        .result-card.primary {
+            border-color: rgba(145, 237, 183, 0.46);
+            --tile-a: rgba(20, 83, 53, 0.9);
+            --tile-b: rgba(12, 46, 34, 0.96);
+            --tile-border: rgba(145, 237, 183, 0.55);
+            --tile-glow: rgba(145, 237, 183, 0.22);
+        }
+
+        .result-card.total-card-color {
+            --tile-a: rgba(57, 50, 22, 0.94);
+            --tile-b: rgba(35, 31, 14, 0.96);
+            --tile-border: rgba(255, 218, 117, 0.48);
+            --tile-glow: rgba(255, 218, 117, 0.2);
+        }
+
+        .result-value {
+            color: #ffffff;
+            font-size: clamp(1.35rem, 2.1vw, 1.9rem);
+            line-height: 1;
+            font-weight: 800;
+            text-shadow: 0 0 18px rgba(99, 187, 255, 0.2);
+        }
+
+        .ncm-card {
+            margin-top: 14px;
+            --tile-a: rgba(18, 45, 76, 0.94);
+            --tile-b: rgba(9, 25, 47, 0.96);
+            --tile-border: rgba(99, 187, 255, 0.42);
+            --tile-glow: rgba(99, 187, 255, 0.2);
+        }
+
+        .monofasico-card {
+            margin-top: 14px;
+            --tile-a: rgba(57, 50, 22, 0.94);
+            --tile-b: rgba(35, 31, 14, 0.96);
+            --tile-border: rgba(255, 218, 117, 0.48);
+            --tile-glow: rgba(255, 218, 117, 0.2);
+        }
+
+        .monofasico-card.sim {
+            --tile-a: rgba(26, 68, 44, 0.94);
+            --tile-b: rgba(12, 41, 28, 0.96);
+            --tile-border: rgba(111, 230, 176, 0.42);
+            --tile-glow: rgba(111, 230, 176, 0.18);
+        }
+
+        .monofasico-card.nao {
+            --tile-a: rgba(20, 50, 84, 0.94);
+            --tile-b: rgba(10, 27, 51, 0.96);
+            --tile-border: rgba(99, 187, 255, 0.42);
+            --tile-glow: rgba(99, 187, 255, 0.18);
+        }
+
+        .ncm-title {
+            color: #9dd6ff;
+            font-size: 1.05rem;
+            font-weight: 800;
+            margin-bottom: 5px;
+        }
+
+        .muted {
+            color: var(--muted);
+            font-size: 1rem;
+            line-height: 1.45;
+        }
+
+        .details-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(180px, 1fr));
+            gap: 14px;
+            margin-top: 14px;
+        }
+
+        .detail-card {
+            --detail-a: rgba(17, 30, 52, 0.9);
+            --detail-b: rgba(10, 20, 36, 0.96);
+            --detail-border: rgba(126, 203, 255, 0.25);
+            --detail-glow: rgba(99, 187, 255, 0.11);
+            border: 1px solid var(--detail-border);
+            border-radius: 14px;
+            background:
+                radial-gradient(circle at 100% 0%, var(--detail-glow), transparent 46%),
+                linear-gradient(180deg, var(--detail-a), var(--detail-b));
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.08), 0 12px 24px rgba(0, 0, 0, 0.22);
+            min-height: 86px;
+            padding: 13px;
+        }
+
+        .detail-card.total {
+            --detail-a: rgba(56, 34, 19, 0.92);
+            --detail-b: rgba(33, 22, 14, 0.96);
+            --detail-border: rgba(255, 166, 94, 0.5);
+            --detail-glow: rgba(255, 166, 94, 0.2);
+        }
+
+        .detail-card.blue {
+            --detail-a: rgba(20, 50, 84, 0.92);
+            --detail-b: rgba(10, 27, 51, 0.96);
+            --detail-border: rgba(99, 187, 255, 0.42);
+            --detail-glow: rgba(99, 187, 255, 0.18);
+        }
+
+        .detail-card.green {
+            --detail-a: rgba(26, 68, 44, 0.92);
+            --detail-b: rgba(12, 41, 28, 0.96);
+            --detail-border: rgba(111, 230, 176, 0.42);
+            --detail-glow: rgba(111, 230, 176, 0.18);
+        }
+
+        .detail-card.purple {
+            --detail-a: rgba(44, 42, 86, 0.92);
+            --detail-b: rgba(25, 24, 53, 0.96);
+            --detail-border: rgba(166, 151, 255, 0.42);
+            --detail-glow: rgba(166, 151, 255, 0.18);
+        }
+
+        .detail-card.teal {
+            --detail-a: rgba(19, 62, 69, 0.92);
+            --detail-b: rgba(10, 36, 43, 0.96);
+            --detail-border: rgba(94, 221, 235, 0.4);
+            --detail-glow: rgba(94, 221, 235, 0.16);
+        }
+
+        .detail-card.gold {
+            --detail-a: rgba(57, 50, 22, 0.92);
+            --detail-b: rgba(35, 31, 14, 0.96);
+            --detail-border: rgba(255, 218, 117, 0.46);
+            --detail-glow: rgba(255, 218, 117, 0.18);
+        }
+
+        .detail-card.pink {
+            --detail-a: rgba(62, 29, 48, 0.92);
+            --detail-b: rgba(39, 15, 31, 0.96);
+            --detail-border: rgba(255, 130, 184, 0.42);
+            --detail-glow: rgba(255, 130, 184, 0.18);
+        }
+
+        .detail-card.red {
+            --detail-a: rgba(70, 25, 25, 0.92);
+            --detail-b: rgba(43, 14, 18, 0.96);
+            --detail-border: rgba(255, 118, 118, 0.42);
+            --detail-glow: rgba(255, 118, 118, 0.18);
+        }
+
+        .detail-label {
+            color: var(--muted);
+            font-size: 0.82rem;
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            font-weight: 800;
+            line-height: 1.25;
+        }
+
+        .detail-value {
+            margin-top: 8px;
+            color: #f6fbff;
+            font-size: 1.08rem;
+            font-weight: 800;
+        }
+
+        .empty {
+            color: var(--muted);
+            font-size: 1.04rem;
+        }
+
+        .cards-reordenaveis .arrastavel-card {
+            cursor: grab;
+            user-select: none;
+        }
+
+        .cards-reordenaveis .arrastavel-card.dragging {
+            opacity: 0.25;
+            transform: scale(0.99);
+            cursor: grabbing;
+        }
+
+        .cards-reordenaveis .arrastavel-card.drag-over-right {
+            box-shadow: inset -3px 0 0 0 rgba(126, 203, 255, 0.85);
+        }
+
+        .cards-reordenaveis .drop-placeholder {
+            border: 1px dashed rgba(126, 203, 255, 0.7);
+            border-radius: 12px;
+            background: rgba(99, 187, 255, 0.12);
+            min-height: 70px;
+        }
+
+        @media (max-width: 1050px) {
+            .topbar { grid-template-columns: 1fr 1fr; }
+            .topbar h1 { grid-column: 1 / -1; }
+            .back-btn { grid-column: 1 / -1; }
+            .details-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+        }
+
+        @media (max-width: 720px) {
+            .container { padding: 18px 14px 28px; }
+            .topbar, .sim-grid, .result-main, .details-grid { grid-template-columns: 1fr; }
+        }
+
+        body.modo-mobile .container {
+            max-width: 1160px;
+            padding: 18px 14px 26px;
+        }
+        body.modo-mobile .topbar {
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            align-items: stretch;
+        }
+        body.modo-mobile .topbar h1 {
+            grid-column: 1 / -1;
+            font-size: clamp(1.8rem, 7vw, 2.4rem);
+            margin-bottom: 2px;
+        }
+        body.modo-mobile .info-box {
+            min-height: 64px;
+            padding: 10px 12px;
+            border-radius: 12px;
+        }
+        body.modo-mobile .back-btn {
+            min-height: 46px;
+            font-size: 1rem;
+        }
+        body.modo-mobile .sim-grid { grid-template-columns: 1fr 1fr; }
+        body.modo-mobile .result-main { grid-template-columns: 1fr 1fr; }
+        body.modo-mobile .details-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
+        body.modo-mobile .card { padding: 14px; }
+        body.modo-mobile .section-card { padding: 12px; }
+        body.modo-mobile .secao-header { margin-bottom: 12px; }
+        body.modo-mobile .result-value { font-size: clamp(1.5rem, 7.2vw, 2rem); }
+
+        @media (max-width: 760px) {
+            body.modo-mobile .result-main,
+            body.modo-mobile .details-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 520px) {
+            body.modo-mobile .container { padding: 16px 10px 22px; }
+            body.modo-mobile .topbar { grid-template-columns: 1fr; }
+            body.modo-mobile .topbar h1 { grid-column: auto; }
+            body.modo-mobile .back-btn { width: 100%; }
+        }
+        body.modo-mobile #btnHistorico {
+            width: 32px;
+            min-height: 92px;
+            font-size: 0.72rem;
+        }
+        body.modo-mobile .historico-painel { width: 100vw; }
+        body.modo-mobile .historico-modal {
+            width: 100vw;
+            max-width: 100vw;
+            max-height: 100vh;
+            border-radius: 0;
+        }
+        body.modo-mobile .historico-modal-corpo { padding: 10px 10px 12px; }
+        body.modo-mobile .historico-table { min-width: 960px; }
+
+        /* ── Histórico ───────────────────────────────── */
+        .historico-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.52); z-index: 2000;
+            backdrop-filter: blur(2px);
+        }
+        .historico-overlay.ativo { display: block; }
+
+        .historico-painel {
+            position: fixed; top: 0; right: 0; bottom: 0;
+            width: min(440px, 100vw);
+            background: linear-gradient(180deg, #0b1526, #060d1a);
+            border-left: 1px solid rgba(99,187,255,0.28);
+            box-shadow: -18px 0 46px rgba(0,0,0,0.55);
+            z-index: 2001; display: flex; flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.28s cubic-bezier(.4,0,.2,1);
+        }
+        .historico-painel.aberto { transform: translateX(0); }
+
+        .historico-header {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 10px; padding: 18px 18px 14px;
+            border-bottom: 1px solid rgba(99,187,255,0.18); flex-shrink: 0;
+        }
+        .historico-titulo { font-size: 1.12rem; font-weight: 800; color: #cfe8ff; }
+        .historico-fechar {
+            background: none; border: 1px solid rgba(126,203,255,0.3);
+            border-radius: 8px; color: var(--muted); padding: 4px 10px;
+            cursor: pointer; font-size: 1.1rem;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .historico-fechar:hover { color: #eaf3ff; border-color: var(--accent); }
+        .historico-fechar.minimizar {
+            font-weight: 800;
+            min-width: 36px;
+            text-align: center;
+        }
+        /* Aba lateral fixa — abre o histórico */
+        #btnHistorico {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: fixed;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 2002;
+            width: 36px;
+            min-height: 120px;
+            padding: 16px 0;
+            border: 1px solid rgba(126,203,255,0.4);
+            border-right: none;
+            border-radius: 10px 0 0 10px;
+            background: linear-gradient(180deg, rgba(19,35,59,0.97), rgba(10,20,36,0.99));
+            color: #d5eaff;
+            font: inherit;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            box-shadow: -4px 0 18px rgba(0,0,0,0.4);
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            transition: background 0.18s, color 0.18s, width 0.18s;
+        }
+        #btnHistorico:hover { background: linear-gradient(180deg,rgba(30,58,100,0.98),rgba(15,30,55,1)); color: #fff; }
+        body.historico-aberto #btnHistorico { display: none; }
+        /* botão minimizar fixo (dentro do painel) */
+        .historico-mini-fixo {
+            display: none;
+            position: fixed;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 2002;
+            border: 1px solid rgba(126,203,255,0.5);
+            border-radius: 999px;
+            background: linear-gradient(180deg, rgba(19,35,59,0.96), rgba(10,20,36,0.98));
+            color: #d5eaff;
+            padding: 9px 12px;
+            font: inherit;
+            font-weight: 800;
+            cursor: pointer;
+            box-shadow: 0 10px 22px rgba(0,0,0,0.35);
+        }
+        .historico-mini-fixo.ativo { display: inline-flex; }
+        .historico-mini-fixo:hover { border-color: var(--accent); color: #ffffff; }
+
+        .historico-toolbar {
+            display: flex; gap: 8px; align-items: center;
+            padding: 10px 18px; border-bottom: 1px solid rgba(99,187,255,0.1);
+            flex-shrink: 0;
+        }
+        .historico-toolbar .btn { font-size: 0.85rem; padding: 6px 11px; }
+
+        .historico-lista {
+            flex: 1; overflow-y: auto; padding: 10px 12px;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .historico-lista::-webkit-scrollbar { width: 5px; }
+        .historico-lista::-webkit-scrollbar-thumb { background: rgba(99,187,255,0.22); border-radius: 4px; }
+
+        .historico-vazio {
+            color: var(--muted); font-size: 0.97rem;
+            text-align: center; padding: 36px 0;
+        }
+
+        .historico-item {
+            border: 1px solid rgba(99,187,255,0.2); border-radius: 12px;
+            background: linear-gradient(180deg, rgba(17,30,52,0.94), rgba(10,20,36,0.96));
+            padding: 11px 13px; transition: border-color 0.15s;
+        }
+        .historico-item:hover { border-color: rgba(99,187,255,0.42); }
+        .historico-item.selecionado {
+            border-color: rgba(111,230,176,0.58);
+            background: linear-gradient(180deg, rgba(18,46,34,0.94), rgba(9,27,22,0.96));
+        }
+        .historico-item-topo { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+        .historico-item-check { flex-shrink: 0; width: 16px; height: 16px; accent-color: #6fe6b0; cursor: pointer; }
+        .historico-item-nome {
+            flex: 1; min-width: 0; font-size: 0.93rem; font-weight: 700; color: #d5eaff;
+            border: none; background: none; padding: 0; font-family: inherit; outline: none;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+        }
+        .historico-item-nome.editando {
+            background: rgba(4,10,20,0.72); border: 1px solid var(--accent);
+            border-radius: 6px; padding: 2px 7px; color: #f4fbff;
+            white-space: normal; overflow: visible; text-overflow: clip;
+        }
+        .historico-item-info {
+            font-size: 0.76rem; color: var(--muted);
+            margin: 0 0 7px 24px; line-height: 1.4;
+        }
+        .historico-item-acoes { display: flex; gap: 6px; margin-left: 24px; }
+        .historico-item-acoes .btn { font-size: 0.8rem; padding: 5px 10px; }
+        .btn-danger { border-color: rgba(255,118,118,0.42) !important; color: #ffb0b0 !important; }
+        .btn-danger:hover { border-color: rgba(255,118,118,0.8) !important; color: #ffdada !important; }
+
+        .historico-modal-bg {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.72); z-index: 1000;
+            align-items: center; justify-content: center; padding: 20px;
+        }
+        .historico-modal-bg.ativo { display: flex; }
+        .historico-modal {
+            background: linear-gradient(180deg, #0d1d34, #060d1a);
+            border: 1px solid rgba(99,187,255,0.35); border-radius: 18px;
+            box-shadow: 0 30px 70px rgba(0,0,0,0.6);
+            width: 100%; max-width: 920px; max-height: 90vh;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .historico-modal-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 18px 20px 14px; border-bottom: 1px solid rgba(99,187,255,0.18); flex-shrink: 0;
+        }
+        .historico-modal-titulo { font-size: 1.1rem; font-weight: 800; color: #cfe8ff; }
+        .historico-modal-corpo {
+            overflow-y: auto; padding: 16px 20px; flex: 1;
+            background: linear-gradient(180deg, rgba(12,23,40,0.45), rgba(9,18,33,0.2));
+        }
+        .historico-table-wrap {
+            overflow: auto;
+            border: 1px solid rgba(99,187,255,0.2);
+            border-radius: 12px;
+            background: rgba(6,14,25,0.45);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+        .historico-table {
+            width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.88rem;
+            min-width: 1120px;
+        }
+        .historico-table th {
+            color: var(--muted); font-size: 0.76rem; text-transform: uppercase;
+            letter-spacing: 0.7px; font-weight: 800; text-align: left;
+            padding: 10px 12px; border-bottom: 1px solid rgba(99,187,255,0.25);
+            background: linear-gradient(180deg, rgba(29,58,92,0.88), rgba(20,42,70,0.92));
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            white-space: nowrap;
+        }
+        .historico-table td {
+            padding: 10px 12px; border-bottom: 1px solid rgba(99,187,255,0.08);
+            color: #d5eaff; vertical-align: top;
+        }
+        .historico-table tbody tr:nth-child(even) td { background: rgba(21,40,66,0.22); }
+        .historico-table tr:last-child td { border-bottom: none; }
+        .historico-table tbody tr:hover td { background: rgba(99,187,255,0.08); }
+        .historico-table td.col-num,
+        .historico-table th.col-num {
+            text-align: right;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .historico-table th.col-center,
+        .historico-table td.col-center { text-align: center; white-space: nowrap; }
+        .historico-table tr.totais-row td {
+            border-top: 1px solid rgba(99,187,255,0.3);
+            color: #b8ffd5; font-weight: 800;
+            background: linear-gradient(180deg, rgba(20,70,47,0.55), rgba(14,50,36,0.55)) !important;
+        }
+        .historico-meta-planilha {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 10px; color: #b8d8f8; font-size: 0.82rem;
+        }
+        .historico-meta-planilha strong { color: #dff0ff; }
+        .btn-export {
+            border-color: rgba(111,230,176,0.5) !important;
+            color: #7bffab !important;
+            font-size: 0.85rem !important;
+            padding: 6px 12px !important;
+        }
+        .btn-export:hover { border-color: rgba(111,230,176,0.85) !important; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="topbar">
+        <h1>Simulador</h1>
+        <div class="info-box">
+            <div>
+                <div class="info-label">Cotação do dia</div>
+                <div id="boxCotacao" class="info-value">Carregando...</div>
+                <div id="boxCotacaoHora" class="info-time">USD/BRL em tempo real</div>
+            </div>
+        </div>
+        <a class="back-btn" href="/dashboard.html">Voltar</a>
+    </div>
+
+    <div class="card">
+        <section class="section-card dados">
+        <div class="secao-header">
+            <span class="secao-titulo">Dados do Produto</span>
+            <span class="badge">Entrada manual</span>
+        </div>
+
+        <div class="sim-grid">
+                <div class="input-card ncm-card-color" data-card-id="dados_ncm">
+                <label for="ncm">NCM</label>
+                <input id="ncm" inputmode="numeric" maxlength="12" placeholder="Ex: 85176249">
+            </div>
+                <div class="input-card valor-card-color" data-card-id="dados_valor_dolar">
+                <label for="valorDolar">Valor unitário em dólar</label>
+                <input id="valorDolar" inputmode="decimal" placeholder="Ex: 12,50">
+            </div>
+                <div class="input-card qtd-card-color" data-card-id="dados_quantidade">
+                <label for="quantidade">Quantidade</label>
+                <input id="quantidade" inputmode="decimal" placeholder="Ex: 100">
+            </div>
+                <div class="input-card cubagem-card-color" data-card-id="dados_cubagem">
+                <label>Cubagem total m³</label>
+                <div class="cubagem-toggle">
+                    <button id="btnCubM3" class="ativo" type="button" onclick="alternarModoCubagem('m3')">M³ Total</button>
+                    <button id="btnCubDims" type="button" onclick="alternarModoCubagem('dims')">A × L × C Unitário</button>
+                </div>
+                <div id="cubM3Panel">
+                    <input id="cubagem" inputmode="decimal" placeholder="Ex: 1,2">
+                </div>
+                <div id="cubDimsPanel" style="display:none;">
+                    <div class="cubagem-dims">
+                        <div>
+                            <input id="cubAltura" inputmode="decimal" placeholder="0" style="width:100%;">
+                            <div class="cubagem-dims-label">Altura (cm)</div>
+                        </div>
+                        <div>
+                            <input id="cubLargura" inputmode="decimal" placeholder="0" style="width:100%;">
+                            <div class="cubagem-dims-label">Largura (cm)</div>
+                        </div>
+                        <div>
+                            <input id="cubComprimento" inputmode="decimal" placeholder="0" style="width:100%;">
+                            <div class="cubagem-dims-label">Comp. (cm)</div>
+                        </div>
+                    </div>
+                    <div id="cubResultado" class="cubagem-resultado">m³ = --</div>
+                </div>
+            </div>
+                <div class="input-card cotacao-card-color" data-card-id="dados_cotacao">
+                <label for="cotacaoDolar">Cotação do dólar</label>
+                <input id="cotacaoDolar" inputmode="decimal" value="5,00">
+            </div>
+                <div class="input-card frete-card-color" data-card-id="dados_frete_m3">
+                <label for="freteM3">Preço $ por m³</label>
+                <input id="freteM3" inputmode="decimal" value="0,00">
+            </div>
+                <div class="input-card proporcao-card-color" data-card-id="dados_proporcao">
+                <label for="proporcao">Proporção (%)</label>
+                <input id="proporcao" inputmode="decimal" value="100" placeholder="Ex: 100">
+            </div>
+        </div>
+
+        <div class="form-actions-card">
+            <button id="btnCalcular" class="btn btn-primary" type="button">Calcular simulação</button>
+            <button id="btnLimpar" class="btn" type="button">Limpar</button>
+        </div>
+
+        </section>
+
+        <section class="section-card resultado">
+        <div class="secao-header">
+            <span class="secao-titulo">Resultado</span>
+            <span id="badgeResultado" class="badge">Aguardando</span>
+        </div>
+
+        <div id="resultadoVazio" class="empty">Nenhuma simulação calculada.</div>
+        <div id="resultado" style="display:none;">
+            <div class="result-main">
+                <div class="result-card primary" data-card-id="resultado_preco_unitario">
+                    <span class="result-label">Preço final unitário</span>
+                    <div id="precoUnitario" class="result-value">R$ 0,00</div>
+                </div>
+                <div class="result-card total-card-color" data-card-id="resultado_preco_total">
+                    <span class="result-label">Preço final total</span>
+                    <div id="precoTotal" class="result-value">R$ 0,00</div>
+                </div>
+            </div>
+            <div class="ncm-card">
+                <div id="ncmTitulo" class="ncm-title"></div>
+                <div id="ncmDescricao" class="muted"></div>
+            </div>
+            <div id="monofasicoCard" class="ncm-card monofasico-card">
+                <div id="monofasicoTitulo" class="ncm-title"></div>
+                <div id="monofasicoDescricao" class="muted"></div>
+            </div>
+            <div id="detalhes" class="details-grid"></div>
+        </div>
+        </section>
+    </div>
+</div>
+
+<!-- Painel histórico -->
+<div id="historicoOverlay" class="historico-overlay"></div>
+<div id="historicoPainel" class="historico-painel">
+    <div class="historico-header">
+        <span class="historico-titulo">&#128203; Histórico de Consultas</span>
+        <button id="btnHistoricoMinimizarHeader" class="historico-fechar minimizar" title="Minimizar aba">Minimizar &#x2192;</button>
+    </div>
+    <div class="historico-toolbar">
+        <button id="btnListaSelecionada" class="btn" onclick="abrirListaSelecionada()" style="display:none;">
+            Ver lista (<span id="countSelecionados">0</span> selecionadas)
+        </button>
+        <button class="btn btn-danger" style="margin-left:auto;" onclick="confirmarLimparHistorico()">Limpar tudo</button>
+    </div>
+    <div id="historicoLista" class="historico-lista">
+        <div class="historico-vazio">Nenhuma consulta salva ainda.</div>
+    </div>
+</div>
+<button id="btnHistorico" type="button" title="Abrir Histórico">&#128203; Histórico</button>
+<button id="btnHistoricoMinimizarFixo" class="historico-mini-fixo" type="button" title="Minimizar histórico">&#x2192;</button>
+
+<!-- Modal lista selecionada -->
+<div id="historicoModalBg" class="historico-modal-bg" onclick="if(event.target===this)fecharListaModal()">
+    <div class="historico-modal">
+        <div class="historico-modal-header">
+            <div style="display:flex;align-items:center;gap:10px;">
+                <span class="historico-modal-titulo">Lista de consultas selecionadas</span>
+                <button id="btnExportarExcel" class="btn btn-export" type="button" onclick="exportarListaExcel()">&#x2B07; Baixar Excel</button>
+            </div>
+            <button class="historico-fechar" onclick="fecharListaModal()">&#x2715;</button>
+        </div>
+        <div id="historicoModalCorpo" class="historico-modal-corpo"></div>
+    </div>
+</div>
+
+<script>
+    if (window.__SIMULADOR_MODO_MOBILE__) document.body.classList.add('modo-mobile');
+
+    if (!verificarSessao()) {
+        // verificarSessao já redireciona quando não há token.
+    }
+
+    const el = (id) => document.getElementById(id);
+    const campos = {
+        ncm: el('ncm'),
+        valorDolar: el('valorDolar'),
+        quantidade: el('quantidade'),
+        cubagem: el('cubagem'),
+        cotacaoDolar: el('cotacaoDolar'),
+        freteM3: el('freteM3'),
+        proporcao: el('proporcao')
+    };
+    let modoCubagem = 'm3'; // 'm3' ou 'dims'
+
+    function alternarModoCubagem(modo) {
+        modoCubagem = modo;
+        el('cubM3Panel').style.display = modo === 'm3' ? '' : 'none';
+        el('cubDimsPanel').style.display = modo === 'dims' ? '' : 'none';
+        el('btnCubM3').classList.toggle('ativo', modo === 'm3');
+        el('btnCubDims').classList.toggle('ativo', modo === 'dims');
+        if (modo === 'dims') calcularCubageDims();
+    }
+
+    function calcularCubageDims() {
+        const a = numero(el('cubAltura').value);
+        const l = numero(el('cubLargura').value);
+        const c = numero(el('cubComprimento').value);
+        const qtd = numero(campos.quantidade.value) || 1;
+        const resultado = el('cubResultado');
+        if (a > 0 && l > 0 && c > 0) {
+            const m3Unit = (a / 100) * (l / 100) * (c / 100);
+            const m3Total = m3Unit * qtd;
+            const fmt = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 6 });
+            resultado.textContent = 'm³/un = ' + fmt(m3Unit) + ' | m³ total = ' + fmt(m3Total);
+            campos.cubagem.value = fmt(m3Total);
+        } else {
+            resultado.textContent = 'm³ = --';
+            campos.cubagem.value = '';
+        }
+    }
+
+    ['cubAltura', 'cubLargura', 'cubComprimento'].forEach(id => {
+        const inp = el(id);
+        if (inp) {
+            inp.addEventListener('input', calcularCubageDims);
+            inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') calcular(); });
+        }
+    });
+
+    // recalcula m³ total se a quantidade mudar enquanto modo dims estiver ativo
+    campos.quantidade.addEventListener('input', () => {
+        if (modoCubagem === 'dims') calcularCubageDims();
+    });
+
+    let cotacaoDolarAtual = 0;
+    let cardArrastado = null;
+    const LS_CARD_ORDER_KEY = 'simulador_card_order_v1';
+    const LS_CARD_ORDER_CONTEXT = 'global';
+
+    function numero(valor) {
+        const txt = String(valor || '').replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+        const n = Number(txt);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function moeda(valor) {
+        return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function setCotacaoCard(valorTexto, horaTexto) {
+        el('boxCotacao').textContent = valorTexto || '--';
+        const hora = el('boxCotacaoHora');
+        if (hora) hora.textContent = horaTexto || 'USD/BRL em tempo real';
+    }
+
+    function preencherCotacaoDoDia(valor) {
+        const n = Number(valor || 0);
+        if (!Number.isFinite(n) || n <= 0) return;
+        cotacaoDolarAtual = n;
+        campos.cotacaoDolar.value = n.toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 4
+        });
+        setCotacaoCard(moeda(n), 'Atualizado ' + new Date().toLocaleTimeString('pt-BR'));
+    }
+
+    async function carregarCotacaoDolarDia() {
+        setCotacaoCard('Carregando...', 'USD/BRL em tempo real');
+        try {
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), 8000);
+            const resp = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL', {
+                method: 'GET',
+                cache: 'no-store',
+                signal: ctrl.signal
+            });
+            clearTimeout(to);
+            if (!resp.ok) throw new Error('Falha ao consultar cotação');
+            const data = await resp.json();
+            const bid = Number(data && data.USDBRL ? data.USDBRL.bid : NaN);
+            if (!Number.isFinite(bid) || bid <= 0) throw new Error('Cotação inválida');
+            preencherCotacaoDoDia(bid);
+        } catch (_e) {
+            const fallback = numero(campos.cotacaoDolar.value) || 5;
+            cotacaoDolarAtual = fallback;
+            setCotacaoCard(moeda(fallback), 'Cotação online indisponível');
+        }
+    }
+
+    function dolar(valor) {
+        return 'US$ ' + Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function percentual(valor) {
+        return Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + '%';
+    }
+
+    function moedaOuTraco(valor) {
+        return valor === null || valor === undefined ? '-' : moeda(valor);
+    }
+
+    function percentualOuTraco(valor) {
+        return valor === null || valor === undefined ? '-' : percentual(valor);
+    }
+
+    function normalizarProporcao(valor) {
+        const n = numero(valor);
+        if (!Number.isFinite(n) || n <= 0) return 1;
+        if (n > 100) return 1;
+        return n / 100;
+    }
+
+    function setStatus(texto, tipo) {
+        const status = el('status');
+        if (!status) return;
+        status.className = 'status' + (tipo ? ' ' + tipo : '');
+        status.textContent = texto || '';
+    }
+
+    function detalhe(cardId, label, valor, estilo) {
+        const classe = estilo ? ' ' + estilo : '';
+        return '<div class="detail-card' + classe + '" data-card-id="' + cardId + '">' +
+            '<div class="detail-label">' + label + '</div>' +
+            '<div class="detail-value">' + valor + '</div>' +
+        '</div>';
+    }
+
+    function renderMonofasico(info) {
+        const dados = info || {};
+        const status = String(dados.status || 'indeterminado').toLowerCase();
+        const card = el('monofasicoCard');
+        const titulo = el('monofasicoTitulo');
+        const descricao = el('monofasicoDescricao');
+        const label = status === 'sim' ? 'Produto monofásico: Sim' : (status === 'nao' ? 'Produto monofásico: Não' : 'Produto monofásico: Indeterminado');
+        card.className = 'ncm-card monofasico-card ' + (status === 'sim' ? 'sim' : (status === 'nao' ? 'nao' : ''));
+        titulo.textContent = label;
+        descricao.textContent = [
+            dados.fonte ? 'Fonte: ' + dados.fonte : '',
+            dados.motivo || ''
+        ].filter(Boolean).join(' | ') || 'Sem classificação para este NCM.';
+    }
+
+    function obterContextoOrdemCards() {
+        return LS_CARD_ORDER_CONTEXT;
+    }
+
+    function carregarOrdensCards() {
+        try {
+            const bruto = JSON.parse(localStorage.getItem(LS_CARD_ORDER_KEY) || '{}') || {};
+            return (bruto && typeof bruto === 'object') ? bruto : {};
+        } catch (_e) {
+            return {};
+        }
+    }
+
+    function salvarOrdensCards(mapa) {
+        try {
+            localStorage.setItem(LS_CARD_ORDER_KEY, JSON.stringify(mapa || {}));
+        } catch (_e) {
+            // Ignora falha de persistência local.
+        }
+    }
+
+    function obterOrdemContainer(contexto, containerKey) {
+        const ordens = carregarOrdensCards();
+        const porContexto = ordens[contexto];
+        if (porContexto && typeof porContexto === 'object') {
+            const ordem = porContexto[containerKey];
+            if (Array.isArray(ordem)) return ordem;
+        }
+        return [];
+    }
+
+    function salvarOrdemContainer(contexto, containerKey, ordem) {
+        if (!contexto || !containerKey || !Array.isArray(ordem)) return;
+        const ordens = carregarOrdensCards();
+        if (!ordens[contexto] || typeof ordens[contexto] !== 'object') {
+            ordens[contexto] = {};
+        }
+        ordens[contexto][containerKey] = ordem;
+        salvarOrdensCards(ordens);
+    }
+
+    function aplicarOrdemNoContainer(container, ordem) {
+        if (!container || !Array.isArray(ordem) || !ordem.length) return;
+        const cards = Array.from(container.children).filter((elCard) => elCard && elCard.dataset && elCard.dataset.cardId);
+        const mapa = new Map(cards.map((elCard) => [elCard.dataset.cardId, elCard]));
+        ordem.forEach((cardId) => {
+            const cardEl = mapa.get(String(cardId || '').trim());
+            if (cardEl) container.appendChild(cardEl);
+        });
+    }
+
+    function limparIndicacaoDrag(container) {
+        if (!container) return;
+        container.querySelectorAll('.arrastavel-card.drag-over-left, .arrastavel-card.drag-over-right').forEach((elCard) => {
+            elCard.classList.remove('drag-over-left', 'drag-over-right');
+        });
+    }
+
+    function obterAlvoPeloPonto(container, x, y) {
+        const elementoNoPonto = document.elementFromPoint(x, y);
+        const cardDireto = elementoNoPonto && elementoNoPonto.closest
+            ? elementoNoPonto.closest('.arrastavel-card')
+            : null;
+        if (cardDireto && cardDireto.parentElement === container && !cardDireto.classList.contains('dragging')) {
+            return cardDireto;
+        }
+        return null;
+    }
+
+    function obterCardDireitaParaInserir(container, x, y) {
+        const cards = Array.from(container.querySelectorAll('.arrastavel-card:not(.dragging)'));
+        if (!cards.length) return null;
+
+        const cardsMesmaFaixa = cards.filter((elCard) => {
+            const r = elCard.getBoundingClientRect();
+            return y >= (r.top - 6) && y <= (r.bottom + 6);
+        });
+
+        const base = cardsMesmaFaixa.length ? cardsMesmaFaixa : cards;
+        const candidatosDireita = base
+            .map((elCard) => ({ elCard, rect: elCard.getBoundingClientRect() }))
+            .filter((item) => item.rect.left >= x)
+            .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
+
+        if (candidatosDireita.length) {
+            return candidatosDireita[0].elCard;
+        }
+
+        const abaixo = cards
+            .map((elCard) => ({ elCard, rect: elCard.getBoundingClientRect() }))
+            .filter((item) => item.rect.top > y)
+            .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+
+        return abaixo.length ? abaixo[0].elCard : null;
+    }
+
+    function habilitarReordenacaoCards(container, containerKey, contexto) {
+        if (!container) return;
+
+        container.classList.add('cards-reordenaveis');
+        aplicarOrdemNoContainer(container, obterOrdemContainer(contexto, containerKey));
+
+        const cards = Array.from(container.children).filter((elCard) => elCard && elCard.dataset && elCard.dataset.cardId);
+        if (cards.length < 2) return;
+
+        if (!container.__dropPlaceholder) {
+            container.__dropPlaceholder = document.createElement('div');
+            container.__dropPlaceholder.className = 'drop-placeholder';
+        }
+        const placeholder = container.__dropPlaceholder;
+
+        const persistirOrdemAtual = () => {
+            const ordemAtual = Array.from(container.children)
+                .map((elCard) => String((elCard.dataset && elCard.dataset.cardId) || '').trim())
+                .filter(Boolean);
+            salvarOrdemContainer(contexto, containerKey, ordemAtual);
+        };
+
+        const limparPlaceholder = () => {
+            if (placeholder.parentElement) {
+                placeholder.parentElement.removeChild(placeholder);
+            }
+        };
+
+        const resetarEstadoDrag = () => {
+            limparIndicacaoDrag(container);
+            limparPlaceholder();
+            if (container.__dragRafId) {
+                cancelAnimationFrame(container.__dragRafId);
+                container.__dragRafId = 0;
+            }
+        };
+
+        const atualizarPlaceholder = (x, y) => {
+            if (!cardArrastado || cardArrastado.parentElement !== container) return;
+            const referencia = obterAlvoPeloPonto(container, x, y) || obterCardDireitaParaInserir(container, x, y);
+            limparIndicacaoDrag(container);
+
+            if (!referencia) {
+                if (container.lastElementChild !== placeholder) {
+                    container.appendChild(placeholder);
+                }
+                return;
+            }
+
+            referencia.classList.add('drag-over-right');
+            container.insertBefore(placeholder, referencia);
+        };
+
+        cards.forEach((card) => {
+            card.classList.add('arrastavel-card');
+            card.setAttribute('draggable', 'true');
+            if (card.dataset.dragBound === '1') return;
+            card.dataset.dragBound = '1';
+
+            card.addEventListener('dragstart', () => {
+                cardArrastado = card;
+                card.classList.add('dragging');
+                placeholder.style.width = card.offsetWidth + 'px';
+                placeholder.style.height = card.offsetHeight + 'px';
+                container.insertBefore(placeholder, card.nextSibling);
+                requestAnimationFrame(() => {
+                    if (cardArrastado === card) {
+                        card.style.display = 'none';
+                    }
+                });
+            });
+
+            card.addEventListener('dragend', () => {
+                card.style.display = '';
+                card.classList.remove('dragging');
+                if (placeholder.parentElement === container) {
+                    container.insertBefore(card, placeholder);
+                }
+                resetarEstadoDrag();
+                cardArrastado = null;
+                persistirOrdemAtual();
+            });
+        });
+
+        if (container.dataset.dragListenersBound !== '1') {
+            container.dataset.dragListenersBound = '1';
+
+            container.addEventListener('dragover', (ev) => {
+                if (!cardArrastado || cardArrastado.parentElement !== container) return;
+                ev.preventDefault();
+
+                if (container.__dragRafId) return;
+                container.__dragRafId = requestAnimationFrame(() => {
+                    container.__dragRafId = 0;
+                    atualizarPlaceholder(ev.clientX, ev.clientY);
+                });
+            });
+
+            container.addEventListener('drop', (ev) => {
+                if (!cardArrastado || cardArrastado.parentElement !== container) return;
+                ev.preventDefault();
+                cardArrastado.style.display = '';
+                cardArrastado.classList.remove('dragging');
+                if (placeholder.parentElement === container) {
+                    container.insertBefore(cardArrastado, placeholder);
+                }
+                resetarEstadoDrag();
+                cardArrastado = null;
+                persistirOrdemAtual();
+            });
+
+            container.addEventListener('dragleave', (ev) => {
+                if (!ev.relatedTarget || !container.contains(ev.relatedTarget)) {
+                    limparIndicacaoDrag(container);
+                }
+            });
+        }
+    }
+
+    function inicializarReordenacaoDosCards() {
+        const contexto = obterContextoOrdemCards();
+        habilitarReordenacaoCards(document.querySelector('.sim-grid'), 'dados_produto_cards', contexto);
+        habilitarReordenacaoCards(document.querySelector('.result-main'), 'resultado_principal_cards', contexto);
+        habilitarReordenacaoCards(document.querySelector('.details-grid'), 'resultado_detalhes_cards', contexto);
+    }
+
+    function renderResultado(data) {
+        const calc = data.calculo || {};
+        const ncm = data.ncm || {};
+        const aliq = data.aliquotas || {};
+        const convenio = data.convenio_mg || {};
+        const totalBase = Number(calc.preco_final_total || 0);
+        const quantidade = Number((data.entradas || {}).quantidade || 0);
+        const precoFinalTotal = totalBase > 0 ? (totalBase / 0.9) : 0;
+        const despesasNacionais = precoFinalTotal * 0.1;
+        const precoFinalUnitario = quantidade > 0
+            ? (precoFinalTotal / quantidade)
+            : (Number(calc.preco_final_unitario || 0) / 0.9);
+        el('resultadoVazio').style.display = 'none';
+        el('resultado').style.display = 'block';
+        el('badgeResultado').textContent = 'Calculado';
+        el('precoUnitario').textContent = moeda(precoFinalUnitario);
+        el('precoTotal').textContent = moeda(precoFinalTotal);
+        const ncmExibido = ncm.ncm && ncm.ncm !== '00000000' ? ('NCM ' + ncm.ncm) : 'NCM não informado';
+        el('ncmTitulo').textContent = ncmExibido;
+        el('ncmDescricao').textContent = ncm.descricao_completa || ncm.descricao || 'Descrição não informada na base.';
+        renderMonofasico(data.monofasico || {});
+        el('detalhes').innerHTML =
+            detalhe('detalhe_valor_produtos_usd', 'Valor dos produtos em dólar', dolar(calc.valor_produtos_usd), 'blue') +
+            detalhe('detalhe_valor_produtos_brl', 'Valor dos produtos em reais', moeda(calc.valor_produtos_brl), 'green') +
+            detalhe('detalhe_frete_internacional', 'Frete internacional', moeda(calc.frete_internacional), 'teal') +
+            detalhe('detalhe_seguro_internacional', 'Seguro internacional (' + percentual(calc.seguro_internacional_percentual) + ')', moeda(calc.seguro_internacional), 'red') +
+            detalhe('detalhe_valor_aduaneiro', 'Valor aduaneiro', moeda(calc.valor_aduaneiro), 'purple') +
+            detalhe('detalhe_base_icms', 'Base de ICMS', moeda(calc.base_icms), 'pink') +
+            detalhe('detalhe_base_cst_mg', 'B. de C.ST MG', moedaOuTraco(calc.base_cst_mg), 'purple') +
+            detalhe('detalhe_base_cst_pb', 'B. de C.ST PB', moedaOuTraco(calc.base_cst_pb), 'purple') +
+            detalhe('detalhe_mva_minas', 'MVA Minas', percentualOuTraco(calc.mva_minas), 'purple') +
+            detalhe('detalhe_mva_ajustado', 'MVA ajustado', percentualOuTraco(calc.mva_ajustado), 'purple') +
+            detalhe('detalhe_icms_retido_nfe', '4% ICMS retido NFe', moedaOuTraco(calc.icms_retido_nfe), 'pink') +
+            detalhe('detalhe_ii', 'II (' + percentual(aliq.ii) + ')', moeda(calc.imposto_ii), 'gold') +
+            detalhe('detalhe_ipi', 'IPI (' + percentual(aliq.ipi) + ')', moeda(calc.imposto_ipi), 'blue') +
+            detalhe('detalhe_pis', 'PIS (' + percentual(aliq.pis) + ')', moeda(calc.imposto_pis), 'green') +
+            detalhe('detalhe_cofins', 'COFINS (' + percentual(aliq.cofins) + ')', moeda(calc.imposto_cofins), 'teal') +
+            detalhe('detalhe_icms', 'ICMS (' + percentual(aliq.icms) + ')', moeda(calc.imposto_icms), 'pink') +
+            detalhe('detalhe_st_minas', 'ST Minas', convenio.convenio_mg_st_minas || '-', 'gold') +
+            detalhe('detalhe_st_paraiba', 'ST Paraíba', convenio.convenio_mg_st_paraiba || '-', 'blue') +
+            detalhe('detalhe_trade', 'Trade (' + percentual(aliq.trade || 3) + ')', moeda(calc.taxa_trade), 'purple') +
+            detalhe('detalhe_total_impostos', 'Total de impostos', moeda(calc.total_impostos), 'total') +
+            detalhe('detalhe_despesas_nacionais', 'Despesas Nacionais (10%)', moeda(despesasNacionais), 'teal');
+        habilitarReordenacaoCards(el('detalhes'), 'resultado_detalhes_cards', obterContextoOrdemCards());
+    }
+
+    async function calcular() {
+        const ignorarRegistroHistorico = _ignorarProximoRegistroHistorico;
+        _ignorarProximoRegistroHistorico = false;
+        const fatorProporcao = normalizarProporcao(campos.proporcao.value);
+        const ncmValor = campos.ncm.value.trim();
+        if (!ncmValor) {
+            setStatus('NCM não informado — usando alíquotas médias: II 10%, IPI 5%, PIS 1,5%, COFINS 7%.', 'warn');
+        } else {
+            setStatus('Calculando...', '');
+        }
+        const payload = {
+            ncm: ncmValor,
+            valor_dolar: numero(campos.valorDolar.value) * fatorProporcao,
+            quantidade: numero(campos.quantidade.value),
+            cubagem: numero(campos.cubagem.value) * fatorProporcao,
+            cotacao_dolar: numero(campos.cotacaoDolar.value),
+            frete_por_m3: numero(campos.freteM3.value)
+        };
+
+        setStatus('Calculando...', '');
+        el('btnCalcular').disabled = true;
+        try {
+            const resp = await fetch('/api/simulador/calcular', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(payload)
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao calcular.');
+            }
+            renderResultado(data);
+            if (!ncmValor) {
+                setStatus('Simulação calculada com alíquotas médias (sem NCM): II 10%, IPI 5%, PIS 1,5%, COFINS 7%.', 'warn');
+            } else {
+                setStatus('Simulação calculada.', 'ok');
+                if (!ignorarRegistroHistorico) registrarConsultaHistorico(data);
+            }
+        } catch (e) {
+            setStatus(e.message || 'Erro ao calcular.', 'error');
+        } finally {
+            el('btnCalcular').disabled = false;
+        }
+    }
+
+    function limpar() {
+        campos.ncm.value = '';
+        campos.valorDolar.value = '';
+        campos.quantidade.value = '';
+        campos.cubagem.value = '';
+        if (el('cubAltura')) el('cubAltura').value = '';
+        if (el('cubLargura')) el('cubLargura').value = '';
+        if (el('cubComprimento')) el('cubComprimento').value = '';
+        if (el('cubResultado')) el('cubResultado').textContent = 'm³ = --';
+        campos.cotacaoDolar.value = (cotacaoDolarAtual > 0 ? cotacaoDolarAtual : 5).toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 4
+        });
+        campos.freteM3.value = '0,00';
+        campos.proporcao.value = '100';
+        el('resultado').style.display = 'none';
+        el('resultadoVazio').style.display = 'block';
+        el('badgeResultado').textContent = 'Aguardando';
+        setCotacaoCard(moeda(cotacaoDolarAtual > 0 ? cotacaoDolarAtual : numero(campos.cotacaoDolar.value)), cotacaoDolarAtual > 0 ? 'USD/BRL em tempo real' : 'Cotação online indisponível');
+        setStatus('Preencha os dados para calcular.', '');
+        campos.ncm.focus();
+    }
+
+    el('btnCalcular').addEventListener('click', calcular);
+    el('btnLimpar').addEventListener('click', limpar);
+    Object.values(campos).forEach((campo) => {
+        campo.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') calcular();
+        });
+    });
+    inicializarEventosHistorico();
+    inicializarReordenacaoDosCards();
+    carregarCotacaoDolarDia();
+
+    // ─── HISTÓRICO ────────────────────────────────────────────
+    const HIST_API_URL = '/api/simulador/historico';
+    const LS_HIST_PREFIX = 'simulador_historico_v1_'; // legado: usado para migração única
+    let _histCache = null;
+    let _histSyncPromise = null;
+    let _ignorarProximoRegistroHistorico = false;
+
+    function _obterChaveHistoricoLegado() {
+        try {
+            const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token') || '';
+            if (!token) return LS_HIST_PREFIX + 'anonimo';
+            const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+            const payload = JSON.parse(atob(b64));
+            return LS_HIST_PREFIX + (payload.sub || payload.username || 'anonimo');
+        } catch (_) { return LS_HIST_PREFIX + 'anonimo'; }
+    }
+
+    async function _carregarHistoricoServidor(force = false) {
+        if (!force && Array.isArray(_histCache)) return _histCache;
+        if (_histSyncPromise && !force) return _histSyncPromise;
+
+        _histSyncPromise = (async () => {
+            try {
+                const resp = await fetch(HIST_API_URL, {
+                    headers: obterAuthHeaders({ 'Content-Type': 'application/json' })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || data.success === false) {
+                    throw new Error(data.detail || data.message || 'Falha ao carregar histórico.');
+                }
+                _histCache = Array.isArray(data.items) ? data.items : [];
+
+                // Migração automática única do histórico legado localStorage para servidor.
+                if (!_histCache.length) {
+                    try {
+                        const chaveLegado = _obterChaveHistoricoLegado();
+                        const legado = JSON.parse(localStorage.getItem(chaveLegado) || '[]') || [];
+                        if (Array.isArray(legado) && legado.length) {
+                            _histCache = legado.slice(0, 100);
+                            await salvarHistoricoStorage(_histCache);
+                            localStorage.removeItem(chaveLegado);
+                        }
+                    } catch (_) {}
+                }
+            } catch (e) {
+                console.warn('[HIST] erro ao carregar no servidor:', e);
+                _histCache = Array.isArray(_histCache) ? _histCache : [];
+            } finally {
+                _histSyncPromise = null;
+            }
+            return _histCache;
+        })();
+
+        return _histSyncPromise;
+    }
+
+    function carregarHistorico() {
+        if (Array.isArray(_histCache)) return _histCache;
+        _carregarHistoricoServidor();
+        return [];
+    }
+
+    async function salvarHistoricoStorage(lista) {
+        _histCache = Array.isArray(lista) ? lista.slice(0, 100) : [];
+        try {
+            const resp = await fetch(HIST_API_URL, {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ items: _histCache })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Falha ao salvar histórico.');
+            }
+        } catch (e) {
+            console.warn('[HIST] erro ao salvar no servidor:', e);
+            setStatus('Não foi possível sincronizar o histórico no servidor.', 'warn');
+        }
+    }
+
+    function gerarNomeAuto() {
+        const ncm = campos.ncm.value.trim();
+        const qtd = campos.quantidade.value.trim();
+        const dt = new Date().toLocaleDateString('pt-BR');
+        const hr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const partes = [];
+        if (ncm) partes.push('NCM ' + ncm);
+        if (qtd) partes.push(qtd + ' un');
+        partes.push(dt + ' ' + hr);
+        return partes.join(' · ');
+    }
+
+    function registrarConsultaHistorico(apiData) {
+        const lista = carregarHistorico();
+        const calc = (apiData && apiData.calculo) || {};
+        const aliq = (apiData && apiData.aliquotas) || {};
+        const qtd = numero(campos.quantidade.value);
+        const totalBase = Number(calc.preco_final_total || 0);
+        const precoFinalTotal = totalBase > 0 ? totalBase / 0.9 : 0;
+        const precoFinalUnitario = qtd > 0 ? precoFinalTotal / qtd : (Number(calc.preco_final_unitario || 0) / 0.9);
+        const despesasNacionais = precoFinalTotal * 0.1;
+        lista.unshift({
+            id: Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+            nome: gerarNomeAuto(),
+            data: new Date().toLocaleString('pt-BR'),
+            ncm: campos.ncm.value.trim(),
+            valorDolar: campos.valorDolar.value,
+            quantidade: campos.quantidade.value,
+            cubagem: campos.cubagem.value,
+            modoCubagem: modoCubagem,
+            cubAltura: el('cubAltura') ? el('cubAltura').value : '',
+            cubLargura: el('cubLargura') ? el('cubLargura').value : '',
+            cubComprimento: el('cubComprimento') ? el('cubComprimento').value : '',
+            cotacaoDolar: campos.cotacaoDolar.value,
+            freteM3: campos.freteM3.value,
+            proporcao: campos.proporcao.value,
+            // resultados calculados
+            res_valor_produtos_usd: calc.valor_produtos_usd,
+            res_valor_produtos_brl: calc.valor_produtos_brl,
+            res_frete_internacional: calc.frete_internacional,
+            res_seguro: calc.seguro_internacional,
+            res_valor_aduaneiro: calc.valor_aduaneiro,
+            res_ii: calc.imposto_ii,
+            res_ipi: calc.imposto_ipi,
+            res_pis: calc.imposto_pis,
+            res_cofins: calc.imposto_cofins,
+            res_icms: calc.imposto_icms,
+            res_trade: calc.taxa_trade,
+            res_total_impostos: calc.total_impostos,
+            res_despesas_nacionais: despesasNacionais,
+            res_preco_unitario: precoFinalUnitario,
+            res_preco_total: precoFinalTotal,
+            aliq_ii: aliq.ii,
+            aliq_ipi: aliq.ipi,
+            aliq_pis: aliq.pis,
+            aliq_cofins: aliq.cofins,
+            aliq_icms: aliq.icms
+        });
+        if (lista.length > 100) lista.length = 100;
+        salvarHistoricoStorage(lista);
+        // atualiza painel se estiver aberto
+        if (el('historicoPainel').classList.contains('aberto')) renderizarHistorico();
+    }
+
+    function excluirConsulta(id) {
+        salvarHistoricoStorage(carregarHistorico().filter(i => i.id !== id));
+        renderizarHistorico();
+    }
+
+    function renomearConsulta(id, novoNome) {
+        const lista = carregarHistorico();
+        const item = lista.find(i => i.id === id);
+        if (item && novoNome.trim()) item.nome = novoNome.trim();
+        salvarHistoricoStorage(lista);
+    }
+
+    function carregarConsultaHistorico(id) {
+        const item = carregarHistorico().find(i => i.id === id);
+        if (!item) return;
+        campos.ncm.value = item.ncm || '';
+        campos.valorDolar.value = item.valorDolar || '';
+        campos.quantidade.value = item.quantidade || '';
+        campos.cotacaoDolar.value = item.cotacaoDolar || '';
+        campos.freteM3.value = item.freteM3 || '';
+        campos.proporcao.value = item.proporcao || '100';
+        if (item.modoCubagem === 'dims') {
+            alternarModoCubagem('dims');
+            if (el('cubAltura')) el('cubAltura').value = item.cubAltura || '';
+            if (el('cubLargura')) el('cubLargura').value = item.cubLargura || '';
+            if (el('cubComprimento')) el('cubComprimento').value = item.cubComprimento || '';
+            calcularCubageDims();
+        } else {
+            alternarModoCubagem('m3');
+            campos.cubagem.value = item.cubagem || '';
+        }
+
+        // Ao carregar do histórico, já executa o cálculo automaticamente.
+        el('resultado').style.display = 'none';
+        el('resultadoVazio').style.display = 'block';
+        el('badgeResultado').textContent = 'Calculando...';
+        setStatus('Consulta carregada. Recalculando automaticamente...', '');
+        fecharPainelHistorico();
+        _ignorarProximoRegistroHistorico = true;
+        calcular();
+    }
+
+    function confirmarLimparHistorico() {
+        if (!confirm('Apagar todo o histórico de consultas?')) return;
+        salvarHistoricoStorage([]);
+        renderizarHistorico();
+    }
+
+    function abrirPainelHistorico() {
+        renderizarHistorico();
+        const painel = el('historicoPainel');
+        const overlay = el('historicoOverlay');
+        painel.classList.add('aberto');
+        painel.style.transform = 'translateX(0)';
+        painel.style.pointerEvents = 'auto';
+        overlay.classList.add('ativo');
+        el('btnHistoricoMinimizarFixo').classList.add('ativo');
+        document.body.classList.add('historico-aberto');
+    }
+
+    function fecharPainelHistorico() {
+        const painel = el('historicoPainel');
+        const overlay = el('historicoOverlay');
+        painel.classList.remove('aberto');
+        painel.style.transform = 'translateX(100%)';
+        painel.style.pointerEvents = 'none';
+        overlay.classList.remove('ativo');
+        el('btnHistoricoMinimizarFixo').classList.remove('ativo');
+        document.body.classList.remove('historico-aberto');
+    }
+
+    function togglePainelHistorico() {
+        if (el('historicoPainel').classList.contains('aberto')) {
+            fecharPainelHistorico();
+        } else {
+            abrirPainelHistorico();
+        }
+    }
+
+    function inicializarEventosHistorico() {
+        const btnAbrir = el('btnHistorico');
+        const btnMinHeader = el('btnHistoricoMinimizarHeader');
+        const btnMinFixo = el('btnHistoricoMinimizarFixo');
+        const overlay = el('historicoOverlay');
+
+        if (btnAbrir && btnAbrir.dataset.bound !== '1') {
+            btnAbrir.dataset.bound = '1';
+            btnAbrir.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                togglePainelHistorico();
+            });
+        }
+
+        if (btnMinHeader && btnMinHeader.dataset.bound !== '1') {
+            btnMinHeader.dataset.bound = '1';
+            btnMinHeader.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                fecharPainelHistorico();
+            });
+        }
+
+        if (btnMinFixo && btnMinFixo.dataset.bound !== '1') {
+            btnMinFixo.dataset.bound = '1';
+            btnMinFixo.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                fecharPainelHistorico();
+            });
+        }
+
+        if (overlay && overlay.dataset.bound !== '1') {
+            overlay.dataset.bound = '1';
+            overlay.addEventListener('click', () => fecharPainelHistorico());
+        }
+
+        if (document.body && document.body.dataset.histEscBound !== '1') {
+            document.body.dataset.histEscBound = '1';
+            document.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Escape' && el('historicoPainel').classList.contains('aberto')) {
+                    fecharPainelHistorico();
+                }
+            });
+        }
+
+        // Estado inicial garantido (painel fechado)
+        fecharPainelHistorico();
+
+        // Pré-carrega histórico do servidor em background.
+        _carregarHistoricoServidor();
+    }
+
+    function atualizarBotaoLista() {
+        const checks = el('historicoLista').querySelectorAll('input[type=checkbox]:checked');
+        el('btnListaSelecionada').style.display = checks.length ? '' : 'none';
+        el('countSelecionados').textContent = checks.length;
+        // destaca itens selecionados
+        el('historicoLista').querySelectorAll('.historico-item').forEach(div => {
+            const cb = div.querySelector('input[type=checkbox]');
+            div.classList.toggle('selecionado', cb && cb.checked);
+        });
+    }
+
+    function renderizarHistorico() {
+        const container = el('historicoLista');
+        if (!Array.isArray(_histCache)) {
+            container.innerHTML = '<div class="historico-vazio">Carregando histórico...</div>';
+            el('btnListaSelecionada').style.display = 'none';
+            _carregarHistoricoServidor().then(() => renderizarHistorico());
+            return;
+        }
+
+        const lista = carregarHistorico();
+        if (!lista.length) {
+            container.innerHTML = '<div class="historico-vazio">Nenhuma consulta salva ainda.</div>';
+            el('btnListaSelecionada').style.display = 'none';
+            return;
+        }
+        container.innerHTML = lista.map(item => {
+            const nomeEsc = item.nome.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+            const propLabel = item.proporcao ? item.proporcao + '% prop.' : '';
+            const info = [item.data, item.ncm ? 'NCM ' + item.ncm : '', item.quantidade ? item.quantidade + ' un' : '', propLabel].filter(Boolean).join(' · ');
+            return `<div class="historico-item" id="hi_${item.id}">
+                <div class="historico-item-topo">
+                    <input type="checkbox" class="historico-item-check" data-id="${item.id}" onchange="atualizarBotaoLista()">
+                    <input type="text" class="historico-item-nome" value="${nomeEsc}" title="Clique para renomear"
+                        onfocus="this.classList.add('editando')"
+                        onblur="this.classList.remove('editando'); renomearConsulta('${item.id}', this.value)"
+                        onkeydown="if(event.key==='Enter') this.blur()">
+                </div>
+                <div class="historico-item-info">${info}</div>
+                <div class="historico-item-acoes">
+                    <button class="btn btn-primary" onclick="carregarConsultaHistorico('${item.id}')">Carregar</button>
+                    <button class="btn btn-danger" onclick="excluirConsulta('${item.id}')">Excluir</button>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    let _listaSelecionadaAtual = [];
+
+    function _fmtR(v) {
+        const n = Number(v);
+        return (n != null && !isNaN(n) && n !== 0)
+            ? ('R$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+            : '—';
+    }
+    function _fmtRaw(v) {
+        const n = Number(v);
+        return (!isNaN(n) && n !== 0)
+            ? ('R$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+            : '';
+    }
+    function _esc(v) {
+        return String(v == null ? '' : v)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\"/g, '&quot;');
+    }
+    function _pct(v) { const n = Number(v); return (!isNaN(n) && n > 0) ? (n * 100).toFixed(2) + '%' : '—'; }
+
+    function abrirListaSelecionada() {
+        const lista = carregarHistorico();
+        const ids = Array.from(el('historicoLista').querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.dataset.id);
+        const selecionados = lista.filter(i => ids.includes(i.id));
+        if (!selecionados.length) return;
+        _listaSelecionadaAtual = selecionados;
+
+        // totais
+        let totQtd = 0, totFreteInt = 0, totII = 0, totIPI = 0, totPIS = 0;
+        let totCOFINS = 0, totICMS = 0, totTrade = 0, totPrecoTotal = 0;
+        selecionados.forEach(it => {
+            totQtd       += numero(it.quantidade);
+            totFreteInt  += Number(it.res_frete_internacional || 0);
+            totII        += Number(it.res_ii || 0);
+            totIPI       += Number(it.res_ipi || 0);
+            totPIS       += Number(it.res_pis || 0);
+            totCOFINS    += Number(it.res_cofins || 0);
+            totICMS      += Number(it.res_icms || 0);
+            totTrade     += Number(it.res_trade || 0);
+            totPrecoTotal+= Number(it.res_preco_total || 0);
+        });
+        const hasCalc = selecionados.some(it => it.res_preco_total);
+
+        const linhasHTML = selecionados.map((it, i) => {
+            const calc = hasCalc
+                ? `<td class="col-num">${_fmtR(it.res_frete_internacional)}</td>
+                   <td class="col-num">${_fmtR(it.res_ii)}</td>
+                   <td class="col-num">${_fmtR(it.res_ipi)}</td>
+                   <td class="col-num">${_fmtR(it.res_pis)}</td>
+                   <td class="col-num">${_fmtR(it.res_cofins)}</td>
+                   <td class="col-num">${_fmtR(it.res_icms)}</td>
+                   <td class="col-num">${_fmtR(it.res_trade)}</td>
+                   <td class="col-num"><strong>${_fmtR(it.res_preco_unitario)}</strong></td>
+                   <td class="col-num"><strong>${_fmtR(it.res_preco_total)}</strong></td>`
+                : '';
+            return `<tr>
+                <td class="col-center">${i+1}</td>
+                <td>${it.nome.replace(/</g,'&lt;')}</td>
+                <td>${it.data}</td>
+                <td>${it.ncm||'—'}</td>
+                <td class="col-num">${it.quantidade||'—'}</td>
+                <td class="col-center">${it.proporcao||'100'}%</td>
+                ${calc}
+            </tr>`;
+        }).join('');
+
+        const cabCalc = hasCalc
+            ? `<th class="col-num">Frete Int. (R$)</th><th class="col-num">II (R$)</th><th class="col-num">IPI (R$)</th><th class="col-num">PIS (R$)</th><th class="col-num">COFINS (R$)</th><th class="col-num">ICMS (R$)</th><th class="col-num">Trade (R$)</th><th class="col-num">Preço Unit. (R$)</th><th class="col-num">Preço Total (R$)</th>`
+            : '';
+        const totCalc = hasCalc
+            ? `<td class="col-num">${_fmtR(totFreteInt)}</td><td class="col-num">${_fmtR(totII)}</td><td class="col-num">${_fmtR(totIPI)}</td><td class="col-num">${_fmtR(totPIS)}</td><td class="col-num">${_fmtR(totCOFINS)}</td><td class="col-num">${_fmtR(totICMS)}</td><td class="col-num">${_fmtR(totTrade)}</td><td class="col-num">—</td><td class="col-num"><strong>${_fmtR(totPrecoTotal)}</strong></td>`
+            : '';
+        const fmtQtd = totQtd > 0 ? totQtd.toLocaleString('pt-BR') : '—';
+
+        el('historicoModalCorpo').innerHTML = `
+            <div class="historico-meta-planilha">
+                <div><strong>Planilha comparativa de consultas</strong></div>
+                <div>Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+            </div>
+            <div class="historico-table-wrap">
+            <table class="historico-table" id="tblListaSelecionada">
+                <thead><tr>
+                    <th class="col-center">#</th><th>Nome</th><th>Data</th><th>NCM</th><th class="col-num">Qtd</th><th class="col-center">Proporção</th>
+                    ${cabCalc}
+                </tr></thead>
+                <tbody>${linhasHTML}
+                <tr class="totais-row">
+                    <td colspan="4"><strong>TOTAIS (${selecionados.length})</strong></td>
+                    <td class="col-num">${fmtQtd}</td><td class="col-center">—</td>
+                    ${totCalc}
+                </tr></tbody>
+            </table></div>`;
+
+        fecharPainelHistorico();
+        el('historicoModalBg').classList.add('ativo');
+    }
+
+    function fecharListaModal() {
+        el('historicoModalBg').classList.remove('ativo');
+        _listaSelecionadaAtual = [];
+    }
+
+    function exportarListaExcel() {
+        const selecionados = _listaSelecionadaAtual;
+        if (!selecionados.length) return;
+        const hasCalc = selecionados.some(it => it.res_preco_total);
+
+        const cabCalc = hasCalc ? ['Frete Int. (R$)','II (R$)','IPI (R$)','PIS (R$)','COFINS (R$)','ICMS (R$)','Trade (R$)','Preço Unit. (R$)','Preço Total (R$)'] : [];
+        const cabecalho = ['#','Nome','Data','NCM','Qtd','Proporção', ...cabCalc];
+
+        let totQtd=0,totFreteInt=0,totII=0,totIPI=0,totPIS=0,totCOFINS=0,totICMS=0,totTrade=0,totTotal=0;
+        const linhas = selecionados.map((it, i) => {
+            totQtd      += numero(it.quantidade);
+            totFreteInt += Number(it.res_frete_internacional||0);
+            totII       += Number(it.res_ii||0);
+            totIPI      += Number(it.res_ipi||0);
+            totPIS      += Number(it.res_pis||0);
+            totCOFINS   += Number(it.res_cofins||0);
+            totICMS     += Number(it.res_icms||0);
+            totTrade    += Number(it.res_trade||0);
+            totTotal    += Number(it.res_preco_total||0);
+            const calc = hasCalc ? [_fmtRaw(it.res_frete_internacional),_fmtRaw(it.res_ii),_fmtRaw(it.res_ipi),_fmtRaw(it.res_pis),_fmtRaw(it.res_cofins),_fmtRaw(it.res_icms),_fmtRaw(it.res_trade),_fmtRaw(it.res_preco_unitario),_fmtRaw(it.res_preco_total)] : [];
+            return [i+1, it.nome, it.data, it.ncm||'', it.quantidade||'', (it.proporcao||'100')+'%', ...calc];
+        });
+                const totCalc = hasCalc ? [_fmtRaw(totFreteInt),_fmtRaw(totII),_fmtRaw(totIPI),_fmtRaw(totPIS),_fmtRaw(totCOFINS),_fmtRaw(totICMS),_fmtRaw(totTrade),'',_fmtRaw(totTotal)] : [];
+                linhas.push(['TOTAIS', selecionados.length+' consultas','','',totQtd||'','', ...totCalc]);
+
+                const htmlHeader = cabecalho.map((h, idx) => {
+                        const numeric = idx === 4 || idx >= 6;
+                        const cls = numeric ? 'num' : '';
+                        return `<th class="${cls}">${_esc(h)}</th>`;
+                }).join('');
+                const htmlRows = linhas.map((row, rowIdx) => {
+                        const isTotal = rowIdx === (linhas.length - 1);
+                        const cells = row.map((v, idx) => {
+                                const numeric = idx === 4 || idx >= 6;
+                                const cls = numeric ? 'num' : '';
+                                return `<td class="${cls}">${_esc(v)}</td>`;
+                        }).join('');
+                        return `<tr class="${isTotal ? 'total' : ''}">${cells}</tr>`;
+                }).join('');
+
+                const htmlXls = `<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <style>
+        body { font-family: Segoe UI, Calibri, Arial, sans-serif; margin: 20px; color: #1f2937; }
+        .title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+        .meta { color: #4b5563; margin-bottom: 14px; font-size: 12px; }
+        table { border-collapse: collapse; width: 100%; font-size: 12px; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px 8px; }
+        th { background: #1e3a8a; color: #ffffff; text-align: left; font-weight: 700; }
+        tr:nth-child(even) td { background: #f8fafc; }
+        td.num, th.num { text-align: right; white-space: nowrap; }
+        tr.total td { background: #dcfce7 !important; font-weight: 700; border-top: 2px solid #16a34a; }
+    </style>
+</head>
+<body>
+    <div class="title">Planilha de Consultas - Simulador</div>
+    <div class="meta">Gerado em ${_esc(new Date().toLocaleString('pt-BR'))}</div>
+    <table>
+        <thead><tr>${htmlHeader}</tr></thead>
+        <tbody>${htmlRows}</tbody>
+    </table>
+</body>
+</html>`;
+
+                const blob = new Blob(['\uFEFF' + htmlXls], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+                a.download = 'simulador_consultas_' + new Date().toISOString().slice(0,10) + '.xls';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+    }
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

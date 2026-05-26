@@ -1,0 +1,467 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug - Módulo Vendas</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0e1117;
+            color: #e5e5e5;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #4facfe;
+            text-align: center;
+            border-bottom: 2px solid #4facfe;
+            padding-bottom: 10px;
+        }
+        .section {
+            background: #1c1f2b;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        .section h2 {
+            color: #9bd1ff;
+            margin-top: 0;
+            border-bottom: 1px solid #444;
+            padding-bottom: 8px;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+            font-size: 0.95rem;
+        }
+        .status.ok {
+            background: #0f2e0d;
+            color: #66bb6a;
+            border-left: 4px solid #66bb6a;
+        }
+        .status.error {
+            background: #28010d;
+            color: #ff6b6b;
+            border-left: 4px solid #ff6b6b;
+        }
+        .status.warning {
+            background: #332700;
+            color: #ffb300;
+            border-left: 4px solid #ffb300;
+        }
+        .status.info {
+            background: #0a1428;
+            color: #9bd1ff;
+            border-left: 4px solid #4facfe;
+        }
+        .code-block {
+            background: #161925;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 12px;
+            overflow-x: auto;
+            margin: 10px 0;
+            line-height: 1.5;
+        }
+        .key {
+            color: #ffb300;
+            font-weight: bold;
+        }
+        .value {
+            color: #66bb6a;
+        }
+        .null {
+            color: #ff6b6b;
+        }
+        .undefined {
+            color: #ff6b6b;
+            font-style: italic;
+        }
+        button {
+            background: #4facfe;
+            color: #0e1117;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 8px;
+            margin-bottom: 8px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #0073e6;
+            color: white;
+        }
+        button.danger {
+            background: #ff6b6b;
+            color: white;
+        }
+        button.danger:hover {
+            background: #ff4444;
+        }
+        button.success {
+            background: #66bb6a;
+            color: white;
+        }
+        button.success:hover {
+            background: #4caf50;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        th, td {
+            border: 1px solid #333;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background: #161925;
+            color: #9bd1ff;
+        }
+        tr:hover {
+            background: #1f2331;
+        }
+        .back-btn {
+            display: inline-block;
+            margin-bottom: 20px;
+            background: #4facfe;
+            color: #0e1117;
+            padding: 8px 16px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+        }
+        .back-btn:hover {
+            background: #0073e6;
+            color: white;
+        }
+        .test-result {
+            background: #161925;
+            border-left: 4px solid #4facfe;
+            padding: 12px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+    <a href="/dashboard.html" class="back-btn">🏠 Home</a>
+    <a href="/dashboard.html" class="back-btn">⬅️ Voltar ao Dashboard</a>
+</div>
+
+<div class="container">
+    <h1>🔧 Debug - Módulo Vendas (Diagnóstico de Sessão)</h1>
+
+    <!-- SEÇÃO 1: DADOS DE SESSÃO -->
+    <div class="section">
+        <h2>1️⃣ Dados de Sessão (localStorage)</h2>
+        <div id="sessionStatus"></div>
+        <div class="code-block" id="sessionData" style="max-height: 300px; overflow-y: auto;"></div>
+    </div>
+
+    <!-- SEÇÃO 2: VERIFICAÇÃO DE CLIENT_ID -->
+    <div class="section">
+        <h2>2️⃣ Verificação de Client ID</h2>
+        <div id="clientIdStatus"></div>
+        <div class="code-block" id="clientIdData"></div>
+    </div>
+
+    <!-- SEÇÃO 3: TESTES DE CONECTIVIDADE -->
+    <div class="section">
+        <h2>3️⃣ Testes de Conectividade com API</h2>
+        <div>
+            <button onclick="testarEndpoint('/api/lojas', 'GET')">Testar /api/lojas</button>
+            <button onclick="testarEndpoint('/api/vendas', 'GET')">Testar /api/vendas</button>
+            <button onclick="testarEndpoint('/api/status', 'GET')">Testar /api/status</button>
+            <button class="danger" onclick="limparSessionStorage()">🗑️ Limpar Sessão</button>
+        </div>
+        <div id="testResults" style="margin-top: 20px;"></div>
+    </div>
+
+    <!-- SEÇÃO 4: SIMULAÇÃO DO VENDAS.HTML -->
+    <div class="section">
+        <h2>4️⃣ Simulação: Carregar Vendas (como vendas.html)</h2>
+        <button class="success" onclick="simularCarregamentoVendas()">▶️ Executar Simulação</button>
+        <div id="simulationLog" style="margin-top: 20px; background: #161925; border: 1px solid #333; border-radius: 4px; padding: 12px; max-height: 400px; overflow-y: auto;"></div>
+    </div>
+
+    <!-- SEÇÃO 5: RECOMENDAÇÕES -->
+    <div class="section">
+        <h2>5️⃣ Recomendações & Próximos Passos</h2>
+        <div id="recommendations"></div>
+    </div>
+</div>
+
+<script>
+    const testResults = document.getElementById('testResults');
+    const simulationLog = document.getElementById('simulationLog');
+    const recommendationsDiv = document.getElementById('recommendations');
+
+    // Função para adicionar logs na simulação
+    function addLog(message, type = 'info') {
+        const p = document.createElement('p');
+        p.style.margin = '8px 0';
+        p.style.padding = '8px';
+        p.style.borderLeft = '3px solid ' + (type === 'error' ? '#ff6b6b' : type === 'success' ? '#66bb6a' : '#4facfe');
+        p.style.background = type === 'error' ? '#28010d' : type === 'success' ? '#0f2e0d' : '#0a1428';
+        p.style.color = type === 'error' ? '#ff6b6b' : type === 'success' ? '#66bb6a' : '#9bd1ff';
+        p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        simulationLog.appendChild(p);
+        simulationLog.scrollTop = simulationLog.scrollHeight;
+    }
+
+    // 1. ANALISAR DADOS DE SESSÃO
+    function analisarSessionStorage() {
+        const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+        const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
+        
+        const sessionStatus = document.getElementById('sessionStatus');
+        const sessionData = document.getElementById('sessionData');
+
+        let html = '';
+
+        if (userData) {
+            html += '<div class="status ok">✅ user_data encontrado no localStorage</div>';
+        } else {
+            html += '<div class="status error">❌ user_data NÃO encontrado no localStorage</div>';
+        }
+
+        if (permissions && Object.keys(permissions).length > 0) {
+            html += '<div class="status ok">✅ permissions encontrado</div>';
+        } else {
+            html += '<div class="status warning">⚠️ permissions vazio ou não encontrado</div>';
+        }
+
+        sessionStatus.innerHTML = html;
+
+        // Mostrar dados em formato JSON
+        let dataHtml = '<strong>user_data:</strong>\n';
+        if (userData) {
+            dataHtml += '<div class="code-block">' + JSON.stringify(userData, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+        } else {
+            dataHtml += '<div class="code-block"><span class="null">null</span></div>';
+        }
+
+        dataHtml += '<br><strong>permissions:</strong>\n';
+        dataHtml += '<div class="code-block">' + JSON.stringify(permissions, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+
+        sessionData.innerHTML = dataHtml;
+    }
+
+    // 2. VERIFICAR CLIENT_ID
+    function verificarClientId() {
+        const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+        const clientIdStatus = document.getElementById('clientIdStatus');
+        const clientIdData = document.getElementById('clientIdData');
+
+        let html = '';
+        let clientId = null;
+
+        if (userData && userData.client_id) {
+            clientId = userData.client_id;
+            html += '<div class="status ok">✅ client_id encontrado em user_data.client_id</div>';
+            html += '<div class="status info">Valor: <strong>' + clientId + '</strong></div>';
+        } else {
+            html += '<div class="status error">❌ client_id NÃO encontrado em user_data.client_id</div>';
+            html += '<div class="status warning">⚠️ Isso causará erro ao chamar endpoints que requerem X-Client-ID header</div>';
+        }
+
+        clientIdStatus.innerHTML = html;
+
+        let dataHtml = '<strong>Extração de client_id:</strong><br>';
+        dataHtml += '<div class="code-block">';
+        dataHtml += 'userData = ' + (userData ? JSON.stringify(userData, null, 2) : '<span class="null">null</span>') + '<br><br>';
+        dataHtml += 'client_id = userData && userData.client_id ? userData.client_id : null<br>';
+        dataHtml += 'Resultado: <strong>' + (clientId || '<span class="null">null</span>') + '</strong>';
+        dataHtml += '</div>';
+
+        clientIdData.innerHTML = dataHtml;
+    }
+
+    // 3. TESTAR ENDPOINTS
+    async function testarEndpoint(endpoint, method) {
+        const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+        const clientId = userData && userData.client_id ? userData.client_id : null;
+
+        const resultDiv = document.createElement('div');
+        resultDiv.className = 'test-result';
+        testResults.appendChild(resultDiv);
+
+        resultDiv.innerHTML = '<strong>Testando: ' + endpoint + ' (' + method + ')</strong><br>';
+        if (clientId) {
+            resultDiv.innerHTML += '<small>com header X-Client-ID: ' + clientId + '</small><br>';
+        } else {
+            resultDiv.innerHTML += '<small style="color:#ff6b6b;">⚠️ SEM header X-Client-ID (client_id vazio)</small><br>';
+        }
+        resultDiv.innerHTML += '<em style="color:#999;">Executando...</em>';
+
+        try {
+            const options = {
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            };
+
+            if (clientId) {
+                options.headers['X-Client-ID'] = clientId;
+            }
+
+            const response = await fetch(endpoint, options);
+            const data = await response.json();
+
+            if (response.ok) {
+                resultDiv.className = 'test-result';
+                resultDiv.style.borderLeft = '4px solid #66bb6a';
+                resultDiv.innerHTML = '<strong style="color:#66bb6a;">✅ ' + endpoint + ' (' + method + ')</strong><br>';
+                resultDiv.innerHTML += '<small>Status: <strong>' + response.status + '</strong></small><br>';
+                resultDiv.innerHTML += '<small>Resposta:</small><br>';
+                resultDiv.innerHTML += '<div class="code-block" style="max-height:200px;overflow-y:auto;">' + JSON.stringify(data, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+            } else {
+                resultDiv.className = 'test-result';
+                resultDiv.style.borderLeft = '4px solid #ff6b6b';
+                resultDiv.innerHTML = '<strong style="color:#ff6b6b;">❌ ' + endpoint + ' (' + method + ')</strong><br>';
+                resultDiv.innerHTML += '<small>Status: <strong style="color:#ff6b6b;">' + response.status + '</strong></small><br>';
+                resultDiv.innerHTML += '<small>Erro:</small><br>';
+                resultDiv.innerHTML += '<div class="code-block" style="max-height:200px;overflow-y:auto;">' + JSON.stringify(data, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+            }
+        } catch (e) {
+            resultDiv.className = 'test-result';
+            resultDiv.style.borderLeft = '4px solid #ff6b6b';
+            resultDiv.innerHTML = '<strong style="color:#ff6b6b;">❌ Erro de Conexão</strong><br>';
+            resultDiv.innerHTML += '<small>' + e.message + '</small>';
+        }
+    }
+
+    // 4. SIMULAR VENDAS.HTML
+    async function simularCarregamentoVendas() {
+        simulationLog.innerHTML = '';
+        addLog('Iniciando simulação do vendas.html...', 'info');
+
+        // Passo 1: Obter userData
+        const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+        addLog(`userData: ${userData ? JSON.stringify(userData) : 'null'}`, userData ? 'success' : 'error');
+
+        // Passo 2: Obter client_id (como vendas.html faz)
+        const clientId = userData && userData.client_id ? userData.client_id : null;
+        addLog(`client_id extraído: ${clientId || '(null)'}`, clientId ? 'success' : 'error');
+
+        if (!clientId) {
+            addLog('❌ ERRO CRÍTICO: Não é possível continuar sem client_id!', 'error');
+            addLog('Este é o motivo do redirecionamento para login.', 'error');
+            return;
+        }
+
+        // Passo 3: Tentar carregar lojas
+        addLog('Chamando /api/lojas com X-Client-ID: ' + clientId, 'info');
+        try {
+            const respLojas = await fetch('/api/lojas', {
+                headers: { 'X-Client-ID': clientId }
+            });
+
+            if (!respLojas.ok) {
+                addLog(`❌ /api/lojas retornou status ${respLojas.status}`, 'error');
+                const errData = await respLojas.json();
+                addLog('Erro: ' + JSON.stringify(errData), 'error');
+                return;
+            }
+
+            const lojas = await respLojas.json();
+            addLog(`✅ Lojas carregadas com sucesso: ${lojas.length} lojas`, 'success');
+            lojas.forEach(l => {
+                addLog(`  - ${l.nome}`, 'info');
+            });
+        } catch (e) {
+            addLog(`❌ Erro ao chamar /api/lojas: ${e.message}`, 'error');
+            return;
+        }
+
+        // Passo 4: Tentar carregar vendas
+        addLog('Chamando /api/vendas com X-Client-ID: ' + clientId, 'info');
+        try {
+            const respVendas = await fetch('/api/vendas', {
+                headers: { 'X-Client-ID': clientId }
+            });
+
+            if (!respVendas.ok) {
+                addLog(`❌ /api/vendas retornou status ${respVendas.status}`, 'error');
+                const errData = await respVendas.json();
+                addLog('Erro: ' + JSON.stringify(errData), 'error');
+                return;
+            }
+
+            const vendas = await respVendas.json();
+            addLog(`✅ Vendas carregadas com sucesso: ${vendas.length} registros`, 'success');
+        } catch (e) {
+            addLog(`❌ Erro ao chamar /api/vendas: ${e.message}`, 'error');
+            return;
+        }
+
+        addLog('✅ Simulação concluída com sucesso!', 'success');
+    }
+
+    // 5. GERAR RECOMENDAÇÕES
+    function gerarRecomendacoes() {
+        const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+        const clientId = userData && userData.client_id ? userData.client_id : null;
+        let html = '';
+
+        if (!userData) {
+            html += '<div class="status error">❌ user_data vazio: Fazer login novamente</div>';
+        } else if (!clientId) {
+            html += '<div class="status error">❌ client_id vazio em user_data</div>';
+            html += '<p>O backend deve incluir <strong>client_id</strong> na resposta do login. Verifique:</p>';
+            html += '<ul>';
+            html += '<li>Endpoint <code>/api/login</code> no backend_api.py</li>';
+            html += '<li>Certifique-se de que <code>user_data</code> inclui <strong>client_id</strong>:</li>';
+            html += '<code style="background:#161925;padding:8px;display:block;border-radius:4px;margin:8px 0;">';
+            html += 'LoginResponse(<br>&nbsp;&nbsp;success=True,<br>&nbsp;&nbsp;user_data={<br>&nbsp;&nbsp;&nbsp;&nbsp;...,<br>&nbsp;&nbsp;&nbsp;&nbsp;"client_id": CLIENT_ID<br>&nbsp;&nbsp;}<br>)';
+            html += '</code>';
+            html += '</ul>';
+        } else {
+            html += '<div class="status ok">✅ Tudo parece estar OK</div>';
+            html += '<p>Se o redirecionamento para login persiste, verifique:</p>';
+            html += '<ul>';
+            html += '<li>Se o backend está rodando em http://127.0.0.1:8003</li>';
+            html += '<li>Se não há erros nos logs do backend</li>';
+            html += '<li>Se o header <strong>X-Client-ID</strong> está sendo enviado corretamente</li>';
+            html += '</ul>';
+        }
+
+        recommendationsDiv.innerHTML = html;
+    }
+
+    // EXECUTAR NA CARGA
+    window.addEventListener('DOMContentLoaded', () => {
+        analisarSessionStorage();
+        verificarClientId();
+        gerarRecomendacoes();
+    });
+
+    // Limpar session storage
+    function limparSessionStorage() {
+        if (confirm('Você tem certeza que deseja limpar a sessão? Você será desconectado.')) {
+            localStorage.removeItem('user_data');
+            localStorage.removeItem('permissions');
+            window.location.href = '/frontend_index.html';
+        }
+    }
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

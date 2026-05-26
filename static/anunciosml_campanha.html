@@ -1,0 +1,535 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anuncios da campanha ML - JK Sistema</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .container { max-width: none; width: 100%; margin: 0; }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .header-titulo {
+            text-align: center;
+            padding: 14px 20px 10px;
+            margin-bottom: 4px;
+        }
+        .header-titulo h1 {
+            margin: 0;
+            font-size: 1.6rem;
+            font-weight: 800;
+            color: #1a3a6e;
+            letter-spacing: 0.01em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .back-btn,
+        button {
+            display: inline-block;
+            padding: 10px 14px;
+            border: none;
+            border-radius: 5px;
+            background: #4facfe;
+            color: #fff;
+            text-decoration: none;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        button:hover,
+        .back-btn:hover { background: #3b8fd9; }
+        .card {
+            background: #fff;
+            padding: 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 12px;
+        }
+        .meta {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            color: #555;
+            font-size: 0.95rem;
+        }
+        .pill {
+            background: #eef3ff;
+            color: #3056d3;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-weight: 700;
+        }
+        .error { color: #c62828; margin-top: 8px; }
+        .success { color: #2e7d32; margin-top: 8px; }
+        .pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 12px 0;
+            flex-wrap: wrap;
+        }
+        .pagination-controls {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pagination-controls button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+        .page-number {
+            min-width: 38px;
+        }
+        .page-number.active {
+            background: #ece7f7;
+            color: #5a35b5;
+        }
+        .table-wrap {
+            width: 100%;
+            overflow-x: auto;
+        }
+        #campanhaAnunciosTable th:nth-child(2),
+        #campanhaAnunciosTable td:nth-child(2),
+        #campanhaAnunciosTable th:nth-child(3),
+        #campanhaAnunciosTable td:nth-child(3),
+        #campanhaAnunciosTable th:nth-child(5),
+        #campanhaAnunciosTable td:nth-child(5),
+        #campanhaAnunciosTable th:nth-child(6),
+        #campanhaAnunciosTable td:nth-child(6),
+        #campanhaAnunciosTable th:nth-child(7),
+        #campanhaAnunciosTable td:nth-child(7),
+        #campanhaAnunciosTable th:nth-child(8),
+        #campanhaAnunciosTable td:nth-child(8),
+        #campanhaAnunciosTable th:nth-child(9),
+        #campanhaAnunciosTable td:nth-child(9) {
+            text-align: center !important;
+            vertical-align: middle;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            background: #fff;
+        }
+        th,
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+            vertical-align: middle;
+        }
+        th { background: #f7f8fb; }
+        .item-thumb {
+            width: 54px;
+            height: 54px;
+            object-fit: contain;
+            border-radius: 8px;
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            padding: 3px;
+        }
+        .price-old {
+            display: block;
+            text-decoration: line-through;
+            color: #888;
+            font-size: 0.82rem;
+        }
+        .status.active { color: #2e7d32; font-weight: 700; }
+        .promo-ativa {
+            display: inline-block;
+            background: #e8f5e9;
+            color: #2e7d32;
+            border: 1.5px solid #a5d6a7;
+            border-radius: 6px;
+            padding: 3px 10px;
+            font-weight: 700;
+            font-size: 0.82rem;
+            letter-spacing: 0.03em;
+        }
+        .promo-elegivel {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1565c0;
+            border: 1.5px solid #90caf9;
+            border-radius: 6px;
+            padding: 3px 10px;
+            font-weight: 700;
+            font-size: 0.82rem;
+            letter-spacing: 0.03em;
+        }
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255,255,255,0.88);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .loading-overlay.hidden { display: none; }
+        .loading-card {
+            position: relative;
+            text-align: center;
+            background: #fff;
+            padding: 40px 46px;
+            border-radius: 20px;
+            box-shadow: 0 14px 40px rgba(0,0,0,0.16);
+            overflow: hidden;
+        }
+        .loading-card::before {
+            content: "";
+            position: absolute;
+            inset: -3px;
+            border-radius: 22px;
+            background: conic-gradient(
+                from 0deg,
+                transparent 0deg,
+                transparent 55deg,
+                #79e6ff 95deg,
+                #b8f4ff 125deg,
+                transparent 165deg,
+                transparent 360deg
+            );
+            animation: neonSpin 1.2s linear infinite;
+            filter: blur(4px);
+        }
+        .loading-card::after {
+            content: "";
+            position: absolute;
+            inset: 4px;
+            border-radius: 16px;
+            background: #fff;
+            box-shadow: inset 0 0 18px rgba(121,230,255,0.22);
+        }
+        .loading-logo,
+        .loading-text {
+            position: relative;
+            z-index: 1;
+        }
+        .loading-logo {
+            width: 240px;
+            max-width: 60vw;
+            height: auto;
+            object-fit: contain;
+            animation: pulseLogo 1s ease-in-out infinite;
+        }
+        .loading-text {
+            margin-top: 14px;
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: #214e9b;
+        }
+        @keyframes pulseLogo {
+            0% { transform: scale(0.88) rotate(0deg); opacity: 0.65; }
+            50% { transform: scale(1.12) rotate(1deg); opacity: 1; }
+            100% { transform: scale(0.88) rotate(0deg); opacity: 0.65; }
+        }
+        @keyframes neonSpin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+</head>
+<body>
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-card">
+            <img class="loading-logo" src="img/Logo Trend2.png" alt="Carregando">
+            <div id="loadingText" class="loading-text">Carregando anúncios...</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header-titulo">
+            <h1 id="tituloCampanha">Anuncios da campanha</h1>
+        </div>
+        <div class="header">
+            <a class="back-btn" href="anunciosml.html">Voltar</a>
+            <button id="btnAtualizar" type="button">Atualizar</button>
+        </div>
+
+        <div class="card">
+            <div id="resumoCampanha">Carregando campanha...</div>
+            <div class="meta">
+                <span id="lojaInfo" class="pill">Loja</span>
+                <span id="tipoInfo" class="pill">Tipo</span>
+                <span id="statusInfo" class="pill">Status</span>
+            </div>
+            <div id="campanhaMsg"></div>
+        </div>
+
+        <div class="card">
+            <div class="pagination-bar">
+                <div class="pagination-info" data-role="pageInfo">0 anúncios</div>
+                <div class="pagination-controls">
+                    <button class="page-nav" data-action="first" type="button">«</button>
+                    <button class="page-nav" data-action="prev" type="button">Voltar</button>
+                    <div class="pagination-numbers" data-role="pageNumbers"></div>
+                    <button class="page-nav" data-action="next" type="button">Avançar</button>
+                    <button class="page-nav" data-action="last" type="button">»</button>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table id="campanhaAnunciosTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Foto</th>
+                            <th>SKU</th>
+                            <th>Titulo</th>
+                            <th>Preco</th>
+                            <th>Desconto</th>
+                            <th>Estoque</th>
+                            <th>Vendidas</th>
+                            <th>Na promoção</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="pagination-bar">
+                <div class="pagination-info" data-role="pageInfo">0 anúncios</div>
+                <div class="pagination-controls">
+                    <button class="page-nav" data-action="first" type="button">«</button>
+                    <button class="page-nav" data-action="prev" type="button">Voltar</button>
+                    <div class="pagination-numbers" data-role="pageNumbers"></div>
+                    <button class="page-nav" data-action="next" type="button">Avançar</button>
+                    <button class="page-nav" data-action="last" type="button">»</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const loja = params.get('loja') || '';
+        const campaignId = params.get('campaign_id') || '';
+        const campaignName = params.get('campaign_name') || campaignId || 'Campanha';
+        const campaignStatus = params.get('campaign_status') || '-';
+        const campaignType = params.get('campaign_type') || '-';
+
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+        const tituloCampanha = document.getElementById('tituloCampanha');
+        const resumoCampanha = document.getElementById('resumoCampanha');
+        const campanhaMsg = document.getElementById('campanhaMsg');
+        const tableBody = document.querySelector('#campanhaAnunciosTable tbody');
+        const pageInfoEls = document.querySelectorAll('[data-role="pageInfo"]');
+        const pageNumberContainers = document.querySelectorAll('[data-role="pageNumbers"]');
+        const limitePaginaAnuncios = 20;
+        let paginaAtualAnuncios = 1;
+        let anunciosCampanha = [];
+
+        function getClientId() {
+            const userDataStr = localStorage.getItem('user_data');
+            if (!userDataStr) return null;
+            const userData = JSON.parse(userDataStr);
+            return userData.client_id;
+        }
+
+        async function apiFetch(url, options = {}, timeoutMs = 120000) {
+            const clientId = getClientId();
+            if (!clientId) {
+                window.location.href = '/frontend_index.html';
+                throw new Error('Sem client_id');
+            }
+            const headers = {
+                ...obterAuthHeaders(),
+                ...(options.headers || {})
+            };
+            if (options.body && !headers['Content-Type']) {
+                headers['Content-Type'] = 'application/json';
+            }
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const resp = await fetch(url, { ...options, headers, signal: controller.signal });
+                clearTimeout(timeoutId);
+                if (!resp.ok) {
+                    let msg = 'Erro na API (' + resp.status + ')';
+                    try {
+                        const err = await resp.json();
+                        msg = err.detail || JSON.stringify(err);
+                    } catch (e) {}
+                    throw new Error(msg);
+                }
+                const ct = resp.headers.get('content-type') || '';
+                if (ct.includes('application/json')) return resp.json();
+                return {};
+            } catch (e) {
+                clearTimeout(timeoutId);
+                if (e.name === 'AbortError') throw new Error('Tempo esgotado ao carregar anúncios da campanha. Tente novamente.');
+                throw e;
+            }
+        }
+
+        function showLoader(texto = 'Carregando anúncios...') {
+            loadingText.textContent = texto;
+            loadingOverlay.classList.remove('hidden');
+        }
+
+        function hideLoader() {
+            loadingOverlay.classList.add('hidden');
+        }
+
+        function nomeCampanhaComPercentual(anuncios) {
+            const descontos = [...new Set((anuncios || [])
+                .map(item => Number(item.discount_pct || 0))
+                .filter(valor => valor > 0)
+                .map(valor => `${valor.toFixed(1)}%`))];
+            return descontos.length ? `${campaignName} - ${descontos.join(' / ')}` : campaignName;
+        }
+
+        function atualizarControlesPaginacao() {
+            const total = anunciosCampanha.length;
+            const totalPaginas = Math.max(1, Math.ceil(total / limitePaginaAnuncios));
+            paginaAtualAnuncios = Math.min(Math.max(1, paginaAtualAnuncios), totalPaginas);
+
+            pageInfoEls.forEach(el => {
+                el.textContent = `${total} anúncios • Página ${paginaAtualAnuncios} de ${totalPaginas}`;
+            });
+
+            let inicio = Math.max(1, paginaAtualAnuncios - 2);
+            let fim = Math.min(totalPaginas, inicio + 4);
+            inicio = Math.max(1, fim - 4);
+
+            const botoes = [];
+            for (let pagina = inicio; pagina <= fim; pagina++) {
+                botoes.push(`<button type="button" class="page-number ${pagina === paginaAtualAnuncios ? 'active' : ''}" data-page="${pagina}">${pagina}</button>`);
+            }
+
+            pageNumberContainers.forEach(el => {
+                el.innerHTML = botoes.join('');
+            });
+
+            document.querySelectorAll('.page-number').forEach(btn => {
+                btn.addEventListener('click', () => renderPagina(Number(btn.dataset.page)));
+            });
+
+            document.querySelectorAll('.page-nav').forEach(btn => {
+                const action = btn.dataset.action;
+                const semItens = total === 0;
+                if (action === 'first' || action === 'prev') {
+                    btn.disabled = paginaAtualAnuncios <= 1 || semItens;
+                } else {
+                    btn.disabled = paginaAtualAnuncios >= totalPaginas || semItens;
+                }
+            });
+        }
+
+        function renderPagina(pagina = paginaAtualAnuncios) {
+            paginaAtualAnuncios = Math.max(1, Number(pagina) || 1);
+            atualizarControlesPaginacao();
+            const inicio = (paginaAtualAnuncios - 1) * limitePaginaAnuncios;
+            const fim = inicio + limitePaginaAnuncios;
+            renderTabela(anunciosCampanha.slice(inicio, fim));
+        }
+
+        function renderTabela(anuncios) {
+            tableBody.innerHTML = '';
+            if (!anuncios.length) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="9">Nenhum anúncio ativo participa desta campanha.</td>';
+                tableBody.appendChild(tr);
+                return;
+            }
+
+            anuncios.forEach(item => {
+                const tr = document.createElement('tr');
+                const thumb = item.thumbnail ? `<img class="item-thumb" src="${item.thumbnail}" alt="${item.title || 'Item'}">` : '-';
+                const priceDisplay = item.price !== undefined && item.price !== null
+                    ? `${item.original_price && Number(item.original_price) > Number(item.price) ? `<span class="price-old">R$ ${Number(item.original_price).toFixed(2)}</span>` : ''}R$ ${Number(item.price).toFixed(2)}`
+                    : '-';
+                const discountDisplay = item.discount_pct ? `${Number(item.discount_pct).toFixed(1)}%` : '-';
+                const temDesconto = Number(item.discount_pct || 0) > 0;
+                const promoStatusHtml = temDesconto
+                    ? `<span class="promo-ativa">Ativa</span>`
+                    : `<span class="promo-elegivel">Elegível</span>`;
+                tr.innerHTML = `
+                    <td>${item.id || '-'}</td>
+                    <td>${thumb}</td>
+                    <td>${item.sku_display || item.sku || '-'}</td>
+                    <td>${item.title || '-'}</td>
+                    <td>${priceDisplay}</td>
+                    <td>${discountDisplay}</td>
+                    <td>${item.available_quantity ?? '-'}</td>
+                    <td>${item.sold_quantity ?? '-'}</td>
+                    <td>${promoStatusHtml}</td>
+                `;
+                tableBody.appendChild(tr);
+            });
+        }
+
+        document.querySelectorAll('.page-nav').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const totalPaginas = Math.max(1, Math.ceil((anunciosCampanha.length || 0) / limitePaginaAnuncios));
+                const action = btn.dataset.action;
+                if (action === 'first') renderPagina(1);
+                if (action === 'prev') renderPagina(Math.max(1, paginaAtualAnuncios - 1));
+                if (action === 'next') renderPagina(Math.min(totalPaginas, paginaAtualAnuncios + 1));
+                if (action === 'last') renderPagina(totalPaginas);
+            });
+        });
+
+        async function carregarAnunciosDaCampanha() {
+            if (!loja || !campaignId) {
+                campanhaMsg.textContent = 'Campanha ou loja não informada.';
+                campanhaMsg.className = 'error';
+                anunciosCampanha = [];
+                renderPagina(1);
+                return;
+            }
+
+            showLoader('Carregando anúncios da campanha...');
+            campanhaMsg.textContent = '';
+            campanhaMsg.className = '';
+            try {
+                const data = await apiFetch(`/api/mercadolivre/promocoes/anuncios?loja=${encodeURIComponent(loja)}&campaign_id=${encodeURIComponent(campaignId)}`);
+                const anuncios = (data.results || []).filter(item => String(item.status || '').toLowerCase() === 'active');
+                anunciosCampanha = anuncios;
+                paginaAtualAnuncios = 1;
+                const titulo = nomeCampanhaComPercentual(anuncios);
+                tituloCampanha.textContent = titulo;
+                resumoCampanha.textContent = `${titulo}: ${anuncios.length} anúncio(s) ativo(s).`;
+                campanhaMsg.textContent = `${anuncios.length} anúncio(s) carregado(s).`;
+                campanhaMsg.className = anuncios.length ? 'success' : '';
+                renderPagina(1);
+            } catch (e) {
+                campanhaMsg.textContent = e.message;
+                campanhaMsg.className = 'error';
+                anunciosCampanha = [];
+                renderPagina(1);
+            } finally {
+                hideLoader();
+            }
+        }
+
+        document.getElementById('lojaInfo').textContent = `Loja: ${loja || '-'}`;
+        document.getElementById('tipoInfo').textContent = `Tipo: ${campaignType}`;
+        document.getElementById('statusInfo').textContent = `Status: ${campaignStatus}`;
+        tituloCampanha.textContent = campaignName;
+        resumoCampanha.textContent = `${campaignName}: carregando anúncios ativos.`;
+        document.getElementById('btnAtualizar').addEventListener('click', carregarAnunciosDaCampanha);
+
+        carregarAnunciosDaCampanha();
+    </script>
+<script src="/table_columns.js"></script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,602 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estoque - JK Sistema</title>
+    <style>
+        body { margin:0; padding:20px; background:#0e1117; color:#e5e5e5; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        .container { max-width:1200px; margin:0 auto; }
+        .header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:20px; }
+        .back-btn { padding:8px 14px; background:#4facfe; color:#fff; text-decoration:none; border-radius:6px; font-weight:bold; }
+        .back-btn:hover { background:#0073e6; }
+        h1 { margin:0; }
+        .filters { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:15px; align-items:center; }
+        input, select { padding:8px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; }
+        .loja-group { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+        .loja-btn { padding:8px 12px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; }
+        .loja-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; font-weight:bold; }
+        table { width:100%; border-collapse:collapse; background:#1c1f2b; border:1px solid #222; }
+        th, td { padding:10px; border-bottom:1px solid #222; text-align:left; font-size:0.95rem; }
+        th { background:#161925; color:#9bd1ff; position:sticky; top:0; z-index:1; }
+        tr:hover { background:#1f2331; }
+        .summary { display:flex; gap:16px; margin-bottom:15px; flex-wrap:wrap; }
+        .card { background:#1c1f2b; border:1px solid #222; padding:12px 14px; border-radius:8px; min-width:140px; }
+        .card h3 { margin:0 0 6px 0; font-size:0.95rem; color:#9bd1ff; }
+        .card .val { font-size:1.2rem; font-weight:bold; }
+        .status-bar { margin:10px 0; padding:10px 12px; border-radius:8px; background:#161925; border:1px solid #222; min-height:20px; }
+        .status-bar.loading { color:#9bd1ff; border-color:#4facfe; background:#0a1428; }
+        .status-bar.error { color:#ff6b6b; border-color:#c62828; background:#28010d; }
+        .status-bar.success { color:#66bb6a; border-color:#1b5e20; background:#0f2e0d; }
+        .status-bar.empty { color:#aaa; }
+        .spinner { display:inline-block; width:14px; height:14px; border:2px solid #4facfe; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .paginacao { display:flex; align-items:center; gap:10px; margin:12px 0; flex-wrap:wrap; }
+        .page-btn { padding:6px 10px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; }
+        .page-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        .page-info { color:#9bd1ff; font-size:0.92rem; }
+        #btnSync:disabled { opacity:0.6; cursor:not-allowed; }
+    </style>
+    <script src="/auth.js?v=20260417c"></script>
+    <script src="/ncm-sync.js"></script>
+    <script src="/global-status.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Estoque</h1>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <a class="back-btn" href="/dashboard.html">Home</a>
+            <a class="back-btn" href="/dashboard.html">Voltar</a>
+        </div>
+    </div>
+
+    <div id="status" class="status-bar"></div>
+
+    <div class="filters">
+        <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
+        <button id="btnSync" class="back-btn" style="background:#28a745;">Atualizar estoque</button>
+        <input type="text" id="filtroTexto" placeholder="Buscar por SKU, título ou código" aria-label="Filtro de texto">
+        <select id="ordenarPor" aria-label="Organizar SKUs">
+            <option value="data_atual">Data da atualização (atual)</option>
+            <option value="sku_az">SKU alfabético (A-Z)</option>
+            <option value="sku_desc">SKU maior para menor</option>
+            <option value="estoque_desc">Estoque maior para menor</option>
+            <option value="estoque_asc">Estoque menor para maior</option>
+        </select>
+    </div>
+
+    <div class="summary" id="resumo"></div>
+
+    <div class="table-wrapper">
+        <table>
+            <thead id="tHead"></thead>
+            <tbody id="tBody"></tbody>
+        </table>
+    </div>
+
+    <div class="paginacao" id="paginacao" style="display:none;">
+        <button id="btnPaginaAnterior" class="page-btn">Anterior</button>
+        <span id="pageInfo" class="page-info"></span>
+        <button id="btnPaginaProxima" class="page-btn">Próxima</button>
+    </div>
+</div>
+
+<script>
+    const tHead = document.getElementById('tHead');
+    const tBody = document.getElementById('tBody');
+    const resumo = document.getElementById('resumo');
+    const statusEl = document.getElementById('status');
+    const filtroTexto = document.getElementById('filtroTexto');
+    const ordenarPor = document.getElementById('ordenarPor');
+    const lojaBotoes = document.getElementById('lojaBotoes');
+    const btnSync = document.getElementById('btnSync');
+    const paginacaoEl = document.getElementById('paginacao');
+    const btnPaginaAnterior = document.getElementById('btnPaginaAnterior');
+    const btnPaginaProxima = document.getElementById('btnPaginaProxima');
+    const pageInfo = document.getElementById('pageInfo');
+    const spinnerHtml = '<span class="spinner"></span>';
+    let dados = [];
+    let clientId = null;
+    let lojaSelecionada = '__todas';
+    let lojasDisponiveis = [];
+    let paginaAtual = 1;
+    const ITENS_POR_PAGINA = 50;
+    let syncEmAndamento = false;
+    let progressTimer = null;
+    let autoSyncSolicitado = false;
+    let janelaAutoSyncMinutos = 30;
+
+    async function carregarConfiguracoesGlobais() {
+        try {
+            const resp = await fetch('/api/configuracoes', { headers: obterAuthHeaders(), cache: 'no-store' });
+            if (!resp.ok) return;
+            const cfg = await resp.json();
+            const janela = Number(cfg && cfg.auto_sync_estoque_janela_minutos);
+            if (Number.isFinite(janela) && janela >= 1) {
+                janelaAutoSyncMinutos = Math.round(janela);
+            }
+        } catch (_e) {
+            // Mantém fallback local caso endpoint/configuração não esteja disponível.
+        }
+    }
+
+    function setSyncButton(isSyncing) {
+        btnSync.disabled = isSyncing;
+        btnSync.textContent = isSyncing ? 'Atualizando...' : 'Atualizar estoque';
+    }
+
+    function renderProgresso(progress, logs) {
+        if (!progress) return;
+        const percent = Math.max(0, Math.min(100, Number(progress.percentual || 0)));
+        const logsList = (logs || []).slice(-8).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${l}</div>`).join('');
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `${spinnerHtml}<strong>${progress.mensagem || 'Atualizando estoque...'}</strong>
+            <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
+                <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
+            </div>
+            <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percent}%</div>
+            <div style="margin-top:8px;font-size:0.85rem;">${logsList}</div>`;
+    }
+
+    function pararMonitoramentoProgresso() {
+        if (progressTimer) {
+            clearInterval(progressTimer);
+            progressTimer = null;
+        }
+    }
+
+    async function verificarProgressoEstoque() {
+        try {
+            const resp = await fetch('/api/estoque/sync/progress', { headers: obterAuthHeaders(), cache: 'no-store' });
+            if (!resp.ok) return;
+            const payload = await resp.json();
+            const progress = payload.progress;
+            if (progress) {
+                renderProgresso(progress, payload.logs || []);
+            }
+
+            syncEmAndamento = !!payload.active;
+            setSyncButton(syncEmAndamento);
+
+            if (!payload.active && progress) {
+                if (Number(progress.percentual || 0) >= 100) {
+                    statusEl.className = 'status-bar success';
+                    statusEl.textContent = `${progress.mensagem || 'Estoque atualizado.'}`;
+                    await carregar(false);
+                    setTimeout(() => {
+                        statusEl.className = 'status-bar';
+                        statusEl.textContent = '';
+                    }, 3500);
+                } else if ((progress.etapa || '').toLowerCase() === 'erro') {
+                    statusEl.className = 'status-bar error';
+                    statusEl.textContent = `${progress.mensagem || 'Falha na atualização do estoque.'}`;
+                }
+                pararMonitoramentoProgresso();
+            }
+        } catch (_e) {
+            // Falha momentânea de rede durante polling; tenta novamente no próximo ciclo.
+        }
+    }
+
+    function iniciarMonitoramentoProgresso() {
+        pararMonitoramentoProgresso();
+        progressTimer = setInterval(verificarProgressoEstoque, 2500);
+        verificarProgressoEstoque();
+    }
+
+    function parseDataHoraAtualizacao(valor) {
+        const txt = String(valor || '').trim();
+        if (!txt) return null;
+
+        // Formato esperado: dd/mm/aaaa HH:MM
+        const m = txt.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
+        if (m) {
+            const [, dd, mm, yyyy, hh, mi] = m;
+            const dt = new Date(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(mi), 0, 0);
+            return Number.isNaN(dt.getTime()) ? null : dt;
+        }
+
+        // Fallback para formatos ISO, se aparecerem futuramente.
+        const dtIso = new Date(txt);
+        return Number.isNaN(dtIso.getTime()) ? null : dtIso;
+    }
+
+    function obterUltimaAtualizacaoDaLoja(lojaNome) {
+        if (!lojaNome || lojaNome === '__todas') return null;
+        const alvo = String(lojaNome).toLowerCase();
+        let ultima = null;
+
+        for (const row of dados) {
+            const lojaRow = String(row.loja_sync || row.loja || '').toLowerCase();
+            if (lojaRow !== alvo) continue;
+
+            const dt = parseDataHoraAtualizacao(row.last_update);
+            if (!dt) continue;
+            if (!ultima || dt > ultima) {
+                ultima = dt;
+            }
+        }
+
+        return ultima;
+    }
+
+    async function solicitarSyncEstoque(lojaAlvo, isAuto = false) {
+        if (!lojaAlvo || lojaAlvo === '__todas') {
+            if (!isAuto) {
+                alert('Selecione uma loja para atualizar no Bling.');
+            }
+            return;
+        }
+
+        clientId = clientId || obterClientId();
+        if (!clientId) {
+            window.location.href = '/frontend_index.html';
+            return;
+        }
+
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = `${spinnerHtml}${isAuto ? 'Solicitando atualização automática...' : 'Solicitando atualização manual...'}`;
+
+        try {
+            const resp = await fetch('/api/estoque/sync', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({ loja: lojaAlvo })
+            });
+
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                throw new Error(data.detail || `HTTP ${resp.status}`);
+            }
+
+            if (data.started || data.already_running) {
+                syncEmAndamento = true;
+                setSyncButton(true);
+                iniciarMonitoramentoProgresso();
+            }
+        } catch (e) {
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = `Erro ao sincronizar: ${e.message}`;
+            setSyncButton(false);
+        }
+    }
+
+    function chavePreferenciaLoja() {
+        const cid = clientId || obterClientId() || 'anon';
+        return `estoque_loja_preferencia_${cid}`;
+    }
+
+    function salvarPreferenciaLoja() {
+        try {
+            localStorage.setItem(chavePreferenciaLoja(), lojaSelecionada || '__todas');
+        } catch (_e) {
+            // Ignora erro de armazenamento local.
+        }
+    }
+
+    function carregarPreferenciaLoja() {
+        try {
+            return localStorage.getItem(chavePreferenciaLoja()) || '__todas';
+        } catch (_e) {
+            return '__todas';
+        }
+    }
+
+    function obterClientId() {
+        const user = JSON.parse(localStorage.getItem('user_data') || 'null');
+        return user && user.client_id ? user.client_id : null;
+    }
+
+    function renderResumo(lista) {
+        resumo.innerHTML = '';
+        const total = lista.length;
+        const cards = [
+            { label: 'Itens', value: total },
+        ];
+        cards.forEach(c => {
+            const div = document.createElement('div');
+            div.className = 'card';
+            div.innerHTML = `<h3>${c.label}</h3><div class="val">${c.value}</div>`;
+            resumo.appendChild(div);
+        });
+    }
+
+    function renderTabela(lista) {
+        tHead.innerHTML = '';
+        tBody.innerHTML = '';
+        if (!lista.length) {
+            statusEl.className = 'status-bar empty';
+            statusEl.textContent = 'Nenhum registro encontrado.';
+            atualizarPaginacao(0, 0);
+            return;
+        }
+        if (!syncEmAndamento) {
+            statusEl.className = 'status-bar';
+            statusEl.textContent = '';
+        }
+        const cols = Object.keys(lista[0]);
+        const trHead = document.createElement('tr');
+        cols.forEach(col => {
+            const th = document.createElement('th');
+            th.textContent = col;
+            trHead.appendChild(th);
+        });
+        tHead.appendChild(trHead);
+
+        const frag = document.createDocumentFragment();
+        lista.forEach(item => {
+            const tr = document.createElement('tr');
+            cols.forEach(col => {
+                const td = document.createElement('td');
+                td.textContent = item[col];
+                tr.appendChild(td);
+            });
+            frag.appendChild(tr);
+        });
+        tBody.appendChild(frag);
+    }
+
+    function obterSku(row) {
+        return String(row.sku || row.SKU || row.codigo || row.Codigo || '').trim();
+    }
+
+    function obterNumeroSku(sku) {
+        const txt = String(sku || '').trim();
+        if (/^\d+(?:[.,]\d+)?$/.test(txt)) {
+            return Number(txt.replace(',', '.'));
+        }
+        const match = txt.match(/\d+/);
+        return match ? Number(match[0]) : Number.NEGATIVE_INFINITY;
+    }
+
+    function obterDataOrdenacao(row) {
+        const campos = ['data_criacao', 'created_at', 'last_update', 'Atualizado em'];
+        for (const campo of campos) {
+            if (!row || row[campo] === undefined || row[campo] === null || row[campo] === '') continue;
+            const dt = parseDataHoraAtualizacao(row[campo]);
+            if (dt) return dt.getTime();
+        }
+        return 0;
+    }
+
+    function obterNumeroCampo(valor) {
+        if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+        const txt = String(valor || '').trim();
+        if (!txt) return 0;
+        const normalizado = txt.replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '');
+        const numero = Number(normalizado);
+        return Number.isFinite(numero) ? numero : 0;
+    }
+
+    function obterQuantidadeEstoque(row) {
+        if (!row) return 0;
+        const camposTotal = ['saldo_total', 'estoque_total', 'total_estoque', 'quantidade', 'Quantidade', 'estoque'];
+        for (const campo of camposTotal) {
+            if (row[campo] !== undefined && row[campo] !== null && row[campo] !== '') {
+                return obterNumeroCampo(row[campo]);
+            }
+        }
+        return obterNumeroCampo(row.saldo_loja) + obterNumeroCampo(row.saldo_full);
+    }
+
+    function ordenarLista(lista) {
+        const modo = ordenarPor.value || 'data_atual';
+        return lista
+            .map((item, indice) => ({ item, indice }))
+            .sort((a, b) => {
+                if (modo === 'sku_az') {
+                    const cmp = obterSku(a.item).localeCompare(obterSku(b.item), 'pt-BR', { numeric: true, sensitivity: 'base' });
+                    return cmp || a.indice - b.indice;
+                }
+
+                if (modo === 'sku_desc') {
+                    const skuA = obterSku(a.item);
+                    const skuB = obterSku(b.item);
+                    const numCmp = obterNumeroSku(skuB) - obterNumeroSku(skuA);
+                    if (numCmp) return numCmp;
+                    const cmp = skuB.localeCompare(skuA, 'pt-BR', { numeric: true, sensitivity: 'base' });
+                    return cmp || a.indice - b.indice;
+                }
+
+                if (modo === 'estoque_desc' || modo === 'estoque_asc') {
+                    const qtdA = obterQuantidadeEstoque(a.item);
+                    const qtdB = obterQuantidadeEstoque(b.item);
+                    const qtdCmp = modo === 'estoque_desc' ? qtdB - qtdA : qtdA - qtdB;
+                    return qtdCmp || obterSku(a.item).localeCompare(obterSku(b.item), 'pt-BR', { numeric: true, sensitivity: 'base' }) || a.indice - b.indice;
+                }
+
+                const dataCmp = obterDataOrdenacao(b.item) - obterDataOrdenacao(a.item);
+                return dataCmp || a.indice - b.indice;
+            })
+            .map(({ item }) => item);
+    }
+
+    function atualizarPaginacao(totalItens, totalPaginas) {
+        if (!totalItens || totalPaginas <= 1) {
+            paginacaoEl.style.display = 'none';
+            return;
+        }
+
+        paginacaoEl.style.display = 'flex';
+        btnPaginaAnterior.disabled = paginaAtual <= 1;
+        btnPaginaProxima.disabled = paginaAtual >= totalPaginas;
+
+        const inicio = (paginaAtual - 1) * ITENS_POR_PAGINA + 1;
+        const fim = Math.min(paginaAtual * ITENS_POR_PAGINA, totalItens);
+        pageInfo.textContent = `Mostrando ${inicio}-${fim} de ${totalItens} SKUs (página ${paginaAtual}/${totalPaginas})`;
+    }
+
+    function filtrar() {
+        const termo = filtroTexto.value.trim().toLowerCase();
+        let lista = dados;
+
+        if (lojaSelecionada && lojaSelecionada !== '__todas') {
+            lista = lista.filter(row => {
+                const loja = (row.loja_sync || row.loja || '').toString().toLowerCase();
+                return loja === lojaSelecionada.toLowerCase();
+            });
+        }
+
+        if (termo) {
+            lista = lista.filter(row => Object.values(row).some(val => String(val).toLowerCase().includes(termo)));
+        }
+
+        lista = ordenarLista(lista);
+
+        renderResumo(lista);
+        const totalItens = lista.length;
+        const totalPaginas = Math.max(1, Math.ceil(totalItens / ITENS_POR_PAGINA));
+        if (paginaAtual > totalPaginas) paginaAtual = totalPaginas;
+        if (paginaAtual < 1) paginaAtual = 1;
+
+        const inicio = (paginaAtual - 1) * ITENS_POR_PAGINA;
+        const listaPaginada = lista.slice(inicio, inicio + ITENS_POR_PAGINA);
+        renderTabela(listaPaginada);
+        atualizarPaginacao(totalItens, totalPaginas);
+    }
+
+    function renderBotoesLojas(lojas) {
+        lojaBotoes.innerHTML = '';
+        const lojasNomes = new Set(lojas.map(l => l.nome));
+        if (lojaSelecionada !== '__todas' && !lojasNomes.has(lojaSelecionada)) {
+            lojaSelecionada = '__todas';
+        }
+
+        const todosBtn = document.createElement('button');
+        todosBtn.textContent = 'Todas as lojas';
+        todosBtn.className = 'loja-btn' + (lojaSelecionada === '__todas' ? ' active' : '');
+        todosBtn.onclick = () => {
+            lojaSelecionada = '__todas';
+            salvarPreferenciaLoja();
+            paginaAtual = 1;
+            atualizarSelecao();
+        };
+        lojaBotoes.appendChild(todosBtn);
+
+        lojas.forEach(l => {
+            const btn = document.createElement('button');
+            btn.textContent = l.nome;
+            btn.className = 'loja-btn' + (lojaSelecionada === l.nome ? ' active' : '');
+            btn.onclick = () => {
+                lojaSelecionada = l.nome;
+                salvarPreferenciaLoja();
+                paginaAtual = 1;
+                atualizarSelecao();
+            };
+            lojaBotoes.appendChild(btn);
+        });
+    }
+
+    function atualizarSelecao() {
+        Array.from(lojaBotoes.children).forEach(btn => {
+            btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
+        });
+        filtrar();
+    }
+
+    async function carregarLojas() {
+        try {
+            clientId = obterClientId();
+            if (!clientId) {
+                window.location.href = '/frontend_index.html';
+                return;
+            }
+            const resp = await fetch('/api/lojas', { headers: obterAuthHeaders() });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const lojas = await resp.json();
+            lojasDisponiveis = Array.isArray(lojas) ? lojas : [];
+            lojaSelecionada = carregarPreferenciaLoja();
+            renderBotoesLojas(lojas);
+            salvarPreferenciaLoja();
+        } catch (e) {
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = `Erro ao carregar lojas: ${e.message}`;
+        }
+    }
+
+    async function carregar(exibirStatus = true) {
+        if (exibirStatus && !syncEmAndamento) {
+            statusEl.className = 'status-bar loading';
+            statusEl.innerHTML = `${spinnerHtml}Carregando estoque...`;
+        }
+        try {
+            clientId = clientId || obterClientId();
+            if (!clientId) {
+                window.location.href = '/frontend_index.html';
+                return;
+            }
+            const resp = await fetch('/api/estoque', { headers: obterAuthHeaders() });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            dados = await resp.json();
+            filtrar();
+            if (exibirStatus && !syncEmAndamento) {
+                statusEl.className = 'status-bar';
+                statusEl.textContent = '';
+            }
+        } catch (e) {
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = `Erro ao carregar estoque: ${e.message}`;
+        }
+    }
+
+    filtroTexto.addEventListener('input', () => {
+        paginaAtual = 1;
+        filtrar();
+    });
+
+    ordenarPor.addEventListener('change', () => {
+        paginaAtual = 1;
+        filtrar();
+    });
+
+    btnPaginaAnterior.addEventListener('click', () => {
+        if (paginaAtual > 1) {
+            paginaAtual -= 1;
+            filtrar();
+        }
+    });
+
+    btnPaginaProxima.addEventListener('click', () => {
+        paginaAtual += 1;
+        filtrar();
+    });
+    btnSync.addEventListener('click', async () => {
+        await solicitarSyncEstoque(lojaSelecionada, false);
+    });
+
+    async function inicializarPaginaEstoque() {
+        await carregarConfiguracoesGlobais();
+        await carregarLojas();
+        await carregar();
+
+        const lojaAuto = lojaSelecionada !== '__todas'
+            ? lojaSelecionada
+            : (lojasDisponiveis[0] && lojasDisponiveis[0].nome ? lojasDisponiveis[0].nome : null);
+
+        if (!autoSyncSolicitado && lojaAuto) {
+            autoSyncSolicitado = true;
+            const ultimaAtualizacao = obterUltimaAtualizacaoDaLoja(lojaAuto);
+            if (ultimaAtualizacao) {
+                const diffMin = (Date.now() - ultimaAtualizacao.getTime()) / 60000;
+                if (diffMin < janelaAutoSyncMinutos) {
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = `Última atualização de ${lojaAuto} foi há ${Math.max(1, Math.round(diffMin))} min. Auto-atualização ignorada.`;
+                    return;
+                }
+            }
+
+            await solicitarSyncEstoque(lojaAuto, true);
+        }
+    }
+
+    inicializarPaginaEstoque();
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+

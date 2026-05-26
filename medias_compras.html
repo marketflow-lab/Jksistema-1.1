@@ -1,0 +1,2990 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Médias e Pedidos - JK Sistema</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #0e1117;
+            color: #e5e5e5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .topbar-title {
+            flex: 1;
+            min-width: 280px;
+        }
+        .title {
+            margin: 0;
+        }
+        .subtitle {
+            margin: 6px 0 0;
+            color: #9bd1ff;
+            font-size: 0.95rem;
+        }
+        .card {
+            background: #1c1f2b;
+            border-radius: 10px;
+            padding: 16px;
+            border: 1px solid #222;
+            box-shadow: none;
+            margin-bottom: 16px;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: end;
+        }
+        .periodo-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .loja-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 8px;
+            width: 100%;
+        }
+        .loja-btn {
+            --loja-accent-rgb: 79, 172, 254;
+            --loja-soft-rgb: 25, 55, 92;
+            --loja-accent: rgb(var(--loja-accent-rgb));
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: flex-start;
+            gap: 4px;
+            min-height: 72px;
+            padding: 8px 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(var(--loja-accent-rgb), 0.48);
+            background: linear-gradient(180deg, rgba(var(--loja-soft-rgb), 0.55) 0%, rgba(11, 16, 24, 0.98) 100%);
+            color: #eef6ff;
+            cursor: pointer;
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, filter 0.18s ease;
+            text-align: left;
+            overflow: hidden;
+            isolation: isolate;
+        }
+        .loja-btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at top right, rgba(var(--loja-accent-rgb), 0.22), transparent 46%);
+            z-index: 0;
+            pointer-events: none;
+        }
+        .loja-btn::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(180deg, var(--loja-accent) 0%, rgba(var(--loja-accent-rgb), 0.25) 100%);
+            z-index: 1;
+        }
+        .loja-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 26px rgba(var(--loja-accent-rgb), 0.18);
+            border-color: rgba(var(--loja-accent-rgb), 0.68);
+        }
+        .loja-btn:focus-visible {
+            outline: 2px solid #7bd0ff;
+            outline-offset: 2px;
+        }
+        .loja-btn.active {
+            background: linear-gradient(135deg, rgba(var(--loja-accent-rgb), 0.96) 0%, rgba(var(--loja-soft-rgb), 0.92) 100%);
+            color: #07111b;
+            border-color: rgba(var(--loja-accent-rgb), 0.98);
+            box-shadow: 0 16px 28px rgba(var(--loja-accent-rgb), 0.34);
+        }
+        .loja-head,
+        .loja-titulo,
+        .loja-sub,
+        .loja-arrow {
+            position: relative;
+            z-index: 1;
+        }
+        .loja-head {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+        }
+        .loja-btn .loja-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.58rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: rgba(var(--loja-accent-rgb), 0.14);
+            color: var(--loja-accent);
+            text-transform: uppercase;
+        }
+        .loja-check {
+            font-size: 0.56rem;
+            font-weight: 800;
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: rgba(var(--loja-accent-rgb), 0.10);
+            color: rgba(var(--loja-accent-rgb), 0.98);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .loja-btn.active .loja-chip,
+        .loja-btn.active .loja-check {
+            background: rgba(8, 18, 29, 0.12);
+            color: #0b2b45;
+        }
+        .loja-btn .loja-titulo {
+            font-size: 0.82rem;
+            font-weight: 800;
+            line-height: 1.12;
+        }
+        .loja-btn .loja-sub {
+            display: block;
+            font-size: 0.64rem;
+            line-height: 1.15;
+            color: #a9c7e6;
+        }
+        .loja-btn .loja-arrow {
+            margin-top: auto;
+            font-size: 0.62rem;
+            font-weight: 800;
+            letter-spacing: 0.03em;
+            color: var(--loja-accent);
+        }
+        .loja-btn.active .loja-sub,
+        .loja-btn.active .loja-arrow {
+            color: #123b59;
+        }
+        .btn-periodo {
+            background: #1c1f2b;
+            color: #e5e5e5;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .btn-periodo.active {
+            background: #4facfe;
+            color: #0e1117;
+            border-color: #4facfe;
+        }
+        label {
+            font-weight: 600;
+            font-size: 0.9rem;
+            display: block;
+            margin-bottom: 6px;
+        }
+        button {
+            box-sizing: border-box;
+            padding: 9px 10px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+            font-size: 0.95rem;
+        }
+        button {
+            border: none;
+            cursor: pointer;
+            font-weight: 700;
+        }
+        .btn-primary { background: #4facfe; color: #0e1117; }
+        .btn-secondary { background: #333a4d; color: #e5e5e5; border: 1px solid #444; }
+        .btn-link { background: #4facfe; color: #0e1117; text-decoration: none; display: inline-block; text-align: center; font-weight: bold; }
+        .back-btn { padding: 8px 14px; background: #4facfe; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; }
+        .back-btn:hover { background: #0073e6; }
+        .btn-danger-soft { background: #3a1b23; color: #ff8ea1; border: 1px solid #6b2735; }
+        .btn-success-soft { background: #173126; color: #85e3b1; border: 1px solid #24593f; }
+        .btn-icon-action {
+            min-width: 30px;
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .btn-icon-action.btn-mini {
+            min-width: 24px;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+        }
+        #tblListaPedidoItens th:last-child,
+        #tblListaPedidoItens td:last-child {
+            text-align: right;
+            padding-right: 12px;
+            min-width: 44px;
+        }
+        .topbar-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .topbar-nav-card {
+            min-width: 120px;
+            min-height: 48px;
+            display: inline-flex;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 1px;
+            padding: 6px 12px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 800;
+            border: 1px solid rgba(135, 197, 255, 0.85);
+            box-shadow: 0 8px 16px rgba(60, 143, 224, 0.24);
+            background: linear-gradient(135deg, #2878c8 0%, #63b2ff 100%);
+            color: #07101b;
+            text-align: left;
+        }
+        .topbar-nav-card small {
+            font-size: 0.68rem;
+            opacity: 0.82;
+        }
+        .topbar-nav-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 24px rgba(60, 143, 224, 0.34);
+        }
+        .topbar-nav-card.home {
+            background: linear-gradient(135deg, #0f8b8d 0%, #5bd7d9 100%);
+            border-color: rgba(144, 255, 247, 0.9);
+            box-shadow: 0 8px 16px rgba(30, 167, 169, 0.26);
+            color: #031416;
+        }
+        .section-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .section-head-main {
+            flex: 1;
+            min-width: 260px;
+        }
+        .section-actions {
+            display: flex;
+            justify-content: center;
+            align-items: stretch;
+            gap: 8px;
+            flex: 0 0 420px;
+            margin-top: 20px;
+            transform: translateY(10px);
+        }
+        .action-card-btn {
+            width: 100%;
+            max-width: 132px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 1px;
+            padding: 6px 10px;
+            border-radius: 9px;
+            background: linear-gradient(135deg, #2faa58 0%, #6bd486 100%);
+            color: #07160d;
+            box-shadow: 0 8px 16px rgba(51, 184, 100, 0.20);
+            border: 1px solid rgba(120, 218, 144, 0.8);
+            text-align: left;
+        }
+        .action-card-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 24px rgba(51, 184, 100, 0.32);
+        }
+        .action-card-btn.alt {
+            background: linear-gradient(135deg, #2878c8 0%, #63b2ff 100%);
+            color: #07101b;
+            border: 1px solid rgba(135, 197, 255, 0.85);
+            box-shadow: 0 8px 16px rgba(60, 143, 224, 0.24);
+        }
+        .action-card-btn.alt:hover {
+            box-shadow: 0 14px 24px rgba(60, 143, 224, 0.34);
+        }
+        .action-card-btn.danger {
+            background: linear-gradient(135deg, #b73a45 0%, #ef6a74 100%);
+            color: #fff4f4;
+            border: 1px solid rgba(255, 167, 176, 0.88);
+            box-shadow: 0 8px 16px rgba(190, 71, 83, 0.26);
+        }
+        .action-card-btn.danger:hover {
+            box-shadow: 0 14px 24px rgba(190, 71, 83, 0.38);
+        }
+        .action-card-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 4px;
+            border-radius: 999px;
+            background: rgba(7, 22, 13, 0.10);
+            font-size: 0.48rem;
+            font-weight: 800;
+            letter-spacing: 0.15px;
+        }
+        .action-card-title {
+            font-size: 0.72rem;
+            font-weight: 900;
+            line-height: 1.05;
+        }
+        .action-card-sub {
+            font-size: 0.56rem;
+            opacity: 0.88;
+        }
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.42);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 16px;
+        }
+        .modal-backdrop.open {
+            display: flex;
+        }
+        .modal-card {
+            width: 100%;
+            max-width: 430px;
+            background: #1c1f2b;
+            border: 1px solid #333;
+            border-radius: 10px;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+            padding: 12px;
+        }
+        .modal-title {
+            margin: 0 0 4px;
+            font-size: 1rem;
+        }
+        .modal-subtitle {
+            margin: 0 0 8px;
+            color: #9bd1ff;
+            font-size: 0.78rem;
+            line-height: 1.2;
+        }
+        .opcoes-lista {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .campo-lista {
+            margin-bottom: 8px;
+        }
+        .input-lista {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 7px 9px;
+            border-radius: 7px;
+            border: 1px solid #333;
+            background: #161925;
+            color: #e5e5e5;
+            font-size: 0.88rem;
+        }
+        .opcao-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            min-height: 46px;
+            background: linear-gradient(145deg, #161c29 0%, #121722 100%);
+            border: 1px solid #334055;
+            border-radius: 9px;
+            padding: 8px 9px;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.14);
+            transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+            cursor: pointer;
+            font-size: 0.78rem;
+            line-height: 1.15;
+        }
+        .opcao-item:hover {
+            transform: translateY(-2px);
+            border-color: #5f84b1;
+            box-shadow: 0 14px 24px rgba(0, 0, 0, 0.22);
+        }
+        .opcao-item input {
+            margin-top: 1px;
+            accent-color: #4facfe;
+            transform: scale(0.95);
+            flex-shrink: 0;
+        }
+        .modal-actions {
+            margin-top: 10px;
+            display: flex;
+            gap: 6px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+        .modal-status {
+            margin-top: 6px;
+            color: #9bd1ff;
+            font-size: 0.82rem;
+            min-height: 18px;
+        }
+        .table-wrap {
+            overflow: visible;
+        }
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 10px;
+            min-width: 950px;
+            table-layout: fixed;
+        }
+        th, td {
+            border-bottom: 1px solid #222;
+            padding: 8px;
+            text-align: left;
+            font-size: 0.9rem;
+            white-space: nowrap;
+            vertical-align: middle;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        th {
+            background: linear-gradient(180deg, #1d2a3f 0%, #162033 100%);
+            color: #b9e1ff;
+            position: sticky;
+            top: 82px;
+            z-index: 5;
+            box-shadow: 0 2px 0 rgba(79, 172, 254, 0.14);
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: normal;
+            line-height: 1.1;
+        }
+        th.th-mes {
+            font-size: 0.75rem;
+            text-align: center;
+            white-space: normal;
+            line-height: 1.05;
+            padding-top: 6px;
+            padding-bottom: 6px;
+        }
+        .mes-ano-topo {
+            display: block;
+            font-weight: 800;
+            color: #9bd1ff;
+        }
+        .mes-nome-base {
+            display: block;
+            font-weight: 700;
+            color: #e5e5e5;
+        }
+        th.resizable {
+            position: sticky;
+        }
+        .col-resizer {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 8px;
+            height: 100%;
+            cursor: col-resize;
+            user-select: none;
+            touch-action: none;
+        }
+        .col-resizer:hover {
+            background: rgba(79, 172, 254, 0.25);
+        }
+        td.num, th.num {
+            text-align: center;
+        }
+        #tblResultado tbody tr td,
+        #tblListaPedidoItens tbody tr td {
+            transition: background-color 0.15s ease;
+        }
+        #tblResultado tbody tr:nth-child(odd) td {
+            background: #101826 !important;
+        }
+        #tblResultado tbody tr:nth-child(even) td {
+            background: #1a2940 !important;
+        }
+        #tblResultado tbody tr.risco-critico td {
+            background: #4a1f24 !important;
+            color: #ffe2e2;
+        }
+        #tblResultado tbody tr.risco-critico:hover td {
+            background: #653039 !important;
+        }
+        #tblResultado tbody tr.risco-atencao td {
+            background: #4a3f16 !important;
+            color: #fff2bf;
+        }
+        #tblResultado tbody tr.risco-atencao:hover td {
+            background: #60511d !important;
+        }
+        #tblResultado tbody tr:hover td {
+            background: #274766 !important;
+        }
+        #tblListaPedidoItens tbody tr:nth-child(odd) td {
+            background: #101826 !important;
+        }
+        #tblListaPedidoItens tbody tr:nth-child(even) td {
+            background: #1a2940 !important;
+        }
+        #tblListaPedidoItens tbody tr:hover td {
+            background: #274766 !important;
+        }
+        .foto-sku {
+            width: 44px;
+            height: 44px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            object-fit: cover;
+            background: #161925;
+        }
+        .foto-empty {
+            color: #8b95a7;
+            font-size: 0.8rem;
+        }
+        .titulo-anuncio {
+            max-width: 380px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: normal;
+            line-height: 1.2;
+        }
+        .produto-alerta-sem-venda {
+            display: inline-block;
+            margin-top: 4px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: rgba(225, 111, 111, 0.18);
+            color: #ffbcbc;
+            border: 1px solid rgba(255, 153, 153, 0.35);
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+        .resumo {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+        .kpi {
+            background: #f8fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .kpi .label { font-size: 0.8rem; color: #6b7280; }
+        .kpi .value { font-size: 1.1rem; font-weight: 700; margin-top: 4px; }
+        .status { color: #9bd1ff; font-size: 0.9rem; margin-top: 8px; }
+        .muted { color: #9bd1ff; font-size: 0.9rem; }
+        .download-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 10, 14, 0.72);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .download-overlay.open {
+            display: flex;
+        }
+        .download-card {
+            min-width: 280px;
+            padding: 18px 18px 14px;
+            border-radius: 14px;
+            border: 1px solid #2c3b53;
+            background: linear-gradient(145deg, #111827 0%, #0e1117 100%);
+            box-shadow: 0 20px 55px rgba(0, 0, 0, 0.35);
+            text-align: center;
+            color: #d8ebff;
+        }
+        .download-spinner {
+            width: 54px;
+            height: 54px;
+            margin: 0 auto 10px;
+            border-radius: 50%;
+            border: 3px solid rgba(79, 172, 254, 0.25);
+            border-top-color: #4facfe;
+            animation: giro 0.9s linear infinite;
+            position: relative;
+        }
+        .download-spinner::after {
+            content: '';
+            position: absolute;
+            inset: 9px;
+            border-radius: 50%;
+            border: 3px solid transparent;
+            border-left-color: #9bd1ff;
+            animation: giro-reverso 1.3s linear infinite;
+        }
+        .download-title {
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            margin-bottom: 4px;
+        }
+        .download-sub {
+            color: #9bb3d1;
+            font-size: 0.86rem;
+        }
+        @keyframes giro {
+            to { transform: rotate(360deg); }
+        }
+        @keyframes giro-reverso {
+            to { transform: rotate(-360deg); }
+        }
+        .abas-wrap {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .abas {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .aba-btn {
+            background: #1c1f2b;
+            color: #e5e5e5;
+            border: 1px solid #333;
+            border-radius: 999px;
+            padding: 7px 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .aba-btn.active {
+            background: #4facfe;
+            color: #0e1117;
+            border-color: #4facfe;
+        }
+        .hidden {
+            display: none !important;
+        }
+        .listas-layout {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 12px;
+        }
+        .listas-painel {
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #161925;
+            max-height: 520px;
+            overflow: auto;
+        }
+        .lista-item {
+            padding: 10px;
+            border-bottom: 1px solid #222;
+            cursor: pointer;
+        }
+        .lista-item-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .lista-item-acoes {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .lista-item:hover {
+            background: #1c1f2b;
+        }
+        .lista-item.active {
+            background: #27344a;
+            border-left: 3px solid #4facfe;
+        }
+        .lista-item-titulo {
+            font-weight: 700;
+            color: #e5e5e5;
+            margin-bottom: 4px;
+        }
+        .lista-item-meta {
+            color: #9bd1ff;
+            font-size: 0.84rem;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+            border: 1px solid transparent;
+        }
+        .status-lista-gerada { background: #1f2b3a; color: #9bd1ff; border-color: #355172; }
+        .status-em-orcamento { background: #3f360b; color: #ffe58f; border-color: #a58a17; }
+        .status-analisando-orcamento { background: #4a2f1a; color: #ffd2a8; border-color: #c9833f; }
+        .status-pedido-aprovado, .status-pedido-feito { background: #1f3a2b; color: #9de2bf; border-color: #2d7b57; }
+        .status-pedido-cancelado { background: #432224; color: #ffbdbd; border-color: #b24b4b; }
+        .btn-lixeira {
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            border: 1px solid #5a2230;
+            background: #2b1620;
+            color: #ff9db6;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .btn-acao-lista {
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            border: 1px solid #29405e;
+            background: #152233;
+            color: #9bd1ff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .btn-acao-lista:hover {
+            background: #1d2e46;
+            border-color: #3e628f;
+            color: #c9e7ff;
+        }
+        .btn-lixeira:hover {
+            background: #3b1b29;
+            border-color: #8a2f4a;
+            color: #ffc1d0;
+        }
+        .editor-lista {
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 10px;
+            background: #161925;
+        }
+        .editor-toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .editor-input {
+            min-width: 300px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            background: #0e1117;
+            color: #e5e5e5;
+        }
+        .mini-table-wrap {
+            overflow: visible;
+            border: 1px solid #222;
+            border-radius: 8px;
+        }
+        .mini-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 0;
+            table-layout: fixed;
+            margin: 0;
+        }
+        .mini-table th,
+        .mini-table td {
+            min-width: 0;
+            padding: 8px;
+            border-bottom: 1px solid #222;
+            font-size: 0.88rem;
+            vertical-align: middle;
+        }
+        .mini-table th {
+            background: linear-gradient(180deg, #1d2a3f 0%, #162033 100%);
+            color: #b9e1ff;
+            position: sticky;
+            top: 0;
+            z-index: 35;
+            box-shadow: 0 2px 0 rgba(79, 172, 254, 0.14);
+        }
+        .mini-table tfoot td { background: #1b2a3e; color: #4facfe; font-weight: 700; border-top: 2px solid #4facfe; font-size: 0.9rem; }
+        .tfoot-label { text-align: right; padding-right: 12px; }
+        .tfoot-val { text-align: center; }
+        .mini-table input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px 8px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            background: #0e1117;
+            color: #e5e5e5;
+        }
+        .money-locked {
+            display: inline-block;
+            padding: 6px 8px;
+            border-radius: 6px;
+            border: 1px solid #2e415a;
+            background: #111a27;
+            color: #c7e4ff;
+            font-weight: 700;
+            min-width: 110px;
+            text-align: right;
+        }
+        .sku-chip {
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: #27344a;
+            color: #9bd1ff;
+            font-weight: 700;
+            font-size: 0.82rem;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .status-lista-visual {
+            display: inline-flex;
+            align-items: center;
+            min-height: 38px;
+        }
+        @media (max-width: 980px) {
+            .listas-layout {
+                grid-template-columns: 1fr;
+            }
+            .editor-input {
+                min-width: 200px;
+                width: 100%;
+            }
+            .section-actions {
+                width: 100%;
+                margin-top: 10px;
+                transform: none;
+            }
+            .action-card-btn {
+                max-width: 160px;
+            }
+        }
+    </style>
+    <script src="/auth.js?v=20260417g"></script>
+    <script src="/ncm-sync.js"></script>
+    <script src="/global-status.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="topbar">
+        <div class="topbar-title">
+            <h1 class="title">Médias e Pedidos</h1>
+            <p class="subtitle">SKUs em ordem crescente com histórico mensal de vendas e saldo atual de estoque.</p>
+        </div>
+        <div class="topbar-actions">
+            <a class="topbar-nav-card home" href="/dashboard.html">
+                <span>🏠 Home</span>
+                <small>Página inicial</small>
+            </a>
+            <a class="back-btn" href="/dashboard.html">Voltar</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="controls">
+            <div>
+                <label>Período de análise</label>
+                <div class="periodo-buttons">
+                    <button id="btnPeriodo3" class="btn-periodo" type="button" onclick="carregarVisao(3)">3 meses</button>
+                    <button id="btnPeriodo6" class="btn-periodo" type="button" onclick="carregarVisao(6)">6 meses</button>
+                    <button id="btnPeriodo12" class="btn-periodo active" type="button" onclick="carregarVisao(12)">12 meses</button>
+                </div>
+            </div>
+            <div style="flex:1; min-width:280px;">
+                <label>Lojas</label>
+                <div id="lojaBotoes" class="loja-group" aria-label="Selecionar loja"></div>
+            </div>
+        </div>
+        <div id="status" class="status">Carregando dados...</div>
+    </div>
+
+    <div class="card">
+        <div class="abas-wrap">
+            <div class="abas">
+                <button id="btnAbaLista" class="aba-btn active" type="button" onclick="selecionarAba('lista')">Lista principal</button>
+                <button id="btnAbaOcultados" class="aba-btn" type="button" onclick="selecionarAba('ocultados')">SKU's ocultados (0)</button>
+                <button id="btnAbaListasPedidos" class="aba-btn" type="button" onclick="selecionarAba('listas_pedidos')">Lista de pedidos</button>
+            </div>
+            <div class="section-actions">
+                <button class="action-card-btn danger" type="button" onclick="abrirPaginaProdutosSemVenda()">
+                    <span class="action-card-chip">ALERTA</span>
+                    <span class="action-card-title">Produtos há algum</span>
+                    <span class="action-card-sub">tempo sem vender</span>
+                </button>
+                <button class="action-card-btn" type="button" onclick="abrirModalListaCompra()">
+                    <span class="action-card-chip">AÇÃO</span>
+                    <span class="action-card-title">Gerar lista</span>
+                    <span class="action-card-sub">de compra</span>
+                </button>
+                <button class="action-card-btn alt" type="button" onclick="baixarListaSugestaoExcel()">
+                    <span class="action-card-chip">AUTO</span>
+                    <span class="action-card-title">Lista sugestão</span>
+                    <span class="action-card-sub">de compra</span>
+                </button>
+            </div>
+        </div>
+        <div id="statusOcultados" class="muted"></div>
+        <div id="secaoTabelaPrincipal" class="table-wrap">
+        <table id="tblResultado" data-jk-no-enhance="1">
+            <thead>
+            <tr id="headRow"></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        </div>
+
+        <div id="secaoListasPedidos" class="hidden">
+            <div class="listas-layout">
+                <div class="listas-painel" id="listasPedidosLista"></div>
+                <div class="editor-lista hidden" id="editorListaPedido">
+                    <div class="editor-toolbar">
+                        <input id="nomeListaPedidoEdit" class="editor-input" type="text" placeholder="Nome da lista">
+                        <div id="statusListaPedidoEdit" class="status-lista-visual" aria-live="polite"></div>
+                        <button id="btnAdicionarSkuPedido" type="button" class="btn-secondary" onclick="abrirModalAdicionarSkuPedido()">Adicionar SKU</button>
+                        <button id="btnSalvarListaPedido" type="button" class="btn-primary" onclick="salvarListaPedidoAtual()">Salvar alterações</button>
+                    </div>
+                    <div id="statusListaPedido" class="muted"></div>
+                    <div class="mini-table-wrap">
+                        <table class="mini-table" id="tblListaPedidoItens" data-jk-no-enhance="1">
+                            <thead>
+                                <tr>
+                                    <th>SKU</th>
+                                    <th>Foto</th>
+                                    <th>Título</th>
+                                    <th>OEM</th>
+                                    <th>Link</th>
+                                    <th>Quantidade</th>
+                                    <th>Valor unidade</th>
+                                    <th>Valor total</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                            <tfoot id="tfootListaPedido">
+                                <tr>
+                                    <td colspan="6" class="tfoot-label">TOTAL</td>
+                                    <td id="tfootQtd" class="tfoot-val">0</td>
+                                    <td>—</td>
+                                    <td id="tfootVtot" class="tfoot-val">R$ 0,00</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="modalListaCompra" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tituloModalListaCompra">
+        <h2 id="tituloModalListaCompra" class="modal-title">Gerar lista de compra</h2>
+        <p class="modal-subtitle">Escolha a estratégia.</p>
+
+        <div class="campo-lista">
+            <label for="nomeListaPedido">Nome da lista</label>
+            <input id="nomeListaPedido" class="input-lista" type="text" placeholder="Ex.: Pedido Abril 2026" maxlength="80">
+        </div>
+
+        <div class="opcoes-lista">
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="media_6m" checked> Usar sugestão automática do período selecionado</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="10"> Sugestão do período + 10%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="20"> Sugestão do período + 20%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="30"> Sugestão do período + 30%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="40"> Sugestão do período + 40%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="50"> Sugestão do período + 50%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="60"> Sugestão do período + 60%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="70"> Sugestão do período + 70%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="80"> Sugestão do período + 80%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="90"> Sugestão do período + 90%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="100"> Sugestão do período + 100%</label>
+        </div>
+
+        <div class="modal-status" id="modalListaCompraStatus"></div>
+
+        <div class="modal-actions">
+            <button type="button" class="btn-secondary" onclick="fecharModalListaCompra()">Cancelar</button>
+            <button id="btnConfirmarListaCompra" type="button" class="btn-primary" onclick="gerarListaCompraExcel()">Gerar Excel</button>
+        </div>
+    </div>
+</div>
+
+<div id="modalAdicionarSkuPedido" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tituloModalAdicionarSkuPedido">
+        <h2 id="tituloModalAdicionarSkuPedido" class="modal-title">Adicionar SKU ao pedido</h2>
+        <p class="modal-subtitle">Informe SKU, quantidade e valor unitário. Os demais dados serão carregados do cadastro.</p>
+
+        <div class="campo-lista">
+            <label for="addSkuInput">SKU</label>
+            <input id="addSkuInput" class="input-lista" type="text" placeholder="Ex.: 12345" maxlength="80">
+        </div>
+
+        <div class="campo-lista">
+            <label for="addSkuQtdInput">Quantidade</label>
+            <input id="addSkuQtdInput" class="input-lista" type="number" min="1" step="1" value="1">
+        </div>
+
+        <div class="campo-lista">
+            <label for="addSkuValorInput">Valor unitário (USD)</label>
+            <input id="addSkuValorInput" class="input-lista" type="text" inputmode="decimal" placeholder="Ex.: 12.50">
+        </div>
+
+        <div class="modal-status" id="modalAdicionarSkuStatus"></div>
+
+        <div class="modal-actions">
+            <button type="button" class="btn-secondary" onclick="fecharModalAdicionarSkuPedido()">Cancelar</button>
+            <button id="btnConfirmarAdicionarSku" type="button" class="btn-primary" onclick="confirmarAdicionarSkuPedido()">Adicionar e salvar</button>
+        </div>
+    </div>
+</div>
+
+<div id="modalAvisoSkuCentral" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tituloModalAvisoSkuCentral">
+        <h2 id="tituloModalAvisoSkuCentral" class="modal-title">Atenção</h2>
+        <p id="textoModalAvisoSkuCentral" class="modal-subtitle">SKU não encontrado na lista.</p>
+        <div class="modal-actions">
+            <button type="button" class="btn-primary" onclick="fecharAvisoSkuCentral()">OK</button>
+        </div>
+    </div>
+</div>
+
+<div id="downloadOverlay" class="download-overlay" aria-hidden="true">
+    <div class="download-card">
+        <div class="download-spinner"></div>
+        <div class="download-title">Gerando Excel</div>
+        <div class="download-sub">Estamos preparando sua lista para download...</div>
+    </div>
+</div>
+
+<script>
+    function definirStatusInicial(msg) {
+        const el = document.getElementById('status');
+        if (el) el.textContent = msg;
+    }
+
+    function parseJsonLocalStorage(chave, fallback) {
+        try {
+            const valor = localStorage.getItem(chave);
+            return valor ? JSON.parse(valor) : fallback;
+        } catch (e) {
+            console.warn('Valor inválido no localStorage:', chave, e);
+            return fallback;
+        }
+    }
+
+    if (typeof obterAuthHeaders !== 'function') {
+        window.obterAuthHeaders = function(extra) {
+            const token = localStorage.getItem('access_token') || '';
+            const userData = parseJsonLocalStorage('user_data', null);
+            const clientId = userData && userData.client_id ? userData.client_id : '';
+            const headers = token ? { Authorization: 'Bearer ' + token } : (clientId ? { 'X-Client-ID': clientId } : {});
+            if (extra && typeof extra === 'object') Object.assign(headers, extra);
+            return headers;
+        };
+    }
+
+    const sessaoOk = (typeof verificarSessao === 'function')
+        ? verificarSessao()
+        : !!(localStorage.getItem('access_token') || localStorage.getItem('user_data'));
+    if (!sessaoOk) {
+        window.location.href = '/frontend_index.html';
+    }
+
+    const permissions = parseJsonLocalStorage('permissions', {});
+    const permissionsConhecidas = permissions && typeof permissions === 'object' && Object.keys(permissions).length > 0;
+    if (permissionsConhecidas && !(permissions.full === true || permissions.medias_compras === true)) {
+        alert('Acesso nao autorizado para Medias e Pedidos.');
+        window.location.href = 'dashboard.html';
+    }
+
+    window.addEventListener('error', function(ev) {
+        definirStatusInicial('Erro ao iniciar a tela: ' + (ev.message || 'verifique o console.'));
+    });
+
+    window.addEventListener('unhandledrejection', function(ev) {
+        const motivo = ev && ev.reason ? (ev.reason.message || String(ev.reason)) : 'erro inesperado';
+        definirStatusInicial('Erro ao carregar dados: ' + motivo);
+    });
+
+    const LS_COL_WIDTHS_KEY = 'medias_compras_larguras_colunas';
+    const tenantKey = String(localStorage.getItem('client_id') || localStorage.getItem('x_client_id') || 'default');
+    const LS_HIDDEN_SKUS_KEY = 'medias_compras_skus_ocultos_' + tenantKey;
+    const LS_PEDIDOS_COL_WIDTHS_KEY = 'medias_pedidos_larguras_colunas_' + tenantKey;
+    const CHAVES_COLUNAS_PEDIDOS = ['sku', 'foto', 'titulo', 'oem', 'link', 'quantidade', 'valor_unidade', 'valor_total', 'acoes'];
+    const LARGURAS_PADRAO_COLUNAS_PEDIDOS = {
+        sku: 96,
+        foto: 64,
+        titulo: 190,
+        oem: 130,
+        link: 140,
+        quantidade: 102,
+        valor_unidade: 128,
+        valor_total: 138,
+        acoes: 56,
+    };
+    const STATUS_LISTA_OPCOES = ['Lista gerada', 'Em Orçamento', 'Analisando orçamento', 'Pedido Aprovado', 'Pedido cancelado'];
+    let largurasColunas = {};
+    let largurasColunasPedidos = {};
+    let chavesColunasAtuais = [];
+    let colElementsAtuais = [];
+    let colElementsPedidos = [];
+    let lojaSelecionada = '__todas';
+    let lojasDisponiveis = [];
+    let skusOcultosSet = new Set();
+    let itensVisaoAtual = [];
+    let colunasMesesAtuais = [];
+    let abaAtual = 'lista';
+    let listasPedidosResumo = [];
+    let listaPedidoAtual = null;
+    try {
+        largurasColunas = JSON.parse(localStorage.getItem(LS_COL_WIDTHS_KEY) || '{}');
+    } catch (_e) {
+        largurasColunas = {};
+    }
+
+    try {
+        largurasColunasPedidos = JSON.parse(localStorage.getItem(LS_PEDIDOS_COL_WIDTHS_KEY) || '{}');
+    } catch (_e) {
+        largurasColunasPedidos = {};
+    }
+
+    try {
+        const ocultosSalvos = JSON.parse(localStorage.getItem(LS_HIDDEN_SKUS_KEY) || '[]');
+        skusOcultosSet = new Set((Array.isArray(ocultosSalvos) ? ocultosSalvos : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean));
+    } catch (_e) {
+        skusOcultosSet = new Set();
+    }
+
+    function numero(v) {
+        return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+
+    function formatarMoedaUSD(valor) {
+        return '$ ' + Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function parseNumeroFlex(valor, fallback = 0) {
+        let txt = String(valor || '').trim();
+        if (!txt) return fallback;
+
+        txt = txt
+            .replace(/US\$/gi, '')
+            .replace(/\$/g, '')
+            .replace(/\s+/g, '')
+            .replace(/[^0-9,.-]/g, '');
+
+        const hasDot = txt.includes('.');
+        const hasComma = txt.includes(',');
+
+        if (hasDot && hasComma) {
+            const lastDot = txt.lastIndexOf('.');
+            const lastComma = txt.lastIndexOf(',');
+            if (lastComma > lastDot) {
+                // Formato pt-BR: 1.234,56
+                txt = txt.replace(/\./g, '').replace(',', '.');
+            } else {
+                // Formato en-US: 1,234.56
+                txt = txt.replace(/,/g, '');
+            }
+        } else if (hasComma) {
+            // Formato com vírgula decimal
+            txt = txt.replace(',', '.');
+        }
+
+        const n = Number(txt);
+        return Number.isFinite(n) ? n : fallback;
+    }
+
+    function toNumeroDecimal(valor) {
+        return parseNumeroFlex(valor, 0);
+    }
+
+    function toNumeroPrompt(valor) {
+        return parseNumeroFlex(valor, NaN);
+    }
+
+    function normalizarSkuComparacaoLocal(valor) {
+        let txt = String(valor || '')
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, '')
+            .replace(/[^A-Z0-9]/g, '');
+        if (/^\d+$/.test(txt)) {
+            txt = String(parseInt(txt, 10));
+        }
+        return txt;
+    }
+
+    function chaveOrdenacaoSkuLista(valor) {
+        const sku = String(valor || '').trim().toUpperCase();
+        const m = sku.match(/^(\d+)(?:[-./](\d+))?$/);
+        if (m) {
+            return { tipo: 0, n1: parseInt(m[1], 10), n2: parseInt(m[2] || '0', 10), txt: sku };
+        }
+        return { tipo: 1, n1: Number.MAX_SAFE_INTEGER, n2: Number.MAX_SAFE_INTEGER, txt: sku };
+    }
+
+    function ordenarItensListaPedidoPorSku(itens) {
+        const lista = Array.isArray(itens) ? [...itens] : [];
+        lista.sort((a, b) => {
+            const ka = chaveOrdenacaoSkuLista(a && a.SKU);
+            const kb = chaveOrdenacaoSkuLista(b && b.SKU);
+            if (ka.tipo !== kb.tipo) return ka.tipo - kb.tipo;
+            if (ka.n1 !== kb.n1) return ka.n1 - kb.n1;
+            if (ka.n2 !== kb.n2) return ka.n2 - kb.n2;
+            return ka.txt.localeCompare(kb.txt, 'pt-BR', { numeric: true, sensitivity: 'base' });
+        });
+        return lista;
+    }
+
+    function setStatusModalAdicionarSku(msg) {
+        const el = document.getElementById('modalAdicionarSkuStatus');
+        if (el) el.textContent = msg || '';
+    }
+
+    function abrirAvisoSkuCentral(msg) {
+        const modal = document.getElementById('modalAvisoSkuCentral');
+        const txt = document.getElementById('textoModalAvisoSkuCentral');
+        if (txt) txt.textContent = String(msg || 'SKU não encontrado na lista.');
+        if (!modal) return;
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+    }
+
+    function fecharAvisoSkuCentral() {
+        const modal = document.getElementById('modalAvisoSkuCentral');
+        if (!modal) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+
+    function abrirModalAdicionarSkuPedido() {
+        if (!listaPedidoAtual || !listaPedidoAtual.id) {
+            setStatusListaPedido('Selecione uma lista para adicionar SKU.');
+            return;
+        }
+        const modal = document.getElementById('modalAdicionarSkuPedido');
+        const inputSku = document.getElementById('addSkuInput');
+        const inputQtd = document.getElementById('addSkuQtdInput');
+        const inputValor = document.getElementById('addSkuValorInput');
+        if (!modal || !inputSku || !inputQtd || !inputValor) return;
+
+        setStatusModalAdicionarSku('');
+        inputSku.value = '';
+        inputQtd.value = '1';
+        inputValor.value = '';
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        setTimeout(() => inputSku.focus(), 40);
+    }
+
+    function fecharModalAdicionarSkuPedido() {
+        const modal = document.getElementById('modalAdicionarSkuPedido');
+        if (!modal) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+        setStatusModalAdicionarSku('');
+    }
+
+    function formatarMesNomeCurto(mesNumero) {
+        const nomes = {
+            '01': 'Jan', '02': 'Fev', '03': 'Mar', '04': 'Abr',
+            '05': 'Mai', '06': 'Jun', '07': 'Jul', '08': 'Ago',
+            '09': 'Set', '10': 'Out', '11': 'Nov', '12': 'Dez'
+        };
+        return nomes[String(mesNumero || '').padStart(2, '0')] || String(mesNumero || '');
+    }
+
+    function quebrarMesAno(chaveMes) {
+        const texto = String(chaveMes || '').trim();
+        const m = texto.match(/^(\d{4})-(\d{2})$/);
+        if (!m) {
+            return { anoCurto: '', mesNome: texto };
+        }
+        const anoCurto = m[1].slice(2);
+        const mesNome = formatarMesNomeCurto(m[2]);
+        return { anoCurto, mesNome };
+    }
+
+    function escaparHtml(valor) {
+        return String(valor || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function ehUrlAbsoluta(valor) {
+        return /^https?:\/\//i.test(String(valor || '').trim());
+    }
+
+    function obterUrlFoto(valor) {
+        const foto = String(valor || '').trim();
+        if (!foto) return '';
+        if (ehUrlAbsoluta(foto)) return foto;
+        const nomeArquivo = foto.split('/').pop();
+        if (!nomeArquivo) return '';
+        return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
+    }
+
+    let periodoAtual = 12;
+
+    function obterCorLoja(valor, indice) {
+        const paleta = [
+            { accent: '79, 172, 254', soft: '21, 54, 92' },
+            { accent: '46, 204, 113', soft: '18, 74, 48' },
+            { accent: '155, 89, 182', soft: '64, 33, 84' },
+            { accent: '241, 196, 15', soft: '92, 72, 14' },
+            { accent: '231, 76, 60', soft: '88, 30, 24' },
+            { accent: '26, 188, 156', soft: '16, 78, 71' },
+            { accent: '230, 126, 34', soft: '96, 50, 18' },
+            { accent: '236, 72, 153', soft: '96, 28, 65' }
+        ];
+        if (valor === '__todas') return paleta[0];
+        return paleta[indice % paleta.length];
+    }
+
+    function atualizarBotoesPeriodo() {
+        [3, 6, 12].forEach(m => {
+            const btn = document.getElementById('btnPeriodo' + m);
+            if (!btn) return;
+            if (periodoAtual === m) btn.classList.add('active');
+            else btn.classList.remove('active');
+        });
+    }
+
+    function renderBotoesLojas(lojas) {
+        const box = document.getElementById('lojaBotoes');
+        if (!box) return;
+        box.innerHTML = '';
+
+        const criarBotao = (texto, valor, indice = 0) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            const selecionada = lojaSelecionada === valor;
+            const cor = obterCorLoja(valor, indice);
+            btn.className = 'loja-btn' + (selecionada ? ' active' : '');
+            btn.style.setProperty('--loja-accent-rgb', cor.accent);
+            btn.style.setProperty('--loja-soft-rgb', cor.soft);
+            const subtitulo = valor === '__todas' ? 'Visão consolidada do sistema' : 'Filtrar médias e pedidos desta loja';
+            const chip = valor === '__todas' ? '🌐 Geral' : '🏬 Loja';
+            const status = selecionada ? 'Ativa' : 'Selecionar';
+            btn.setAttribute('aria-pressed', selecionada ? 'true' : 'false');
+            btn.setAttribute('aria-label', texto + '. ' + subtitulo);
+            btn.title = subtitulo;
+            btn.innerHTML =
+                '<span class="loja-head">' +
+                    '<span class="loja-chip">' + chip + '</span>' +
+                    '<span class="loja-check">' + status + '</span>' +
+                '</span>' +
+                '<span class="loja-titulo">' + escaparHtml(texto) + '</span>' +
+                '<span class="loja-sub">' + escaparHtml(subtitulo) + '</span>' +
+                '<span class="loja-arrow">Ver dados →</span>';
+            btn.onclick = () => {
+                lojaSelecionada = valor;
+                renderBotoesLojas(lojasDisponiveis || []);
+                carregarVisao(periodoAtual);
+                if (abaAtual === 'listas_pedidos') {
+                    carregarListasPedidos();
+                }
+            };
+            box.appendChild(btn);
+        };
+
+        criarBotao('Todas as lojas', '__todas', 0);
+        (Array.isArray(lojas) ? lojas : []).forEach((loja, indice) => {
+            const nome = String((loja && loja.nome) || '').trim();
+            if (!nome) return;
+            criarBotao(nome, nome, indice + 1);
+        });
+    }
+
+    async function carregarLojas() {
+        try {
+            const resp = await fetch('/api/lojas', {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) {
+                throw new Error('Não foi possível carregar as lojas.');
+            }
+            const lojas = await resp.json();
+            lojasDisponiveis = Array.isArray(lojas) ? lojas : [];
+            if (lojaSelecionada !== '__todas' && !lojasDisponiveis.some(l => String((l && l.nome) || '').trim() === lojaSelecionada)) {
+                lojaSelecionada = '__todas';
+            }
+            renderBotoesLojas(lojasDisponiveis);
+        } catch (_e) {
+            lojasDisponiveis = [];
+            lojaSelecionada = '__todas';
+            renderBotoesLojas([]);
+        }
+    }
+
+    function setStatus(msg) {
+        document.getElementById('status').textContent = msg;
+    }
+
+    function normalizarSku(valor) {
+        return String(valor || '').trim().toUpperCase();
+    }
+
+    function salvarSkusOcultos() {
+        try {
+            localStorage.setItem(LS_HIDDEN_SKUS_KEY, JSON.stringify(Array.from(skusOcultosSet)));
+        } catch (_e) {
+            // Persistência local complementar.
+        }
+    }
+
+    function ocultarSkuPorCodigo(skuCodificado) {
+        const sku = normalizarSku(decodeURIComponent(String(skuCodificado || '')));
+        if (!sku) return;
+        skusOcultosSet.add(sku);
+        salvarSkusOcultos();
+        renderAbaAtual();
+        setStatus('SKU ocultado com sucesso.');
+    }
+
+    function reexibirSkuPorCodigo(skuCodificado) {
+        const sku = normalizarSku(decodeURIComponent(String(skuCodificado || '')));
+        if (!sku) return;
+        skusOcultosSet.delete(sku);
+        salvarSkusOcultos();
+        renderAbaAtual();
+        setStatus('SKU removido da aba de ocultados.');
+    }
+
+    function selecionarAba(aba) {
+        abaAtual = (aba === 'ocultados' || aba === 'listas_pedidos') ? aba : 'lista';
+        const btnLista = document.getElementById('btnAbaLista');
+        const btnOcultados = document.getElementById('btnAbaOcultados');
+        const btnListasPedidos = document.getElementById('btnAbaListasPedidos');
+        if (btnLista) btnLista.classList.toggle('active', abaAtual === 'lista');
+        if (btnOcultados) btnOcultados.classList.toggle('active', abaAtual === 'ocultados');
+        if (btnListasPedidos) btnListasPedidos.classList.toggle('active', abaAtual === 'listas_pedidos');
+
+        if (abaAtual === 'listas_pedidos') {
+            carregarListasPedidos();
+        }
+        renderAbaAtual();
+    }
+
+    function formatarDataHoraLocal(isoTexto) {
+        const d = new Date(isoTexto || '');
+        if (isNaN(d.getTime())) return String(isoTexto || '');
+        return d.toLocaleString('pt-BR');
+    }
+
+    function setStatusListaPedido(msg) {
+        const el = document.getElementById('statusListaPedido');
+        if (el) el.textContent = msg || '';
+    }
+
+    function renderStatusListaPedidoVisual(status) {
+        const el = document.getElementById('statusListaPedidoEdit');
+        if (!el) return;
+        const statusNormalizado = normalizarStatusListaPedido(status);
+        el.innerHTML = '<span class="status-badge ' + classeStatusListaPedido(statusNormalizado) + '">' + escaparHtml(statusNormalizado) + '</span>';
+    }
+
+    function exibirOverlayDownload(ativo) {
+        const el = document.getElementById('downloadOverlay');
+        if (!el) return;
+        el.classList.toggle('open', !!ativo);
+        el.setAttribute('aria-hidden', ativo ? 'false' : 'true');
+    }
+
+    function obterMapaStatusCanceladoLocal() {
+        const chave = 'jk_lista_status_cancelado_override';
+        try {
+            const mapa = JSON.parse(localStorage.getItem(chave) || '{}');
+            return mapa && typeof mapa === 'object' ? mapa : {};
+        } catch (_e) {
+            return {};
+        }
+    }
+
+    function forcarStatusCanceladoLocal(listaId) {
+        if (!listaId) return false;
+        const mapa = obterMapaStatusCanceladoLocal();
+        return !!mapa[String(listaId)];
+    }
+
+    function limparStatusCanceladoLocal(listaId) {
+        if (!listaId) return;
+        const chave = 'jk_lista_status_cancelado_override';
+        const mapa = obterMapaStatusCanceladoLocal();
+        if (Object.prototype.hasOwnProperty.call(mapa, String(listaId))) {
+            delete mapa[String(listaId)];
+            localStorage.setItem(chave, JSON.stringify(mapa));
+        }
+    }
+
+    function normalizarStatusListaPedido(status) {
+        let texto = String(status || '').trim();
+        if (texto === 'Pedido feito') texto = 'Pedido Aprovado';
+        return STATUS_LISTA_OPCOES.includes(texto) ? texto : 'Lista gerada';
+    }
+
+    function classeStatusListaPedido(status) {
+        if (status === 'Em Orçamento') return 'status-em-orcamento';
+        if (status === 'Analisando orçamento') return 'status-analisando-orcamento';
+        if (status === 'Pedido Aprovado' || status === 'Pedido feito') return 'status-pedido-aprovado';
+        if (status === 'Pedido cancelado') return 'status-pedido-cancelado';
+        return 'status-lista-gerada';
+    }
+
+    async function carregarListasPedidos() {
+        try {
+            setStatusListaPedido('Carregando listas de pedidos...');
+            const params = new URLSearchParams();
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.set('loja', lojaSelecionada);
+            }
+            const resp = await fetch('/api/medias-compras/listas-pedidos' + (params.toString() ? '?' + params.toString() : ''), {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao carregar listas de pedidos.');
+            }
+            const data = await resp.json();
+            listasPedidosResumo = Array.isArray(data.listas) ? data.listas : [];
+            renderListaPedidosResumo();
+            if (!listasPedidosResumo.length) {
+                listaPedidoAtual = null;
+                renderEditorListaPedido();
+                setStatusListaPedido('Nenhuma lista salva ainda.');
+            } else if (!listaPedidoAtual) {
+                renderEditorListaPedido();
+                setStatusListaPedido('Clique em uma lista para visualizar e editar.');
+            }
+        } catch (e) {
+            setStatusListaPedido(e.message || 'Erro ao carregar listas de pedidos.');
+        }
+    }
+
+    function renderListaPedidosResumo() {
+        const box = document.getElementById('listasPedidosLista');
+        if (!box) return;
+        box.innerHTML = '';
+
+        if (!listasPedidosResumo.length) {
+            box.innerHTML = '<div class="lista-item-meta" style="padding:10px;">Nenhuma lista de pedidos.</div>';
+            return;
+        }
+
+        listasPedidosResumo.forEach(l => {
+            const ativo = listaPedidoAtual && String(listaPedidoAtual.id) === String(l.id);
+            const statusOriginal = normalizarStatusListaPedido(l.status);
+            const status = forcarStatusCanceladoLocal(l.id) ? 'Pedido cancelado' : statusOriginal;
+            if (statusOriginal === 'Pedido cancelado') {
+                limparStatusCanceladoLocal(l.id);
+            }
+            const lojaMeta = (l.loja && l.loja !== '__todas') ? ' | Loja: ' + escaparHtml(l.loja) : '';
+            const podeExcluirCancelada = status === 'Pedido cancelado';
+            const tituloExcluir = podeExcluirCancelada ? 'Excluir lista cancelada' : 'Excluir lista';
+            const avisoCancelada = podeExcluirCancelada
+                ? '<div class="lista-item-meta" style="color:#ffbdbd;">Aviso: lista cancelada. A exclusão é permanente.</div>'
+                : '';
+            const div = document.createElement('div');
+            div.className = 'lista-item' + (ativo ? ' active' : '');
+            div.innerHTML =
+                '<div class="lista-item-header">' +
+                    '<div>' +
+                        '<span class="status-badge ' + classeStatusListaPedido(status) + '">' + escaparHtml(status) + '</span>' +
+                        '<div class="lista-item-titulo">' + escaparHtml(l.nome_lista || 'Sem nome') + '</div>' +
+                    '</div>' +
+                    '<div class="lista-item-acoes">' +
+                        '<button type="button" class="btn-acao-lista" data-action="baixar" title="Baixar Excel" aria-label="Baixar Excel">' +
+                            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+                                '<path d="M12 3V14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                                '<path d="M8 10L12 14L16 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+                                '<path d="M4 17V19C4 20.1 4.9 21 6 21H18C19.1 21 20 20.1 20 19V17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                            '</svg>' +
+                        '</button>' +
+                        '<button type="button" class="btn-acao-lista" data-action="anexar" title="Anexar Excel para atualizar preços" aria-label="Anexar Excel para atualizar preços">' +
+                            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+                                '<path d="M21.44 11.05L12.25 20.24C10.3 22.19 7.13 22.19 5.18 20.24C3.23 18.29 3.23 15.12 5.18 13.17L14.37 3.98C15.67 2.68 17.78 2.68 19.08 3.98C20.38 5.28 20.38 7.39 19.08 8.69L9.89 17.88C9.24 18.53 8.18 18.53 7.53 17.88C6.88 17.23 6.88 16.17 7.53 15.52L15.66 7.39" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+                            '</svg>' +
+                        '</button>' +
+                        '<button type="button" class="btn-lixeira" data-action="excluir" title="' + tituloExcluir + '" aria-label="' + tituloExcluir + '">' +
+                            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+                                '<path d="M3 6H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                                '<path d="M8 6V4C8 2.9 8.9 2 10 2H14C15.1 2 16 2.9 16 4V6" stroke="currentColor" stroke-width="2"/>' +
+                                '<path d="M19 6L18 20C17.9 21.1 17 22 15.9 22H8.1C7 22 6.1 21.1 6 20L5 6" stroke="currentColor" stroke-width="2"/>' +
+                                '<path d="M10 11V17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                                '<path d="M14 11V17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                            '</svg>' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="lista-item-meta">Itens: ' + numero(l.total_itens || 0) + lojaMeta + ' | Atualizada: ' + escaparHtml(formatarDataHoraLocal(l.updated_at || l.created_at || '')) + '</div>' +
+                avisoCancelada;
+            div.addEventListener('click', () => abrirListaPedidoPorId(l.id));
+            const btnExcluir = div.querySelector('button[data-action="excluir"]');
+            const btnBaixar = div.querySelector('button[data-action="baixar"]');
+            const btnAnexar = div.querySelector('button[data-action="anexar"]');
+            if (btnBaixar) {
+                btnBaixar.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    baixarListaPedidoExcel(l.id);
+                });
+            }
+            if (btnAnexar) {
+                btnAnexar.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    anexarExcelAtualizarPrecosLista(l.id, l.nome_lista || 'Sem nome');
+                });
+            }
+            if (btnExcluir) {
+                btnExcluir.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    excluirListaPedido(l.id, l.nome_lista || 'Sem nome', status);
+                });
+            }
+            box.appendChild(div);
+        });
+    }
+
+    async function baixarListaPedidoExcel(listaId) {
+        if (!listaId) return;
+        const MIN_OVERLAY_MS = 1000;
+        const inicioAnimacao = Date.now();
+        try {
+            exibirOverlayDownload(true);
+            setStatusListaPedido('Gerando Excel da lista...');
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/gerar-download', {
+                method: 'POST',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao gerar Excel da lista.');
+            }
+
+            const data = await resp.json();
+            const nomeArquivo = data.filename || ('lista_pedido_' + String(listaId) + '.xlsx');
+            const downloadUrl = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/download?ts=' + Date.now();
+            const respDownload = await fetch(downloadUrl, {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() },
+                cache: 'no-store'
+            });
+            if (!respDownload.ok) {
+                const err = await respDownload.json().catch(() => ({}));
+                throw new Error(err.detail || 'Arquivo não estava disponível para download.');
+            }
+
+            const blob = await respDownload.blob();
+            if (!blob || !blob.size) {
+                throw new Error('Arquivo de download vazio.');
+            }
+
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = nomeArquivo;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(objectUrl);
+
+            try {
+                await atualizarStatusListaPedido(listaId, 'Em Orçamento');
+            } catch (_e) {
+                // Não bloqueia download se atualização de status falhar.
+            }
+
+            setStatusListaPedido('Excel gerado e download iniciado.');
+        } catch (e) {
+            setStatusListaPedido(e.message || 'Erro ao baixar Excel da lista.');
+        } finally {
+            const tempoDecorrido = Date.now() - inicioAnimacao;
+            const restante = Math.max(0, MIN_OVERLAY_MS - tempoDecorrido);
+            if (restante > 0) {
+                await new Promise(resolve => setTimeout(resolve, restante));
+            }
+            exibirOverlayDownload(false);
+        }
+    }
+
+    function anexarExcelAtualizarPrecosLista(listaId, nomeLista) {
+        if (!listaId) return;
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.xlsx,.xlsm,.xltx,.xltm';
+        input.addEventListener('change', async () => {
+            const file = input.files && input.files[0] ? input.files[0] : null;
+            if (!file) return;
+            try {
+                const enviarArquivo = async (confirmarInclusoes) => {
+                    const fd = new FormData();
+                    fd.append('file', file);
+                    fd.append('confirmar_inclusoes', confirmarInclusoes ? '1' : '0');
+                    const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/importar-excel-precos', {
+                        method: 'POST',
+                        headers: { ...obterAuthHeaders() },
+                        body: fd
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        throw new Error(err.detail || 'Falha ao importar Excel.');
+                    }
+                    return resp.json();
+                };
+
+                setStatusListaPedido('Atualizando preços e quantidades da lista "' + String(nomeLista || '') + '"...');
+                let data = await enviarArquivo(false);
+
+                if (data && data.requer_confirmacao) {
+                    const resumo = data.resumo_pendencias || {};
+                    const pendencias = Array.isArray(data.pendencias) ? data.pendencias : [];
+                    const exemplos = pendencias.slice(0, 8).map((p) => {
+                        const skuTxt = String(p.sku || '');
+                        if (p.tipo === 'sku_novo') {
+                            return '- SKU novo: ' + skuTxt;
+                        }
+                        if (p.tipo === 'titulo_diferente') {
+                            return '- Título diferente no SKU ' + skuTxt;
+                        }
+                        return '- Divergência no SKU ' + skuTxt;
+                    }).join('\n');
+
+                    const mensagemConfirmacao =
+                        'O arquivo possui divergências e precisa da sua confirmação para incluir:\n\n' +
+                        '- SKUs novos: ' + numero(resumo.total_sku_novo || 0) + '\n' +
+                        '- Títulos diferentes: ' + numero(resumo.total_titulo_diferente || 0) + '\n' +
+                        (exemplos ? ('\nExemplos:\n' + exemplos + '\n') : '\n') +
+                        '\nDeseja continuar e incluir mesmo assim?';
+
+                    const confirmar = window.confirm(mensagemConfirmacao);
+                    if (!confirmar) {
+                        setStatusListaPedido('Importação cancelada pelo usuário após validação de divergências.');
+                        return;
+                    }
+
+                    data = await enviarArquivo(true);
+                }
+
+                try {
+                    await atualizarStatusListaPedido(listaId, 'Analisando orçamento');
+                } catch (_e) {
+                    // Não bloqueia atualização de preços se status falhar.
+                }
+                await carregarListasPedidos();
+                if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId)) {
+                    await abrirListaPedidoPorId(listaId);
+                }
+                const skusIncluidos = Array.isArray(data.skus_incluidos) ? data.skus_incluidos.filter(Boolean) : [];
+                const sufixoSkusIncluidos = skusIncluidos.length
+                    ? ' | SKUs incluídos: ' + skusIncluidos.join(', ')
+                    : '';
+                setStatusListaPedido(
+                    'Importação concluída. SKUs atualizados: ' + numero(data.total_skus_atualizados || 0) +
+                    ' | Quantidades atualizadas: ' + numero(data.total_quantidades_atualizadas || 0) +
+                    ' | SKUs incluídos: ' + numero(data.total_skus_incluidos || 0) + '.' +
+                    sufixoSkusIncluidos
+                );
+            } catch (e) {
+                setStatusListaPedido(e.message || 'Erro ao atualizar preços com Excel.');
+            }
+        });
+        input.click();
+    }
+
+    async function atualizarStatusListaPedido(listaId, novoStatus) {
+        if (!listaId || !novoStatus) return;
+        const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/status', {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                ...obterAuthHeaders()
+            },
+            body: JSON.stringify({ status: novoStatus })
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao atualizar status da lista.');
+        }
+        const data = await resp.json();
+        const listaAtualizada = data.lista || null;
+        if (listaAtualizada && listaAtualizada.id) {
+            listasPedidosResumo = (listasPedidosResumo || []).map(l => {
+                if (String(l.id) !== String(listaAtualizada.id)) return l;
+                return { ...l, ...listaAtualizada };
+            });
+            if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaAtualizada.id)) {
+                listaPedidoAtual = { ...listaPedidoAtual, ...listaAtualizada };
+            }
+            renderListaPedidosResumo();
+            renderEditorListaPedido();
+        }
+    }
+
+    async function excluirListaPedido(listaId, nomeLista, statusLista) {
+        if (!listaId) return;
+        const cancelada = String(statusLista || '').trim() === 'Pedido cancelado';
+        const mensagem = cancelada
+            ? 'Aviso: esta lista cancelada será excluída permanentemente e não poderá ser recuperada.\n\nLista: "' + String(nomeLista || '') + '"\n\nDeseja continuar?'
+            : 'Tem certeza que deseja apagar a lista "' + String(nomeLista || '') + '"?\n\nEssa ação não pode ser desfeita.';
+        const confirma = window.confirm(mensagem);
+        if (!confirma) return;
+        try {
+            setStatusListaPedido(cancelada ? 'Excluindo lista cancelada...' : 'Apagando lista...');
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)), {
+                method: 'DELETE',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao apagar lista.');
+            }
+
+            listasPedidosResumo = listasPedidosResumo.filter(l => String(l.id) !== String(listaId));
+            if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId)) {
+                listaPedidoAtual = null;
+            }
+            renderListaPedidosResumo();
+            renderEditorListaPedido();
+            setStatusListaPedido('Lista apagada com sucesso.');
+        } catch (e) {
+            setStatusListaPedido(e.message || 'Erro ao apagar lista.');
+        }
+    }
+
+    async function abrirListaPedidoPorId(listaId) {
+        if (!listaId) return;
+        try {
+            setStatusListaPedido('Abrindo lista...');
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)), {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao abrir lista de pedidos.');
+            }
+            const data = await resp.json();
+            listaPedidoAtual = data.lista || null;
+            if (listaPedidoAtual && forcarStatusCanceladoLocal(listaId)) {
+                listaPedidoAtual.status = 'Pedido cancelado';
+            }
+            renderListaPedidosResumo();
+            renderEditorListaPedido();
+            setStatusListaPedido('Lista carregada.');
+        } catch (e) {
+            setStatusListaPedido(e.message || 'Erro ao abrir lista.');
+        }
+    }
+
+    function renderEditorListaPedido() {
+        const inputNome = document.getElementById('nomeListaPedidoEdit');
+        const inputStatus = document.getElementById('statusListaPedidoEdit');
+        const painelEditor = document.getElementById('editorListaPedido');
+        const tbody = document.querySelector('#tblListaPedidoItens tbody');
+        const btnSalvar = document.getElementById('btnSalvarListaPedido');
+        if (!inputNome || !inputStatus || !painelEditor || !tbody || !btnSalvar) return;
+
+        prepararColunasListaPedidos();
+        habilitarResizeColunasListaPedidos();
+
+        tbody.innerHTML = '';
+        if (!listaPedidoAtual) {
+            painelEditor.classList.add('hidden');
+            inputNome.value = '';
+            renderStatusListaPedidoVisual('Lista gerada');
+            btnSalvar.disabled = true;
+            tbody.innerHTML = '<tr><td colspan="9">Selecione uma lista para editar.</td></tr>';
+            return;
+        }
+
+        painelEditor.classList.remove('hidden');
+        btnSalvar.disabled = false;
+        inputNome.value = String(listaPedidoAtual.nome_lista || '');
+        renderStatusListaPedidoVisual(listaPedidoAtual.status);
+        const itens = Array.isArray(listaPedidoAtual.itens) ? listaPedidoAtual.itens : [];
+        if (!itens.length) {
+            tbody.innerHTML = '<tr><td colspan="9">Lista sem itens.</td></tr>';
+            atualizarTotaisListaPedido();
+            return;
+        }
+
+        itens.forEach((item, idx) => {
+            const sku = String(item.SKU || '');
+            const foto = String(item.Foto || '');
+            const titulo = String(item['Título do produto em inglês'] || '');
+            const oem = String(item.OEM || '');
+            const link = String(item.Link || '');
+            const qtd = Number(item.Quantidade || 0);
+            const vUnit = Number(item['Valor unidade'] || 0);
+            const vTotal = Number(item['Valor total'] || (qtd * vUnit));
+            const fotoUrl = obterUrlFoto(foto);
+
+            const tr = document.createElement('tr');
+            tr.dataset.skuCmp = normalizarSkuComparacaoLocal(sku);
+            tr.innerHTML =
+                '<td><span class="sku-chip">' + escaparHtml(sku) + '</span></td>' +
+                '<td>' + (fotoUrl ? '<img class="foto-sku" src="' + escaparHtml(fotoUrl) + '" alt="Foto ' + escaparHtml(sku) + '" loading="lazy">' : '<span class="foto-empty">Sem foto</span>') + '</td>' +
+                '<td title="' + escaparHtml(titulo) + '">' + escaparHtml(titulo) + '</td>' +
+                '<td>' + escaparHtml(oem) + '</td>' +
+                '<td>' + (link ? '<a href="' + escaparHtml(link) + '" target="_blank" rel="noopener noreferrer">' + escaparHtml(link) + '</a>' : '') + '</td>' +
+                '<td><input data-kind="qtd" data-idx="' + idx + '" type="number" min="0" step="1" value="' + escaparHtml(String(qtd)) + '"></td>' +
+                '<td><input data-kind="vun" data-idx="' + idx + '" type="text" inputmode="decimal" value="' + escaparHtml(formatarMoedaUSD(vUnit)) + '"></td>' +
+                '<td><input data-kind="vtot" data-idx="' + idx + '" type="hidden" value="' + escaparHtml(String(vTotal)) + '"><span class="money-locked" data-kind="vtot_fmt" data-idx="' + idx + '">' + escaparHtml(formatarMoedaUSD(vTotal)) + '</span></td>' +
+                '<td><button type="button" class="btn-danger-soft btn-icon-action btn-mini" data-kind="excluir-item" data-idx="' + idx + '" title="Excluir SKU" aria-label="Excluir SKU">' +
+                    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+                        '<path d="M3 6H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                        '<path d="M8 6V4C8 2.9 8.9 2 10 2H14C15.1 2 16 2.9 16 4V6" stroke="currentColor" stroke-width="2"/>' +
+                        '<path d="M19 6L18 20C17.9 21.1 17 22 15.9 22H8.1C7 22 6.1 21.1 6 20L5 6" stroke="currentColor" stroke-width="2"/>' +
+                        '<path d="M10 11V17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                        '<path d="M14 11V17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                    '</svg>' +
+                '</button></td>';
+            tbody.appendChild(tr);
+        });
+
+        tbody.querySelectorAll('input[data-kind="qtd"], input[data-kind="vun"]').forEach(inp => {
+            inp.addEventListener('input', recalcularLinhaListaPedido);
+        });
+        tbody.querySelectorAll('input[data-kind="vun"]').forEach(inp => {
+            inp.addEventListener('blur', () => {
+                const vu = toNumeroDecimal(inp.value || 0);
+                inp.value = formatarMoedaUSD(vu);
+                recalcularLinhaListaPedido({ target: inp });
+            });
+        });
+        tbody.querySelectorAll('button[data-kind="excluir-item"]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idxItem = Number(btn.dataset.idx || -1);
+                excluirItemListaPedido(idxItem);
+            });
+        });
+        atualizarTotaisListaPedido();
+    }
+
+    function excluirItemListaPedido(idx) {
+        if (!listaPedidoAtual || !Array.isArray(listaPedidoAtual.itens)) return;
+        const pos = Number(idx);
+        if (!Number.isInteger(pos) || pos < 0 || pos >= listaPedidoAtual.itens.length) return;
+
+        const item = listaPedidoAtual.itens[pos] || {};
+        const sku = String(item.SKU || '').trim() || ('item #' + String(pos + 1));
+        const confirmar = window.confirm('Deseja excluir o SKU ' + sku + ' desta lista?');
+        if (!confirmar) return;
+
+        const itens = [...listaPedidoAtual.itens];
+        itens.splice(pos, 1);
+        listaPedidoAtual.itens = itens;
+        renderEditorListaPedido();
+        setStatusListaPedido('SKU ' + sku + ' removido. Clique em "Salvar alterações" para confirmar.');
+    }
+
+    function destacarSkuNaTabelaPedido(sku) {
+        const skuCmp = normalizarSkuComparacaoLocal(sku);
+        if (!skuCmp) return false;
+        const rows = Array.from(document.querySelectorAll('#tblListaPedidoItens tbody tr'));
+        const alvo = rows.find((r) => String(r.dataset.skuCmp || '') === skuCmp);
+        if (!alvo) return false;
+
+        rows.forEach((r) => {
+            r.style.outline = '';
+            r.style.background = '';
+        });
+
+        alvo.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        alvo.style.outline = '2px solid rgba(99, 187, 255, 0.95)';
+        alvo.style.background = 'rgba(52, 103, 168, 0.22)';
+        setTimeout(() => {
+            alvo.style.outline = '';
+            alvo.style.background = '';
+        }, 2200);
+        return true;
+    }
+
+    function atualizarTotaisListaPedido() {
+        const tbody = document.querySelector('#tblListaPedidoItens tbody');
+        if (!tbody) return;
+        let somaQtd = 0, somaVtot = 0;
+        tbody.querySelectorAll('input[data-kind="qtd"]').forEach(el => { somaQtd += toNumeroDecimal(el.value || 0); });
+        tbody.querySelectorAll('input[data-kind="vtot"]').forEach(el => { somaVtot += toNumeroDecimal(el.value || 0); });
+        const elQtd = document.getElementById('tfootQtd');
+        const elVtot = document.getElementById('tfootVtot');
+        if (elQtd) elQtd.textContent = somaQtd.toLocaleString('pt-BR');
+        if (elVtot) elVtot.textContent = formatarMoedaUSD(somaVtot);
+    }
+
+    function recalcularLinhaListaPedido(ev) {
+        const el = ev && ev.target ? ev.target : null;
+        if (!el) return;
+        const idx = String(el.dataset.idx || '');
+        const qtdEl = document.querySelector('input[data-kind="qtd"][data-idx="' + idx + '"]');
+        const vunEl = document.querySelector('input[data-kind="vun"][data-idx="' + idx + '"]');
+        const vtotEl = document.querySelector('input[data-kind="vtot"][data-idx="' + idx + '"]');
+        const vtotFmtEl = document.querySelector('[data-kind="vtot_fmt"][data-idx="' + idx + '"]');
+        if (!qtdEl || !vunEl || !vtotEl) return;
+        const q = toNumeroDecimal(qtdEl.value || 0);
+        const vu = toNumeroDecimal(vunEl.value || 0);
+        const total = Math.max(0, q * vu);
+        vtotEl.value = String(Math.round(total * 100) / 100);
+        if (vtotFmtEl) vtotFmtEl.textContent = formatarMoedaUSD(total);
+        atualizarTotaisListaPedido();
+    }
+
+    function obterCampoProdutoCadastro(produto, chaves) {
+        if (!produto || typeof produto !== 'object') return '';
+        const normalizarChave = (txt) => String(txt || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/_/g, ' ')
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/^cg\s+/, '');
+        const mapa = {};
+        Object.keys(produto).forEach((k) => {
+            const nk = normalizarChave(k);
+            if (!nk) return;
+            const val = produto[k];
+            if (val === undefined || val === null || !String(val).trim()) return;
+            if (mapa[nk] === undefined) {
+                mapa[nk] = val;
+            }
+        });
+        for (const chave of (chaves || [])) {
+            const key = normalizarChave(chave);
+            if (!key) continue;
+            const val = mapa[key];
+            if (val !== undefined && val !== null && String(val).trim()) {
+                return String(val).trim();
+            }
+            for (const mk of Object.keys(mapa)) {
+                if (mk === key || mk.includes(key) || key.includes(mk)) {
+                    const mv = mapa[mk];
+                    if (mv !== undefined && mv !== null && String(mv).trim()) {
+                        return String(mv).trim();
+                    }
+                }
+            }
+        }
+        return '';
+    }
+
+    async function buscarProdutoCadastroPorSku(sku) {
+        const skuTxt = String(sku || '').trim();
+        if (!skuTxt) {
+            throw new Error('Informe um SKU válido.');
+        }
+
+        const headers = { ...obterAuthHeaders() };
+        const resp = await fetch('/api/cadastro/produto?sku=' + encodeURIComponent(skuTxt), {
+            method: 'GET',
+            headers
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            return (data && data.produto) ? data.produto : {};
+        }
+
+        const respLista = await fetch('/api/cadastro/produtos', {
+            method: 'GET',
+            headers
+        });
+        if (!respLista.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || 'SKU não encontrado no cadastro.');
+        }
+
+        const lista = await respLista.json();
+        const produtos = Array.isArray(lista) ? lista : [];
+        const skuCmp = normalizarSkuComparacaoLocal(skuTxt);
+        const encontrado = produtos.find((p) => {
+            const skuProd = (p && (p.sku || p.SKU)) || '';
+            return normalizarSkuComparacaoLocal(skuProd) === skuCmp;
+        });
+
+        if (!encontrado) {
+            throw new Error('SKU não encontrado no cadastro.');
+        }
+        return encontrado;
+    }
+
+    async function confirmarAdicionarSkuPedido() {
+        if (!listaPedidoAtual || !listaPedidoAtual.id) {
+            setStatusListaPedido('Selecione uma lista para adicionar SKU.');
+            return;
+        }
+
+        const inputSku = document.getElementById('addSkuInput');
+        const inputQtd = document.getElementById('addSkuQtdInput');
+        const inputValor = document.getElementById('addSkuValorInput');
+        const btnConfirmar = document.getElementById('btnConfirmarAdicionarSku');
+        const inputNome = document.getElementById('nomeListaPedidoEdit');
+        if (!inputSku || !inputQtd || !inputValor || !btnConfirmar || !inputNome) return;
+
+        const skuDigitado = String(inputSku.value || '').trim();
+        const qtdNumero = toNumeroPrompt(inputQtd.value || '');
+        const quantidade = Math.max(0, Math.round(Number.isFinite(qtdNumero) ? qtdNumero : 0));
+        const valorNumero = toNumeroPrompt(inputValor.value || '');
+
+        if (!skuDigitado) {
+            setStatusModalAdicionarSku('Informe o SKU.');
+            inputSku.focus();
+            return;
+        }
+        if (!/^\d+$/.test(skuDigitado)) {
+            setStatusModalAdicionarSku('Somente SKU numérico é permitido.');
+            inputSku.focus();
+            return;
+        }
+        if (!Number.isFinite(qtdNumero) || quantidade <= 0) {
+            setStatusModalAdicionarSku('Informe uma quantidade válida (maior que zero).');
+            inputQtd.focus();
+            return;
+        }
+        if (!Number.isFinite(valorNumero) || valorNumero <= 0) {
+            setStatusModalAdicionarSku('Informe um valor unitário válido (maior que zero).');
+            inputValor.focus();
+            return;
+        }
+
+        const nomeLista = String((inputNome && inputNome.value) || '').trim();
+        if (!nomeLista) {
+            setStatusListaPedido('Informe o nome da lista antes de adicionar SKU.');
+            return;
+        }
+
+        try {
+            btnConfirmar.disabled = true;
+            setStatusModalAdicionarSku('Buscando dados do SKU no cadastro...');
+            const produto = await buscarProdutoCadastroPorSku(skuDigitado);
+
+            const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['sku']) || skuDigitado);
+            const titulo = obterCampoProdutoCadastro(produto, [
+                'produtos blig', 'produto blig', 'produtos bling', 'produto bling',
+                'titulo do produto em ingles', 'título do produto em inglês', 'titulo', 'produto',
+                'nome', 'product name', 'description', 'product description', 'tradução ptbr ou nome na bling'
+            ]);
+            const foto = obterCampoProdutoCadastro(produto, ['foto']);
+            const oem = obterCampoProdutoCadastro(produto, ['oem', 'oem/ model', 'oem model', 'codigo oem', 'part number']);
+            const link = obterCampoProdutoCadastro(produto, ['link', 'link aliexpress', 'url aliexpress', 'url', 'mlb principal']);
+            const valorUnidade = Math.round((Number(valorNumero) + Number.EPSILON) * 100) / 100;
+            const valorTotal = Math.round(((quantidade * valorUnidade) + Number.EPSILON) * 100) / 100;
+
+            let itensAtuais = Array.isArray(listaPedidoAtual.itens) ? [...listaPedidoAtual.itens] : [];
+            const idxExistente = itensAtuais.findIndex((i) => normalizarSku(i && i.SKU) === skuCadastro);
+
+            const novoItem = {
+                SKU: skuCadastro,
+                Foto: foto,
+                'Título do produto em inglês': titulo,
+                OEM: oem,
+                Link: link,
+                Quantidade: quantidade,
+                'Valor unidade': valorUnidade,
+                'Valor total': valorTotal,
+            };
+
+            let msgAcao = '';
+            if (idxExistente >= 0) {
+                itensAtuais[idxExistente] = { ...itensAtuais[idxExistente], ...novoItem };
+                msgAcao = 'SKU ' + skuCadastro + ' já existia e foi atualizado.';
+            } else {
+                itensAtuais.push(novoItem);
+                msgAcao = 'SKU ' + skuCadastro + ' adicionado na lista.';
+            }
+            itensAtuais = ordenarItensListaPedidoPorSku(itensAtuais);
+
+            setStatusModalAdicionarSku('Salvando item na lista...');
+            const headers = {
+                'Content-Type': 'application/json',
+                ...obterAuthHeaders()
+            };
+
+            let data = null;
+            let falhaRotaDedicada = false;
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)) + '/adicionar-sku', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    sku: skuCadastro,
+                    quantidade,
+                    valor_unitario: valorUnidade
+                })
+            });
+
+            if (resp.ok) {
+                data = await resp.json();
+            } else {
+                falhaRotaDedicada = true;
+                const err = await resp.json().catch(() => ({}));
+                const erroAutenticacao = resp.status === 401 || resp.status === 403;
+                if (erroAutenticacao) {
+                    throw new Error(err.detail || 'Falha ao salvar item na lista.');
+                }
+            }
+
+            if (falhaRotaDedicada) {
+                const respPut = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
+                    method: 'PUT',
+                    headers,
+                    body: JSON.stringify({ nome_lista: nomeLista, itens: itensAtuais })
+                });
+                if (!respPut.ok) {
+                    const errPut = await respPut.json().catch(() => ({}));
+                    throw new Error(errPut.detail || 'Falha ao salvar item na lista.');
+                }
+                data = await respPut.json();
+            }
+
+            listaPedidoAtual = data.lista || listaPedidoAtual;
+
+            const skuSalvo = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
+                ? listaPedidoAtual.itens.some((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro))
+                : false;
+            if (!skuSalvo) {
+                throw new Error('O item não retornou na lista após salvar. Tente novamente.');
+            }
+
+            await carregarListasPedidos();
+            if (listaPedidoAtual && listaPedidoAtual.id) {
+                await abrirListaPedidoPorId(listaPedidoAtual.id);
+            }
+
+            const skuAposReabrir = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
+                ? listaPedidoAtual.itens.some((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro))
+                : false;
+            if (!skuAposReabrir) {
+                // Última tentativa: força inclusão explícita e salva novamente.
+                const itensForcados = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens) ? [...listaPedidoAtual.itens] : [];
+                const idxForcado = itensForcados.findIndex((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro));
+                if (idxForcado >= 0) {
+                    itensForcados[idxForcado] = { ...itensForcados[idxForcado], ...novoItem };
+                } else {
+                    itensForcados.push({ ...novoItem });
+                }
+                const itensForcadosOrdenados = ordenarItensListaPedidoPorSku(itensForcados);
+
+                const respForcado = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
+                    method: 'PUT',
+                    headers,
+                    body: JSON.stringify({ nome_lista: nomeLista, itens: itensForcadosOrdenados })
+                });
+                if (!respForcado.ok) {
+                    const errForcado = await respForcado.json().catch(() => ({}));
+                    throw new Error(errForcado.detail || 'Não foi possível confirmar o SKU na lista.');
+                }
+
+                const dataForcado = await respForcado.json();
+                listaPedidoAtual = dataForcado.lista || listaPedidoAtual;
+                await abrirListaPedidoPorId(listaPedidoAtual.id);
+
+                const skuAposForcar = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
+                    ? listaPedidoAtual.itens.some((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro))
+                    : false;
+                if (!skuAposForcar) {
+                    throw new Error('SKU não apareceu na lista após tentativas de salvamento.');
+                }
+            }
+
+            const apareceuVisual = destacarSkuNaTabelaPedido(skuCadastro);
+            if (!apareceuVisual) {
+                throw new Error('SKU salvo, mas não foi localizado visualmente na tabela.');
+            }
+
+            const acaoServidor = String((data && data.acao) || '').toLowerCase();
+            let msgFinal = msgAcao;
+            if (acaoServidor === 'adicionado') {
+                msgFinal = 'SKU ' + skuCadastro + ' adicionado na lista.';
+            } else if (acaoServidor === 'atualizado') {
+                msgFinal = 'SKU ' + skuCadastro + ' já existia e foi atualizado.';
+            }
+
+            fecharModalAdicionarSkuPedido();
+            setStatusListaPedido(msgFinal + ' Salvo com sucesso.');
+        } catch (e) {
+            const msgErro = e.message || 'Não foi possível adicionar o SKU ao pedido.';
+            setStatusModalAdicionarSku(msgErro);
+            if (/sku/i.test(String(msgErro))) {
+                abrirAvisoSkuCentral(msgErro);
+            }
+        } finally {
+            btnConfirmar.disabled = false;
+        }
+    }
+
+    async function salvarListaPedidoAtual() {
+        if (!listaPedidoAtual || !listaPedidoAtual.id) {
+            setStatusListaPedido('Selecione uma lista para salvar.');
+            return;
+        }
+        const inputNome = document.getElementById('nomeListaPedidoEdit');
+        const nomeLista = String((inputNome && inputNome.value) || '').trim();
+        if (!nomeLista) {
+            setStatusListaPedido('Informe o nome da lista.');
+            return;
+        }
+
+        const itensOriginais = Array.isArray(listaPedidoAtual.itens) ? listaPedidoAtual.itens : [];
+        const itens = itensOriginais.map((item, idx) => {
+            const qtdEl = document.querySelector('input[data-kind="qtd"][data-idx="' + idx + '"]');
+            const vunEl = document.querySelector('input[data-kind="vun"][data-idx="' + idx + '"]');
+            const vtotEl = document.querySelector('input[data-kind="vtot"][data-idx="' + idx + '"]');
+            return {
+                ...item,
+                Quantidade: toNumeroDecimal((qtdEl && qtdEl.value) || item.Quantidade || 0),
+                'Valor unidade': toNumeroDecimal((vunEl && vunEl.value) || item['Valor unidade'] || 0),
+                'Valor total': toNumeroDecimal((vtotEl && vtotEl.value) || item['Valor total'] || 0),
+            };
+        });
+
+        try {
+            setStatusListaPedido('Salvando alterações...');
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({ nome_lista: nomeLista, itens })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao salvar alterações da lista.');
+            }
+            const data = await resp.json();
+            listaPedidoAtual = data.lista || listaPedidoAtual;
+            await carregarListasPedidos();
+            if (listaPedidoAtual && listaPedidoAtual.id) {
+                await abrirListaPedidoPorId(listaPedidoAtual.id);
+            }
+            setStatusListaPedido('Lista salva com sucesso.');
+        } catch (e) {
+            setStatusListaPedido(e.message || 'Erro ao salvar lista.');
+        }
+    }
+
+    function obterItensVisiveis() {
+        return (itensVisaoAtual || []).filter(i => !skusOcultosSet.has(normalizarSku(i.sku)));
+    }
+
+    function obterItensOcultados() {
+        const itensMap = new Map((itensVisaoAtual || []).map(i => [normalizarSku(i.sku), i]));
+        const itens = [];
+        Array.from(skusOcultosSet)
+            .sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true }))
+            .forEach(sku => {
+                if (itensMap.has(sku)) {
+                    itens.push(itensMap.get(sku));
+                } else {
+                    itens.push({
+                        sku,
+                        foto: '',
+                        titulo_anuncio: '',
+                        vendas_mensais: {},
+                        total_vendas_periodo: 0,
+                        saldo_atual_estoque: 0,
+                    });
+                }
+            });
+        return itens;
+    }
+
+    function renderAbaAtual() {
+        const titulo = document.getElementById('tituloTabela');
+        const statusOcultados = document.getElementById('statusOcultados');
+        const btnAbaOcultados = document.getElementById('btnAbaOcultados');
+        const secaoTabelaPrincipal = document.getElementById('secaoTabelaPrincipal');
+        const secaoListasPedidos = document.getElementById('secaoListasPedidos');
+        const visiveis = obterItensVisiveis();
+        const ocultados = obterItensOcultados();
+
+        if (btnAbaOcultados) {
+            btnAbaOcultados.textContent = "SKU's ocultados (" + numero(ocultados.length) + ')';
+        }
+
+        if (statusOcultados) {
+            statusOcultados.textContent = 'Ocultados: ' + numero(ocultados.length) + ' | Exibidos na lista principal: ' + numero(visiveis.length);
+        }
+
+        if (abaAtual === 'listas_pedidos') {
+            if (titulo) titulo.textContent = 'Lista de pedidos';
+            if (statusOcultados) statusOcultados.textContent = 'Listas salvas por cliente. Clique em uma lista para abrir o conteudo.';
+            if (secaoTabelaPrincipal) secaoTabelaPrincipal.classList.add('hidden');
+            if (secaoListasPedidos) secaoListasPedidos.classList.remove('hidden');
+            listaPedidoAtual = null;
+            renderListaPedidosResumo();
+            renderEditorListaPedido();
+            return;
+        }
+
+        if (secaoTabelaPrincipal) secaoTabelaPrincipal.classList.remove('hidden');
+        if (secaoListasPedidos) secaoListasPedidos.classList.add('hidden');
+
+        if (abaAtual === 'ocultados') {
+            if (titulo) titulo.textContent = "SKU's ocultados";
+            renderTabela(colunasMesesAtuais, ocultados, 'ocultados');
+            return;
+        }
+
+        if (titulo) titulo.textContent = 'SKUs e vendas por mês';
+        renderTabela(colunasMesesAtuais, visiveis, 'lista');
+    }
+
+    function setStatusModalListaCompra(msg) {
+        const el = document.getElementById('modalListaCompraStatus');
+        if (el) el.textContent = msg || '';
+    }
+
+    function abrirModalListaCompra() {
+        const modal = document.getElementById('modalListaCompra');
+        const inputNome = document.getElementById('nomeListaPedido');
+        if (!modal) return;
+        setStatusModalListaCompra('');
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        if (inputNome) {
+            const agora = new Date();
+            const mm = String(agora.getMonth() + 1).padStart(2, '0');
+            const yyyy = String(agora.getFullYear());
+            if (!String(inputNome.value || '').trim()) {
+                const sufixoLoja = (lojaSelecionada && lojaSelecionada !== '__todas') ? ' - ' + lojaSelecionada : '';
+                inputNome.value = 'Pedido' + sufixoLoja + ' ' + mm + '/' + yyyy;
+            }
+            setTimeout(() => inputNome.focus(), 40);
+        }
+    }
+
+    function fecharModalListaCompra() {
+        const modal = document.getElementById('modalListaCompra');
+        if (!modal) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+
+    function obterOpcaoListaCompraSelecionada() {
+        const opcao = document.querySelector('input[name="opcaoCompra"]:checked');
+        if (!opcao) {
+            return { opcao: 'media_6m', crescimento_percent: 0 };
+        }
+
+        if (opcao.value === 'media_6m') {
+            return { opcao: 'media_6m', crescimento_percent: 0 };
+        }
+
+        const perc = Number(opcao.value || 0);
+        return {
+            opcao: 'crescimento',
+            crescimento_percent: Number.isFinite(perc) ? perc : 0
+        };
+    }
+
+    async function gerarListaCompraExcel() {
+        const btn = document.getElementById('btnConfirmarListaCompra');
+        const inputNome = document.getElementById('nomeListaPedido');
+        if (btn) btn.disabled = true;
+        exibirOverlayDownload(true);
+        setStatusModalListaCompra('Gerando arquivo Excel...');
+
+        try {
+            const payload = obterOpcaoListaCompraSelecionada();
+            payload.nome_lista = String((inputNome && inputNome.value) || '').trim();
+            if (!payload.nome_lista) {
+                throw new Error('Informe o nome da lista para continuar.');
+            }
+            payload.hidden_skus = Array.from(skusOcultosSet);
+            payload.loja = lojaSelecionada || '__todas';
+            payload.periodo_meses = Number(periodoAtual || 12);
+            let resp = await fetch('/api/medias-compras/gerar-lista-compra', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (resp.status === 405) {
+                const params = new URLSearchParams();
+                params.set('opcao', String(payload.opcao || 'media_6m'));
+                if (payload.opcao === 'crescimento') {
+                    params.set('crescimento_percent', String(Number(payload.crescimento_percent || 0)));
+                }
+                if (Array.isArray(payload.hidden_skus) && payload.hidden_skus.length) {
+                    params.set('hidden_skus', payload.hidden_skus.join(','));
+                }
+                params.set('nome_lista', payload.nome_lista);
+                params.set('loja', String(payload.loja || '__todas'));
+                params.set('periodo_meses', String(Number(payload.periodo_meses || 12)));
+                resp = await fetch('/api/medias-compras/gerar-lista-compra?' + params.toString(), {
+                    method: 'GET',
+                    headers: {
+                        ...obterAuthHeaders()
+                    }
+                });
+            }
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao gerar lista de compra.');
+            }
+
+            const data = await resp.json();
+            if (!data.lista_id) {
+                throw new Error('Lista nao foi gerada corretamente.');
+            }
+
+            setStatusModalListaCompra('Lista gerada com sucesso.');
+            setStatus('Lista de compra gerada com sucesso. Itens: ' + numero(data.total_itens || 0) + '. SKUs ocultados ignorados: ' + numero(data.total_skus_ocultados || 0));
+            setTimeout(() => {
+                fecharModalListaCompra();
+                selecionarAba('listas_pedidos');
+            }, 500);
+        } catch (e) {
+            setStatusModalListaCompra(e.message || 'Erro ao gerar lista de compra.');
+        } finally {
+            exibirOverlayDownload(false);
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    function abrirPaginaProdutosSemVenda() {
+        const params = new URLSearchParams();
+        if (lojaSelecionada && lojaSelecionada !== '__todas') {
+            params.set('loja', lojaSelecionada);
+        }
+        window.location.href = '/produtos_sem_venda.html' + (params.toString() ? '?' + params.toString() : '');
+    }
+
+    async function baixarListaSugestaoExcel() {
+        exibirOverlayDownload(true);
+        setStatus('Gerando lista de sugestão de compra...');
+        try {
+            const params = new URLSearchParams();
+            params.set('meses', String(Number(periodoAtual || 12)));
+            params.set('loja', String(lojaSelecionada || '__todas'));
+
+            const resp = await fetch('/api/medias-compras/gerar-lista-sugestao?' + params.toString(), {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Falha ao gerar lista de sugestão.');
+            }
+
+            const data = await resp.json();
+            if (!data.file_id) {
+                throw new Error('Arquivo da sugestão não foi gerado.');
+            }
+
+            const downloadUrl = '/api/medias-compras/download/' + encodeURIComponent(String(data.file_id)) + '?ts=' + Date.now();
+            const respDownload = await fetch(downloadUrl, {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!respDownload.ok) {
+                const err = await respDownload.json().catch(() => ({}));
+                throw new Error(err.detail || 'Arquivo de sugestão indisponível para download.');
+            }
+
+            const blob = await respDownload.blob();
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = String(data.filename || 'sugestao_compra.xlsx');
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(link.href);
+            setStatus('Lista de sugestão gerada com sucesso. Itens: ' + numero(data.total_itens || 0));
+        } catch (e) {
+            setStatus(e.message || 'Erro ao gerar lista de sugestão.');
+        } finally {
+            exibirOverlayDownload(false);
+        }
+    }
+
+    function salvarLargurasColunas() {
+        try {
+            localStorage.setItem(LS_COL_WIDTHS_KEY, JSON.stringify(largurasColunas));
+        } catch (_e) {
+            // Sem bloqueio: persistência é complementar.
+        }
+    }
+
+    function salvarLargurasColunasPedidos() {
+        try {
+            localStorage.setItem(LS_PEDIDOS_COL_WIDTHS_KEY, JSON.stringify(largurasColunasPedidos));
+        } catch (_e) {
+            // Sem bloqueio: persistência é complementar.
+        }
+    }
+
+    function aplicarLarguraColuna(th, colKey) {
+        const largura = Number(largurasColunas[colKey] || 0);
+        if (largura > 0) {
+            th.style.width = largura + 'px';
+            th.style.minWidth = largura + 'px';
+        }
+    }
+
+    function aplicarLarguraColunaPorIndice(colIndex, larguraPx) {
+        const col = colElementsAtuais[colIndex];
+        if (!col) return;
+        col.style.width = larguraPx + 'px';
+        col.style.minWidth = larguraPx + 'px';
+    }
+
+    function prepararColunasListaPedidos() {
+        const tabela = document.getElementById('tblListaPedidoItens');
+        if (!tabela) return;
+
+        const colgroupAntigo = tabela.querySelector('colgroup');
+        if (colgroupAntigo) colgroupAntigo.remove();
+
+        const colgroup = document.createElement('colgroup');
+        colElementsPedidos = [];
+
+        CHAVES_COLUNAS_PEDIDOS.forEach((colKey) => {
+            const col = document.createElement('col');
+            const larguraSalva = Number(largurasColunasPedidos[colKey] || 0);
+            const larguraPadrao = Number(LARGURAS_PADRAO_COLUNAS_PEDIDOS[colKey] || 0);
+            const largura = Math.max(0, larguraSalva || larguraPadrao);
+            if (largura > 0) {
+                col.style.width = largura + 'px';
+                col.style.minWidth = largura + 'px';
+            }
+            colgroup.appendChild(col);
+            colElementsPedidos.push(col);
+        });
+
+        tabela.insertBefore(colgroup, tabela.firstChild);
+    }
+
+    function aplicarLarguraColunaPedidoPorIndice(colIndex, larguraPx) {
+        const col = colElementsPedidos[colIndex];
+        if (!col) return;
+        col.style.width = larguraPx + 'px';
+        col.style.minWidth = larguraPx + 'px';
+    }
+
+    function habilitarResizeColunasListaPedidos() {
+        const ths = Array.from(document.querySelectorAll('#tblListaPedidoItens thead th'));
+        ths.forEach((th, idx) => {
+            const colKey = CHAVES_COLUNAS_PEDIDOS[idx] || ('col_' + idx);
+            th.dataset.colKey = colKey;
+            th.dataset.colIndex = String(idx);
+            th.classList.add('resizable');
+
+            const larguraSalva = Number(largurasColunasPedidos[colKey] || 0);
+            const larguraPadrao = Number(LARGURAS_PADRAO_COLUNAS_PEDIDOS[colKey] || 0);
+            const largura = Math.max(0, larguraSalva || larguraPadrao);
+            if (largura > 0) {
+                th.style.width = largura + 'px';
+                th.style.minWidth = largura + 'px';
+            }
+
+            if (th.querySelector('.col-resizer')) return;
+
+            const grip = document.createElement('span');
+            grip.className = 'col-resizer';
+            grip.title = 'Arraste para ajustar largura';
+
+            grip.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const startX = e.clientX;
+                const rect = th.getBoundingClientRect();
+                const startWidth = rect.width;
+                const colIndex = Number(th.dataset.colIndex || -1);
+
+                function onMouseMove(ev) {
+                    const delta = ev.clientX - startX;
+                    const novaLargura = Math.max(1, Math.round(startWidth + delta));
+                    th.style.width = novaLargura + 'px';
+                    th.style.minWidth = novaLargura + 'px';
+                    aplicarLarguraColunaPedidoPorIndice(colIndex, novaLargura);
+                }
+
+                function onMouseUp() {
+                    const finalWidth = Math.round(th.getBoundingClientRect().width);
+                    largurasColunasPedidos[colKey] = Math.max(1, finalWidth);
+                    salvarLargurasColunasPedidos();
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+
+            th.appendChild(grip);
+        });
+    }
+
+    function habilitarResizeColunas() {
+        const ths = Array.from(document.querySelectorAll('#tblResultado thead th'));
+        ths.forEach(th => {
+            const colKey = th.dataset.colKey;
+            if (!colKey) return;
+
+            th.classList.add('resizable');
+            if (th.querySelector('.col-resizer')) return;
+
+            const grip = document.createElement('span');
+            grip.className = 'col-resizer';
+            grip.title = 'Arraste para ajustar largura';
+
+            grip.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const startX = e.clientX;
+                const rect = th.getBoundingClientRect();
+                const startWidth = rect.width;
+                const colIndex = Number(th.dataset.colIndex || -1);
+
+                function onMouseMove(ev) {
+                    const delta = ev.clientX - startX;
+                    const novaLargura = Math.max(8, Math.round(startWidth + delta));
+                    th.style.width = novaLargura + 'px';
+                    th.style.minWidth = novaLargura + 'px';
+                    aplicarLarguraColunaPorIndice(colIndex, novaLargura);
+                }
+
+                function onMouseUp() {
+                    const finalWidth = Math.round(th.getBoundingClientRect().width);
+                    largurasColunas[colKey] = Math.max(8, finalWidth);
+                    salvarLargurasColunas();
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+
+            th.appendChild(grip);
+        });
+    }
+
+    async function carregarVisao(meses) {
+        if ([3, 6, 12].includes(Number(meses))) {
+            periodoAtual = Number(meses);
+        }
+        atualizarBotoesPeriodo();
+        const lojaTexto = (lojaSelecionada && lojaSelecionada !== '__todas') ? (' da loja ' + lojaSelecionada) : ' de todas as lojas';
+        setStatus('Carregando dados de vendas e estoque' + lojaTexto + '...');
+
+        try {
+            const params = new URLSearchParams();
+            params.set('meses', String(periodoAtual));
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.set('loja', lojaSelecionada);
+            }
+            const resp = await fetch('/api/medias-compras/visao?' + params.toString(), {
+                method: 'GET',
+                headers: {
+                    ...obterAuthHeaders()
+                }
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Erro ao consultar visão de médias e compras.');
+            }
+
+            const data = await resp.json();
+            colunasMesesAtuais = data.colunas_meses || [];
+            itensVisaoAtual = data.itens || [];
+            renderAbaAtual();
+            const lojaData = (data.loja && data.loja !== '__todas') ? (' da loja ' + data.loja) : ' de todas as lojas';
+            setStatus('Dados' + lojaData + ' atualizados com sucesso. Sugestões de compra recalculadas com lead time de 6 meses.');
+        } catch (e) {
+            setStatus('Falha ao carregar dados.');
+            alert(e.message || 'Falha ao calcular.');
+        }
+    }
+
+    function renderTabela(colunasMeses, itens, modo) {
+        const tabela = document.getElementById('tblResultado');
+        const head = document.getElementById('headRow');
+
+        const colgroupAntigo = tabela.querySelector('colgroup');
+        if (colgroupAntigo) colgroupAntigo.remove();
+
+        const colgroup = document.createElement('colgroup');
+        colElementsAtuais = [];
+
+        head.innerHTML = '';
+        const headers = ['SKU', 'Foto', 'Título anúncio']
+            .concat(colunasMeses.map(c => c.key))
+            .concat(['Total período', 'VMM', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Sugestão compra', 'Ocultar']);
+        chavesColunasAtuais = ['sku', 'foto', 'titulo_anuncio']
+            .concat(colunasMeses.map(c => 'mes_' + c.key))
+            .concat(['total_periodo', 'media_mensal', 'saldo_estoque', 'estoque_transito', 'posicao_estoque', 'compra_sugerida', 'acao']);
+
+        chavesColunasAtuais.forEach((colKey) => {
+            const col = document.createElement('col');
+            const largura = Number(largurasColunas[colKey] || 0);
+            if (largura > 0) {
+                col.style.width = largura + 'px';
+                col.style.minWidth = largura + 'px';
+            }
+            colgroup.appendChild(col);
+            colElementsAtuais.push(col);
+        });
+
+        tabela.insertBefore(colgroup, tabela.firstChild);
+
+        headers.forEach((h, idx) => {
+            const th = document.createElement('th');
+            const ehColunaNumerica = idx >= 3 && idx < (headers.length - 1);
+            if (ehColunaNumerica) th.className = 'num';
+
+            const inicioMeses = 3;
+            const fimMeses = inicioMeses + colunasMeses.length;
+            const ehCabecalhoMes = idx >= inicioMeses && idx < fimMeses;
+
+            if (ehCabecalhoMes) {
+                const { anoCurto, mesNome } = quebrarMesAno(h);
+                th.classList.add('th-mes');
+                th.innerHTML = '<span class="mes-ano-topo">' + escaparHtml(anoCurto) + '</span><span class="mes-nome-base">' + escaparHtml(mesNome) + '</span>';
+            } else {
+                th.textContent = h;
+            }
+
+            th.dataset.colKey = chavesColunasAtuais[idx] || ('col_' + idx);
+            th.dataset.colIndex = String(idx);
+            aplicarLarguraColuna(th, th.dataset.colKey);
+            head.appendChild(th);
+        });
+
+        habilitarResizeColunas();
+
+        const tbody = document.querySelector('#tblResultado tbody');
+        tbody.innerHTML = '';
+
+        if (!itens.length) {
+            const tr = document.createElement('tr');
+            const msgVazio = (modo === 'ocultados')
+                ? "Nenhum SKU ocultado."
+                : "Nenhum SKU encontrado para o período selecionado.";
+            tr.innerHTML = '<td colspan="' + headers.length + '">' + msgVazio + '</td>';
+            tbody.appendChild(tr);
+            return;
+        }
+
+        itens.forEach(i => {
+            const tr = document.createElement('tr');
+
+            const compraSugeridaNivel = Number(i.compra_sugerida || 0);
+            const mediaMensalNivel = Number(i.media_mensal || 0);
+            const saldoFisicoNivel = Number(i.saldo_atual_estoque || 0);
+            const posicaoEstoqueNivel = Number(i.posicao_estoque || 0);
+            const mesesRestantesNivel = mediaMensalNivel > 0 ? (posicaoEstoqueNivel / mediaMensalNivel) : 999;
+
+            if (modo !== 'ocultados' && compraSugeridaNivel > 0) {
+                if (saldoFisicoNivel <= 0 || mesesRestantesNivel <= 1.5) {
+                    tr.classList.add('risco-critico');
+                } else {
+                    tr.classList.add('risco-atencao');
+                }
+            }
+
+            const tds = [];
+            tds.push('<td>' + escaparHtml(i.sku || '') + '</td>');
+
+            const fotoUrl = obterUrlFoto(i.foto || '');
+            if (fotoUrl) {
+                tds.push('<td><img class="foto-sku" src="' + escaparHtml(fotoUrl) + '" alt="Foto ' + escaparHtml(i.sku || '') + '" loading="lazy"></td>');
+            } else {
+                tds.push('<td><span class="foto-empty">Sem foto</span></td>');
+            }
+
+            const alertaSemVenda = String(i.aviso_sem_venda || '').trim();
+            const tituloAnuncio = escaparHtml(i.titulo_anuncio || '');
+            const alertaHtml = alertaSemVenda ? '<div class="produto-alerta-sem-venda">' + escaparHtml(alertaSemVenda) + '</div>' : '';
+            tds.push('<td class="titulo-anuncio" title="' + tituloAnuncio + '">' + tituloAnuncio + alertaHtml + '</td>');
+
+            colunasMeses.forEach(c => {
+                const v = i.vendas_mensais ? i.vendas_mensais[c.key] : 0;
+                tds.push('<td class="num">' + numero(v) + '</td>');
+            });
+
+            const compraSugerida = Number(i.compra_sugerida || 0);
+
+            tds.push('<td class="num"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
+            tds.push('<td class="num">' + numero(i.media_mensal || 0) + '</td>');
+            tds.push('<td class="num"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
+            tds.push('<td class="num">' + numero(i.estoque_em_transito || 0) + '</td>');
+            tds.push('<td class="num"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
+            tds.push('<td class="num"><strong style="color:' + (compraSugerida > 0 ? '#9de2bf' : '#9bb3d1') + '">' + numero(compraSugerida) + '</strong></td>');
+
+            const skuCodificado = encodeURIComponent(String(i.sku || ''));
+            if (modo === 'ocultados') {
+                tds.push('<td><button type="button" class="btn-success-soft" onclick="reexibirSkuPorCodigo(\'' + skuCodificado + '\')">Reexibir</button></td>');
+            } else {
+                tds.push('<td><button type="button" class="btn-danger-soft btn-icon-action" title="Ocultar SKU" aria-label="Ocultar SKU" onclick="ocultarSkuPorCodigo(\'' + skuCodificado + '\')">&minus;</button></td>');
+            }
+
+            tr.innerHTML = tds.join('');
+            tbody.appendChild(tr);
+        });
+    }
+
+    renderBotoesLojas([]);
+    carregarLojas().finally(() => carregarVisao(12));
+</script>
+<script src="/table_columns.js"></script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+

@@ -1,0 +1,1220 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vendas por SKU - JK Sistema</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
+    <script src="/auth.js?v=20260417c"></script>
+    <style>
+        body { margin:0; padding:20px; background:#0e1117; color:#e5e5e5; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        .container { max-width:1360px; margin:0 auto; }
+        .header { position:relative; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; min-height:44px; flex-wrap:wrap; }
+        .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .back-btn { padding:7px 12px; background:#4facfe; color:#fff; text-decoration:none; border-radius:6px; font-weight:bold; }
+        .back-btn:hover { background:#0073e6; }
+        .header .back-btn { position:absolute; left:0; top:50%; transform:translateY(-50%); }
+        .back-main-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 0 16px;
+            border-radius: 11px;
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: #ffffff;
+            background: linear-gradient(105deg, #63bbff, #7bcfff);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
+            transition: transform 0.18s ease, filter 0.18s ease;
+            position: fixed;
+            top: 16px;
+            right: 18px;
+            z-index: 1200;
+            cursor: pointer;
+        }
+        .back-main-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(0.96);
+        }
+        .nav-actions .back-main-btn {
+            position: static;
+            top: auto;
+            right: auto;
+        }
+        h1 { margin:0; }
+        .filters {
+            display:flex;
+            flex-direction:column;
+            gap:8px;
+            margin-bottom:12px;
+            align-items:stretch;
+        }
+        .periodo-linha {
+            display:flex;
+            flex-wrap:wrap;
+            gap:8px;
+            align-items:center;
+            background:#121722;
+            border:1px solid #1f2a3a;
+            border-radius:8px;
+            padding:8px;
+        }
+        .periodo-texto {
+            color:#9bd1ff;
+            font-size:0.86rem;
+            font-weight:500;
+        }
+        .periodo-range {
+            display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+        }
+        .periodo-separador {
+            color:#6a7a96; font-size:0.85rem;
+        }
+        .flatpickr-calendar {
+            background: #f5f7fb;
+            border: 1px solid #cfd8e3;
+            box-shadow: 0 14px 32px rgba(0,0,0,0.38);
+        }
+        .flatpickr-months .flatpickr-month,
+        .flatpickr-weekday,
+        .flatpickr-day { color: #32445e; }
+        .flatpickr-current-month input.cur-year,
+        .flatpickr-current-month .flatpickr-monthDropdown-months { color:#32445e; font-weight:700; }
+        .flatpickr-day.today { border-color:#4facfe; }
+        .flatpickr-day.selected, .flatpickr-day.startRange, .flatpickr-day.endRange { background:#31b364; border-color:#31b364; color:#fff; }
+        .flatpickr-day.inRange { background:#d7f2df; border-color:#d7f2df; color:#426556; box-shadow:none; }
+        .flatpickr-prev-month, .flatpickr-next-month { opacity:1!important; visibility:visible!important; display:block!important; width:34px; height:34px; padding:6px!important; border-radius:8px; top:4px; color:#2f4a67!important; }
+        .flatpickr-prev-month svg, .flatpickr-next-month svg { display:block!important; width:18px; height:18px; fill:#2f4a67!important; }
+        .loja-barra {
+            display:flex;
+            align-items:center;
+            gap:8px;
+            background:#121722;
+            border:1px solid #1f2a3a;
+            border-radius:8px;
+            padding:8px;
+            margin-bottom:10px;
+            flex-wrap:wrap;
+        }
+        .loja-group { display:flex; flex-wrap:nowrap; gap:8px; align-items:center; overflow-x:auto; }
+        .loja-btn { padding:7px 10px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; font-size:0.9rem; }
+        .loja-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; font-weight:bold; }
+        .loja-btn:hover:not(.active) { background:#232840; }
+        .loja-sep { width:1px; height:22px; background:#2a3347; flex-shrink:0; margin:0 4px; }
+        input, select { padding:7px 8px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; }
+        .summary {
+            display:grid;
+            grid-template-columns:repeat(8, minmax(0, 1fr));
+            gap:8px;
+            margin-bottom:12px;
+        }
+        .card { background:#151d2c; border:1px solid #324762; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding:8px 10px; border-radius:8px; min-height:78px; min-width:0; display:flex; flex-direction:column; justify-content:space-between; }
+        .card h3 { margin:0 0 5px 0; font-size:0.87rem; color:#c6e3ff; font-weight:700; }
+        .card .val { font-size:1.02rem; font-weight:bold; color:#f3f8ff; }
+        .table-wrapper { max-height:none; overflow:visible; }
+        table { width:100%; border-collapse:collapse; background:#1c1f2b; border:1px solid #222; }
+        th, td { padding:10px; border-bottom:1px solid #222; text-align:left; font-size:0.95rem; }
+        th { background:#161925; color:#9bd1ff; position:sticky; top:0; z-index:1; }
+        tr:hover { background:#1f2331; }
+        .status-bar { margin:10px 0; padding:10px 12px; border-radius:8px; background:#161925; border:1px solid #222; min-height:20px; }
+        .loading { color:#9bd1ff; }
+        .error { color:#ff6b6b; }
+        .empty { color:#aaa; }
+        
+        /* Estilos para gráficos */
+        .graficos-container { margin: 14px 0; }
+        .grafico-controles {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+            align-items: stretch;
+        }
+        .grafico-grupo {
+            display: flex;
+            align-items: stretch;
+            flex-direction: column;
+            gap: 6px;
+            background: #121722;
+            border: 1px solid #1f2a3a;
+            border-radius: 8px;
+            padding: 7px 8px;
+            min-height: 44px;
+        }
+        .grafico-label {
+            color: #9bd1ff;
+            font-weight: bold;
+            white-space: nowrap;
+            text-align: center;
+            width: 100%;
+            display: block;
+        }
+        .grafico-opcoes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }
+        .grafico-btn { padding: 6px 11px; border-radius: 6px; border: 1px solid #333; background: #1c1f2b; color: #e5e5e5; cursor: pointer; font-size: 13px; }
+        .grafico-btn.active { background: #4facfe; color: #0e1117; border-color: #4facfe; font-weight: bold; }
+        .grafico-btn:hover:not(.active) { background: #2a2e3b; }
+        .grafico-wrapper { background: #1c1f2b; border: 1px solid #222; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+        .grafico-wrapper canvas { max-height: 400px; }
+        @media (max-width: 980px) {
+            .periodo-linha {
+                align-items: stretch;
+            }
+            .back-main-btn {
+                top: 12px;
+                right: 12px;
+                min-height: 48px;
+            }
+        }
+        @media (max-width: 760px) {
+            .back-main-btn {
+                width: auto;
+                min-height: 44px;
+                font-size: 1rem;
+                padding: 0 13px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<script>
+    if (typeof verificarSessao === 'function' && !verificarSessao()) {
+        // verificarSessao já redireciona quando necessário.
+    }
+
+    // Debug: Verificar sessão no início (SEM redirecionar)
+    const userData = localStorage.getItem('user_data');
+    console.log('userData no localStorage (vendas_sku):', userData);
+    if (!userData) {
+        console.warn('userData não encontrado no localStorage');
+    }
+</script>
+
+<div class="container">
+    <div class="header">
+        <h1 id="titulo">SKU</h1>
+        <div class="nav-actions">
+            <a class="back-main-btn" href="/dashboard.html">🏠 Home</a>
+            <button id="btnVoltarVendas" class="back-main-btn" type="button">Voltar</button>
+        </div>
+    </div>
+
+    <div id="status" class="status-bar"></div>
+
+    <div class="loja-barra">
+        <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
+        <div class="loja-sep"></div>
+        <select id="unidadeNegocioSelect" aria-label="Filtrar loja virtual">
+            <option value="__todos">Todas as lojas virtuais</option>
+        </select>
+    </div>
+
+    <div class="filters">
+        <div class="periodo-linha">
+            <div class="periodo-range">
+                <select id="mesAno"><option value="">Selecione um mês</option></select>
+                <span class="periodo-separador">ou</span>
+                <input type="text" id="dataIni" placeholder="DD/MM/AAAA" aria-label="Data inicial" readonly>
+                <input type="text" id="dataFim" placeholder="DD/MM/AAAA" aria-label="Data final" readonly>
+            </div>
+            <button id="btnReload" class="back-btn" style="background:#28a745;">Atualizar</button>
+        </div>
+        <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
+    </div>
+
+    <div class="summary" id="resumo"></div>
+
+    <!-- Seção de Gráficos -->
+    <div class="graficos-container">
+        <div class="grafico-controles">
+            <div class="grafico-grupo">
+                <span class="grafico-label">📊 Visualização:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-periodo="3m">3 Meses</button>
+                    <button class="grafico-btn" data-periodo="6m">6 Meses</button>
+                    <button class="grafico-btn" data-periodo="1a">1 Ano</button>
+                    <button class="grafico-btn" data-periodo="2a">2 Anos</button>
+                    <button class="grafico-btn" data-periodo="max">Máximo</button>
+                </div>
+            </div>
+            <div class="grafico-grupo">
+                <span class="grafico-label">📈 Tipo:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-tipo="linha">Linha</button>
+                    <button class="grafico-btn" data-tipo="barra">Barra</button>
+                </div>
+            </div>
+            <div class="grafico-grupo">
+                <span class="grafico-label">📐 Métrica:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-metrica="valor">Valor vendido</button>
+                    <button class="grafico-btn" data-metrica="quantidade">Quantidade vendida</button>
+                </div>
+            </div>
+            <div class="grafico-grupo">
+                <span class="grafico-label">📅 Intervalo:</span>
+                <div class="grafico-opcoes">
+                    <button class="grafico-btn active" data-intervalo="dia">Dia</button>
+                    <button class="grafico-btn" data-intervalo="semana">Semana</button>
+                    <button class="grafico-btn" data-intervalo="mes">Mês</button>
+                </div>
+            </div>
+        </div>
+        <div class="grafico-wrapper">
+            <canvas id="graficoVendas"></canvas>
+        </div>
+    </div>
+
+    <div class="table-wrapper">
+        <table>
+            <thead id="tHead"></thead>
+            <tbody id="tBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    const params = new URLSearchParams(window.location.search);
+    const skuAlvo = params.get('sku');
+    const dataInicio = params.get('data_inicio') || '';
+    const dataFim_param = params.get('data_fim') || '';
+    const lojaAlvo = params.get('loja') || '';
+    const veioDeVendas = document.referrer && document.referrer.includes('/vendas.html');
+
+    const tHead = document.getElementById('tHead');
+    const tBody = document.getElementById('tBody');
+    const resumo = document.getElementById('resumo');
+    const statusEl = document.getElementById('status');
+    const dataIni = document.getElementById('dataIni');
+    const dataFimEl = document.getElementById('dataFim');
+    const mesAno = document.getElementById('mesAno');
+    const periodoTexto = document.getElementById('periodoTexto');
+    const btnReload = document.getElementById('btnReload');
+    const titulo = document.getElementById('titulo');
+    const unidadeNegocioSelect = document.getElementById('unidadeNegocioSelect');
+
+    let clientId = null;
+    let dados = [];
+    let devolucoes = [];
+    let paginaEncerrando = false;
+    let dateRangePicker = null;
+    let dateFimPicker = null;
+    const controladoresFetchAtivos = new Set();
+    const timeoutsAtivos = new Set();
+
+    // --- Funções de data (mesmo padrão de vendas.html) ---
+    function toIsoDateFromInput(value) {
+        const v = String(value || '').trim();
+        if (!v) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(v)) {
+            const [d, m, y] = v.split('/');
+            return `${y}-${m}-${d}`;
+        }
+        return '';
+    }
+
+    function getDataIniISO() { return toIsoDateFromInput(dataIni.value); }
+    function getDataFimISO() { return toIsoDateFromInput(dataFimEl.value); }
+    function getHojeISO() { return new Date().toISOString().split('T')[0]; }
+
+    function setDataRangeISO(inicioIso, fimIso) {
+        const hojeIso = getHojeISO();
+        const fimSeguro = fimIso && fimIso > hojeIso ? hojeIso : fimIso;
+        // Usa Date object para evitar ambiguidade na parse do flatpickr (formato d/m/Y)
+        if (dateRangePicker) dateRangePicker.setDate(new Date(inicioIso + 'T12:00:00'), false);
+        else dataIni.value = inicioIso;
+        if (dateFimPicker) { if (fimSeguro) dateFimPicker.setDate(new Date(fimSeguro + 'T12:00:00'), false); else dateFimPicker.clear(false); }
+        else dataFimEl.value = fimSeguro || '';
+    }
+
+    function limitarDataFinalAoHoje() {
+        const fimIso = getDataFimISO();
+        if (!fimIso) return false;
+        const hojeIso = getHojeISO();
+        if (fimIso <= hojeIso) return false;
+        setDataRangeISO(getDataIniISO() || hojeIso, hojeIso);
+        return true;
+    }
+
+    function garantirOrdemPeriodo() {
+        const iniIso = getDataIniISO(), fimIso = getDataFimISO();
+        if (!iniIso || !fimIso || fimIso >= iniIso) return false;
+        setDataRangeISO(iniIso, iniIso);
+        return true;
+    }
+
+    function atualizarPeriodoTexto() {
+        const ini = getDataIniISO(), fim = getDataFimISO();
+        if (ini && fim) {
+            periodoTexto.textContent = 'Período: ' + formatDate(ini) + ' até ' + formatDate(fim);
+        } else {
+            periodoTexto.textContent = 'Período: não selecionado';
+        }
+    }
+
+    function sincronizarMesAnoSelect(inicioIso, fimIso) {
+        const mIni = (inicioIso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const mFim = (fimIso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        let valor = '';
+        if (mIni && mFim && mIni[1] === mFim[1] && mIni[2] === mFim[2] && mIni[3] === '01') {
+            const ultimoDia = new Date(Number(mIni[1]), Number(mIni[2]), 0).getDate();
+            if (Number(mFim[3]) === ultimoDia) valor = `${mIni[1]}-${mIni[2]}`;
+        }
+        mesAno.value = valor;
+    }
+
+    function preencherMeses() {
+        const hoje = new Date();
+        const meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+        for (let i = 0; i < 24; i++) {
+            const data = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+            const opt = document.createElement('option');
+            opt.value = data.getFullYear() + '-' + String(data.getMonth()+1).padStart(2,'0');
+            opt.textContent = meses[data.getMonth()] + ' de ' + data.getFullYear();
+            mesAno.appendChild(opt);
+        }
+    }
+
+    function selecionarMes(valor) {
+        if (!valor) return;
+        const [ano, mes] = valor.split('-');
+        const ultimoDia = new Date(Number(ano), Number(mes), 0).getDate();
+        const ini = `${ano}-${mes}-01`;
+        const fim = `${ano}-${mes}-${String(ultimoDia).padStart(2,'0')}`;
+        setDataRangeISO(ini, fim);
+        atualizarPeriodoTexto();
+        // setTimeout(0) garante que o flatpickr atualizou .value antes de ler getDataIniISO()
+        setTimeout(() => {
+            carregarUnidadesNegocioSku();
+            carregarVendasSku();
+        }, 0);
+    }
+
+    function initFlatpickrSku() {
+        if (typeof flatpickr !== 'function') return;
+        if (flatpickr?.localize && flatpickr?.l10ns?.pt) flatpickr.localize(flatpickr.l10ns.pt);
+        dateRangePicker = flatpickr(dataIni, {
+            dateFormat: 'd/m/Y', disableMobile: true, allowInput: true, clickOpens: true,
+            maxDate: 'today', locale: flatpickr.l10ns?.pt,
+            onChange: (sel) => {
+                if (sel.length === 1) { dataFimEl.value = ''; if (dateFimPicker) { dateFimPicker.clear(false); dateFimPicker.open(); } }
+            },
+            onValueUpdate: () => atualizarPeriodoTexto(),
+            onClose: () => {
+                limitarDataFinalAoHoje();
+                if (getDataIniISO() && getDataFimISO()) { atualizarPeriodoTexto(); carregarUnidadesNegocioSku(); carregarVendasSku(); }
+            }
+        });
+        dateFimPicker = flatpickr(dataFimEl, {
+            dateFormat: 'd/m/Y', disableMobile: true, allowInput: true, clickOpens: true,
+            maxDate: 'today', locale: flatpickr.l10ns?.pt,
+            onChange: (sel, _s, inst) => { if (sel.length === 1 && inst?.isOpen) inst.close(); },
+            onValueUpdate: () => { limitarDataFinalAoHoje(); garantirOrdemPeriodo(); atualizarPeriodoTexto(); },
+            onClose: () => {
+                limitarDataFinalAoHoje(); garantirOrdemPeriodo();
+                if (getDataIniISO() && getDataFimISO()) { atualizarPeriodoTexto(); carregarUnidadesNegocioSku(); carregarVendasSku(); }
+            }
+        });
+    }
+
+    function agendarTimeout(fn, ms) {
+        const id = setTimeout(() => {
+            timeoutsAtivos.delete(id);
+            fn();
+        }, ms);
+        timeoutsAtivos.add(id);
+        return id;
+    }
+
+    async function fetchCancelable(url, options = {}) {
+        if (paginaEncerrando) {
+            throw new Error('Navegando para Vendas');
+        }
+        const controller = new AbortController();
+        controladoresFetchAtivos.add(controller);
+        try {
+            return await fetch(url, {
+                ...options,
+                signal: controller.signal
+            });
+        } finally {
+            controladoresFetchAtivos.delete(controller);
+        }
+    }
+
+    function cancelarProcessosAtivosSku() {
+        paginaEncerrando = true;
+        controladoresFetchAtivos.forEach(controller => controller.abort());
+        controladoresFetchAtivos.clear();
+        timeoutsAtivos.forEach(id => clearTimeout(id));
+        timeoutsAtivos.clear();
+        if (chartInstance) {
+            chartInstance.destroy();
+            chartInstance = null;
+        }
+    }
+
+    // Funções utilitárias
+    function formatDate(dateStr) {
+        if (!dateStr) return '';
+        const [year, month, day] = dateStr.split('-');
+        return day + '/' + month + '/' + year;
+    }
+
+    if (skuAlvo) {
+        titulo.textContent = 'SKU: ' + skuAlvo;
+    }
+
+    preencherMeses();
+    initFlatpickrSku();
+    // Inicializa datas APÓS o flatpickr estar pronto para que setDate() seja chamado corretamente
+    if (dataInicio) setDataRangeISO(dataInicio, dataFim_param || dataInicio);
+    else if (dataFim_param) setDataRangeISO(dataFim_param, dataFim_param);
+    atualizarPeriodoTexto();
+    if (dataInicio && dataFim_param) sincronizarMesAnoSelect(dataInicio, dataFim_param);
+    mesAno.addEventListener('change', (e) => selecionarMes(e.target.value));
+
+    // Redireciona setDataRangeISO para funcionar antes do flatpickr estar inicializado
+    // (já tratado com fallback no método)
+
+    function formatCurrency(v) {
+        return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function renderResumo(lista, dev) {
+        const totalPedidos = lista.length;
+        const totalItens = lista.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const totalValor = lista.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
+        const totalDevolucoes = dev.length;
+        const itensDevolucao = dev.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const valorDevolucao = dev.reduce((acc, cur) => acc + Number(cur.valor_total || 0), 0);
+        const itensLiquidos = totalItens - itensDevolucao;
+        const valorLiquido = totalValor - valorDevolucao;
+        resumo.innerHTML = '';
+        const cards = [
+            { label: 'Pedidos Vendidos', value: totalPedidos },
+            { label: 'Itens Vendidos', value: totalItens },
+            { label: 'Valor Bruto', value: formatCurrency(totalValor) },
+            { label: 'Devolucoes', value: totalDevolucoes, isNegative: true },
+            { label: 'Itens Devolvidos', value: itensDevolucao, isNegative: true },
+            { label: 'Valor Devolvido', value: formatCurrency(valorDevolucao), isNegative: true },
+            { label: 'Itens Liquidos', value: itensLiquidos, isLiquido: true },
+            { label: 'Valor Liquido', value: formatCurrency(valorLiquido), isLiquido: true }
+        ];
+        cards.forEach(c => {
+            const div = document.createElement('div');
+            div.className = 'card';
+            if (c.isNegative) {
+                div.style.background = '#8f1f26';
+                div.style.borderLeft = '4px solid #ff6d74';
+                div.style.color = '#fff';
+            } else if (c.isLiquido) {
+                div.style.background = '#1a5a29';
+                div.style.borderLeft = '4px solid #69d68e';
+                div.style.fontWeight = 'bold';
+                div.style.color = '#fff';
+            }
+            const h3 = document.createElement('h3');
+            if (c.isNegative || c.isLiquido) h3.style.color = '#fff';
+            h3.textContent = c.label;
+            const val = document.createElement('div');
+            val.className = 'val';
+            if (c.isNegative || c.isLiquido) val.style.color = '#fff';
+            val.textContent = c.value;
+            div.appendChild(h3);
+            div.appendChild(val);
+            resumo.appendChild(div);
+        });
+    }
+
+    function renderTabela(vendas, devs) {
+        tHead.innerHTML = '';
+        tBody.innerHTML = '';
+        if (!vendas.length && !devs.length) {
+            statusEl.className = 'status-bar empty';
+            statusEl.textContent = 'Nenhum registro encontrado.';
+            return;
+        }
+        statusEl.textContent = '';
+        const cols = ['data','numero','numero_nf','comprador','quantidade','valor','tipo'];
+        const trHead = document.createElement('tr');
+        const labels = { data: 'Data', numero: 'Pedido', numero_nf: 'NF', comprador: 'Comprador', quantidade: 'Qtd', valor: 'Valor', tipo: 'Tipo' };
+        cols.forEach(col => {
+            const th = document.createElement('th');
+            th.textContent = labels[col] || col;
+            trHead.appendChild(th);
+        });
+        tHead.appendChild(trHead);
+
+        const frag = document.createDocumentFragment();
+        
+        vendas.forEach(item => {
+            const tr = document.createElement('tr');
+            const cells = [
+                (item.data || '').slice(0, 10),
+                item.numero || '',
+                item.numero_nf || '-',
+                item.comprador || '-',
+                item.quantidade || '',
+                formatCurrency(item.valor || 0),
+                'Venda'
+            ];
+            cells.forEach((val, idx) => {
+                const td = document.createElement('td');
+                td.textContent = val;
+                if (idx === 6) td.style.color = '#66bb6a';
+                tr.appendChild(td);
+            });
+            frag.appendChild(tr);
+        });
+        
+        devs.forEach(dev => {
+            const tr = document.createElement('tr');
+            const tipoDevolucao = String(dev.unidade_negocio_virtual || dev.unidade_negocio || '').trim() || 'Devolução';
+            const cells = [
+                (dev.data_emissao || '').slice(0, 10),
+                dev.numero_nota || '',
+                    dev.origem_codigo || dev.numero_nota || '-',
+                dev.fornecedor || '-',
+                dev.quantidade || '',
+                formatCurrency(dev.valor_total || 0),
+                tipoDevolucao
+            ];
+            cells.forEach((val, idx) => {
+                const td = document.createElement('td');
+                td.textContent = val;
+                if (idx === 6) td.style.color = '#ff5252';
+                tr.appendChild(td);
+            });
+            frag.appendChild(tr);
+        });
+        
+        tBody.appendChild(frag);
+    }
+
+    function obterClientId() {
+        const user = JSON.parse(localStorage.getItem('user_data') || 'null');
+        return user && user.client_id ? user.client_id : null;
+    }
+
+    function obterHeadersProtegidos(extra = {}) {
+        if (typeof obterAuthHeaders === 'function') {
+            return obterAuthHeaders(extra);
+        }
+        const cid = clientId || obterClientId();
+        return {
+            ...extra,
+            ...(cid ? { 'X-Client-ID': cid } : {})
+        };
+    }
+
+    async function carregarUnidadesNegocioSku() {
+        try {
+            const qsUn = new URLSearchParams();
+            if (lojaAlvo) qsUn.append('loja', lojaAlvo);
+            if (skuAlvo) qsUn.append('sku', skuAlvo);
+            const iniIso = getDataIniISO();
+            const fimIso = getDataFimISO();
+            if (iniIso) qsUn.append('data_inicio', iniIso);
+            if (fimIso) qsUn.append('data_fim', fimIso);
+            const resp = await fetchCancelable('/api/unidades-negocios' + (qsUn.toString() ? `?${qsUn.toString()}` : ''), { headers: obterHeadersProtegidos() });
+            if (!resp.ok) return;
+            const payload = await resp.json();
+            const unidades = Array.isArray(payload?.unidades) ? payload.unidades : [];
+            const nomes = unidades
+                .map(u => String(u?.nome || '').trim())
+                .filter(Boolean);
+
+            const atual = unidadeNegocioSelect.value || '__todos';
+            unidadeNegocioSelect.innerHTML = '<option value="__todos">Todas as lojas virtuais</option>';
+
+            nomes.sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(nome => {
+                const opt = document.createElement('option');
+                opt.value = nome;
+                opt.textContent = String(nome || '').replace(/^\s*Unidade\s+/i, '').trim() || nome;
+                unidadeNegocioSelect.appendChild(opt);
+            });
+
+            const valores = Array.from(unidadeNegocioSelect.options).map(o => o.value);
+            unidadeNegocioSelect.value = valores.includes(atual) ? atual : '__todos';
+        } catch (_e) {
+            // Se falhar, mantém apenas "Todas as lojas virtuais".
+        }
+    }
+
+    async function carregarVendasSku() {
+        if (paginaEncerrando) return;
+        statusEl.className = 'status-bar loading';
+        statusEl.textContent = 'Carregando vendas e devolucoes...';
+        try {
+            clientId = clientId || obterClientId();
+            if (!clientId) { 
+                console.warn('ClientId vazio - tentando carregar de localStorage novamente');
+                const userData2 = JSON.parse(localStorage.getItem('user_data') || 'null');
+                if (userData2 && userData2.client_id) {
+                    clientId = userData2.client_id;
+                    console.log('ClientId recuperado:', clientId);
+                }
+            }
+            
+            if (!clientId) { 
+                statusEl.className = 'status-bar error';
+                statusEl.innerHTML = '⚠️ Sessão expirada. <a href="/frontend_index.html" style="color:white; text-decoration:underline;">Fazer login novamente</a>';
+                console.warn('ClientId ainda vazio');
+                return; 
+            }
+            if (!skuAlvo) { 
+                statusEl.textContent = 'SKU nao informado.'; 
+                return; 
+            }
+            
+            const iniIso = getDataIniISO();
+            const fimIso = getDataFimISO();
+            const qs = new URLSearchParams({ sku: skuAlvo, resolver_nf: '0' });
+            if (iniIso) qs.append('data_inicio', iniIso);
+            if (fimIso) qs.append('data_fim', fimIso);
+            if (lojaAlvo) qs.append('loja', lojaAlvo);
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                qs.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+
+            const graficoPromise = carregarGrafico();
+            
+            const url = '/api/vendas?' + qs.toString();
+            const qsDev = new URLSearchParams();
+            if (iniIso) qsDev.append('data_inicio', iniIso);
+            if (fimIso) qsDev.append('data_fim', fimIso);
+            if (lojaAlvo) qsDev.append('loja', lojaAlvo);
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                qsDev.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+            const urlDev = '/api/notas-entrada/sku/' + encodeURIComponent(skuAlvo) + '?' + qsDev.toString();
+
+            const [resp, respDev] = await Promise.all([
+                fetchCancelable(url, { headers: obterHeadersProtegidos() }),
+                fetchCancelable(urlDev, { headers: obterHeadersProtegidos() })
+            ]);
+
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            dados = await resp.json();
+            if (respDev.ok) {
+                devolucoes = await respDev.json();
+            } else {
+                devolucoes = [];
+            }
+            
+            if (paginaEncerrando) return;
+
+            const mostrarDevolucoes = !unidadeNegocioSelect.value || unidadeNegocioSelect.value === '__todos';
+            const devolucoesAtivas = mostrarDevolucoes ? devolucoes : [];
+            renderResumo(dados, devolucoesAtivas);
+            renderTabela(dados, devolucoesAtivas);
+            statusEl.className = 'status-bar';
+            statusEl.textContent = '';
+            await graficoPromise;
+
+            // Hidrata numero de NF em segundo plano sem bloquear a primeira renderizacao.
+            hidratarNfEmSegundoPlano(qs);
+        } catch (e) {
+            if (paginaEncerrando || e.name === 'AbortError') {
+                return;
+            }
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = 'Erro ao carregar: ' + e.message;
+            console.error(e);
+        }
+    }
+
+    function chaveVenda(v) {
+        return [
+            (v.data || '').slice(0, 10),
+            String(v.numero || ''),
+            String(v.quantidade || ''),
+            String(v.valor || ''),
+            String(v.nota_fiscal_id || '')
+        ].join('|');
+    }
+
+    async function hidratarNfEmSegundoPlano(qsBase) {
+        if (paginaEncerrando) return;
+        const semNf = dados.some(v => !v.numero_nf && v.nota_fiscal_id);
+        if (!semNf) return;
+
+        try {
+            const qsNf = new URLSearchParams(qsBase);
+            qsNf.set('resolver_nf', '1');
+            const respNf = await fetchCancelable('/api/vendas?' + qsNf.toString(), { headers: obterHeadersProtegidos() });
+            if (!respNf.ok) return;
+
+            const dadosComNf = await respNf.json();
+            const mapaNf = new Map(dadosComNf.map(item => [chaveVenda(item), item.numero_nf || '']));
+            let alterou = false;
+
+            dados = dados.map(item => {
+                const nf = mapaNf.get(chaveVenda(item));
+                if (nf && nf !== item.numero_nf) {
+                    alterou = true;
+                    return { ...item, numero_nf: nf };
+                }
+                return item;
+            });
+
+            if (alterou) {
+                if (paginaEncerrando) return;
+                renderTabela(dados, devolucoes);
+            }
+        } catch (_e) {
+            // Sem impacto na UX principal se a hidratacao de NF falhar.
+        }
+    }
+
+    // ==================== GRÁFICOS ====================
+    let chartInstance = null;
+    let periodoGrafico = '3m';
+    let tipoGrafico = 'linha';
+    let metricaGrafico = 'valor';
+    let intervaloGrafico = 'dia';
+
+    function chavePreferenciaGraficoSku() {
+        const cid = clientId || obterClientId() || 'anon';
+        return `vendas_sku_grafico_pref_${cid}`;
+    }
+
+    function salvarPreferenciaGraficoSku() {
+        try {
+            localStorage.setItem(chavePreferenciaGraficoSku(), JSON.stringify({
+                periodo: periodoGrafico,
+                tipo: tipoGrafico,
+                metrica: metricaGrafico,
+                intervalo: intervaloGrafico
+            }));
+        } catch (_e) {
+            // Ignora erro de localStorage.
+        }
+    }
+
+    function carregarPreferenciaGraficoSku() {
+        try {
+            const raw = localStorage.getItem(chavePreferenciaGraficoSku());
+            if (!raw) return;
+            const pref = JSON.parse(raw);
+            if (pref?.periodo) periodoGrafico = pref.periodo;
+            if (pref?.tipo) tipoGrafico = pref.tipo;
+            if (pref?.metrica) metricaGrafico = pref.metrica;
+            if (pref?.intervalo) intervaloGrafico = pref.intervalo;
+        } catch (_e) {
+            // Ignora preferência inválida.
+        }
+    }
+
+    function aplicarPreferenciaGraficoUI() {
+        document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => {
+            b.classList.toggle('active', b.dataset.periodo === periodoGrafico);
+        });
+        document.querySelectorAll('.grafico-btn[data-tipo]').forEach(b => {
+            b.classList.toggle('active', b.dataset.tipo === tipoGrafico);
+        });
+        document.querySelectorAll('.grafico-btn[data-metrica]').forEach(b => {
+            b.classList.toggle('active', b.dataset.metrica === metricaGrafico);
+        });
+        document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(b => {
+            b.classList.toggle('active', b.dataset.intervalo === intervaloGrafico);
+        });
+
+        const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
+        if (intervaloGrafico === 'semana') {
+            btnsPeriodo.forEach(btn => {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+                btn.style.cursor = 'not-allowed';
+            });
+        } else {
+            btnsPeriodo.forEach(btn => {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.cursor = 'pointer';
+            });
+        }
+    }
+
+    function formatarLabelDataGrafico(label) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(label || '')) {
+            const [ano, mes, dia] = label.split('-');
+            return `${dia}/${mes}/${ano}`;
+        }
+        return label;
+    }
+
+    async function carregarGrafico() {
+        if (paginaEncerrando) return;
+        try {
+            const params = new URLSearchParams({
+                periodo: periodoGrafico,
+                intervalo: intervaloGrafico,
+                sku: skuAlvo
+            });
+
+            if (dataIni.value) params.append('data_inicio', getDataIniISO() || dataIni.value);
+            if (dataFimEl.value) params.append('data_fim', getDataFimISO() || dataFimEl.value);
+            if (lojaAlvo) params.append('loja', lojaAlvo);
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                params.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+
+            const response = await fetchCancelable(`/api/vendas/grafico?${params.toString()}`, {
+                headers: obterHeadersProtegidos()
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+
+            if (paginaEncerrando) return;
+            renderizarGrafico(data);
+        } catch (error) {
+            if (paginaEncerrando || error.name === 'AbortError') {
+                return;
+            }
+            console.error('Erro ao carregar gráfico:', error);
+        }
+    }
+
+    function renderizarGrafico(data) {
+        const ctx = document.getElementById('graficoVendas').getContext('2d');
+        
+        // Destruir gráfico anterior se existir
+        if (chartInstance) {
+            chartInstance.destroy();
+        }
+
+        const tipo = tipoGrafico === 'linha' ? 'line' : 'bar';
+        const usandoQuantidade = metricaGrafico === 'quantidade';
+
+        const unidadesNoTopoPlugin = {
+            id: 'unidadesNoTopo',
+            afterDatasetsDraw(chart) {
+                const { ctx } = chart;
+                ctx.save();
+                ctx.font = '700 11px Segoe UI';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+
+                const seriesQtd = [
+                    data.quantidades_vendas || [],
+                    data.quantidades_devolucoes || []
+                ];
+
+                chart.data.datasets.forEach((dataset, datasetIndex) => {
+                    const meta = chart.getDatasetMeta(datasetIndex);
+                    if (!meta || meta.hidden) return;
+
+                    meta.data.forEach((pointOrBar, index) => {
+                        const pos = pointOrBar.tooltipPosition();
+                        ctx.fillStyle = datasetIndex === 0 ? '#9bd1ff' : '#ffb3b3';
+
+                        if (tipoGrafico === 'barra') {
+                            const valorMetrica = Number((chart.data.datasets[datasetIndex]?.data || [])[index] || 0);
+                            if (!valorMetrica) return;
+                            const yBar = Math.min(pos.y - 6, chart.chartArea.bottom - 4);
+                            const textoBarra = usandoQuantidade
+                                ? Math.round(valorMetrica).toLocaleString('pt-BR')
+                                : ('R$ ' + valorMetrica.toFixed(2));
+                            ctx.fillText(textoBarra, pos.x, yBar);
+                            return;
+                        }
+
+                        if (tipoGrafico === 'linha') {
+                            const valor = Number((dataset.data || [])[index] || 0);
+                            if (!Number.isFinite(valor)) return;
+                            const texto = usandoQuantidade
+                                ? Math.round(valor).toLocaleString('pt-BR')
+                                : ('R$ ' + valor.toFixed(2));
+                            const yLinha = pos.y - 8;
+                            ctx.fillText(texto, pos.x, yLinha);
+                        }
+                    });
+                });
+
+                ctx.restore();
+            }
+        };
+
+        chartInstance = new Chart(ctx, {
+            type: tipo,
+            plugins: [unidadesNoTopoPlugin],
+            data: {
+                labels: (data.labels || []).map(formatarLabelDataGrafico),
+                datasets: [
+                    {
+                        label: usandoQuantidade ? `Vendas - SKU ${skuAlvo} (Qtd)` : `Vendas - SKU ${skuAlvo} (R$)`,
+                        data: usandoQuantidade ? (data.quantidades_vendas || []) : (data.valores_vendas || []),
+                        backgroundColor: tipoGrafico === 'linha' ? 'rgba(79, 172, 254, 0.2)' : 'rgba(79, 172, 254, 0.6)',
+                        borderColor: 'rgba(79, 172, 254, 1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true
+                    },
+                    {
+                        label: usandoQuantidade ? `Devoluções - SKU ${skuAlvo} (Qtd)` : `Devoluções - SKU ${skuAlvo} (R$)`,
+                        data: usandoQuantidade ? (data.quantidades_devolucoes || []) : (data.valores_devolucoes || []),
+                        backgroundColor: tipoGrafico === 'linha' ? 'rgba(255, 107, 107, 0.2)' : 'rgba(255, 107, 107, 0.6)',
+                        borderColor: 'rgba(255, 107, 107, 1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: {
+                            color: '#e5e5e5'
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                const idx = context.dataIndex;
+                                const isVendas = context.datasetIndex === 0;
+                                const qtdSerie = isVendas
+                                    ? (data.quantidades_vendas || [])
+                                    : (data.quantidades_devolucoes || []);
+                                const qtd = Number(qtdSerie[idx] || 0);
+                                if (usandoQuantidade) {
+                                    label += String(Math.round(context.parsed.y));
+                                } else {
+                                    label += 'R$ ' + context.parsed.y.toFixed(2) + ` | Qtd: ${qtd}`;
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: {
+                            color: '#e5e5e5',
+                            maxRotation: 45,
+                            minRotation: 45
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    },
+                    y: {
+                        ticks: {
+                            color: '#e5e5e5',
+                            callback: function(value) {
+                                if (usandoQuantidade) {
+                                    return Number(value || 0).toLocaleString('pt-BR');
+                                }
+                                return 'R$ ' + value.toFixed(2);
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Event listeners para controles de gráfico
+    document.querySelectorAll('.grafico-btn[data-periodo]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-periodo]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            periodoGrafico = this.dataset.periodo;
+            salvarPreferenciaGraficoSku();
+            
+            // Calcular e aplicar datas correspondentes
+            const hoje = new Date();
+            let dataInicial;
+            
+            if (periodoGrafico === '3m') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 90);
+            } else if (periodoGrafico === '6m') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 180);
+            } else if (periodoGrafico === '1a') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 365);
+            } else if (periodoGrafico === '2a') {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 730);
+            } else if (periodoGrafico === 'max') {
+                dataInicial = new Date(hoje);
+                dataInicial.setFullYear(hoje.getFullYear() - 10);
+            } else {
+                dataInicial = new Date(hoje);
+                dataInicial.setDate(hoje.getDate() - 90);
+            }
+            
+            // Atualizar inputs de data
+            dataIni.value = dataInicial.toISOString().split('T')[0];
+            dataFimEl.value = hoje.toISOString().split('T')[0];
+            atualizarPeriodoTexto();
+            
+            // Recarregar dados do SKU; o gráfico é carregado dentro do próprio fluxo.
+            carregarVendasSku();
+        });
+    });
+
+    document.querySelectorAll('.grafico-btn[data-tipo]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-tipo]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            tipoGrafico = this.dataset.tipo;
+            salvarPreferenciaGraficoSku();
+            carregarGrafico();
+        });
+    });
+
+    document.querySelectorAll('.grafico-btn[data-metrica]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-metrica]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            metricaGrafico = this.dataset.metrica;
+            salvarPreferenciaGraficoSku();
+            carregarGrafico();
+        });
+    });
+
+    document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            intervaloGrafico = this.dataset.intervalo;
+            salvarPreferenciaGraficoSku();
+            
+            // Desabilitar botões de período se intervalo = semana
+            const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
+            if (intervaloGrafico === 'semana') {
+                btnsPeriodo.forEach(btn => {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                });
+            } else {
+                btnsPeriodo.forEach(btn => {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                });
+            }
+            
+            carregarGrafico();
+        });
+    });
+
+    btnReload.addEventListener('click', () => { carregarUnidadesNegocioSku(); carregarVendasSku(); });
+    unidadeNegocioSelect.addEventListener('change', () => { carregarVendasSku(); });
+
+    const btnVoltarVendas = document.getElementById('btnVoltarVendas');
+    if (btnVoltarVendas) {
+        btnVoltarVendas.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            btnVoltarVendas.disabled = true;
+            cancelarProcessosAtivosSku();
+
+            if (veioDeVendas && window.history.length > 1) {
+                agendarTimeout(() => window.history.back(), 10);
+                return;
+            }
+
+            const qs = new URLSearchParams();
+            const iniIso = getDataIniISO();
+            const fimIso = getDataFimISO();
+            if (iniIso) qs.append('data_inicio', iniIso);
+            if (fimIso) qs.append('data_fim', fimIso);
+            if (lojaAlvo) qs.append('loja', lojaAlvo);
+            qs.append('from_sku', '1');
+            qs.append('_ts', String(Date.now()));
+            const destino = '/vendas.html' + (qs.toString() ? `?${qs.toString()}` : '');
+            agendarTimeout(() => window.location.replace(destino), 20);
+        }, { capture: true });
+    }
+
+    carregarPreferenciaGraficoSku();
+    aplicarPreferenciaGraficoUI();
+    carregarLojasBotoes();
+    carregarUnidadesNegocioSku();
+
+    // Carregar automaticamente se houver período selecionado e SKU
+    if (skuAlvo && (getDataIniISO() || dataInicio)) {
+        carregarVendasSku();
+    }
+    const lojaBotoes = document.getElementById('lojaBotoes');
+    let lojaSelecionadaSku = lojaAlvo || '__todas';
+
+    function renderBotoesLojasSku(lojas) {
+        lojaBotoes.innerHTML = '';
+        const todosBtn = document.createElement('button');
+        todosBtn.textContent = 'Todas as lojas';
+        todosBtn.className = 'loja-btn' + (lojaSelecionadaSku === '__todas' ? ' active' : '');
+        todosBtn.onclick = () => trocarLojaSku('__todas');
+        lojaBotoes.appendChild(todosBtn);
+        lojas.forEach(l => {
+            const btn = document.createElement('button');
+            btn.textContent = l.nome;
+            btn.className = 'loja-btn' + (lojaSelecionadaSku === l.nome ? ' active' : '');
+            btn.onclick = () => trocarLojaSku(l.nome);
+            lojaBotoes.appendChild(btn);
+        });
+    }
+
+    function trocarLojaSku(novaLoja) {
+        const qs = new URLSearchParams(window.location.search);
+        if (novaLoja && novaLoja !== '__todas') qs.set('loja', novaLoja);
+        else qs.delete('loja');
+        const iniIso = getDataIniISO(), fimIso = getDataFimISO();
+        if (iniIso) qs.set('data_inicio', iniIso);
+        if (fimIso) qs.set('data_fim', fimIso);
+        window.location.href = '/vendas_sku.html?' + qs.toString();
+    }
+
+    async function carregarLojasBotoes() {
+        try {
+            const resp = await fetchCancelable('/api/lojas', { headers: obterHeadersProtegidos() });
+            if (!resp.ok) return;
+            const lojas = await resp.json();
+            if (!Array.isArray(lojas)) return;
+            lojas.sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+            renderBotoesLojasSku(lojas);
+        } catch (_e) {
+            // Se falhar mantém botão Todas as lojas vazio
+            lojaBotoes.innerHTML = '<button class="loja-btn active">Todas as lojas</button>';
+        }
+    }
+
+
+</script>
+<script src="/ia-sidebar.js"></script>
+</body>
+</html>
+
+
