@@ -322,6 +322,62 @@
             0% { transform: translateX(-110%); }
             100% { transform: translateX(260%); }
         }
+        .update-toast {
+            background: rgba(7, 17, 31, 0.96);
+            border: 1px solid rgba(93, 183, 255, 0.38);
+            border-radius: 8px;
+            bottom: 22px;
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34), 0 0 22px rgba(93, 183, 255, 0.18);
+            color: #eef6ff;
+            min-width: 280px;
+            opacity: 0;
+            padding: 13px 14px 12px;
+            pointer-events: none;
+            position: fixed;
+            right: 22px;
+            transform: translateY(16px);
+            transition: opacity 180ms ease, transform 180ms ease;
+            width: min(360px, calc(100vw - 44px));
+            z-index: 110;
+        }
+        .update-toast.is-active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .update-toast-title {
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 850;
+            margin-bottom: 4px;
+        }
+        .update-toast-message {
+            color: #b8c9dc;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        .update-toast-progress {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 999px;
+            display: none;
+            height: 4px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        .update-toast-progress.is-active {
+            display: block;
+        }
+        .update-toast-progress span {
+            background: linear-gradient(90deg, #4facfe, #31c4be);
+            border-radius: inherit;
+            display: block;
+            height: 100%;
+            transition: width 180ms ease;
+            width: 0%;
+        }
+        .update-toast.is-error {
+            border-color: rgba(255, 112, 112, 0.58);
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34), 0 0 22px rgba(255, 112, 112, 0.16);
+        }
     </style>
 </head>
 <body>
@@ -343,6 +399,13 @@
             <div class="update-save-title">Salvando trabalho aberto</div>
             <div id="update-save-message" class="update-save-message">Preparando as abas para instalar a atualizacao.</div>
             <div class="update-save-bar" aria-hidden="true"></div>
+        </div>
+    </div>
+    <div id="update-toast" class="update-toast" aria-live="polite">
+        <div id="update-toast-title" class="update-toast-title">Atualizacao</div>
+        <div id="update-toast-message" class="update-toast-message">Preparando atualizacao.</div>
+        <div id="update-toast-progress" class="update-toast-progress" aria-hidden="true">
+            <span id="update-toast-progress-fill"></span>
         </div>
     </div>
 
@@ -376,11 +439,17 @@
         const toolbarTrigger = document.getElementById('toolbar-trigger');
         const updateSaveOverlay = document.getElementById('update-save-overlay');
         const updateSaveMessage = document.getElementById('update-save-message');
+        const updateToast = document.getElementById('update-toast');
+        const updateToastTitle = document.getElementById('update-toast-title');
+        const updateToastMessage = document.getElementById('update-toast-message');
+        const updateToastProgress = document.getElementById('update-toast-progress');
+        const updateToastProgressFill = document.getElementById('update-toast-progress-fill');
         const tabs = new Map();
         const pendingUpdateSaveRequests = new Map();
         let activeId = '';
         let serial = 0;
         let toolbarAutoHideTimer = null;
+        let updateToastTimer = null;
         let mlBrowserWebview = null;
         let mlBrowserOwnerId = '';
         const mlBrowserBoundsByTab = new Map();
@@ -574,6 +643,83 @@
         function setUpdateSaveOverlay(active, message = '') {
             if (updateSaveOverlay) updateSaveOverlay.classList.toggle('is-active', !!active);
             if (updateSaveMessage && message) updateSaveMessage.textContent = message;
+        }
+
+        function showUpdateToast(title, message, options = {}) {
+            if (!updateToast) return;
+            clearTimeout(updateToastTimer);
+            updateToast.classList.toggle('is-error', options.kind === 'error');
+            updateToast.classList.add('is-active');
+            if (updateToastTitle) updateToastTitle.textContent = title || 'Atualizacao';
+            if (updateToastMessage) updateToastMessage.textContent = message || '';
+            const hasProgress = Number.isFinite(Number(options.progress));
+            if (updateToastProgress) updateToastProgress.classList.toggle('is-active', hasProgress);
+            if (updateToastProgressFill && hasProgress) {
+                const progress = Math.max(0, Math.min(100, Number(options.progress)));
+                updateToastProgressFill.style.width = `${progress}%`;
+            }
+            if (options.timeout > 0) {
+                updateToastTimer = setTimeout(() => {
+                    updateToast.classList.remove('is-active');
+                }, options.timeout);
+            }
+        }
+
+        function updatePayloadVersion(payload) {
+            return payload && (
+                payload.latestVersion
+                || payload.currentVersion
+                || payload.updateInfo && payload.updateInfo.version
+            ) || '';
+        }
+
+        function bindAutoUpdateStatusToast() {
+            if (!window.electronAPI || typeof window.electronAPI.onAutoUpdateStatus !== 'function') return;
+            window.electronAPI.onAutoUpdateStatus((payload = {}) => {
+                const status = payload.status || '';
+                const version = updatePayloadVersion(payload);
+                if (status === 'checking') {
+                    showUpdateToast('Buscando atualizacao', 'Conferindo se existe uma versao mais recente...', { progress: 12 });
+                    return;
+                }
+                if (status === 'available' || status === 'manual-update-available') {
+                    showUpdateToast('Atualizacao encontrada', `Baixando a versao ${version || 'nova'} automaticamente...`, { progress: 18 });
+                    return;
+                }
+                if (status === 'downloading') {
+                    const progress = Math.max(1, Math.min(99, Number(payload.percent || 0)));
+                    showUpdateToast('Baixando atualizacao', `Download em andamento: ${Math.round(progress)}%`, { progress });
+                    return;
+                }
+                if (status === 'downloaded') {
+                    showUpdateToast('Atualizacao pronta', 'Salvando o trabalho aberto e instalando automaticamente...', { progress: 100 });
+                    return;
+                }
+                if (status === 'saving-work') {
+                    showUpdateToast('Salvando trabalho', 'Guardando abas, rascunhos e dados locais antes de atualizar...', { progress: 100 });
+                    return;
+                }
+                if (status === 'work-saved') {
+                    showUpdateToast('Trabalho salvo', 'Instalacao automatica iniciando...', { progress: 100 });
+                    return;
+                }
+                if (status === 'installing') {
+                    showUpdateToast('Instalando atualizacao', 'O JK Sistema vai reiniciar sozinho em instantes.', { progress: 100 });
+                    setUpdateSaveOverlay(true, 'Instalando atualizacao automaticamente...');
+                    return;
+                }
+                if (status === 'not-available' || status === 'up-to-date') {
+                    showUpdateToast('Sistema atualizado', `Voce ja esta na versao mais recente${version ? `: ${version}` : ''}.`, { progress: 100, timeout: 5200 });
+                    return;
+                }
+                if (status === 'skipped') {
+                    showUpdateToast('Atualizacao indisponivel', payload.reason || 'Nao foi possivel verificar atualizacao agora.', { timeout: 6500 });
+                    return;
+                }
+                if (status === 'error') {
+                    showUpdateToast('Erro ao atualizar', payload.error || 'Nao foi possivel concluir a atualizacao.', { kind: 'error', timeout: 8500 });
+                }
+            });
         }
 
         function getCurrentTabUrl(tab) {
@@ -1292,6 +1438,7 @@
         reloadBtn.addEventListener('click', reloadActiveTab);
         newTabBtn.addEventListener('click', () => createTab(appUrl, 'Inicio'));
         bindAutoHidingToolbar();
+        bindAutoUpdateStatusToast();
         window.addEventListener('keydown', (event) => {
             if (event.key === 'F5' || ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 'r')) {
                 event.preventDefault();

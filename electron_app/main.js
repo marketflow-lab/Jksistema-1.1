@@ -323,17 +323,11 @@ async function installDownloadedUpdateSafely(info = null) {
     try {
         await prepareOpenWorkForUpdate('update-install');
         sendUpdateStatus('installing', { updateInfo: normalizeUpdateInfo(info) });
-        autoUpdater.quitAndInstall(false, true);
+        autoUpdater.quitAndInstall(true, true);
     } catch (err) {
         updateInstallInProgress = false;
         const message = getUpdateErrorMessage(err);
         sendUpdateStatus('error', { error: message });
-        await dialog.showMessageBox({
-            type: 'warning',
-            title: 'Atualizacao pausada',
-            message: 'Nao foi possivel preparar o sistema para instalar a atualizacao.',
-            detail: message
-        });
     }
 }
 
@@ -365,23 +359,13 @@ function registerAutoUpdateEvents() {
         sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
     });
     autoUpdater.on('update-downloaded', (info) => {
-        const version = info && info.version ? ` ${info.version}` : '';
         sendUpdateStatus('downloaded', { updateInfo: normalizeUpdateInfo(info) });
-        dialog.showMessageBox({
-            type: 'info',
-            buttons: ['Salvar e instalar agora', 'Depois'],
-            defaultId: 0,
-            cancelId: 1,
-            title: 'Atualizacao pronta',
-            message: `Uma nova versao${version} foi baixada.`,
-            detail: 'Antes de reiniciar, o JK Sistema vai salvar abas abertas, rascunhos locais e dados persistentes.'
-        }).then(async (result) => {
-            if (result.response === 0) {
-                await installDownloadedUpdateSafely(info);
-            }
-        }).catch((err) => {
-            logElectronLifecycle('auto-update-dialog-error', err);
-        });
+        const timer = setTimeout(() => {
+            installDownloadedUpdateSafely(info).catch((err) => {
+                logElectronLifecycle('auto-update-auto-install-error', err);
+            });
+        }, 1200);
+        if (typeof timer.unref === 'function') timer.unref();
     });
     return true;
 }
@@ -395,13 +379,6 @@ async function checkForUpdates(manual = false) {
             reason: unavailableReason
         };
         sendUpdateStatus('skipped', { reason: result.reason });
-        if (manual) {
-            await dialog.showMessageBox({
-                type: 'info',
-                title: 'Atualizacao indisponivel',
-                message: result.reason
-            });
-        }
         return result;
     }
     if (!autoUpdater) {
@@ -410,16 +387,11 @@ async function checkForUpdates(manual = false) {
             skipped: true,
             reason: 'electron-updater nao esta disponivel neste pacote.'
         };
-        if (manual) {
-            await dialog.showMessageBox({
-                type: 'warning',
-                title: 'Atualizacao indisponivel',
-                message: result.reason
-            });
-        }
+        sendUpdateStatus('skipped', { reason: result.reason });
         return result;
     }
     if (updateCheckInProgress) {
+        sendUpdateStatus('checking', { reason: 'Verificacao de atualizacao ja em andamento.' });
         return { success: true, checking: true };
     }
 
@@ -432,18 +404,16 @@ async function checkForUpdates(manual = false) {
         const latestVersion = updateInfo && updateInfo.version ? updateInfo.version : currentVersion;
         const hasNewVersion = !!(updateInfo && updateInfo.version && updateInfo.version !== currentVersion);
         if (manual && hasNewVersion) {
-            await dialog.showMessageBox({
-                type: 'info',
-                title: 'Atualizacao encontrada',
-                message: `Existe uma nova versao: ${formatVersionLabel(latestVersion)}.`,
-                detail: `Versao instalada: ${formatVersionLabel(currentVersion)}.\nO download vai continuar automaticamente. Quando terminar, o app vai pedir confirmacao para salvar tudo e instalar.`
+            sendUpdateStatus('manual-update-available', {
+                currentVersion,
+                latestVersion,
+                updateInfo
             });
         } else if (manual) {
-            await dialog.showMessageBox({
-                type: 'info',
-                title: 'Sistema atualizado',
-                message: `Voce ja esta usando a versao mais recente: ${formatVersionLabel(currentVersion)}.`,
-                detail: 'Nenhuma atualizacao nova foi encontrada no GitHub.'
+            sendUpdateStatus('up-to-date', {
+                currentVersion,
+                latestVersion,
+                updateInfo
             });
         }
         return {
@@ -457,13 +427,6 @@ async function checkForUpdates(manual = false) {
     } catch (err) {
         const message = getUpdateErrorMessage(err);
         sendUpdateStatus('error', { error: message });
-        if (manual) {
-            await dialog.showMessageBox({
-                type: 'warning',
-                title: 'Erro ao verificar atualizacao',
-                message
-            });
-        }
         return {
             success: false,
             error: message

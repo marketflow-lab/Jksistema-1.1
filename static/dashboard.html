@@ -994,9 +994,9 @@
             }
             const resultado = await api.checkForUpdates();
             if (resultado && resultado.skipped) {
-                alert(resultado.reason || 'Atualização automática indisponível neste ambiente.');
+                console.warn(resultado.reason || 'Atualizacao automatica indisponivel neste ambiente.');
             } else if (resultado && resultado.checking) {
-                alert('A verificação de atualização já está em andamento.');
+                console.info('A verificacao de atualizacao ja esta em andamento.');
             }
         } catch (err) {
             alert((err && err.message) || 'Não foi possível verificar atualizações.');
