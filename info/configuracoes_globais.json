@@ -1,8 +1,16 @@
 {
   "auto_sync_estoque_janela_minutos": 30,
   "ia_modelo_padrao": "vertex:gemini-2.5-flash",
-  "ia_modelo_perguntas": "vertex:gemini-2.5-pro",
+  "ia_modelo_perguntas": "vertex:gemini-2.5-flash",
   "ia_modelo_chat": "vertex:gemini-2.5-flash",
-  "ia_modelo_favoritos": "vertex:gemini-2.5-pro",
-  "ia_favoritos_usar_imagem": false
+  "ia_modelo_favoritos": "vertex:gemini-2.5-flash",
+  "ia_vertex_project_id": "jk-sistema-prod-20260525",
+  "ia_vertex_location": "us-central1",
+  "ia_vertex_model": "gemini-2.5-flash",
+  "ia_vertex_service_account_email": "",
+  "ia_favoritos_usar_imagem": true,
+  "ia_openai_ativa": true,
+  "ia_deepseek_ativa": true,
+  "ia_gemini_ativa": false,
+  "ia_vertex_ativa": true
 }

@@ -497,7 +497,7 @@ def _carregar_configuracoes_globais() -> dict:
     if not os.path.exists(ARQUIVO_CONFIG_GLOBAIS):
         return dados
     try:
-        with open(ARQUIVO_CONFIG_GLOBAIS, "r", encoding="utf-8") as f:
+        with open(ARQUIVO_CONFIG_GLOBAIS, "r", encoding="utf-8-sig") as f:
             payload = json.load(f)
         if isinstance(payload, dict):
             dados.update(payload)
@@ -505,8 +505,8 @@ def _carregar_configuracoes_globais() -> dict:
         logger.exception("Erro ao carregar configuracoes globais")
     dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))
     dados["ia_deepseek_ativa"] = bool(dados.get("ia_deepseek_ativa", True))
-    dados["ia_gemini_ativa"] = False
-    dados["ia_vertex_ativa"] = True
+    dados["ia_gemini_ativa"] = bool(dados.get("ia_gemini_ativa", False))
+    dados["ia_vertex_ativa"] = bool(dados.get("ia_vertex_ativa", True))
     dados["ia_agent_api_key_configurada"] = bool(_vertex_ai_agent_api_key())
     return dados
 
@@ -519,8 +519,8 @@ def _salvar_configuracoes_globais(dados: dict) -> None:
         payload.pop(chave, None)
     payload["ia_openai_ativa"] = bool(payload.get("ia_openai_ativa", True))
     payload["ia_deepseek_ativa"] = bool(payload.get("ia_deepseek_ativa", True))
-    payload["ia_gemini_ativa"] = False
-    payload["ia_vertex_ativa"] = True
+    payload["ia_gemini_ativa"] = bool(payload.get("ia_gemini_ativa", False))
+    payload["ia_vertex_ativa"] = bool(payload.get("ia_vertex_ativa", True))
     with open(ARQUIVO_CONFIG_GLOBAIS, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
@@ -5041,6 +5041,8 @@ def _favoritos_ia_texto_resposta(
     try:
         if _modelo_eh_vertex_ai(model_req):
             return _chamar_vertex_ai_chat(req, client_id)
+        if _modelo_eh_gemini_api(model_req):
+            return _chamar_gemini_chat(req, client_id)
         if model_req.startswith("deepseek-"):
             return _chamar_deepseek_chat(req, client_id)
         return _chamar_openai_responses(req, client_id)
@@ -5050,7 +5052,8 @@ def _favoritos_ia_texto_resposta(
 
 
 def _favoritos_ia_gemini_pesquisa_texto(mensagem: str, model: str | None = None) -> str:
-    return _favoritos_ia_vertex_pesquisa_texto(mensagem, model=_normalizar_ia_modelo_padrao(model))
+    req = IAChatRequest(message=mensagem, model=_normalizar_ia_modelo_padrao(model), page="Favoritos")
+    return _chamar_gemini_chat(req, "default")
 
 
 def _favoritos_ia_vertex_pesquisa_texto(mensagem: str, model: str | None = None) -> str:
@@ -5098,6 +5101,8 @@ def _favoritos_ia_pesquisa_texto(client_id: str, mensagem: str, model: str | Non
     model_name = _normalizar_ia_modelo_padrao(model or _ia_modelo_favoritos_configurado())
     if _modelo_eh_vertex_ai(model_name):
         return _favoritos_ia_vertex_pesquisa_texto(mensagem, model=model_name)
+    if _modelo_eh_gemini_api(model_name):
+        return _favoritos_ia_texto_resposta(client_id, mensagem, model=model_name)
     return _favoritos_ia_texto_resposta(client_id, mensagem, model=model_name)
 
 
@@ -13259,6 +13264,8 @@ def _obter_gemini_api_key() -> str:
 
 def _gemini_nome_curto(model_name: str) -> str:
     nome = str(model_name or "").strip()
+    if nome.lower().startswith("gemini:"):
+        nome = nome.split(":", 1)[1]
     if nome.startswith("models/"):
         nome = nome.split("/", 1)[1]
     return nome
@@ -13299,6 +13306,9 @@ def _normalizar_ia_modelo_padrao(model_name: str | None) -> str:
     nome = str(model_name or "").strip()
     if not nome:
         return IA_MODELO_PADRAO_SISTEMA
+    if nome.lower().startswith("gemini:"):
+        curto = _gemini_nome_curto(nome)
+        return f"gemini:{curto}" if curto else IA_MODELO_PADRAO_SISTEMA
     if _modelo_eh_vertex_ai(nome):
         curto = _vertex_modelo_nome_curto(nome)
         return f"vertex:{curto}" if curto else IA_MODELO_PADRAO_SISTEMA
@@ -13325,6 +13335,58 @@ def _vertex_generation_config(model_name: str, modo_rapido: bool = False, json_m
     elif modelo.startswith("gemini-2.5-pro"):
         cfg["thinkingConfig"] = {"thinkingBudget": 128 if modo_rapido else 512}
     return cfg
+
+
+def _gemini_api_key_para_ia() -> str:
+    return (_vertex_ai_agent_api_key() or _obter_gemini_api_key() or "").strip()
+
+
+def _extrair_texto_generate_content(data: dict | None) -> str:
+    if not isinstance(data, dict):
+        return ""
+    candidatos = data.get("candidates") if isinstance(data.get("candidates"), list) else []
+    textos: list[str] = []
+    for candidato in candidatos:
+        if not isinstance(candidato, dict):
+            continue
+        content = candidato.get("content") if isinstance(candidato.get("content"), dict) else {}
+        parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+        for parte in parts:
+            if isinstance(parte, dict):
+                texto = str(parte.get("text") or "").strip()
+                if texto:
+                    textos.append(texto)
+    return "\n".join(textos).strip()
+
+
+def _chamar_gemini_api_direta(model_name: str, request_body: dict, api_key: str) -> str:
+    chave = str(api_key or "").strip()
+    if not chave:
+        raise RuntimeError("Chave da Gemini API nao configurada.")
+    model = _gemini_nome_curto(model_name) or _vertex_modelo_nome_curto(model_name) or _vertex_ai_modelo_padrao()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    body = json.loads(json.dumps(request_body or {}))
+    resp = requests.post(
+        url,
+        params={"key": chave},
+        headers={"Content-Type": "application/json"},
+        json=body,
+        verify=False,
+        timeout=60,
+    )
+    if not resp.ok:
+        detail = "Falha ao chamar a Gemini API direta."
+        try:
+            erro = resp.json().get("error") or {}
+            if erro.get("message"):
+                detail = str(erro.get("message"))
+        except Exception:
+            pass
+        raise RuntimeError(f"Gemini API HTTP {resp.status_code}: {detail}")
+    texto = _extrair_texto_generate_content(resp.json())
+    if not texto:
+        raise RuntimeError("Gemini API retornou sem texto.")
+    return texto
 
 
 def _ia_modelo_padrao_configurado() -> str:
@@ -13383,7 +13445,7 @@ IA_PROVIDER_CONFIG_KEYS = {
 IA_PROVIDER_LABELS = {
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
-    "gemini": "Gemini desativada",
+    "gemini": "Gemini",
     "vertex": "Vertex AI",
 }
 
@@ -13392,14 +13454,14 @@ def _ia_provedor_por_modelo(model_name: str | None) -> str:
     nome = str(model_name or "").strip()
     if _modelo_eh_vertex_ai(nome):
         return "vertex"
+    if _modelo_eh_gemini_api(nome):
+        return "gemini"
     if nome.startswith("deepseek-"):
         return "deepseek"
     return "openai"
 
 
 def _ia_provedor_ativo(provedor: str) -> bool:
-    if str(provedor or "").strip().lower() == "gemini":
-        return False
     chave = IA_PROVIDER_CONFIG_KEYS.get(str(provedor or "").strip().lower())
     if not chave:
         return True
@@ -13548,10 +13610,8 @@ def _vertex_ai_headers_e_project() -> tuple[dict, str]:
     api_key = _vertex_ai_agent_api_key()
     auth_mode = _env_config_value(*VERTEX_AI_AUTH_MODE_ENV_KEYS).strip().lower().replace("-", "_")
     usar_api_key_primeiro = auth_mode in {"api_key", "apikey", "key", "chave"}
-    chave_agent_no_env = bool(_env_config_value(*IA_AGENT_API_KEY_ENV_KEYS, cache_as="GEMINI_AGENT_API_KEY"))
     permitir_api_key = (
         usar_api_key_primeiro
-        or chave_agent_no_env
         or _env_config_bool(VERTEX_AI_API_KEY_ALLOW_ENV_KEYS, default=False)
     )
 
@@ -13595,7 +13655,13 @@ def _listar_modelos_vertex_ai() -> list[dict]:
 
 
 def _listar_modelos_gemini_api(force_refresh: bool = False) -> list[dict]:
-    return []
+    if not _ia_provedor_ativo("gemini"):
+        return []
+    return [
+        {"name": "gemini:gemini-2.5-flash", "display_name": "Gemini API 2.5 Flash", "description": "Google Gemini API generateContent"},
+        {"name": "gemini:gemini-2.5-pro", "display_name": "Gemini API 2.5 Pro", "description": "Google Gemini API generateContent"},
+        {"name": "gemini:gemini-2.0-flash", "display_name": "Gemini API 2.0 Flash", "description": "Google Gemini API generateContent"},
+    ]
 
 
 def _listar_modelos_gemini_api_desativada(force_refresh: bool = False) -> list[dict]:
@@ -13603,7 +13669,7 @@ def _listar_modelos_gemini_api_desativada(force_refresh: bool = False) -> list[d
 
 
 def _modelo_eh_gemini_api(model_name: str) -> bool:
-    return False
+    return str(model_name or "").strip().lower().startswith("gemini:")
 
 
 def _ia_chat_tem_imagem(anexos: Optional[list[dict]] = None) -> bool:
@@ -15115,6 +15181,9 @@ def _perguntas_ia_gerar_resposta(
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
+    elif _modelo_eh_gemini_api(model_req):
+        resposta = _chamar_gemini_chat(payload, client_id)
+        model_usado = f"gemini:{_gemini_nome_curto(model_req) or 'gemini-2.5-flash'}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
@@ -15699,9 +15768,98 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
 
 
 def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
-    payload.model = _normalizar_ia_modelo_padrao(payload.model or _ia_modelo_chat_configurado())
-    logger.info("[IA] Provedor Gemini direto desativado; redirecionando para Vertex AI.")
-    return _chamar_vertex_ai_chat(payload, client_id)
+    _ia_validar_provedor_ativo("gemini")
+
+    def _resposta_fallback_simpatico(pergunta: str) -> str:
+        if not str(pergunta or "").strip():
+            return "Oi! Eu estou aqui para ajudar. Pode me enviar sua pergunta novamente."
+        return (
+            "Oi! Estou com uma instabilidade momentanea para gerar a resposta pela Gemini API agora, "
+            "mas continuo disponivel para ajudar.\n\n"
+            "Se quiser, reformule em uma frase curta que eu tento novamente em seguida."
+        )
+
+    model = _gemini_nome_curto(payload.model) or _gemini_nome_curto(_ia_modelo_chat_configurado()) or "gemini-2.5-flash"
+    mensagem = str(payload.message or "").strip()
+    anexos = _ia_chat_normalizar_anexos(payload)
+    ctx_payload = payload.context if isinstance(payload.context, dict) else {}
+    modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+
+    if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
+        return _ia_chat_resposta_saudacao(payload)
+    if not mensagem and not anexos:
+        raise HTTPException(status_code=400, detail="Mensagem vazia.")
+    if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
+        logger.warning("[IA] Mensagem longa (%s chars) compactada antes da Gemini API.", len(mensagem))
+        mensagem = _ia_compactar_mensagem_chat(mensagem)
+
+    if modo_rapido:
+        system_prompt = (
+            "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
+            "de forma curta, humana e direta."
+        )
+    else:
+        system_prompt = (
+            "Voce e o assistente IA do JK Sistema. Responda sempre em portugues do Brasil, "
+            "com tom simpatico, cordial, humano e profissional. "
+            "Responda exatamente ao que foi pedido e nao invente totais, SKUs, precos ou datas."
+        )
+        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+            mensagem,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
+        system_prompt += _ia_treinamento_ppv_bloco_prompt(
+            client_id,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
+
+    historico = []
+    for item in (payload.history or [])[-8:]:
+        role = "model" if item.get("role") == "assistant" else "user"
+        content = str(item.get("content") or "").strip()
+        if content:
+            historico.append({"role": role, "parts": [{"text": content[:1500]}]})
+
+    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if not modo_rapido else ""
+    pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
+    user_text = (
+        (f"{contexto_tela}\n\n" if contexto_tela else "")
+        + f"Pergunta do usuario:\n{pergunta_usuario}\n\n"
+        "Instrucao adicional: responda de forma humana e natural, com foco no que foi pedido."
+    )
+    user_parts = [{"text": user_text}]
+    for anexo in anexos:
+        nome = str(anexo.get("name") or "anexo")
+        mime = str(anexo.get("mime_type") or "application/octet-stream")
+        if mime.startswith("image/"):
+            user_parts.append({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": anexo.get("data_base64"),
+                }
+            })
+            continue
+        texto_anexo = _ia_chat_extrair_texto_anexo(anexo)
+        if texto_anexo:
+            user_parts.append({"text": f"Conteudo extraido do arquivo '{nome}':\n{texto_anexo}"})
+        else:
+            user_parts.append({"text": f"Arquivo '{nome}' anexado com tipo '{mime}', sem extracao automatica disponivel."})
+
+    contents = list(historico)
+    contents.append({"role": "user", "parts": user_parts})
+    request_body = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "generationConfig": _vertex_generation_config(model, modo_rapido=modo_rapido),
+    }
+
+    try:
+        return _chamar_gemini_api_direta(model, request_body, _gemini_api_key_para_ia())
+    except Exception as exc:
+        logger.warning("[IA] Gemini API direta indisponivel: %s", exc)
+        return _resposta_fallback_simpatico(mensagem)
 
 
 def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
@@ -15734,15 +15892,22 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da Vertex AI.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
+    headers: dict | None = None
+    project_id = ""
+    vertex_credentials_error: Exception | None = None
     try:
         headers, project_id = _vertex_ai_headers_e_project()
     except Exception as exc:
+        vertex_credentials_error = exc
         logger.warning(f"[IA] Credenciais Vertex AI indisponiveis: {exc}")
-        return _resposta_fallback_simpatico(mensagem)
 
     location = _vertex_ai_location()
     host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
-    url = f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
+    url = (
+        f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
+        if headers and project_id
+        else ""
+    )
 
     rag_query = mensagem or " ".join([a.get("name") or "anexo" for a in (anexos or [])])
     contexto_rag = _ia_rag_contexto(rag_query, client_id) if usa_contexto else ""
@@ -15859,40 +16024,42 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     contents = list(historico)
     contents.append({"role": "user", "parts": user_parts})
 
-    try:
-        resp = requests.post(
-            url,
-            headers=headers,
-            json={
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": contents,
-                "generationConfig": _vertex_generation_config(model, modo_rapido=modo_rapido),
-            },
-            verify=False,
-            timeout=60,
-        )
-    except requests.RequestException as exc:
-        logger.warning(f"[IA] Falha de conexao com Vertex AI: {exc}")
-        return _resposta_fallback_simpatico(mensagem)
+    request_body = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "generationConfig": _vertex_generation_config(model, modo_rapido=modo_rapido),
+    }
 
-    if not resp.ok:
-        detail = "Falha ao chamar a Vertex AI."
+    if url and headers:
         try:
-            erro = resp.json().get("error") or {}
-            if erro.get("message"):
-                detail = str(erro.get("message"))
-        except Exception:
-            pass
-        logger.warning(f"[IA] Vertex AI HTTP {resp.status_code}: {detail}")
-        return _resposta_fallback_simpatico(mensagem)
+            resp = requests.post(
+                url,
+                headers=headers,
+                json=request_body,
+                verify=False,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            logger.warning(f"[IA] Falha de conexao com Vertex AI: {exc}")
+        else:
+            if resp.ok:
+                texto = _extrair_texto_generate_content(resp.json())
+                if texto:
+                    return texto
+                logger.warning("[IA] Vertex AI retornou sem texto. Usando fallback simpatico.")
+            else:
+                detail = "Falha ao chamar a Vertex AI."
+                try:
+                    erro = resp.json().get("error") or {}
+                    if erro.get("message"):
+                        detail = str(erro.get("message"))
+                except Exception:
+                    pass
+                logger.warning(f"[IA] Vertex AI HTTP {resp.status_code}: {detail}")
+    elif vertex_credentials_error:
+        logger.warning("[IA] Vertex AI sem credenciais validas.")
 
-    try:
-        partes = resp.json()["candidates"][0]["content"]["parts"]
-        texto = "\n".join([str(parte.get("text") or "").strip() for parte in partes if str(parte.get("text") or "").strip()]).strip()
-    except (KeyError, IndexError, TypeError):
-        logger.warning("[IA] Vertex AI retornou sem texto. Usando fallback simpatico.")
-        return _resposta_fallback_simpatico(mensagem)
-    return texto or _resposta_fallback_simpatico(mensagem)
+    return _resposta_fallback_simpatico(mensagem)
 
 
 def _carregar_permissoes_usuario(username: str, client_id: Optional[str] = None) -> dict:
@@ -16079,6 +16246,9 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
+    elif _modelo_eh_gemini_api(model_req):
+        resposta = _chamar_gemini_chat(payload, client_id)
+        model_usado = f"gemini:{_gemini_nome_curto(model_req) or 'gemini-2.5-flash'}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
@@ -30179,6 +30349,9 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
+    elif _modelo_eh_gemini_api(model_req):
+        resposta = _chamar_gemini_chat(payload, client_id)
+        model_usado = f"gemini:{_gemini_nome_curto(model_req) or 'gemini-2.5-flash'}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
@@ -31165,6 +31338,9 @@ def _ml_pos_venda_gerar_resposta_ia(
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
+    elif _modelo_eh_gemini_api(model_req):
+        resposta = _chamar_gemini_chat(payload, client_id)
+        model_usado = f"gemini:{_gemini_nome_curto(model_req) or 'gemini-2.5-flash'}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
@@ -38460,14 +38636,13 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     for campo, valor in (
         ("ia_openai_ativa", req.ia_openai_ativa),
         ("ia_deepseek_ativa", req.ia_deepseek_ativa),
+        ("ia_gemini_ativa", req.ia_gemini_ativa),
         ("ia_vertex_ativa", req.ia_vertex_ativa),
     ):
         if valor is not None:
             atuais[campo] = bool(valor)
         else:
             atuais[campo] = bool(atuais.get(campo, True))
-    atuais["ia_gemini_ativa"] = False
-    atuais["ia_vertex_ativa"] = True
     _salvar_configuracoes_globais(atuais)
     resposta = _carregar_configuracoes_globais()
     return {"success": True, "configuracoes": resposta}
