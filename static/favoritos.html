@@ -5757,8 +5757,7 @@
         }
 
         function balaoResultadosMlAberto() {
-            const abaNavegadorAtiva = document.getElementById('aba-navegador')?.classList.contains('active');
-            return !!(abaNavegadorAtiva && mlWorkModalEl && !mlWorkModalEl.classList.contains('hidden'));
+            return !!(mlWorkModalEl && !mlWorkModalEl.classList.contains('hidden'));
         }
 
         function navegadorMlEmSegundoPlano() {
@@ -5792,6 +5791,23 @@
                     agendarAtualizacaoPosicaoNavegadorMlShell();
                 }, 80);
             }
+        }
+
+        function mostrarNavegadorFavoritosEmExecucao() {
+            mlFavoritosExecucaoEmSegundoPlano = false;
+            abrirBalaoResultadosMl({
+                titulo: 'Fazendo Favorito! Aguarde...',
+                subtitulo: 'Navegador de trabalho do Mercado Livre em tempo real.',
+                mostrarFavoritos: true,
+                browserCompleto: true,
+                forcarExibicao: true
+            });
+            restaurarNavegadorMlShellSeVisivel();
+            atualizarEstadoSidebarRanking();
+            setTimeout(() => {
+                atualizarPosicaoNavegadorMlShell();
+                agendarAtualizacaoPosicaoNavegadorMlShell();
+            }, 120);
         }
 
         function fecharBalaoResultadosMl(opcoes = {}) {
@@ -9668,7 +9684,7 @@
         }
 
         const ML_API_WORKERS = 18;
-        const ML_BROWSER_WORKERS = 2;
+        const ML_BROWSER_WORKERS = 6;
 
         function tituloPareceFiltroOuCategoriaMl(titulo) {
             const normalizado = normalizarTextoMl(titulo);
@@ -12387,6 +12403,13 @@
             mlFavoritosBalloonEl.classList.toggle('is-wide', !!opcoes.larga);
             if (!opcoes.manterAcoes && mlFavoritosBalloonActionsEl) {
                 mlFavoritosBalloonActionsEl.innerHTML = '';
+                if (mlFavoritosEmExecucao && !balaoResultadosMlAberto()) {
+                    const mostrarBtn = document.createElement('button');
+                    mostrarBtn.type = 'button';
+                    mostrarBtn.textContent = 'Mostrar navegador';
+                    mostrarBtn.addEventListener('click', mostrarNavegadorFavoritosEmExecucao);
+                    mlFavoritosBalloonActionsEl.appendChild(mostrarBtn);
+                }
             }
             mlFavoritosBalloonEl.classList.remove('is-comparison');
             const titulo = mlFavoritosBalloonEl.querySelector('.ml-favoritos-balloon-title');
