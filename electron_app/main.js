@@ -38,6 +38,7 @@ const JK_LOCAL_BACKEND_PORT = 8001;
 const JK_PROMO_WORKER_PORT = 8011;
 const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
 const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
+const JK_PRIVATE_CREDENTIALS_FILE_NAME = 'credenciais-jk-private.jkcred';
 let localBackendProcess = null;
 let localBackendStartupPromise = null;
 
@@ -84,6 +85,7 @@ let chromeExtensionsLoadPromise = null;
 let chromeExtensionSessionEventsRegistered = false;
 let updateEventsRegistered = false;
 let updateCheckInProgress = false;
+let updateInstallInProgress = false;
 const mlItemInfoCache = new Map();
 const ML_ITEM_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
@@ -229,9 +231,34 @@ function normalizeUpdateInfo(info) {
     };
 }
 
+function formatVersionLabel(value) {
+    return String(value || '').trim() || 'desconhecida';
+}
+
 function getUpdateErrorMessage(err) {
     if (!err) return 'Erro desconhecido ao verificar atualizacao.';
     return String(err.message || err).slice(0, 500);
+}
+
+function getAppUpdateConfigPath() {
+    const candidates = [
+        app.isPackaged && process.resourcesPath ? path.join(process.resourcesPath, 'app-update.yml') : '',
+        path.join(getAppRootDir(), 'app-update.yml')
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return '';
+}
+
+function getUpdateUnavailableReason() {
+    if (!app.isPackaged) {
+        return 'Atualizacao automatica funciona apenas no app instalado.';
+    }
+    if (!getAppUpdateConfigPath()) {
+        return 'Este instalador privado nao possui canal de atualizacao automatica. Use a versao privada mais recente gerada localmente.';
+    }
+    return '';
 }
 
 function sendUpdateStatus(status, payload = {}) {
@@ -243,6 +270,70 @@ function sendUpdateStatus(status, payload = {}) {
                 win.webContents.send('auto-update-status', message);
             }
         } catch (_err) {}
+    }
+}
+
+function withTimeout(promise, timeoutMs, fallbackValue) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(fallbackValue), timeoutMs);
+        promise
+            .then((value) => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch((err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
+async function prepareOpenWorkForUpdate(reason = 'auto-update') {
+    sendUpdateStatus('saving-work', { reason });
+    const windows = BrowserWindow.getAllWindows().filter((win) => win && !win.isDestroyed());
+    const results = [];
+    for (const win of windows) {
+        try {
+            const payload = JSON.stringify({ reason });
+            const result = await withTimeout(
+                win.webContents.executeJavaScript(`
+                    (async () => {
+                        if (typeof window.jkElectronPrepareForUpdate !== 'function') {
+                            return { success: true, reason: 'no-renderer-handler' };
+                        }
+                        return await window.jkElectronPrepareForUpdate(${payload});
+                    })()
+                `, true),
+                15000,
+                { success: false, timedOut: true }
+            );
+            results.push(result);
+        } catch (err) {
+            results.push({ success: false, error: getUpdateErrorMessage(err) });
+        }
+    }
+    await flushPersistentSessions();
+    sendUpdateStatus('work-saved', { reason, results });
+    return { success: true, results };
+}
+
+async function installDownloadedUpdateSafely(info = null) {
+    if (!autoUpdater || updateInstallInProgress) return;
+    updateInstallInProgress = true;
+    try {
+        await prepareOpenWorkForUpdate('update-install');
+        sendUpdateStatus('installing', { updateInfo: normalizeUpdateInfo(info) });
+        autoUpdater.quitAndInstall(false, true);
+    } catch (err) {
+        updateInstallInProgress = false;
+        const message = getUpdateErrorMessage(err);
+        sendUpdateStatus('error', { error: message });
+        await dialog.showMessageBox({
+            type: 'warning',
+            title: 'Atualizacao pausada',
+            message: 'Nao foi possivel preparar o sistema para instalar a atualizacao.',
+            detail: message
+        });
     }
 }
 
@@ -278,15 +369,15 @@ function registerAutoUpdateEvents() {
         sendUpdateStatus('downloaded', { updateInfo: normalizeUpdateInfo(info) });
         dialog.showMessageBox({
             type: 'info',
-            buttons: ['Reiniciar agora', 'Depois'],
+            buttons: ['Salvar e instalar agora', 'Depois'],
             defaultId: 0,
             cancelId: 1,
             title: 'Atualizacao pronta',
             message: `Uma nova versao${version} foi baixada.`,
-            detail: 'Reinicie o aplicativo para instalar a atualizacao.'
-        }).then((result) => {
+            detail: 'Antes de reiniciar, o JK Sistema vai salvar abas abertas, rascunhos locais e dados persistentes.'
+        }).then(async (result) => {
             if (result.response === 0) {
-                autoUpdater.quitAndInstall(false, true);
+                await installDownloadedUpdateSafely(info);
             }
         }).catch((err) => {
             logElectronLifecycle('auto-update-dialog-error', err);
@@ -296,16 +387,18 @@ function registerAutoUpdateEvents() {
 }
 
 async function checkForUpdates(manual = false) {
-    if (!app.isPackaged) {
+    const unavailableReason = getUpdateUnavailableReason();
+    if (unavailableReason) {
         const result = {
             success: false,
             skipped: true,
-            reason: 'Atualizacao automatica funciona apenas no app instalado.'
+            reason: unavailableReason
         };
+        sendUpdateStatus('skipped', { reason: result.reason });
         if (manual) {
             await dialog.showMessageBox({
                 type: 'info',
-                title: 'Atualizacao',
+                title: 'Atualizacao indisponivel',
                 message: result.reason
             });
         }
@@ -334,16 +427,32 @@ async function checkForUpdates(manual = false) {
     updateCheckInProgress = true;
     try {
         const result = await autoUpdater.checkForUpdates();
-        if (manual && !(result && result.updateInfo && result.updateInfo.version && result.updateInfo.version !== app.getVersion())) {
+        const updateInfo = normalizeUpdateInfo(result && result.updateInfo);
+        const currentVersion = app.getVersion();
+        const latestVersion = updateInfo && updateInfo.version ? updateInfo.version : currentVersion;
+        const hasNewVersion = !!(updateInfo && updateInfo.version && updateInfo.version !== currentVersion);
+        if (manual && hasNewVersion) {
             await dialog.showMessageBox({
                 type: 'info',
-                title: 'Atualizacao',
-                message: 'Voce ja esta usando a versao mais recente.'
+                title: 'Atualizacao encontrada',
+                message: `Existe uma nova versao: ${formatVersionLabel(latestVersion)}.`,
+                detail: `Versao instalada: ${formatVersionLabel(currentVersion)}.\nO download vai continuar automaticamente. Quando terminar, o app vai pedir confirmacao para salvar tudo e instalar.`
+            });
+        } else if (manual) {
+            await dialog.showMessageBox({
+                type: 'info',
+                title: 'Sistema atualizado',
+                message: `Voce ja esta usando a versao mais recente: ${formatVersionLabel(currentVersion)}.`,
+                detail: 'Nenhuma atualizacao nova foi encontrada no GitHub.'
             });
         }
         return {
             success: true,
-            updateInfo: normalizeUpdateInfo(result && result.updateInfo)
+            currentVersion,
+            latestVersion,
+            upToDate: !hasNewVersion,
+            available: hasNewVersion,
+            updateInfo
         };
     } catch (err) {
         const message = getUpdateErrorMessage(err);
@@ -374,6 +483,11 @@ function scheduleAutoUpdateCheck() {
             packaged: app.isPackaged,
             updaterAvailable: !!autoUpdater
         });
+        return;
+    }
+    const unavailableReason = getUpdateUnavailableReason();
+    if (unavailableReason) {
+        logElectronLifecycle('auto-update-skipped', { reason: unavailableReason });
         return;
     }
     registerAutoUpdateEvents();
@@ -689,6 +803,229 @@ function getCredentialsScriptPath() {
     return '';
 }
 
+function getBundledPrivateCredentialsPaths() {
+    const candidates = [
+        process.env.JK_PRIVATE_CREDENTIALS_PACKAGE,
+        path.join(getAppRootDir(), 'private', JK_PRIVATE_CREDENTIALS_FILE_NAME),
+        path.join(getAppRootDir(), JK_PRIVATE_CREDENTIALS_FILE_NAME),
+        path.join(process.resourcesPath || '', 'private', JK_PRIVATE_CREDENTIALS_FILE_NAME)
+    ].filter(Boolean);
+    const packagePaths = [];
+    for (const candidate of candidates) {
+        const resolved = path.resolve(candidate);
+        if (fs.existsSync(resolved)) packagePaths.push(resolved);
+    }
+    const privateDirs = [
+        path.join(getAppRootDir(), 'private'),
+        path.join(process.resourcesPath || '', 'private')
+    ].filter(Boolean);
+    for (const privateDir of privateDirs) {
+        try {
+            const entries = fs.readdirSync(privateDir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isFile() && entry.name.toLowerCase().endsWith('.jkcred')) {
+                    packagePaths.push(path.join(privateDir, entry.name));
+                }
+            }
+        } catch (_err) {}
+    }
+    return Array.from(new Set(packagePaths.map((item) => path.resolve(item)))).sort((a, b) => a.localeCompare(b));
+}
+
+function getPrivateCredentialsImportMarker() {
+    return path.join(JK_ELECTRON_USER_DATA_DIR, '.private_credentials_imported');
+}
+
+function promptPrivateCredentialsPassword(parentWindow) {
+    return new Promise((resolve) => {
+        const channel = `private-credentials-password-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const modal = new BrowserWindow({
+            width: 440,
+            height: 260,
+            title: 'Credenciais privadas',
+            parent: parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined,
+            modal: !!(parentWindow && !parentWindow.isDestroyed()),
+            resizable: false,
+            minimizable: false,
+            maximizable: false,
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false
+            }
+        });
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            ipcMain.removeAllListeners(channel);
+            try {
+                if (!modal.isDestroyed()) modal.close();
+            } catch (_err) {}
+            resolve(value);
+        };
+        ipcMain.once(channel, (_event, payload) => {
+            const action = payload && payload.action;
+            if (action === 'ok') {
+                finish(String(payload.password || ''));
+            } else {
+                finish(null);
+            }
+        });
+        modal.on('closed', () => finish(null));
+        const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Credenciais privadas</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; background: #07111f; color: #eef6ff; font-family: Inter, Segoe UI, Arial, sans-serif; display: grid; place-items: center; }
+        main { width: 100%; padding: 24px; }
+        h1 { margin: 0 0 8px; font-size: 20px; }
+        p { margin: 0 0 18px; color: #b8c9dc; line-height: 1.4; }
+        input { width: 100%; border: 1px solid rgba(130, 180, 230, 0.35); border-radius: 8px; padding: 12px; background: rgba(255,255,255,0.08); color: #fff; outline: none; font-size: 15px; }
+        .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+        button { border: 0; border-radius: 8px; padding: 10px 14px; color: #fff; background: #2387d8; font-weight: 700; cursor: pointer; }
+        button.secondary { background: rgba(255,255,255,0.12); }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Importar dados privados</h1>
+        <p>Digite a senha do pacote criptografado para restaurar as credenciais e dados locais.</p>
+        <input id="senha" type="password" autocomplete="current-password" autofocus>
+        <div class="actions">
+            <button class="secondary" id="cancelar" type="button">Depois</button>
+            <button id="importar" type="button">Importar</button>
+        </div>
+    </main>
+    <script>
+        const { ipcRenderer } = require('electron');
+        const channel = ${JSON.stringify(channel)};
+        const senha = document.getElementById('senha');
+        document.getElementById('cancelar').addEventListener('click', () => ipcRenderer.send(channel, { action: 'cancel' }));
+        document.getElementById('importar').addEventListener('click', () => ipcRenderer.send(channel, { action: 'ok', password: senha.value || '' }));
+        senha.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') ipcRenderer.send(channel, { action: 'ok', password: senha.value || '' });
+            if (event.key === 'Escape') ipcRenderer.send(channel, { action: 'cancel' });
+        });
+    </script>
+</body>
+</html>`;
+        modal.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => finish(null));
+    });
+}
+
+function importCredentialPackage(importFile, password) {
+    const scriptPath = getCredentialsScriptPath();
+    if (!scriptPath) {
+        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
+    }
+    const localAppDir = syncBundledLocalBackend();
+    const logPath = path.join(localAppDir, 'logs', 'private_credentials_import.log');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [
+            scriptPath,
+            'import',
+            '--in',
+            importFile,
+            '--force',
+            '--no-backup'
+        ], {
+            cwd: localAppDir,
+            env: {
+                ...process.env,
+                ELECTRON_RUN_AS_NODE: '1',
+                JK_CREDENTIALS_ROOT: localAppDir,
+                JK_CREDENTIALS_PASSWORD: password
+            },
+            windowsHide: true
+        });
+        const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+        logStream.write(`\n==== Importacao privada ${new Date().toISOString()} ====\n`);
+        child.stdout.on('data', (chunk) => logStream.write(chunk));
+        child.stderr.on('data', (chunk) => logStream.write(chunk));
+        child.once('error', (err) => {
+            logStream.end();
+            reject(err);
+        });
+        child.once('exit', (code, signal) => {
+            logStream.end();
+            if (code === 0) {
+                resolve({ success: true });
+            } else {
+                reject(new Error(`Importacao falhou. Codigo: ${code ?? ''} ${signal || ''}`.trim()));
+            }
+        });
+    });
+}
+
+function writeCredentialsImportRunner(importFile, options = {}) {
+    const scriptPath = getCredentialsScriptPath();
+    if (!scriptPath) {
+        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
+    }
+    const localAppDir = syncBundledLocalBackend();
+    const runnerName = options.runnerName || 'importar-credenciais-local.cmd';
+    const runnerPath = path.join(JK_ELECTRON_USER_DATA_DIR, runnerName);
+    const markerPath = options.markerPath || '';
+    const lines = [
+        '@echo off',
+        'setlocal',
+        `cd /d "${cmdValue(localAppDir)}"`,
+        'set "ELECTRON_RUN_AS_NODE=1"',
+        `set "JK_CREDENTIALS_ROOT=${cmdValue(localAppDir)}"`,
+        'echo Importando credenciais para o JK Sistema local.',
+        'echo.',
+        `"${cmdValue(process.execPath)}" "${cmdValue(scriptPath)}" import --in "${cmdValue(importFile)}" --force`,
+        'set "IMPORT_EXIT=%ERRORLEVEL%"',
+        'echo.',
+        'if "%IMPORT_EXIT%"=="0" (',
+        '  echo Importacao concluida.',
+        ...(markerPath ? [`  echo ok> "${cmdValue(markerPath)}"`] : []),
+        ') else (',
+        '  echo Importacao falhou. Confira a senha e tente novamente.',
+        ')',
+        'echo.',
+        'echo Feche esta janela para continuar.',
+        'pause',
+        'exit /b %IMPORT_EXIT%'
+    ];
+    fs.writeFileSync(runnerPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+    return { runnerPath, localAppDir };
+}
+
+function launchCredentialsImportRunner(runnerPath, localAppDir, options = {}) {
+    if (process.platform !== 'win32') {
+        return shell.openPath(runnerPath).then((result) => {
+            if (result) throw new Error(result);
+            return { code: 0 };
+        });
+    }
+
+    const waitFlag = options.wait ? '/wait ' : '';
+    const child = spawn('cmd.exe', ['/d', '/c', `start ${waitFlag}"" "${cmdValue(runnerPath)}"`], {
+        cwd: localAppDir,
+        detached: !options.wait,
+        stdio: 'ignore',
+        windowsHide: !!options.wait
+    });
+
+    if (!options.wait) {
+        child.unref();
+        return Promise.resolve({ code: 0 });
+    }
+
+    return new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', (code, signal) => {
+            resolve({ code, signal });
+        });
+    });
+}
+
 async function openLocalCredentialsImporter() {
     const scriptPath = getCredentialsScriptPath();
     if (!scriptPath) {
@@ -924,7 +1261,7 @@ function renderLocalBackendStartupScreen(win, options = {}) {
     const error = options.error ? String(options.error) : '';
     const detail = error
         ? `Nao consegui iniciar o servidor local. Veja o log em ${path.join(getLocalBackendRuntimeDir(), 'logs', 'local_backend.log')}`
-        : 'Preparando o servidor local. Na primeira abertura isso pode levar alguns minutos enquanto as dependencias sao instaladas.';
+        : String(options.detail || 'Preparando o servidor local. Na primeira abertura isso pode levar alguns minutos enquanto as dependencias sao instaladas.');
     const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -955,12 +1292,87 @@ function renderLocalBackendStartupScreen(win, options = {}) {
     });
 }
 
+async function maybeImportBundledPrivateCredentials(win) {
+    const packagePaths = getBundledPrivateCredentialsPaths();
+    if (!packagePaths.length) {
+        return { imported: false, reason: 'no-package' };
+    }
+
+    const markerPath = getPrivateCredentialsImportMarker();
+    if (fs.existsSync(markerPath)) {
+        return { imported: false, reason: 'already-imported' };
+    }
+
+    const response = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['Importar agora', 'Depois'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Credenciais privadas encontradas',
+        message: 'Este instalador privado inclui pacotes criptografados de credenciais e dados locais.',
+        detail: 'Informe a senha na janela que abrir para restaurar os dados antes de entrar no sistema.'
+    });
+    if (response.response !== 0) {
+        return { imported: false, reason: 'skipped' };
+    }
+
+    let password = await promptPrivateCredentialsPassword(win);
+    if (!password) {
+        return { imported: false, reason: 'password-skipped' };
+    }
+
+    while (true) {
+        try {
+            for (let index = 0; index < packagePaths.length; index += 1) {
+                renderLocalBackendStartupScreen(win, {
+                    detail: `Importando pacote privado ${index + 1} de ${packagePaths.length}. Aguarde, isso pode levar alguns minutos.`
+                });
+                await importCredentialPackage(packagePaths[index], password);
+            }
+            fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
+            break;
+        } catch (err) {
+            logElectronLifecycle('private-credentials-import-failed', err);
+            const retry = await dialog.showMessageBox(win, {
+                type: 'warning',
+                buttons: ['Tentar novamente', 'Continuar sem importar'],
+                defaultId: 0,
+                cancelId: 1,
+                title: 'Falha ao importar credenciais',
+                message: 'Nao foi possivel importar o pacote privado.',
+                detail: 'Confira a senha e tente novamente. O log fica na pasta local_app\\logs.'
+            });
+            if (retry.response !== 0) {
+                return { imported: false, reason: 'failed' };
+            }
+            password = await promptPrivateCredentialsPassword(win);
+            if (!password) {
+                return { imported: false, reason: 'password-skipped' };
+            }
+        }
+    }
+
+    if (!fs.existsSync(markerPath)) {
+        await dialog.showMessageBox(win, {
+            type: 'warning',
+            buttons: ['Continuar'],
+            title: 'Credenciais nao importadas',
+            message: 'A importacao privada nao foi concluida.',
+            detail: 'O sistema vai abrir mesmo assim. Voce tambem pode importar depois pelo botao Importar credenciais no sidebar.'
+        });
+        return { imported: false, reason: 'not-finished' };
+    }
+
+    return { imported: true };
+}
+
 function loadConfiguredApp(win, clientConfig = null) {
     const config = clientConfig || loadClientConfig();
     logElectronLifecycle('client-config-loaded', { appUrl: config.appUrl, configPath: config.configPath });
     if (isLocalBackendAppUrl(config.appUrl)) {
         renderLocalBackendStartupScreen(win);
-        ensureLocalBackendStarted()
+        maybeImportBundledPrivateCredentials(win)
+            .then(() => ensureLocalBackendStarted())
             .then(() => {
                 if (!win || win.isDestroyed()) return;
                 loadElectronTabbedShell(win, appendNoCache(config.appUrl));

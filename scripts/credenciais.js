@@ -10,6 +10,10 @@ const FORMAT = 'jk-sistema-credentials';
 const FORMAT_VERSION = 1;
 const KDF_ITERATIONS = 310000;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_DATA_FILE_BYTES = Math.max(
+  MAX_FILE_BYTES,
+  Number(process.env.JK_CREDENTIALS_MAX_FILE_BYTES || 0) || (512 * 1024 * 1024)
+);
 
 const DEFAULT_SECRET_FILES = new Set([
   'auth_users.db',
@@ -56,12 +60,23 @@ const INFO_EXCLUDED_PARTS = new Set([
   '__pycache__',
 ]);
 
+const MEDIA_FILE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.gif',
+  '.bmp',
+  '.tif',
+  '.tiff',
+]);
+
 const SECRET_NAME_PATTERN = /(api[_-]?key|token|secret|credential|credentials|oauth|auth)/i;
 
 function printUsage() {
   console.log(`Uso:
   node scripts/credenciais.js list [--include caminho]
-  node scripts/credenciais.js export [--out arquivo.jkcred] [--pass senha] [--force] [--include caminho]
+  node scripts/credenciais.js export [--out arquivo.jkcred] [--pass senha] [--force] [--include-data] [--include-media] [--include caminho]
   node scripts/credenciais.js import --in arquivo.jkcred [--pass senha] [--force] [--no-backup]
 
 Exemplos:
@@ -70,7 +85,9 @@ Exemplos:
   node scripts/credenciais.js import --in credenciais-jk.jkcred
 
 Tambem e possivel definir a senha pela variavel JK_CREDENTIALS_PASSWORD.
-Use JK_CREDENTIALS_ROOT para escolher a pasta raiz de importacao/exportacao.`);
+Use JK_CREDENTIALS_ROOT para escolher a pasta raiz de importacao/exportacao.
+Use --include-data para incluir os dados locais da pasta info no pacote privado.
+Use --include-media apenas quando tambem quiser embutir imagens/midias locais.`);
 }
 
 function parseArgs(argv) {
@@ -83,7 +100,7 @@ function parseArgs(argv) {
     }
 
     const key = arg.slice(2);
-    if (key === 'force' || key === 'no-backup' || key === 'dry-run') {
+    if (key === 'force' || key === 'no-backup' || key === 'dry-run' || key === 'include-data' || key === 'include-media') {
       result[key] = true;
       continue;
     }
@@ -139,6 +156,19 @@ function statIfFile(filePath) {
   }
 }
 
+function statIfDirectory(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isDirectory() ? stat : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function isMediaFile(filePath) {
+  return MEDIA_FILE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
 function walk(dirPath, visitor) {
   let entries;
   try {
@@ -162,14 +192,24 @@ function walk(dirPath, visitor) {
   }
 }
 
-function shouldSkipInfoPath(rootDir, filePath) {
+function shouldSkipInfoPath(rootDir, filePath, options = {}) {
   const rel = toPortablePath(path.relative(rootDir, filePath));
   const parts = rel.split('/');
-  if (parts.some((part) => INFO_EXCLUDED_PARTS.has(part))) {
+  if (parts.some((part) => INFO_EXCLUDED_PARTS.has(part) || part.startsWith('electron_user_data'))) {
     return true;
   }
   const name = path.basename(filePath);
   const lower = rel.toLowerCase();
+  if (options.includeData) {
+    return (
+      lower.includes('backup') ||
+      lower.includes('recovery') ||
+      lower.endsWith('.log') ||
+      lower.includes('.bak') ||
+      lower.endsWith('.tmp') ||
+      (!options.includeMedia && isMediaFile(filePath))
+    );
+  }
   if (DEFAULT_SECRET_FILES.has(name) && !lower.includes('backup')) {
     return false;
   }
@@ -185,7 +225,10 @@ function shouldSkipInfoPath(rootDir, filePath) {
   );
 }
 
-function shouldIncludeInfoFile(filePath) {
+function shouldIncludeInfoFile(filePath, options = {}) {
+  if (options.includeData) {
+    return true;
+  }
   const name = path.basename(filePath);
   if (DEFAULT_SECRET_FILES.has(name)) {
     return true;
@@ -193,9 +236,10 @@ function shouldIncludeInfoFile(filePath) {
   return SECRET_NAME_PATTERN.test(name) && /\.(json|txt|key|pem|env)$/i.test(name);
 }
 
-function addCandidate(rootDir, absolutePath, candidates) {
+function addCandidate(rootDir, absolutePath, candidates, options = {}) {
   const stat = statIfFile(absolutePath);
-  if (!stat || stat.size > MAX_FILE_BYTES) {
+  const maxBytes = options.includeData ? MAX_DATA_FILE_BYTES : MAX_FILE_BYTES;
+  if (!stat || stat.size > maxBytes) {
     return;
   }
 
@@ -211,11 +255,25 @@ function addCandidate(rootDir, absolutePath, candidates) {
   });
 }
 
-function collectCredentialFiles(rootDir, extraIncludes = []) {
+function addIncludePath(rootDir, includePath, candidates, options = {}) {
+  const resolved = path.resolve(rootDir, includePath);
+  const includeOptions = { ...options, includeData: true, includeMedia: true };
+  if (statIfDirectory(resolved)) {
+    walk(resolved, (fullPath, entry) => {
+      if (entry.isFile()) {
+        addCandidate(rootDir, fullPath, candidates, includeOptions);
+      }
+    });
+    return;
+  }
+  addCandidate(rootDir, resolved, candidates, includeOptions);
+}
+
+function collectCredentialFiles(rootDir, extraIncludes = [], options = {}) {
   const candidates = new Map();
 
   for (const fileName of DEFAULT_ROOT_FILES) {
-    addCandidate(rootDir, path.join(rootDir, fileName), candidates);
+    addCandidate(rootDir, path.join(rootDir, fileName), candidates, options);
   }
 
   let rootEntries = [];
@@ -229,7 +287,7 @@ function collectCredentialFiles(rootDir, extraIncludes = []) {
       continue;
     }
     if (DEFAULT_ROOT_GLOBS.some((pattern) => pattern.test(entry.name))) {
-      addCandidate(rootDir, path.join(rootDir, entry.name), candidates);
+      addCandidate(rootDir, path.join(rootDir, entry.name), candidates, options);
     }
   }
 
@@ -237,20 +295,19 @@ function collectCredentialFiles(rootDir, extraIncludes = []) {
   if (fs.existsSync(infoDir)) {
     walk(infoDir, (fullPath, entry) => {
       if (entry.isDirectory()) {
-        return shouldSkipInfoPath(rootDir, fullPath) ? false : undefined;
+        return shouldSkipInfoPath(rootDir, fullPath, options) ? false : undefined;
       }
-      if (shouldSkipInfoPath(rootDir, fullPath)) {
+      if (shouldSkipInfoPath(rootDir, fullPath, options)) {
         return;
       }
-      if (shouldIncludeInfoFile(fullPath)) {
-        addCandidate(rootDir, fullPath, candidates);
+      if (shouldIncludeInfoFile(fullPath, options)) {
+        addCandidate(rootDir, fullPath, candidates, options);
       }
     });
   }
 
   for (const includePath of extraIncludes || []) {
-    const resolved = path.resolve(rootDir, includePath);
-    addCandidate(rootDir, resolved, candidates);
+    addIncludePath(rootDir, includePath, candidates, options);
   }
 
   return Array.from(candidates.values()).sort((a, b) => a.portablePath.localeCompare(b.portablePath));
@@ -390,7 +447,8 @@ function defaultOutFile(rootDir) {
 }
 
 async function exportCredentials(rootDir, args) {
-  const files = collectCredentialFiles(rootDir, args.include);
+  const options = { includeData: !!args['include-data'], includeMedia: !!args['include-media'] };
+  const files = collectCredentialFiles(rootDir, args.include, options);
   if (files.length === 0) {
     throw new Error('Nenhum arquivo de credenciais foi encontrado.');
   }
@@ -508,7 +566,8 @@ function importCredentials(rootDir, args) {
 }
 
 function listCredentials(rootDir, args) {
-  const files = collectCredentialFiles(rootDir, args.include);
+  const options = { includeData: !!args['include-data'], includeMedia: !!args['include-media'] };
+  const files = collectCredentialFiles(rootDir, args.include, options);
   if (files.length === 0) {
     console.log('Nenhum arquivo de credenciais foi encontrado.');
     return;

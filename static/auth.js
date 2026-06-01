@@ -252,6 +252,184 @@ function navegarComTransicao(url) {
     } catch (_err) {}
 })();
 
+(function initElectronUpdateSaveBridge() {
+    if (window.__jkElectronUpdateSaveBridgeInit) return;
+    window.__jkElectronUpdateSaveBridgeInit = true;
+
+    const DRAFT_PREFIX = 'jk-update-draft:';
+    window.__jkBeforeUpdateSaveHandlers = window.__jkBeforeUpdateSaveHandlers || [];
+
+    window.jkRegisterBeforeUpdateSaveHandler = function jkRegisterBeforeUpdateSaveHandler(handler) {
+        if (typeof handler !== 'function') return () => {};
+        window.__jkBeforeUpdateSaveHandlers.push(handler);
+        return () => {
+            window.__jkBeforeUpdateSaveHandlers = window.__jkBeforeUpdateSaveHandlers.filter(item => item !== handler);
+        };
+    };
+
+    function draftKey() {
+        return `${DRAFT_PREFIX}${window.location.pathname}`;
+    }
+
+    function cssValue(value) {
+        if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+        return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
+    function inputCanBeDrafted(el) {
+        if (!el || !el.matches || !el.matches('input, textarea, select')) return false;
+        if (el.disabled || el.readOnly) return false;
+        const type = String(el.type || '').toLowerCase();
+        return !['password', 'hidden', 'file', 'button', 'submit', 'reset'].includes(type);
+    }
+
+    function saveFormDraftsForUpdate() {
+        const fields = [];
+        document.querySelectorAll('input, textarea, select').forEach((el) => {
+            if (!inputCanBeDrafted(el)) return;
+            const key = el.id || el.name;
+            if (!key) return;
+            const type = String(el.type || '').toLowerCase();
+            if (type === 'checkbox' || type === 'radio') return;
+            fields.push({
+                id: el.id || '',
+                name: el.name || '',
+                tag: String(el.tagName || '').toLowerCase(),
+                type,
+                value: el.value
+            });
+        });
+        if (fields.length) {
+            localStorage.setItem(draftKey(), JSON.stringify({
+                savedAt: Date.now(),
+                url: window.location.href,
+                fields
+            }));
+        }
+        return fields.length;
+    }
+
+    function findDraftTarget(field) {
+        if (field.id) {
+            const byId = document.getElementById(field.id);
+            if (byId) return byId;
+        }
+        if (field.name) {
+            return document.querySelector(`[name="${cssValue(field.name)}"]`);
+        }
+        return null;
+    }
+
+    function restoreFormDraftsAfterUpdate() {
+        let draft = null;
+        try {
+            draft = JSON.parse(localStorage.getItem(draftKey()) || 'null');
+        } catch (_err) {
+            draft = null;
+        }
+        if (!draft || !Array.isArray(draft.fields)) return;
+        if (Date.now() - Number(draft.savedAt || 0) > 2 * 60 * 60 * 1000) {
+            localStorage.removeItem(draftKey());
+            return;
+        }
+        draft.fields.forEach((field) => {
+            const el = findDraftTarget(field);
+            if (!inputCanBeDrafted(el)) return;
+            if (String(el.value || '') !== '') return;
+            el.value = field.value || '';
+            try {
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (_err) {}
+        });
+    }
+
+    function addKnownSaveFunction(name, promises) {
+        const fn = window[name];
+        if (typeof fn !== 'function') return;
+        try {
+            const result = fn();
+            if (result && typeof result.then === 'function') promises.push(result);
+        } catch (_err) {}
+    }
+
+    async function preparePageForUpdate(payload = {}) {
+        const promises = [];
+        const waitUntil = (promise) => {
+            if (promise && typeof promise.then === 'function') promises.push(promise);
+        };
+        const drafts = saveFormDraftsForUpdate();
+        try {
+            window.dispatchEvent(new CustomEvent('jk-before-update-save', {
+                detail: {
+                    reason: payload.reason || 'update-install',
+                    waitUntil
+                }
+            }));
+        } catch (_err) {}
+        for (const handler of window.__jkBeforeUpdateSaveHandlers.slice()) {
+            try {
+                const result = handler(payload || {});
+                if (result && typeof result.then === 'function') promises.push(result);
+            } catch (_err) {}
+        }
+        [
+            'salvarSessaoNavegadorElectron',
+            'salvarCacheTelaVendas',
+            'salvarNotasSkuTreinamentoAtual',
+            'salvarLarguras',
+            '_salvarLarguras',
+            'salvarLargurasColunas',
+            'salvarLargurasColunasPedidos',
+            'saveColumnPrefs',
+            'savePagePrefs',
+            'saveColumnWidthPrefsFromDom',
+            'saveColumnWidthPrefsFromDomRobust'
+        ].forEach((name) => addKnownSaveFunction(name, promises));
+        if (promises.length) {
+            await Promise.allSettled(promises.map((promise) => Promise.resolve(promise)));
+        }
+        try {
+            localStorage.setItem('jk-last-update-save', JSON.stringify({
+                savedAt: Date.now(),
+                url: window.location.href,
+                title: document.title || ''
+            }));
+        } catch (_err) {}
+        return { success: true, drafts, asyncHandlers: promises.length, url: window.location.href };
+    }
+
+    window.jkPreparePageForUpdate = preparePageForUpdate;
+
+    window.addEventListener('message', (event) => {
+        const data = event && event.data ? event.data : {};
+        if (!data || typeof data !== 'object' || data.channel !== 'jk-prepare-for-update') return;
+        const requestId = data.requestId || '';
+        preparePageForUpdate(data.payload || {})
+            .then((result) => {
+                if (event.source && typeof event.source.postMessage === 'function') {
+                    event.source.postMessage({ channel: 'jk-prepare-for-update-result', requestId, result }, '*');
+                }
+            })
+            .catch((err) => {
+                if (event.source && typeof event.source.postMessage === 'function') {
+                    event.source.postMessage({
+                        channel: 'jk-prepare-for-update-result',
+                        requestId,
+                        result: { success: false, error: err && err.message ? err.message : String(err) }
+                    }, '*');
+                }
+            });
+    });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restoreFormDraftsAfterUpdate, { once: true });
+    } else {
+        restoreFormDraftsAfterUpdate();
+    }
+    window.addEventListener('load', () => setTimeout(restoreFormDraftsAfterUpdate, 300));
+})();
+
 function obterClientId() {
     const u = JSON.parse(localStorage.getItem('user_data') || 'null');
     return u && u.client_id ? u.client_id : null;
@@ -570,6 +748,9 @@ function verificarSessao() {
     }
 
     function atualizarIndicador() {
+        document.getElementById('jk-ia-rag-indicador')?.remove();
+        return;
+
         const el = garantirIndicador();
         if (!el) return;
 
@@ -1271,6 +1452,36 @@ function verificarSessao() {
         return el;
     }
 
+    function corrigirTextoMojibakeGlobal(valor) {
+        let texto = valor === null || valor === undefined ? '' : String(valor);
+        const pareceMojibake = (txt) => /Ã[\u0080-\u00bf]|Ãƒ|Ã‚|Â[\u0080-\u00bf]|â[€œš–—™“”€¢]|ï¿½|�/.test(txt);
+        const pares = [
+            ['Ã¢Å“â€¦', '✅'], ['âœ…', '✅'], ['Ã¢ÂÅ’', '❌'], ['âŒ', '❌'],
+            ['Ã¢Å¡Â Ã¯Â¸Â', '⚠️'], ['âš ï¸', '⚠️'], ['â€”', '-'], ['â€“', '-'],
+            ['â€œ', '"'], ['â€', '"'], ['â€˜', "'"], ['â€™', "'"]
+        ];
+        const substituir = (txt) => pares.reduce((acc, [errado, correto]) => acc.split(errado).join(correto), txt);
+        texto = substituir(texto);
+        if (!pareceMojibake(texto) || typeof TextDecoder !== 'function') return texto;
+        const mapaCp1252 = new Map([
+            ['€', 0x80], ['‚', 0x82], ['ƒ', 0x83], ['„', 0x84], ['…', 0x85], ['†', 0x86], ['‡', 0x87],
+            ['ˆ', 0x88], ['‰', 0x89], ['Š', 0x8a], ['‹', 0x8b], ['Œ', 0x8c], ['Ž', 0x8e],
+            ['‘', 0x91], ['’', 0x92], ['“', 0x93], ['”', 0x94], ['•', 0x95], ['–', 0x96], ['—', 0x97],
+            ['˜', 0x98], ['™', 0x99], ['š', 0x9a], ['›', 0x9b], ['œ', 0x9c], ['ž', 0x9e], ['Ÿ', 0x9f]
+        ]);
+        const score = (txt) => (txt.match(/Ã|Â|â|ï¿½|�/g) || []).length;
+        const replacements = (txt) => (txt.match(/�/g) || []).length;
+        const decoder = new TextDecoder('utf-8');
+        for (let i = 0; i < 3 && pareceMojibake(texto); i += 1) {
+            const bytes = Uint8Array.from(Array.from(texto, ch => mapaCp1252.get(ch) ?? (ch.charCodeAt(0) & 0xff)));
+            const corrigido = substituir(decoder.decode(bytes));
+            if (!corrigido || corrigido === texto) break;
+            if (score(corrigido) > score(texto) || replacements(corrigido) > replacements(texto)) break;
+            texto = corrigido;
+        }
+        return substituir(texto);
+    }
+
     function renderWidget(payload) {
         const widget = garantirWidget();
         const progress = payload && payload.progress ? payload.progress : null;
@@ -1286,8 +1497,8 @@ function verificarSessao() {
         const loja = meta && meta.loja ? meta.loja : '-';
         const inicio = formatarDataBr(meta && meta.data_inicio ? meta.data_inicio : '');
         const fim = formatarDataBr(meta && meta.data_fim ? meta.data_fim : '');
-        const etapa = progress && progress.etapa ? progress.etapa : 'Preparando';
-        const mensagem = progress && progress.mensagem ? progress.mensagem : 'Sincronizando...';
+        const etapa = corrigirTextoMojibakeGlobal(progress && progress.etapa ? progress.etapa : 'Preparando');
+        const mensagem = corrigirTextoMojibakeGlobal(progress && progress.mensagem ? progress.mensagem : 'Sincronizando...');
 
         const titleEl = widget.querySelector('.jk-title');
         const fullTitle = `Sincronização de vendas (${loja})`;

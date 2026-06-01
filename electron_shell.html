@@ -16,19 +16,53 @@
         }
         .shell {
             display: grid;
-            grid-template-rows: 42px minmax(0, 1fr);
+            grid-template-rows: minmax(0, 1fr);
             height: 100vh;
+        }
+        .toolbar-trigger {
+            background: linear-gradient(90deg, rgba(79, 172, 254, 0.34), rgba(49, 196, 190, 0.26), rgba(79, 172, 254, 0.18));
+            height: 8px;
+            left: 0;
+            position: fixed;
+            right: 0;
+            top: 0;
+            z-index: 60;
+        }
+        .toolbar-trigger::after {
+            background: rgba(15, 23, 42, 0.42);
+            border-radius: 999px;
+            content: "";
+            height: 3px;
+            left: 50%;
+            opacity: 0.58;
+            position: absolute;
+            top: 2px;
+            transform: translateX(-50%);
+            width: 86px;
         }
         .toolbar {
             align-items: center;
-            background: linear-gradient(180deg, #f8fbff, #e7eef8);
-            border-bottom: 1px solid #cbd8ea;
-            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+            background: linear-gradient(180deg, #f9fbff, #e7f0fb);
+            border-bottom: 1px solid rgba(79, 172, 254, 0.28);
+            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.14);
             display: flex;
             gap: 8px;
+            height: 46px;
+            left: 0;
             min-width: 0;
-            padding: 6px 10px;
-            z-index: 5;
+            padding: 7px 10px 8px;
+            position: fixed;
+            right: 0;
+            top: 0;
+            transform: translateY(-38px);
+            transition: transform 180ms ease, box-shadow 180ms ease;
+            z-index: 70;
+        }
+        .shell.tabs-expanded .toolbar,
+        .toolbar:hover,
+        .toolbar:focus-within {
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+            transform: translateY(0);
         }
         .tabs {
             align-items: center;
@@ -44,25 +78,53 @@
         .tabs::-webkit-scrollbar-track { background: transparent; }
         .tabs::-webkit-scrollbar-thumb { background: rgba(37, 99, 235, .24); border-radius: 999px; }
         .tab {
+            --tab-accent: #4facfe;
             align-items: center;
-            background: rgba(255, 255, 255, 0.78);
-            border: 1px solid #d5e2f2;
-            border-radius: 9px;
-            color: #334155;
+            background: rgba(255, 255, 255, 0.84);
+            border: 1px solid rgba(148, 163, 184, 0.42);
+            border-left: 3px solid var(--tab-accent);
+            border-radius: 10px;
+            color: #243447;
             cursor: pointer;
             display: flex;
             flex: 0 0 auto;
-            gap: 7px;
+            gap: 8px;
             height: 30px;
-            max-width: 220px;
-            min-width: 116px;
-            padding: 0 7px 0 10px;
+            max-width: 238px;
+            min-width: 132px;
+            padding: 0 7px 0 8px;
+            transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+        }
+        .tab:hover {
+            background: #ffffff;
+            border-color: rgba(79, 172, 254, 0.52);
         }
         .tab.is-active {
             background: #ffffff;
-            border-color: #4facfe;
-            box-shadow: 0 0 0 2px rgba(79, 172, 254, 0.12);
+            border-color: var(--tab-accent);
+            box-shadow: 0 0 0 2px rgba(79, 172, 254, 0.14);
             color: #0f172a;
+        }
+        .tab-icon {
+            align-items: center;
+            background: rgba(15, 23, 42, 0.06);
+            border: 1px solid rgba(148, 163, 184, 0.38);
+            border-radius: 8px;
+            color: #0f172a;
+            display: inline-flex;
+            flex: 0 0 auto;
+            font-size: 10px;
+            font-weight: 900;
+            height: 20px;
+            justify-content: center;
+            line-height: 1;
+            min-width: 22px;
+            padding: 0 5px;
+        }
+        .tab.is-active .tab-icon {
+            background: var(--tab-accent);
+            border-color: var(--tab-accent);
+            color: #ffffff;
         }
         .tab-title {
             display: block;
@@ -109,6 +171,8 @@
         .toolbar-btn:hover { background: #eef6ff; border-color: #4facfe; }
         .toolbar-btn:disabled { cursor: not-allowed; opacity: 0.55; }
         .views {
+            background: #ffffff;
+            height: 100vh;
             min-height: 0;
             position: relative;
         }
@@ -123,6 +187,66 @@
         }
         .tab-view.is-active {
             display: block;
+        }
+        .tab-load-state {
+            align-items: center;
+            background: #f8fbff;
+            color: #334155;
+            display: none;
+            inset: 0;
+            justify-content: center;
+            padding: 24px;
+            position: absolute;
+            text-align: center;
+            z-index: 2;
+        }
+        .tab-load-state.is-active {
+            display: flex;
+        }
+        .tab-load-box {
+            background: #ffffff;
+            border: 1px solid #cbd8ea;
+            border-radius: 8px;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+            max-width: 520px;
+            padding: 18px 20px;
+            width: min(92vw, 520px);
+        }
+        .tab-load-title {
+            color: #0f172a;
+            font-size: 15px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .tab-load-message {
+            color: #475569;
+            font-size: 13px;
+            line-height: 1.45;
+            margin-bottom: 14px;
+        }
+        .tab-load-actions {
+            display: none;
+            gap: 8px;
+            justify-content: center;
+        }
+        .tab-load-state.has-actions .tab-load-actions {
+            display: flex;
+        }
+        .tab-load-action {
+            background: #ffffff;
+            border: 1px solid #cbd8ea;
+            border-radius: 8px;
+            color: #0f172a;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 800;
+            min-height: 30px;
+            padding: 0 12px;
+        }
+        .tab-load-action.primary {
+            background: #0f172a;
+            border-color: #0f172a;
+            color: #ffffff;
         }
         .ml-browser-shell-webview {
             background: #ffffff;
@@ -146,9 +270,62 @@
             justify-content: center;
         }
         .empty-state.is-active { display: flex; }
+        .update-save-overlay {
+            align-items: center;
+            background: rgba(7, 17, 31, 0.84);
+            color: #eef6ff;
+            display: none;
+            inset: 0;
+            justify-content: center;
+            padding: 24px;
+            position: fixed;
+            text-align: left;
+            z-index: 120;
+        }
+        .update-save-overlay.is-active { display: flex; }
+        .update-save-box {
+            background: #07111f;
+            border: 1px solid rgba(93, 183, 255, 0.36);
+            border-radius: 8px;
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+            max-width: 520px;
+            padding: 20px;
+            width: min(92vw, 520px);
+        }
+        .update-save-title {
+            font-size: 18px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .update-save-message {
+            color: #b8c9dc;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+        .update-save-bar {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 99px;
+            height: 5px;
+            margin-top: 18px;
+            overflow: hidden;
+        }
+        .update-save-bar::before {
+            animation: updateSaveLoad 1.2s ease-in-out infinite;
+            background: #5db7ff;
+            border-radius: inherit;
+            content: "";
+            display: block;
+            height: 100%;
+            width: 42%;
+        }
+        @keyframes updateSaveLoad {
+            0% { transform: translateX(-110%); }
+            100% { transform: translateX(260%); }
+        }
     </style>
 </head>
 <body>
+    <div id="toolbar-trigger" class="toolbar-trigger" aria-hidden="true"></div>
     <main class="shell">
         <header class="toolbar">
             <div id="tabs" class="tabs" aria-label="Abas abertas"></div>
@@ -161,10 +338,30 @@
             <div id="empty" class="empty-state">Nenhuma aba aberta.</div>
         </section>
     </main>
+    <div id="update-save-overlay" class="update-save-overlay" aria-live="polite">
+        <div class="update-save-box">
+            <div class="update-save-title">Salvando trabalho aberto</div>
+            <div id="update-save-message" class="update-save-message">Preparando as abas para instalar a atualizacao.</div>
+            <div class="update-save-bar" aria-hidden="true"></div>
+        </div>
+    </div>
 
     <script>
+        function normalizeInitialAppUrl(value) {
+            const fallback = 'http://127.0.0.1:8001/dashboard.html';
+            try {
+                const target = new URL(value || fallback, fallback);
+                if (/\/frontend_index\.html$/i.test(target.pathname)) {
+                    target.pathname = target.pathname.replace(/frontend_index\.html$/i, 'dashboard.html');
+                }
+                return target.href;
+            } catch (_err) {
+                return value || fallback;
+            }
+        }
+
         const params = new URLSearchParams(window.location.search);
-        const appUrl = params.get('appUrl') || 'http://127.0.0.1:8001/frontend_index.html';
+        const appUrl = normalizeInitialAppUrl(params.get('appUrl'));
         const tabPreload = params.get('tabPreload') || '';
         const browserPartition = params.get('browserPartition') || 'persist:jk-sistema-browser';
         const tabsEl = document.getElementById('tabs');
@@ -174,13 +371,23 @@
         const backBtn = document.getElementById('back-tab');
         const reloadBtn = document.getElementById('reload-tab');
         const newTabBtn = document.getElementById('new-tab');
+        const shellEl = document.querySelector('.shell');
+        const toolbarEl = document.querySelector('.toolbar');
+        const toolbarTrigger = document.getElementById('toolbar-trigger');
+        const updateSaveOverlay = document.getElementById('update-save-overlay');
+        const updateSaveMessage = document.getElementById('update-save-message');
         const tabs = new Map();
+        const pendingUpdateSaveRequests = new Map();
         let activeId = '';
         let serial = 0;
+        let toolbarAutoHideTimer = null;
         let mlBrowserWebview = null;
         let mlBrowserOwnerId = '';
         const mlBrowserBoundsByTab = new Map();
         const mlBrowserUrlByTab = new Map();
+        const mlBrowserVisibleByTab = new Map();
+        const TAB_LOAD_TIMEOUT_MS = 12000;
+        const TAB_MAX_AUTO_RETRIES = 2;
 
         function normalizeTitle(value, fallback = 'Nova aba') {
             const clean = String(value || '')
@@ -259,6 +466,85 @@
             }
         }
 
+        function compactKey(value) {
+            return String(value || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase();
+        }
+
+        function tabProfileFrom(url, title) {
+            const key = compactKey(`${title || ''} ${url || ''}`);
+            const profiles = [
+                { label: 'IN', accent: '#4facfe', terms: ['inicio', 'dashboard', 'frontend_index'] },
+                { label: '$', accent: '#f5a84b', terms: ['vendas'] },
+                { label: 'ML', accent: '#29c7e8', terms: ['anuncios', 'mercado livre', 'anunciosml'] },
+                { label: 'FV', accent: '#f4d03f', terms: ['favoritos'] },
+                { label: '?', accent: '#38d4f0', terms: ['perguntas', 'pos venda'] },
+                { label: 'CX', accent: '#4facfe', terms: ['estoque', 'full'] },
+                { label: 'ET', accent: '#33d17a', terms: ['etiquetas'] },
+                { label: 'IT', accent: '#33d1bf', terms: ['integracoes'] },
+                { label: '+', accent: '#72a7ff', terms: ['cadastro'] },
+                { label: 'PR', accent: '#4facfe', terms: ['promocao', 'promo'] },
+                { label: 'RF', accent: '#25c2f0', terms: ['renovacao'] },
+                { label: 'MD', accent: '#83d96b', terms: ['medias', 'pedidos'] },
+                { label: '%', accent: '#ff8b5c', terms: ['impostos'] },
+                { label: 'IM', accent: '#ffe066', terms: ['importacoes'] },
+                { label: 'CF', accent: '#b68cff', terms: ['configuracoes'] }
+            ];
+            return profiles.find(profile => profile.terms.some(term => key.includes(term))) || { label: 'JK', accent: '#4facfe' };
+        }
+
+        function applyTabProfile(tab) {
+            if (!tab || !tab.button) return;
+            const profile = tabProfileFrom(tab.url, tab.title);
+            tab.button.style.setProperty('--tab-accent', profile.accent);
+            const iconEl = tab.button.querySelector('.tab-icon');
+            if (iconEl) iconEl.textContent = profile.label;
+        }
+
+        function hideTabsToolbar() {
+            if (!shellEl || !toolbarEl) return;
+            if (toolbarEl.matches(':hover') || toolbarEl.contains(document.activeElement)) {
+                showTabsToolbar(900);
+                return;
+            }
+            shellEl.classList.remove('tabs-expanded');
+        }
+
+        function showTabsToolbar(timeout = 1800) {
+            if (!shellEl) return;
+            clearTimeout(toolbarAutoHideTimer);
+            shellEl.classList.add('tabs-expanded');
+            if (timeout > 0) {
+                toolbarAutoHideTimer = setTimeout(hideTabsToolbar, timeout);
+            }
+        }
+
+        function scheduleTabsToolbarHide(timeout = 700) {
+            clearTimeout(toolbarAutoHideTimer);
+            toolbarAutoHideTimer = setTimeout(hideTabsToolbar, timeout);
+        }
+
+        function bindAutoHidingToolbar() {
+            if (!toolbarEl) return;
+            if (toolbarTrigger) {
+                toolbarTrigger.addEventListener('mouseenter', () => showTabsToolbar(2600));
+                toolbarTrigger.addEventListener('click', () => showTabsToolbar(3200));
+            }
+            toolbarEl.addEventListener('mouseenter', () => showTabsToolbar(0));
+            toolbarEl.addEventListener('mouseleave', () => scheduleTabsToolbarHide(650));
+            toolbarEl.addEventListener('focusin', () => showTabsToolbar(0));
+            toolbarEl.addEventListener('focusout', () => scheduleTabsToolbarHide(650));
+            document.addEventListener('mousemove', event => {
+                if (event.clientY <= 10) {
+                    showTabsToolbar(2600);
+                } else if (event.clientY > 62 && shellEl && shellEl.classList.contains('tabs-expanded') && !toolbarEl.matches(':hover')) {
+                    scheduleTabsToolbarHide(420);
+                }
+            });
+        }
+
         function setTabTitle(id, title) {
             const tab = tabs.get(id);
             if (!tab) return;
@@ -266,6 +552,7 @@
             const titleEl = tab.button.querySelector('.tab-title');
             if (titleEl) titleEl.textContent = tab.title;
             tab.button.title = tab.title;
+            applyTabProfile(tab);
             if (id === activeId) document.title = `${tab.title} - JK Sistema`;
         }
 
@@ -281,6 +568,218 @@
                 if (tab && tab.webview && tab.webview.contentWindow) {
                     tab.webview.contentWindow.postMessage(message, '*');
                 }
+            } catch (_err) {}
+        }
+
+        function setUpdateSaveOverlay(active, message = '') {
+            if (updateSaveOverlay) updateSaveOverlay.classList.toggle('is-active', !!active);
+            if (updateSaveMessage && message) updateSaveMessage.textContent = message;
+        }
+
+        function getCurrentTabUrl(tab) {
+            if (!tab) return '';
+            try {
+                const href = tab.webview && tab.webview.contentWindow && tab.webview.contentWindow.location
+                    ? tab.webview.contentWindow.location.href
+                    : '';
+                if (href) return href;
+            } catch (_err) {}
+            return tab.url || '';
+        }
+
+        function saveOpenTabsSnapshot(reason = 'manual') {
+            try {
+                const snapshot = {
+                    reason,
+                    savedAt: Date.now(),
+                    activeUrl: activeId && tabs.get(activeId) ? getCurrentTabUrl(tabs.get(activeId)) : '',
+                    tabs: Array.from(tabs.values()).map(tab => ({
+                        url: getCurrentTabUrl(tab),
+                        title: tab.title || titleFromUrl(tab.url) || 'JK Sistema'
+                    })).filter(item => item.url)
+                };
+                localStorage.setItem('jk-electron-update-tabs-v1', JSON.stringify(snapshot));
+            } catch (_err) {}
+        }
+
+        function prepareTabForUpdate(tab, index, total) {
+            return new Promise((resolve) => {
+                if (!tab || !tab.webview || !tab.webview.contentWindow) {
+                    resolve({ success: true, reason: 'no-tab-window' });
+                    return;
+                }
+                const requestId = `update-save-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
+                const timer = setTimeout(() => {
+                    pendingUpdateSaveRequests.delete(requestId);
+                    resolve({ success: false, timedOut: true, title: tab.title || '' });
+                }, 8000);
+                pendingUpdateSaveRequests.set(requestId, {
+                    resolve: (result) => {
+                        clearTimeout(timer);
+                        pendingUpdateSaveRequests.delete(requestId);
+                        resolve(result || { success: true });
+                    }
+                });
+                postToTab(tab, {
+                    channel: 'jk-prepare-for-update',
+                    requestId,
+                    payload: {
+                        title: tab.title || '',
+                        url: getCurrentTabUrl(tab),
+                        index,
+                        total
+                    }
+                });
+            });
+        }
+
+        async function prepareAllTabsForUpdate(payload = {}) {
+            const tabList = Array.from(tabs.values());
+            saveOpenTabsSnapshot(payload.reason || 'update-install');
+            setUpdateSaveOverlay(true, 'Salvando abas abertas e rascunhos locais...');
+            const results = [];
+            for (let index = 0; index < tabList.length; index += 1) {
+                const tab = tabList[index];
+                setUpdateSaveOverlay(true, `Salvando aba ${index + 1} de ${tabList.length}: ${tab.title || 'JK Sistema'}`);
+                results.push(await prepareTabForUpdate(tab, index + 1, tabList.length));
+            }
+            if (window.electronAPI && typeof window.electronAPI.flushBrowserSession === 'function') {
+                setUpdateSaveOverlay(true, 'Gravando sessao local no disco...');
+                try {
+                    await window.electronAPI.flushBrowserSession();
+                } catch (_err) {}
+            }
+            setUpdateSaveOverlay(true, 'Tudo salvo. Instalando atualizacao...');
+            return { success: true, tabCount: tabList.length, results };
+        }
+
+        function restoreTabsAfterUpdate() {
+            let snapshot = null;
+            try {
+                snapshot = JSON.parse(localStorage.getItem('jk-electron-update-tabs-v1') || 'null');
+                localStorage.removeItem('jk-electron-update-tabs-v1');
+            } catch (_err) {
+                snapshot = null;
+            }
+            if (!snapshot || !Array.isArray(snapshot.tabs) || !snapshot.tabs.length) return false;
+            if (Date.now() - Number(snapshot.savedAt || 0) > 12 * 60 * 60 * 1000) return false;
+            const seen = new Set();
+            let restoredActiveId = '';
+            snapshot.tabs.forEach((item) => {
+                const url = normalizeTabUrl(item.url, appUrl);
+                if (!url || seen.has(url)) return;
+                seen.add(url);
+                const id = createTab(url, item.title || titleFromUrl(url) || 'JK Sistema');
+                if (snapshot.activeUrl && sameUrlWithoutCache(snapshot.activeUrl, url)) {
+                    restoredActiveId = id;
+                }
+            });
+            if (restoredActiveId) activateTab(restoredActiveId);
+            return tabs.size > 0;
+        }
+
+        window.jkElectronPrepareForUpdate = prepareAllTabsForUpdate;
+
+        function clearTabLoadTimer(tab) {
+            if (tab && tab.loadTimer) {
+                clearTimeout(tab.loadTimer);
+                tab.loadTimer = null;
+            }
+            if (tab && tab.softReadyTimer) {
+                clearTimeout(tab.softReadyTimer);
+                tab.softReadyTimer = null;
+            }
+        }
+
+        function setTabLoadState(id, state, message = '') {
+            const tab = tabs.get(id);
+            if (!tab || !tab.loadState) return;
+            const isActive = id === activeId;
+            const show = isActive && state && state !== 'ready';
+            const titleEl = tab.loadState.querySelector('.tab-load-title');
+            const msgEl = tab.loadState.querySelector('.tab-load-message');
+            tab.loadState.classList.toggle('is-active', !!show);
+            tab.loadState.classList.toggle('has-actions', state === 'error');
+            if (titleEl) {
+                titleEl.textContent = state === 'error'
+                    ? 'Nao foi possivel carregar esta aba'
+                    : 'Carregando modulo...';
+            }
+            if (msgEl) {
+                msgEl.textContent = message || (
+                    state === 'error'
+                        ? 'O backend respondeu, mas o Electron nao conseguiu renderizar a pagina. Tente recarregar a aba.'
+                        : 'Aguardando resposta do sistema local.'
+                );
+            }
+        }
+
+        function withCacheBust(url) {
+            try {
+                const target = new URL(url, appUrl);
+                target.searchParams.set('_jk_retry', String(Date.now()));
+                return target.href;
+            } catch (_err) {
+                return url;
+            }
+        }
+
+        function startTabLoadWatchdog(id) {
+            const tab = tabs.get(id);
+            if (!tab) return;
+            clearTabLoadTimer(tab);
+            tab.loaded = false;
+            setTabLoadState(id, 'loading');
+            tab.softReadyTimer = setTimeout(() => {
+                const atual = tabs.get(id);
+                if (!atual || atual.loaded) return;
+                const currentUrl = normalizeTabUrl(atual.url || atual.webview?.src || appUrl, appUrl);
+                if (/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//i.test(currentUrl)) {
+                    markTabReady(id);
+                }
+            }, 4500);
+            tab.loadTimer = setTimeout(() => {
+                const atual = tabs.get(id);
+                if (!atual || atual.loaded) return;
+                if ((atual.loadRetries || 0) < TAB_MAX_AUTO_RETRIES) {
+                    atual.loadRetries = (atual.loadRetries || 0) + 1;
+                    const currentUrl = normalizeTabUrl(atual.url || atual.webview?.src || appUrl, appUrl);
+                    if (/\/frontend_index\.html(?:[?#]|$)/i.test(currentUrl)) {
+                        setTabLoadState(id, 'loading', 'Sessao salva encontrada. Abrindo painel inicial...');
+                        reloadTab(id, { keepRetryCount: true, cacheBust: true, url: dashboardUrl() });
+                        return;
+                    }
+                    setTabLoadState(id, 'loading', 'A tela demorou para responder. Tentando recarregar automaticamente...');
+                    reloadTab(id, { keepRetryCount: true, cacheBust: true });
+                    return;
+                }
+                setTabLoadState(id, 'error', 'A aba abriu, mas ficou sem conteudo renderizado. Use Atualizar para tentar novamente.');
+            }, TAB_LOAD_TIMEOUT_MS);
+        }
+
+        function markTabReady(id) {
+            const tab = tabs.get(id);
+            if (!tab) return;
+            tab.loaded = true;
+            tab.loadRetries = 0;
+            clearTabLoadTimer(tab);
+            setTabLoadState(id, 'ready');
+        }
+
+        function reloadTab(id, options = {}) {
+            const tab = tabs.get(id);
+            if (!tab) return;
+            if (!options.keepRetryCount) tab.loadRetries = 0;
+            const requestedUrl = options.url ? normalizeTabUrl(options.url, appUrl) : '';
+            const currentUrl = normalizeTabUrl(requestedUrl || tab.url || tab.webview?.src || appUrl, appUrl);
+            if (requestedUrl) {
+                tab.url = requestedUrl;
+                setTabTitle(id, titleFromUrl(requestedUrl) || tab.title || 'JK Sistema');
+            }
+            const nextUrl = options.cacheBust ? withCacheBust(currentUrl) : currentUrl;
+            startTabLoadWatchdog(id);
+            try {
+                tab.webview.src = nextUrl;
             } catch (_err) {}
         }
 
@@ -323,6 +822,7 @@
         function positionMlBrowserForTab(source, bounds) {
             const found = findTabBySource(source);
             if (!found) return null;
+            const background = !!(bounds && bounds.background);
             const frameRect = found.tab.webview.getBoundingClientRect();
             const viewsRect = viewsEl.getBoundingClientRect();
             const temBoundsValidos = !!(
@@ -350,7 +850,7 @@
             webview.style.width = `${width}px`;
             webview.style.height = `${height}px`;
             mlBrowserOwnerId = found.id;
-            webview.classList.toggle('is-active', found.id === activeId);
+            webview.classList.toggle('is-active', found.id === activeId && !background);
             return { found, webview };
         }
 
@@ -362,6 +862,7 @@
 
         function getMlBrowserBoundsForTab(tab, bounds) {
             if (!tab || !tab.webview || typeof tab.webview.getBoundingClientRect !== 'function') return null;
+            const background = !!(bounds && bounds.background);
             const frameRect = tab.webview.getBoundingClientRect();
             const temBoundsValidos = !!(
                 bounds &&
@@ -383,7 +884,8 @@
                         : Math.max(80, Math.round(Number(frameRect.width || 0))),
                     height: temBoundsValidos
                         ? Math.max(80, Math.round(Number(bounds.height || 0)))
-                        : Math.max(80, Math.round(Number(frameRect.height || 0)))
+                        : Math.max(80, Math.round(Number(frameRect.height || 0))),
+                    background
                 }
             };
         }
@@ -400,9 +902,12 @@
             if (!activeId) return;
             const url = mlBrowserUrlByTab.get(activeId);
             if (!url) return;
+            if (!mlBrowserVisibleByTab.get(activeId)) return;
             const tab = tabs.get(activeId);
             if (!tab) return;
-            const data = getMlBrowserBoundsForTab(tab, mlBrowserBoundsByTab.get(activeId) || null);
+            const boundsSalvos = mlBrowserBoundsByTab.get(activeId) || null;
+            if (boundsSalvos && boundsSalvos.background) return;
+            const data = getMlBrowserBoundsForTab(tab, boundsSalvos);
             if (!data || !data.bounds) return;
             if (window.electronAPI && typeof window.electronAPI.showEmbeddedMlBrowser === 'function') {
                 window.electronAPI.showEmbeddedMlBrowser(url, data.bounds).catch(() => {});
@@ -432,17 +937,23 @@
                 const active = id === activeId;
                 tab.button.classList.toggle('is-active', active);
                 tab.webview.classList.toggle('is-active', active);
+                if (tab.loadState) {
+                    tab.loadState.classList.toggle('is-active', active && !tab.loaded);
+                }
             });
+            const activeMlBounds = activeId ? mlBrowserBoundsByTab.get(activeId) : null;
+            const activeMlBackground = !!(activeMlBounds && activeMlBounds.background);
             const activeHasMlState = !!(activeId && mlBrowserUrlByTab.get(activeId));
+            const activeMlVisible = !!(activeId && mlBrowserVisibleByTab.get(activeId));
             if (activeHasMlState) {
                 mlBrowserOwnerId = activeId;
             } else {
                 mlBrowserOwnerId = '';
             }
             if (mlBrowserWebview) {
-                mlBrowserWebview.classList.toggle('is-active', !!activeHasMlState);
+                mlBrowserWebview.classList.toggle('is-active', !!activeHasMlState && activeMlVisible && !activeMlBackground);
             }
-            if (!activeHasMlState && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
+            if ((!activeHasMlState || !activeMlVisible || activeMlBackground) && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
                 window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
                 hideMlBrowserShell();
             } else {
@@ -456,6 +967,7 @@
             const tab = tabs.get(id);
             document.title = `${tab.title || 'JK Sistema'} - JK Sistema`;
             updateVisibleState();
+            showTabsToolbar(1400);
         }
 
         function closeTab(id) {
@@ -467,14 +979,18 @@
             }
             mlBrowserBoundsByTab.delete(id);
             mlBrowserUrlByTab.delete(id);
+            mlBrowserVisibleByTab.delete(id);
+            clearTabLoadTimer(tab);
             tab.button.remove();
             tab.webview.remove();
+            if (tab.loadState) tab.loadState.remove();
             tabs.delete(id);
             if (activeId === id) {
                 const last = Array.from(tabs.keys()).pop();
                 activeId = last || '';
             }
             updateVisibleState();
+            showTabsToolbar(1200);
         }
 
         function createTab(url, title = 'JK Sistema', options = {}) {
@@ -492,7 +1008,7 @@
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'tab';
-            button.innerHTML = '<span class="tab-title"></span><span class="tab-close" title="Fechar aba" aria-label="Fechar aba">x</span>';
+            button.innerHTML = '<span class="tab-icon" aria-hidden="true"></span><span class="tab-title"></span><span class="tab-close" title="Fechar aba" aria-label="Fechar aba">x</span>';
             button.addEventListener('click', () => activateTab(id));
             button.querySelector('.tab-close').addEventListener('click', (event) => {
                 event.stopPropagation();
@@ -501,36 +1017,54 @@
 
             const webview = document.createElement('iframe');
             webview.className = 'tab-view';
-            webview.src = targetUrl;
             webview.setAttribute('allow', 'clipboard-read; clipboard-write; fullscreen');
+            const loadState = document.createElement('div');
+            loadState.className = 'tab-load-state';
+            loadState.innerHTML = `
+                <div class="tab-load-box">
+                    <div class="tab-load-title">Carregando modulo...</div>
+                    <div class="tab-load-message">Aguardando resposta do sistema local.</div>
+                    <div class="tab-load-actions">
+                        <button type="button" class="tab-load-action primary" data-action="reload">Tentar novamente</button>
+                        <button type="button" class="tab-load-action" data-action="home">Abrir inicio</button>
+                    </div>
+                </div>
+            `;
+            loadState.addEventListener('click', (event) => {
+                const action = event.target && event.target.dataset ? event.target.dataset.action : '';
+                if (action === 'reload') {
+                    reloadTab(id, { cacheBust: true });
+                } else if (action === 'home') {
+                    navigateActiveTab(dashboardUrl(), 'Inicio');
+                }
+            });
             webview.addEventListener('load', () => {
                 const tab = tabs.get(id);
                 if (!tab) return;
+                markTabReady(id);
                 const frameTitle = titleFromFrame(webview);
                 if (frameTitle) setTabTitle(id, frameTitle);
             });
+            webview.addEventListener('error', () => {
+                clearTabLoadTimer(tabs.get(id));
+                setTabLoadState(id, 'error', 'O Electron recebeu erro ao carregar a pagina desta aba.');
+            });
 
-            tabs.set(id, { id, title: normalizeTitle(title), url: targetUrl, button, webview });
+            tabs.set(id, { id, title: normalizeTitle(title), url: targetUrl, button, webview, loadState, loaded: false, loadRetries: 0, loadTimer: null, softReadyTimer: null });
             tabsEl.appendChild(button);
             viewsEl.appendChild(webview);
+            viewsEl.appendChild(loadState);
             setTabTitle(id, title);
             activateTab(id);
+            startTabLoadWatchdog(id);
+            webview.src = targetUrl;
             return id;
         }
 
         function reloadActiveTab() {
             const tab = tabs.get(activeId);
             if (!tab) return;
-            try {
-                if (tab.webview && tab.webview.contentWindow && tab.webview.contentWindow.location) {
-                    tab.webview.contentWindow.location.reload();
-                    return;
-                }
-            } catch (_err) {}
-            try {
-                const currentUrl = normalizeTabUrl(tab.url || tab.webview?.src || appUrl, appUrl);
-                if (currentUrl) tab.webview.src = currentUrl;
-            } catch (_err) {}
+            reloadTab(activeId, { cacheBust: true });
         }
 
         function dashboardUrl() {
@@ -550,6 +1084,7 @@
             }
             tab.url = targetUrl;
             if (title) setTabTitle(activeId, title);
+            startTabLoadWatchdog(activeId);
             try {
                 tab.webview.src = targetUrl;
             } catch (_err) {}
@@ -569,14 +1104,34 @@
             const data = event && event.data ? event.data : {};
             if (!data || typeof data !== 'object') return;
 
+            if (data.channel === 'jk-prepare-for-update-result') {
+                const pending = pendingUpdateSaveRequests.get(data.requestId || '');
+                if (pending) {
+                    pending.resolve(data.result || data.payload || { success: true });
+                }
+                return;
+            }
+
             if (data.channel === 'jk-ml-browser-show' || data.channel === 'jk-ml-browser-position') {
                 const payload = data.payload || {};
-                const embedded = getMlBrowserBoundsForMainWindow(event.source, payload.bounds);
+                const sourceTab = findTabBySource(event.source);
+                const boundsPayload = sourceTab && sourceTab.id !== activeId
+                    ? { ...(payload.bounds || {}), background: true }
+                    : (payload.bounds || null);
+                const embedded = getMlBrowserBoundsForMainWindow(event.source, boundsPayload);
                 if (embedded && window.electronAPI && typeof window.electronAPI.showEmbeddedMlBrowser === 'function') {
                     mlBrowserOwnerId = embedded.found.id;
-                    mlBrowserBoundsByTab.set(embedded.found.id, payload.bounds || null);
+                    mlBrowserBoundsByTab.set(embedded.found.id, boundsPayload || null);
+                    mlBrowserVisibleByTab.set(embedded.found.id, !(embedded.bounds && embedded.bounds.background));
                     if (payload.url && /^https?:\/\//i.test(payload.url)) {
                         mlBrowserUrlByTab.set(embedded.found.id, payload.url);
+                    }
+                    if (data.channel === 'jk-ml-browser-position' && embedded.bounds && embedded.bounds.background) {
+                        if (typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
+                            window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
+                        }
+                        hideMlBrowserShell();
+                        return;
                     }
                     const action = data.channel === 'jk-ml-browser-show'
                         ? window.electronAPI.showEmbeddedMlBrowser(mlBrowserUrlByTab.get(embedded.found.id) || payload.url, embedded.bounds)
@@ -602,9 +1157,10 @@
                         });
                     return;
                 }
-                const positioned = positionMlBrowserForTab(event.source, payload.bounds);
+                const positioned = positionMlBrowserForTab(event.source, boundsPayload);
                 if (positioned && positioned.found) {
-                    mlBrowserBoundsByTab.set(positioned.found.id, payload.bounds || null);
+                    mlBrowserBoundsByTab.set(positioned.found.id, boundsPayload || null);
+                    mlBrowserVisibleByTab.set(positioned.found.id, !(boundsPayload && boundsPayload.background));
                     if (payload.url && /^https?:\/\//i.test(payload.url)) {
                         mlBrowserUrlByTab.set(positioned.found.id, payload.url);
                     }
@@ -629,6 +1185,11 @@
 
             if (data.channel === 'jk-ml-browser-hide') {
                 const found = findTabBySource(event.source);
+                if (found) {
+                    mlBrowserVisibleByTab.set(found.id, false);
+                } else if (mlBrowserOwnerId) {
+                    mlBrowserVisibleByTab.set(mlBrowserOwnerId, false);
+                }
                 if (found && found.id === mlBrowserOwnerId && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
                     window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
                 }
@@ -686,11 +1247,41 @@
             if (data.channel === 'jk-tab-title') {
                 const payload = data.payload || {};
                 const incomingTitle = payload.title || data.title || '';
+                let handled = false;
                 for (const [id, tab] of tabs) {
                     if (tab.webview && tab.webview.contentWindow === event.source) {
+                        markTabReady(id);
                         if (payload.url) tab.url = normalizeTabUrl(payload.url, tab.url);
                         setTabTitle(id, incomingTitle || titleFromUrl(tab.url) || tab.title);
+                        handled = true;
                         break;
+                    }
+                }
+                if (!handled && activeId) {
+                    const tab = tabs.get(activeId);
+                    if (tab) {
+                        markTabReady(activeId);
+                        if (payload.url) tab.url = normalizeTabUrl(payload.url, tab.url);
+                        setTabTitle(activeId, incomingTitle || titleFromUrl(tab.url) || tab.title);
+                    }
+                }
+                return;
+            }
+
+            if (data.channel === 'jk-page-ready') {
+                const found = findTabBySource(event.source);
+                if (found) {
+                    markTabReady(found.id);
+                    const payload = data.payload || {};
+                    if (payload.url) found.tab.url = normalizeTabUrl(payload.url, found.tab.url);
+                    if (payload.title) setTabTitle(found.id, payload.title);
+                } else if (activeId) {
+                    const tab = tabs.get(activeId);
+                    const payload = data.payload || {};
+                    if (tab) {
+                        markTabReady(activeId);
+                        if (payload.url) tab.url = normalizeTabUrl(payload.url, tab.url);
+                        if (payload.title) setTabTitle(activeId, payload.title);
                     }
                 }
             }
@@ -700,6 +1291,7 @@
         backBtn.addEventListener('click', goBackActiveTab);
         reloadBtn.addEventListener('click', reloadActiveTab);
         newTabBtn.addEventListener('click', () => createTab(appUrl, 'Inicio'));
+        bindAutoHidingToolbar();
         window.addEventListener('keydown', (event) => {
             if (event.key === 'F5' || ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 'r')) {
                 event.preventDefault();
@@ -707,7 +1299,9 @@
             }
         });
 
-        createTab(appUrl, 'Inicio');
+        if (!restoreTabsAfterUpdate()) {
+            createTab(appUrl, 'Inicio');
+        }
     </script>
 </body>
 </html>
