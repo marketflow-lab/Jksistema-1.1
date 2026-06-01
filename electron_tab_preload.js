@@ -4,12 +4,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMac: () => ipcRenderer.invoke('get-mac'),
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
+    ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     flushBrowserSession: () => ipcRenderer.invoke('flush-browser-session'),
     getMlPublicItemInfo: (itemId) => ipcRenderer.invoke('ml-public-item-info', itemId),
     getMlBrowserItemInfo: (itemId, url) => ipcRenderer.invoke('ml-browser-item-info', itemId, url),
     openInternalBrowser: (url) => ipcRenderer.invoke('open-internal-browser', url),
     openExternalChrome: (url) => ipcRenderer.invoke('open-external-chrome', url),
-    extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url)
+    extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url),
+    importCredentials: () => ipcRenderer.invoke('import-credentials')
 });
 
 function isMercadoLivreHost(hostname) {

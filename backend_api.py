@@ -1,14 +1,20 @@
 ﻿from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request, Header
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import gspread
 import google.auth
+from google.oauth2 import id_token as google_id_token
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.auth.exceptions import GoogleAuthError
+try:
+    from google.auth import impersonated_credentials
+except Exception:
+    impersonated_credentials = None
 import bcrypt
 import os
 import socket
@@ -95,6 +101,16 @@ SYNC_PROGRESS = {}
 SYNC_LOGS = {}
 # Metadados da sincronizaÃƒÂ§ÃƒÂ£o de vendas por cliente (loja/perÃƒÂ­odo)
 SYNC_META = {}
+# Contexto temporario para transformar progresso de um dia em progresso global
+SYNC_DAY_CONTEXT = {}
+# Controle interno para permitir sincronizar vendas de ate 2 contas ao mesmo tempo
+SYNC_MAX_ACTIVE_VENDAS = 2
+SYNC_ACTIVE_LOCK = threading.RLock()
+SYNC_STATE_LOCK = threading.RLock()
+SYNC_THREAD_CONTEXT = threading.local()
+GOOGLE_LOGIN_STATES = {}
+GOOGLE_LOGIN_RESULTS = {}
+GOOGLE_LOGIN_STATE_LOCK = threading.RLock()
 # Jobs de sincronizaÃƒÂ§ÃƒÂ£o de NCM no Cadastro por tarefa
 SYNC_NCM_JOBS = {}
 # Controle de sincronizaÃƒÂ§ÃƒÂ£o de vendas ativa por cliente (para background threading)
@@ -292,6 +308,25 @@ ARQUIVO_CACHE_USUARIOS = os.path.join(PASTA_INFO, "usuarios_cache.json")
 ARQUIVO_USUARIOS_LOCAL = os.path.join(PASTA_INFO, "usuarios_local.json")
 ARQUIVO_AUTH_DB = os.path.join(PASTA_INFO, "auth_users.db")
 ARQUIVO_CONFIG_GLOBAIS = os.path.join(PASTA_INFO, "configuracoes_globais.json")
+ARQUIVO_VERTEX_AGENT_API_KEY = os.path.join(PASTA_INFO, "vertex_agent_api_key.txt")
+IA_AGENT_API_KEY_ENV_KEYS = (
+    "GEMINI_AGENT_API_KEY",
+    "VERTEX_AGENT_API_KEY",
+    "VERTEX_AI_API_KEY",
+    "GOOGLE_GENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+)
+VERTEX_AI_API_KEY_ALLOW_ENV_KEYS = (
+    "VERTEX_AI_ALLOW_API_KEY",
+    "IA_VERTEX_ALLOW_API_KEY",
+    "JK_IA_ALLOW_API_KEY",
+)
+VERTEX_AI_AUTH_MODE_ENV_KEYS = (
+    "VERTEX_AI_AUTH_MODE",
+    "IA_VERTEX_AUTH_MODE",
+    "JK_IA_AUTH_MODE",
+)
 ARQUIVO_NCM_XLSX = os.path.join(BASE_DIR, "NCM.xlsx")
 ARQUIVO_NCM1_XLSX = os.path.join(BASE_DIR, "NCM1.xlsx")
 SPREADSHEET_ID_SISTEMA_FIXO = '1Kj8ioVDpjLDH2kTSKWvBYKX4-R5zryTj2Ka5_G2irO0'
@@ -309,11 +344,71 @@ DEFAULT_REDIRECT_URI = "http://127.0.0.1:8001/auth/callback"
 REDIRECT_URI = os.getenv("JK_REDIRECT_URI", DEFAULT_REDIRECT_URI).strip()
 
 
+def _env_paths_programa() -> list[str]:
+    paths = []
+    for base in (BASE_DIR, os.getcwd()):
+        try:
+            caminho = os.path.join(base, ".env")
+        except Exception:
+            continue
+        if caminho and caminho not in paths:
+            paths.append(caminho)
+    return paths
+
+
+def _env_config_value(*keys: str, cache_as: str | None = None) -> str:
+    normalized_keys = [str(key or "").replace("\ufeff", "").strip().upper() for key in keys if str(key or "").strip()]
+    if not normalized_keys:
+        return ""
+
+    for key in normalized_keys:
+        value = str(os.getenv(key) or "").strip()
+        if value:
+            return value
+
+    wanted = set(normalized_keys)
+    for env_path in _env_paths_programa():
+        if not os.path.exists(env_path):
+            continue
+        try:
+            values = dotenv_values(env_path)
+        except Exception:
+            continue
+        if not isinstance(values, dict):
+            continue
+        for raw_key, raw_value in values.items():
+            key_norm = str(raw_key or "").replace("\ufeff", "").strip().upper()
+            if key_norm not in wanted:
+                continue
+            value = str(raw_value or "").strip()
+            if value:
+                os.environ[cache_as or normalized_keys[0]] = value
+                return value
+    return ""
+
+
+def _env_config_bool(keys: tuple[str, ...] | list[str], default: bool = False) -> bool:
+    value = _env_config_value(*keys)
+    if not value:
+        return default
+    return str(value).strip().lower() in {"1", "true", "sim", "yes", "on"}
+
+
 def _redirect_uri_eh_local(uri: Optional[str]) -> bool:
     valor = str(uri or "").strip().lower()
     if not valor:
         return True
     return "127.0.0.1" in valor or "localhost" in valor
+
+
+def _request_eh_local(request: Optional[Request]) -> bool:
+    if request is None:
+        return False
+    try:
+        host = str(request.headers.get("host") or request.url.netloc or "").split(",")[0].strip().lower()
+        return "127.0.0.1" in host or "localhost" in host
+    except Exception:
+        return False
 
 
 def _descobrir_redirect_uri_ngrok() -> Optional[str]:
@@ -356,22 +451,41 @@ def _resolver_redirect_uri_publica(request: Optional[Request] = None, saved_redi
     valor_final = str(saved_redirect_uri or REDIRECT_URI or DEFAULT_REDIRECT_URI).strip() or DEFAULT_REDIRECT_URI
     return valor_final.rstrip("/")
 
+
+def _resolver_redirect_uri_bling(request: Optional[Request] = None, saved_redirect_uri: Optional[str] = None) -> str:
+    bling_uri = str(os.getenv("JK_BLING_REDIRECT_URI", "") or "").strip()
+    if bling_uri:
+        return bling_uri.rstrip("/")
+
+    if saved_redirect_uri:
+        return str(saved_redirect_uri).strip().rstrip("/")
+
+    auto_ngrok = str(os.getenv("JK_AUTO_NGROK_REDIRECT", "") or "").strip().lower() in {"1", "true", "sim", "yes"}
+    if _request_eh_local(request) and not auto_ngrok:
+        return DEFAULT_REDIRECT_URI.rstrip("/")
+
+    return _resolver_redirect_uri_publica(request=request)
+
 CONFIG_GLOBAIS_DEFAULT = {
     "auto_sync_estoque_janela_minutos": 30,
-    "ia_modelo_padrao": "vertex:gemini-2.5-pro",
-    "ia_modelo_perguntas": "vertex:gemini-2.5-pro",
+    "ia_modelo_padrao": "vertex:gemini-2.5-flash",
+    "ia_modelo_perguntas": "vertex:gemini-2.5-flash",
     "ia_modelo_chat": "vertex:gemini-2.5-flash",
-    "ia_modelo_favoritos": "vertex:gemini-2.5-pro",
+    "ia_modelo_favoritos": "vertex:gemini-2.5-flash",
+    "ia_vertex_project_id": "",
+    "ia_vertex_location": "global",
+    "ia_vertex_model": "gemini-2.5-flash",
+    "ia_vertex_service_account_email": "",
     "ia_favoritos_usar_imagem": False,
     "ia_openai_ativa": True,
     "ia_deepseek_ativa": True,
-    "ia_gemini_ativa": True,
+    "ia_gemini_ativa": False,
     "ia_vertex_ativa": True,
 }
 
 PERMISSION_KEYS = [
     'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
-    'etiquetas', 'full', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras',
+    'etiquetas', 'full', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador'
 ]
 
@@ -387,6 +501,11 @@ def _carregar_configuracoes_globais() -> dict:
             dados.update(payload)
     except Exception:
         logger.exception("Erro ao carregar configuracoes globais")
+    dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))
+    dados["ia_deepseek_ativa"] = bool(dados.get("ia_deepseek_ativa", True))
+    dados["ia_gemini_ativa"] = False
+    dados["ia_vertex_ativa"] = True
+    dados["ia_agent_api_key_configurada"] = bool(_vertex_ai_agent_api_key())
     return dados
 
 
@@ -394,6 +513,12 @@ def _salvar_configuracoes_globais(dados: dict) -> None:
     payload = dict(CONFIG_GLOBAIS_DEFAULT)
     if isinstance(dados, dict):
         payload.update(dados)
+    for chave in ("ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada"):
+        payload.pop(chave, None)
+    payload["ia_openai_ativa"] = bool(payload.get("ia_openai_ativa", True))
+    payload["ia_deepseek_ativa"] = bool(payload.get("ia_deepseek_ativa", True))
+    payload["ia_gemini_ativa"] = False
+    payload["ia_vertex_ativa"] = True
     with open(ARQUIVO_CONFIG_GLOBAIS, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
@@ -442,6 +567,7 @@ def _cache_invalidar_loja(client_id: str, loja: str):
     """Remove todas as entradas de cache de uma loja especÃƒÂ­fica."""
     prefixos = (
         f"anuncios:{client_id}:{loja}:",
+        f"visitas:{client_id}:{loja}:",
         f"promocoes:{client_id}:{loja}",
         f"campanha_itens:{client_id}:{loja}:",
         f"camp_contagens:{client_id}:{loja}",
@@ -474,6 +600,10 @@ class LoginRequest(BaseModel):
     client_id: str = None
     machine_id: str = None
 
+class GoogleLoginRequest(BaseModel):
+    credential: str
+    machine_id: str = None
+
 class LoginResponse(BaseModel):
     success: bool
     message: str
@@ -486,6 +616,7 @@ class AdminUserUpsertRequest(BaseModel):
     original_username: Optional[str] = None
     password: Optional[str] = None
     name: str = ""
+    email: str = ""
     client_id: str = "default"
     permissions: dict = {}
     active: bool = True
@@ -495,6 +626,11 @@ class AdminUserUpsertRequest(BaseModel):
 
 class AdminUserPasswordRequest(BaseModel):
     password: str
+
+class UserChangePasswordRequest(BaseModel):
+    current_password: str = ""
+    new_password: str = ""
+    confirm_password: Optional[str] = None
 
 class AdminUserMaxMachinesRequest(BaseModel):
     max_machines: int
@@ -525,6 +661,7 @@ class IAChatRequest(BaseModel):
 class IATreinamentoPerguntasPosVendaRequest(BaseModel):
     orientacoes: str = ""
     tipo: Optional[str] = "perguntas_anuncio"
+    loja: Optional[str] = ""
     contexto_loja: Optional[str] = ""
     compatibilidade_autopecas: Optional[str] = ""
     proibicoes: Optional[str] = ""
@@ -537,6 +674,7 @@ class IATreinamentoPerguntasPosVendaSimularRequest(BaseModel):
     contexto: Optional[str] = ""
     sku: Optional[str] = ""
     tipo: Optional[str] = "perguntas_anuncio"
+    loja: Optional[str] = ""
     model: Optional[str] = None
 
 class PerguntasLojaConfigRequest(BaseModel):
@@ -973,6 +1111,12 @@ class ConfiguracoesGlobaisRequest(BaseModel):
     ia_modelo_perguntas: str | None = None
     ia_modelo_chat: str | None = None
     ia_modelo_favoritos: str | None = None
+    ia_vertex_project_id: str | None = None
+    ia_vertex_location: str | None = None
+    ia_vertex_model: str | None = None
+    ia_vertex_service_account_email: str | None = None
+    ia_agent_api_key: str | None = None
+    ia_agent_api_key_limpar: bool | None = None
     ia_favoritos_usar_imagem: bool | None = None
     ia_openai_ativa: bool | None = None
     ia_deepseek_ativa: bool | None = None
@@ -1111,18 +1255,18 @@ class PromoPreferenciasColunasRequest(BaseModel):
 
 class FavoritosSearchRequest(BaseModel):
     termo: str
-    max_anuncios: int | None = 30
+    max_anuncios: int | None = 60
 
 
 class FavoritosPrimeiraPaginaRequest(BaseModel):
     termo: str
-    max_anuncios: int | None = 50
+    max_anuncios: int | None = 60
     usar_automatico: bool | None = False
 
 
 class FavoritosEnriquecerDatasRequest(BaseModel):
     anuncios: list[dict] | None = None
-    max_anuncios: int | None = 50
+    max_anuncios: int | None = 60
 
 
 class FavoritosSkuDescricoesRequest(BaseModel):
@@ -1163,8 +1307,11 @@ class FavoritosRankingIARequest(BaseModel):
     titulo: str | None = ""
     descricao: str | None = ""
     pesquisas: list[str] | None = None
+    meus_anuncios: list[dict] | None = None
     anuncios: list[dict] | None = None
     max_anuncios: int | None = 160
+    max_confirmados: int | None = None
+    usar_imagem: bool | None = None
 
 
 class FavoritosSkusOcultosRequest(BaseModel):
@@ -1173,6 +1320,10 @@ class FavoritosSkusOcultosRequest(BaseModel):
 
 class FavoritosVendedoresIgnoradosRequest(BaseModel):
     vendedores_ignorados: list[str] | None = None
+
+
+class FavoritosAnunciosIgnoradosRequest(BaseModel):
+    anuncios_ignorados: dict[str, list[dict]] | None = None
 
 
 class FavoritosHistoricoRequest(BaseModel):
@@ -2038,6 +2189,15 @@ def _ml_favoritos_extrair_skus_item(item: dict) -> set[str]:
         return set()
 
     skus: set[str] = set()
+    campos_sku_preferenciais = (
+        "seller_sku",
+        "sellerSku",
+        "SELLER_SKU",
+        "sku",
+        "SKU",
+        "custom_sku",
+        "item_sku",
+    )
 
     def _registrar(valor: object):
         if valor is None:
@@ -2046,45 +2206,23 @@ def _ml_favoritos_extrair_skus_item(item: dict) -> set[str]:
         if not texto:
             return
         for parte in re.split(r"[,;/|]", texto):
-            token = str(parte or "").strip()
+            token = str(parte or "").strip().strip(",;/|")
             if token:
                 skus.add(token)
         if " " in texto and len(texto) <= 80 and " " not in "".join(re.findall(r"[A-Za-z0-9]", texto)):
             for parte in texto.split():
-                token = str(parte or "").strip()
+                token = str(parte or "").strip().strip(",;/|")
                 if token:
                     skus.add(token)
 
-    for campo in (
-        "seller_sku",
-        "sellerSku",
-        "SELLER_SKU",
-        "sku",
-        "SKU",
-        "seller_custom_field",
-        "sellerCustomField",
-        "SELLER_CUSTOM_FIELD",
-        "custom_sku",
-        "item_sku",
-    ):
-        _registrar(item.get(campo))
     _registrar(_ml_extrair_sku(item))
+    for campo in campos_sku_preferenciais:
+        _registrar(item.get(campo))
     for var in item.get("variations", []) or []:
         if not isinstance(var, dict):
             continue
         _registrar(_ml_extrair_sku(var))
-        for campo in (
-            "seller_sku",
-            "sellerSku",
-            "SELLER_SKU",
-            "sku",
-            "SKU",
-            "seller_custom_field",
-            "sellerCustomField",
-            "SELLER_CUSTOM_FIELD",
-            "custom_sku",
-            "item_sku",
-        ):
+        for campo in campos_sku_preferenciais:
             _registrar(var.get(campo))
     variations_data = item.get("variations_data")
     if isinstance(variations_data, dict):
@@ -2092,18 +2230,7 @@ def _ml_favoritos_extrair_skus_item(item: dict) -> set[str]:
             if not isinstance(var_data, dict):
                 continue
             _registrar(_ml_extrair_sku(var_data))
-            for campo in (
-                "seller_sku",
-                "sellerSku",
-                "SELLER_SKU",
-                "sku",
-                "SKU",
-                "seller_custom_field",
-                "sellerCustomField",
-                "SELLER_CUSTOM_FIELD",
-                "custom_sku",
-                "item_sku",
-            ):
+            for campo in campos_sku_preferenciais:
                 _registrar(var_data.get(campo))
 
     return skus
@@ -2125,7 +2252,7 @@ def _ml_favoritos_item_corresponde_sku(item: dict, sku_alvo: str) -> bool:
         sku_comp = _normalizar_sku_compacto_favoritos(sku_norm)
         if not sku_norm and not sku_comp:
             continue
-        if alvo_norm and (alvo_norm in sku_norm or sku_norm in alvo_norm or alvo_norm == sku_norm):
+        if alvo_norm and alvo_norm == sku_norm:
             return True
         if alvo_compacto and sku_comp and (alvo_compacto == sku_comp):
             return True
@@ -2350,6 +2477,7 @@ def _ml_extrair_variacoes_resumo(item: dict, client_id: str = "", loja: str = ""
             "title": titulo_variacao,
             "sku": sku_variacao,
             "parent_sku": sku_pai or "-",
+            "inventory_id": str(var.get("inventory_id") or "").strip(),
             "available_quantity": var.get("available_quantity", 0),
             "sold_quantity": var.get("sold_quantity", 0),
             "price": var.get("price"),
@@ -2627,6 +2755,126 @@ def _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id: str):
     return {}
 
 
+def _promo_status_item_promocao(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    status = entry.get("status") or entry.get("status_item") or entry.get("statusItem")
+    if isinstance(status, dict):
+        status = status.get("id") or status.get("name") or status.get("status")
+    return str(status or "").strip().lower()
+
+
+def _promo_entry_item_id(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return _promo_normalizar_mlb(entry)
+    raw_item = entry.get("item")
+    raw_item_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
+    return _promo_normalizar_mlb(
+        entry.get("item_id")
+        or entry.get("itemId")
+        or entry.get("item_id_to")
+        or raw_item_id
+        or entry.get("id")
+        or ""
+    )
+
+
+def _promo_erro_candidate_not_found(texto: str) -> bool:
+    texto_norm = normalizar_texto(texto or "").replace("_", " ")
+    return (
+        "candidate not found" in texto_norm
+        or "candidate was not found" in texto_norm
+        or "candidato nao encontrado" in texto_norm
+    )
+
+
+def _promo_consultar_item_na_campanha(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    promotion_id: str,
+    promotion_type: str,
+    item_id: str,
+) -> tuple[dict, dict]:
+    promotion_id = str(promotion_id or "").strip()
+    promotion_type = str(promotion_type or "").strip()
+    item_id = _promo_normalizar_mlb(item_id)
+    if not promotion_id or not item_id:
+        return {"success": False, "found": False, "detail": "Promocao ou MLB ausente."}, cfg
+
+    base_params = {
+        "app_version": "v2",
+        "item_id": item_id,
+    }
+    if promotion_type:
+        base_params["promotion_type"] = promotion_type
+
+    tentativas = [dict(base_params)]
+    for status_consulta in ("candidate", "pending", "started"):
+        tentativas.append({**base_params, "status": status_consulta})
+    for status_consulta in ("active", "paused"):
+        tentativas.append({**base_params, "status_item": status_consulta})
+    ultimo_erro = ""
+    for params in tentativas:
+        resp, cfg = _ml_api_request(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}/items",
+            params=params,
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            continue
+        if resp.status_code != 200:
+            ultimo_erro = _ml_parse_error_detail(resp, f"Erro {resp.status_code} ao consultar candidato")
+            continue
+        try:
+            data = resp.json() or {}
+        except Exception:
+            data = {}
+        entries = data.get("results") if isinstance(data, dict) else []
+        if not isinstance(entries, list):
+            entries = []
+        for entry in entries:
+            entry_item_id = _promo_entry_item_id(entry)
+            if entry_item_id and entry_item_id.upper() == item_id.upper():
+                status = _promo_status_item_promocao(entry)
+                status = status or str(params.get("status") or params.get("status_item") or "").strip().lower()
+                return {
+                    "success": True,
+                    "found": True,
+                    "status": status,
+                    "entry": entry,
+                    "can_participate": status in {"candidate", "eligible"},
+                    "already_participating": status in {"started", "active", "pending", "programmed"},
+                }, cfg
+
+    return {
+        "success": not bool(ultimo_erro),
+        "found": False,
+        "status": "",
+        "detail": ultimo_erro or "MLB nao aparece como candidato/elegivel nessa campanha.",
+    }, cfg
+
+
+def _ml_contexto_frete_item(item: dict, item_price: Any = None) -> dict:
+    item = item or {}
+    shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    contexto = {
+        "item_price": item_price if item_price not in (None, "") else item.get("price"),
+        "listing_type_id": item.get("listing_type_id") or "",
+        "condition": item.get("condition") or "new",
+        "category_id": item.get("category_id") or "",
+        "mode": shipping.get("mode") or "",
+        "logistic_type": shipping.get("logistic_type") or "",
+        "dimensions": shipping.get("dimensions") or "",
+        "free_shipping": bool(shipping.get("free_shipping")),
+    }
+    return contexto
+
+
 def _ml_obter_frete_detalhado(
     client_id: str,
     loja: str,
@@ -2634,13 +2882,49 @@ def _ml_obter_frete_detalhado(
     item_id: str,
     shipping_info: Optional[dict] = None,
     request_fn=None,
+    reconsultar_zero: bool = False,
+    contexto_frete: Optional[dict] = None,
 ):
     """ObtÃƒÂ©m o custo de frete cobrado pelo Mercado Livre no anuncio especÃƒÂ­fico."""
     request_fn = request_fn or _ml_api_request
     shipping_info = shipping_info or {}
-    cache_key = f"v2:{client_id}:{loja}:{item_id}"
+    contexto_frete = contexto_frete or {}
+
+    def _shipping_to_money(raw):
+        try:
+            if raw is None or raw == "":
+                return None
+            return float(raw)
+        except Exception:
+            return None
+
+    def _deve_reconsultar_zero(payload: dict) -> bool:
+        if not reconsultar_zero:
+            return False
+        valor = _shipping_to_money((payload or {}).get("shipping_cost"))
+        if valor is None or valor > 0:
+            return False
+        buyer = _shipping_to_money((payload or {}).get("shipping_buyer_cost"))
+        return bool((payload or {}).get("free_shipping")) or (buyer is not None and buyer <= 0)
+
+    def _pick_contexto(*chaves):
+        for chave in chaves:
+            valor = contexto_frete.get(chave)
+            if valor not in (None, ""):
+                return valor
+        return None
+
+    contexto_preco = _shipping_to_money(_pick_contexto("item_price", "price", "preco", "preco_final"))
+    contexto_listing_type = str(_pick_contexto("listing_type_id", "listing_type") or "").strip()
+    contexto_mode = str(_pick_contexto("mode", "shipping_mode") or shipping_info.get("mode") or "").strip()
+    contexto_logistic_type = str(_pick_contexto("logistic_type") or shipping_info.get("logistic_type") or "").strip()
+    contexto_cache = ""
+    if contexto_preco is not None:
+        contexto_cache = f":p{round(float(contexto_preco), 2)}:{contexto_listing_type}:{contexto_mode}:{contexto_logistic_type}"
+
+    cache_key = f"v4:{client_id}:{loja}:{item_id}{contexto_cache}"
     cached = _cache_get(ML_ITEM_SHIPPING_CACHE, cache_key, ML_ITEM_SHIPPING_CACHE_TTL)
-    if cached and cached.get("shipping_cost") is not None:
+    if cached and cached.get("shipping_cost") is not None and not _deve_reconsultar_zero(cached):
         return cached, cfg
 
     info = {
@@ -2658,13 +2942,73 @@ def _ml_obter_frete_detalhado(
         "shipping_zip": "01310930",
     }
 
-    def _shipping_to_money(raw):
-        try:
-            if raw is None or raw == "":
-                return None
-            return float(raw)
-        except Exception:
-            return None
+    def _valores_positivos_frete_payload(payload) -> list[float]:
+        valores = []
+
+        def _add(valor):
+            val = _shipping_to_money(valor)
+            if val is not None and val > 0:
+                valores.append(float(val))
+
+        if not isinstance(payload, dict):
+            return valores
+
+        coverage = payload.get("coverage")
+        if isinstance(coverage, dict):
+            all_country = coverage.get("all_country")
+            if isinstance(all_country, dict):
+                for campo in ("list_cost", "base_cost", "cost", "seller_cost", "shipping_cost"):
+                    _add(all_country.get(campo))
+                discount = all_country.get("discount")
+                if isinstance(discount, dict):
+                    _add(discount.get("promoted_amount"))
+            for valor_cov in coverage.values():
+                if isinstance(valor_cov, dict):
+                    for campo in ("list_cost", "base_cost", "cost", "seller_cost", "shipping_cost"):
+                        _add(valor_cov.get(campo))
+
+        options = payload.get("options")
+        if isinstance(options, dict):
+            options = list(options.values())
+        if isinstance(options, list):
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                for campo in ("base_cost", "list_cost", "seller_cost", "shipping_cost", "cost"):
+                    _add(opt.get(campo))
+
+        for campo in ("base_cost", "list_cost", "seller_cost", "shipping_cost", "cost"):
+            _add(payload.get(campo))
+
+        return valores
+
+    def _params_frete_gratis_contexto() -> dict:
+        params = {"item_id": item_id}
+        preco = contexto_preco
+        if preco is not None and preco > 0:
+            params["item_price"] = round(float(preco), 2)
+        listing_type = contexto_listing_type
+        if listing_type:
+            params["listing_type_id"] = listing_type
+        condition = str(_pick_contexto("condition") or "").strip()
+        if condition:
+            params["condition"] = condition
+        category_id = str(_pick_contexto("category_id") or "").strip()
+        if category_id:
+            params["category_id"] = category_id
+        mode = contexto_mode
+        if mode:
+            params["mode"] = mode
+        logistic_type = contexto_logistic_type
+        if logistic_type:
+            params["logistic_type"] = logistic_type
+        dimensions = str(_pick_contexto("dimensions") or shipping_info.get("dimensions") or "").strip()
+        if dimensions and dimensions.lower() != "null":
+            params["dimensions"] = dimensions
+        if bool(_pick_contexto("free_shipping") if _pick_contexto("free_shipping") is not None else info["free_shipping"]):
+            params["free_shipping"] = "true"
+        params["verbose"] = "true"
+        return params
 
     item_list_cost = _shipping_to_money(shipping_info.get("list_cost"))
     item_base_cost = _shipping_to_money(shipping_info.get("base_cost"))
@@ -2774,50 +3118,48 @@ def _ml_obter_frete_detalhado(
     except Exception as e:
         logger.warning(f"[ML API] Falha ao consultar frete do item {item_id}: {e}")
 
-    if info["shipping_cost"] is None and cfg.get("user_id"):
+    if (info["shipping_cost"] is None or _deve_reconsultar_zero(info)) and cfg.get("user_id"):
         try:
-            resp, cfg = request_fn(
-                client_id,
-                loja,
-                cfg,
-                "GET",
-                f"https://api.mercadolibre.com/users/{cfg.get('user_id')}/shipping_options/free",
-                params={"item_id": item_id},
-                timeout=12,
-            )
-            if resp.status_code == 200:
+            tentativas_frete_gratis = [
+                (
+                    f"https://api.mercadolibre.com/users/{cfg.get('user_id')}/shipping_options/free",
+                    _params_frete_gratis_contexto(),
+                    "users/shipping_options/free/contexto",
+                ),
+                (
+                    f"https://api.mercadolibre.com/users/{cfg.get('user_id')}/shipping_options/free",
+                    {"item_id": item_id},
+                    "users/shipping_options/free/item_id",
+                ),
+                (
+                    f"https://api.mercadolibre.com/items/{item_id}/shipping_options/free",
+                    {},
+                    "items/shipping_options/free",
+                ),
+            ]
+            for url_retry, params_retry, fonte_retry in tentativas_frete_gratis:
+                resp, cfg = request_fn(
+                    client_id,
+                    loja,
+                    cfg,
+                    "GET",
+                    url_retry,
+                    params=params_retry,
+                    timeout=12,
+                )
+                if resp.status_code != 200:
+                    continue
                 data = resp.json() or {}
-                options = data.get("options") or []
-                if isinstance(options, dict):
-                    options = list(options.values())
-
-                def _to_money(raw):
-                    try:
-                        if raw is None or raw == "":
-                            return None
-                        return float(raw)
-                    except Exception:
-                        return None
-
-                valores = []
-                for opt in options:
-                    if not isinstance(opt, dict):
-                        continue
-                    opcoes_valor = [
-                        _shipping_to_money(opt.get("base_cost")),
-                        _shipping_to_money(opt.get("list_cost")),
-                        _shipping_to_money(opt.get("cost")),
-                    ]
-                    positivos = [valor for valor in opcoes_valor if valor is not None and valor > 0]
-                    val = min(positivos) if positivos else next((valor for valor in opcoes_valor if valor is not None), None)
-                    if val is not None and val > 0:
-                        valores.append(val)
-                if valores:
-                    charged_cost = min(valores)
-                    info["shipping_cost"] = charged_cost
-                    info["shipping_seller_cost"] = charged_cost
-                    info["shipping_text"] = "Gratis" if charged_cost <= 0 else f"R$ {charged_cost:.2f}"
-                    info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: users/shipping_options/free"
+                valores = _valores_positivos_frete_payload(data)
+                if not valores:
+                    continue
+                charged_cost = min(valores)
+                info["shipping_cost"] = charged_cost
+                info["shipping_seller_cost"] = charged_cost
+                info["shipping_text"] = "Gratis" if charged_cost <= 0 else f"R$ {charged_cost:.2f}"
+                info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: {fonte_retry}"
+                info["shipping_cost_retry_source"] = fonte_retry
+                break
         except Exception as e:
             logger.warning(f"[ML API] Falha ao consultar frete grÃ¡tis do item {item_id}: {e}")
 
@@ -3388,6 +3730,14 @@ def _favoritos_ler_cadastro_csv(cadastro_path: str, cols_padrao: list[str] | Non
 
 CADASTRO_PESQUISA_COLS = ["pesquisa_1", "pesquisa_2", "pesquisa_3"]
 CADASTRO_COLS_BASE = ["sku", "nome", "categoria", "marca", "custo", "preco", "imposto", "descricao", "updated_at"] + CADASTRO_PESQUISA_COLS
+CADASTRO_DESCRICAO_COL_ALIASES = {
+    "descricao",
+    "description",
+    "descricao produto",
+    "descricao do produto",
+    "descricaoproduto",
+    "descricaodoproduto",
+}
 
 
 def _cadastro_cols_base(*extras: str) -> list[str]:
@@ -3399,7 +3749,48 @@ def _cadastro_cols_base(*extras: str) -> list[str]:
     return cols
 
 
+def _cadastro_norm_coluna_texto(coluna: str) -> str:
+    texto = str(coluna or "").strip().lower()
+    texto = (
+        texto
+        .replace("\u00e3\u00a7", "c")
+        .replace("\u00e3\u00a3", "a")
+        .replace("\u00e3\u00a9", "e")
+        .replace("\u00e3\u00aa", "e")
+        .replace("\u00e3\u00ad", "i")
+        .replace("\u00e3\u00b3", "o")
+        .replace("\u00e3\u00ba", "u")
+    )
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    texto = re.sub(r"[^a-z0-9]+", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def _cadastro_canonizar_coluna_descricao(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    aliases = [
+        col for col in list(df.columns)
+        if _cadastro_norm_coluna_texto(col) in CADASTRO_DESCRICAO_COL_ALIASES
+    ]
+    if "descricao" not in df.columns:
+        df["descricao"] = ""
+    for col in aliases:
+        if col == "descricao" or col not in df.columns:
+            continue
+        atual = df["descricao"].astype(str)
+        origem = df[col].astype(str)
+        mask = atual.str.strip().eq("") & origem.str.strip().ne("")
+        if mask.any():
+            df.loc[mask, "descricao"] = origem.loc[mask]
+        df = df.drop(columns=[col], errors="ignore")
+    return df
+
+
 def _cadastro_garantir_colunas_pesquisa(df: pd.DataFrame) -> pd.DataFrame:
+    df = _cadastro_canonizar_coluna_descricao(df)
     for col in CADASTRO_PESQUISA_COLS:
         if col not in df.columns:
             df[col] = ""
@@ -3447,9 +3838,34 @@ def _favoritos_arquivo_pesquisas_usuario(client_id: str, username: str) -> str:
 
 
 def _favoritos_chave_pesquisa_usuario(loja: Any, sku: Any) -> str:
-    loja_key = _chave_loja_favoritos(str(loja or "").strip()) or "semloja"
     sku_key = _normalizar_sku_match_favoritos(str(sku or "").strip()).upper()
-    return f"{loja_key}::{sku_key}" if sku_key else ""
+    return f"sku::{sku_key}" if sku_key else ""
+
+
+def _favoritos_pesquisa_score(item: dict) -> tuple[int, float]:
+    if not isinstance(item, dict):
+        return (0, 0.0)
+    preenchidos = sum(1 for campo in CADASTRO_PESQUISA_COLS if str(item.get(campo) or "").strip())
+    data_raw = str(item.get("updated_at") or "").strip()
+    timestamp = 0.0
+    if data_raw:
+        try:
+            timestamp = datetime.fromisoformat(data_raw.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            timestamp = 0.0
+    return (preenchidos, timestamp)
+
+
+def _favoritos_escolher_pesquisa_usuario(atual: dict | None, novo: dict) -> dict:
+    if not atual:
+        return novo
+    score_atual = _favoritos_pesquisa_score(atual)
+    score_novo = _favoritos_pesquisa_score(novo)
+    if score_novo[1] and score_atual[1] and score_novo[1] != score_atual[1]:
+        return novo if score_novo[1] >= score_atual[1] else atual
+    if score_novo[0] != score_atual[0]:
+        return novo if score_novo[0] >= score_atual[0] else atual
+    return novo
 
 
 def _favoritos_carregar_pesquisas_usuario(client_id: str, username: str) -> dict:
@@ -3471,7 +3887,7 @@ def _favoritos_carregar_pesquisas_usuario(client_id: str, username: str) -> dict
             chave_norm = _favoritos_chave_pesquisa_usuario(loja, sku) or str(chave or "").strip()
             if not chave_norm:
                 continue
-            normalizadas[chave_norm] = {
+            item_norm = {
                 "loja": loja,
                 "sku": sku,
                 "produto": str(item.get("produto") or "").strip(),
@@ -3480,6 +3896,7 @@ def _favoritos_carregar_pesquisas_usuario(client_id: str, username: str) -> dict
                 "pesquisa_3": str(item.get("pesquisa_3") or "").strip(),
                 "updated_at": item.get("updated_at"),
             }
+            normalizadas[chave_norm] = _favoritos_escolher_pesquisa_usuario(normalizadas.get(chave_norm), item_norm)
         return {
             "pesquisas": normalizadas,
             "updated_at": dados.get("updated_at") if isinstance(dados, dict) else None,
@@ -3514,7 +3931,7 @@ def _favoritos_salvar_pesquisas_usuario_batch(
         pesquisa_2 = str((item or {}).get("pesquisa_2") or "").strip()
         pesquisa_3 = str((item or {}).get("pesquisa_3") or "").strip()
         produto = _favoritos_limpar_nome_produto((item or {}).get("produto") or (item or {}).get("nome") or (item or {}).get("titulo") or "")
-        chave = _favoritos_chave_pesquisa_usuario(loja_nome, sku_norm)
+        chave = _favoritos_chave_pesquisa_usuario("", sku_norm)
         if not chave:
             continue
         pesquisas[chave] = {
@@ -3551,14 +3968,13 @@ def _favoritos_enriquecer_pesquisas_usuario(
     if not skus:
         return skus
     pesquisas = (_favoritos_carregar_pesquisas_usuario(client_id, username).get("pesquisas") or {})
-    loja_nome = str(loja or "").strip()
     cadastro_legado: dict[str, dict] | None = None
     for item in skus:
         if not isinstance(item, dict):
             continue
-        chave = _favoritos_chave_pesquisa_usuario(loja_nome, item.get("sku"))
+        chave = _favoritos_chave_pesquisa_usuario("", item.get("sku"))
         salvo = pesquisas.get(chave)
-        fonte = "favoritos_usuario_loja"
+        fonte = "favoritos_usuario_sku"
         if not salvo:
             if cadastro_legado is None:
                 cadastro_legado, _ = _favoritos_carregar_cadastro_por_sku(client_id)
@@ -3656,6 +4072,92 @@ def _favoritos_salvar_vendedores_ignorados(client_id: str, username: str, vended
     os.makedirs(os.path.dirname(caminho), exist_ok=True)
     payload = {
         "vendedores_ignorados": _favoritos_normalizar_vendedores_ignorados(vendedores_ignorados),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+def _favoritos_arquivo_anuncios_ignorados(client_id: str, username: str) -> str:
+    return os.path.join(get_tenant_path(client_id), f"favoritos_anuncios_ignorados_{_favoritos_usuario_slug(username)}.json")
+
+
+def _favoritos_normalizar_anuncios_ignorados(valor: Any) -> dict[str, list[dict]]:
+    if not isinstance(valor, dict):
+        return {}
+    saida: dict[str, list[dict]] = {}
+    total = 0
+    for sku_raw, itens_raw in valor.items():
+        sku = _normalizar_sku_mes(str(sku_raw or "").strip())
+        if not sku or not isinstance(itens_raw, list):
+            continue
+        vistos: set[str] = set()
+        itens: list[dict] = []
+        for item in itens_raw:
+            if not isinstance(item, dict):
+                continue
+            item_id = re.sub(r"[^A-Z0-9]+", "", str(item.get("id") or item.get("mlb") or "").strip().upper())
+            url = _favoritos_limpar_texto_historico(item.get("url") or item.get("permalink") or "", 500)
+            titulo = _favoritos_limpar_texto_historico(item.get("titulo") or item.get("title") or "", 500)
+            vendedor = _favoritos_limpar_texto_historico(item.get("vendedor") or item.get("seller") or "", 180)
+            chaves = []
+            if isinstance(item.get("chaves"), list):
+                chaves = [
+                    _favoritos_limpar_texto_historico(chave, 700)
+                    for chave in item.get("chaves")
+                    if str(chave or "").strip()
+                ][:12]
+            if item_id and not any(str(chave).upper() == f"ID:{item_id}" for chave in chaves):
+                chaves.insert(0, f"id:{item_id}")
+            chave_unica = item_id or (chaves[0] if chaves else "") or f"{titulo}|{vendedor}|{url}"
+            if not chave_unica or chave_unica in vistos:
+                continue
+            vistos.add(chave_unica)
+            itens.append({
+                "id": item_id,
+                "url": url,
+                "titulo": titulo,
+                "vendedor": vendedor,
+                "imagem": _favoritos_limpar_texto_historico(item.get("imagem") or item.get("thumbnail") or "", 500),
+                "preco": _favoritos_numero_historico(item.get("preco")),
+                "preco_promocional": _favoritos_numero_historico(item.get("preco_promocional")),
+                "chaves": chaves,
+                "loja": _favoritos_limpar_texto_historico(item.get("loja") or "", 160),
+                "ignorado_em": _favoritos_limpar_texto_historico(item.get("ignorado_em") or item.get("data_iso") or "", 80),
+            })
+            total += 1
+            if len(itens) >= 500 or total >= 10000:
+                break
+        if itens:
+            saida[sku] = itens
+        if total >= 10000:
+            break
+    return saida
+
+
+def _favoritos_carregar_anuncios_ignorados(client_id: str, username: str) -> dict:
+    caminho = _favoritos_arquivo_anuncios_ignorados(client_id, username)
+    if not os.path.exists(caminho):
+        return {"anuncios_ignorados": {}, "updated_at": None}
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+        if isinstance(dados, dict):
+            return {
+                "anuncios_ignorados": _favoritos_normalizar_anuncios_ignorados(dados.get("anuncios_ignorados") or dados),
+                "updated_at": dados.get("updated_at"),
+            }
+    except Exception as exc:
+        logger.warning("[Favoritos ML] Falha ao carregar anuncios ignorados do usuario %s: %s", username, exc)
+    return {"anuncios_ignorados": {}, "updated_at": None}
+
+
+def _favoritos_salvar_anuncios_ignorados(client_id: str, username: str, anuncios_ignorados: Any) -> dict:
+    caminho = _favoritos_arquivo_anuncios_ignorados(client_id, username)
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    payload = {
+        "anuncios_ignorados": _favoritos_normalizar_anuncios_ignorados(anuncios_ignorados),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     with open(caminho, "w", encoding="utf-8") as f:
@@ -3767,8 +4269,26 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                     "meses_desde_criacao": _favoritos_numero_historico(anuncio.get("meses_desde_criacao")),
                     "pesquisas_origem": _favoritos_lista_texto_historico(anuncio.get("pesquisas_origem"), 220, 3),
                     "campos_origem": _favoritos_lista_texto_historico(anuncio.get("campos_origem"), 80, 3),
+                    "motivo_ia": _favoritos_limpar_texto_historico(anuncio.get("motivo_ia") or anuncio.get("motivo"), 240),
                 })
-            if not anuncios_saida:
+            removidos_ia_saida: list[dict] = []
+            for anuncio in (grupo.get("removidos_ia") or grupo.get("removidosIa") or [])[:80]:
+                if not isinstance(anuncio, dict):
+                    continue
+                anuncio_id = _favoritos_limpar_texto_historico(
+                    anuncio.get("id") or anuncio.get("mlb") or _extrair_item_id(str(anuncio.get("url") or "")),
+                    40,
+                )
+                removidos_ia_saida.append({
+                    "id": anuncio_id,
+                    "url": _favoritos_limpar_texto_historico(anuncio.get("url"), 800),
+                    "titulo": _favoritos_limpar_texto_historico(anuncio.get("titulo") or anuncio.get("title"), 500),
+                    "vendedor": _favoritos_limpar_texto_historico(anuncio.get("vendedor"), 160),
+                    "imagem": _favoritos_limpar_texto_historico(anuncio.get("imagem") or anuncio.get("thumbnail"), 800),
+                    "thumbnail": _favoritos_limpar_texto_historico(anuncio.get("thumbnail") or anuncio.get("imagem"), 800),
+                    "motivo_ia": _favoritos_limpar_texto_historico(anuncio.get("motivo_ia") or anuncio.get("motivo"), 240),
+                })
+            if not anuncios_saida and not removidos_ia_saida:
                 continue
             termos_saida = []
             for termo in (grupo.get("termos") or [])[:3]:
@@ -3804,6 +4324,11 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                 "avulso": bool(grupo.get("avulso") or grupo.get("pesquisa_avulsa") or sku.strip().lower() == "avulso"),
                 "pesquisa_avulsa": bool(grupo.get("pesquisa_avulsa") or grupo.get("avulso") or sku.strip().lower() == "avulso"),
                 "total_anuncios": _favoritos_int_historico(grupo.get("total_anuncios"), len(anuncios_saida)),
+                "usou_ia": bool(grupo.get("usou_ia")),
+                "ia_confirmados": _favoritos_int_historico(grupo.get("ia_confirmados"), 0),
+                "ia_max_confirmados": _favoritos_int_historico(grupo.get("ia_max_confirmados"), 0),
+                "removidos_ia_total": _favoritos_int_historico(grupo.get("removidos_ia_total"), len(removidos_ia_saida)),
+                "removidos_ia": removidos_ia_saida,
                 "anuncios": anuncios_saida,
             })
         if not grupos_saida:
@@ -3987,6 +4512,13 @@ def _favoritos_ml_enriquecer_estoque_cadastro(
         item_sku["estoque_cadastro_encontrado"] = bool(estoque)
         item_sku["estoque_fonte"] = "cadastro_estoque" if estoque else "cadastro_estoque_nao_encontrado"
         item_sku["estoque_cadastro_atualizado_em"] = (estoque or {}).get("last_update") or ""
+        if estoque and estoque.get("sku"):
+            sku_canonico = str(estoque.get("sku") or "").strip()
+            sku_atual = str(item_sku.get("sku") or "").strip()
+            if sku_canonico and sku_atual and sku_canonico.upper() != sku_atual.upper():
+                item_sku.setdefault("sku_ml", sku_atual)
+                item_sku.setdefault("sku_original_ml", sku_atual)
+                item_sku["sku"] = sku_canonico
         if estoque and estoque.get("id_bling"):
             item_sku["id_bling"] = estoque.get("id_bling")
         if estoque and estoque.get("nome_bling"):
@@ -4046,7 +4578,7 @@ def _favoritos_listar_skus_payload(client_id: str) -> dict:
             or _favoritos_sku_pick(row_dict, ["nome_bling", "produto", "nome", "titulo"])
             or "-"
         )
-        descricao_salva = _favoritos_sku_pick(cadastro, ["descricao", "descriÃ§Ã£o", "description"])
+        descricao_salva = _favoritos_sku_pick(cadastro, ["descricao", "descrição", "description"])
         itens.append({
             "sku": sku,
             "nome": nome,
@@ -4099,9 +4631,6 @@ def _favoritos_salvar_descricao_cadastro(client_id: str, sku: str, descricao: st
             if c not in df.columns:
                 df[c] = ""
 
-        if "descriÃ§Ã£o" not in df.columns:
-            df["descriÃ§Ã£o"] = ""
-
         df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
         df, _ = _consolidar_cadastro_por_sku(df)
 
@@ -4109,14 +4638,11 @@ def _favoritos_salvar_descricao_cadastro(client_id: str, sku: str, descricao: st
         agora = datetime.now().strftime("%d/%m/%Y %H:%M")
         if mask.any():
             df.loc[mask, "descricao"] = descricao_limpa
-            if "descriÃ§Ã£o" in df.columns:
-                df.loc[mask, "descriÃ§Ã£o"] = descricao_limpa
             df.loc[mask, "updated_at"] = agora
         else:
             nova_linha = {c: "" for c in df.columns}
             nova_linha["sku"] = sku_norm
             nova_linha["descricao"] = descricao_limpa
-            nova_linha["descriÃ§Ã£o"] = descricao_limpa
             nova_linha["updated_at"] = agora
             df = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
 
@@ -4171,9 +4697,6 @@ def _favoritos_salvar_pesquisas_batch(
         for c in ("sku", "nome", "pesquisa_1", "pesquisa_2", "pesquisa_3"):
             if c not in df.columns:
                 df[c] = ""
-
-        if "descriÃ§Ã£o" not in df.columns:
-            df["descriÃ§Ã£o"] = ""
 
         df["sku"] = df["sku"].astype(str).apply(_normalizar_sku_mes)
         df, _ = _consolidar_cadastro_por_sku(df)
@@ -4511,14 +5034,13 @@ def _favoritos_ia_texto_resposta(
     model: str | None = None,
 ) -> str:
     req = IAChatRequest(message=mensagem, model=model, page="Favoritos")
-    model_req = str(model or "").strip()
+    model_req = _normalizar_ia_modelo_padrao(model or _ia_modelo_favoritos_configurado())
+    req.model = model_req
     try:
         if _modelo_eh_vertex_ai(model_req):
             return _chamar_vertex_ai_chat(req, client_id)
         if model_req.startswith("deepseek-"):
             return _chamar_deepseek_chat(req, client_id)
-        if _modelo_eh_gemini_api(model_req):
-            return _chamar_gemini_chat(req, client_id)
         return _chamar_openai_responses(req, client_id)
     except Exception as exc:
         logger.warning("[Favoritos IA] Falha ao gerar texto de pesquisa: %s", exc)
@@ -4526,91 +5048,19 @@ def _favoritos_ia_texto_resposta(
 
 
 def _favoritos_ia_gemini_pesquisa_texto(mensagem: str, model: str | None = None) -> str:
-    api_key = _obter_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY ausente.")
-
-    def _candidatos_modelo():
-        candidatos = []
-        for nome in [model or "", FAVORITOS_PESQUISAS_IA_MODEL, *FAVORITOS_PESQUISAS_IA_FALLBACK_MODELS]:
-            if _modelo_eh_vertex_ai(nome):
-                continue
-            nome_curto = _gemini_nome_curto(nome)
-            if nome_curto and nome_curto not in candidatos:
-                candidatos.append(nome_curto)
-
-        try:
-            modelos = _listar_modelos_gemini_api()
-        except Exception:
-            modelos = []
-        disponiveis = {
-            str(item.get("name") or "").strip()
-            for item in modelos
-            if "generateContent" in (item.get("methods") or [])
-        }
-        if disponiveis:
-            filtrados = [nome for nome in candidatos if nome in disponiveis]
-            if filtrados:
-                return filtrados
-        return candidatos
-
-    ultimo_erro = ""
-    for model_name in _candidatos_modelo():
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
-            params={"key": api_key},
-            headers={"Content-Type": "application/json"},
-            json={
-                "systemInstruction": {
-                    "parts": [{
-                        "text": (
-                            "VocÃª gera termos de busca para marketplace. "
-                            "Responda somente com o termo solicitado, sem saudaÃ§Ã£o, sem explicaÃ§Ã£o, sem Markdown e sem aspas extras."
-                        )
-                    }]
-                },
-                "contents": [{"role": "user", "parts": [{"text": mensagem}]}],
-                "generationConfig": {"temperature": 0.2},
-            },
-            timeout=60,
-            verify=False,
-        )
-        if not resp.ok:
-            detail = resp.text[:300]
-            try:
-                erro = resp.json().get("error") or {}
-                detail = str(erro.get("message") or detail)
-            except Exception:
-                pass
-            ultimo_erro = f"{model_name}: Gemini HTTP {resp.status_code}: {detail}"
-            if resp.status_code in {400, 404}:
-                logger.warning("[Favoritos IA] Modelo Gemini indisponivel para pesquisa: %s", model_name)
-                continue
-            raise RuntimeError(ultimo_erro)
-
-        try:
-            partes = resp.json()["candidates"][0]["content"]["parts"]
-            return "\n".join(str(parte.get("text") or "").strip() for parte in partes if str(parte.get("text") or "").strip()).strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            ultimo_erro = f"{model_name}: resposta sem texto ({exc})"
-            continue
-
-    raise RuntimeError(ultimo_erro or "Nenhum modelo Gemini disponÃ­vel para generateContent.")
+    return _favoritos_ia_vertex_pesquisa_texto(mensagem, model=_normalizar_ia_modelo_padrao(model))
 
 
 def _favoritos_ia_vertex_pesquisa_texto(mensagem: str, model: str | None = None) -> str:
-    model_name = _vertex_modelo_nome_curto(model) or _vertex_modelo_nome_curto(IA_MODELO_PADRAO_SISTEMA)
-    token, project_id = _vertex_ai_auth()
+    model_name = _vertex_modelo_nome_curto(model) or _vertex_ai_modelo_padrao()
+    headers, project_id = _vertex_ai_headers_e_project()
     location = _vertex_ai_location()
     host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
     url = f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_name}:generateContent"
 
     resp = requests.post(
         url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         json={
             "systemInstruction": {
                 "parts": [{
@@ -4646,8 +5096,6 @@ def _favoritos_ia_pesquisa_texto(client_id: str, mensagem: str, model: str | Non
     model_name = _normalizar_ia_modelo_padrao(model or _ia_modelo_favoritos_configurado())
     if _modelo_eh_vertex_ai(model_name):
         return _favoritos_ia_vertex_pesquisa_texto(mensagem, model=model_name)
-    if _modelo_eh_gemini_api(model_name):
-        return _favoritos_ia_gemini_pesquisa_texto(mensagem, model=model_name)
     return _favoritos_ia_texto_resposta(client_id, mensagem, model=model_name)
 
 
@@ -5547,81 +5995,19 @@ def _favoritos_ranking_chamar_ia_json(
     model: str | None = None,
 ) -> dict:
     model_name = _normalizar_ia_modelo_padrao(model or _ia_modelo_favoritos_configurado())
-    if model_name.startswith("deepseek-"):
-        api_key = _obter_deepseek_api_key()
-        if not api_key:
-            raise RuntimeError("DEEPSEEK_API_KEY ausente.")
-        modelos_permitidos = {
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "deepseek-chat",
-            "deepseek-reasoner",
-        }
-        model_req = model_name if model_name in modelos_permitidos else "deepseek-v4-flash"
-        logger.info(
-            "[Favoritos IA] Filtrando ranking com DeepSeek modelo=%s chars_prompt=%s",
-            model_req,
-            len(str(mensagem or "")) + len(str(system_prompt or "")),
-        )
-        payload_json = {
-                "model": model_req,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": mensagem},
-                ],
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-        }
-        resp = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload_json,
-            timeout=90,
-        )
-        if not resp.ok and resp.status_code == 400:
-            payload_json.pop("response_format", None)
-            resp = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload_json,
-                timeout=90,
-            )
-        if not resp.ok:
-            detail = resp.text[:300]
-            try:
-                erro = resp.json().get("error") or {}
-                detail = str(erro.get("message") or detail)
-            except Exception:
-                pass
-            raise RuntimeError(f"DeepSeek HTTP {resp.status_code}: {detail}")
-        try:
-            texto = resp.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(f"DeepSeek retornou sem texto ({exc})")
-        return _favoritos_ranking_json_obj(texto)
-
     if _modelo_eh_vertex_ai(model_name):
-        model_curto = _vertex_modelo_nome_curto(model_name) or _vertex_modelo_nome_curto(IA_MODELO_PADRAO_SISTEMA)
-        token, project_id = _vertex_ai_auth()
+        model_curto = _vertex_modelo_nome_curto(model_name) or _vertex_ai_modelo_padrao()
+        headers, project_id = _vertex_ai_headers_e_project()
         location = _vertex_ai_location()
         host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
         payload_json = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": mensagem}]}],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-            },
+            "generationConfig": _vertex_generation_config(model_curto, json_mode=True),
         }
         resp = requests.post(
             f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_curto}:generateContent",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            headers=headers,
             json=payload_json,
             verify=False,
             timeout=75,
@@ -5630,50 +6016,13 @@ def _favoritos_ranking_chamar_ia_json(
             payload_json["generationConfig"].pop("responseMimeType", None)
             resp = requests.post(
                 f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_curto}:generateContent",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                headers=headers,
                 json=payload_json,
                 verify=False,
                 timeout=75,
             )
         if not resp.ok:
             raise RuntimeError(f"Vertex Gemini HTTP {resp.status_code}: {resp.text[:300]}")
-        partes = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        texto = "\n".join(str(parte.get("text") or "").strip() for parte in partes if str(parte.get("text") or "").strip())
-        return _favoritos_ranking_json_obj(texto)
-
-    if _modelo_eh_gemini_api(model_name):
-        api_key = _obter_gemini_api_key()
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY ausente.")
-        model_curto = _gemini_nome_curto(model_name)
-        payload_json = {
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": mensagem}]}],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-            },
-        }
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model_curto}:generateContent",
-            params={"key": api_key},
-            headers={"Content-Type": "application/json"},
-            json=payload_json,
-            timeout=75,
-            verify=False,
-        )
-        if not resp.ok and resp.status_code == 400:
-            payload_json["generationConfig"].pop("responseMimeType", None)
-            resp = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model_curto}:generateContent",
-                params={"key": api_key},
-                headers={"Content-Type": "application/json"},
-                json=payload_json,
-                timeout=75,
-                verify=False,
-            )
-        if not resp.ok:
-            raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
         partes = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
         texto = "\n".join(str(parte.get("text") or "").strip() for parte in partes if str(parte.get("text") or "").strip())
         return _favoritos_ranking_json_obj(texto)
@@ -5693,19 +6042,31 @@ def _favoritos_ranking_filtrar_com_ia(
     descricao: str,
     pesquisas: list[str],
     anuncios: list[dict],
+    meus_anuncios: list[dict] | None = None,
+    max_confirmados: int | None = None,
+    usar_imagem: bool | None = None,
     model: str | None = None,
 ) -> dict:
     anuncios_norm = []
-    usar_imagem_comparacao = _ia_favoritos_usar_imagem_configurado()
-    for anuncio in anuncios or []:
+    usar_imagem_comparacao = bool(usar_imagem) or _ia_favoritos_usar_imagem_configurado()
+    alvo_confirmados = None
+    if max_confirmados is not None:
+        try:
+            alvo_confirmados = max(1, min(int(max_confirmados), 20))
+        except Exception:
+            alvo_confirmados = 8
+
+    def _normalizar_anuncio_ia(anuncio: dict) -> dict | None:
         item_id = _favoritos_ranking_anuncio_id(anuncio)
         if not item_id:
-            continue
+            return None
         item_norm = {
             "id": item_id,
             "titulo": str((anuncio or {}).get("titulo") or (anuncio or {}).get("title") or "")[:240],
             "descricao": _favoritos_ranking_descricao_anuncio(anuncio)[:1800],
             "vendedor": str((anuncio or {}).get("vendedor") or "")[:120],
+            "loja": str((anuncio or {}).get("loja") or (anuncio or {}).get("loja_sync") or "")[:120],
+            "sku": str((anuncio or {}).get("sku") or (anuncio or {}).get("seller_sku") or "")[:120],
         }
         if usar_imagem_comparacao:
             imagem = str(
@@ -5718,12 +6079,23 @@ def _favoritos_ranking_filtrar_com_ia(
             ).strip()
             if imagem:
                 item_norm["imagem"] = imagem[:700]
-        anuncios_norm.append(item_norm)
+        return item_norm
+
+    for anuncio in anuncios or []:
+        item_norm = _normalizar_anuncio_ia(anuncio)
+        if item_norm:
+            anuncios_norm.append(item_norm)
 
     if not anuncios_norm:
         return {"manter_ids": [], "remover_ids": [], "removidos": []}
 
     _favoritos_ranking_completar_descricoes(anuncios_norm)
+    meus_anuncios_norm = [
+        item for item in (_normalizar_anuncio_ia(anuncio) for anuncio in (meus_anuncios or []))
+        if item
+    ][:12]
+    if meus_anuncios_norm:
+        _favoritos_ranking_completar_descricoes(meus_anuncios_norm)
 
     system_prompt = (
         "Voce e um especialista em catalogacao de autopecas e inteligencia de mercado automotivo. "
@@ -5740,6 +6112,8 @@ def _favoritos_ranking_filtrar_com_ia(
         "produto_cadastro": str(titulo or "").strip()[:700],
         "descricao_cadastro": str(descricao or "").strip()[:2400],
         "pesquisas_usadas": [str(item or "").strip() for item in (pesquisas or []) if str(item or "").strip()][:3],
+        "meus_anuncios": meus_anuncios_norm,
+        "max_confirmados": alvo_confirmados,
     }
     base_campos = _favoritos_ranking_extrair_campos_tecnicos(
         base["titulo_sku"],
@@ -5781,7 +6155,12 @@ def _favoritos_ranking_filtrar_com_ia(
         }
         decisoes_cache_alterado = True
 
+    def _atingiu_alvo_confirmados() -> bool:
+        return alvo_confirmados is not None and len(manter_ids - remover_ids) >= alvo_confirmados
+
     for item in anuncios_norm:
+        if _atingiu_alvo_confirmados():
+            break
         item_id = str(item.get("id") or "").strip()
         item["campos_tecnicos"] = _favoritos_ranking_extrair_campos_tecnicos(
             item.get("titulo"),
@@ -5828,6 +6207,8 @@ def _favoritos_ranking_filtrar_com_ia(
 
     chunk_tamanho = 18
     for inicio in range(0, len(anuncios_para_ia), chunk_tamanho):
+        if _atingiu_alvo_confirmados():
+            break
         chunk = anuncios_para_ia[inicio:inicio + chunk_tamanho]
         payload = dict(base)
         payload["anuncios"] = [
@@ -5853,8 +6234,10 @@ def _favoritos_ranking_filtrar_com_ia(
             }
         mensagem = (
             "Analise e compare cada anuncio concorrente com o MEU ANUNCIO informado em produto_cadastro, "
-            "descricao_cadastro, titulo_sku, descricao_sku, sku e pesquisas_usadas. Cada item em anuncios "
-            "contem titulo e descricao do anuncio rankeado quando disponivel. O objetivo e remover somente anuncios "
+            "descricao_cadastro, titulo_sku, descricao_sku, sku, pesquisas_usadas e, principalmente, meus_anuncios "
+            "quando estiverem presentes. meus_anuncios sao os anuncios da nossa loja para o mesmo SKU; use titulo, "
+            "descricao, SKU, loja e imagem deles como referencia principal. Cada item em anuncios contem titulo, "
+            "descricao, imagem e posicao do anuncio rankeado quando disponivel. O objetivo e remover somente anuncios "
             "que claramente nao vendem a mesma peca/produto; anuncios compativeis ou duvidosos devem permanecer "
             "para revisao no ranking.\n\n"
             "DIRETRIZES DE COMPARACAO, em ordem de prioridade obrigatoria:\n"
@@ -5873,8 +6256,9 @@ def _favoritos_ranking_filtrar_com_ia(
             "em vez de remover, a menos que exista conflito objetivo.\n\n"
             + (
                 "COMPARACAO POR IMAGEM:\n"
-                "A configuracao de Favoritos esta marcada para usar imagem. Quando o campo imagem estiver presente, "
-                "use a foto como pista auxiliar para validar formato, componente, lado, kit e aparencia geral. "
+                "Quando o campo imagem estiver presente em meus_anuncios ou anuncios, use a foto como pista auxiliar "
+                "para validar formato, componente, lado, kit e aparencia geral. Compare visualmente nossas fotos com "
+                "as fotos dos anuncios rankeados quando isso ajudar a diferenciar produtos parecidos. "
                 "A imagem nunca deve prevalecer contra codigo, titulo, descricao ou aplicacao veicular objetiva; "
                 "ela serve apenas para reduzir duvidas quando os textos forem incompletos.\n\n"
                 if usar_imagem_comparacao else ""
@@ -5948,6 +6332,8 @@ def _favoritos_ranking_filtrar_com_ia(
             item = itens_por_id.get(item_id)
             if item:
                 _registrar_decisao_cache(item, "remover", removidos_map.get(item_id) or motivos_ia.get(item_id) or "removido pela IA", "ia", 80)
+        if _atingiu_alvo_confirmados():
+            break
 
     if decisoes_cache_alterado:
         with FAVORITOS_RANKING_DECISOES_LOCK:
@@ -5967,6 +6353,8 @@ def _favoritos_ranking_filtrar_com_ia(
         "manter_ids": sorted(manter_ids - remover_ids),
         "remover_ids": sorted(remover_ids),
         "removidos": removidos,
+        "interrompido_apos_confirmados": _atingiu_alvo_confirmados(),
+        "confirmados_total": len(manter_ids - remover_ids),
     }
 
 
@@ -6399,6 +6787,52 @@ def _favoritos_ml_dividir_skus(valor: str) -> list[str]:
     ]
 
 
+def _favoritos_ml_imagem_item(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    imagem = str(item.get("secure_thumbnail") or item.get("thumbnail") or "").strip()
+    if imagem:
+        return imagem
+    pictures = item.get("pictures") if isinstance(item.get("pictures"), list) else []
+    for picture in pictures:
+        if not isinstance(picture, dict):
+            continue
+        imagem = str(picture.get("secure_url") or picture.get("url") or picture.get("thumbnail") or "").strip()
+        if imagem:
+            return imagem
+    return ""
+
+
+def _favoritos_ml_url_item_id(item_id: str) -> str:
+    item_id_txt = re.sub(r"[^A-Za-z0-9]", "", str(item_id or "").strip()).upper()
+    digitos = item_id_txt[3:] if item_id_txt.startswith("MLB") else ""
+    if not item_id_txt.startswith("MLB") or len(digitos) < 8:
+        return ""
+    return f"https://produto.mercadolivre.com.br/{item_id_txt.replace('MLB', 'MLB-')}-_JM"
+
+
+def _favoritos_ml_resumo_anuncio_sku(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    item_id = str(item.get("id") or "").strip()
+    permalink = str(item.get("permalink") or "").strip()
+    if not permalink and item_id:
+        permalink = _favoritos_ml_url_item_id(item_id)
+    imagem = _favoritos_ml_imagem_item(item)
+    return {
+        "id": item_id,
+        "mlb": item_id,
+        "titulo": str(item.get("title") or "").strip(),
+        "title": str(item.get("title") or "").strip(),
+        "url": permalink,
+        "permalink": permalink,
+        "link": permalink,
+        "imagem": imagem,
+        "thumbnail": imagem,
+        "status": str(item.get("status") or "").strip(),
+    }
+
+
 def _favoritos_ml_skus_unicos_itens(itens: list[dict]) -> list[dict]:
     mapa: dict[str, dict] = {}
     for item in itens or []:
@@ -6407,6 +6841,8 @@ def _favoritos_ml_skus_unicos_itens(itens: list[dict]) -> list[dict]:
         item_id = str(item.get("id") or "").strip()
         titulo = str(item.get("title") or "").strip()
         permalink = str(item.get("permalink") or "").strip()
+        imagem_item = _favoritos_ml_imagem_item(item)
+        resumo_anuncio = _favoritos_ml_resumo_anuncio_sku(item)
         status_item = str(item.get("status") or "").strip()
         try:
             estoque_item = int(float(str(item.get("available_quantity") or 0).replace(",", ".")))
@@ -6432,6 +6868,12 @@ def _favoritos_ml_skus_unicos_itens(itens: list[dict]) -> list[dict]:
                     "estoque_loja": 0,
                     "item_ids": [],
                     "links": [],
+                    "url": permalink,
+                    "permalink": permalink,
+                    "link": permalink,
+                    "imagem": imagem_item,
+                    "thumbnail": imagem_item,
+                    "anuncios": [],
                     "total_anuncios": 0,
                     "status_anuncio": status_item,
                     "status_anuncios": [],
@@ -6443,8 +6885,17 @@ def _favoritos_ml_skus_unicos_itens(itens: list[dict]) -> list[dict]:
                 atual["total_anuncios"] = len(atual["item_ids"])
                 atual["saldo_loja"] = int(atual.get("saldo_loja") or 0) + estoque_item
                 atual["estoque_loja"] = atual["saldo_loja"]
+                if resumo_anuncio and len(atual.get("anuncios") or []) < 12:
+                    atual["anuncios"].append(resumo_anuncio)
             if permalink and permalink not in atual["links"]:
                 atual["links"].append(permalink)
+            if permalink and not atual.get("url"):
+                atual["url"] = permalink
+                atual["permalink"] = permalink
+                atual["link"] = permalink
+            if imagem_item and not atual.get("imagem"):
+                atual["imagem"] = imagem_item
+                atual["thumbnail"] = imagem_item
             if status_item and status_item not in atual["status_anuncios"]:
                 atual["status_anuncios"].append(status_item)
                 if not atual.get("status_anuncio") or atual.get("status_anuncio") != "active":
@@ -6480,14 +6931,24 @@ def _favoritos_ml_garantir_sku_busca(skus: list[dict], sku_busca: str, itens: li
 
     item_ids = []
     titulo = ""
+    permalink = ""
+    imagem = ""
+    anuncios = []
     for item in itens or []:
         if not isinstance(item, dict):
             continue
         item_id = str(item.get("id") or "").strip()
         if item_id and item_id not in item_ids:
             item_ids.append(item_id)
+            resumo = _favoritos_ml_resumo_anuncio_sku(item)
+            if resumo and len(anuncios) < 12:
+                anuncios.append(resumo)
         if not titulo:
             titulo = str(item.get("title") or "").strip()
+        if not permalink:
+            permalink = str(item.get("permalink") or "").strip() or _favoritos_ml_url_item_id(item_id)
+        if not imagem:
+            imagem = _favoritos_ml_imagem_item(item)
 
     if not item_ids:
         return skus
@@ -6496,6 +6957,13 @@ def _favoritos_ml_garantir_sku_busca(skus: list[dict], sku_busca: str, itens: li
         "sku": sku_txt,
         "titulo": titulo,
         "item_ids": item_ids,
+        "links": [permalink] if permalink else [],
+        "url": permalink,
+        "permalink": permalink,
+        "link": permalink,
+        "imagem": imagem,
+        "thumbnail": imagem,
+        "anuncios": anuncios,
         "total_anuncios": len(item_ids),
         "sku_forcado_busca": True,
     }
@@ -6863,6 +7331,8 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[str]
         return "vendas"
     if rota.startswith("/api/medias-compras/"):
         return "medias_compras"
+    if rota.startswith("/api/full/"):
+        return "mercado_full"
     if rota.startswith("/api/favoritos/"):
         return "favoritos"
     if rota.startswith("/api/admin/"):
@@ -12808,7 +13278,7 @@ def _modelo_eh_vertex_ai(model_name: str) -> bool:
     return nome.startswith("vertex:")
 
 
-IA_MODELO_PADRAO_SISTEMA = "vertex:gemini-2.5-pro"
+IA_MODELO_PADRAO_SISTEMA = "vertex:gemini-2.5-flash"
 GEMINI_31_FLASH_MODEL = "gemini-3.1-flash"
 FAVORITOS_PESQUISAS_IA_MODEL = (
     os.getenv("FAVORITOS_PESQUISAS_IA_MODEL")
@@ -12830,10 +13300,29 @@ def _normalizar_ia_modelo_padrao(model_name: str | None) -> str:
     if _modelo_eh_vertex_ai(nome):
         curto = _vertex_modelo_nome_curto(nome)
         return f"vertex:{curto}" if curto else IA_MODELO_PADRAO_SISTEMA
-    gemini = _gemini_nome_curto(nome)
-    if gemini:
-        return gemini
-    return IA_MODELO_PADRAO_SISTEMA
+    if nome.lower().startswith(("gpt-", "deepseek-")):
+        return nome
+    curto = _vertex_modelo_nome_curto(nome)
+    return f"vertex:{curto}" if curto else IA_MODELO_PADRAO_SISTEMA
+
+
+def _vertex_generation_config(model_name: str, modo_rapido: bool = False, json_mode: bool = False) -> dict:
+    modelo = _vertex_modelo_nome_curto(model_name).lower()
+    cfg: dict = {
+        "maxOutputTokens": 768 if modo_rapido else 4096,
+    }
+    if json_mode:
+        cfg["temperature"] = 0
+        cfg["responseMimeType"] = "application/json"
+    elif modo_rapido:
+        cfg["temperature"] = 0.2
+
+    # Gemini 2.5 pode consumir todo o limite com thinking tokens e voltar HTTP 200 sem texto.
+    if modelo.startswith("gemini-2.5-flash"):
+        cfg["thinkingConfig"] = {"thinkingBudget": 0}
+    elif modelo.startswith("gemini-2.5-pro"):
+        cfg["thinkingConfig"] = {"thinkingBudget": 128 if modo_rapido else 512}
+    return cfg
 
 
 def _ia_modelo_padrao_configurado() -> str:
@@ -12892,7 +13381,7 @@ IA_PROVIDER_CONFIG_KEYS = {
 IA_PROVIDER_LABELS = {
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
-    "gemini": "Gemini API",
+    "gemini": "Gemini desativada",
     "vertex": "Vertex AI",
 }
 
@@ -12903,12 +13392,12 @@ def _ia_provedor_por_modelo(model_name: str | None) -> str:
         return "vertex"
     if nome.startswith("deepseek-"):
         return "deepseek"
-    if _modelo_eh_gemini_api(nome):
-        return "gemini"
     return "openai"
 
 
 def _ia_provedor_ativo(provedor: str) -> bool:
+    if str(provedor or "").strip().lower() == "gemini":
+        return False
     chave = IA_PROVIDER_CONFIG_KEYS.get(str(provedor or "").strip().lower())
     if not chave:
         return True
@@ -12933,8 +13422,77 @@ def _ia_validar_provedor_ativo(provedor: str) -> None:
     )
 
 
+def _vertex_config_valor(chave: str, padrao: str = "") -> str:
+    try:
+        cfg = _carregar_configuracoes_globais()
+        valor = str(cfg.get(chave) or "").strip()
+        if valor:
+            return valor
+    except Exception:
+        pass
+    return str(padrao or "").strip()
+
+
 def _vertex_ai_location() -> str:
-    return (os.getenv("VERTEX_AI_LOCATION") or "us-central1").strip() or "us-central1"
+    return (
+        _vertex_config_valor("ia_vertex_location")
+        or (os.getenv("VERTEX_AI_LOCATION") or "").strip()
+        or "global"
+    ).strip()
+
+
+def _vertex_ai_modelo_padrao() -> str:
+    return (
+        _vertex_modelo_nome_curto(_vertex_config_valor("ia_vertex_model"))
+        or _vertex_modelo_nome_curto(os.getenv("VERTEX_AI_MODEL") or "")
+        or "gemini-2.5-flash"
+    )
+
+
+def _vertex_ai_project_id_configurado() -> str:
+    return (
+        _vertex_config_valor("ia_vertex_project_id")
+        or (os.getenv("VERTEX_AI_PROJECT_ID") or "").strip()
+    ).strip()
+
+
+def _vertex_ai_service_account_email() -> str:
+    return (
+        _vertex_config_valor("ia_vertex_service_account_email")
+        or (os.getenv("VERTEX_AI_SERVICE_ACCOUNT") or "").strip()
+    ).strip()
+
+
+def _vertex_ai_agent_api_key() -> str:
+    api_key = _env_config_value(*IA_AGENT_API_KEY_ENV_KEYS, cache_as="GEMINI_AGENT_API_KEY")
+    if api_key:
+        return api_key
+    if os.path.exists(ARQUIVO_VERTEX_AGENT_API_KEY):
+        try:
+            with open(ARQUIVO_VERTEX_AGENT_API_KEY, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def _salvar_vertex_agent_api_key(valor: str | None, limpar: bool = False) -> None:
+    if limpar:
+        try:
+            if os.path.exists(ARQUIVO_VERTEX_AGENT_API_KEY):
+                os.remove(ARQUIVO_VERTEX_AGENT_API_KEY)
+        except Exception:
+            logger.exception("Erro ao remover chave do agente Vertex")
+        for key in IA_AGENT_API_KEY_ENV_KEYS:
+            os.environ.pop(key, None)
+        return
+    api_key = str(valor or "").strip()
+    if not api_key:
+        return
+    os.makedirs(os.path.dirname(ARQUIVO_VERTEX_AGENT_API_KEY), exist_ok=True)
+    with open(ARQUIVO_VERTEX_AGENT_API_KEY, "w", encoding="utf-8") as f:
+        f.write(api_key)
+    os.environ["GEMINI_AGENT_API_KEY"] = api_key
 
 
 def _vertex_ai_credentials_file() -> str:
@@ -12956,16 +13514,26 @@ def _vertex_ai_auth() -> tuple[str, str]:
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
     if cred_file:
         creds = Credentials.from_service_account_file(cred_file, scopes=scopes)
-        project_id = (os.getenv("VERTEX_AI_PROJECT_ID") or getattr(creds, "project_id", "") or "").strip()
+        project_id = (_vertex_ai_project_id_configurado() or getattr(creds, "project_id", "") or "").strip()
     else:
         creds, default_project_id = google.auth.default(scopes=scopes)
         project_id = (
-            os.getenv("VERTEX_AI_PROJECT_ID")
+            _vertex_ai_project_id_configurado()
             or str(default_project_id or "")
             or getattr(creds, "project_id", "")
             or getattr(creds, "quota_project_id", "")
             or ""
         ).strip()
+    target_service_account = _vertex_ai_service_account_email()
+    if target_service_account and impersonated_credentials is not None:
+        origem = str(getattr(creds, "service_account_email", "") or "").strip().lower()
+        if origem != target_service_account.lower():
+            creds = impersonated_credentials.Credentials(
+                source_credentials=creds,
+                target_principal=target_service_account,
+                target_scopes=scopes,
+                lifetime=3600,
+            )
     session = requests.Session()
     session.verify = False
     creds.refresh(GoogleAuthRequest(session=session))
@@ -12974,10 +13542,42 @@ def _vertex_ai_auth() -> tuple[str, str]:
     return str(creds.token or ""), project_id
 
 
+def _vertex_ai_headers_e_project() -> tuple[dict, str]:
+    api_key = _vertex_ai_agent_api_key()
+    auth_mode = _env_config_value(*VERTEX_AI_AUTH_MODE_ENV_KEYS).strip().lower().replace("-", "_")
+    usar_api_key_primeiro = auth_mode in {"api_key", "apikey", "key", "chave"}
+    chave_agent_no_env = bool(_env_config_value(*IA_AGENT_API_KEY_ENV_KEYS, cache_as="GEMINI_AGENT_API_KEY"))
+    permitir_api_key = (
+        usar_api_key_primeiro
+        or chave_agent_no_env
+        or _env_config_bool(VERTEX_AI_API_KEY_ALLOW_ENV_KEYS, default=False)
+    )
+
+    def _headers_api_key(causa: Exception | None = None) -> tuple[dict, str]:
+        project_id = _vertex_ai_project_id_configurado()
+        if not project_id:
+            if causa is not None:
+                raise RuntimeError("Project ID da Vertex AI nao encontrado para usar a chave do agente.") from causa
+            raise RuntimeError("Project ID da Vertex AI nao encontrado para usar a chave do agente.")
+        logger.warning("[IA] Usando chave de API para Vertex AI via .env/configuracao.")
+        return {"x-goog-api-key": api_key, "Content-Type": "application/json"}, project_id
+
+    if api_key and usar_api_key_primeiro:
+        return _headers_api_key()
+
+    try:
+        token, project_id = _vertex_ai_auth()
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, project_id
+    except Exception as exc:
+        if api_key and permitir_api_key:
+            return _headers_api_key(exc)
+        raise
+
+
 def _vertex_ai_generate_url(model_name: str) -> str:
-    model = _vertex_modelo_nome_curto(model_name) or (os.getenv("VERTEX_AI_MODEL") or "gemini-2.5-flash")
+    model = _vertex_modelo_nome_curto(model_name) or _vertex_ai_modelo_padrao()
     location = _vertex_ai_location()
-    _token, project_id = _vertex_ai_auth()
+    _headers, project_id = _vertex_ai_headers_e_project()
     host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
     return f"https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
 
@@ -12993,71 +13593,15 @@ def _listar_modelos_vertex_ai() -> list[dict]:
 
 
 def _listar_modelos_gemini_api(force_refresh: bool = False) -> list[dict]:
-    agora = time.time()
-    with IA_GEMINI_MODELS_LOCK:
-        if not force_refresh and IA_GEMINI_MODELS_CACHE["items"] and IA_GEMINI_MODELS_CACHE["expires_at"] > agora:
-            return list(IA_GEMINI_MODELS_CACHE["items"])
+    return []
 
-    api_key = _obter_gemini_api_key()
-    if not api_key:
-        return []
 
-    modelos = []
-    page_token = None
-    while True:
-        params = {"key": api_key, "pageSize": 200}
-        if page_token:
-            params["pageToken"] = page_token
-        try:
-            resp = requests.get(
-                "https://generativelanguage.googleapis.com/v1beta/models",
-                params=params,
-                timeout=30,
-                verify=False,
-            )
-        except requests.RequestException as exc:
-            logger.warning("[IA] Falha ao listar modelos Gemini: %s", exc.__class__.__name__)
-            break
-        if not resp.ok:
-            logger.warning(f"[IA] Gemini listModels HTTP {resp.status_code}: {resp.text[:300]}")
-            break
-
-        data = resp.json() if resp.content else {}
-        for item in (data.get("models") or []):
-            methods = item.get("supportedGenerationMethods") or []
-            if "generateContent" not in methods:
-                continue
-            nome = _gemini_nome_curto(item.get("name"))
-            if not nome:
-                continue
-            modelos.append({
-                "name": nome,
-                "display_name": str(item.get("displayName") or nome),
-                "description": str(item.get("description") or "").strip(),
-                "methods": methods,
-            })
-        page_token = str(data.get("nextPageToken") or "").strip() or None
-        if not page_token:
-            break
-
-    modelos_ordenados = sorted(
-        {m["name"]: m for m in modelos}.values(),
-        key=lambda item: (("preview" in item["name"]), item["display_name"].lower(), item["name"].lower())
-    )
-    with IA_GEMINI_MODELS_LOCK:
-        IA_GEMINI_MODELS_CACHE["items"] = modelos_ordenados
-        IA_GEMINI_MODELS_CACHE["expires_at"] = time.time() + IA_GEMINI_MODELS_CACHE_TTL_S
-    return list(modelos_ordenados)
+def _listar_modelos_gemini_api_desativada(force_refresh: bool = False) -> list[dict]:
+    return []
 
 
 def _modelo_eh_gemini_api(model_name: str) -> bool:
-    nome = _gemini_nome_curto(model_name)
-    if not nome:
-        return False
-    modelos = _listar_modelos_gemini_api()
-    if modelos:
-        return any(item.get("name") == nome for item in modelos)
-    return nome.startswith(("gemini-", "gemma-", "deep-research", "nano-banana", "lyria-"))
+    return False
 
 
 def _ia_chat_tem_imagem(anexos: Optional[list[dict]] = None) -> bool:
@@ -13385,6 +13929,49 @@ def _ia_chat_resposta_saudacao(payload: IAChatRequest) -> str:
     )
 
 
+def _ia_chat_eh_pedido_rapido_sidebar(
+    mensagem: str,
+    contexto: Optional[dict] = None,
+    anexos: Optional[list] = None,
+) -> bool:
+    if anexos:
+        return False
+    texto_raw = str(mensagem or "").strip()
+    if not texto_raw:
+        return False
+    texto = _normalizar_texto(texto_raw)
+    palavras = re.findall(r"[A-Z0-9]+", texto)
+    if len(texto_raw) > 220 or len(palavras) > 32:
+        return False
+    if re.search(r"\bMLB\d{5,}\b|\bSKU\b|R\$", texto):
+        return False
+
+    termos_operacionais = (
+        "VENDA", "VENDAS", "PEDIDO", "PEDIDOS", "ESTOQUE", "SKU", "SKUS",
+        "DEVOLUCAO", "DEVOLUCOES", "NOTA", "NFE", "NF E", "PRODUTO", "PRODUTOS",
+        "PERIODO", "TELA", "LISTA", "RANKING", "LOJA", "LOJAS", "UNIDADE",
+        "FATURAMENTO", "VALOR BRUTO", "ITENS VENDIDOS", "ITENS DEVOLVIDOS",
+        "MARGEM", "CUSTO", "IMPOSTO", "BLING", "MERCADO LIVRE", "ANUNCIO",
+        "ANUNCIOS", "FAVORITO", "FAVORITOS", "CAMPANHA", "PROMOCAO",
+        "SINCRONIZAR", "SINCRONIZACAO", "ERRO", "PROBLEMA", "RELATORIO",
+        "PLANILHA", "CALCULE", "CALCULAR", "ANALISE", "ANALISAR", "COMPARE",
+        "COMPARAR", "BUSQUE", "BUSCAR", "PESQUISE", "PESQUISAR", "LISTE",
+        "LISTAR", "MOSTRE", "MOSTRAR", "VERIFIQUE", "VERIFICAR",
+    )
+    if any(termo in texto for termo in termos_operacionais):
+        return False
+
+    termos_rapidos = (
+        "OI", "OLA", "BOM DIA", "BOA TARDE", "BOA NOITE", "OBRIGADO", "OBRIGADA",
+        "VALEU", "REPITA", "REPETE", "REPETIR", "FALE DE NOVO", "DIGA DE NOVO",
+        "QUE DIA", "QUAL DIA", "QUAL DATA", "DATA DE HOJE", "HOJE E", "HOJE",
+        "AGORA", "QUE HORAS", "HORARIO",
+    )
+    if any(termo in texto for termo in termos_rapidos):
+        return True
+    return len(palavras) <= 8
+
+
 def _ia_chat_usa_contexto_tela(mensagem: str, anexos: Optional[list[dict]] = None) -> bool:
     texto = str(mensagem or "").strip().lower()
     if not texto:
@@ -13409,6 +13996,29 @@ def _ia_chat_usa_contexto_tela(mensagem: str, anexos: Optional[list[dict]] = Non
         return True
 
     return bool(anexos)
+
+
+def _ia_chat_deve_anexar_estoque_contexto(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem or "")
+    if not texto:
+        return False
+    termos = (
+        "ESTOQUE", "SALDO", "FULL", "RUPTURA", "PARADO", "SEM VENDA",
+        "SKU", "PRODUTO", "CADASTRO", "MARGEM", "CUSTO",
+    )
+    return any(termo in texto for termo in termos)
+
+
+def _ia_chat_deve_anexar_vendas_db_contexto(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem or "")
+    if not texto:
+        return False
+    termos = (
+        "TOP", "RANKING", "MAIS VENDEU", "MAIS VENDIDO", "LIDER",
+        "LISTE", "LISTAR", "TODOS OS SKU", "TODOS OS SKUS",
+        "SKUS VENDIDOS", "PRODUTOS VENDIDOS", "CURVA ABC",
+    )
+    return any(termo in texto for termo in termos)
 
 
 def _ia_chat_pede_analise_especialista_vendas(
@@ -13550,79 +14160,104 @@ def _ia_treinamento_ppv_normalizar_exemplos(valor) -> dict:
     return base
 
 
+def _ia_treinamento_ppv_loja_key(loja: str | None = None) -> str:
+    return _chave_loja_favoritos(str(loja or "").strip())
+
+
+def _ia_treinamento_ppv_payload_vazio(loja: str = "", loja_key: str = "") -> dict:
+    return {
+        "orientacoes": "",
+        "orientacoes_perguntas": "",
+        "orientacoes_pos_venda": "",
+        "contexto_loja": "",
+        "compatibilidade_autopecas": "",
+        "proibicoes": "",
+        "notas_sku": {},
+        "exemplos": {"perguntas_anuncio": [], "pos_venda": []},
+        "updated_at": None,
+        "updated_at_perguntas": None,
+        "updated_at_pos_venda": None,
+        "loja": str(loja or "").strip(),
+        "loja_key": str(loja_key or "").strip(),
+    }
+
+
+def _ia_treinamento_ppv_normalizar_notas_sku(valor) -> dict:
+    notas_sku = valor if isinstance(valor, dict) else {}
+    notas_sku_norm = {}
+    for sku_key, item in notas_sku.items():
+        sku_norm = _normalizar_sku_mes(str(sku_key or "").strip())
+        if not sku_norm:
+            continue
+        if isinstance(item, dict):
+            notas = str(item.get("notas") or item.get("texto") or "").strip()[:8000]
+            updated_sku = item.get("updated_at")
+        else:
+            notas = str(item or "").strip()[:8000]
+            updated_sku = None
+        if notas:
+            notas_sku_norm[sku_norm] = {"notas": notas, "updated_at": updated_sku}
+    return notas_sku_norm
+
+
+def _ia_treinamento_ppv_normalizar_payload(data, loja: str = "", loja_key: str = "") -> dict:
+    data = data if isinstance(data, dict) else {}
+    orientacoes_legado = str(data.get("orientacoes") or "")[:12000]
+    orientacoes_perguntas = str(data.get("orientacoes_perguntas") or data.get("perguntas_anuncio") or orientacoes_legado)[:12000]
+    orientacoes_pos_venda = str(data.get("orientacoes_pos_venda") or data.get("pos_venda") or "")[:12000]
+    updated_at = data.get("updated_at")
+    updated_at_perguntas = data.get("updated_at_perguntas") or updated_at
+    updated_at_pos_venda = data.get("updated_at_pos_venda")
+    payload = _ia_treinamento_ppv_payload_vazio(
+        str(data.get("loja") or loja or "").strip(),
+        str(data.get("loja_key") or loja_key or "").strip(),
+    )
+    payload.update({
+        "orientacoes": orientacoes_perguntas,
+        "orientacoes_perguntas": orientacoes_perguntas,
+        "orientacoes_pos_venda": orientacoes_pos_venda,
+        "contexto_loja": str(data.get("contexto_loja") or "")[:12000],
+        "compatibilidade_autopecas": str(data.get("compatibilidade_autopecas") or "")[:12000],
+        "proibicoes": str(data.get("proibicoes") or "")[:8000],
+        "notas_sku": _ia_treinamento_ppv_normalizar_notas_sku(data.get("notas_sku")),
+        "exemplos": _ia_treinamento_ppv_normalizar_exemplos(data.get("exemplos")),
+        "updated_at": updated_at_perguntas or updated_at_pos_venda,
+        "updated_at_perguntas": updated_at_perguntas,
+        "updated_at_pos_venda": updated_at_pos_venda,
+    })
+    return payload
+
+
 def _ia_treinamento_ppv_carregar(client_id: str) -> dict:
     caminho = _ia_treinamento_ppv_path(client_id)
     if not os.path.exists(caminho):
-        return {
-            "orientacoes": "",
-            "orientacoes_perguntas": "",
-            "orientacoes_pos_venda": "",
-            "contexto_loja": "",
-            "compatibilidade_autopecas": "",
-            "proibicoes": "",
-            "notas_sku": {},
-            "exemplos": {"perguntas_anuncio": [], "pos_venda": []},
-            "updated_at": None,
-            "updated_at_perguntas": None,
-            "updated_at_pos_venda": None,
-        }
+        return {**_ia_treinamento_ppv_payload_vazio(), "por_loja": {}}
     try:
         with open(caminho, "r", encoding="utf-8") as fh:
             data = json.load(fh) or {}
-        orientacoes_legado = str(data.get("orientacoes") or "")[:12000]
-        orientacoes_perguntas = str(data.get("orientacoes_perguntas") or data.get("perguntas_anuncio") or orientacoes_legado)[:12000]
-        orientacoes_pos_venda = str(data.get("orientacoes_pos_venda") or data.get("pos_venda") or "")[:12000]
-        updated_at = data.get("updated_at")
-        updated_at_perguntas = data.get("updated_at_perguntas") or updated_at
-        updated_at_pos_venda = data.get("updated_at_pos_venda")
-        notas_sku = data.get("notas_sku") if isinstance(data.get("notas_sku"), dict) else {}
-        notas_sku_norm = {}
-        for sku_key, item in notas_sku.items():
-            sku_norm = _normalizar_sku_mes(str(sku_key or "").strip())
-            if not sku_norm:
+        payload = _ia_treinamento_ppv_normalizar_payload(data)
+        por_loja_raw = data.get("por_loja") if isinstance(data.get("por_loja"), dict) else {}
+        por_loja = {}
+        for chave_raw, item_raw in por_loja_raw.items():
+            if not isinstance(item_raw, dict):
                 continue
-            if isinstance(item, dict):
-                notas = str(item.get("notas") or item.get("texto") or "").strip()[:8000]
-                updated_sku = item.get("updated_at")
-            else:
-                notas = str(item or "").strip()[:8000]
-                updated_sku = None
-            if notas:
-                notas_sku_norm[sku_norm] = {"notas": notas, "updated_at": updated_sku}
-        return {
-            "orientacoes": orientacoes_perguntas,
-            "orientacoes_perguntas": orientacoes_perguntas,
-            "orientacoes_pos_venda": orientacoes_pos_venda,
-            "contexto_loja": str(data.get("contexto_loja") or "")[:12000],
-            "compatibilidade_autopecas": str(data.get("compatibilidade_autopecas") or "")[:12000],
-            "proibicoes": str(data.get("proibicoes") or "")[:8000],
-            "notas_sku": notas_sku_norm,
-            "exemplos": _ia_treinamento_ppv_normalizar_exemplos(data.get("exemplos")),
-            "updated_at": updated_at_perguntas or updated_at_pos_venda,
-            "updated_at_perguntas": updated_at_perguntas,
-            "updated_at_pos_venda": updated_at_pos_venda,
-        }
+            nome_loja = str(item_raw.get("loja") or chave_raw or "").strip()
+            loja_key = _ia_treinamento_ppv_loja_key(nome_loja) or _ia_treinamento_ppv_loja_key(chave_raw)
+            if not loja_key:
+                continue
+            por_loja[loja_key] = _ia_treinamento_ppv_normalizar_payload(item_raw, nome_loja, loja_key)
+        payload["por_loja"] = por_loja
+        return payload
     except Exception as exc:
         logger.warning("[IA TREINO PPV] Falha ao carregar treinamento: %s", exc)
-        return {
-            "orientacoes": "",
-            "orientacoes_perguntas": "",
-            "orientacoes_pos_venda": "",
-            "contexto_loja": "",
-            "compatibilidade_autopecas": "",
-            "proibicoes": "",
-            "notas_sku": {},
-            "exemplos": {"perguntas_anuncio": [], "pos_venda": []},
-            "updated_at": None,
-            "updated_at_perguntas": None,
-            "updated_at_pos_venda": None,
-        }
+        return {**_ia_treinamento_ppv_payload_vazio(), "por_loja": {}}
 
 
 def _ia_treinamento_ppv_salvar(
     client_id: str,
     orientacoes: str,
     tipo: str | None = None,
+    loja: str | None = None,
     contexto_loja: str | None = None,
     compatibilidade_autopecas: str | None = None,
     proibicoes: str | None = None,
@@ -13632,7 +14267,16 @@ def _ia_treinamento_ppv_salvar(
 ) -> dict:
     tipo_norm = _ia_treinamento_ppv_tipo_normalizar(tipo)
     texto = str(orientacoes or "").strip()[:12000]
-    payload = _ia_treinamento_ppv_carregar(client_id)
+    payload_raiz = _ia_treinamento_ppv_carregar(client_id)
+    loja_nome = str(loja or "").strip()
+    loja_key = _ia_treinamento_ppv_loja_key(loja_nome)
+    if loja_key:
+        por_loja = payload_raiz.setdefault("por_loja", {})
+        payload = _ia_treinamento_ppv_normalizar_payload(por_loja.get(loja_key), loja_nome, loja_key)
+        payload["loja"] = loja_nome
+        payload["loja_key"] = loja_key
+    else:
+        payload = payload_raiz
     agora = dt.datetime.now().isoformat(timespec="seconds")
     payload["contexto_loja"] = str(contexto_loja if contexto_loja is not None else payload.get("contexto_loja") or "").strip()[:12000]
     payload["compatibilidade_autopecas"] = str(compatibilidade_autopecas if compatibilidade_autopecas is not None else payload.get("compatibilidade_autopecas") or "").strip()[:12000]
@@ -13662,11 +14306,27 @@ def _ia_treinamento_ppv_salvar(
         payload["updated_at_perguntas"] = agora
         payload["updated_at"] = agora
     payload["tipo"] = tipo_norm
+    if loja_key:
+        payload_raiz.setdefault("por_loja", {})[loja_key] = payload
+    else:
+        payload_raiz = payload
     caminho = _ia_treinamento_ppv_path(client_id)
     os.makedirs(os.path.dirname(caminho), exist_ok=True)
     with open(caminho, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        json.dump(payload_raiz, fh, ensure_ascii=False, indent=2)
     return {**payload, "orientacoes": texto, "updated_at": agora}
+
+
+def _ia_treinamento_ppv_resolver(client_id: str, loja: str | None = None) -> dict:
+    payload = _ia_treinamento_ppv_carregar(client_id)
+    loja_nome = str(loja or "").strip()
+    loja_key = _ia_treinamento_ppv_loja_key(loja_nome)
+    if loja_key:
+        item = (payload.get("por_loja") or {}).get(loja_key)
+        if isinstance(item, dict):
+            return {**item, "loja": item.get("loja") or loja_nome, "loja_key": loja_key}
+        return _ia_treinamento_ppv_payload_vazio(loja_nome, loja_key)
+    return payload
 
 
 def _ia_treinamento_ppv_deve_aplicar(page: Optional[str], context: Optional[dict]) -> bool:
@@ -13698,11 +14358,33 @@ def _ia_treinamento_ppv_tipo_contexto(context: Optional[dict], tipo: str | None 
     return "perguntas_anuncio"
 
 
+def _ia_treinamento_ppv_loja_contexto(context: Optional[dict]) -> str:
+    contexto = context if isinstance(context, dict) else {}
+    produto = contexto.get("produto") if isinstance(contexto.get("produto"), dict) else {}
+    conversa = contexto.get("conversa") if isinstance(contexto.get("conversa"), dict) else {}
+    candidatos = [
+        contexto.get("loja"),
+        contexto.get("store"),
+        contexto.get("loja_nome"),
+        produto.get("loja"),
+        produto.get("loja_nome"),
+        conversa.get("loja"),
+        conversa.get("loja_nome"),
+        conversa.get("store"),
+    ]
+    for candidato in candidatos:
+        texto = str(candidato or "").strip()
+        if texto:
+            return texto
+    return ""
+
+
 def _ia_treinamento_ppv_bloco_prompt(client_id: str, page: Optional[str], context: Optional[dict]) -> str:
     if not _ia_treinamento_ppv_deve_aplicar(page, context):
         return ""
     tipo = _ia_treinamento_ppv_tipo_contexto(context)
-    data = _ia_treinamento_ppv_carregar(client_id)
+    loja_ctx = _ia_treinamento_ppv_loja_contexto(context)
+    data = _ia_treinamento_ppv_resolver(client_id, loja_ctx)
     chave = "orientacoes_pos_venda" if tipo == "pos_venda" else "orientacoes_perguntas"
     orientacoes = str(data.get(chave) or "").strip()
     contexto_loja = str(data.get("contexto_loja") or "").strip()
@@ -13731,8 +14413,10 @@ def _ia_treinamento_ppv_bloco_prompt(client_id: str, page: Optional[str], contex
 
     if not any([orientacoes, contexto_loja, compatibilidade, proibicoes, nota_sku, exemplos]):
         return ""
+    loja_label = str(data.get("loja") or loja_ctx or "").strip()
+    escopo = f" da loja {loja_label}" if loja_label else ""
     partes = [
-        f"\n\nOrientacoes salvas no treinamento de IA para {_ia_treinamento_ppv_tipo_label(tipo)}. "
+        f"\n\nOrientacoes salvas no treinamento de IA para {_ia_treinamento_ppv_tipo_label(tipo)}{escopo}. "
         "Use estas orientacoes ao simular ou redigir este tipo de resposta para clientes do Mercado Livre. "
         "Se houver conflito, preserve a verdade dos dados e as politicas do marketplace, mas adapte tom, estrutura e conteudo conforme abaixo:"
     ]
@@ -13810,6 +14494,29 @@ def _perguntas_loja_config_normalizar(config: dict | None = None) -> dict:
         "habilitar_pos_venda_automatico": bool(pos_venda_raw),
         "intervalo_minutos": intervalo_minutos,
     }
+
+
+def _perguntas_loja_config_obter(configs_lojas: dict, nome_loja: str) -> dict | None:
+    if not isinstance(configs_lojas, dict):
+        return None
+    if nome_loja in configs_lojas:
+        return configs_lojas.get(nome_loja)
+
+    nome_norm = _integracoes_nome_normalizado(nome_loja)
+    if not nome_norm:
+        return None
+    for chave, config in configs_lojas.items():
+        chave_texto = str(chave or "").strip()
+        candidatos = [chave_texto]
+        try:
+            corrigido = _corrigir_texto_mojibake(chave_texto)
+            if corrigido and corrigido not in candidatos:
+                candidatos.append(corrigido)
+        except Exception:
+            pass
+        if any(_integracoes_nome_normalizado(candidato) == nome_norm for candidato in candidatos):
+            return config
+    return None
 
 
 def _perguntas_loja_config_salvar(
@@ -14022,6 +14729,23 @@ def _perguntas_ia_limpar_resposta(texto: str) -> str:
     if len(resposta) > limite:
         resposta = resposta[: max(0, limite - 3)].rstrip() + "..."
     return resposta
+
+
+class PerguntasIARespostaIndisponivel(RuntimeError):
+    pass
+
+
+def _perguntas_ia_resposta_fallback_invalida(texto: str) -> bool:
+    normalizado = _favoritos_normalizar_sem_acentos(texto)
+    if not normalizado:
+        return False
+    sinais_fallback = (
+        "instabilidade momentanea" in normalizado,
+        "reformule em uma frase curta" in normalizado,
+        "gerar a resposta pela vertex ai" in normalizado,
+        "gerar a resposta completa agora" in normalizado,
+    )
+    return any(sinais_fallback)
 
 
 def _perguntas_ia_compactar_contexto(texto: str, limite: int) -> str:
@@ -14381,24 +15105,26 @@ def _perguntas_ia_gerar_resposta(
     payload = IAChatRequest(
         message=prompt,
         page="Perguntas e pÃ³s venda",
-        context={"modulo": "perguntas_pos_venda", "tipo": "resposta_automatica_ml", "produto": contexto},
+        context={"modulo": "perguntas_pos_venda", "tipo": "resposta_automatica_ml", "loja": loja, "produto": contexto},
         model=None,
     )
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
-        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_modelo_nome_curto(os.getenv('VERTEX_AI_MODEL') or 'gemini-2.5-flash')}"
+        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
-    elif _modelo_eh_gemini_api(model_req):
-        resposta = _chamar_gemini_chat(payload, client_id)
-        model_usado = _gemini_nome_curto(model_req) or _gemini_nome_curto(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash")
     else:
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
-    return _perguntas_ia_limpar_resposta(resposta), cfg, {**contexto, "model": model_usado}
+    resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+    if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
+        raise PerguntasIARespostaIndisponivel(
+            "IA indisponivel para responder esta pergunta. Resposta automatica bloqueada para nao enviar mensagem de erro ao comprador."
+        )
+    return resposta_limpa, cfg, {**contexto, "model": model_usado}
 
 
 def _perguntas_ia_enviar_resposta_ml(
@@ -14414,6 +15140,11 @@ def _perguntas_ia_enviar_resposta_ml(
         raise HTTPException(status_code=400, detail="ID da pergunta nao informado.")
     if not texto:
         raise HTTPException(status_code=400, detail="Resposta vazia.")
+    if _perguntas_ia_resposta_fallback_invalida(texto):
+        raise HTTPException(
+            status_code=400,
+            detail="Resposta de fallback da IA bloqueada. Gere uma nova resposta antes de enviar ao comprador.",
+        )
     resp, cfg = _ml_api_request(
         client_id,
         loja,
@@ -14576,8 +15307,10 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     model = _model_req if _model_req in _MODELOS_PERMITIDOS else _model_env
     mensagem = str(payload.message or "").strip()
     anexos = _ia_chat_normalizar_anexos(payload)
-    usa_contexto = _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
+    ctx_payload = payload.context if isinstance(payload.context, dict) else {}
+    modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    usa_contexto = False if modo_rapido else _ia_chat_usa_contexto_tela(mensagem, anexos)
+    if not modo_rapido and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
         usa_contexto = True
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
@@ -14599,40 +15332,47 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "content": content[:1500]})
 
-    system_prompt = (
-        "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
-        "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
-        "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
-        "Cumprimente de forma breve quando fizer sentido, sem exagero. "
-        "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
-        "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
-        "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
-        "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
-        "Evite respostas roboticas ou muito duras. "
-        "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
-        "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
-        "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
-        "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
-        "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
-        "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
-        "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
-        "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
-        "Quando comparar meses, perÃƒÂ­odos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
-        "Em comparaÃƒÂ§ÃƒÂµes financeiras, use colunas separadas como SKU, Produto, MÃƒÂªs/PerÃƒÂ­odo, Quantidade, Valor vendido, Valor devolvido e VariaÃƒÂ§ÃƒÂ£o; nÃ£o use barras verticais dentro de listas. "
-        "Nunca invente totais, SKUs, preÃ§os ou datas. "
-        "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
-        "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
-    )
-    system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-        mensagem,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
-    system_prompt += _ia_treinamento_ppv_bloco_prompt(
-        client_id,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
+    if modo_rapido:
+        system_prompt = (
+            "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
+            "de forma curta, humana e direta. Use o historico recente somente quando for necessario "
+            "para entender pedidos como repetir, confirmar ou continuar."
+        )
+    else:
+        system_prompt = (
+            "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
+            "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
+            "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
+            "Cumprimente de forma breve quando fizer sentido, sem exagero. "
+            "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
+            "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
+            "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
+            "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
+            "Evite respostas roboticas ou muito duras. "
+            "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
+            "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
+            "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
+            "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
+            "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
+            "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
+            "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
+            "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
+            "Quando comparar meses, perÃƒÂ­odos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
+            "Em comparaÃƒÂ§ÃƒÂµes financeiras, use colunas separadas como SKU, Produto, MÃƒÂªs/PerÃƒÂ­odo, Quantidade, Valor vendido, Valor devolvido e VariaÃƒÂ§ÃƒÂ£o; nÃ£o use barras verticais dentro de listas. "
+            "Nunca invente totais, SKUs, preÃ§os ou datas. "
+            "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
+            "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
+        )
+        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+            mensagem,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
+        system_prompt += _ia_treinamento_ppv_bloco_prompt(
+            client_id,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
 
     input_messages = [{"role": "system", "content": system_prompt}]
     input_messages.extend(historico)
@@ -14643,14 +15383,14 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
 
     contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if usa_contexto else ""
+    texto_estoque = _ia_estoque_texto(client_id) if (usa_contexto and _ia_chat_deve_anexar_estoque_contexto(mensagem)) else ""
     bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
     # SKUs vendidos no perÃƒÂ­odo lidos direto do banco de dados
     bloco_vendas = ""
     bloco_vendas_exato = ""
     bloco_web = ""
     bloco_funcoes = ""
-    if usa_contexto:
+    if usa_contexto and _ia_chat_deve_anexar_vendas_db_contexto(mensagem):
         try:
             ctx = payload.context if isinstance(payload.context, dict) else {}
             _v_ini = str(ctx.get("data_inicio") or "").strip()
@@ -14663,18 +15403,19 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         except Exception:
             bloco_vendas = ""
             bloco_vendas_exato = ""
-    if _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
+    if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
         try:
             texto_web = _ia_web_contexto(mensagem, client_id)
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    try:
-        texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-        bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-    except Exception as exc:
-        logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat OpenAI: {exc}")
-        bloco_funcoes = ""
+    if not modo_rapido:
+        try:
+            texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
+            bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
+        except Exception as exc:
+            logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat OpenAI: {exc}")
+            bloco_funcoes = ""
     contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
     bloco_contexto = f"{contexto_tela}{bloco_estoque}{bloco_vendas}{bloco_vendas_exato}{bloco_web}{bloco_funcoes}{contexto_recuperado}{resumo_anexos}" if (contexto_tela or bloco_estoque or bloco_vendas or bloco_vendas_exato or bloco_web or bloco_funcoes or contexto_recuperado or resumo_anexos) else ""
 
@@ -14718,16 +15459,20 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     input_messages.append({"role": "user", "content": user_content})
 
     try:
+        request_json = {
+            "model": model,
+            "input": input_messages,
+        }
+        if modo_rapido:
+            request_json["max_output_tokens"] = 360
         resp = requests.post(
             "https://api.openai.com/v1/responses",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": model,
-                "input": input_messages,
-            },
+            json=request_json,
+            verify=False,
             timeout=45,
         )
     except requests.RequestException as exc:
@@ -14780,8 +15525,10 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     model = _model_req if _model_req in _MODELOS_PERMITIDOS else "deepseek-v4-flash"
     mensagem = str(payload.message or "").strip()
     anexos = _ia_chat_normalizar_anexos(payload)
-    usa_contexto = _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
+    ctx_payload = payload.context if isinstance(payload.context, dict) else {}
+    modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    usa_contexto = False if modo_rapido else _ia_chat_usa_contexto_tela(mensagem, anexos)
+    if not modo_rapido and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
         usa_contexto = True
 
     if _ia_chat_tem_imagem(anexos):
@@ -14810,38 +15557,45 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "content": content[:1500]})
 
-    system_prompt = (
-        "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
-        "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
-        "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
-        "Cumprimente de forma breve quando fizer sentido, sem exagero. "
-        "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
-        "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
-        "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
-        "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
-        "Evite respostas roboticas ou muito duras. "
-        "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
-        "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
-        "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
-        "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
-        "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
-        "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
-        "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
-        "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
-        "Nunca invente totais, SKUs, preÃ§os ou datas. "
-        "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
-        "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
-    )
-    system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-        mensagem,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
-    system_prompt += _ia_treinamento_ppv_bloco_prompt(
-        client_id,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
+    if modo_rapido:
+        system_prompt = (
+            "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
+            "de forma curta, humana e direta. Use o historico recente somente quando for necessario "
+            "para entender pedidos como repetir, confirmar ou continuar."
+        )
+    else:
+        system_prompt = (
+            "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
+            "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
+            "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
+            "Cumprimente de forma breve quando fizer sentido, sem exagero. "
+            "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
+            "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
+            "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
+            "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
+            "Evite respostas roboticas ou muito duras. "
+            "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
+            "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
+            "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
+            "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
+            "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
+            "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
+            "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
+            "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
+            "Nunca invente totais, SKUs, preÃ§os ou datas. "
+            "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
+            "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
+        )
+        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+            mensagem,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
+        system_prompt += _ia_treinamento_ppv_bloco_prompt(
+            client_id,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(historico)
@@ -14853,13 +15607,13 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
 
     contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if usa_contexto else ""
+    texto_estoque = _ia_estoque_texto(client_id) if (usa_contexto and _ia_chat_deve_anexar_estoque_contexto(mensagem)) else ""
     bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
     bloco_vendas = ""
     bloco_vendas_exato = ""
     bloco_web = ""
     bloco_funcoes = ""
-    if usa_contexto:
+    if usa_contexto and _ia_chat_deve_anexar_vendas_db_contexto(mensagem):
         try:
             ctx = payload.context if isinstance(payload.context, dict) else {}
             texto_vendas = _ia_vendas_db_texto(
@@ -14874,18 +15628,19 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         except Exception:
             bloco_vendas = ""
             bloco_vendas_exato = ""
-    if _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
+    if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
         try:
             texto_web = _ia_web_contexto(mensagem, client_id)
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    try:
-        texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-        bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-    except Exception as exc:
-        logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat DeepSeek: {exc}")
-        bloco_funcoes = ""
+    if not modo_rapido:
+        try:
+            texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
+            bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
+        except Exception as exc:
+            logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat DeepSeek: {exc}")
+            bloco_funcoes = ""
     contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
     bloco_contexto = (
         f"{contexto_tela}{bloco_estoque}{bloco_vendas}{bloco_vendas_exato}{bloco_web}{bloco_funcoes}{contexto_recuperado}{resumo_anexos}"
@@ -14913,7 +15668,9 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
             json={
                 "model": model,
                 "messages": messages,
+                **({"max_tokens": 360} if modo_rapido else {}),
             },
+            verify=False,
             timeout=60,
         )
     except requests.RequestException as exc:
@@ -14940,213 +15697,9 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
 
 
 def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
-    _ia_validar_provedor_ativo("gemini")
-
-    def _resposta_fallback_simpatico(pergunta: str) -> str:
-        if not str(pergunta or "").strip():
-            return "Oi! Eu estou aqui para ajudar. Pode me enviar sua pergunta novamente."
-        return (
-            "Oi! Estou com uma instabilidade momentanea para gerar a resposta agora, "
-            "mas continuo disponivel para ajudar.\n\n"
-            "Se quiser, reformule em uma frase curta que eu tento novamente em seguida."
-        )
-
-    api_key = _obter_gemini_api_key()
-    if not api_key:
-        logger.warning("[IA] GEMINI_API_KEY ausente. Retornando fallback simpatico.")
-        return _resposta_fallback_simpatico(payload.message)
-
-    _model_env = _gemini_nome_curto(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash")
-    _model_req = _gemini_nome_curto(payload.model)
-    model = _model_req if (_model_req == GEMINI_31_FLASH_MODEL or _modelo_eh_gemini_api(_model_req)) else _model_env
-    mensagem = str(payload.message or "").strip()
-    anexos = _ia_chat_normalizar_anexos(payload)
-    usa_contexto = _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
-        usa_contexto = True
-
-    if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
-        return _ia_chat_resposta_saudacao(payload)
-
-    if not mensagem and not anexos:
-        raise HTTPException(status_code=400, detail="Mensagem vazia.")
-    if len(mensagem) > IA_CHAT_MESSAGE_MAX_CHARS:
-        logger.warning("[IA] Mensagem longa (%s chars) compactada antes do Gemini.", len(mensagem))
-        mensagem = _ia_compactar_mensagem_chat(mensagem)
-
-    rag_query = mensagem or " ".join([a.get("name") or "anexo" for a in (anexos or [])])
-    contexto_rag = _ia_rag_contexto(rag_query, client_id) if usa_contexto else ""
-
-    historico = []
-    for item in (payload.history or [])[-8:]:
-        role = "model" if item.get("role") == "assistant" else "user"
-        content = str(item.get("content") or "").strip()
-        if content:
-            historico.append({"role": role, "parts": [{"text": content[:1500]}]})
-
-    system_prompt = (
-        "VocÃƒÂª ÃƒÂ© o assistente IA do JK Sistema. Responda sempre em portuguÃƒÂªs do Brasil, "
-        "com tom simpÃƒÂ¡tico, cordial, humano e profissional. "
-        "Escreva como uma pessoa experiente ajudando outra pessoa, com linguagem natural e acolhedora. "
-        "Cumprimente de forma breve quando fizer sentido, sem exagero. "
-        "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
-        "Responda exatamente ao que o usuario pediu e nao antecipe analises extras. "
-        "Nao traga resumo automatico da tela, numeros ou listas se isso nao foi solicitado. "
-        "Se a mensagem for ambigua, curta ou genÃƒÂ©rica, responda de forma simples e natural, sem puxar dados da tela. "
-        "Evite respostas roboticas ou muito duras. "
-        "Prefira frases curtas, claras e diretas; use listas apenas quando realmente ajudarem. "
-        "Se a pergunta pedir explicaÃƒÂ§ÃƒÂ£o, explique de forma didÃƒÂ¡tica e prÃƒÂ¡tica. "
-        "Quando a pergunta for sobre o contexto da tela, use apenas os dados relevantes e diga se algo estiver faltando. "
-        "Quando houver anexos (imagens/arquivos), considere o conteÃƒÂºdo dos anexos na resposta. "
-        "Quando houver contexto de busca web, use essas fontes externas com cautela e deixe claro quando a informaÃƒÂ§ÃƒÂ£o veio da internet. "
-        "Se a resposta usar internet, cite ao final 2 a 4 fontes curtas com nome do site e, quando houver, a data publicada. "
-        "Se a pergunta pedir noticias do dia, priorize noticias recentes e mencione que se tratam de manchetes/resumos coletados na web. "
-        "Quando houver resultados de funÃƒÂ§ÃƒÂµes do backend, trate esses resultados como a fonte mais confiÃƒÂ¡vel para nÃƒÂºmeros e fatos operacionais. "
-        "Nunca invente totais, SKUs, preÃ§os ou datas. "
-        "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
-        "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
-    )
-    system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-        mensagem,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
-    system_prompt += _ia_treinamento_ppv_bloco_prompt(
-        client_id,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
-
-    pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
-    resumo_anexos = ""
-    if anexos:
-        itens = ", ".join([f"{a.get('name')} ({a.get('mime_type')})" for a in anexos])
-        resumo_anexos = f"\n\nAnexos enviados pelo usuÃƒÂ¡rio: {itens}"
-
-    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if usa_contexto else ""
-    bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
-    bloco_vendas = ""
-    bloco_vendas_exato = ""
-    bloco_web = ""
-    bloco_funcoes = ""
-    if usa_contexto:
-        try:
-            ctx = payload.context if isinstance(payload.context, dict) else {}
-            texto_vendas = _ia_vendas_db_texto(
-                client_id,
-                str(ctx.get("data_inicio") or "").strip(),
-                str(ctx.get("data_fim") or "").strip(),
-                str(ctx.get("loja") or "").strip(),
-            )
-            bloco_vendas = f"\n\n{texto_vendas}" if texto_vendas else ""
-            texto_vendas_exato = _ia_vendas_contexto_exato(mensagem, client_id, ctx)
-            bloco_vendas_exato = f"\n\n{texto_vendas_exato}" if texto_vendas_exato else ""
-        except Exception:
-            bloco_vendas = ""
-            bloco_vendas_exato = ""
-    if _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
-        try:
-            texto_web = _ia_web_contexto(mensagem, client_id)
-            bloco_web = f"\n\n{texto_web}" if texto_web else ""
-        except Exception:
-            bloco_web = ""
-    try:
-        texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-        bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-    except Exception as exc:
-        logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat Gemini: {exc}")
-        bloco_funcoes = ""
-    contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
-    bloco_contexto = (
-        f"{contexto_tela}{bloco_estoque}{bloco_vendas}{bloco_vendas_exato}{bloco_web}{bloco_funcoes}{contexto_recuperado}{resumo_anexos}"
-        if (contexto_tela or bloco_estoque or bloco_vendas or bloco_vendas_exato or bloco_web or bloco_funcoes or contexto_recuperado or resumo_anexos)
-        else ""
-    )
-
-    user_text = (
-        (f"{bloco_contexto}\n\n" if bloco_contexto else "")
-        + f"Pergunta do usuÃƒÂ¡rio:\n{pergunta_usuario}\n\n"
-        "InstruÃƒÂ§ÃƒÂ£o adicional: responda de forma humana e natural, com foco no que foi pedido "
-        "e destacando apenas as informaÃƒÂ§ÃƒÂµes mais relevantes. "
-        "Se a resposta comparar valores entre meses, perÃƒÂ­odos ou SKUs, use tabela Markdown com cabeÃƒÂ§alho e separador. "
-        "Nao inclua dados nao solicitados."
-    )
-
-    user_parts = [{"text": user_text}]
-    for anexo in anexos:
-        nome = str(anexo.get("name") or "anexo")
-        mime = str(anexo.get("mime_type") or "application/octet-stream")
-        if mime.startswith("image/"):
-            user_parts.append({
-                "inlineData": {
-                    "mimeType": mime,
-                    "data": anexo.get("data_base64"),
-                }
-            })
-            continue
-        texto_anexo = _ia_chat_extrair_texto_anexo(anexo)
-        if texto_anexo:
-            user_parts.append({"text": f"ConteÃƒÂºdo extraÃƒÂ­do do arquivo '{nome}':\n{texto_anexo}"})
-        else:
-            user_parts.append({
-                "text": (
-                    f"Arquivo '{nome}' anexado com tipo '{mime}', porÃƒÂ©m sem extraÃƒÂ§ÃƒÂ£o automÃƒÂ¡tica disponÃƒÂ­vel. "
-                    "Considere este contexto ao orientar o usuÃƒÂ¡rio."
-                )
-            })
-
-    contents = list(historico)
-    contents.append({"role": "user", "parts": user_parts})
-
-    try:
-        resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            params={"key": api_key},
-            headers={"Content-Type": "application/json"},
-            json={
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": contents,
-                "generationConfig": {},
-            },
-            timeout=60,
-        )
-    except requests.RequestException as exc:
-        logger.warning(f"[IA] Falha de conexÃƒÂ£o com Gemini: {exc}")
-        return _resposta_fallback_simpatico(mensagem)
-
-    if not resp.ok:
-        detail = "Falha ao chamar o Gemini."
-        try:
-            erro = resp.json().get("error") or {}
-            if erro.get("message"):
-                detail = str(erro.get("message"))
-        except Exception:
-            pass
-        logger.warning(f"[IA] Gemini HTTP {resp.status_code}: {detail}")
-        return _resposta_fallback_simpatico(mensagem)
-
-    try:
-        partes = resp.json()["candidates"][0]["content"]["parts"]
-        trechos_texto = []
-        retornou_midia = False
-        for parte in partes:
-            texto_parte = str(parte.get("text") or "").strip()
-            if texto_parte:
-                trechos_texto.append(texto_parte)
-                continue
-            if parte.get("inlineData") or parte.get("fileData"):
-                retornou_midia = True
-        texto = "\n".join(trechos_texto).strip()
-    except (KeyError, IndexError, TypeError):
-        logger.warning("[IA] Gemini retornou sem texto. Usando fallback simpatico.")
-        return _resposta_fallback_simpatico(mensagem)
-    if not texto and retornou_midia:
-        return (
-            f"O modelo {model} respondeu com saÃƒÂ­da de mÃƒÂ­dia, mas este chat ainda exibe apenas texto. "
-            "Se quiser, eu posso adaptar a interface para mostrar imagens, ÃƒÂ¡udio ou outros arquivos gerados por esses modelos."
-        )
-    return texto or _resposta_fallback_simpatico(mensagem)
+    payload.model = _normalizar_ia_modelo_padrao(payload.model or _ia_modelo_chat_configurado())
+    logger.info("[IA] Provedor Gemini direto desativado; redirecionando para Vertex AI.")
+    return _chamar_vertex_ai_chat(payload, client_id)
 
 
 def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
@@ -15161,11 +15714,13 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
             "Se quiser, reformule em uma frase curta que eu tento novamente em seguida."
         )
 
-    model = _vertex_modelo_nome_curto(payload.model) or _vertex_modelo_nome_curto(os.getenv("VERTEX_AI_MODEL") or "gemini-2.5-flash")
+    model = _vertex_modelo_nome_curto(payload.model) or _vertex_ai_modelo_padrao()
     mensagem = str(payload.message or "").strip()
     anexos = _ia_chat_normalizar_anexos(payload)
-    usa_contexto = _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
+    ctx_payload = payload.context if isinstance(payload.context, dict) else {}
+    modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    usa_contexto = False if modo_rapido else _ia_chat_usa_contexto_tela(mensagem, anexos)
+    if not modo_rapido and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
         usa_contexto = True
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
@@ -15178,7 +15733,7 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
     try:
-        token, project_id = _vertex_ai_auth()
+        headers, project_id = _vertex_ai_headers_e_project()
     except Exception as exc:
         logger.warning(f"[IA] Credenciais Vertex AI indisponiveis: {exc}")
         return _resposta_fallback_simpatico(mensagem)
@@ -15197,27 +15752,34 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "parts": [{"text": content[:1500]}]})
 
-    system_prompt = (
-        "Voce e o assistente IA do JK Sistema. Responda sempre em portugues do Brasil, "
-        "com tom simpatico, cordial, humano e profissional. "
-        "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
-        "Responda exatamente ao que o usuario pediu e nao invente totais, SKUs, precos ou datas. "
-        "Quando houver contexto de busca web, use essas fontes externas com cautela, deixe claro quando a informacao veio da internet "
-        "e cite de 2 a 4 fontes curtas quando a resposta depender desses resultados. "
-        "Quando houver resultados de funcoes do backend, trate esses resultados como a fonte mais confiavel. "
-        "Quando comparar meses, periodos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
-        "Se houver anexos, considere o conteudo deles. Seja claro, acionavel e focado."
-    )
-    system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-        mensagem,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
-    system_prompt += _ia_treinamento_ppv_bloco_prompt(
-        client_id,
-        payload.page,
-        payload.context if isinstance(payload.context, dict) else None,
-    )
+    if modo_rapido:
+        system_prompt = (
+            "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
+            "de forma curta, humana e direta. Use o historico recente somente quando for necessario "
+            "para entender pedidos como repetir, confirmar ou continuar."
+        )
+    else:
+        system_prompt = (
+            "Voce e o assistente IA do JK Sistema. Responda sempre em portugues do Brasil, "
+            "com tom simpatico, cordial, humano e profissional. "
+            "Quando o contexto informar o nome do usuario, use esse nome de forma natural para manter continuidade. "
+            "Responda exatamente ao que o usuario pediu e nao invente totais, SKUs, precos ou datas. "
+            "Quando houver contexto de busca web, use essas fontes externas com cautela, deixe claro quando a informacao veio da internet "
+            "e cite de 2 a 4 fontes curtas quando a resposta depender desses resultados. "
+            "Quando houver resultados de funcoes do backend, trate esses resultados como a fonte mais confiavel. "
+            "Quando comparar meses, periodos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
+            "Se houver anexos, considere o conteudo deles. Seja claro, acionavel e focado."
+        )
+        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+            mensagem,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
+        system_prompt += _ia_treinamento_ppv_bloco_prompt(
+            client_id,
+            payload.page,
+            payload.context if isinstance(payload.context, dict) else None,
+        )
 
     pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
     resumo_anexos = ""
@@ -15226,13 +15788,13 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         resumo_anexos = f"\n\nAnexos enviados pelo usuario: {itens}"
 
     contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if usa_contexto else ""
-    texto_estoque = _ia_estoque_texto(client_id) if usa_contexto else ""
+    texto_estoque = _ia_estoque_texto(client_id) if (usa_contexto and _ia_chat_deve_anexar_estoque_contexto(mensagem)) else ""
     bloco_estoque = f"\n\n{texto_estoque}" if texto_estoque else ""
     bloco_vendas = ""
     bloco_vendas_exato = ""
     bloco_web = ""
     bloco_funcoes = ""
-    if usa_contexto:
+    if usa_contexto and _ia_chat_deve_anexar_vendas_db_contexto(mensagem):
         try:
             ctx = payload.context if isinstance(payload.context, dict) else {}
             texto_vendas = _ia_vendas_db_texto(
@@ -15247,18 +15809,19 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         except Exception:
             bloco_vendas = ""
             bloco_vendas_exato = ""
-    if _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
+    if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
         try:
             texto_web = _ia_web_contexto(mensagem, client_id)
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    try:
-        texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
-        bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
-    except Exception as exc:
-        logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat Vertex AI: {exc}")
-        bloco_funcoes = ""
+    if not modo_rapido:
+        try:
+            texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
+            bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
+        except Exception as exc:
+            logger.warning(f"[IA TOOLS] Falha ao executar funcoes no chat Vertex AI: {exc}")
+            bloco_funcoes = ""
 
     contexto_recuperado = f"\n\nContexto recuperado por busca semantica:\n{contexto_rag}" if contexto_rag else ""
     bloco_contexto = (
@@ -15297,14 +15860,11 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     try:
         resp = requests.post(
             url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json={
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": contents,
-                "generationConfig": {},
+                "generationConfig": _vertex_generation_config(model, modo_rapido=modo_rapido),
             },
             verify=False,
             timeout=60,
@@ -15394,6 +15954,29 @@ def _usuario_pode_escolher_modelo_chat(request: Request, client_id: str) -> bool
         return False
 
 
+def _payload_sessao_por_authorization(authorization: Optional[str]) -> dict:
+    if not authorization or not str(authorization).startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Token de autenticação ausente. Faça o login novamente.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = str(authorization)[len("Bearer "):].strip()
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Sessão expirada ou inválida. Faça o login novamente.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    username = str(payload.get("sub") or "").strip().lower()
+    client_id = str(payload.get("client_id") or "").strip()
+    if not username or not client_id:
+        raise HTTPException(status_code=401, detail="Sessão inválida. Faça o login novamente.")
+    return {"username": username, "client_id": client_id}
+
+
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
     """Extrai o client_id do JWT e valida a permissÃƒÂ£o do mÃƒÂ³dulo acessado."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -15427,8 +16010,15 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
         )
 
 @app.post("/api/ia/chat")
-async def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+    perf_t0 = time.perf_counter()
     contexto = payload.context if isinstance(payload.context, dict) else {}
+    mensagem_original = str(payload.message or "").strip()
+    modo_rapido_sidebar = bool(isinstance(contexto, dict) and contexto.get("modo_rapido_sidebar")) or _ia_chat_eh_pedido_rapido_sidebar(
+        mensagem_original,
+        contexto if isinstance(contexto, dict) else {},
+        payload.attachments or [],
+    )
     username = _extrair_username_do_request(request)
     nome_usuario = _ia_nome_usuario(client_id, username) if username else ""
     if username or nome_usuario:
@@ -15442,9 +16032,10 @@ async def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Dep
             f"Chame o usuario pelo nome '{nome_usuario or username}' quando for natural, "
             "sem repetir o nome em toda frase. Use a memoria de conversas do usuario para manter continuidade."
         )
-        memoria_usuario = _ia_conversas_contexto_usuario(client_id, username)
-        if memoria_usuario:
-            contexto["memoria_conversas_usuario"] = memoria_usuario
+        if not modo_rapido_sidebar:
+            memoria_usuario = _ia_conversas_contexto_usuario(client_id, username)
+            if memoria_usuario:
+                contexto["memoria_conversas_usuario"] = memoria_usuario
         payload.context = contexto
 
     resumo_historico = _ia_chat_resumo_historico(payload.history, limite=10)
@@ -15452,44 +16043,47 @@ async def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Dep
         contexto = dict(contexto)
         contexto["historico_recente"] = resumo_historico
         payload.context = contexto
+    if modo_rapido_sidebar:
+        contexto = dict(contexto)
+        contexto["modo_rapido_sidebar"] = True
+        payload.context = contexto
 
     try:
         payload_execucao = payload.model_copy(deep=True)
     except AttributeError:
         payload_execucao = payload.copy(deep=True)
-    payload_execucao.message = _ia_chat_mensagem_contextual(payload)
+    payload_execucao.message = mensagem_original if modo_rapido_sidebar else _ia_chat_mensagem_contextual(payload)
 
-    try:
-        payload.tool_results = _ia_chat_executar_funcoes(payload_execucao, client_id)
-    except Exception as exc:
-        logger.warning(f"[IA TOOLS] Falha ao preparar funcoes do chat: {exc}")
+    perf_tools_t0 = time.perf_counter()
+    if modo_rapido_sidebar:
         payload.tool_results = []
-    pode_escolher_modelo = _usuario_pode_escolher_modelo_chat(request, client_id)
-    model_req = (
-        str(payload.model or "").strip()
-        if pode_escolher_modelo and str(payload.model or "").strip()
-        else _ia_modelo_chat_configurado()
-    )
+    else:
+        try:
+            payload.tool_results = _ia_chat_executar_funcoes(payload_execucao, client_id)
+        except Exception as exc:
+            logger.warning(f"[IA TOOLS] Falha ao preparar funcoes do chat: {exc}")
+            payload.tool_results = []
+    perf_tools = time.perf_counter() - perf_tools_t0
+    model_req = str(payload.model or "").strip() or _ia_modelo_chat_configurado()
     model_req = _normalizar_ia_modelo_padrao(model_req)
     payload.model = model_req
     # GeraÃƒÂ§ÃƒÂ£o de imagem deve considerar apenas a mensagem atual.
     # O payload_execucao inclui histÃƒÂ³rico recente e pode herdar pedidos antigos como "gere uma imagem".
     resposta_imagem = _ia_gerar_imagem_sku_resposta(payload, client_id)
+    perf_provider_t0 = time.perf_counter()
     if resposta_imagem:
         resposta = resposta_imagem
         model_usado = (os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip()
     elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
-        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_modelo_nome_curto(os.getenv('VERTEX_AI_MODEL') or 'gemini-2.5-flash')}"
+        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
-    elif _modelo_eh_gemini_api(model_req):
-        resposta = _chamar_gemini_chat(payload, client_id)
-        model_usado = _gemini_nome_curto(model_req) or _gemini_nome_curto(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash")
     else:
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
+    perf_provider = time.perf_counter() - perf_provider_t0
 
     conversa_id = str(payload.conversa_id or "").strip()
     modulo = str(payload.modulo or payload.page or "assistente").strip() or "assistente"
@@ -15519,6 +16113,19 @@ async def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Dep
         except Exception as exc:
             logger.warning(f"[IA] Falha ao salvar conversa no /api/ia/chat: {exc}")
 
+    perf_total = time.perf_counter() - perf_t0
+    if perf_total >= 2.5:
+        logger.info(
+            "[IA CHAT PERF] model=%s fast=%s tools=%.2fs provider=%.2fs total=%.2fs tools_count=%s page=%s",
+            model_usado,
+            modo_rapido_sidebar,
+            perf_tools,
+            perf_provider,
+            perf_total,
+            len(payload.tool_results or []),
+            str(payload.page or "")[:80],
+        )
+
     return {
         "success": True,
         "model": model_usado,
@@ -15543,7 +16150,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             {"name": "deepseek-v4-flash", "display_name": "DS V4 Flash"},
             {"name": "deepseek-v4-pro", "display_name": "DS V4 Pro"},
         ],
-        "gemini": _listar_modelos_gemini_api(),
+        "gemini": [],
         "vertex": _listar_modelos_vertex_ai(),
         "defaults": {
             "sistema": _ia_modelo_padrao_configurado(),
@@ -15553,12 +16160,16 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             "favoritos_usar_imagem": _ia_favoritos_usar_imagem_configurado(),
             "openai_ativa": _ia_provedor_ativo("openai"),
             "deepseek_ativa": _ia_provedor_ativo("deepseek"),
-            "gemini_ativa": _ia_provedor_ativo("gemini"),
+            "gemini_ativa": False,
             "vertex_ativa": _ia_provedor_ativo("vertex"),
             "openai": (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip(),
             "deepseek": "deepseek-v4-flash",
-            "gemini": _gemini_nome_curto(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"),
-            "vertex": f"vertex:{_vertex_modelo_nome_curto(os.getenv('VERTEX_AI_MODEL') or 'gemini-2.5-flash')}",
+            "gemini": "",
+            "vertex": f"vertex:{_vertex_ai_modelo_padrao()}",
+            "vertex_project_id": _vertex_ai_project_id_configurado(),
+            "vertex_location": _vertex_ai_location(),
+            "vertex_service_account_email": _vertex_ai_service_account_email(),
+            "agent_api_key_configurada": bool(_vertex_ai_agent_api_key()),
         },
     }
 
@@ -15752,9 +16363,10 @@ def auth_bling_exchange(client_id, client_secret, code, redirect_uri=None):
     headers = {
         "Authorization": f"Basic {base64.b64encode(credential.encode()).decode()}",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "enable-jwt": "1",
     }
-    redirect_final = _resolver_redirect_uri_publica(saved_redirect_uri=redirect_uri)
+    redirect_final = _resolver_redirect_uri_bling(saved_redirect_uri=redirect_uri)
     payload = {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_final}
     try:
         resp = BLING_SESSION.post(url, headers=headers, data=payload, timeout=20)
@@ -15831,7 +16443,8 @@ def _bling_refresh_token(client_id, client_secret, refresh_token):
     headers = {
         "Authorization": f"Basic {base64.b64encode(credential.encode()).decode()}",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "enable-jwt": "1",
     }
     payload = {"grant_type": "refresh_token", "refresh_token": refresh_token}
     try:
@@ -15872,7 +16485,7 @@ def _bling_refresh_token(client_id, client_secret, refresh_token):
     ):
         raise HTTPException(
             status_code=401,
-            detail="Token Bling expirado para esta loja. RefaÃƒÂ§a a conexÃƒÂ£o em IntegraÃƒÂ§ÃƒÂµes para continuar.",
+            detail="Token Bling expirado para esta loja. Refaça a conexão em Integrações para continuar.",
         )
 
     raise HTTPException(
@@ -16313,15 +16926,27 @@ def _resolver_nome_loja_virtual(mapa_cliente: dict, loja_id: str = "", unidade_i
     oficial = _normalizar_nome_loja_virtual_candidato(nome_oficial)
     inter = _normalizar_nome_loja_virtual_candidato(intermediador_nome)
     canal_norm = _normalizar_nome_loja_virtual_candidato(canal)
+    nomes_genericos = {"MERCADO LIVRE", "BALCAO/PAINEL", "BALCAO PAINEL", "BALCAO"}
+
+    def _eh_generico(nome: str) -> bool:
+        norm = _normalizar_texto(nome)
+        if norm in nomes_genericos:
+            return True
+        compacto = re.sub(r"[^A-Z0-9]+", "", norm)
+        if compacto == "MERCADOLIVRE":
+            return True
+        if compacto.startswith("BALC") and compacto.endswith("PAINEL"):
+            return True
+        return False
 
     # Prioriza nomes oficiais vindos das informaÃƒÂ§ÃƒÂµes da venda/NF.
-    if oficial:
+    if oficial and not _eh_generico(oficial):
         return oficial
 
-    if inter:
+    if inter and not _eh_generico(inter):
         return inter
 
-    if canal_norm and _normalizar_texto(canal_norm) not in ("BALCAO/PAINEL",):
+    if canal_norm and not _eh_generico(canal_norm):
         return canal_norm
 
     if loja_id and mapa_loja_id.get(loja_id):
@@ -16335,7 +16960,7 @@ def _resolver_nome_loja_virtual(mapa_cliente: dict, loja_id: str = "", unidade_i
     if cnpj_norm and mapa_cnpj.get(cnpj_norm):
         return str(mapa_cnpj.get(cnpj_norm)).strip()
 
-    if canal and str(canal).strip() and str(canal).strip().lower() not in ("balcÃƒÂ£o/painel", "balcao/painel"):
+    if canal and str(canal).strip() and not _eh_generico(str(canal).strip()):
         return str(canal).strip()
 
     return ""
@@ -16448,12 +17073,31 @@ def _classificar_unidade_virtual_devolucao(
 ) -> str:
     """Classifica devoluÃƒÂ§ÃƒÂµes por regra de negÃƒÂ³cio e loja, com persistÃƒÂªncia consistente."""
     loja_norm = _normalizar_texto(loja_conta)
+    unidade_limpa = _remover_prefixo_unidade_nome(unidade_virtual)
+    unidade_norm = _normalizar_texto(unidade_limpa)
+
+    if _devolucao_deve_ir_para_ml_full(unidade_limpa, natureza_operacao):
+        return "Mercado Livre Full"
+
+    unidades_genericas = {
+        "",
+        "MERCADO LIVRE",
+        "MERCADO LIVRE - LOJA",
+        "MERCADO LIVRE LOJA",
+        "BALCAO/PAINEL",
+        "BALCAO PAINEL",
+    }
+    if unidade_limpa and unidade_norm not in unidades_genericas and not _eh_unidade_sintetica_sistema(unidade_limpa):
+        return unidade_limpa
 
     if "IMPORTS" in loja_norm:
         return "Carlos Jose"
-
-    if _devolucao_deve_ir_para_ml_full(unidade_virtual, natureza_operacao):
-        return "Mercado Livre Full"
+    if "CARLOS" in loja_norm:
+        return "Carlos Jose"
+    if "DECKAS" in loja_norm:
+        return "Deckas"
+    if "UAI" in loja_norm or "MINEIRINHO" in loja_norm:
+        return "Uai Mineirinho"
 
     return "JK PEÃƒâ€¡AS LTDA"
 
@@ -16901,10 +17545,25 @@ def _sql_filtro_loja_vendas(loja: str):
     return f" AND {sql_match}", params
 
 
+def _slug_loja_para_arquivo(loja: str) -> str:
+    texto = str(loja or "").strip().lower()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    texto = re.sub(r"[^a-z0-9]+", "_", texto)
+    return texto.strip("_") or "loja"
+
+
 def _get_vendas_db_path(client_id: str, loja: str = None) -> str:
     tenant_path = get_tenant_path(client_id)
     if loja and str(loja).strip() and str(loja).strip() != "__todas":
-        slug = _slug_loja_para_arquivo(loja)
+        slug_fn = globals().get("_slug_loja_para_arquivo")
+        if callable(slug_fn):
+            slug = slug_fn(loja)
+        else:
+            texto = str(loja or "").strip().lower()
+            texto = unicodedata.normalize("NFKD", texto)
+            texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+            slug = re.sub(r"[^a-z0-9]+", "_", texto).strip("_") or "loja"
         return os.path.join(tenant_path, f"vendas_historico_{slug}.db")
     return os.path.join(tenant_path, "vendas_historico.db")
 
@@ -17240,6 +17899,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                     if unidade_id:
                         loja_virtual = _bling_buscar_unidade_negocio(access_token, unidade_id, unidades_cache, unidades_mapeamento)
 
+            loja_virtual_por_unidade = loja_virtual
             intermediador = venda.get("intermediador") or {}
             if isinstance(intermediador, dict):
                 intermediador_nome = _normalizar_nome_loja_virtual_candidato(intermediador.get("nomeUsuario"))
@@ -17250,7 +17910,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                 mapa_lojas_cliente,
                 loja_id=loja_virtual_id,
                 unidade_id=str(unidade_id or ""),
-                nome_oficial=loja_virtual_nome,
+                nome_oficial=loja_virtual_nome or loja_virtual_por_unidade,
                 intermediador_nome=intermediador_nome,
                 intermediador_cnpj=intermediador_cnpj,
                 canal=canal,
@@ -17331,7 +17991,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
     return registros, 200
 
 def _bling_listar_naturezas(access_token: str):
-    url = "https://www.bling.com.br/Api/v3/naturezas-operacoes"
+    url = "https://api.bling.com.br/Api/v3/naturezas-operacoes"
     headers = {"Authorization": f"Bearer {access_token}"}
     natureza_map = {}
     pagina = 1
@@ -17380,7 +18040,7 @@ def _normalizar_texto(texto: str):
 
 def _bling_obter_detalhes_nf(access_token: str, nf_id: str):
     """ObtÃƒÆ’Ã‚Â©m os detalhes de uma NF especÃƒÆ’Ã‚Â­fica incluindo itens"""
-    url = f"https://www.bling.com.br/Api/v3/nfe/{nf_id}"
+    url = f"https://api.bling.com.br/Api/v3/nfe/{nf_id}"
     headers = {"Authorization": f"Bearer {access_token}"}
     
     try:
@@ -17446,13 +18106,19 @@ def _extrair_codigo_origem_nf(nf_obj: dict) -> str:
 
 
 def _bling_listar_notas_entrada(access_token: str, data_inicio: str, data_fim: str, naturezas_map: dict, client_id: str = None):
-    url = "https://www.bling.com.br/Api/v3/nfe"
+    url = "https://api.bling.com.br/Api/v3/nfe"
     headers = {"Authorization": f"Bearer {access_token}"}
     registros = []
     itens = []
     pagina = 1
     tentativas_429 = 0
     limiter = _BlingAdaptiveLimiter(start_interval=0.08)
+    mapa_lojas_cliente = {}
+    if client_id:
+        try:
+            mapa_lojas_cliente = _carregar_mapeamento_lojas_virtuais_cliente(client_id)
+        except Exception:
+            mapa_lojas_cliente = {}
     
     while True:
         # Verificar cancelamento antes de cada requisiÃƒÂ§ÃƒÂ£o
@@ -17524,17 +18190,36 @@ def _bling_listar_notas_entrada(access_token: str, data_inicio: str, data_fim: s
             loja_nf = nf.get("loja") or {}
             unidade_nf = ""
             loja_desc_nf = ""
+            loja_id_nf = ""
+            unidade_id_nf = ""
             if isinstance(loja_nf, dict):
+                loja_id_nf = str(loja_nf.get("id") or "").strip()
                 unidade_obj = loja_nf.get("unidadeNegocio") or {}
                 if isinstance(unidade_obj, dict):
+                    unidade_id_nf = str(unidade_obj.get("id") or "").strip()
                     unidade_nf = str(unidade_obj.get("nome") or unidade_obj.get("descricao") or "").strip()
                 loja_desc_nf = str(loja_nf.get("descricao") or "").strip()
                 if not unidade_nf:
                     unidade_nf = loja_desc_nf
+            intermediador_nf = nf.get("intermediador") or {}
+            intermediador_nome_nf = ""
+            intermediador_cnpj_nf = ""
+            if isinstance(intermediador_nf, dict):
+                intermediador_nome_nf = _normalizar_nome_loja_virtual_candidato(intermediador_nf.get("nomeUsuario"))
+                intermediador_cnpj_nf = str(intermediador_nf.get("cnpj") or "").strip()
+            unidade_resolvida_nf = _resolver_nome_loja_virtual(
+                mapa_lojas_cliente,
+                loja_id=loja_id_nf,
+                unidade_id=unidade_id_nf,
+                nome_oficial=unidade_nf or loja_desc_nf,
+                intermediador_nome=intermediador_nome_nf,
+                intermediador_cnpj=intermediador_cnpj_nf,
+                canal=loja_desc_nf,
+            )
 
             devolucao = _eh_devolucao_nota_entrada(natureza_desc, unidade_nf, loja_desc_nf, finalidade_desc)
             origem_codigo = _extrair_codigo_origem_nf(nf)
-            unidade_virtual = _normalizar_unidade_devolucao_entrada(unidade_nf, natureza_desc, loja_desc_nf)
+            unidade_virtual = _normalizar_unidade_devolucao_entrada(unidade_resolvida_nf or unidade_nf, natureza_desc, loja_desc_nf)
 
             registros.append({
                 "id": nid,
@@ -17601,7 +18286,7 @@ def _bling_listar_vendas_fallback_nf_saida(
     mapa_lojas_cliente: dict = None,
 ):
     """Fallback: monta vendas a partir de NF-e de saÃƒÂ­da (tipo=1), ÃƒÂºtil para operaÃƒÂ§ÃƒÂµes Fulfillment."""
-    url = "https://www.bling.com.br/Api/v3/nfe"
+    url = "https://api.bling.com.br/Api/v3/nfe"
     headers = {"Authorization": f"Bearer {access_token}"}
     registros = []
     pagina = 1
@@ -17649,6 +18334,8 @@ def _bling_listar_vendas_fallback_nf_saida(
             raise HTTPException(status_code=502, detail="Falha de conexÃƒÂ£o ao listar NFe de saÃƒÂ­da.")
         if resp.status_code == 401:
             return None, 401
+        if resp.status_code == 403:
+            return [], 403
         if resp.status_code == 429:
             tentativas_429 += 1
             if tentativas_429 >= 3:
@@ -17695,6 +18382,8 @@ def _bling_listar_vendas_fallback_nf_saida(
             detalhe, status_det = _bling_obter_detalhes_nf(access_token, nf_id)
             if status_det == 401:
                 return None, 401
+            if status_det == 403:
+                return [], 403
             if status_det == 429:
                 time.sleep(1)
                 continue
@@ -18119,6 +18808,10 @@ def _normalizar_data_sistema(valor) -> Optional[str]:
     return texto
 
 
+def _normalizar_email(valor) -> str:
+    return str(valor or "").strip().lower()
+
+
 def _hash_password_se_preciso(password: str) -> str:
     senha = str(password or "").strip()
     if not senha:
@@ -18148,6 +18841,7 @@ def _init_auth_db():
                 username TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
                 name TEXT NOT NULL,
+                email TEXT,
                 client_id TEXT NOT NULL,
                 permissions_json TEXT NOT NULL DEFAULT '{}',
                 active INTEGER NOT NULL DEFAULT 1,
@@ -18176,12 +18870,15 @@ def _init_auth_db():
             """
         )
         colunas = {str(row['name']) for row in conn.execute("PRAGMA table_info(usuarios_auth)").fetchall()}
+        if 'email' not in colunas:
+            cur.execute("ALTER TABLE usuarios_auth ADD COLUMN email TEXT")
         if 'max_machines' not in colunas:
             cur.execute("ALTER TABLE usuarios_auth ADD COLUMN max_machines INTEGER NOT NULL DEFAULT 1")
         if 'machine_ids_json' not in colunas:
             cur.execute("ALTER TABLE usuarios_auth ADD COLUMN machine_ids_json TEXT NOT NULL DEFAULT '[]'")
         if 'user_number' not in colunas:
             cur.execute("ALTER TABLE usuarios_auth ADD COLUMN user_number INTEGER")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_auth_email ON usuarios_auth(email)")
         conn.commit()
     finally:
         conn.close()
@@ -18213,6 +18910,7 @@ def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
             if not username_norm or not senha:
                 continue
             nome = str(item.get("name") or username_norm).strip()
+            email = _normalizar_email(item.get("email") or item.get("google_email"))
             client_id = str(item.get("client_id") or "default").strip() or "default"
             permissoes = _normalizar_permissoes(item.get("permissions") or {})
             active = 1 if item.get("active", True) else 0
@@ -18223,13 +18921,14 @@ def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
             cur.execute(
                 """
                 INSERT INTO usuarios_auth (
-                    username, password, name, client_id, permissions_json,
+                    username, password, name, email, client_id, permissions_json,
                     active, valid_until, machine_id, max_machines, machine_ids_json,
                     source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(username) DO UPDATE SET
                     password=excluded.password,
                     name=excluded.name,
+                    email=excluded.email,
                     client_id=excluded.client_id,
                     permissions_json=excluded.permissions_json,
                     active=excluded.active,
@@ -18244,6 +18943,7 @@ def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
                     username_norm,
                     senha,
                     nome,
+                    email,
                     client_id,
                     json.dumps(permissoes, ensure_ascii=False),
                     active,
@@ -18281,7 +18981,7 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
     try:
         rows = conn.execute(
             """
-            SELECT username, password, name, client_id, permissions_json,
+            SELECT username, password, name, email, client_id, permissions_json,
                    active, valid_until, machine_id, max_machines, machine_ids_json, source, user_number
             FROM usuarios_auth
             ORDER BY user_number, username
@@ -18291,18 +18991,78 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
             return None, []
 
         usuarios = {}
+        cache_lookup_loaded = False
+        cache_usuarios = {}
+        cache_headers = []
+        local_lookup_loaded = False
+        local_usuarios = {}
+        local_headers = []
+        permissoes_reparadas = 0
+
+        def _fallback_permissoes_armazenadas(username_norm: str) -> Optional[dict]:
+            nonlocal cache_lookup_loaded, cache_usuarios, cache_headers, local_lookup_loaded, local_usuarios, local_headers
+
+            if not cache_lookup_loaded:
+                cache_lookup_loaded = True
+                cache_usuarios, cache_headers = _carregar_cache_usuarios()
+                if not isinstance(cache_usuarios, dict):
+                    cache_usuarios = {}
+                    cache_headers = []
+
+            item_cache = cache_usuarios.get(username_norm) if isinstance(cache_usuarios, dict) else None
+            if isinstance(item_cache, dict):
+                if isinstance(item_cache.get("permissions"), dict):
+                    permissoes_cache = _normalizar_permissoes(item_cache.get("permissions") or {})
+                    if any(permissoes_cache.values()):
+                        return permissoes_cache
+                if item_cache.get("original_row"):
+                    permissoes_cache = extrair_permissoes(item_cache.get("original_row") or [], cache_headers or [])
+                    if any(permissoes_cache.values()):
+                        return permissoes_cache
+
+            if not local_lookup_loaded:
+                local_lookup_loaded = True
+                local_usuarios, local_headers = _carregar_usuarios_local()
+                if not isinstance(local_usuarios, dict):
+                    local_usuarios = {}
+                    local_headers = []
+
+            item_local = local_usuarios.get(username_norm) if isinstance(local_usuarios, dict) else None
+            if isinstance(item_local, dict) and isinstance(item_local.get("permissions"), dict):
+                permissoes_local = _normalizar_permissoes(item_local.get("permissions") or {})
+                if any(permissoes_local.values()):
+                    return permissoes_local
+
+            return None
+
         for i, row in enumerate(rows, start=1):
             try:
                 permissoes = json.loads(str(row["permissions_json"] or "{}"))
             except Exception:
                 permissoes = {}
+            username_norm = str(row["username"] or "").strip().lower()
+            permissoes_norm = _normalizar_permissoes(permissoes)
+            if not any(permissoes_norm.values()):
+                permissoes_fallback = _fallback_permissoes_armazenadas(username_norm)
+                if isinstance(permissoes_fallback, dict) and any(permissoes_fallback.values()):
+                    permissoes_norm = _normalizar_permissoes(permissoes_fallback)
+                    conn.execute(
+                        "UPDATE usuarios_auth SET permissions_json = ?, updated_at = ? WHERE username = ?",
+                        (
+                            json.dumps(permissoes_norm, ensure_ascii=False),
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            username_norm,
+                        )
+                    )
+                    permissoes_reparadas += 1
             machine_id = str(row["machine_id"] or "").strip() or None
             machine_ids = _normalizar_lista_maquinas(row["machine_ids_json"], machine_id)
-            usuarios[str(row["username"] or "").strip().lower()] = {
+            usuarios[username_norm] = {
                 "password": str(row["password"] or ""),
                 "name": str(row["name"] or row["username"] or ""),
+                "email": _normalizar_email(row["email"]),
                 "client_id": str(row["client_id"] or "default"),
-                "permissions": _normalizar_permissoes(permissoes),
+                "permissions": permissoes_norm,
                 "original_row": [],
                 "row_index": i,
                 "source": str(row["source"] or "sql"),
@@ -18313,6 +19073,9 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
                 "max_machines": _normalizar_max_machines(row["max_machines"]),
                 "user_number": int(row["user_number"]) if row["user_number"] is not None else None,
             }
+        if permissoes_reparadas:
+            conn.commit()
+            logger.warning("[LOGIN] Permissoes SQL reparadas a partir do cache/local: %s usuario(s).", permissoes_reparadas)
         return usuarios, []
     finally:
         conn.close()
@@ -18329,6 +19092,7 @@ def _listar_usuarios_admin_sql() -> list[dict]:
         resultado.append({
             "username": username,
             "name": str(item.get("name") or username),
+            "email": _normalizar_email(item.get("email")),
             "client_id": str(item.get("client_id") or "default"),
             "permissions": _normalizar_permissoes(item.get("permissions") or {}),
             "active": bool(item.get("active", True)),
@@ -18353,6 +19117,7 @@ def _obter_usuario_sql(username: str) -> dict:
         "username": username_norm,
         "password": item.get("password") or "",
         "name": str(item.get("name") or username_norm),
+        "email": _normalizar_email(item.get("email")),
         "client_id": str(item.get("client_id") or "default"),
         "permissions": _normalizar_permissoes(item.get("permissions") or {}),
         "active": bool(item.get("active", True)),
@@ -18385,6 +19150,16 @@ def _salvar_usuario_admin_sql(payload: AdminUserUpsertRequest) -> dict:
             if exc.status_code != 404:
                 raise
 
+    email_norm = _normalizar_email(payload.email if payload.email is not None else (existente.get("email") if existente else ""))
+    if email_norm:
+        usuarios_sql, _headers_sql = _carregar_usuarios_sql(seed_if_empty=True)
+        if isinstance(usuarios_sql, dict):
+            for usuario_chave, usuario_item in usuarios_sql.items():
+                if str(usuario_chave or "").strip().lower() == original_username:
+                    continue
+                if _normalizar_email((usuario_item or {}).get("email")) == email_norm:
+                    raise HTTPException(status_code=400, detail="JÃƒÂ¡ existe outro usuÃƒÂ¡rio vinculado a esse e-mail Google.")
+
     senha_final = str(payload.password or "").strip() or (existente.get("password") if existente else "")
     if not senha_final:
         raise HTTPException(status_code=400, detail="Informe a senha para criar o usuÃƒÂ¡rio.")
@@ -18399,6 +19174,7 @@ def _salvar_usuario_admin_sql(payload: AdminUserUpsertRequest) -> dict:
     registro = {
         "password": senha_final,
         "name": str(payload.name or username_norm).strip() or username_norm,
+        "email": email_norm,
         "client_id": str(payload.client_id or (existente.get("client_id") if existente else "default")).strip() or "default",
         "permissions": _normalizar_permissoes(payload.permissions or (existente.get("permissions") if existente else {})),
         "active": bool(payload.active),
@@ -18474,6 +19250,7 @@ def _resumo_usuario_admin(usuario: dict) -> dict:
     return {
         "username": usuario.get("username"),
         "name": usuario.get("name"),
+        "email": _normalizar_email(usuario.get("email")),
         "client_id": usuario.get("client_id"),
         "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
         "active": bool(usuario.get("active", True)),
@@ -18511,6 +19288,32 @@ def admin_trocar_senha_usuario(username: str, payload: AdminUserPasswordRequest,
         "message": "Senha atualizada.",
         "user": _resumo_usuario_admin(usuario),
     }
+
+
+@app.put("/api/auth/change-password")
+def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    usuario = _obter_usuario_sql(sessao["username"])
+    client_usuario = str(usuario.get("client_id") or "").strip()
+    if client_usuario and client_usuario != sessao["client_id"]:
+        raise HTTPException(status_code=403, detail="Sessão inválida para esse usuário.")
+
+    senha_atual = str(payload.current_password or "")
+    nova_senha = str(payload.new_password or "").strip()
+    confirmacao = str(payload.confirm_password if payload.confirm_password is not None else payload.new_password or "").strip()
+    if not senha_atual:
+        raise HTTPException(status_code=400, detail="Informe a senha atual.")
+    if not nova_senha:
+        raise HTTPException(status_code=400, detail="Informe a nova senha.")
+    if len(nova_senha) < 6:
+        raise HTTPException(status_code=400, detail="A nova senha deve ter pelo menos 6 caracteres.")
+    if nova_senha != confirmacao:
+        raise HTTPException(status_code=400, detail="A confirmação da senha não confere.")
+    if not _login_senha_confere(senha_atual, usuario.get("password") or ""):
+        raise HTTPException(status_code=400, detail="Senha atual incorreta.")
+
+    _atualizar_senha_usuario_sql(usuario["username"], nova_senha)
+    return {"success": True, "message": "Senha alterada com sucesso."}
 
 
 @app.put("/api/admin/users/{username}/reset-devices")
@@ -18736,6 +19539,7 @@ def _carregar_usuarios_local():
             usuarios[username] = {
                 "password": password,
                 "name": str(item.get("name") or username),
+                "email": _normalizar_email(item.get("email") or item.get("google_email")),
                 "client_id": str(item.get("client_id") or "default"),
                 "permissions": _normalizar_permissoes(item.get("permissions") if isinstance(item.get("permissions"), dict) else {}),
                 "original_row": [],
@@ -18842,6 +19646,7 @@ def extrair_permissoes(row, headers):
         'perguntas_pos_venda': ['perguntas e pos venda', 'perguntas e pÃ³s venda', 'perguntas pos venda', 'pos venda', 'pÃ³s venda'],
         'anuncios_ml': ['anuncios mercado livre', 'anuncios mercado livre', 'anuncios ml'],
         'medias_compras': ['mÃƒÂ©dias e compras', 'medias e compras', 'media e compras', 'medias compras'],
+        'mercado_full': ['modulo full', 'mercado full', 'mercado livre full', 'ml full'],
         'cadastro': ['cadastro', 'cadastro de produtos'],
         'impostos': ['impostos', 'imposto'],
         'configuracoes': ['configuraÃƒÂ§ÃƒÂµes', 'configuracoes', 'configuraÃƒÂ§ÃƒÂ£o', 'configuracao'],
@@ -18852,7 +19657,7 @@ def extrair_permissoes(row, headers):
     fallback_map = {
         'analise_promo': 10, 'renovacao_fixa': 11, 'vendas': 12, 'estoque': 13,
         'integracao': 14, 'etiquetas': 15, 'full': 16, 'favoritos': 17,
-        'perguntas_pos_venda': -1, 'anuncios_ml': 18, 'medias_compras': 19,
+        'perguntas_pos_venda': -1, 'anuncios_ml': 18, 'medias_compras': 19, 'mercado_full': -1,
         'cadastro': -1, 'impostos': -1, 'configuracoes': -1, 'importacoes': -1,
         'simulador': -1,
     }
@@ -18990,6 +19795,9 @@ def carregar_usuarios_sheets():
         idx_user = find_idx(["usuÃƒÆ’Ã‚Â¡rio", "usuario", "user", "login"])
         idx_pass = find_idx(["senha", "password", "pass"])
         idx_name = find_idx(["nome", "name"])
+        idx_email = find_idx(["email", "e-mail", "gmail", "google email", "email google", "e-mail google"])
+        if idx_email == -1:
+            idx_email = find_idx_norm(["EMAIL", "EMAILGOOGLE", "GOOGLEEMAIL", "GMAIL"])
         idx_client_id = find_idx(["nÃƒÆ’Ã‚Âºmero do cliente", "numero do cliente", "id cliente"])
         if idx_client_id == -1:
             idx_client_id = find_idx_norm(["NUMERODOCLIENTE", "IDCLIENTE", "CLIENTEID", "CODIGOCLIENTE", "CODCLIENTE"])
@@ -19004,13 +19812,17 @@ def carregar_usuarios_sheets():
             user = str(row[idx_user]).strip()
             raw_pw = str(row[idx_pass]).strip()
             name = str(row[idx_name]).strip() if idx_name != -1 and len(row) > idx_name else user
+            email = str(row[idx_email]).strip() if idx_email != -1 and len(row) > idx_email else ""
             client_id = str(row[idx_client_id]).strip() if idx_client_id != -1 and len(row) > idx_client_id else None
             
             if user and raw_pw:
+                permissoes_usuario = extrair_permissoes(row, headers_raw)
                 usuarios[user.lower()] = {
                     "password": raw_pw,
                     "name": name,
+                    "email": _normalizar_email(email),
                     "client_id": client_id,
+                    "permissions": permissoes_usuario,
                     "original_row": row,
                     "row_index": i
                 }
@@ -19085,6 +19897,458 @@ def _login_validar_e_registrar_maquina(username: str, usuario: dict, permissoes:
     return True, "", machine_final
 
 
+def _google_login_client_id() -> str:
+    return _env_config_value("GOOGLE_LOGIN_CLIENT_ID", "GOOGLE_CLIENT_ID", cache_as="GOOGLE_LOGIN_CLIENT_ID")
+
+
+def _google_login_client_secret() -> str:
+    return _env_config_value("GOOGLE_LOGIN_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET", cache_as="GOOGLE_LOGIN_CLIENT_SECRET")
+
+
+def _google_login_scopes() -> str:
+    scopes = _env_config_value("GOOGLE_LOGIN_SCOPES", "GOOGLE_OAUTH_SCOPES")
+    required_scopes = [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/drive.file",
+    ]
+    scope_parts = [item.strip() for item in str(scopes or "").split() if item.strip()]
+    for required_scope in required_scopes:
+        if required_scope not in scope_parts:
+            scope_parts.append(required_scope)
+    return " ".join(scope_parts)
+
+
+def _google_login_verify_id_token(id_token_value: str, client_id_google: str) -> dict:
+    return google_id_token.verify_oauth2_token(
+        id_token_value,
+        GoogleAuthRequest(),
+        client_id_google,
+        clock_skew_in_seconds=60,
+    )
+
+
+def _google_login_redirect_uri(request: Optional[Request] = None) -> str:
+    local_configured = _env_config_value("GOOGLE_LOGIN_REDIRECT_URI_LOCAL", "GOOGLE_LOCAL_REDIRECT_URI")
+    public_configured = _env_config_value("GOOGLE_LOGIN_REDIRECT_URI_PUBLIC", "GOOGLE_PUBLIC_REDIRECT_URI")
+    configured = _env_config_value("GOOGLE_LOGIN_REDIRECT_URI", "GOOGLE_REDIRECT_URI")
+    if _request_eh_local(request) and local_configured:
+        return local_configured.rstrip("/")
+    if request is not None and not _request_eh_local(request) and public_configured:
+        return public_configured.rstrip("/")
+    if configured:
+        return configured.rstrip("/")
+
+    if request is not None:
+        try:
+            proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip() or "http"
+            host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc or "").split(",")[0].strip()
+            if host:
+                return f"{proto}://{host}/auth/google/callback"
+        except Exception:
+            pass
+
+    return "http://127.0.0.1:8001/auth/google/callback"
+
+
+def _google_login_configurado() -> bool:
+    return bool(_google_login_client_id() and _google_login_client_secret())
+
+
+def _buscar_usuario_por_email_google(usuarios: dict, email: str) -> tuple[Optional[str], Optional[dict]]:
+    email_norm = _normalizar_email(email)
+    if not email_norm or not isinstance(usuarios, dict):
+        return None, None
+
+    fallback_username = None
+    fallback_usuario = None
+    for username, usuario in usuarios.items():
+        if not isinstance(usuario, dict):
+            continue
+        username_norm = str(username or "").strip().lower()
+        if _normalizar_email(usuario.get("email") or usuario.get("google_email")) == email_norm:
+            return username_norm, usuario
+        if username_norm == email_norm:
+            fallback_username = username_norm
+            fallback_usuario = usuario
+
+    return fallback_username, fallback_usuario
+
+
+def _montar_resposta_login_sucesso(username: str, usuario: dict, permissoes: dict, client_id: str, machine_final: str) -> LoginResponse:
+    token = criar_access_token(username, client_id)
+    user_data = {
+        "username": username,
+        "name": str(usuario.get("name") or username),
+        "email": _normalizar_email(usuario.get("email")),
+        "client_id": client_id,
+        "machine_id": machine_final,
+    }
+    return LoginResponse(
+        success=True,
+        message="Login realizado com sucesso.",
+        user_data=user_data,
+        permissions=_normalizar_permissoes(permissoes),
+        access_token=token,
+    )
+
+
+def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, request: Request) -> LoginResponse:
+    issuer = str((token_info or {}).get("iss") or "")
+    if issuer not in {"accounts.google.com", "https://accounts.google.com"}:
+        return LoginResponse(success=False, message="Origem da conta Google invalida.")
+
+    email = _normalizar_email((token_info or {}).get("email"))
+    email_verified = (token_info or {}).get("email_verified")
+    if isinstance(email_verified, str):
+        email_verified = email_verified.strip().lower() == "true"
+    if not email or not bool(email_verified):
+        return LoginResponse(success=False, message="Use uma conta Google com e-mail verificado.")
+
+    usuarios, _ws, _headers = carregar_usuarios_sheets()
+    username, usuario = _buscar_usuario_por_email_google(usuarios or {}, email)
+    if not username or not isinstance(usuario, dict):
+        return LoginResponse(
+            success=False,
+            message="Conta Google nao vinculada. Peça ao administrador para cadastrar esse e-mail no usuario.",
+        )
+
+    if not _login_usuario_ativo(usuario):
+        return LoginResponse(success=False, message="Usuario inativo. Contate o administrador.")
+
+    validade_ok, msg_validade = _login_validade_ok(usuario)
+    if not validade_ok:
+        return LoginResponse(success=False, message=msg_validade or "Acesso expirado ou invalido.")
+
+    permissoes = _normalizar_permissoes(usuario.get("permissions") or {})
+    client_id = str(usuario.get("client_id") or "default").strip() or "default"
+    usuario["client_id"] = client_id
+    if not _normalizar_email(usuario.get("email")):
+        usuario["email"] = email
+
+    maquina_ok, msg_maquina, machine_final = _login_validar_e_registrar_maquina(
+        username,
+        usuario,
+        permissoes,
+        machine_id,
+        request,
+    )
+    if not maquina_ok:
+        return LoginResponse(success=False, message=msg_maquina)
+
+    try:
+        _registrar_login_maquina(username, client_id, machine_final, request)
+    except Exception as exc:
+        logger.warning("[LOGIN] Nao foi possivel registrar auditoria de login Google para %s: %s", username, exc)
+
+    return _montar_resposta_login_sucesso(username, usuario, permissoes, client_id, machine_final)
+
+
+def _google_login_error_redirect(message: str):
+    query = urlencode({"google_error": str(message or "Nao foi possivel entrar com Google.")})
+    return RedirectResponse(url=f"/frontend_index.html?{query}", status_code=303)
+
+
+def _google_login_success_html(resp: LoginResponse):
+    user_json = json.dumps(resp.user_data or {}, ensure_ascii=False).replace("</", "<\\/")
+    permissions_json = json.dumps(resp.permissions or {}, ensure_ascii=False).replace("</", "<\\/")
+    token_json = json.dumps(resp.access_token or "", ensure_ascii=False).replace("</", "<\\/")
+    html = f"""
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <title>Entrando...</title>
+</head>
+<body>
+    <script>
+        localStorage.setItem('user_data', JSON.stringify({user_json}));
+        localStorage.setItem('permissions', JSON.stringify({permissions_json}));
+        const token = {token_json};
+        if (token) {{
+            localStorage.setItem('access_token', token);
+        }} else {{
+            localStorage.removeItem('access_token');
+        }}
+        window.location.replace('/dashboard.html');
+    </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+def _google_login_poll_html(success: bool, message: str):
+    titulo = html_lib.escape("Login concluido" if success else "Login nao autorizado")
+    texto = html_lib.escape(str(message or ("Login concluido. Volte ao sistema." if success else "Nao foi possivel entrar com Google.")))
+    html = f"""
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <title>{titulo}</title>
+    <style>
+        body {{
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            font-family: Arial, sans-serif;
+            background: #071326;
+            color: #e8f3ff;
+        }}
+        main {{
+            max-width: 480px;
+            padding: 32px;
+            text-align: center;
+        }}
+        h1 {{ margin: 0 0 12px; font-size: 26px; }}
+        p {{ margin: 0; line-height: 1.5; color: #b8c7dc; }}
+    </style>
+</head>
+<body>
+    <main>
+        <h1>{titulo}</h1>
+        <p>{texto}</p>
+    </main>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+def _google_login_poll_response_payload(resp: LoginResponse) -> dict:
+    return {
+        "created_at": time.time(),
+        "success": bool(resp.success),
+        "message": resp.message,
+        "user_data": resp.user_data or {},
+        "permissions": resp.permissions or {},
+        "access_token": resp.access_token or "",
+    }
+
+
+def _google_login_store_poll_result(state: str, payload: dict):
+    state = str(state or "").strip()
+    if not state:
+        return
+    payload = dict(payload or {})
+    payload["created_at"] = time.time()
+    with GOOGLE_LOGIN_STATE_LOCK:
+        GOOGLE_LOGIN_RESULTS[state] = payload
+
+
+def _google_login_finish_poll(state: str, resp: LoginResponse):
+    _google_login_store_poll_result(state, _google_login_poll_response_payload(resp))
+    if resp.success:
+        return _google_login_poll_html(True, "Login concluido. Volte ao sistema para continuar.")
+    return _google_login_poll_html(False, resp.message or "Conta Google nao autorizada.")
+
+
+@app.get("/api/auth/google/config")
+def google_auth_config(request: Request):
+    client_id = _google_login_client_id()
+    client_secret = _google_login_client_secret()
+    return {
+        "success": True,
+        "enabled": bool(client_id and client_secret),
+        "oauth_enabled": bool(client_id and client_secret),
+        "client_id": client_id,
+        "redirect_uri": _google_login_redirect_uri(request),
+        "scopes": _google_login_scopes(),
+    }
+
+
+@app.get("/api/auth/google/start")
+def google_auth_start(request: Request, machine_id: str = "", mode: str = ""):
+    mode = str(mode or "").strip().lower()
+    client_id_google = _google_login_client_id()
+    client_secret_google = _google_login_client_secret()
+    if not client_id_google or not client_secret_google:
+        if mode == "json":
+            return {
+                "success": False,
+                "message": "Login Google nao configurado. Informe GOOGLE_LOGIN_CLIENT_ID e GOOGLE_LOGIN_CLIENT_SECRET no servidor.",
+            }
+        return _google_login_error_redirect("Login Google nao configurado. Informe GOOGLE_LOGIN_CLIENT_ID e GOOGLE_LOGIN_CLIENT_SECRET no servidor.")
+
+    state = secrets.token_urlsafe(32)
+    redirect_uri = _google_login_redirect_uri(request)
+    agora = time.time()
+    with GOOGLE_LOGIN_STATE_LOCK:
+        expirados = [chave for chave, item in GOOGLE_LOGIN_STATES.items() if agora - float((item or {}).get("created_at") or 0) > 900]
+        for chave in expirados:
+            GOOGLE_LOGIN_STATES.pop(chave, None)
+        GOOGLE_LOGIN_STATES[state] = {
+            "created_at": agora,
+            "machine_id": str(machine_id or ""),
+            "redirect_uri": redirect_uri,
+            "poll": mode == "json",
+        }
+
+    params = {
+        "client_id": client_id_google,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": _google_login_scopes(),
+        "state": state,
+        "access_type": "online",
+        "include_granted_scopes": "true",
+        "prompt": "select_account consent",
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    if mode == "json":
+        return {
+            "success": True,
+            "auth_url": auth_url,
+            "state": state,
+            "redirect_uri": redirect_uri,
+        }
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+@app.get("/api/auth/google/result/{state}")
+def google_auth_result(state: str):
+    state = str(state or "").strip()
+    agora = time.time()
+    with GOOGLE_LOGIN_STATE_LOCK:
+        expirados = [chave for chave, item in GOOGLE_LOGIN_RESULTS.items() if agora - float((item or {}).get("created_at") or 0) > 900]
+        for chave in expirados:
+            GOOGLE_LOGIN_RESULTS.pop(chave, None)
+        resultado = GOOGLE_LOGIN_RESULTS.get(state)
+        if not isinstance(resultado, dict):
+            return {"success": False, "pending": True}
+        resultado = dict(resultado)
+        GOOGLE_LOGIN_RESULTS.pop(state, None)
+
+    resultado.pop("created_at", None)
+    resultado["pending"] = False
+    return resultado
+
+
+@app.get("/auth/google/callback")
+def google_auth_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    state = str(state or "").strip()
+    if error:
+        with GOOGLE_LOGIN_STATE_LOCK:
+            state_data_error = GOOGLE_LOGIN_STATES.pop(state, None) if state else None
+        if isinstance(state_data_error, dict) and state_data_error.get("poll"):
+            return _google_login_finish_poll(
+                state,
+                LoginResponse(success=False, message=f"Google recusou o login: {error}."),
+            )
+        return _google_login_error_redirect(f"Google recusou o login: {error}.")
+
+    if not code or not state:
+        return _google_login_error_redirect("Retorno do Google incompleto.")
+
+    with GOOGLE_LOGIN_STATE_LOCK:
+        state_data = GOOGLE_LOGIN_STATES.pop(state, None)
+    poll_mode = bool(isinstance(state_data, dict) and state_data.get("poll"))
+    if not isinstance(state_data, dict):
+        return _google_login_error_redirect("Sessao do login Google expirou. Tente novamente.")
+    if time.time() - float(state_data.get("created_at") or 0) > 900:
+        if poll_mode:
+            return _google_login_finish_poll(
+                state,
+                LoginResponse(success=False, message="Sessao do login Google expirou. Tente novamente."),
+            )
+        return _google_login_error_redirect("Sessao do login Google expirou. Tente novamente.")
+
+    client_id_google = _google_login_client_id()
+    client_secret_google = _google_login_client_secret()
+    redirect_uri = str(state_data.get("redirect_uri") or _google_login_redirect_uri(request)).strip()
+
+    try:
+        token_resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": client_id_google,
+                "client_secret": client_secret_google,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            timeout=20,
+        )
+        token_payload = token_resp.json() if token_resp.content else {}
+    except Exception as exc:
+        logger.warning("[LOGIN] Falha ao trocar codigo Google: %s", exc)
+        if poll_mode:
+            return _google_login_finish_poll(
+                state,
+                LoginResponse(success=False, message="Nao foi possivel concluir o login Google."),
+            )
+        return _google_login_error_redirect("Nao foi possivel concluir o login Google.")
+
+    if token_resp.status_code != 200:
+        detalhe = ""
+        if isinstance(token_payload, dict):
+            detalhe = str(token_payload.get("error_description") or token_payload.get("error") or "").strip()
+        logger.warning("[LOGIN] Google token exchange falhou: %s", detalhe or token_resp.text[:300])
+        if poll_mode:
+            return _google_login_finish_poll(
+                state,
+                LoginResponse(success=False, message=detalhe or "Google nao autorizou o login."),
+            )
+        return _google_login_error_redirect(detalhe or "Google nao autorizou o login.")
+
+    id_token_value = str((token_payload or {}).get("id_token") or "").strip()
+    if not id_token_value:
+        if poll_mode:
+            return _google_login_finish_poll(
+                state,
+                LoginResponse(success=False, message="Google nao retornou a identidade da conta."),
+            )
+        return _google_login_error_redirect("Google nao retornou a identidade da conta.")
+
+    try:
+        token_info = _google_login_verify_id_token(id_token_value, client_id_google)
+    except (ValueError, GoogleAuthError) as exc:
+        logger.warning("[LOGIN] ID token Google invalido no callback: %s", exc)
+        if poll_mode:
+            return _google_login_finish_poll(
+                state,
+                LoginResponse(success=False, message="Nao foi possivel validar sua conta Google."),
+            )
+        return _google_login_error_redirect("Nao foi possivel validar sua conta Google.")
+
+    login_resp = _autenticar_usuario_por_google_info(
+        token_info,
+        str(state_data.get("machine_id") or ""),
+        request,
+    )
+    if poll_mode:
+        return _google_login_finish_poll(state, login_resp)
+    if not login_resp.success:
+        return _google_login_error_redirect(login_resp.message)
+
+    return _google_login_success_html(login_resp)
+
+
+@app.post("/api/auth/google", response_model=LoginResponse)
+async def google_login_endpoint(payload: GoogleLoginRequest, request: Request):
+    client_id_google = _google_login_client_id()
+    if not client_id_google:
+        return LoginResponse(success=False, message="Login com Google ainda nao configurado no servidor.")
+
+    credential = str(payload.credential or "").strip()
+    if not credential:
+        return LoginResponse(success=False, message="Credencial Google nao recebida.")
+
+    try:
+        token_info = _google_login_verify_id_token(credential, client_id_google)
+    except (ValueError, GoogleAuthError) as exc:
+        logger.warning("[LOGIN] Token Google invalido: %s", exc)
+        return LoginResponse(success=False, message="Nao foi possivel validar sua conta Google.")
+    except Exception as exc:
+        logger.warning("[LOGIN] Falha ao validar token Google: %s", exc)
+        return LoginResponse(success=False, message="Erro ao validar login Google.")
+
+    return _autenticar_usuario_por_google_info(token_info, payload.machine_id, request)
+
+
 @app.post("/api/login", response_model=LoginResponse)
 async def login_endpoint(payload: LoginRequest, request: Request):
     username = str(payload.username or "").strip().lower()
@@ -19137,20 +20401,7 @@ async def login_endpoint(payload: LoginRequest, request: Request):
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar auditoria de login para %s: %s", username, exc)
 
-    token = criar_access_token(username, client_id)
-    user_data = {
-        "username": username,
-        "name": str(usuario.get("name") or username),
-        "client_id": client_id,
-        "machine_id": machine_final,
-    }
-    return LoginResponse(
-        success=True,
-        message="Login realizado com sucesso.",
-        user_data=user_data,
-        permissions=permissoes,
-        access_token=token,
-    )
+    return _montar_resposta_login_sucesso(username, usuario, permissoes, client_id, machine_final)
 
 # --- FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã¢â‚¬Â¢ES AUXILIARES PROMO (Adaptadas de promo.py) ---
 def carregar_id_planilha_sistema(client_id: str = None):
@@ -21159,7 +22410,7 @@ def _ler_df_cadastro_custos_arquivo(arquivo: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _listar_arquivos_cadastro_custos(client_id: str) -> list[str]:
+def _listar_arquivos_cadastro_custos(client_id: str, incluir_custos_lojas: bool = True) -> list[str]:
     principal = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
     caminhos = []
     vistos = set()
@@ -21177,10 +22428,11 @@ def _listar_arquivos_cadastro_custos(client_id: str) -> list[str]:
         caminhos.append(real)
 
     adicionar(principal)
-    try:
-        adicionar(_cadastro_custos_lojas_path(client_id))
-    except Exception:
-        pass
+    if incluir_custos_lojas:
+        try:
+            adicionar(_cadastro_custos_lojas_path(client_id))
+        except Exception:
+            pass
     pastas = []
     try:
         pastas.append(get_tenant_path(client_id))
@@ -21215,20 +22467,20 @@ def _listar_arquivos_cadastro_custos(client_id: str) -> list[str]:
     return caminhos
 
 
-def _iterar_dfs_cadastro_custos(client_id: str):
-    for caminho in _listar_arquivos_cadastro_custos(client_id):
+def _iterar_dfs_cadastro_custos(client_id: str, incluir_custos_lojas: bool = True):
+    for caminho in _listar_arquivos_cadastro_custos(client_id, incluir_custos_lojas=incluir_custos_lojas):
         df = _ler_df_cadastro_custos_arquivo(caminho)
         if df is None or df.empty:
             continue
         yield df, caminho
 
 
-def _carregar_custos_cadastro_por_sku(client_id: str) -> dict:
+def _carregar_custos_cadastro_por_sku(client_id: str, incluir_custos_lojas: bool = True) -> dict:
     mapa = {}
     chaves_exatas = set()
     fontes_usadas = []
 
-    for df, caminho in _iterar_dfs_cadastro_custos(client_id):
+    for df, caminho in _iterar_dfs_cadastro_custos(client_id, incluir_custos_lojas=incluir_custos_lojas):
         if "sku" not in df.columns:
             continue
         col_custo = "custo" if "custo" in df.columns else None
@@ -21263,12 +22515,12 @@ def _carregar_custos_cadastro_por_sku(client_id: str) -> dict:
     return mapa
 
 
-def _carregar_impostos_cadastro_por_sku(client_id: str) -> dict:
+def _carregar_impostos_cadastro_por_sku(client_id: str, incluir_custos_lojas: bool = True) -> dict:
     mapa = {}
     chaves_exatas = set()
     fontes_usadas = []
 
-    for df, caminho in _iterar_dfs_cadastro_custos(client_id):
+    for df, caminho in _iterar_dfs_cadastro_custos(client_id, incluir_custos_lojas=incluir_custos_lojas):
         if "sku" not in df.columns:
             continue
         col_imposto = "imposto" if "imposto" in df.columns else None
@@ -21305,6 +22557,46 @@ def _carregar_impostos_cadastro_por_sku(client_id: str) -> dict:
             ", ".join(fontes_usadas) or "-",
         )
     return mapa
+
+
+def _carregar_custos_impostos_cadastro_por_sku_loja(client_id: str, loja: str) -> tuple[dict, dict]:
+    custos_por_sku = _carregar_custos_cadastro_por_sku(client_id, incluir_custos_lojas=False)
+    impostos_por_sku = _carregar_impostos_cadastro_por_sku(client_id, incluir_custos_lojas=False)
+    loja_key = _cadastro_norm_loja_custo(loja)
+    if not loja_key:
+        return custos_por_sku, impostos_por_sku
+
+    try:
+        mapa_lojas = _cadastro_mapa_custos_lojas(client_id)
+    except Exception as exc:
+        logger.warning("[PROMO CADASTRO] Falha ao carregar custos por loja para %s: %s", loja, exc)
+        return custos_por_sku, impostos_por_sku
+
+    custos_loja = 0
+    impostos_loja = 0
+    for sku_key, lojas_sku in (mapa_lojas or {}).items():
+        if not sku_key or not isinstance(lojas_sku, dict):
+            continue
+        dados_loja = lojas_sku.get(loja_key)
+        if not isinstance(dados_loja, dict):
+            continue
+        custo = _parse_float_flex(dados_loja.get("custo"))
+        imposto_rate = _to_rate_safe(dados_loja.get("imposto"))
+        if custo is not None:
+            custos_por_sku[sku_key] = float(custo)
+            custos_loja += 1
+        if imposto_rate is not None:
+            impostos_por_sku[sku_key] = float(imposto_rate)
+            impostos_loja += 1
+
+    if custos_loja or impostos_loja:
+        logger.info(
+            "[PROMO CADASTRO] Custos/impostos por loja aplicados: loja=%s custos=%s impostos=%s",
+            loja,
+            custos_loja,
+            impostos_loja,
+        )
+    return custos_por_sku, impostos_por_sku
 
     df = _carregar_df_cadastro_custos(client_id)
     if "sku" not in df.columns:
@@ -21425,21 +22717,15 @@ def _calcular_desconto_ml_valor(
     tarifa_base: Any = None,
     tarifa_ml: Any = None,
 ) -> float | None:
+    """Retorna somente desconto de tarifa explicitamente informado pelo ML/arquivo.
+
+    O percentual da campanha representa desconto no preco de venda ao comprador.
+    Ele nao deve ser somado ao valor liquido como se fosse credito/reducao de
+    tarifa do Mercado Livre.
+    """
     desconto = _to_float_safe(desconto_atual)
     if desconto is not None and desconto > 0:
         return desconto
-
-    pct = _to_rate_safe(ml_pct)
-    base = _to_float_safe(preco_base)
-    if base is None or base <= 0:
-        base = _to_float_safe(preco_final_ml)
-    if pct is not None and pct > 0 and base is not None and base > 0:
-        return round(float(base) * float(pct), 2)
-
-    tarifa_a = _to_float_safe(tarifa_base)
-    tarifa_b = _to_float_safe(tarifa_ml)
-    if tarifa_a is not None and tarifa_b is not None and tarifa_a > tarifa_b:
-        return round(float(tarifa_a) - float(tarifa_b), 2)
     return None
 
 
@@ -21928,54 +23214,125 @@ def _ml_iterar_campos_payload_limitado(obj, *, max_depth: int = 8, max_nodes: in
 
 
 def _ml_extrair_preco_promocao_raw(entry: dict):
-    """Tenta encontrar o preÃ§o/desconto retornado nos diferentes formatos da API de promocoes."""
+    """Extrai somente preco final/desconto da promocao no payload do Mercado Livre."""
     if not isinstance(entry, dict):
         return None, None
 
-    candidatos_preco = [
-        entry.get("price"),
-        entry.get("deal_price"),
-        entry.get("promotion_price"),
-        entry.get("suggested_price"),
-        entry.get("final_price"),
-        entry.get("loyalty_price"),
-        entry.get("campaign_price"),
-        entry.get("new_price"),
-        entry.get("receives"),
-        entry.get("seller_receives"),
-        entry.get("amount"),
-    ]
-    for chave in ("price", "deal_price", "promotion_price", "suggested_price", "final_price", "loyalty_price", "campaign_price", "new_price", "receives", "seller_receives"):
+    chaves_preco_ordem = (
+        "price",
+        "deal_price",
+        "promotion_price",
+        "final_price",
+        "campaign_price",
+        "new_price",
+        "loyalty_price",
+        "max_discounted_price",
+        "discounted_price",
+        "suggested_price",
+    )
+    chaves_preco = set(chaves_preco_ordem)
+    termos_preco = (
+        "price",
+        "preco",
+        "precio",
+        "deal_price",
+        "promotion_price",
+        "final_price",
+        "loyalty_price",
+        "campaign_price",
+        "new_price",
+        "suggested_price",
+        "max_discounted_price",
+        "discounted_price",
+    )
+    termos_excluir_preco = (
+        "receive",
+        "receives",
+        "seller_receives",
+        "seller_receive",
+        "net",
+        "liquid",
+        "liquido",
+        "margin",
+        "margem",
+        "contribution",
+        "contribuicao",
+        "fee",
+        "tariff",
+        "tarifa",
+        "commission",
+        "comissao",
+        "tax",
+        "imposto",
+    )
+
+    def _path_tem(caminho: str, termos: tuple[str, ...]) -> bool:
+        caminho_norm = str(caminho or "").lower()
+        return any(termo in caminho_norm for termo in termos)
+
+    candidatos_preco = []
+    for chave in chaves_preco_ordem:
         obj = entry.get(chave)
         if isinstance(obj, dict):
             candidatos_preco.extend([obj.get("amount"), obj.get("value")])
+        else:
+            candidatos_preco.append(obj)
 
     for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
-        chave_norm = str(caminho or "").rsplit(".", 1)[-1]
-        if chave_norm in {
-            "price",
-            "deal_price",
-            "promotion_price",
-            "suggested_price",
-            "final_price",
-            "loyalty_price",
-            "campaign_price",
-            "new_price",
-            "receives",
-            "seller_receives",
-        }:
+        caminho_norm = str(caminho or "").lower()
+        chave_norm = caminho_norm.rsplit(".", 1)[-1]
+        if _path_tem(caminho_norm, termos_excluir_preco):
+            continue
+        if chave_norm in chaves_preco:
+            candidatos_preco.append(valor)
+            continue
+        if chave_norm in {"amount", "value"} and _path_tem(caminho_norm, termos_preco):
             candidatos_preco.append(valor)
 
     preco = next((v for v in (_parse_float_flex(x) for x in candidatos_preco) if v is not None and v > 0), None)
 
+    chaves_desconto_direto = {
+        "discount_percentage",
+        "discount_percent",
+        "seller_discount_percentage",
+        "meli_discount_percentage",
+    }
+    chaves_desconto_partes = {
+        "seller_percentage",
+        "meli_percentage",
+    }
+    termos_desconto = (
+        "discount",
+        "desconto",
+        "seller_percentage",
+        "meli_percentage",
+        "seller_discount",
+        "meli_discount",
+    )
+    termos_excluir_desconto = (
+        "margin",
+        "margem",
+        "contribution",
+        "contribuicao",
+        "profit",
+        "lucro",
+        "receive",
+        "receives",
+        "seller_receives",
+        "net",
+        "liquid",
+        "liquido",
+        "fee",
+        "tariff",
+        "tarifa",
+        "tax",
+        "imposto",
+    )
+
     candidatos_desconto = [
         entry.get("discount_percentage"),
         entry.get("discount_percent"),
-        entry.get("discount"),
-        entry.get("percentage"),
-        entry.get("seller_percentage"),
         entry.get("seller_discount_percentage"),
-        entry.get("meli_percentage"),
         entry.get("meli_discount_percentage"),
     ]
     meli_pct = _parse_float_flex(entry.get("meli_percentage") or entry.get("meli_discount_percentage"))
@@ -21984,19 +23341,21 @@ def _ml_extrair_preco_promocao_raw(entry: dict):
         candidatos_desconto.insert(0, float(meli_pct or 0.0) + float(seller_pct or 0.0))
 
     for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
-        chave_norm = str(caminho or "").rsplit(".", 1)[-1]
-        if chave_norm in {
-            "discount_percentage",
-            "discount_percent",
-            "discount",
-            "percentage",
-            "seller_percentage",
-            "seller_discount_percentage",
-            "meli_percentage",
-            "meli_discount_percentage",
-        }:
+        caminho_norm = str(caminho or "").lower()
+        chave_norm = caminho_norm.rsplit(".", 1)[-1]
+        if _path_tem(caminho_norm, termos_excluir_desconto):
+            continue
+        if chave_norm in chaves_desconto_direto or chave_norm in chaves_desconto_partes:
             candidatos_desconto.append(valor)
+            continue
+        if chave_norm in {"percent", "percentage", "pct"} and _path_tem(caminho_norm, termos_desconto):
+            candidatos_desconto.append(valor)
+
     desconto = next((v for v in (_parse_float_flex(x) for x in candidatos_desconto) if v is not None), None)
+    if desconto is None:
+        preco_original = _parse_float_flex(entry.get("original_price"))
+        if preco_original is not None and preco_original > 0 and preco is not None and preco > 0:
+            desconto = max(0.0, min(100.0, ((float(preco_original) - float(preco)) / float(preco_original)) * 100.0))
     return preco, desconto
 
 
@@ -22095,46 +23454,72 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
     urls = [
         f"https://api.mercadolibre.com/seller-promotions/promotions/{campaign_id}/items",
     ]
-    for status_item in ("active", ""):
+    consultas_status = [
+        ("status_item", "candidate"),
+        ("status", "candidate"),
+        ("status_item", "eligible"),
+        ("status", "eligible"),
+        ("status_item", "pending"),
+        ("status", "pending"),
+        ("status_item", "started"),
+        ("status", "started"),
+        ("status_item", "active"),
+        ("status", "active"),
+        ("", ""),
+    ]
+    for status_param, status_item in consultas_status:
         params = {
             "app_version": "v2",
             "promotion_type": promotion_type,
             "item_id": item_id,
         }
-        if status_item:
-            params["status_item"] = status_item
+        if status_param and status_item:
+            params[status_param] = status_item
         for url in urls:
-            if request_fn is _ml_api_request:
-                resp, cfg = _ml_api_request_com_retry(
-                    client_id,
-                    loja,
-                    cfg,
-                    "GET",
-                    url,
-                    params=params,
-                    timeout=30,
-                    max_attempts=3,
-                )
-            else:
-                resp, cfg = request_fn(client_id, loja, cfg, "GET", url, params=params, timeout=30)
-            if resp.status_code != 200:
-                continue
-            try:
-                data = resp.json() or {}
-            except Exception:
-                data = {}
-            entries = data.get("results") or data.get("items") or []
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                raw_item = entry.get("item")
-                item_obj_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
-                entry_id = str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "").strip()
-                if entry_id == item_id:
-                    entry = dict(entry)
-                    if status_item:
-                        entry["_jk_status_item_consultado"] = status_item
-                    return entry, cfg
+            offset = 0
+            limit = 50
+            paginas = 0
+            while True:
+                paginas += 1
+                params_chamada = dict(params)
+                params_chamada.update({"offset": offset, "limit": limit})
+                if request_fn is _ml_api_request:
+                    resp, cfg = _ml_api_request_com_retry(
+                        client_id,
+                        loja,
+                        cfg,
+                        "GET",
+                        url,
+                        params=params_chamada,
+                        timeout=30,
+                        max_attempts=3,
+                    )
+                else:
+                    resp, cfg = request_fn(client_id, loja, cfg, "GET", url, params=params_chamada, timeout=30)
+                if resp.status_code != 200:
+                    break
+                try:
+                    data = resp.json() or {}
+                except Exception:
+                    data = {}
+                entries = data.get("results") or data.get("items") or []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    raw_item = entry.get("item")
+                    item_obj_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
+                    entry_id = str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "").strip()
+                    if entry_id == item_id:
+                        entry = dict(entry)
+                        if status_item:
+                            entry["_jk_status_item_consultado"] = status_item
+                            entry["_jk_status_param_consultado"] = status_param
+                        return entry, cfg
+                paging = data.get("paging") or {}
+                total = int(paging.get("total") or 0)
+                offset += limit
+                if not entries or len(entries) < limit or (total and offset >= total) or paginas >= 100:
+                    break
     return {}, cfg
 
 
@@ -22185,6 +23570,26 @@ def _ml_promocao_raw_tipo(entry: dict) -> str:
 
 def _ml_promocao_raw_nome(entry: dict) -> str:
     return _ml_promocao_raw_texto(entry, ("name", "title", "label"))
+
+
+def _ml_promocao_raw_offer_id(entry: dict) -> str:
+    texto = _ml_promocao_raw_texto(
+        entry,
+        ("offer_id", "offerId", "ref_id", "refId", "candidate_offer_id", "candidateOfferId"),
+    )
+    if texto:
+        return texto
+    if not isinstance(entry, dict):
+        return ""
+    chaves_offer = {"offer_id", "offerid", "ref_id", "refid", "candidate_offer_id", "candidateofferid"}
+    for caminho, valor in _ml_iterar_campos_payload_limitado(entry, max_depth=5, max_nodes=900):
+        ultimo = str(caminho or "").rsplit(".", 1)[-1].strip().lower().replace("-", "_")
+        ultimo = re.sub(r"[^a-z0-9_]", "", ultimo)
+        if ultimo in chaves_offer or ultimo.replace("_", "") in chaves_offer:
+            valor_txt = str(valor or "").strip()
+            if valor_txt and valor_txt.lower() not in {"-", "none", "null"}:
+                return valor_txt
+    return ""
 
 
 def _ml_grupo_promocao_por_meta(promotion_type: str = "", nome: str = "") -> str:
@@ -23115,8 +24520,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         if str(item.get("id") or "").strip()
     }
 
-    custos_por_sku = _carregar_custos_cadastro_por_sku(client_id)
-    impostos_por_sku = _carregar_impostos_cadastro_por_sku(client_id)
+    custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, req.loja)
 
     def _montar_linha_item(item_id: str, item: dict, promo_b: str, promo_b_type: str, ids_b: set[str], raw_b: dict, arquivo_nome_b: str):
         item = itens_por_id[item_id]
@@ -23170,7 +24574,15 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         if preco_base_anuncio and preco_b and preco_base_anuncio > 0:
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
-        shipping_data, cfg_local = _ml_obter_frete_detalhado(client_id, req.loja, cfg_local, item_id, item.get("shipping") or {})
+        shipping_data, cfg_local = _ml_obter_frete_detalhado(
+            client_id,
+            req.loja,
+            cfg_local,
+            item_id,
+            item.get("shipping") or {},
+            reconsultar_zero=True,
+            contexto_frete=_ml_contexto_frete_item(item, preco_b or preco_a or preco_atual or preco_base_anuncio),
+        )
         frete_api = shipping_data.get("shipping_cost")
         frete_api_val = _parse_float_flex(frete_api)
         frete_fallback_val = 0.0
@@ -23216,12 +24628,6 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         if desconto_tarifa_ml is not None and tarifa_b_tmp is not None and desconto_tarifa_ml >= (tarifa_b_tmp * 0.8):
             # Alguns formatos chamam a prÃ³pria tarifa de sale_fee; nesse caso nÃ£o ÃƒÂ© o desconto.
             desconto_tarifa_ml = None
-        if desconto_tarifa_ml is None and preco_b is not None:
-            # Fallback operacional para SMART: quando a API nÃ£o traz reduÃ§Ã£o explÃ­cita,
-            # usa 4% do preÃ§o final da Promocao 2 para preencher a coluna "Desconto ML".
-            tipo_b = str(raw_b_item.get("type") or promo_b_type or "").strip().upper()
-            if tipo_b == "SMART" or raw_b_item.get("meli_percentage") is not None:
-                desconto_tarifa_ml = round(float(preco_b) * 0.04, 2)
         desconto_tarifa_ml = _calcular_desconto_ml_valor(
             desconto_atual=desconto_tarifa_ml,
             ml_pct=desconto_b,
@@ -23298,6 +24704,8 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "Margem ML": _format_pct_br(margem_b),
             "AÃ§Ã£o": decisao,
             "Participar ou nÃ£o": decisao,
+            "offer_id": _ml_promocao_raw_offer_id(raw_b_item),
+            "promotion_type": promo_b_type,
         }
 
     dados_analise = []
@@ -23330,9 +24738,23 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
     planilha_nome = _salvar_planilha_analise_promo(client_id, dados_analise, prefixo='analise_promo_api')
     df_payload = _build_df_planilha_analise_promo(dados_analise).fillna("")
     dados_payload = df_payload.to_dict(orient="records")
+    meta_por_linha = {}
+    for item in dados_analise:
+        chave = (str(item.get("MLB") or "").strip(), str(item.get("Campanha ML") or "").strip())
+        if not chave[0]:
+            continue
+        meta_por_linha[chave] = {
+            "offer_id": str(item.get("offer_id") or "").strip(),
+            "promotion_type": str(item.get("promotion_type") or "").strip(),
+        }
     for row in dados_payload:
         row['Frete Gratis'] = row.get('Frete GrÃ¡tis', '')
         row['Frete Gratis ML'] = row.get('Frete GrÃ¡tis ML', '')
+        meta = meta_por_linha.get((str(row.get("MLB") or "").strip(), str(row.get("Campanha ML") or "").strip())) or {}
+        if meta.get("offer_id"):
+            row["offer_id"] = meta["offer_id"]
+        if meta.get("promotion_type"):
+            row["promotion_type"] = meta["promotion_type"]
     return {
         "success": True,
         "mode": "api_comparacao_promocoes",
@@ -23432,8 +24854,7 @@ async def analisar_promo_via_api_sem_arquivos(
     ids_a = {str(x.get("id") or "").strip() for x in (itens_a_refs or []) if str(x.get("id") or "").strip()}
     _emit_progress(32, f"Promocao 1 carregada com {len(ids_a)} anuncio(s).")
 
-    custos_por_sku = _carregar_custos_cadastro_por_sku(client_id)
-    impostos_por_sku = _carregar_impostos_cadastro_por_sku(client_id)
+    custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, loja)
 
     def _erro_legivel(exc: Exception) -> str:
         if isinstance(exc, HTTPException):
@@ -23542,7 +24963,15 @@ async def analisar_promo_via_api_sem_arquivos(
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
         try:
-            shipping_data, cfg_local = _ml_obter_frete_detalhado(client_id, loja, cfg_local, item_id, item.get("shipping") or {})
+            shipping_data, cfg_local = _ml_obter_frete_detalhado(
+                client_id,
+                loja,
+                cfg_local,
+                item_id,
+                item.get("shipping") or {},
+                reconsultar_zero=True,
+                contexto_frete=_ml_contexto_frete_item(item, preco_b or preco_a or preco_atual or preco_base_anuncio),
+            )
         except Exception:
             shipping_data = {}
         frete_api_val = _parse_float_flex(shipping_data.get("shipping_cost"))
@@ -23673,6 +25102,8 @@ async def analisar_promo_via_api_sem_arquivos(
             "Margem ML": _format_pct_br(margem_b),
             "AÃ§Ã£o": decisao,
             "Participar ou nÃ£o": decisao,
+            "offer_id": _ml_promocao_raw_offer_id(raw_b_item),
+            "promotion_type": promo_meta.get("promo_b_type") or "",
         }
 
     analises = []
@@ -23824,9 +25255,22 @@ async def analisar_promo_via_api_sem_arquivos(
         )
         df_payload = _build_df_planilha_analise_promo(linhas).fillna("")
         dados_payload = df_payload.to_dict(orient="records")
+        meta_por_linha = {
+            str(item.get("MLB") or "").strip(): {
+                "offer_id": str(item.get("offer_id") or "").strip(),
+                "promotion_type": str(item.get("promotion_type") or "").strip(),
+            }
+            for item in linhas
+            if str(item.get("MLB") or "").strip()
+        }
         for row in dados_payload:
             row["Frete Gratis"] = row.get("Frete GrÃ¡tis", row.get("Frete Gratis", ""))
             row["Frete Gratis ML"] = row.get("Frete GrÃ¡tis ML", row.get("Frete Gratis ML", ""))
+            meta = meta_por_linha.get(str(row.get("MLB") or "").strip()) or {}
+            if meta.get("offer_id"):
+                row["offer_id"] = meta["offer_id"]
+            if meta.get("promotion_type"):
+                row["promotion_type"] = meta["promotion_type"]
 
         arquivo_nome = f"analise_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])}.xlsx"
         analises.append({
@@ -23958,8 +25402,7 @@ async def analisar_promo_via_api_com_arquivos(
     ids_a = {str(x.get("id") or "").strip() for x in (itens_a_refs or []) if str(x.get("id") or "").strip()}
     _emit_progress(32, f"Promocao 1 carregada com {len(ids_a)} anuncio(s).")
 
-    custos_por_sku = _carregar_custos_cadastro_por_sku(client_id)
-    impostos_por_sku = _carregar_impostos_cadastro_por_sku(client_id)
+    custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, loja)
 
     analises = []
     ids_globais = set()
@@ -24079,7 +25522,15 @@ async def analisar_promo_via_api_com_arquivos(
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
         try:
-            shipping_data, cfg_local = _ml_obter_frete_detalhado(client_id, loja, cfg_local, item_id, item.get("shipping") or {})
+            shipping_data, cfg_local = _ml_obter_frete_detalhado(
+                client_id,
+                loja,
+                cfg_local,
+                item_id,
+                item.get("shipping") or {},
+                reconsultar_zero=True,
+                contexto_frete=_ml_contexto_frete_item(item, preco_b or preco_a or preco_atual or preco_base_anuncio),
+            )
         except Exception:
             shipping_data = {}
         frete_api_val = _parse_float_flex(shipping_data.get("shipping_cost"))
@@ -24741,7 +26192,8 @@ async def iniciar_analise_promo_via_api(
     promocoes_b_meta: str = Form(...),
     client_id: str = Depends(get_tenant_id),
 ):
-    return _promo_start_api_worker_job(
+    return await asyncio.to_thread(
+        _promo_start_api_worker_job,
         client_id=client_id,
         loja=loja,
         promocao_a_id=promocao_a_id,
@@ -24785,11 +26237,12 @@ async def iniciar_analise_promo_via_api_com_arquivos(
         if not files_payload:
             raise HTTPException(status_code=400, detail="Nenhum arquivo valido foi enviado.")
 
-        resp = requests.post(
+        resp = await asyncio.to_thread(
+            requests.post,
             f"{PROMO_WORKER_URL}/api/promo/jobs/start",
             data=data,
             files=files_payload,
-            timeout=60,
+            timeout=90,
         )
         payload = _safe_json_response(resp)
     except HTTPException:
@@ -24812,16 +26265,31 @@ async def iniciar_analise_promo_via_api_com_arquivos(
 async def progresso_analise_promo_via_api_com_arquivos(job_id: str, client_id: str = Depends(get_tenant_id)):
     if not _ensure_promo_worker_running():
         raise HTTPException(status_code=503, detail="Worker dedicado de promocoes indisponivel.")
-    try:
-        resp = requests.get(
-            f"{PROMO_WORKER_URL}/api/promo/jobs/{job_id}",
-            params={"client_id": client_id},
-            timeout=30,
-        )
-        payload = _safe_json_response(resp)
-    except Exception as e:
-        logger.exception("[PROMO WORKER] Falha ao consultar job %s", job_id)
-        raise HTTPException(status_code=503, detail=f"Falha ao consultar worker dedicado: {e}")
+    payload = {}
+    ultimo_erro = None
+    resp = None
+    for tentativa in range(1, 4):
+        try:
+            resp = await asyncio.to_thread(
+                requests.get,
+                f"{PROMO_WORKER_URL}/api/promo/jobs/{job_id}",
+                params={"client_id": client_id},
+                timeout=45,
+            )
+            payload = _safe_json_response(resp)
+            if resp.status_code >= 500 and tentativa < 3:
+                await asyncio.sleep(0.7 * tentativa)
+                continue
+            break
+        except Exception as e:
+            ultimo_erro = e
+            if tentativa < 3:
+                await asyncio.sleep(0.7 * tentativa)
+                continue
+            logger.exception("[PROMO WORKER] Falha ao consultar job %s", job_id)
+            raise HTTPException(status_code=503, detail=f"Falha ao consultar worker dedicado: {e}")
+    if resp is None:
+        raise HTTPException(status_code=503, detail=f"Falha ao consultar worker dedicado: {ultimo_erro or 'sem resposta'}")
     if not resp.ok:
         detalhe = payload.get("detail") or payload.get("error") or resp.reason or "Falha ao consultar job no worker dedicado."
         raise HTTPException(status_code=resp.status_code, detail=f"Worker promocoes respondeu HTTP {resp.status_code}: {detalhe}")
@@ -24833,10 +26301,11 @@ async def cancelar_analise_promo_via_api_com_arquivos(job_id: str, client_id: st
     if not _ensure_promo_worker_running():
         raise HTTPException(status_code=503, detail="Worker dedicado de promocoes indisponivel.")
     try:
-        resp = requests.post(
+        resp = await asyncio.to_thread(
+            requests.post,
             f"{PROMO_WORKER_URL}/api/promo/jobs/{job_id}/cancel",
             params={"client_id": client_id},
-            timeout=15,
+            timeout=20,
         )
         payload = _safe_json_response(resp)
     except Exception as e:
@@ -24919,12 +26388,15 @@ def _promo_aplicar_item_participacao_ml(
     item_id: str,
     promotion_id: str,
     promotion_type: str,
+    offer_id: Optional[str] = None,
     deal_price: Optional[float] = None,
     discount_percentage: Optional[float] = None,
 ) -> tuple[bool, str, dict]:
     item_id = _promo_normalizar_mlb(item_id)
     promotion_id = str(promotion_id or "").strip()
-    promotion_type = str(promotion_type or "").strip() or "SELLER_CAMPAIGN"
+    promotion_type = str(promotion_type or "").strip()
+    if not promotion_type:
+        promotion_type = "SMART" if promotion_id.upper().startswith("P-") else "SELLER_CAMPAIGN"
     if not item_id or not promotion_id:
         return False, "MLB ou promocao ausente", cfg
 
@@ -25014,6 +26486,9 @@ def _promo_aplicar_item_participacao_ml(
             or ("credibility" in erro_norm and "price" in erro_norm)
         )
 
+    def _extrair_offer_id_promocao(raw_entry: dict) -> str:
+        return _ml_promocao_raw_offer_id(raw_entry)
+
     def _erro_payload_ml(resp) -> str:
         try:
             data = resp.json() or {}
@@ -25049,6 +26524,8 @@ def _promo_aplicar_item_participacao_ml(
     promotion_type_upper = promotion_type.upper().strip()
     deal_price_num = _parse_float_flex(deal_price)
     discount_num = _parse_float_flex(discount_percentage)
+    offer_id_texto = str(offer_id or "").strip()
+    tipos_exigem_offer_id = {"SMART", "PRICE_MATCHING", "PRICE_MATCHING_MELI_ALL"}
     payloads = []
     payloads_vistos = set()
 
@@ -25061,11 +26538,36 @@ def _promo_aplicar_item_participacao_ml(
         payloads_vistos.add(assinatura)
         payloads.append(payload)
 
+    if promotion_type_upper in tipos_exigem_offer_id:
+        raw_item_promocao = {}
+        if not offer_id_texto:
+            try:
+                raw_item_promocao, cfg = _ml_obter_item_promocao_raw(
+                    client_id,
+                    loja,
+                    cfg,
+                    promotion_id,
+                    promotion_type,
+                    item_id,
+                )
+            except Exception:
+                raw_item_promocao = {}
+            offer_id_texto = _extrair_offer_id_promocao(raw_item_promocao)
+        if not offer_id_texto:
+            return (
+                False,
+                (
+                    f"Campanha {promotion_type_upper} exige offer_id do convite/candidato, "
+                    "mas o Mercado Livre nao retornou esse identificador para o item."
+                ),
+                cfg,
+            )
+        _adicionar_payload({**base_payload, "offer_id": offer_id_texto})
     # Em campanhas do vendedor com percentual fixo, o percentual ja foi usado para
     # calcular o preco cheio. Na adesao do item, a API espera o preco final
     # promocional (deal_price). Enviar fallbacks sem preco depois disso pode fazer
     # o ML recalcular a oferta de forma incorreta e rejeitar com FINAL_PRICE_*.
-    if deal_price_num is not None and deal_price_num > 0:
+    elif deal_price_num is not None and deal_price_num > 0:
         _adicionar_payload({**base_payload, "deal_price": round(float(deal_price_num), 2)})
     elif discount_num is not None and discount_num > 0:
         _adicionar_payload({**base_payload, "discount_percentage": round(float(discount_num), 4)})
@@ -25103,6 +26605,15 @@ def _promo_aplicar_item_participacao_ml(
         erro_payload = _erro_payload_ml(resp)
         erro_completo = f"{erro} | {erro_payload}" if erro_payload else erro
         erro_norm = normalizar_texto(erro_completo)
+        if _promo_erro_candidate_not_found(erro_completo):
+            return (
+                False,
+                (
+                    "CANDIDATE_NOT_FOUND: o Mercado Livre informou que este MLB nao esta como "
+                    "candidate/elegivel para essa campanha."
+                ),
+                cfg,
+            )
         if "already" in erro_norm or ("ja" in erro_norm and "promoc" in erro_norm):
             edit_resp, cfg = _ml_api_request(
                 client_id,
@@ -25152,8 +26663,11 @@ def _promo_aplicar_item_participacao_ml(
     return False, ultimo_erro or "Mercado Livre nao aceitou a inclusao do item", cfg
 
 
-@app.post("/api/promo/aplicar-participacoes")
-def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client_id: str = Depends(get_tenant_id)):
+def _aplicar_participacoes_promocoes_payload(
+    req: PromoAplicarParticipacaoRequest,
+    client_id: str,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
     loja = str(req.loja or "").strip()
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
@@ -25163,9 +26677,37 @@ def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client
 
     cfg = _obter_cfg_ml(client_id, loja)
     resumo = []
+    detalhes = []
     total_sucesso = 0
     total_falha = 0
     total_ignorados = 0
+    total_itens = sum(
+        len(grupo.get("items") or [])
+        for grupo in promocoes
+        if isinstance(grupo, dict) and isinstance(grupo.get("items"), list)
+    )
+    processados = 0
+
+    def _notificar(mensagem: str):
+        if not progress_callback:
+            return
+        progresso = 5
+        if total_itens > 0:
+            progresso = min(98, max(5, int((processados / total_itens) * 93) + 5))
+        try:
+            progress_callback({
+                "progress": progresso,
+                "message": mensagem,
+                "processed": processados,
+                "total": total_itens,
+                "total_sucesso": total_sucesso,
+                "total_falha": total_falha,
+                "total_ignorados": total_ignorados,
+            })
+        except Exception:
+            logger.exception("[PROMO APPLY] Falha ao atualizar progresso")
+
+    _notificar(f"Iniciando entrada em {total_itens} anuncio(s) nas promocoes...")
 
     for grupo in promocoes:
         if not isinstance(grupo, dict):
@@ -25187,19 +26729,98 @@ def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client
             promo_resumo["falhas"] = len(items)
             promo_resumo["erros"].append("Promocao sem ID.")
             total_falha += len(items)
+            processados += len(items)
+            _notificar(f"Promocao sem ID ignorada ({processados}/{total_itens}).")
             resumo.append(promo_resumo)
             continue
         for item in items:
             if not isinstance(item, dict):
                 total_ignorados += 1
                 promo_resumo["ignorados"] += 1
+                processados += 1
+                _notificar(f"Item invalido ignorado ({processados}/{total_itens}).")
                 continue
             item_id = _promo_normalizar_mlb(item.get("item_id") or item.get("mlb") or item.get("MLB"))
+            offer_id = str(
+                item.get("offer_id")
+                or item.get("offerId")
+                or item.get("ref_id")
+                or item.get("refId")
+                or ""
+            ).strip()
             deal_price = _parse_float_flex(item.get("deal_price") or item.get("preco_final_ml") or item.get("price"))
             discount_percentage = _parse_float_flex(item.get("discount_percentage") or item.get("percentual") or item.get("ml_pct"))
             if not item_id:
                 total_ignorados += 1
                 promo_resumo["ignorados"] += 1
+                processados += 1
+                _notificar(f"Item sem MLB ignorado ({processados}/{total_itens}).")
+                continue
+            elegibilidade, cfg = _promo_consultar_item_na_campanha(
+                client_id,
+                loja,
+                cfg,
+                promotion_id,
+                promotion_type,
+                item_id,
+            )
+            if elegibilidade.get("success") and elegibilidade.get("found"):
+                if elegibilidade.get("already_participating"):
+                    total_ignorados += 1
+                    promo_resumo["ignorados"] += 1
+                    processados += 1
+                    status_atual = elegibilidade.get("status") or "started"
+                    if len(promo_resumo["erros"]) < 8:
+                        promo_resumo["erros"].append(f"{item_id}: ja esta na campanha ({status_atual}).")
+                    if len(detalhes) < 300:
+                        detalhes.append({
+                            "item_id": item_id,
+                            "promotion_id": promotion_id,
+                            "promotion_type": promotion_type,
+                            "success": True,
+                            "ignored": True,
+                            "status": status_atual,
+                            "message": "Item ja esta participando ou pendente na campanha.",
+                        })
+                    _notificar(f"{item_id} ja esta na campanha; ignorado ({processados}/{total_itens}).")
+                    continue
+                if not elegibilidade.get("can_participate"):
+                    total_ignorados += 1
+                    promo_resumo["ignorados"] += 1
+                    processados += 1
+                    status_atual = elegibilidade.get("status") or "-"
+                    if len(promo_resumo["erros"]) < 8:
+                        promo_resumo["erros"].append(f"{item_id}: status {status_atual}; nao esta candidate.")
+                    if len(detalhes) < 300:
+                        detalhes.append({
+                            "item_id": item_id,
+                            "promotion_id": promotion_id,
+                            "promotion_type": promotion_type,
+                            "success": True,
+                            "ignored": True,
+                            "status": status_atual,
+                            "message": "Item nao esta com status candidate para essa campanha.",
+                        })
+                    _notificar(f"{item_id} nao esta candidate; ignorado ({processados}/{total_itens}).")
+                    continue
+            elif elegibilidade.get("success") and not elegibilidade.get("found"):
+                total_ignorados += 1
+                promo_resumo["ignorados"] += 1
+                processados += 1
+                detalhe = str(elegibilidade.get("detail") or "Nao elegivel para essa campanha.")
+                if len(promo_resumo["erros"]) < 8:
+                    promo_resumo["erros"].append(f"{item_id}: nao elegivel/candidate nesta campanha.")
+                if len(detalhes) < 300:
+                    detalhes.append({
+                        "item_id": item_id,
+                        "promotion_id": promotion_id,
+                        "promotion_type": promotion_type,
+                        "success": True,
+                        "ignored": True,
+                        "status": "not_candidate",
+                        "message": detalhe,
+                    })
+                _notificar(f"{item_id} nao e candidato da campanha; ignorado ({processados}/{total_itens}).")
                 continue
             ok, erro, cfg = _promo_aplicar_item_participacao_ml(
                 client_id,
@@ -25208,6 +26829,7 @@ def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client
                 item_id=item_id,
                 promotion_id=promotion_id,
                 promotion_type=promotion_type,
+                offer_id=offer_id,
                 deal_price=deal_price,
                 discount_percentage=discount_percentage,
             )
@@ -25215,20 +26837,158 @@ def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client
                 total_sucesso += 1
                 promo_resumo["sucesso"] += 1
             else:
+                if _promo_erro_candidate_not_found(erro):
+                    total_ignorados += 1
+                    promo_resumo["ignorados"] += 1
+                    if len(promo_resumo["erros"]) < 8:
+                        promo_resumo["erros"].append(f"{item_id}: nao elegivel/candidate nesta campanha.")
+                    if len(detalhes) < 300:
+                        detalhes.append({
+                            "item_id": item_id,
+                            "promotion_id": promotion_id,
+                            "promotion_type": promotion_type,
+                            "success": True,
+                            "ignored": True,
+                            "status": "candidate_not_found",
+                            "message": erro,
+                        })
+                    processados += 1
+                    _notificar(f"{item_id} nao e candidato da campanha; ignorado ({processados}/{total_itens}).")
+                    continue
                 total_falha += 1
                 promo_resumo["falhas"] += 1
                 if len(promo_resumo["erros"]) < 8:
                     promo_resumo["erros"].append(f"{item_id}: {erro}")
+                if len(detalhes) < 300:
+                    detalhes.append({
+                        "item_id": item_id,
+                        "promotion_id": promotion_id,
+                        "promotion_type": promotion_type,
+                        "success": False,
+                        "error": erro,
+                    })
+            processados += 1
+            _notificar(f"Entrando nas promocoes: {processados}/{total_itens} anuncio(s).")
         resumo.append(promo_resumo)
 
     return {
         "success": total_falha == 0,
         "loja": loja,
+        "total_itens": total_itens,
         "total_sucesso": total_sucesso,
         "total_falha": total_falha,
         "total_ignorados": total_ignorados,
+        "detalhes": detalhes,
         "promocoes": resumo,
     }
+
+
+@app.post("/api/promo/aplicar-participacoes")
+def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client_id: str = Depends(get_tenant_id)):
+    return _aplicar_participacoes_promocoes_payload(req, client_id)
+
+
+def _promo_aplicar_participacoes_job_worker(job_id: str, payload_req: dict, client_id: str) -> None:
+    def _progress(payload: dict):
+        _promo_job_set(
+            job_id,
+            client_id=client_id,
+            status="running",
+            progress=int(payload.get("progress") or 0),
+            message=str(payload.get("message") or "Entrando nas promocoes..."),
+            result=None,
+            error="",
+            stats=payload,
+        )
+
+    try:
+        req = PromoAplicarParticipacaoRequest(**(payload_req or {}))
+        _promo_job_set(
+            job_id,
+            client_id=client_id,
+            status="running",
+            progress=1,
+            message="Preparando entrada nas promocoes...",
+            result=None,
+            error="",
+        )
+        result = _aplicar_participacoes_promocoes_payload(req, client_id, progress_callback=_progress)
+        _promo_job_set(
+            job_id,
+            client_id=client_id,
+            status="completed",
+            progress=100,
+            message=(
+                f"Entrada concluida: {int(result.get('total_sucesso') or 0)} sucesso(s), "
+                f"{int(result.get('total_falha') or 0)} falha(s), "
+                f"{int(result.get('total_ignorados') or 0)} ignorado(s)."
+            ),
+            result=result,
+            error="",
+        )
+    except Exception as exc:
+        detalhe = str(getattr(exc, "detail", None) or exc or "Erro ao entrar nas promocoes.")
+        logger.exception("[PROMO APPLY] Falha no job %s", job_id)
+        _promo_job_set(
+            job_id,
+            client_id=client_id,
+            status="error",
+            progress=100,
+            message=detalhe,
+            result=None,
+            error=detalhe,
+        )
+
+
+@app.post("/api/promo/aplicar-participacoes/start")
+def aplicar_participacoes_promocoes_start(req: PromoAplicarParticipacaoRequest, client_id: str = Depends(get_tenant_id)):
+    payload_req = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    loja = str(payload_req.get("loja") or "").strip()
+    promocoes = payload_req.get("promocoes") if isinstance(payload_req.get("promocoes"), list) else []
+    total_itens = sum(
+        len(grupo.get("items") or [])
+        for grupo in promocoes
+        if isinstance(grupo, dict) and isinstance(grupo.get("items"), list)
+    )
+    if not loja:
+        raise HTTPException(status_code=400, detail="Informe a loja.")
+    if total_itens <= 0:
+        raise HTTPException(status_code=400, detail="Nenhuma promocao enviada para aplicar.")
+    job_id = uuid.uuid4().hex
+    _promo_job_set(
+        job_id,
+        client_id=client_id,
+        status="queued",
+        progress=0,
+        message=f"Entrada em {total_itens} anuncio(s) enviada para segundo plano.",
+        result=None,
+        error="",
+    )
+    threading.Thread(
+        target=_promo_aplicar_participacoes_job_worker,
+        args=(job_id, payload_req, client_id),
+        name=f"promo-apply-{job_id[:8]}",
+        daemon=True,
+    ).start()
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "queued",
+        "progress": 0,
+        "message": f"Entrada em {total_itens} anuncio(s) enviada para segundo plano.",
+    }
+
+
+@app.get("/api/promo/aplicar-participacoes/jobs/{job_id}")
+def aplicar_participacoes_promocoes_job(job_id: str, client_id: str = Depends(get_tenant_id)):
+    job = _promo_job_get(job_id)
+    if not job or job.get("client_id") != client_id:
+        raise HTTPException(status_code=404, detail="Job de participacao em promocoes nao encontrado.")
+    payload = dict(job)
+    payload.pop("client_id", None)
+    payload["success"] = True
+    payload["job_id"] = job_id
+    return payload
 
 
 @app.get("/api/promo/analise")
@@ -25246,7 +27006,7 @@ async def analisar_promo_automatico(
     payload = await ml_listar_anuncios(loja=loja, offset=offset, limit=limit, client_id=client_id)
     anuncios = payload.get("results", []) if isinstance(payload, dict) else []
 
-    custos_por_sku = _carregar_custos_cadastro_por_sku(client_id)
+    custos_por_sku, _ = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, loja)
     dados_analise = []
 
     for item in anuncios:
@@ -27500,6 +29260,21 @@ def _integracoes_nome_normalizado(nome):
     return texto
 
 
+def _integracoes_nome_equivalente(nome_a, nome_b) -> bool:
+    """Compara nomes de loja tolerando acentos, pequenas perdas e texto normalizado."""
+    norm_a = _integracoes_nome_normalizado(nome_a)
+    norm_b = _integracoes_nome_normalizado(nome_b)
+    if not norm_a or not norm_b:
+        return False
+    if norm_a == norm_b:
+        return True
+    if norm_a in norm_b or norm_b in norm_a:
+        return True
+    if min(len(norm_a), len(norm_b)) >= 5 and SequenceMatcher(None, norm_a, norm_b).ratio() >= 0.88:
+        return True
+    return False
+
+
 def _integracoes_ler_json(caminho, padrao):
     if not os.path.exists(caminho):
         return padrao
@@ -27520,7 +29295,7 @@ def _integracoes_merge_sem_sobrescrever(atual, legado):
         if not _integracoes_valor_preenchido(atual.get(chave)):
             atual[chave] = valor
             mudou = True
-    if legado.get("connected") and atual.get("connected") is not True:
+    if legado.get("connected") and "connected" not in atual:
         atual["connected"] = True
         mudou = True
     return atual, mudou
@@ -27682,8 +29457,12 @@ def salvar_lojas(client_id: str, lojas: list):
 def buscar_loja(client_id: str, nome_loja: str):
     """Busca uma loja especÃƒÂ­fica do cliente."""
     lojas = carregar_lojas(client_id)
+    nome_alvo = str(nome_loja or "").strip()
     for loja in lojas:
-        if loja.get('nome') == nome_loja:
+        if str(loja.get('nome') or "").strip() == nome_alvo:
+            return loja
+    for loja in lojas:
+        if _integracoes_nome_equivalente(loja.get("nome"), nome_alvo):
             return loja
     return None
 
@@ -27754,7 +29533,7 @@ async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: s
     if not buscar_loja(client_id, auth_req.loja):
         raise HTTPException(status_code=404, detail="Loja nao encontrada.")
     state = secrets.token_urlsafe(24)
-    redirect_uri = _resolver_redirect_uri_publica(request=request)
+    redirect_uri = _resolver_redirect_uri_bling(request=request)
     salvar_temp_auth({
         "client_id": client_id,
         "loja": auth_req.loja,
@@ -27765,7 +29544,7 @@ async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: s
         "redirect_uri": redirect_uri,
         "created_at": time.time(),
     })
-    return {"success": True, "url": auth_bling_get_link(auth_req.client_id, state, redirect_uri=redirect_uri)}
+    return {"success": True, "url": auth_bling_get_link(auth_req.client_id, state, redirect_uri=redirect_uri), "redirect_uri": redirect_uri}
 
 
 @app.post("/api/integracoes/mercadolivre/start")
@@ -27891,12 +29670,14 @@ def ml_invalidar_cache(loja: str, client_id: str = Depends(get_tenant_id)):
 def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
     lojas = []
     configs_lojas = _perguntas_loja_configs_carregar(client_id)
+    lojas_index = set()
     for loja in carregar_lojas(client_id) or []:
         if not isinstance(loja, dict):
             continue
-        nome = str(loja.get("nome") or "").strip()
+        nome = _corrigir_texto_mojibake(str(loja.get("nome") or "").strip())
         if not nome:
             continue
+        lojas_index.add(_integracoes_nome_normalizado(nome))
         integracoes = loja.get("integracoes") or {}
         cfg = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
         ml_status = _ml_oauth_status(cfg)
@@ -27908,8 +29689,31 @@ def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
             "mercadolivre_motivo": ml_status.get("motivo") or "",
             "mercadolivre_oauth_faltando": ml_status.get("faltando") or [],
             "seller_id": str((cfg or {}).get("user_id") or "").strip(),
-            "config_perguntas": _perguntas_loja_config_normalizar(configs_lojas.get(nome)),
+            "config_perguntas": _perguntas_loja_config_normalizar(_perguntas_loja_config_obter(configs_lojas, nome)),
+            "precisa_reintegrar": False,
         })
+
+    for nome_config, config in (configs_lojas or {}).items():
+        nome = _corrigir_texto_mojibake(str(nome_config or "").strip())
+        nome_norm = _integracoes_nome_normalizado(nome)
+        if not nome or not nome_norm or nome_norm in lojas_index:
+            continue
+        lojas_index.add(nome_norm)
+        lojas.append({
+            "nome": nome,
+            "mercadolivre_conectado": False,
+            "mercadolivre_status": "reautenticar",
+            "mercadolivre_motivo": "Loja tinha configuracao em Perguntas e pos-venda, mas nao esta mais autenticada em Integracoes.",
+            "mercadolivre_oauth_faltando": ["access_token", "refresh_token", "app_id", "client_secret"],
+            "seller_id": "",
+            "config_perguntas": _perguntas_loja_config_normalizar(config),
+            "precisa_reintegrar": True,
+        })
+
+    lojas.sort(key=lambda item: (
+        0 if item.get("mercadolivre_conectado") else 1,
+        _integracoes_nome_normalizado(item.get("nome")),
+    ))
     return {"success": True, "lojas": lojas}
 
 
@@ -28009,7 +29813,17 @@ def ml_perguntas_automacao_poll(
                     break
 
                 item = item_por_id.get(str(pergunta.get("item_id") or "").strip()) or {}
-                resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, nome_loja, cfg, pergunta, item)
+                try:
+                    resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, nome_loja, cfg, pergunta, item)
+                except PerguntasIARespostaIndisponivel as exc:
+                    logger.warning(
+                        "[ML PERGUNTAS IA] Resposta bloqueada para a loja %s, pergunta %s: %s",
+                        nome_loja,
+                        question_id,
+                        exc,
+                    )
+                    erros.append({"loja": nome_loja, "question_id": question_id, "erro": str(exc)})
+                    continue
                 if not resposta:
                     continue
 
@@ -28243,7 +30057,10 @@ def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, clien
             ] if pergunta.get("item_sku") else [],
         }
 
-    resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
+    try:
+        resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
+    except PerguntasIARespostaIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "success": True,
         "loja": loja,
@@ -28288,8 +30105,8 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
 
 
 @app.get("/api/mercadolivre/ia-treinamento")
-def ml_ia_treinamento_obter(client_id: str = Depends(get_tenant_id)):
-    data = _ia_treinamento_ppv_carregar(client_id)
+def ml_ia_treinamento_obter(loja: Optional[str] = None, client_id: str = Depends(get_tenant_id)):
+    data = _ia_treinamento_ppv_resolver(client_id, loja)
     return {"success": True, **data}
 
 
@@ -28299,6 +30116,7 @@ def ml_ia_treinamento_salvar(req: IATreinamentoPerguntasPosVendaRequest, client_
         client_id,
         req.orientacoes,
         req.tipo,
+        loja=req.loja,
         contexto_loja=req.contexto_loja,
         compatibilidade_autopecas=req.compatibilidade_autopecas,
         proibicoes=req.proibicoes,
@@ -28323,6 +30141,7 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     tipo_treinamento = _ia_treinamento_ppv_tipo_normalizar(req.tipo)
     contexto_tipo = "pos-venda" if tipo_treinamento == "pos_venda" else "pergunta de anuncio"
     contexto_extra = str(req.contexto or "").strip()
+    loja = str(req.loja or "").strip()
     mensagem = (
         f"Simule uma resposta pronta de {contexto_tipo} para enviar a um comprador do Mercado Livre. "
         f"Use as orientacoes salvas no treinamento de {_ia_treinamento_ppv_tipo_label(tipo_treinamento)}. "
@@ -28346,6 +30165,7 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
             "modulo": "perguntas_pos_venda",
             "tipo": "treinamento_ia",
             "tipo_treinamento": tipo_treinamento,
+            "loja": loja,
             "sku": sku_selecionado,
             "produto": produto_sku,
         },
@@ -28356,13 +30176,10 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
 
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
-        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_modelo_nome_curto(os.getenv('VERTEX_AI_MODEL') or 'gemini-2.5-flash')}"
+        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
-    elif _modelo_eh_gemini_api(model_req):
-        resposta = _chamar_gemini_chat(payload, client_id)
-        model_usado = _gemini_nome_curto(model_req) or _gemini_nome_curto(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash")
     else:
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
@@ -29336,6 +31153,7 @@ def _ml_pos_venda_gerar_resposta_ia(
             "modulo": "perguntas_pos_venda",
             "tipo": "resposta_pos_venda",
             "tipo_treinamento": "pos_venda",
+            "loja": loja,
             "conversa": conversa,
         },
         model=None,
@@ -29344,13 +31162,10 @@ def _ml_pos_venda_gerar_resposta_ia(
     payload.model = model_req
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
-        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_modelo_nome_curto(os.getenv('VERTEX_AI_MODEL') or 'gemini-2.5-flash')}"
+        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif model_req.startswith("deepseek-"):
         resposta = _chamar_deepseek_chat(payload, client_id)
         model_usado = model_req
-    elif _modelo_eh_gemini_api(model_req):
-        resposta = _chamar_gemini_chat(payload, client_id)
-        model_usado = _gemini_nome_curto(model_req) or _gemini_nome_curto(os.getenv("GEMINI_MODEL") or "gemini-2.5-flash")
     else:
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
@@ -30531,6 +32346,121 @@ def ml_listar_anuncios(loja: str, offset: int = 0, limit: int = 50, sku: Optiona
         logger.exception(f"[ML API] Falha inesperada ao listar anuncios da loja {loja}: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao listar anuncios do Mercado Livre: {str(e)}")
 
+
+def _ml_parse_data_visita(valor: Any) -> Optional[dt.date]:
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    try:
+        return dt.datetime.fromisoformat(texto.replace("Z", "+00:00")).date()
+    except Exception:
+        pass
+    try:
+        return dt.datetime.strptime(texto[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+@app.get("/api/mercadolivre/anuncios/{item_id}/visitas")
+def ml_historico_visitas_anuncio(
+    item_id: str,
+    loja: str,
+    dias: int = 150,
+    client_id: str = Depends(get_tenant_id),
+):
+    try:
+        item_id = str(item_id or "").strip().upper()
+        if not re.match(r"^[A-Z]{3}\d+$", item_id):
+            raise HTTPException(status_code=400, detail="ID do anúncio inválido.")
+
+        dias = max(1, min(150, int(dias or 150)))
+        ending = dt.datetime.now().strftime("%Y-%m-%d")
+        chave_cache = f"visitas:{client_id}:{loja}:{item_id}:{dias}:{ending}"
+        cached = _ml_cache_get(chave_cache, 900)
+        if cached is not None:
+            return cached
+
+        cfg = _obter_cfg_ml(client_id, loja)
+        resp, cfg = _ml_api_request(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/items/{item_id}/visits/time_window",
+            params={"last": dias, "unit": "day", "ending": ending},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=_ml_parse_error_detail(resp, "Erro ao consultar histórico de visitas"),
+            )
+
+        data = resp.json() or {}
+        pontos_map: dict[str, int] = {}
+        for entry in data.get("results") or []:
+            if not isinstance(entry, dict):
+                continue
+            dia = _ml_parse_data_visita(entry.get("date"))
+            if not dia:
+                continue
+            try:
+                total_dia = int(float(entry.get("total") or 0))
+            except Exception:
+                total_dia = 0
+            pontos_map[dia.isoformat()] = max(0, total_dia)
+
+        data_inicio = _ml_parse_data_visita(data.get("date_from"))
+        data_fim = _ml_parse_data_visita(data.get("date_to"))
+        if not data_fim:
+            data_fim = dt.datetime.strptime(ending, "%Y-%m-%d").date()
+        if not data_inicio:
+            data_inicio = data_fim - dt.timedelta(days=dias)
+
+        pontos = []
+        dia_atual = data_inicio
+        limite_dias = 0
+        while dia_atual < data_fim and limite_dias < 160:
+            data_iso = dia_atual.isoformat()
+            pontos.append({"date": data_iso, "total": int(pontos_map.get(data_iso, 0))})
+            dia_atual += dt.timedelta(days=1)
+            limite_dias += 1
+        if not pontos and pontos_map:
+            pontos = [{"date": data_iso, "total": total} for data_iso, total in sorted(pontos_map.items())]
+
+        total_visits = data.get("total_visits")
+        try:
+            total_visits = int(float(total_visits))
+        except Exception:
+            total_visits = sum(p["total"] for p in pontos)
+
+        media = round((total_visits / len(pontos)), 2) if pontos else 0
+        recorde = None
+        if pontos:
+            recorde = max(pontos, key=lambda p: p["total"])
+
+        payload = jsonable_encoder({
+            "success": True,
+            "item_id": data.get("item_id") or item_id,
+            "date_from": data.get("date_from"),
+            "date_to": data.get("date_to"),
+            "total_visits": total_visits,
+            "average": media,
+            "record": recorde,
+            "last": dias,
+            "unit": data.get("unit") or "day",
+            "results": pontos,
+            "raw_count": len(data.get("results") or []),
+        })
+        _ml_cache_set(chave_cache, payload)
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[ML API] Falha inesperada ao consultar visitas do anúncio %s: %s", item_id, e)
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar histórico de visitas: {str(e)}")
+
+
 @app.get("/api/mercadolivre/anuncios/{item_id}")
 async def ml_buscar_anuncio(item_id: str, loja: str, client_id: str = Depends(get_tenant_id)):
     cfg = _obter_cfg_ml(client_id, loja)
@@ -30629,6 +32559,32 @@ def favoritos_vendedores_ignorados_put(
     return {
         "success": True,
         "vendedores_ignorados": payload.get("vendedores_ignorados") or [],
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+@app.get("/api/favoritos/preferencias-anuncios-ignorados")
+def favoritos_anuncios_ignorados_get(request: Request, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    prefs = _favoritos_carregar_anuncios_ignorados(client_id, username)
+    return {
+        "success": True,
+        "anuncios_ignorados": prefs.get("anuncios_ignorados") or {},
+        "updated_at": prefs.get("updated_at"),
+    }
+
+
+@app.put("/api/favoritos/preferencias-anuncios-ignorados")
+def favoritos_anuncios_ignorados_put(
+    req: FavoritosAnunciosIgnoradosRequest,
+    request: Request,
+    client_id: str = Depends(get_tenant_id),
+):
+    username = _extrair_username_do_request(request)
+    payload = _favoritos_salvar_anuncios_ignorados(client_id, username, req.anuncios_ignorados or {})
+    return {
+        "success": True,
+        "anuncios_ignorados": payload.get("anuncios_ignorados") or {},
         "updated_at": payload.get("updated_at"),
     }
 
@@ -31163,6 +33119,62 @@ def _favoritos_ml_preco_ranking_simulado(req: FavoritosEfetivarPromocaoRequest) 
     return None
 
 
+def _favoritos_ml_preco_minimo_margem_simulado(req: FavoritosEfetivarPromocaoRequest) -> Optional[float]:
+    sim = req.simulacao if isinstance(req.simulacao, dict) else {}
+    for campo in (
+        "precoMinimoMargem",
+        "preco_minimo_margem",
+        "minimum_margin_price",
+        "preco_minimo_15",
+    ):
+        valor = _parse_float_flex(sim.get(campo))
+        if valor is not None and valor > 0:
+            return math.ceil(float(valor) * 100.0) / 100.0
+    return None
+
+
+def _favoritos_ml_preco_final_verificacao(verificacao: Optional[dict]) -> Optional[float]:
+    if not isinstance(verificacao, dict):
+        return None
+    price_info = verificacao.get("price_info") if isinstance(verificacao.get("price_info"), dict) else {}
+    for valor in (
+        verificacao.get("promotion_price_raw"),
+        price_info.get("price"),
+        price_info.get("sale_price"),
+        price_info.get("promotional_price"),
+        verificacao.get("item_price"),
+    ):
+        preco = _parse_float_flex(valor)
+        if preco is not None and preco > 0:
+            return float(preco)
+    return None
+
+
+def _favoritos_ml_margem_estimada(req: FavoritosEfetivarPromocaoRequest, preco_venda: Optional[float]) -> Optional[float]:
+    preco = _parse_float_flex(preco_venda)
+    if preco is None or preco <= 0:
+        return None
+    sim = req.simulacao if isinstance(req.simulacao, dict) else {}
+    custo = _parse_float_flex(sim.get("custo"))
+    frete = _parse_float_flex(sim.get("frete"))
+    tarifa_ref = _parse_float_flex(sim.get("tarifa"))
+    imposto_ref = _parse_float_flex(sim.get("impostoValor") or sim.get("imposto_valor"))
+    preco_ref = _parse_float_flex(
+        sim.get("precoCompetitivo")
+        or sim.get("precoPromocionalCalculado")
+        or sim.get("precoPromocional")
+        or req.preco_promocional
+        or req.preco_competitivo
+    )
+    if custo is None or preco_ref is None or preco_ref <= 0:
+        return None
+    frete = frete or 0.0
+    taxa_tarifa = max(0.0, float(tarifa_ref or 0.0)) / float(preco_ref)
+    taxa_imposto = max(0.0, float(imposto_ref or 0.0)) / float(preco_ref)
+    liquido = float(preco) - float(custo) - float(frete) - (float(preco) * taxa_tarifa) - (float(preco) * taxa_imposto)
+    return (liquido * 100.0) / float(preco)
+
+
 def _favoritos_ml_preco_contingencia_sem_promocao(
     req: FavoritosEfetivarPromocaoRequest,
     desconto_maximo: float = 1.5,
@@ -31170,7 +33182,60 @@ def _favoritos_ml_preco_contingencia_sem_promocao(
     preco_ranking = _favoritos_ml_preco_ranking_simulado(req)
     if preco_ranking is None or preco_ranking <= 0:
         return None
-    return round(max(0.01, float(preco_ranking) - float(desconto_maximo)), 2)
+    preco_teto = math.floor((float(preco_ranking) - 0.01) * 100.0) / 100.0
+    if preco_teto <= 0:
+        return None
+    preco_piso_competitivo = math.ceil(max(0.01, float(preco_ranking) - float(desconto_maximo)) * 100.0) / 100.0
+    preco_minimo_margem = _favoritos_ml_preco_minimo_margem_simulado(req)
+    preco_contingencia = max(preco_piso_competitivo, preco_minimo_margem or 0.01)
+    preco_contingencia = math.ceil(preco_contingencia * 100.0) / 100.0
+    if preco_contingencia > preco_teto:
+        return None
+    return round(float(preco_contingencia), 2)
+
+
+def _favoritos_ml_verificacao_exige_contingencia_por_margem(
+    req: FavoritosEfetivarPromocaoRequest,
+    verificacao: Optional[dict],
+) -> tuple[bool, str, dict]:
+    preco_final = _favoritos_ml_preco_final_verificacao(verificacao)
+    preco_simulado = _parse_float_flex(req.preco_promocional)
+    if preco_simulado is None:
+        preco_simulado = _parse_float_flex(req.preco_competitivo)
+    preco_minimo_margem = _favoritos_ml_preco_minimo_margem_simulado(req)
+    margem = _favoritos_ml_margem_estimada(req, preco_final)
+    preco_proximo = bool(
+        (isinstance(verificacao, dict) and verificacao.get("preco_promocional_ok"))
+        or _favoritos_ml_float_close(preco_final, preco_simulado)
+    )
+    margem_baixa = bool(margem is not None and margem < 15.0)
+    abaixo_minimo = bool(
+        preco_final is not None
+        and preco_minimo_margem is not None
+        and float(preco_final) + 0.005 < float(preco_minimo_margem)
+    )
+    detalhes = {
+        "preco_final_verificado": round(float(preco_final), 2) if preco_final is not None else None,
+        "preco_promocional_simulado": round(float(preco_simulado), 2) if preco_simulado is not None else None,
+        "preco_minimo_margem": round(float(preco_minimo_margem), 2) if preco_minimo_margem is not None else None,
+        "margem_estimada": round(float(margem), 2) if margem is not None else None,
+        "preco_proximo_simulado": preco_proximo,
+    }
+    if margem_baixa or abaixo_minimo:
+        motivo = (
+            "Preco final aplicado ficou com margem abaixo de 15% "
+            f"(preco final {detalhes['preco_final_verificado']}, "
+            f"margem estimada {detalhes['margem_estimada']}, "
+            f"minimo seguro {detalhes['preco_minimo_margem']})."
+        )
+        return True, motivo, detalhes
+    if not preco_proximo and (margem_baixa or abaixo_minimo):
+        motivo = (
+            "Preco final aplicado nao ficou proximo do simulado e entrou em faixa de margem insegura. "
+            f"Detalhes: {detalhes}"
+        )
+        return True, motivo, detalhes
+    return False, "", detalhes
 
 
 def _favoritos_ml_falha_por_percentual_promocao(
@@ -31218,12 +33283,25 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
     preco_ranking = _favoritos_ml_preco_ranking_simulado(req)
     preco_contingencia = _favoritos_ml_preco_contingencia_sem_promocao(req)
     if preco_contingencia is None:
+        preco_ranking_txt = round(float(preco_ranking), 2) if preco_ranking is not None else None
+        preco_minimo_txt = _favoritos_ml_preco_minimo_margem_simulado(req)
         raise HTTPException(
             status_code=409,
             detail=(
-                "A campanha foi recusada pelo Mercado Livre e nao foi possivel calcular o preco de contingencia "
-                "(ranking - R$ 1,50). Motivo original: "
+                "A campanha foi recusada pelo Mercado Livre, mas nao existe preco de contingencia seguro: "
+                "o anuncio precisa ficar abaixo do concorrente com diferenca maxima de R$ 1,50 e margem minima de 15%. "
+                f"Preco concorrente: {preco_ranking_txt}. Preco minimo para margem: {preco_minimo_txt}. Motivo original: "
                 f"{motivo}"
+            ),
+        )
+    margem_contingencia = _favoritos_ml_margem_estimada(req, preco_contingencia)
+    if margem_contingencia is not None and margem_contingencia < 15.0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Contingencia sem promocao bloqueada: o preco calculado ficaria com margem abaixo de 15%. "
+                f"Preco calculado: {preco_contingencia}. Margem estimada: {round(float(margem_contingencia), 2)}%. "
+                f"Motivo original: {motivo}"
             ),
         )
 
@@ -31254,6 +33332,7 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
         "fallback_motivo": motivo,
         "preco_ranking_referencia": round(float(preco_ranking), 2) if preco_ranking is not None else None,
         "preco_anuncio_contingencia": round(float(preco_contingencia), 2),
+        "margem_estimada_contingencia": round(float(margem_contingencia), 2) if margem_contingencia is not None else None,
         "promocoes_removidas_fallback": removidas,
         "preco_update_fallback": preco_update,
         "preco_confirmacao_fallback": preco_confirmacao,
@@ -31439,13 +33518,20 @@ def _favoritos_ml_remover_promocoes_atuais(
                 textos_resposta.append(resp.text or "")
             except Exception:
                 pass
-        erro_sem_oferta = any("no offers found" in normalizar_texto(e) for e in textos_resposta)
-        erro_tipo_promocao_invalido = any("invalid promotion type" in normalizar_texto(e) for e in textos_resposta)
+        textos_normalizados = [normalizar_texto(e).replace("_", " ") for e in textos_resposta]
+        erro_sem_oferta = any("no offers found" in e for e in textos_normalizados)
+        erro_tipo_promocao_invalido = any("invalid promotion type" in e for e in textos_normalizados)
+        erro_promocao_invalida = any("invalid promotion id" in e for e in textos_normalizados)
         ok_status = resp.status_code in (200, 202, 204, 404)
-        if erro_sem_oferta or erro_tipo_promocao_invalido:
+        if erro_sem_oferta or erro_tipo_promocao_invalido or erro_promocao_invalida:
             erros_payload = []
             ok_status = True
-            aviso = "No offers found for item" if erro_sem_oferta else "Invalid promotion type ignored while removing stale promotion reference"
+            if erro_sem_oferta:
+                aviso = "No offers found for item"
+            elif erro_tipo_promocao_invalido:
+                aviso = "Invalid promotion type ignored while removing stale promotion reference"
+            else:
+                aviso = "Invalid promotion id ignored while removing stale promotion reference"
             if not body_resp:
                 body_resp = {"warning": aviso}
             elif isinstance(body_resp, dict):
@@ -31940,19 +34026,20 @@ def favoritos_ml_efetivar_promocao(
             "Mercado Livre recebeu as alteracoes, mas a conferencia ainda nao bateu com o simulado. "
             f"Verificacao: {verificacao}"
         )
-        if _favoritos_ml_falha_por_percentual_promocao(motivo_verificacao, verificacao):
+        exige_fallback_margem, motivo_margem, detalhes_margem = _favoritos_ml_verificacao_exige_contingencia_por_margem(req, verificacao)
+        if _favoritos_ml_falha_por_percentual_promocao(motivo_verificacao, verificacao) or exige_fallback_margem:
             fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
                 client_id,
                 loja,
                 cfg,
                 item_id,
                 req,
-                motivo_verificacao,
+                motivo_margem or motivo_verificacao,
             )
             _cache_invalidar_loja(client_id, loja)
             return {
                 "success": True,
-                "message": "Campanha recusada/nao conferida pelo Mercado Livre; aplicado fallback sem campanha.",
+                "message": "Campanha recusada/nao conferida pelo Mercado Livre; aplicado fallback sem campanha e com margem segura.",
                 "loja": loja,
                 "sku": req.sku,
                 "item_id": item_id,
@@ -31967,9 +34054,42 @@ def favoritos_ml_efetivar_promocao(
                 "preco_update": preco_update,
                 "preco_confirmacao": preco_confirmacao,
                 "verificacao": verificacao,
+                "verificacao_margem": detalhes_margem,
                 **fallback,
             }
         raise HTTPException(status_code=409, detail=motivo_verificacao)
+
+    exige_fallback_margem, motivo_margem, detalhes_margem = _favoritos_ml_verificacao_exige_contingencia_por_margem(req, verificacao)
+    if exige_fallback_margem:
+        fallback, cfg = _favoritos_ml_aplicar_contingencia_sem_promocao(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            req,
+            motivo_margem,
+        )
+        _cache_invalidar_loja(client_id, loja)
+        return {
+            "success": True,
+            "message": "Preco promocional aplicado ficou abaixo da margem minima; aplicado fallback sem campanha e com margem segura.",
+            "loja": loja,
+            "sku": req.sku,
+            "item_id": item_id,
+            "promotion_id": campanha_id,
+            "promotion_type": promotion_type,
+            "campanha_nome": req.campanha_nome,
+            "campanha_aplicada": False,
+            "preco_anuncio": round(float(fallback.get("preco_anuncio_contingencia")), 2),
+            "preco_promocional": None,
+            "percentual_promocao": percentual,
+            "promocoes_removidas": removidas,
+            "preco_update": preco_update,
+            "preco_confirmacao": preco_confirmacao,
+            "verificacao": verificacao,
+            "verificacao_margem": detalhes_margem,
+            **fallback,
+        }
 
     _cache_invalidar_loja(client_id, loja)
     return {
@@ -31989,6 +34109,7 @@ def favoritos_ml_efetivar_promocao(
         "preco_update": preco_update,
         "preco_confirmacao": preco_confirmacao,
         "verificacao": verificacao,
+        "verificacao_margem": detalhes_margem,
     }
 
 
@@ -32287,6 +34408,9 @@ def _favoritos_aplicar_margem_anuncio_ml(
 def favoritos_ml_listar_anuncios_sku(
     sku: str,
     loja: Optional[str] = None,
+    compartilhar_sku: bool = False,
+    todas_contas: bool = False,
+    mlbs: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
 ):
     sku_norm = _normalizar_sku_match_favoritos(sku)
@@ -32321,6 +34445,22 @@ def favoritos_ml_listar_anuncios_sku(
         loja_info = lojas_validas[0]
 
     nome_loja = str(loja_info.get("nome") or "").strip()
+    ids_forcados = []
+    for parte in re.split(r"[,;|\s]+", str(mlbs or "")):
+        item_id = re.sub(r"[^A-Z0-9]", "", str(parte or "").upper())
+        if item_id.startswith("MLB") and item_id not in ids_forcados:
+            ids_forcados.append(item_id)
+        if len(ids_forcados) >= 80:
+            break
+    ids_forcados_key = ",".join(ids_forcados)
+    compartilhar_efetivo = bool(compartilhar_sku and todas_contas)
+    cache_key_endpoint = (
+        f"favoritos:anuncios_sku:v3:{client_id}:"
+        f"{_chave_loja_favoritos(nome_loja)}:{sku_norm}:{int(compartilhar_efetivo)}:{ids_forcados_key}"
+    )
+    cached_endpoint = _ml_cache_get(cache_key_endpoint, ttl=90)
+    if cached_endpoint is not None:
+        return cached_endpoint
 
     def _resumir_item_ml(
         item: dict,
@@ -32475,25 +34615,35 @@ def favoritos_ml_listar_anuncios_sku(
             "sku": ", ".join(sorted(_ml_favoritos_extrair_skus_item(item))) or sku_norm,
         }
 
-    try:
-        cfg = _obter_cfg_ml(client_id, nome_loja)
-        itens, cfg = _ml_favoritos_buscar_itens_por_sku(client_id, nome_loja, cfg, sku_norm)
-        custos_por_sku = _carregar_custos_cadastro_por_sku(client_id)
-        impostos_por_sku = _carregar_impostos_cadastro_por_sku(client_id)
-        anuncios = []
-        for item in itens:
+    def _carregar_anuncios_sku_loja(nome_loja_consulta: str, ids_diretos: Optional[list[str]] = None) -> dict:
+        cfg = _obter_cfg_ml(client_id, nome_loja_consulta)
+        ids_diretos = list(dict.fromkeys([
+            str(item_id or "").strip().upper()
+            for item_id in (ids_diretos or [])
+            if str(item_id or "").strip().upper().startswith("MLB")
+        ]))
+        if ids_diretos:
+            itens, cfg = _ml_favoritos_buscar_itens_batch(client_id, nome_loja_consulta, cfg, ids_diretos)
+            if not itens:
+                itens, cfg = _ml_favoritos_buscar_itens_por_sku(client_id, nome_loja_consulta, cfg, sku_norm)
+        else:
+            itens, cfg = _ml_favoritos_buscar_itens_por_sku(client_id, nome_loja_consulta, cfg, sku_norm)
+        custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, nome_loja_consulta)
+
+        def _montar_anuncio_item(item: dict) -> dict | None:
             if not isinstance(item, dict):
-                continue
+                return None
             item_id = str(item.get("id") or "").strip()
             price_info = _ml_montar_preco_listagem(item)
             shipping_data = {}
             fee_data = {}
+            cfg_item = dict(cfg or {})
             if item_id:
                 try:
-                    price_info, cfg = _ml_obter_preco_detalhado(
+                    price_info, cfg_item = _ml_obter_preco_detalhado(
                         client_id,
-                        nome_loja,
-                        cfg,
+                        nome_loja_consulta,
+                        cfg_item,
                         item_id,
                         fallback_price=item.get("price"),
                         request_fn=_ml_favoritos_api_request,
@@ -32502,10 +34652,10 @@ def favoritos_ml_listar_anuncios_sku(
                 except Exception as exc:
                     logger.warning("[Favoritos ML] Falha ao buscar preco detalhado do item %s: %s", item_id, exc)
                 try:
-                    shipping_data, cfg = _ml_obter_frete_detalhado(
+                    shipping_data, cfg_item = _ml_obter_frete_detalhado(
                         client_id,
-                        nome_loja,
-                        cfg,
+                        nome_loja_consulta,
+                        cfg_item,
                         item_id,
                         item.get("shipping") or {},
                         request_fn=_ml_favoritos_api_request,
@@ -32516,17 +34666,17 @@ def favoritos_ml_listar_anuncios_sku(
                     item_fee = dict(item)
                     if price_info.get("price") not in (None, ""):
                         item_fee["price"] = price_info.get("price")
-                    fee_data, cfg = _ml_obter_taxas_anuncio(
+                    fee_data, cfg_item = _ml_obter_taxas_anuncio(
                         client_id,
-                        nome_loja,
-                        cfg,
+                        nome_loja_consulta,
+                        cfg_item,
                         item_fee,
                         request_fn=_ml_favoritos_api_request,
                     )
-                    promo_fee_info, cfg = _ml_obter_desconto_taxa_promocao_item(
+                    promo_fee_info, cfg_item = _ml_obter_desconto_taxa_promocao_item(
                         client_id,
-                        nome_loja,
-                        cfg,
+                        nome_loja_consulta,
+                        cfg_item,
                         item_id,
                         item=item_fee,
                         price_info=price_info,
@@ -32538,19 +34688,114 @@ def favoritos_ml_listar_anuncios_sku(
                 except Exception as exc:
                     logger.warning("[Favoritos ML] Falha ao buscar tarifa do item %s: %s", item_id, exc)
             anuncio = _resumir_item_ml(item, price_info=price_info, shipping_data=shipping_data, fee_data=fee_data)
-            anuncios.append(anuncio)
+            anuncio["loja"] = nome_loja_consulta
+            anuncio["loja_sync"] = nome_loja_consulta
+            anuncio["loja_conta"] = nome_loja_consulta
+            return anuncio
+
+        anuncios = []
+        if len(itens) > 1:
+            max_workers_itens = min(8, len(itens))
+            with ThreadPoolExecutor(max_workers=max_workers_itens) as executor:
+                futuros_itens = [executor.submit(_montar_anuncio_item, item) for item in itens]
+                for futuro in as_completed(futuros_itens):
+                    try:
+                        anuncio = futuro.result()
+                        if anuncio:
+                            anuncios.append(anuncio)
+                    except Exception as exc:
+                        logger.warning("[Favoritos ML] Falha ao montar detalhe do SKU %s na loja %s: %s", sku_norm, nome_loja_consulta, exc)
+        else:
+            for item in itens:
+                anuncio = _montar_anuncio_item(item)
+                if anuncio:
+                    anuncios.append(anuncio)
+
         _favoritos_completar_frete_pausados_por_sku(anuncios, sku_norm)
         for anuncio in anuncios:
             _favoritos_aplicar_margem_anuncio_ml(anuncio, sku_norm, custos_por_sku, impostos_por_sku)
-        anuncios.sort(key=lambda item: (str(item.get("titulo") or "").lower(), str(item.get("id") or "")))
         return {
+            "loja": nome_loja_consulta,
+            "anuncios": anuncios,
+            "total_itens": len(itens),
+        }
+
+    try:
+        lojas_para_consulta: list[str] = []
+        if compartilhar_efetivo:
+            candidatos = [loja_info] + [item for item in lojas_validas if item is not loja_info]
+        else:
+            candidatos = [loja_info]
+        vistos_lojas: set[str] = set()
+        for candidata in candidatos:
+            nome_candidata = str((candidata or {}).get("nome") or "").strip()
+            chave_candidata = _chave_loja_favoritos(nome_candidata)
+            if not nome_candidata or chave_candidata in vistos_lojas:
+                continue
+            vistos_lojas.add(chave_candidata)
+            lojas_para_consulta.append(nome_candidata)
+
+        resultados: list[dict] = []
+        avisos: list[str] = []
+        loja_forcada_chave = _chave_loja_favoritos(nome_loja)
+        if len(lojas_para_consulta) <= 1:
+            nome_consulta = lojas_para_consulta[0] if lojas_para_consulta else nome_loja
+            ids_consulta = ids_forcados if _chave_loja_favoritos(nome_consulta) == loja_forcada_chave else []
+            resultados.append(_carregar_anuncios_sku_loja(nome_consulta, ids_consulta))
+        else:
+            max_workers = min(4, len(lojas_para_consulta))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futuros = {
+                    executor.submit(
+                        _carregar_anuncios_sku_loja,
+                        nome,
+                        ids_forcados if _chave_loja_favoritos(nome) == loja_forcada_chave else [],
+                    ): nome
+                    for nome in lojas_para_consulta
+                }
+                for futuro in as_completed(futuros):
+                    nome_consulta = futuros[futuro]
+                    try:
+                        resultados.append(futuro.result() or {"loja": nome_consulta, "anuncios": [], "total_itens": 0})
+                    except Exception as exc:
+                        avisos.append(f"{nome_consulta}: {exc}")
+                        logger.warning("[Favoritos ML] Falha ao compartilhar SKU %s com loja %s: %s", sku_norm, nome_consulta, exc)
+
+        anuncios = []
+        lojas_com_sku = []
+        total_itens = 0
+        for resultado in resultados:
+            total_loja = int(resultado.get("total_itens") or 0)
+            total_itens += total_loja
+            anuncios_loja = [item for item in (resultado.get("anuncios") or []) if isinstance(item, dict)]
+            if total_loja or anuncios_loja:
+                loja_resultado = str(resultado.get("loja") or "").strip()
+                if loja_resultado:
+                    lojas_com_sku.append(loja_resultado)
+            anuncios.extend(anuncios_loja)
+
+        ordem_lojas = {nome: idx for idx, nome in enumerate(lojas_para_consulta)}
+        lojas_com_sku = list(dict.fromkeys(sorted(lojas_com_sku, key=lambda nome: ordem_lojas.get(nome, 9999))))
+        anuncios.sort(key=lambda item: (
+            ordem_lojas.get(str(item.get("loja") or ""), 9999),
+            str(item.get("titulo") or "").lower(),
+            str(item.get("id") or ""),
+        ))
+        payload = {
             "success": True,
             "lojas": lojas_payload,
             "loja": nome_loja,
             "sku": sku_norm,
+            "compartilhado_por_sku": bool(compartilhar_efetivo and len(lojas_com_sku) > 1),
+            "lojas_com_sku": lojas_com_sku,
             "anuncios": anuncios,
             "total": len(anuncios),
+            "total_itens_ml": total_itens,
+            "warnings": avisos,
+            "warning": " | ".join(avisos[:3]) if avisos else "",
         }
+        _ml_cache_set(cache_key_endpoint, payload)
+        return payload
     except HTTPException:
         raise
     except Exception as exc:
@@ -32568,9 +34813,7 @@ def favoritos_salvar_pesquisas_sku(
     if not sku_norm:
         raise HTTPException(status_code=400, detail="SKU invalido.")
 
-    loja_nome = str(req.loja or "").strip()
-    if not loja_nome:
-        raise HTTPException(status_code=400, detail="Loja/conta nao informada para salvar as pesquisas.")
+    loja_nome = str(req.loja or "").strip() or "Todas as lojas"
 
     try:
         atualizados = _favoritos_salvar_pesquisas_usuario_batch(
@@ -32586,7 +34829,7 @@ def favoritos_salvar_pesquisas_sku(
             }],
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erro ao salvar pesquisas por usuario/conta: {exc}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar pesquisas por SKU: {exc}")
 
     retorno = atualizados[0] if atualizados else {
         "sku": sku_norm,
@@ -32613,9 +34856,7 @@ def favoritos_gerar_pesquisas_sku_ia(
 ):
     if not req.itens:
         raise HTTPException(status_code=400, detail="Lista de itens vazia.")
-    loja_nome = str(req.loja or "").strip()
-    if not loja_nome:
-        raise HTTPException(status_code=400, detail="Loja/conta nao informada para salvar as pesquisas.")
+    loja_nome = str(req.loja or "").strip() or "Todas as lojas"
 
     payload: list[dict] = []
     vistos: set[str] = set()
@@ -32658,7 +34899,7 @@ def favoritos_gerar_pesquisas_sku_ia(
         sku_norm = _normalizar_sku_match_favoritos(str(item.get("sku") or "")).strip()
         if not sku_norm:
             continue
-        atual = pesquisas_salvas.get(_favoritos_chave_pesquisa_usuario(loja_nome, sku_norm)) or {}
+        atual = pesquisas_salvas.get(_favoritos_chave_pesquisa_usuario("", sku_norm)) or {}
         pesquisa1_existente = str(atual.get("pesquisa_1") or "").strip()
         pesquisa2_existente = str(atual.get("pesquisa_2") or "").strip()
         pesquisa3_existente = str(atual.get("pesquisa_3") or "").strip()
@@ -32684,7 +34925,7 @@ def favoritos_gerar_pesquisas_sku_ia(
             itens=sugestoes_para_salvar,
         ) if sugestoes_para_salvar else []
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erro ao salvar pesquisas por usuario/conta: {exc}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar pesquisas por SKU: {exc}")
 
     return {
         "success": True,
@@ -32727,6 +34968,9 @@ def favoritos_filtrar_ranking_ia(
             descricao=str(req.descricao or "").strip(),
             pesquisas=req.pesquisas or [],
             anuncios=anuncios[:limite],
+            meus_anuncios=req.meus_anuncios or [],
+            max_confirmados=req.max_confirmados,
+            usar_imagem=req.usar_imagem,
             model=_ia_modelo_favoritos_configurado(),
         )
     except Exception as exc:
@@ -32736,6 +34980,7 @@ def favoritos_filtrar_ranking_ia(
     return {
         "success": True,
         "sku": sku_norm,
+        "max_confirmados": req.max_confirmados,
         **resultado,
     }
 
@@ -33213,13 +35458,48 @@ def _ml_api_user_com_oauth_tenant(client_id: str | None, user_id: str | None):
             logger.warning("[Favoritos][Vendedor] Falha OAuth loja=%s user=%s: %s", nome_loja, user_id, exc)
     return None
 
-def _ml_api_search(termo: str, limit: int = 50):
+def _ml_api_search(termo: str, limit: int = 50, offset: int = 0):
     params = {
         "q": termo,
         "limit": limit,
-        "offset": 0
+        "offset": offset
     }
     return _ml_api_get("https://api.mercadolibre.com/sites/MLB/search", params=params)
+
+def _ml_api_search_paginated(termo: str, limit: int = 60) -> list[dict]:
+    limite = max(1, min(int(limit or 60), 100))
+    resultados: list[dict] = []
+    vistos: set[str] = set()
+    offset = 0
+
+    while len(resultados) < limite:
+        page_limit = min(50, limite - len(resultados))
+        if page_limit <= 0:
+            break
+        api_data = _ml_api_search(termo, limit=page_limit, offset=offset) or {}
+        pagina = api_data.get("results") or []
+        if not pagina:
+            break
+
+        adicionados = 0
+        for item in pagina:
+            if not isinstance(item, dict):
+                continue
+            chave = str(item.get("id") or item.get("permalink") or "").strip()
+            if chave and chave in vistos:
+                continue
+            if chave:
+                vistos.add(chave)
+            resultados.append(item)
+            adicionados += 1
+            if len(resultados) >= limite:
+                break
+
+        if len(pagina) < page_limit or adicionados <= 0:
+            break
+        offset += page_limit
+
+    return resultados[:limite]
 
 def _ml_parcelamento_sem_juros_api(item: dict | None):
     if not isinstance(item, dict):
@@ -33608,9 +35888,8 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
 
     try:
         # Usa primeiro a API oficial (ordem da pÃƒÂ¡gina de busca).
-        limite = min(max(int(req.max_anuncios or 50), 1), 100)
-        api_data = _ml_api_search(termo, limit=limite) or {}
-        base_resultados = api_data.get("results") or []
+        limite = min(max(int(req.max_anuncios or 60), 1), 100)
+        base_resultados = _ml_api_search_paginated(termo, limit=limite)
 
         # Fallback para HTML se API falhar ou o Mercado Livre bloquear a API.
         if not base_resultados and bool(req.usar_automatico):
@@ -34785,7 +37064,7 @@ def _montar_urls_busca_diretas(link_produto: str, dados: dict):
 
     return urls
 
-def _buscar_anuncios_mercadolivre_automatico(url_busca: str, max_anuncios: int = 30):
+def _buscar_anuncios_mercadolivre_automatico(url_busca: str, max_anuncios: int = 60):
     """
     Scraping com Selenium + Chrome headless para contornar proteÃƒÂ§ÃƒÂ£o do Mercado Livre.
     Com fallback para requests simples.
@@ -35071,8 +37350,8 @@ async def favoritos_pesquisar(req: FavoritosSearchRequest):
     if not termo:
         raise HTTPException(status_code=400, detail="Termo de pesquisa vazio.")
 
-    max_anuncios = req.max_anuncios or 30
-    max_anuncios = min(max(max_anuncios, 1), 50)
+    max_anuncios = req.max_anuncios or 60
+    max_anuncios = min(max(max_anuncios, 1), 60)
 
     url_busca = termo if termo.startswith("http") else f"https://www.mercadolivre.com.br/jm/search?q={quote_plus(termo)}"
     logger.info(f"[Favoritos] Buscando em paralelo: {termo[:80]}")
@@ -36157,6 +38436,21 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     atuais["ia_modelo_favoritos"] = _normalizar_ia_modelo_padrao(
         req.ia_modelo_favoritos or atuais.get("ia_modelo_favoritos") or atuais["ia_modelo_padrao"]
     )
+    if req.ia_vertex_project_id is not None:
+        atuais["ia_vertex_project_id"] = str(req.ia_vertex_project_id or "").strip()
+    if req.ia_vertex_location is not None:
+        atuais["ia_vertex_location"] = str(req.ia_vertex_location or "global").strip() or "global"
+    if req.ia_vertex_model is not None:
+        modelo_vertex_curto = _vertex_modelo_nome_curto(req.ia_vertex_model) or "gemini-2.5-flash"
+        atuais["ia_vertex_model"] = modelo_vertex_curto
+        modelo_vertex = f"vertex:{modelo_vertex_curto}"
+        atuais["ia_modelo_padrao"] = modelo_vertex
+        atuais["ia_modelo_perguntas"] = modelo_vertex
+        atuais["ia_modelo_chat"] = modelo_vertex
+        atuais["ia_modelo_favoritos"] = modelo_vertex
+    if req.ia_vertex_service_account_email is not None:
+        atuais["ia_vertex_service_account_email"] = str(req.ia_vertex_service_account_email or "").strip()
+    _salvar_vertex_agent_api_key(req.ia_agent_api_key, limpar=bool(req.ia_agent_api_key_limpar))
     if req.ia_favoritos_usar_imagem is not None:
         atuais["ia_favoritos_usar_imagem"] = bool(req.ia_favoritos_usar_imagem)
     else:
@@ -36164,15 +38458,17 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     for campo, valor in (
         ("ia_openai_ativa", req.ia_openai_ativa),
         ("ia_deepseek_ativa", req.ia_deepseek_ativa),
-        ("ia_gemini_ativa", req.ia_gemini_ativa),
         ("ia_vertex_ativa", req.ia_vertex_ativa),
     ):
         if valor is not None:
             atuais[campo] = bool(valor)
         else:
             atuais[campo] = bool(atuais.get(campo, True))
+    atuais["ia_gemini_ativa"] = False
+    atuais["ia_vertex_ativa"] = True
     _salvar_configuracoes_globais(atuais)
-    return {"success": True, "configuracoes": atuais}
+    resposta = _carregar_configuracoes_globais()
+    return {"success": True, "configuracoes": resposta}
 
 # --- ENDPOINTS IMPOSTOS ---
 
@@ -39118,6 +41414,877 @@ async def listar_estoque(client_id: str = Depends(get_tenant_id)):
     return []
 
 
+@app.get("/api/full/estoque")
+async def listar_estoque_full(client_id: str = Depends(get_tenant_id)):
+    """Retorna somente itens com saldo no Full."""
+    registros = await listar_estoque(client_id)
+
+    def _numero_full(valor) -> float:
+        if isinstance(valor, (int, float)):
+            return float(valor) if math.isfinite(float(valor)) else 0.0
+        texto = str(valor or "").strip()
+        if not texto:
+            return 0.0
+        normalizado = re.sub(r"[^\d,.-]", "", texto).replace(".", "").replace(",", ".")
+        try:
+            numero = float(normalizado)
+            return numero if math.isfinite(numero) else 0.0
+        except Exception:
+            return 0.0
+
+    def _saldo_full(row: dict) -> float:
+        for campo in ("saldo_full", "estoque_full", "full", "fulfillment", "quantidade_full"):
+            if campo in row and row.get(campo) not in (None, ""):
+                return _numero_full(row.get(campo))
+        return 0.0
+
+    return [
+        {**row, "saldo_full": _saldo_full(row)}
+        for row in (registros or [])
+        if isinstance(row, dict) and _saldo_full(row) > 0
+    ]
+
+
+@app.get("/api/full/lojas-mercadolivre")
+async def listar_lojas_full_mercadolivre(client_id: str = Depends(get_tenant_id)):
+    """Lista lojas com Mercado Livre autenticado em Integrações."""
+    lojas = carregar_lojas(client_id) or []
+    conectadas = []
+    for loja in lojas:
+        if not isinstance(loja, dict):
+            continue
+        nome = str(loja.get("nome") or "").strip()
+        if not nome:
+            continue
+        integracoes = loja.get("integracoes") or {}
+        cfg_ml = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
+        status_ml = _ml_oauth_status(cfg_ml if isinstance(cfg_ml, dict) else {})
+        if not status_ml.get("conectado"):
+            continue
+        conectadas.append({
+            "nome": nome,
+            "conectado": True,
+            "status": status_ml.get("status") or "conectado",
+            "user_id": str((cfg_ml or {}).get("user_id") or "").strip(),
+        })
+    conectadas.sort(key=lambda item: item.get("nome", "").lower())
+    return {"success": True, "total": len(conectadas), "lojas": conectadas}
+
+
+def _full_item_logistic_type(item: dict) -> str:
+    shipping = item.get("shipping") if isinstance(item, dict) else {}
+    shipping = shipping if isinstance(shipping, dict) else {}
+    return str(
+        item.get("logistic_type")
+        or item.get("shipping_logistic_type")
+        or shipping.get("logistic_type")
+        or ""
+    ).strip()
+
+
+def _full_item_eh_full(item: dict) -> bool:
+    return _full_item_logistic_type(item).lower() == "fulfillment"
+
+
+def _full_numero(valor) -> float:
+    if isinstance(valor, (int, float)):
+        try:
+            return float(valor) if math.isfinite(float(valor)) else 0.0
+        except Exception:
+            return 0.0
+    texto = str(valor or "").strip()
+    if not texto:
+        return 0.0
+    normalizado = re.sub(r"[^\d,.-]", "", texto).replace(".", "").replace(",", ".")
+    try:
+        numero = float(normalizado)
+        return numero if math.isfinite(numero) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _full_obter_estoque_fulfillment(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    inventory_id: str,
+) -> tuple[dict, dict]:
+    inventory_id = str(inventory_id or "").strip()
+    if not inventory_id:
+        return {"inventory_id": "", "available_quantity": 0, "source": "sem_inventory_id"}, cfg
+
+    cache_key = f"full:inventory_stock:{client_id}:{loja}:{inventory_id}"
+    cached = _ml_cache_get(cache_key, ttl=300)
+    if cached is not None:
+        return cached, cfg
+
+    url = f"https://api.mercadolibre.com/inventories/{quote(inventory_id)}/stock/fulfillment"
+    resp, cfg_local = _ml_favoritos_api_request(client_id, loja, cfg, "GET", url, timeout=15)
+    if resp.status_code != 200:
+        erro = _ml_parse_error_detail(resp, "Erro ao consultar estoque Full do Mercado Livre")
+        logger.warning("[FULL ML] Falha ao consultar inventory_id=%s loja=%s: %s", inventory_id, loja, erro)
+        payload = {
+            "inventory_id": inventory_id,
+            "available_quantity": 0,
+            "not_available_quantity": 0,
+            "total_quantity": 0,
+            "source": "fulfillment_stock_error",
+            "error": erro,
+        }
+        _ml_cache_set(cache_key, payload)
+        return payload, cfg_local
+
+    data = resp.json() or {}
+    disponivel = _full_numero(
+        data.get("available_quantity")
+        if data.get("available_quantity") is not None
+        else data.get("saleable_quantity")
+    )
+    indisponivel = _full_numero(data.get("not_available_quantity"))
+    total = _full_numero(data.get("total")) or _full_numero(data.get("total_quantity")) or (disponivel + indisponivel)
+    payload = {
+        "inventory_id": inventory_id,
+        "available_quantity": disponivel,
+        "not_available_quantity": indisponivel,
+        "total_quantity": total,
+        "source": "fulfillment_stock",
+        "raw": data,
+    }
+    _ml_cache_set(cache_key, payload)
+    return payload, cfg_local
+
+
+def _full_normalizar_anuncio_ml(client_id: str, loja: str, cfg: dict, item: dict) -> tuple[dict, dict]:
+    cfg_local = dict(cfg or {})
+    variacoes = _ml_extrair_variacoes_resumo(item, client_id=client_id, loja=loja)
+    skus_variacoes = [
+        str(var.get("sku") or "").strip()
+        for var in variacoes
+        if isinstance(var, dict) and str(var.get("sku") or "").strip() and str(var.get("sku") or "").strip() != "-"
+    ]
+    sku_item = _ml_extrair_sku(item)
+    sku_display = " / ".join(list(dict.fromkeys(skus_variacoes))[:4]) if skus_variacoes else (sku_item or "N/D")
+    vendidos_variacoes = sum(_full_numero(var.get("sold_quantity")) for var in variacoes if isinstance(var, dict))
+    vendidos = vendidos_variacoes if variacoes else _full_numero(item.get("sold_quantity"))
+    shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    inventory_id = str(item.get("inventory_id") or "").strip()
+    estoque_total = 0.0
+    estoque_total_geral = 0.0
+    indisponivel_total = 0.0
+    fontes_estoque = set()
+
+    if variacoes:
+        variacoes_full = []
+        for var in variacoes:
+            var_payload = dict(var or {})
+            estoque_info, cfg_local = _full_obter_estoque_fulfillment(
+                client_id,
+                loja,
+                cfg_local,
+                str(var_payload.get("inventory_id") or "").strip(),
+            )
+            disponivel = _full_numero(estoque_info.get("available_quantity"))
+            indisponivel = _full_numero(estoque_info.get("not_available_quantity"))
+            total_var = _full_numero(estoque_info.get("total_quantity")) or (disponivel + indisponivel)
+            var_payload["available_quantity"] = disponivel
+            var_payload["full_available_quantity"] = disponivel
+            var_payload["full_not_available_quantity"] = indisponivel
+            var_payload["full_total_quantity"] = total_var
+            var_payload["stock_source"] = estoque_info.get("source")
+            if estoque_info.get("error"):
+                var_payload["stock_error"] = estoque_info.get("error")
+            estoque_total += disponivel
+            indisponivel_total += indisponivel
+            estoque_total_geral += total_var
+            fontes_estoque.add(str(estoque_info.get("source") or ""))
+            variacoes_full.append(var_payload)
+        variacoes = variacoes_full
+    else:
+        estoque_info, cfg_local = _full_obter_estoque_fulfillment(client_id, loja, cfg_local, inventory_id)
+        estoque_total = _full_numero(estoque_info.get("available_quantity"))
+        indisponivel_total = _full_numero(estoque_info.get("not_available_quantity"))
+        estoque_total_geral = _full_numero(estoque_info.get("total_quantity")) or (estoque_total + indisponivel_total)
+        fontes_estoque.add(str(estoque_info.get("source") or ""))
+
+    anuncio = {
+        "id": item.get("id"),
+        "loja": loja,
+        "title": item.get("title"),
+        "thumbnail": item.get("secure_thumbnail") or item.get("thumbnail") or ((item.get("pictures") or [{}])[0].get("secure_url") if (item.get("pictures") or []) else None),
+        "sku": sku_item or "N/D",
+        "sku_display": sku_display,
+        "inventory_id": inventory_id,
+        "price": _full_numero(item.get("price")),
+        "available_quantity": estoque_total,
+        "full_available_quantity": estoque_total,
+        "full_not_available_quantity": indisponivel_total,
+        "full_total_quantity": estoque_total_geral,
+        "stock_source": "fulfillment_stock" if "fulfillment_stock" in fontes_estoque else next(iter(fontes_estoque), ""),
+        "sold_quantity": vendidos,
+        "status": item.get("status"),
+        "listing_type_id": item.get("listing_type_id"),
+        "condition": item.get("condition"),
+        "logistic_type": _full_item_logistic_type(item),
+        "shipping_mode": shipping.get("mode") or item.get("shipping_mode"),
+        "permalink": item.get("permalink") or f"https://produto.mercadolivre.com.br/{item.get('id', '')}",
+        "has_variations": bool(variacoes),
+        "variations": variacoes,
+    }
+    return anuncio, cfg_local
+
+
+@app.get("/api/full/anuncios")
+async def listar_anuncios_full_mercadolivre(
+    loja: str,
+    limite: int = 10000,
+    client_id: str = Depends(get_tenant_id),
+):
+    """Busca no Mercado Livre todos os anúncios Full da loja selecionada."""
+    nome_loja = str(loja or "").strip()
+    if not nome_loja:
+        raise HTTPException(status_code=400, detail="Informe a loja para consultar os anúncios Full.")
+
+    limite = max(100, min(int(limite or 10000), 20000))
+    cache_key = f"full:v2:anuncios_ml:{client_id}:{nome_loja}:{limite}"
+    cached = _ml_cache_get(cache_key, ttl=600)
+    if cached is not None:
+        return cached
+
+    cfg = _obter_cfg_ml(client_id, nome_loja)
+    itens, _cfg = _ml_favoritos_listar_todos_itens_ativos_loja(client_id, nome_loja, cfg, limite=limite)
+    cfg_local = dict(_cfg or cfg or {})
+    anuncios = []
+    for item in (itens or []):
+        if not isinstance(item, dict) or not _full_item_eh_full(item):
+            continue
+        anuncio, cfg_local = _full_normalizar_anuncio_ml(client_id, nome_loja, cfg_local, item)
+        anuncios.append(anuncio)
+    anuncios.sort(key=lambda item: (str(item.get("title") or "").lower(), str(item.get("id") or "")))
+    resultado = jsonable_encoder({
+        "success": True,
+        "loja": nome_loja,
+        "total": len(anuncios),
+        "results": anuncios,
+    })
+    _ml_cache_set(cache_key, resultado)
+    return resultado
+
+
+def _full_feriados_nacionais_ano(ano: int) -> dict:
+    ano = int(ano or datetime.now().year)
+    cache_key = f"full:feriados_nacionais:{ano}"
+    cached = _ml_cache_get(cache_key, ttl=7 * 24 * 60 * 60)
+    if cached is not None:
+        return cached
+
+    url = f"https://brasilapi.com.br/api/feriados/v1/{ano}"
+    feriados: list[dict[str, str]] = []
+    erro = ""
+    verify_ssl = _env_config_bool(("FERIADOS_VERIFY_SSL", "BRASILAPI_VERIFY_SSL"), default=True)
+    try:
+        try:
+            resp = requests.get(url, timeout=12, verify=verify_ssl)
+        except requests.exceptions.SSLError:
+            if not verify_ssl:
+                raise
+            logger.warning("[FULL CALENDARIO] SSL da BrasilAPI falhou para %s; repetindo sem verificacao.", ano)
+            resp = requests.get(url, timeout=12, verify=False)
+        if resp.status_code == 200:
+            payload = resp.json() or []
+            if isinstance(payload, list):
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    data = str(item.get("date") or "").strip()[:10]
+                    nome = str(item.get("name") or "").strip()
+                    tipo = str(item.get("type") or "").strip()
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", data):
+                        feriados.append({"data": data, "nome": nome or "Feriado nacional", "tipo": tipo or "national"})
+        else:
+            erro = f"BrasilAPI retornou HTTP {resp.status_code}"
+    except Exception as e:
+        erro = str(e)
+
+    resultado = {
+        "ano": ano,
+        "fonte": "BrasilAPI",
+        "fonte_url": url,
+        "feriados": feriados,
+        "erro": erro,
+    }
+    _ml_cache_set(cache_key, resultado)
+    return resultado
+
+
+@app.get("/api/full/calendario-comercial")
+async def calendario_comercial_full(
+    ano: int | None = None,
+    mes: int | None = None,
+    client_id: str = Depends(get_tenant_id),
+):
+    del client_id
+    hoje = datetime.now()
+    ano_ref = int(ano or hoje.year)
+    mes_ref = int(mes or hoje.month)
+    if ano_ref < 2000 or ano_ref > 2100:
+        raise HTTPException(status_code=400, detail="Ano invalido para calendario comercial.")
+    if mes_ref < 1 or mes_ref > 12:
+        raise HTTPException(status_code=400, detail="Mes invalido para calendario comercial.")
+
+    primeiro_dia = dt.date(ano_ref, mes_ref, 1)
+    inicio_grid = primeiro_dia - dt.timedelta(days=(primeiro_dia.weekday() + 1) % 7)
+    fim_grid = inicio_grid + dt.timedelta(days=41)
+    anos_grid = range(inicio_grid.year, fim_grid.year + 1)
+
+    feriados_por_data: dict[str, dict[str, str]] = {}
+    erros: list[str] = []
+    fonte_urls: list[str] = []
+    for ano_item in anos_grid:
+        payload = _full_feriados_nacionais_ano(int(ano_item))
+        fonte_url = str(payload.get("fonte_url") or "").strip()
+        if fonte_url:
+            fonte_urls.append(fonte_url)
+        erro = str(payload.get("erro") or "").strip()
+        if erro:
+            erros.append(f"{ano_item}: {erro}")
+        for feriado in payload.get("feriados") or []:
+            if isinstance(feriado, dict) and feriado.get("data"):
+                feriados_por_data[str(feriado.get("data"))] = feriado
+
+    dias = []
+    resumo = {"dias_comerciais": 0, "feriados": 0, "fins_semana": 0}
+    feriados_mes = []
+    for offset in range(42):
+        data = inicio_grid + dt.timedelta(days=offset)
+        data_iso = data.isoformat()
+        feriado = feriados_por_data.get(data_iso)
+        fim_semana = data.weekday() >= 5
+        mes_atual = data.month == mes_ref and data.year == ano_ref
+        dia_comercial = not fim_semana and not bool(feriado)
+        if mes_atual:
+            if dia_comercial:
+                resumo["dias_comerciais"] += 1
+            if fim_semana:
+                resumo["fins_semana"] += 1
+            if feriado:
+                resumo["feriados"] += 1
+                feriados_mes.append({
+                    "data": data_iso,
+                    "nome": feriado.get("nome") or "Feriado nacional",
+                    "tipo": feriado.get("tipo") or "national",
+                })
+        dias.append({
+            "data": data_iso,
+            "dia": data.day,
+            "mes_atual": mes_atual,
+            "fim_semana": fim_semana,
+            "feriado": bool(feriado),
+            "nome_feriado": (feriado or {}).get("nome") or "",
+            "tipo_feriado": (feriado or {}).get("tipo") or "",
+            "dia_comercial": dia_comercial,
+        })
+
+    return {
+        "success": True,
+        "ano": ano_ref,
+        "mes": mes_ref,
+        "fonte": "BrasilAPI - feriados nacionais",
+        "fonte_urls": sorted(set(fonte_urls)),
+        "dias": dias,
+        "feriados": feriados_mes,
+        "resumo": resumo,
+        "erros": erros,
+    }
+
+
+class FullEnvioTransitoItem(BaseModel):
+    sku: str = ""
+    produto: str = ""
+    variacao: str = ""
+    quantidade: float = 0
+    mlb: str = ""
+
+
+class FullEnvioTransitoPayload(BaseModel):
+    codigo_envio: str = ""
+    loja: str = ""
+    status: str = "aguardando_inicio"
+    situacao_ml: str = ""
+    data_envio: str = ""
+    data_recebimento: str = ""
+    total_unidades: float | None = None
+    observacoes: str = ""
+    ativo: bool = True
+    itens: list[FullEnvioTransitoItem] = []
+
+
+class FullEnvioTransitoUpdate(BaseModel):
+    codigo_envio: str | None = None
+    loja: str | None = None
+    status: str | None = None
+    situacao_ml: str | None = None
+    data_envio: str | None = None
+    data_recebimento: str | None = None
+    total_unidades: float | None = None
+    observacoes: str | None = None
+    ativo: bool | None = None
+    itens: list[FullEnvioTransitoItem] | None = None
+
+
+def _full_envios_db_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "full_envios_transito.db")
+
+
+def _full_envios_files_dir(client_id: str) -> str:
+    path = os.path.join(get_tenant_path(client_id), "full_envios_transito_pdfs")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _full_envios_status_norm(status: str) -> str:
+    valor = str(status or "aguardando_inicio").strip().lower()
+    valor = unicodedata.normalize("NFKD", valor).encode("ascii", "ignore").decode("ascii")
+    valor = re.sub(r"[^a-z0-9]+", "_", valor).strip("_")
+    permitidos = {
+        "aguardando_inicio",
+        "em_processamento",
+        "finalizando",
+        "finalizado",
+        "recebimento_pendente",
+        "recebido",
+        "inativo",
+    }
+    return valor if valor in permitidos else "aguardando_inicio"
+
+
+def _full_envios_data_iso(valor: str | None, fallback_hoje: bool = False) -> str:
+    texto = str(valor or "").strip()
+    if not texto:
+        return datetime.now().strftime("%Y-%m-%d") if fallback_hoje else ""
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(texto[:10], fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    match = re.search(r"(\d{2})[/-](\d{2})[/-](\d{4})", texto)
+    if match:
+        try:
+            return datetime(int(match.group(3)), int(match.group(2)), int(match.group(1))).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return datetime.now().strftime("%Y-%m-%d") if fallback_hoje else ""
+
+
+def _garantir_tabela_full_envios_transito(client_id: str) -> None:
+    db_path = _full_envios_db_path(client_id)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS envios_transito (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                codigo_envio TEXT NOT NULL,
+                loja TEXT,
+                status TEXT NOT NULL DEFAULT 'aguardando_inicio',
+                situacao_ml TEXT,
+                data_envio TEXT,
+                data_recebimento TEXT,
+                total_unidades REAL NOT NULL DEFAULT 0,
+                total_produtos INTEGER NOT NULL DEFAULT 0,
+                arquivo_pdf TEXT,
+                arquivo_nome TEXT,
+                itens_json TEXT NOT NULL DEFAULT '[]',
+                observacoes TEXT,
+                ativo INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_full_envios_status ON envios_transito (status, ativo)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_full_envios_data ON envios_transito (data_envio)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_full_envios_codigo ON envios_transito (codigo_envio)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _full_envio_row_to_dict(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    try:
+        itens = json.loads(data.get("itens_json") or "[]")
+    except Exception:
+        itens = []
+    data["itens"] = itens if isinstance(itens, list) else []
+    data["ativo"] = bool(data.get("ativo"))
+    data.pop("itens_json", None)
+    return data
+
+
+def _full_envios_agrupar_itens(itens: list[dict]) -> list[dict]:
+    agrupado: dict[tuple[str, str, str], dict] = {}
+    for item in itens or []:
+        sku_item = str(item.get("sku") or "").strip()
+        produto = str(item.get("produto") or "").strip()
+        variacao = str(item.get("variacao") or "").strip()
+        key = (sku_item.upper(), produto.lower(), variacao.lower())
+        atual = agrupado.get(key) or {
+            "sku": sku_item,
+            "produto": produto,
+            "variacao": variacao,
+            "quantidade": 0,
+            "mlb": str(item.get("mlb") or "").strip(),
+        }
+        atual["quantidade"] = float(atual.get("quantidade") or 0) + _full_numero(item.get("quantidade"))
+        if not atual.get("mlb"):
+            atual["mlb"] = str(item.get("mlb") or "").strip()
+        agrupado[key] = atual
+    return list(agrupado.values())
+
+
+def _full_envios_extrair_texto_pdf(conteudo: bytes) -> str:
+    doc = fitz.open(stream=conteudo, filetype="pdf")
+    try:
+        partes = []
+        for idx in range(min(len(doc), 80)):
+            partes.append(doc[idx].get_text() or "")
+        return "\n".join(partes)
+    finally:
+        doc.close()
+
+
+def _full_envios_parse_itens(texto: str) -> list[dict]:
+    itens: list[dict] = []
+    for match in re.finditer(r"(?is)Produto\s+Varia..o\s+Qnt\s+SKU\s+(.*?)(?:Checklist de carregamento|ID Pedido|Corte aqui|$)", texto or ""):
+        linhas = [ln.strip() for ln in match.group(1).splitlines() if ln.strip()]
+        if not linhas:
+            continue
+        if linhas and re.fullmatch(r"\d+", linhas[0]):
+            linhas = linhas[1:]
+        sku_idx = None
+        for idx in range(len(linhas) - 1, -1, -1):
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,40}", linhas[idx]):
+                sku_idx = idx
+                break
+        if sku_idx is None:
+            continue
+        qtd_idx = None
+        for idx in range(sku_idx - 1, -1, -1):
+            if re.fullmatch(r"\d+(?:[,.]\d+)?", linhas[idx]):
+                qtd_idx = idx
+                break
+        if qtd_idx is None:
+            continue
+        nome_partes = linhas[:qtd_idx]
+        variacao = ""
+        if len(nome_partes) > 1:
+            variacao = nome_partes[-1]
+            nome_partes = nome_partes[:-1]
+        itens.append({
+            "produto": " ".join(nome_partes).strip(),
+            "variacao": variacao,
+            "quantidade": _full_numero(linhas[qtd_idx]),
+            "sku": linhas[sku_idx],
+            "mlb": "",
+        })
+
+    if itens:
+        return _full_envios_agrupar_itens(itens)
+
+    for match in re.finditer(r"(?im)\bSKU\s*[:\-]?\s*([A-Z0-9._/-]{2,})", texto or ""):
+        start = max(0, match.start() - 180)
+        trecho = (texto or "")[start:match.start()]
+        qtd_match = re.search(r"(?im)(?:qtd|quantidade|unidades?)\s*[:\-]?\s*(\d+(?:[,.]\d+)?)", trecho)
+        produto_match = re.search(r"(?im)(?:produto|titulo|descri..o)\s*[:\-]?\s*(.+)$", trecho)
+        itens.append({
+            "produto": produto_match.group(1).strip() if produto_match else "",
+            "variacao": "",
+            "quantidade": _full_numero(qtd_match.group(1)) if qtd_match else 1,
+            "sku": match.group(1).strip(),
+            "mlb": "",
+        })
+    return _full_envios_agrupar_itens(itens)
+
+
+def _full_envios_parse_pdf(nome_arquivo: str, conteudo: bytes) -> dict:
+    texto = _full_envios_extrair_texto_pdf(conteudo)
+    codigo = ""
+    for pattern in (
+        r"#\s*(\d{5,})",
+        r"\b(?:envio|remessa|shipment|inbound)\s*(?:n(?:ro|o|r|\.)*)?\s*[:#-]?\s*(\d{5,})",
+        r"\b(\d{6,10})\b",
+    ):
+        match = re.search(pattern, texto, flags=re.IGNORECASE)
+        if match:
+            codigo = match.group(1)
+            break
+    if not codigo:
+        nome_match = re.search(r"(\d{5,})", nome_arquivo or "")
+        codigo = nome_match.group(1) if nome_match else f"ENV-{uuid.uuid4().hex[:8].upper()}"
+
+    data_envio = ""
+    previsto = re.search(r"(?is)(?:envio previsto|data(?: de)? envio|criado em|recebimento)\D{0,30}(\d{2}[/-]\d{2}[/-]\d{4})", texto or "")
+    if previsto:
+        data_envio = _full_envios_data_iso(previsto.group(1))
+    if not data_envio:
+        data_envio = _full_envios_data_iso(texto, fallback_hoje=True)
+
+    situacao = ""
+    texto_norm = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode("ascii").lower()
+    if "recebimento pendente" in texto_norm:
+        situacao = "Recebimento pendente"
+    elif re.search(r"\brecebido\b", texto_norm):
+        situacao = "Recebido"
+
+    itens = _full_envios_parse_itens(texto)
+    total_unidades = sum(_full_numero(item.get("quantidade")) for item in itens)
+    if not total_unidades:
+        match_unidades = re.search(r"(\d+(?:[,.]\d+)?)\s+unidades", texto or "", flags=re.IGNORECASE)
+        total_unidades = _full_numero(match_unidades.group(1)) if match_unidades else 0
+
+    status = "recebido" if situacao.lower() == "recebido" else "recebimento_pendente"
+    return {
+        "codigo_envio": codigo,
+        "status": status,
+        "situacao_ml": situacao,
+        "data_envio": data_envio,
+        "data_recebimento": data_envio if status == "recebido" else "",
+        "total_unidades": total_unidades,
+        "total_produtos": len(itens),
+        "itens": itens,
+        "observacoes": "",
+    }
+
+
+def _full_envios_inserir_registro(client_id: str, payload: dict) -> dict:
+    _garantir_tabela_full_envios_transito(client_id)
+    agora = datetime.now().isoformat(timespec="seconds")
+    itens = payload.get("itens") if isinstance(payload.get("itens"), list) else []
+    itens = _full_envios_agrupar_itens([dict(item) for item in itens])
+    total_unidades = payload.get("total_unidades")
+    if total_unidades is None:
+        total_unidades = sum(_full_numero(item.get("quantidade")) for item in itens)
+    status = _full_envios_status_norm(payload.get("status"))
+    ativo = 0 if status == "inativo" else (1 if payload.get("ativo", True) else 0)
+    codigo = str(payload.get("codigo_envio") or "").strip() or f"ENV-{uuid.uuid4().hex[:8].upper()}"
+
+    conn = sqlite3.connect(_full_envios_db_path(client_id))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO envios_transito (
+                codigo_envio, loja, status, situacao_ml, data_envio, data_recebimento,
+                total_unidades, total_produtos, arquivo_pdf, arquivo_nome,
+                itens_json, observacoes, ativo, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                codigo,
+                str(payload.get("loja") or "").strip(),
+                status,
+                str(payload.get("situacao_ml") or "").strip(),
+                _full_envios_data_iso(payload.get("data_envio"), fallback_hoje=True),
+                _full_envios_data_iso(payload.get("data_recebimento")),
+                float(total_unidades or 0),
+                len(itens),
+                str(payload.get("arquivo_pdf") or "").strip(),
+                str(payload.get("arquivo_nome") or "").strip(),
+                json.dumps(itens, ensure_ascii=False),
+                str(payload.get("observacoes") or "").strip(),
+                ativo,
+                agora,
+                agora,
+            ),
+        )
+        conn.commit()
+        cur.execute("SELECT * FROM envios_transito WHERE id = ?", (cur.lastrowid,))
+        return _full_envio_row_to_dict(cur.fetchone())
+    finally:
+        conn.close()
+
+
+@app.get("/api/full/envios-transito")
+async def listar_full_envios_transito(status: str = "all", client_id: str = Depends(get_tenant_id)):
+    _garantir_tabela_full_envios_transito(client_id)
+    status_norm = str(status or "all").strip().lower()
+    where = []
+    params: list[Any] = []
+    if status_norm in {"ativos", "active"}:
+        where.append("ativo = 1 AND status <> 'inativo'")
+    elif status_norm in {"inativos", "inactive"}:
+        where.append("(ativo = 0 OR status = 'inativo')")
+    elif status_norm not in {"all", "todos"}:
+        where.append("status = ?")
+        params.append(_full_envios_status_norm(status_norm))
+    sql = "SELECT * FROM envios_transito"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY date(data_envio) DESC, id DESC"
+
+    conn = sqlite3.connect(_full_envios_db_path(client_id))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = [_full_envio_row_to_dict(row) for row in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+    resumo: dict[str, Any] = {"total": len(rows), "unidades": 0, "por_status": {}}
+    for row in rows:
+        resumo["unidades"] += _full_numero(row.get("total_unidades"))
+        st = str(row.get("status") or "aguardando_inicio")
+        resumo["por_status"][st] = resumo["por_status"].get(st, 0) + 1
+    return {"success": True, "total": len(rows), "results": rows, "resumo": resumo}
+
+
+@app.post("/api/full/envios-transito/upload")
+async def upload_full_envios_transito(
+    files: list[UploadFile] = File(...),
+    loja: str = Form(""),
+    client_id: str = Depends(get_tenant_id),
+):
+    if not files:
+        raise HTTPException(status_code=400, detail="Envie ao menos um PDF.")
+    if len(files) > 20:
+        raise HTTPException(status_code=400, detail="Envie no maximo 20 PDFs por vez.")
+
+    registros = []
+    pasta = _full_envios_files_dir(client_id)
+    for upload in files:
+        nome_original = str(getattr(upload, "filename", "") or "envio.pdf").strip()
+        if not nome_original.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail=f"Arquivo nao e PDF: {nome_original}")
+        conteudo = await upload.read()
+        if not conteudo:
+            raise HTTPException(status_code=400, detail=f"Arquivo vazio: {nome_original}")
+        try:
+            parsed = await asyncio.to_thread(_full_envios_parse_pdf, nome_original, conteudo)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Nao foi possivel ler o PDF {nome_original}: {e}")
+
+        nome_seguro = re.sub(r"[^A-Za-z0-9._-]+", "_", nome_original)[:120] or "envio.pdf"
+        nome_salvo = f"{uuid.uuid4().hex}_{nome_seguro}"
+        caminho = os.path.join(pasta, nome_salvo)
+        with open(caminho, "wb") as f:
+            f.write(conteudo)
+
+        parsed.update({
+            "loja": str(loja or "").strip(),
+            "arquivo_pdf": nome_salvo,
+            "arquivo_nome": nome_original,
+            "ativo": True,
+        })
+        registros.append(_full_envios_inserir_registro(client_id, parsed))
+
+    return {"success": True, "total": len(registros), "results": registros}
+
+
+@app.post("/api/full/envios-transito/manual")
+async def criar_full_envio_transito_manual(payload: FullEnvioTransitoPayload, client_id: str = Depends(get_tenant_id)):
+    data = payload.dict()
+    data["status"] = _full_envios_status_norm(data.get("status"))
+    registro = _full_envios_inserir_registro(client_id, data)
+    return {"success": True, "result": registro}
+
+
+@app.patch("/api/full/envios-transito/{envio_id}")
+async def atualizar_full_envio_transito(envio_id: int, payload: FullEnvioTransitoUpdate, client_id: str = Depends(get_tenant_id)):
+    _garantir_tabela_full_envios_transito(client_id)
+    campos = payload.dict(exclude_unset=True)
+    if not campos:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+    if "status" in campos and campos["status"] is not None:
+        campos["status"] = _full_envios_status_norm(campos["status"])
+        if campos["status"] == "inativo":
+            campos["ativo"] = False
+    if "data_envio" in campos and campos["data_envio"] is not None:
+        campos["data_envio"] = _full_envios_data_iso(campos["data_envio"])
+    if "data_recebimento" in campos and campos["data_recebimento"] is not None:
+        campos["data_recebimento"] = _full_envios_data_iso(campos["data_recebimento"])
+    if "itens" in campos and campos["itens"] is not None:
+        itens = _full_envios_agrupar_itens([dict(item) for item in campos["itens"]])
+        campos["itens_json"] = json.dumps(itens, ensure_ascii=False)
+        campos["total_produtos"] = len(itens)
+        if campos.get("total_unidades") is None:
+            campos["total_unidades"] = sum(_full_numero(item.get("quantidade")) for item in itens)
+        campos.pop("itens", None)
+    if "ativo" in campos and campos["ativo"] is not None:
+        campos["ativo"] = 1 if campos["ativo"] else 0
+        if campos["ativo"] == 1 and campos.get("status") == "inativo":
+            campos["status"] = "aguardando_inicio"
+    campos["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+    permitidos = {
+        "codigo_envio", "loja", "status", "situacao_ml", "data_envio", "data_recebimento",
+        "total_unidades", "total_produtos", "itens_json", "observacoes", "ativo", "updated_at",
+    }
+    sets = []
+    params = []
+    for campo, valor in campos.items():
+        if campo in permitidos:
+            sets.append(f"{campo} = ?")
+            params.append(valor)
+    if not sets:
+        raise HTTPException(status_code=400, detail="Nenhum campo valido para atualizar.")
+    params.append(envio_id)
+
+    conn = sqlite3.connect(_full_envios_db_path(client_id))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE envios_transito SET {', '.join(sets)} WHERE id = ?", params)
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Envio nao encontrado.")
+        conn.commit()
+        row = cur.execute("SELECT * FROM envios_transito WHERE id = ?", (envio_id,)).fetchone()
+        return {"success": True, "result": _full_envio_row_to_dict(row)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/full/envios-transito/{envio_id}")
+async def excluir_full_envio_transito(envio_id: int, client_id: str = Depends(get_tenant_id)):
+    _garantir_tabela_full_envios_transito(client_id)
+    conn = sqlite3.connect(_full_envios_db_path(client_id))
+    try:
+        cur = conn.cursor()
+        row = cur.execute("SELECT arquivo_pdf FROM envios_transito WHERE id = ?", (envio_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Envio nao encontrado.")
+        arquivo_pdf = str(row[0] or "").strip()
+        cur.execute("DELETE FROM envios_transito WHERE id = ?", (envio_id,))
+        conn.commit()
+        if arquivo_pdf:
+            caminho = os.path.join(_full_envios_files_dir(client_id), arquivo_pdf)
+            if os.path.exists(caminho):
+                try:
+                    os.remove(caminho)
+                except Exception:
+                    logger.warning("[FULL TRANSITO] Nao foi possivel remover PDF %s", caminho)
+        return {"success": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/full/envios-transito/{envio_id}/pdf")
+async def baixar_pdf_full_envio_transito(envio_id: int, client_id: str = Depends(get_tenant_id)):
+    _garantir_tabela_full_envios_transito(client_id)
+    conn = sqlite3.connect(_full_envios_db_path(client_id))
+    try:
+        row = conn.execute("SELECT arquivo_pdf, arquivo_nome FROM envios_transito WHERE id = ?", (envio_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="PDF nao encontrado para este envio.")
+    caminho = os.path.join(_full_envios_files_dir(client_id), str(row[0]))
+    if not os.path.exists(caminho):
+        raise HTTPException(status_code=404, detail="Arquivo PDF nao encontrado.")
+    return FileResponse(caminho, media_type="application/pdf", filename=str(row[1] or row[0]))
+
+
 def _estoque_historico_db_path(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "estoque_historico.db")
 
@@ -39713,18 +42880,18 @@ def _sincronizar_lancamentos_estoque_sku_api(
 ) -> dict:
     loja_cfg = buscar_loja(client_id, loja_nome)
     if not loja_cfg:
-        raise HTTPException(status_code=404, detail="Loja nÃ£o encontrada para o cliente.")
+        raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
     bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
     access_token = bling_cfg.get("access_token")
     cid = bling_cfg.get("id")
     sec = bling_cfg.get("secret")
     refresh_tok = bling_cfg.get("refresh_token")
     if not (access_token and cid and sec):
-        raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para buscar lanÃƒÂ§amentos.")
+        raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para buscar lançamentos.")
 
     id_bling_sku = _resolver_id_bling_por_sku_snapshot(client_id, loja_nome, sku, data_fim)
     if not id_bling_sku:
-        raise HTTPException(status_code=404, detail="ID do produto no Bling nÃ£o encontrado para o SKU informado.")
+        raise HTTPException(status_code=404, detail="ID do produto no Bling não encontrado para o SKU informado.")
 
     lotes, status_lotes = _bling_listar_lotes_produto(access_token, id_bling_sku)
     if status_lotes == 401 and refresh_tok:
@@ -39742,11 +42909,11 @@ def _sincronizar_lancamentos_estoque_sku_api(
         lotes, status_lotes = _bling_listar_lotes_produto(access_token, id_bling_sku)
 
     if status_lotes == 401:
-        raise HTTPException(status_code=401, detail="Token Bling expirado. RefaÃƒÂ§a a conexÃƒÂ£o em IntegraÃƒÂ§ÃƒÂµes.")
+        raise HTTPException(status_code=401, detail="Token Bling expirado. Refaça a conexão em Integrações.")
     if status_lotes == 403:
         raise HTTPException(
             status_code=403,
-            detail="PermissÃƒÂ£o insuficiente (insufficient_scope) no token Bling para consultar lotes/lanÃƒÂ§amentos de estoque.",
+            detail="Permissão insuficiente (insufficient_scope) no token Bling para consultar lotes/lançamentos de estoque.",
         )
 
     total_salvos = 0
@@ -39755,11 +42922,11 @@ def _sincronizar_lancamentos_estoque_sku_api(
         lote_id = lote.get("idLote") or lote.get("id")
         lancs, status_lancs = _bling_listar_lancamentos_lote(access_token, str(lote_id or ""))
         if status_lancs == 401:
-            raise HTTPException(status_code=401, detail="Token Bling expirado ao consultar lanÃƒÂ§amentos.")
+            raise HTTPException(status_code=401, detail="Token Bling expirado ao consultar lançamentos.")
         if status_lancs == 403:
             raise HTTPException(
                 status_code=403,
-                detail="PermissÃƒÂ£o insuficiente (insufficient_scope) no token Bling para consultar lanÃƒÂ§amentos de lote.",
+                detail="Permissão insuficiente (insufficient_scope) no token Bling para consultar lançamentos de lote.",
             )
         total_lancamentos += len(lancs or [])
         total_salvos += _salvar_lancamentos_estoque(
@@ -39793,9 +42960,9 @@ async def sincronizar_lancamentos_estoque_api(
     loja_nome = str(req.loja or "").strip()
     sku = _normalizar_sku_estoque(req.sku)
     if not loja_nome or loja_nome == "__todas":
-        raise HTTPException(status_code=400, detail="Informe uma loja especÃƒÂ­fica.")
+        raise HTTPException(status_code=400, detail="Informe uma loja específica.")
     if not sku:
-        raise HTTPException(status_code=400, detail="Informe um SKU para sincronizar lanÃƒÂ§amentos.")
+        raise HTTPException(status_code=400, detail="Informe um SKU para sincronizar lançamentos.")
 
     data_fim = req.data_fim or datetime.now().strftime("%Y-%m-%d")
     if req.data_inicio:
@@ -39819,7 +42986,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
 ) -> dict:
     loja_nome = str(req.loja or "").strip()
     if not loja_nome or loja_nome == "__todas":
-        raise HTTPException(status_code=400, detail="Informe uma loja especÃƒÂ­fica.")
+        raise HTTPException(status_code=400, detail="Informe uma loja específica.")
 
     data_fim = req.data_fim or datetime.now().strftime("%Y-%m-%d")
     try:
@@ -39838,7 +43005,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
 
     loja_cfg = buscar_loja(client_id, loja_nome)
     if not loja_cfg:
-        raise HTTPException(status_code=404, detail="Loja nÃ£o encontrada para o cliente.")
+        raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
 
     bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
     access_token = bling_cfg.get("access_token")
@@ -39850,7 +43017,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para buscar notas fiscais.")
 
     data_fim_str = data_fim_ref.strftime("%Y-%m-%d")
-    _estoque_lanc_log(client_id, f"[ESTOQUE][LANC] Iniciando sincronizaÃƒÂ§ÃƒÂ£o via NF da loja {loja_nome} ({data_inicio} a {data_fim_str})")
+    _estoque_lanc_log(client_id, f"[ESTOQUE][LANC] Iniciando sincronização via NF da loja {loja_nome} ({data_inicio} a {data_fim_str})")
     _set_estoque_lanc_progresso(
         client_id,
         _criar_progresso("Notas Entrada", 0, 1, 15, "Buscando notas fiscais de entrada..."),
@@ -39871,7 +43038,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         })
         natureza_map, status_nat = _bling_listar_naturezas(access_token)
     if status_nat == 401:
-        raise HTTPException(status_code=401, detail="Token Bling expirado. RefaÃƒÂ§a a conexÃƒÂ£o em IntegraÃƒÂ§ÃƒÂµes.")
+        raise HTTPException(status_code=401, detail="Token Bling expirado. Refaça a conexão em Integrações.")
 
     notas_entrada, notas_entrada_itens, status_entrada = _bling_listar_notas_entrada(
         access_token,
@@ -39908,7 +43075,7 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
     )
     _set_estoque_lanc_progresso(
         client_id,
-        _criar_progresso("Notas SaÃƒÂ­da", 0, 1, 45, "Buscando notas fiscais de saÃƒÂ­da..."),
+        _criar_progresso("Notas Saída", 0, 1, 45, "Buscando notas fiscais de saída..."),
     )
 
     notas_saida_itens, status_saida = _bling_listar_vendas_fallback_nf_saida(
@@ -39938,12 +43105,12 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
             client_id,
         )
     if status_saida == 401:
-        raise HTTPException(status_code=401, detail="Token Bling expirado ao buscar notas de saÃƒÂ­da.")
+        raise HTTPException(status_code=401, detail="Token Bling expirado ao buscar notas de saída.")
 
-    _estoque_lanc_log(client_id, f"[ESTOQUE][LANC] Itens de saÃƒÂ­da via NF: {len(notas_saida_itens or [])}")
+    _estoque_lanc_log(client_id, f"[ESTOQUE][LANC] Itens de saída via NF: {len(notas_saida_itens or [])}")
     _set_estoque_lanc_progresso(
         client_id,
-        _criar_progresso("Persistindo", 0, 1, 75, "Gravando movimentos de entrada e saÃƒÂ­da por SKU..."),
+        _criar_progresso("Persistindo", 0, 1, 75, "Gravando movimentos de entrada e saída por SKU..."),
     )
 
     movimentos_nf: list[dict] = []
@@ -40038,16 +43205,16 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
 
     _estoque_lanc_log(
         client_id,
-        f"[ESTOQUE][LANC] ConcluÃƒÂ­do via NF: skus={len(skus_movimentados)} movimentos={len(movimentos_nf)} salvos={salvos} entradas={entradas_total:.2f} saÃƒÂ­das={saidas_total:.2f}",
+        f"[ESTOQUE][LANC] Concluído via NF: skus={len(skus_movimentados)} movimentos={len(movimentos_nf)} salvos={salvos} entradas={entradas_total:.2f} saídas={saidas_total:.2f}",
     )
     _set_estoque_lanc_progresso(
         client_id,
         _criar_progresso(
-            "ConcluÃƒÂ­do",
+            "Concluído",
             len(skus_movimentados),
             len(skus_movimentados),
             100,
-            f"SincronizaÃƒÂ§ÃƒÂ£o por notas concluida: {salvos} movimentos gravados.",
+            f"Sincronização por notas concluída: {salvos} movimentos gravados.",
         ),
     )
     ESTOQUE_LANC_SYNC_META[client_id] = {
@@ -40063,16 +43230,16 @@ def _sincronizar_lancamentos_estoque_lote_thread_worker(req: "EstoqueLancamentos
     try:
         _set_estoque_lanc_progresso(
             client_id,
-            _criar_progresso("Preparando", 0, 0, 5, "Preparando sincronizaÃƒÂ§ÃƒÂ£o de lanÃƒÂ§amentos em lote..."),
+            _criar_progresso("Preparando", 0, 0, 5, "Preparando sincronização de lançamentos em lote..."),
         )
         asyncio.run(_sincronizar_lancamentos_estoque_lote_impl(req, client_id))
     except HTTPException as e:
-        msg = str(e.detail or "Erro na sincronizaÃƒÂ§ÃƒÂ£o de lanÃƒÂ§amentos")
-        _estoque_lanc_log(client_id, f"[ESTOQUE][LANC] Ã¢ÂÅ’ {msg}")
+        msg = str(e.detail or "Erro na sincronização de lançamentos")
+        _estoque_lanc_log(client_id, f"[ESTOQUE][LANC] Erro: {msg}")
         _set_estoque_lanc_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, msg[:140]))
     except Exception as e:
         msg = f"Erro inesperado: {str(e)}"
-        logger.exception(f"[ESTOQUE][LANC] Ã¢ÂÅ’ {msg}")
+        logger.exception(f"[ESTOQUE][LANC] Erro: {msg}")
         _set_estoque_lanc_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, msg[:140]))
     finally:
         ESTOQUE_LANC_SYNC_ACTIVE.pop(client_id, None)
@@ -40085,10 +43252,10 @@ async def sincronizar_lancamentos_estoque_lote_api(
 ):
     loja_nome = str(req.loja or "").strip()
     if not loja_nome or loja_nome == "__todas":
-        raise HTTPException(status_code=400, detail="Informe uma loja especÃƒÂ­fica.")
+        raise HTTPException(status_code=400, detail="Informe uma loja específica.")
 
     if ESTOQUE_LANC_SYNC_ACTIVE.get(client_id):
-        return {"started": False, "already_running": True, "message": "SincronizaÃƒÂ§ÃƒÂ£o de lanÃƒÂ§amentos jÃƒÂ¡ em andamento."}
+        return {"started": False, "already_running": True, "message": "Sincronização de lançamentos já em andamento."}
 
     ESTOQUE_LANC_SYNC_META[client_id] = {
         "loja": loja_nome,
@@ -40102,7 +43269,7 @@ async def sincronizar_lancamentos_estoque_lote_api(
         daemon=True,
     )
     t.start()
-    return {"started": True, "message": "SincronizaÃƒÂ§ÃƒÂ£o de lanÃƒÂ§amentos iniciada em background."}
+    return {"started": True, "message": "Sincronização de lançamentos iniciada em background."}
 
 
 @app.get("/api/estoque/lancamentos/sync-lote/progress")
@@ -40110,7 +43277,7 @@ async def progresso_sincronizacao_lancamentos_estoque(client_id: str = Depends(g
     active = bool(ESTOQUE_LANC_SYNC_ACTIVE.get(client_id))
     progress = ESTOQUE_LANC_SYNC_PROGRESS.get(client_id)
     if progress is None and active:
-        progress = _criar_progresso("Preparando", 0, 0, 0, "Iniciando sincronizaÃƒÂ§ÃƒÂ£o de lanÃƒÂ§amentos...")
+        progress = _criar_progresso("Preparando", 0, 0, 0, "Iniciando sincronização de lançamentos...")
     return {
         "success": True,
         "progress": progress,
@@ -40133,7 +43300,7 @@ async def estoque_serie_retroativa(
 ):
     loja_nome = str(loja or "").strip()
     if not loja_nome or loja_nome == "__todas":
-        raise HTTPException(status_code=400, detail="Informe uma loja especÃƒÂ­fica.")
+        raise HTTPException(status_code=400, detail="Informe uma loja específica.")
 
     intervalo = str(intervalo or "dia").strip().lower()
     if intervalo not in ("dia", "semana", "mes"):
@@ -40152,7 +43319,7 @@ async def estoque_serie_retroativa(
 
     data_inicio_ref = _inicio_periodo_estoque(periodo, data_inicio, data_fim_ref, client_id, loja_nome)
     if data_inicio_ref > data_fim_ref:
-        raise HTTPException(status_code=400, detail="data_inicio nÃ£o pode ser maior que data_fim.")
+        raise HTTPException(status_code=400, detail="data_inicio não pode ser maior que data_fim.")
 
     db_hist = _estoque_historico_db_path(client_id)
     if not os.path.exists(db_hist):
@@ -40164,7 +43331,7 @@ async def estoque_serie_retroativa(
             "saidas": [],
             "base_snapshot_data": None,
             "total_skus": 0,
-            "detail": "HistÃƒÂ³rico de estoque ainda nÃ£o foi gerado para esta loja.",
+            "detail": "Histórico de estoque ainda não foi gerado para esta loja.",
         }
 
     conn_hist = sqlite3.connect(db_hist)
@@ -40190,7 +43357,7 @@ async def estoque_serie_retroativa(
                 "saidas": [],
                 "base_snapshot_data": None,
                 "total_skus": 0,
-                "detail": "Sem snapshot de estoque para a loja no perÃƒÂ­odo solicitado.",
+                "detail": "Sem snapshot de estoque para a loja no período solicitado.",
             }
 
         sku_filtro_norm = _normalizar_sku_estoque(sku) if sku else ""
@@ -40544,15 +43711,15 @@ def _estoque_log(client_id: str, mensagem: str):
 def _estoque_verificar_cancelamento(client_id: str):
     if ESTOQUE_SYNC_CANCEL_FLAGS.get(client_id):
         ESTOQUE_SYNC_CANCEL_FLAGS.pop(client_id, None)
-        _set_estoque_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, "SincronizaÃƒÂ§ÃƒÂ£o de estoque cancelada."))
-        raise HTTPException(status_code=409, detail="SincronizaÃƒÂ§ÃƒÂ£o de estoque cancelada pelo usuÃƒÂ¡rio.")
+        _set_estoque_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, "Sincronização de estoque cancelada."))
+        raise HTTPException(status_code=409, detail="Sincronização de estoque cancelada pelo usuário.")
 
 @app.get("/api/estoque/sync/progress")
 async def progresso_sincronizacao_estoque(client_id: str = Depends(get_tenant_id)):
     active = bool(ESTOQUE_SYNC_ACTIVE.get(client_id))
     progress = ESTOQUE_SYNC_PROGRESS.get(client_id)
     if progress is None and active:
-        progress = _criar_progresso("Preparando", 0, 0, 0, "Iniciando atualizaÃƒÂ§ÃƒÂ£o de estoque...")
+        progress = _criar_progresso("Preparando", 0, 0, 0, "Iniciando atualização de estoque...")
     return {
         "success": True,
         "progress": progress,
@@ -40593,12 +43760,12 @@ def _sincronizar_estoque_thread_worker(req: "EstoqueSyncRequest", client_id: str
     try:
         asyncio.run(_sincronizar_estoque_impl(req, client_id))
     except HTTPException as e:
-        msg = e.detail or "Erro na sincronizaÃƒÂ§ÃƒÂ£o de estoque"
-        _estoque_log(client_id, f"[ESTOQUE] Ã¢ÂÅ’ {msg}")
+        msg = e.detail or "Erro na sincronização de estoque"
+        _estoque_log(client_id, f"[ESTOQUE] Erro: {msg}")
         _set_estoque_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, str(msg)[:140]))
     except requests.RequestException:
-        msg = "Falha de conexao com a API do Bling. Verifique internet/firewall e tente novamente em alguns minutos."
-        logger.exception(f"[ESTOQUE] Ã¢ÂÅ’ {msg}")
+        msg = "Falha de conexão com a API do Bling. Verifique internet/firewall e tente novamente em alguns minutos."
+        logger.exception(f"[ESTOQUE] Erro: {msg}")
         _set_estoque_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, msg[:140]))
     except Exception as e:
         texto = str(e)
@@ -40606,7 +43773,7 @@ def _sincronizar_estoque_thread_worker(req: "EstoqueSyncRequest", client_id: str
             msg = "Erro de conectividade com a API do Bling. Tente novamente em alguns minutos."
         else:
             msg = f"Erro inesperado: {texto}"
-        logger.exception(f"[ESTOQUE] Ã¢ÂÅ’ {msg}")
+        logger.exception(f"[ESTOQUE] Erro: {msg}")
         _set_estoque_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, msg[:140]))
     finally:
         ESTOQUE_SYNC_ACTIVE.pop(client_id, None)
@@ -40617,7 +43784,7 @@ async def sincronizar_estoque(req: EstoqueSyncRequest, client_id: str = Depends(
         raise HTTPException(status_code=400, detail="Selecione uma loja para sincronizar.")
 
     if ESTOQUE_SYNC_ACTIVE.get(client_id):
-        return {"started": False, "already_running": True, "message": "AtualizaÃƒÂ§ÃƒÂ£o de estoque jÃƒÂ¡ em andamento."}
+        return {"started": False, "already_running": True, "message": "Atualização de estoque já em andamento."}
 
     ESTOQUE_SYNC_META[client_id] = {
         "loja": req.loja,
@@ -40630,25 +43797,25 @@ async def sincronizar_estoque(req: EstoqueSyncRequest, client_id: str = Depends(
         daemon=True
     )
     t.start()
-    return {"started": True, "message": "AtualizaÃƒÂ§ÃƒÂ£o de estoque iniciada em background."}
+    return {"started": True, "message": "Atualização de estoque iniciada em background."}
 
 async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     ESTOQUE_SYNC_CANCEL_FLAGS.pop(client_id, None)
     ESTOQUE_SYNC_LOGS[client_id] = []
-    _set_estoque_progresso(client_id, _criar_progresso("Preparando", 0, 0, 0, "Iniciando atualizaÃƒÂ§ÃƒÂ£o de estoque."))
-    _estoque_log(client_id, f"[ESTOQUE] Iniciando sincronizaÃƒÂ§ÃƒÂ£o da loja {req.loja}")
+    _set_estoque_progresso(client_id, _criar_progresso("Preparando", 0, 0, 0, "Iniciando atualização de estoque."))
+    _estoque_log(client_id, f"[ESTOQUE] Iniciando sincronização da loja {req.loja}")
 
     if not req.loja or req.loja == "__todas":
         raise HTTPException(status_code=400, detail="Selecione uma loja para sincronizar.")
 
     loja = buscar_loja(client_id, req.loja)
     if not loja:
-        raise HTTPException(status_code=404, detail="Loja nÃ£o encontrada para o cliente.")
+        raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
 
     integracoes = loja.get("integracoes", {})
     bling_cfg = integracoes.get("bling")
     if not bling_cfg:
-        raise HTTPException(status_code=400, detail="Loja nÃ£o possui integraÃƒÂ§ÃƒÂ£o Bling conectada.")
+        raise HTTPException(status_code=400, detail="Loja não possui integração Bling conectada.")
 
     access_token = bling_cfg.get("access_token")
     cid = bling_cfg.get("id")
@@ -40690,8 +43857,8 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
         )
 
     _estoque_verificar_cancelamento(client_id)
-    _set_estoque_progresso(client_id, _criar_progresso("Bling", 2, 4, 45, "Mapeando depÃƒÂ³sitos da loja..."))
-    _estoque_log(client_id, "[ESTOQUE] Etapa 2/4: mapeando depÃƒÂ³sitos")
+    _set_estoque_progresso(client_id, _criar_progresso("Bling", 2, 4, 45, "Mapeando depósitos da loja..."))
+    _estoque_log(client_id, "[ESTOQUE] Etapa 2/4: mapeando depósitos")
     mapa_dep, status_dep = _bling_map_depositos(access_token)
     if status_dep != 200:
         status_err = int(status_dep or 502)
@@ -40763,12 +43930,12 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
 
     df_saida.to_csv(arquivo_cliente, index=False)
 
-    _set_estoque_progresso(client_id, _criar_progresso("Finalizando", 4, 4, 97, "Registrando histÃƒÂ³rico diÃƒÂ¡rio de estoque..."))
+    _set_estoque_progresso(client_id, _criar_progresso("Finalizando", 4, 4, 97, "Registrando histórico diário de estoque..."))
     total_hist = _registrar_snapshot_historico_estoque(client_id, req.loja, registros)
 
-    _estoque_log(client_id, f"[ESTOQUE] Ã¢Å“â€¦ SincronizaÃƒÂ§ÃƒÂ£o concluida: {len(registros)} SKUs")
-    _estoque_log(client_id, f"[ESTOQUE] Ã°Å¸â€”â€šÃ¯Â¸Â HistÃƒÂ³rico atualizado ({total_hist} registros processados; ÃƒÂºltimo snapshot do dia por SKU)")
-    _set_estoque_progresso(client_id, _criar_progresso("ConcluÃƒÂ­do", 4, 4, 100, f"Estoque atualizado com {len(registros)} SKUs."))
+    _estoque_log(client_id, f"[ESTOQUE] Sincronização concluída: {len(registros)} SKUs")
+    _estoque_log(client_id, f"[ESTOQUE] Histórico atualizado ({total_hist} registros processados; último snapshot do dia por SKU)")
+    _set_estoque_progresso(client_id, _criar_progresso("Concluído", 4, 4, 100, f"Estoque atualizado com {len(registros)} SKUs."))
     return {"success": True, "total": len(registros)}
 
 
@@ -41531,7 +44698,7 @@ async def listar_produtos_cadastro(
 
             return fotos_por_sku
         except Exception as e:
-            logger.warning(f"[CADASTRO] NÃƒÂ£o foi possÃƒÂ­vel sincronizar fotos da planilha: {e}")
+            logger.warning(f"[CADASTRO] Não foi possível sincronizar fotos da planilha: {e}")
             return {}
 
     tenant_path = get_tenant_path(client_id)
@@ -41558,6 +44725,10 @@ async def listar_produtos_cadastro(
             cols_antes_custos = list(df.columns)
             df = _cadastro_canonizar_colunas_custos(df)
             if list(df.columns) != cols_antes_custos:
+                precisa_salvar = True
+            cols_antes_texto = list(df.columns)
+            df = _cadastro_canonizar_coluna_descricao(df)
+            if list(df.columns) != cols_antes_texto:
                 precisa_salvar = True
             cols_pesquisa_ausentes = [c for c in CADASTRO_PESQUISA_COLS if c not in df.columns]
             if cols_pesquisa_ausentes:
@@ -41838,7 +45009,7 @@ async def listar_produtos_cadastro(
                         mask_loja = lojas_resolvidas.astype(str).str.strip() != ""
                         df.loc[mask_loja, "loja_sync"] = lojas_resolvidas.loc[mask_loja]
 
-                        # Preserva NCM/CEST jÃƒÂ¡ salvos no cadastro quando o estoque nÃ£o tiver valor.
+                        # Preserva NCM/CEST já salvos no cadastro quando o estoque não tiver valor.
                         ncm_resolvido = df["sku"].astype(str).apply(_resolver_ncm).fillna("")
                         cest_resolvido = df["sku"].astype(str).apply(_resolver_cest).fillna("")
 
@@ -42053,8 +45224,8 @@ async def importar_colunas_cadastro_por_sku(
 
             if melhor_df is None:
                 if ultimo_erro:
-                    raise HTTPException(status_code=400, detail=f"NÃƒÂ£o foi possÃƒÂ­vel ler o CSV: {str(ultimo_erro)}")
-                raise HTTPException(status_code=400, detail="NÃƒÂ£o foi possÃƒÂ­vel ler o CSV informado.")
+                    raise HTTPException(status_code=400, detail=f"Não foi possível ler o CSV: {str(ultimo_erro)}")
+                raise HTTPException(status_code=400, detail="Não foi possível ler o CSV informado.")
 
             df_import = melhor_df
         else:
@@ -42075,7 +45246,7 @@ async def importar_colunas_cadastro_por_sku(
                 col_sku = c
                 break
         if not col_sku:
-            raise HTTPException(status_code=400, detail="Coluna SKU nÃ£o encontrada na planilha.")
+            raise HTTPException(status_code=400, detail="Coluna SKU não encontrada na planilha.")
 
         # Colunas importadas: todas exceto SKU.
         colunas_importadas = [c for c in df_import.columns if c != col_sku]
@@ -42085,7 +45256,7 @@ async def importar_colunas_cadastro_por_sku(
         if df_import.empty:
             raise HTTPException(status_code=400, detail="Nenhum SKU valido encontrado na planilha.")
 
-        # Remove duplicidade de SKU na planilha mantendo a ÃƒÂºltima ocorrÃƒÂªncia.
+        # Remove duplicidade de SKU na planilha mantendo a última ocorrência.
         df_import = df_import.drop_duplicates(subset=[col_sku], keep="last")
         df_import = df_import.set_index(col_sku)
         modo_custos = (
@@ -42214,7 +45385,22 @@ async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_i
         for campo in ("nome", "produto", "produto_bling", "nome_bling"):
             if campo in linha:
                 linha[campo] = _cadastro_limpar_nome(linha[campo])
-        return {"produto": {k: ("" if pd.isna(v) else str(v)) for k, v in linha.items()}}
+        try:
+            mapa_custos = _cadastro_mapa_custos_lojas(client_id)
+            custos_por_loja = {}
+            for sku_key in _sku_lookup_variantes(sku_norm):
+                custos_por_loja = mapa_custos.get(sku_key) or {}
+                if custos_por_loja:
+                    break
+            linha["custos_por_loja"] = custos_por_loja
+        except Exception as exc:
+            logger.warning("[CADASTRO] Falha ao anexar custos por loja ao SKU %s: %s", sku_norm, exc)
+        def _json_valor(v):
+            if isinstance(v, (dict, list)):
+                return v
+            return "" if pd.isna(v) else str(v)
+
+        return {"produto": {k: _json_valor(v) for k, v in linha.items()}}
     except HTTPException:
         raise
     except Exception as e:
@@ -42792,6 +45978,8 @@ async def listar_notas_entrada(client_id: str = Depends(get_tenant_id), data_ini
             cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN unidade_negocio TEXT")
         if "unidade_negocio_virtual" not in cols_itens:
             cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN unidade_negocio_virtual TEXT")
+        if "finalidade_operacao" not in cols_itens:
+            cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN finalidade_operacao TEXT")
         conn.commit()
 
         if agrupado:
@@ -42830,7 +46018,7 @@ async def listar_notas_entrada(client_id: str = Depends(get_tenant_id), data_ini
             return [dict(r) for r in rows]
         else:
             # Retorna lista de itens individuais de devoluÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes
-            query = "SELECT numero_nota, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, loja_conta FROM notas_entrada_itens"
+            query = "SELECT numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens"
             params = []
             conditions = ["devolucao = 1"]
             if data_inicio and data_fim:
@@ -42863,7 +46051,6 @@ async def listar_notas_entrada(client_id: str = Depends(get_tenant_id), data_ini
                     item.get("natureza_operacao"),
                     item.get("loja_conta"),
                 )
-                item.pop("natureza_operacao", None)
             return dados
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao ler notas de entrada: {str(e)}")
@@ -42901,9 +46088,11 @@ async def listar_itens_devolucoes(client_id: str = Depends(get_tenant_id), data_
                     cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN unidade_negocio TEXT")
                 if "unidade_negocio_virtual" not in cols_itens:
                     cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN unidade_negocio_virtual TEXT")
-                    conn.commit()
+                if "finalidade_operacao" not in cols_itens:
+                    cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN finalidade_operacao TEXT")
+                conn.commit()
 
-                query = "SELECT sku, descricao, quantidade, valor_total, data_emissao, unidade_negocio_virtual, unidade_negocio, natureza_operacao, loja_conta FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
+                query = "SELECT numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
                 params = []
 
                 if data_inicio and data_fim:
@@ -42933,7 +46122,6 @@ async def listar_itens_devolucoes(client_id: str = Depends(get_tenant_id), data_
                         item.get("natureza_operacao"),
                         item.get("loja_conta"),
                     )
-                    item.pop("natureza_operacao", None)
                     resultado.append(item)
             except sqlite3.OperationalError:
                 # Alguns bancos podem nÃ£o ter tabela de notas ainda.
@@ -42967,12 +46155,14 @@ async def listar_notas_entrada_por_sku(sku: str, client_id: str = Depends(get_te
             cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN unidade_negocio TEXT")
         if "unidade_negocio_virtual" not in cols_itens:
             cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN unidade_negocio_virtual TEXT")
-            conn.commit()
+        if "finalidade_operacao" not in cols_itens:
+            cur.execute("ALTER TABLE notas_entrada_itens ADD COLUMN finalidade_operacao TEXT")
+        conn.commit()
 
         # ÃƒÂndice para acelerar busca de devoluÃƒÂ§ÃƒÂµes por SKU e perÃƒÂ­odo.
         cur.execute("CREATE INDEX IF NOT EXISTS idx_notas_itens_sku_data_dev ON notas_entrada_itens(sku, data_emissao, devolucao)")
 
-        query = "SELECT numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, loja_conta FROM notas_entrada_itens WHERE sku = ? AND sku != '' AND devolucao = 1"
+        query = "SELECT numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE sku = ? AND sku != '' AND devolucao = 1"
         params = [sku]
         
         if data_inicio and data_fim:
@@ -43002,7 +46192,6 @@ async def listar_notas_entrada_por_sku(sku: str, client_id: str = Depends(get_te
                 item.get("natureza_operacao"),
                 item.get("loja_conta"),
             )
-            item.pop("natureza_operacao", None)
         return dados
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao ler notas de entrada: {str(e)}")
@@ -43368,17 +46557,28 @@ def _corrigir_texto_mojibake(valor):
         return valor
     texto = valor
     substituicoes = {
+        "\u00c3\u00a2\u00c5\u201c\u00e2\u20ac\u00a6": "\u2705",
+        "\u00c3\u00a2\u00c2\u009d\u00c5\u2019": "\u274c",
+        "\u00c3\u00a2\u00c5\u00a1\u00c2\u00a0\u00c3\u00af\u00c2\u00b8\u00c2\u008f": "\u26a0\ufe0f",
         "\u00e2\u0153\u2026": "\u2705",
         "\u00e2\u009d\u0152": "\u274c",
+        "\u00e2\u0161\u00a0\u00ef\u00b8\u008f": "\u26a0\ufe0f",
         "\u00e2\u20ac\u201d": "-",
+        "\u00e2\u20ac\u201c": "-",
         "\u00e2\u20ac\u0153": '"',
         "\u00e2\u20ac\u009d": '"',
+        "\u00e2\u20ac\u02dc": "'",
+        "\u00e2\u20ac\u2122": "'",
     }
     for errado, correto in substituicoes.items():
         texto = texto.replace(errado, correto)
-    if not texto or not any(m in texto for m in ("Ãƒ", "Ã‚", "Ã¢", "ï¿½")):
+    marcadores = (
+        "Ãƒ", "Ã‚", "Ã€", "Ã¡", "Ã¢", "Ã£", "Ã§", "Ã©", "Ãª", "Ã­",
+        "Ã³", "Ãµ", "Ãº", "Â", "â€", "âœ", "â", "âš", "ï¿½", "�",
+    )
+    if not texto or not any(m in texto for m in marcadores):
         return texto
-    for _ in range(2):
+    for _ in range(3):
         try:
             corrigido = texto.encode("cp1252").decode("utf-8")
         except UnicodeError:
@@ -43386,7 +46586,9 @@ def _corrigir_texto_mojibake(valor):
         if not corrigido or corrigido == texto:
             break
         texto = corrigido
-        if not any(m in texto for m in ("Ãƒ", "Ã‚", "Ã¢", "ï¿½")):
+        for errado, correto in substituicoes.items():
+            texto = texto.replace(errado, correto)
+        if not any(m in texto for m in marcadores):
             break
     return texto
 
@@ -43404,8 +46606,145 @@ def _criar_progresso(etapa: str, lote: int, total_lotes: int, percentual: int, m
         "timestamp": datetime.now().isoformat()
     }
 
+
+def _sync_context_key(client_id: str) -> str:
+    return str(getattr(SYNC_THREAD_CONTEXT, "job_id", "") or client_id)
+
+
+def _sync_context_loja() -> str:
+    return str(getattr(SYNC_THREAD_CONTEXT, "loja", "") or "").strip()
+
+
+def _sync_active_jobs_unlocked(client_id: str) -> dict:
+    active = SYNC_ACTIVE.get(client_id)
+    if isinstance(active, dict):
+        return active
+    if active:
+        return {"legacy": {"id": "legacy", "loja": ""}}
+    return {}
+
+
+def _sync_active_jobs(client_id: str) -> dict:
+    with SYNC_ACTIVE_LOCK:
+        return dict(_sync_active_jobs_unlocked(client_id))
+
+
+def _sync_register_active_unlocked(client_id: str, req: "VendasSyncRequest") -> str:
+    active = dict(_sync_active_jobs_unlocked(client_id))
+    job_id = uuid.uuid4().hex
+    agora = datetime.now().isoformat()
+    meta = {
+        "id": job_id,
+        "client_id": client_id,
+        "loja": req.loja,
+        "data_inicio": req.data_inicio,
+        "data_fim": req.data_fim,
+        "forcar_resync": bool(req.forcar_resync),
+        "started_at": agora,
+        "status": "running",
+    }
+    active[job_id] = meta
+    SYNC_ACTIVE[client_id] = active
+    SYNC_META[job_id] = meta
+    SYNC_META[client_id] = {
+        "modo": "diario_paralelo",
+        "limite_contas": SYNC_MAX_ACTIVE_VENDAS,
+        "active_count": len(active),
+        "started_at": agora,
+        "jobs": list(active.values()),
+    }
+    SYNC_LOGS[job_id] = []
+    SYNC_PROGRESS.pop(job_id, None)
+    SYNC_CANCEL_FLAGS.pop(job_id, None)
+    return job_id
+
+
+def _sync_unregister_active(client_id: str, job_id: str):
+    with SYNC_ACTIVE_LOCK:
+        active = dict(_sync_active_jobs_unlocked(client_id))
+        active.pop(job_id, None)
+        if active:
+            SYNC_ACTIVE[client_id] = active
+            SYNC_META[client_id] = {
+                **(SYNC_META.get(client_id) or {}),
+                "modo": "diario_paralelo",
+                "limite_contas": SYNC_MAX_ACTIVE_VENDAS,
+                "active_count": len(active),
+                "jobs": list(active.values()),
+                "updated_at": datetime.now().isoformat(),
+            }
+        else:
+            SYNC_ACTIVE.pop(client_id, None)
+            SYNC_CANCEL_FLAGS.pop(client_id, None)
+            SYNC_META[client_id] = {
+                **(SYNC_META.get(client_id) or {}),
+                "modo": "diario_paralelo",
+                "limite_contas": SYNC_MAX_ACTIVE_VENDAS,
+                "active_count": 0,
+                "jobs": [],
+                "finished_at": datetime.now().isoformat(),
+            }
+    SYNC_DAY_CONTEXT.pop(job_id, None)
+
+
+def _sync_build_aggregate_progress(client_id: str, active_jobs: dict | None = None) -> dict | None:
+    active_jobs = active_jobs if active_jobs is not None else _sync_active_jobs(client_id)
+    if not active_jobs:
+        return SYNC_PROGRESS.get(client_id)
+
+    itens = []
+    percentuais = []
+    for job_id, meta in active_jobs.items():
+        prog = SYNC_PROGRESS.get(job_id)
+        if isinstance(prog, dict):
+            percentuais.append(max(0, min(100, int(prog.get("percentual") or 0))))
+        itens.append({
+            "id": job_id,
+            "loja": (meta or {}).get("loja") or "",
+            "progress": prog,
+        })
+
+    percentual = int(sum(percentuais) / len(percentuais)) if percentuais else 0
+    lojas = ", ".join(str(item.get("loja") or "").strip() for item in itens if str(item.get("loja") or "").strip())
+    mensagem = f"{len(active_jobs)} conta(s) sincronizando"
+    if lojas:
+        mensagem += f": {lojas}"
+    progresso = _criar_progresso("Sincronizando", len(active_jobs), SYNC_MAX_ACTIVE_VENDAS, percentual, mensagem)
+    progresso["active_count"] = len(active_jobs)
+    progresso["jobs"] = itens
+    return progresso
+
+
 def _set_progresso(client_id: str, data: dict):
-    SYNC_PROGRESS[client_id] = data
+    key = _sync_context_key(client_id)
+    ctx = SYNC_DAY_CONTEXT.get(key) or SYNC_DAY_CONTEXT.get(client_id)
+    if ctx and isinstance(data, dict) and not data.get("_global_percent_applied"):
+        data = dict(data)
+        try:
+            total_dias = max(1, int(ctx.get("total_dias") or 1))
+            dia_indice = max(1, int(ctx.get("dia_indice") or 1))
+            percentual_local = max(0, min(100, int(data.get("percentual") or 0)))
+            percentual_global = int((((dia_indice - 1) + (percentual_local / 100)) / total_dias) * 100)
+            data["percentual_local"] = percentual_local
+            data["percentual"] = max(0, min(99, percentual_global))
+            data["dia_atual"] = ctx.get("dia_atual")
+            data["dia_indice"] = dia_indice
+            data["dias_total"] = total_dias
+            mensagem = str(data.get("mensagem") or "")
+            data["mensagem"] = f"Dia {dia_indice}/{total_dias} ({ctx.get('dia_atual')}): {mensagem}"
+            data["_global_percent_applied"] = True
+        except Exception:
+            pass
+    if isinstance(data, dict):
+        loja = _sync_context_loja()
+        if loja:
+            data = dict(data)
+            data["loja"] = loja
+    SYNC_PROGRESS[key] = data
+    if key != client_id:
+        SYNC_PROGRESS[client_id] = _sync_build_aggregate_progress(client_id)
+    else:
+        SYNC_PROGRESS[client_id] = data
 
 def _limpar_progresso(client_id: str):
     SYNC_PROGRESS.pop(client_id, None)
@@ -43414,17 +46753,143 @@ def _limpar_progresso(client_id: str):
 def _sync_log(client_id: str, mensagem: str):
     mensagem = _corrigir_texto_mojibake(str(mensagem or ""))
     print(mensagem)
-    logs = SYNC_LOGS.get(client_id, [])
+    key = _sync_context_key(client_id)
+    logs = SYNC_LOGS.get(key, [])
     logs.append(mensagem)
     if len(logs) > 200:
         logs = logs[-200:]
-    SYNC_LOGS[client_id] = logs
+    SYNC_LOGS[key] = logs
+    if key != client_id:
+        loja = _sync_context_loja()
+        prefixo = f"[{loja}] " if loja else ""
+        logs_cliente = SYNC_LOGS.get(client_id, [])
+        logs_cliente.append(f"{prefixo}{mensagem}")
+        if len(logs_cliente) > 200:
+            logs_cliente = logs_cliente[-200:]
+        SYNC_LOGS[client_id] = logs_cliente
 
 def _verificar_cancelamento(client_id: str):
-    if SYNC_CANCEL_FLAGS.get(client_id):
-        SYNC_CANCEL_FLAGS.pop(client_id, None)
+    key = _sync_context_key(client_id)
+    if SYNC_CANCEL_FLAGS.get(client_id) or SYNC_CANCEL_FLAGS.get(key):
+        SYNC_CANCEL_FLAGS.pop(key, None)
         _set_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, "SincronizaÃƒÂ§ÃƒÂ£o cancelada pelo usuÃƒÂ¡rio."))
         raise HTTPException(status_code=409, detail="SincronizaÃƒÂ§ÃƒÂ£o cancelada pelo usuÃƒÂ¡rio.")
+
+
+def _vendas_sync_parse_date(valor: str, campo: str) -> dt.date:
+    try:
+        return dt.date.fromisoformat(str(valor or "").strip()[:10])
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Data invalida em {campo}. Use YYYY-MM-DD.")
+
+
+def _vendas_sync_dias_periodo(data_inicio: str, data_fim: str) -> list[str]:
+    inicio = _vendas_sync_parse_date(data_inicio, "data_inicio")
+    fim = _vendas_sync_parse_date(data_fim, "data_fim")
+    if inicio > fim:
+        raise HTTPException(status_code=400, detail="Data inicial nao pode ser maior que a data final.")
+    total = (fim - inicio).days + 1
+    return [(inicio + dt.timedelta(days=i)).isoformat() for i in range(total)]
+
+
+def _vendas_sync_state_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "vendas_sync_state.json")
+
+
+def _vendas_sync_load_state(client_id: str) -> dict:
+    path = _vendas_sync_state_path(client_id)
+    if not os.path.exists(path):
+        return {"jobs": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            return {"jobs": {}}
+        if not isinstance(state.get("jobs"), dict):
+            state["jobs"] = {}
+        return state
+    except Exception:
+        return {"jobs": {}}
+
+
+def _vendas_sync_save_state(client_id: str, state: dict):
+    path = _vendas_sync_state_path(client_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(state or {"jobs": {}}, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _vendas_sync_job_key(loja: str, data_inicio: str, data_fim: str, forcar_resync: bool) -> str:
+    base = "|".join([
+        str(loja or "").strip().lower(),
+        str(data_inicio or "").strip()[:10],
+        str(data_fim or "").strip()[:10],
+        "1" if forcar_resync else "0",
+    ])
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+
+def _vendas_sync_prepare_job(client_id: str, req: VendasSyncRequest, dias: list[str]) -> tuple[str, dict]:
+    with SYNC_STATE_LOCK:
+        state = _vendas_sync_load_state(client_id)
+        jobs = state.setdefault("jobs", {})
+        key = _vendas_sync_job_key(req.loja, req.data_inicio, req.data_fim, req.forcar_resync)
+        job = jobs.get(key)
+        precisa_novo = (
+            not isinstance(job, dict)
+            or job.get("status") == "complete"
+            or job.get("loja") != req.loja
+            or job.get("data_inicio") != req.data_inicio
+            or job.get("data_fim") != req.data_fim
+            or bool(job.get("forcar_resync")) != bool(req.forcar_resync)
+        )
+        if precisa_novo:
+            job = {
+                "id": key,
+                "loja": req.loja,
+                "data_inicio": req.data_inicio,
+                "data_fim": req.data_fim,
+                "forcar_resync": bool(req.forcar_resync),
+                "dias_total": len(dias),
+                "dias_concluidos": [],
+                "dia_atual": None,
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+            }
+        else:
+            job["status"] = "running"
+            job["dias_total"] = len(dias)
+            job["updated_at"] = datetime.now().isoformat()
+        jobs[key] = job
+        state["active_key"] = key
+        _vendas_sync_save_state(client_id, state)
+        return key, job
+
+
+def _vendas_sync_update_job(client_id: str, key: str, updates: dict) -> dict:
+    with SYNC_STATE_LOCK:
+        state = _vendas_sync_load_state(client_id)
+        jobs = state.setdefault("jobs", {})
+        job = jobs.get(key) if isinstance(jobs.get(key), dict) else {"id": key}
+        job.update(updates or {})
+        job["updated_at"] = datetime.now().isoformat()
+        jobs[key] = job
+        state["active_key"] = key
+
+        # Mantem o arquivo pequeno, preservando os jobs mais recentes.
+        if len(jobs) > 25:
+            ordenados = sorted(
+                jobs.items(),
+                key=lambda item: str((item[1] or {}).get("updated_at") or ""),
+                reverse=True,
+            )
+            state["jobs"] = dict(ordenados[:25])
+
+        _vendas_sync_save_state(client_id, state)
+        return job
 
 @app.get("/api/vendas/todas")
 async def listar_vendas_todas(client_id: str = Depends(get_tenant_id)):
@@ -43979,34 +47444,88 @@ async def cancelar_sincronizacao_vendas(client_id: str = Depends(get_tenant_id))
 
 @app.get("/api/vendas/sync/progress")
 async def progresso_sincronizacao_vendas(client_id: str = Depends(get_tenant_id)):
-    active = bool(SYNC_ACTIVE.get(client_id))
-    progress = SYNC_PROGRESS.get(client_id)
+    active_jobs = _sync_active_jobs(client_id)
+    active = bool(active_jobs)
+    progress = _sync_build_aggregate_progress(client_id, active_jobs)
+    state = _vendas_sync_load_state(client_id)
+    active_key = state.get("active_key")
+    sync_state = (state.get("jobs") or {}).get(active_key) if active_key else None
     # Se a thread estÃƒÂ¡ ativa mas ainda nÃ£o registrou progresso, retornar estado inicial
     if progress is None and active:
         progress = _criar_progresso("Preparando", 0, 0, 0, "Iniciando sincronizaÃƒÂ§ÃƒÂ£o...")
+    if isinstance(progress, dict):
+        progress = {
+            chave: _corrigir_texto_mojibake(valor) if isinstance(valor, str) else valor
+            for chave, valor in progress.items()
+        }
+    active_jobs_payload = []
+    for job_id, meta in active_jobs.items():
+        job_progress = SYNC_PROGRESS.get(job_id)
+        if isinstance(job_progress, dict):
+            job_progress = {
+                chave: _corrigir_texto_mojibake(valor) if isinstance(valor, str) else valor
+                for chave, valor in job_progress.items()
+            }
+        active_jobs_payload.append({
+            **(meta or {}),
+            "id": job_id,
+            "progress": job_progress,
+        })
     return {
         "success": True,
         "progress": progress,
-        "logs": SYNC_LOGS.get(client_id, []),
+        "logs": [_corrigir_texto_mojibake(log) for log in SYNC_LOGS.get(client_id, [])],
         "active": active,
-        "sync_meta": SYNC_META.get(client_id)
+        "active_count": len(active_jobs),
+        "active_jobs": active_jobs_payload,
+        "job_progress": {
+            job_id: SYNC_PROGRESS.get(job_id)
+            for job_id in set(
+                list(active_jobs.keys())
+                + [
+                    str(k) for k in SYNC_PROGRESS.keys()
+                    if str(k) != client_id and (SYNC_META.get(str(k)) or {}).get("client_id") == client_id
+                ]
+            )
+            if isinstance(SYNC_PROGRESS.get(job_id), dict)
+        },
+        "sync_meta": SYNC_META.get(client_id),
+        "sync_state": sync_state,
     }
 
-def _sincronizar_vendas_thread_worker(req: "VendasSyncRequest", client_id: str):
+def _sincronizar_vendas_thread_worker(req: "VendasSyncRequest", client_id: str, job_id: str):
     """Executa a sincronizaÃƒÂ§ÃƒÂ£o de vendas em thread separada para nÃ£o bloquear o servidor."""
-    SYNC_ACTIVE[client_id] = True
+    SYNC_THREAD_CONTEXT.job_id = job_id
+    SYNC_THREAD_CONTEXT.loja = req.loja
     try:
         asyncio.run(_sincronizar_vendas_impl(req, client_id))
     except HTTPException as e:
         msg = e.detail or "Erro na sincronizaÃƒÂ§ÃƒÂ£o"
-        _sync_log(client_id, f"[SYNC] Ã¢ÂÅ’ {msg}")
-        _set_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, str(msg)[:100]))
+        if e.status_code == 409:
+            _sync_log(client_id, f"[SYNC] Sincronizacao interrompida: {msg}")
+            _set_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, str(msg)[:100]))
+        else:
+            _sync_log(client_id, f"[SYNC] Ã¢ÂÅ’ {msg}")
+            _set_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, str(msg)[:100]))
     except Exception as e:
         msg = f"Erro inesperado: {str(e)}"
         logger.exception(f"[SYNC] Ã¢ÂÅ’ {msg}")
         _set_progresso(client_id, _criar_progresso("Erro", 0, 0, 0, msg[:100]))
     finally:
-        SYNC_ACTIVE.pop(client_id, None)
+        progresso_final = SYNC_PROGRESS.get(job_id) if isinstance(SYNC_PROGRESS.get(job_id), dict) else {}
+        etapa_final = str((progresso_final or {}).get("etapa") or "").strip().lower()
+        status_final = "complete" if (progresso_final or {}).get("concluido") else ("erro" if etapa_final == "erro" else ("cancelado" if etapa_final == "cancelamento" else "finished"))
+        SYNC_META[job_id] = {
+            **(SYNC_META.get(job_id) or {}),
+            "status": status_final,
+            "finished_at": datetime.now().isoformat(),
+        }
+        _sync_unregister_active(client_id, job_id)
+        for attr in ("job_id", "loja"):
+            try:
+                delattr(SYNC_THREAD_CONTEXT, attr)
+            except Exception:
+                pass
 
 @app.post("/api/vendas/sync")
 async def sincronizar_vendas(req: VendasSyncRequest, client_id: str = Depends(get_tenant_id)):
@@ -44016,33 +47535,208 @@ async def sincronizar_vendas(req: VendasSyncRequest, client_id: str = Depends(ge
     if not req.data_inicio or not req.data_fim:
         raise HTTPException(status_code=400, detail="Informe data inicial e final.")
 
-    # Se jÃƒÂ¡ estiver rodando, retornar status sem iniciar nova thread
-    if SYNC_ACTIVE.get(client_id):
-        return {"started": False, "already_running": True, "message": "SincronizaÃƒÂ§ÃƒÂ£o jÃƒÂ¡ em andamento."}
-
-    SYNC_META[client_id] = {
-        "loja": req.loja,
-        "data_inicio": req.data_inicio,
-        "data_fim": req.data_fim,
-        "started_at": datetime.now().isoformat(),
-    }
+    with SYNC_ACTIVE_LOCK:
+        active = dict(_sync_active_jobs_unlocked(client_id))
+        loja_norm = str(req.loja or "").strip().lower()
+        for job_id, meta in active.items():
+            if str((meta or {}).get("loja") or "").strip().lower() == loja_norm:
+                return {
+                    "started": False,
+                    "already_running": True,
+                    "job_id": job_id,
+                    "message": "Esta loja ja esta sincronizando.",
+                }
+        if len(active) >= SYNC_MAX_ACTIVE_VENDAS:
+            return {
+                "started": False,
+                "already_running": True,
+                "limit_reached": True,
+                "active_count": len(active),
+                "limit": SYNC_MAX_ACTIVE_VENDAS,
+                "message": "Limite de 2 contas sincronizando ao mesmo tempo atingido.",
+            }
+        if not active:
+            SYNC_CANCEL_FLAGS.pop(client_id, None)
+            SYNC_LOGS[client_id] = []
+        job_id = _sync_register_active_unlocked(client_id, req)
 
     # Iniciar em thread de background Ã¢â‚¬â€ nÃ£o bloqueia o servidor nem o cliente
     t = threading.Thread(
         target=_sincronizar_vendas_thread_worker,
-        args=(req, client_id),
+        args=(req, client_id, job_id),
         daemon=True
     )
     t.start()
-    return {"started": True, "message": "SincronizaÃƒÂ§ÃƒÂ£o iniciada em background."}
+    return {
+        "started": True,
+        "job_id": job_id,
+        "active_count": len(_sync_active_jobs(client_id)),
+        "limit": SYNC_MAX_ACTIVE_VENDAS,
+        "message": "Sincronizacao diaria iniciada em background.",
+    }
 
 
 async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
-    SYNC_CANCEL_FLAGS.pop(client_id, None)
-    # Limpar logs anteriores para nÃ£o acumular entre runs
-    SYNC_LOGS[client_id] = []
-    _set_progresso(client_id, _criar_progresso("Preparando", 0, 0, 0, "Iniciando sincronizaÃƒÂ§ÃƒÂ£o."))
-    _sync_log(client_id, "[SYNC] Iniciando sincronizaÃƒÂ§ÃƒÂ£o")
+    job_context_key = _sync_context_key(client_id)
+    SYNC_CANCEL_FLAGS.pop(job_context_key, None)
+    SYNC_LOGS[job_context_key] = []
+    _set_progresso(client_id, _criar_progresso("Preparando", 0, 0, 0, "Iniciando sincronizacao por dia."))
+    _sync_log(client_id, "[SYNC] Iniciando sincronizacao por dia")
+
+    if not req.loja or req.loja == "__todas":
+        raise HTTPException(status_code=400, detail="Selecione uma loja para sincronizar.")
+    if not req.data_inicio or not req.data_fim:
+        raise HTTPException(status_code=400, detail="Informe data inicial e final.")
+
+    dias = _vendas_sync_dias_periodo(req.data_inicio, req.data_fim)
+    job_key, job = _vendas_sync_prepare_job(client_id, req, dias)
+    dias_concluidos = set(str(d or "") for d in (job.get("dias_concluidos") or []) if str(d or "").strip())
+    retomando = bool(dias_concluidos)
+    if retomando:
+        _sync_log(client_id, f"[SYNC] Retomando sincronizacao: {len(dias_concluidos)}/{len(dias)} dia(s) ja concluidos.")
+    _sync_log(client_id, f"[SYNC] Periodo dividido em {len(dias)} dia(s): {req.data_inicio} ate {req.data_fim}")
+
+    totais = {
+        "total": 0,
+        "notas_entrada_total": 0,
+        "nf_enriquecidas": 0,
+        "nf_pendentes_restantes": 0,
+        "vendas_processadas": 0,
+        "notas_processadas": 0,
+    }
+
+    try:
+        for idx, dia in enumerate(dias, start=1):
+            _verificar_cancelamento(client_id)
+            if dia in dias_concluidos:
+                percentual = int(((idx - 1) / max(len(dias), 1)) * 100)
+                _set_progresso(
+                    client_id,
+                    _criar_progresso("Retomada", idx, len(dias), percentual, f"Dia {idx}/{len(dias)} ja sincronizado. Avancando..."),
+                )
+                continue
+
+            _vendas_sync_update_job(
+                client_id,
+                job_key,
+                {
+                    "status": "running",
+                    "dia_atual": dia,
+                    "dia_indice": idx,
+                    "dias_total": len(dias),
+                },
+            )
+            meta_job = {
+                "loja": req.loja,
+                "data_inicio": req.data_inicio,
+                "data_fim": req.data_fim,
+                "started_at": (SYNC_META.get(job_context_key) or SYNC_META.get(client_id) or {}).get("started_at") or datetime.now().isoformat(),
+                "modo": "diario",
+                "dia_atual": dia,
+                "dia_indice": idx,
+                "dias_total": len(dias),
+            }
+            SYNC_META[job_context_key] = {**(SYNC_META.get(job_context_key) or {}), **meta_job}
+            SYNC_META[client_id] = {
+                **(SYNC_META.get(client_id) or {}),
+                "modo": "diario_paralelo",
+                "limite_contas": SYNC_MAX_ACTIVE_VENDAS,
+                "active_count": len(_sync_active_jobs(client_id)),
+                "ultimo_job": meta_job,
+            }
+            _sync_log(client_id, f"[SYNC] Dia {idx}/{len(dias)}: sincronizando {dia}")
+            _set_progresso(
+                client_id,
+                _criar_progresso("Dia", idx, len(dias), int(((idx - 1) / max(len(dias), 1)) * 100), f"Iniciando dia {idx}/{len(dias)} ({dia})..."),
+            )
+
+            dia_req = VendasSyncRequest(
+                loja=req.loja,
+                data_inicio=dia,
+                data_fim=dia,
+                forcar_resync=req.forcar_resync,
+            )
+            SYNC_DAY_CONTEXT[job_context_key] = {
+                "dia_atual": dia,
+                "dia_indice": idx,
+                "total_dias": len(dias),
+            }
+            try:
+                resultado_dia = await _sincronizar_vendas_periodo_impl(dia_req, client_id, reset_estado=False)
+            finally:
+                SYNC_DAY_CONTEXT.pop(job_context_key, None)
+
+            dias_concluidos.add(dia)
+            dias_concluidos_ordenados = [d for d in dias if d in dias_concluidos]
+            _vendas_sync_update_job(
+                client_id,
+                job_key,
+                {
+                    "status": "running",
+                    "dia_atual": dia,
+                    "dia_indice": idx,
+                    "dias_concluidos": dias_concluidos_ordenados,
+                    "ultimo_resultado": resultado_dia,
+                },
+            )
+
+            for campo in ("total", "notas_entrada_total", "nf_enriquecidas", "vendas_processadas", "notas_processadas"):
+                totais[campo] += int((resultado_dia or {}).get(campo) or 0)
+            totais["nf_pendentes_restantes"] = int((resultado_dia or {}).get("nf_pendentes_restantes") or 0)
+
+        _vendas_sync_update_job(
+            client_id,
+            job_key,
+            {
+                "status": "complete",
+                "dia_atual": dias[-1] if dias else None,
+                "dia_indice": len(dias),
+                "dias_concluidos": dias,
+                "completed_at": datetime.now().isoformat(),
+                "resultado_total": totais,
+            },
+        )
+    except HTTPException as exc:
+        status = "interrompido" if exc.status_code == 409 else "erro"
+        _vendas_sync_update_job(
+            client_id,
+            job_key,
+            {
+                "status": status,
+                "ultimo_erro": str(exc.detail or exc),
+                "interrupted_at": datetime.now().isoformat(),
+                "dias_concluidos": [d for d in dias if d in dias_concluidos],
+            },
+        )
+        raise
+    except Exception as exc:
+        _vendas_sync_update_job(
+            client_id,
+            job_key,
+            {
+                "status": "erro",
+                "ultimo_erro": str(exc),
+                "interrupted_at": datetime.now().isoformat(),
+                "dias_concluidos": [d for d in dias if d in dias_concluidos],
+            },
+        )
+        raise
+
+    _sync_log(client_id, f"[SYNC] Sincronizacao diaria finalizada: {len(dias)} dia(s) processados.")
+    prog_final = _criar_progresso("Finalizado", len(dias), len(dias), 100, "Sincronizacao finalizada com sucesso.")
+    prog_final["concluido"] = True
+    prog_final["result"] = totais
+    _set_progresso(client_id, prog_final)
+    return {"success": True, **totais}
+
+
+async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: str, reset_estado: bool = True):
+    if reset_estado:
+        SYNC_CANCEL_FLAGS.pop(_sync_context_key(client_id), None)
+        # Limpar logs anteriores para nÃ£o acumular entre runs
+        SYNC_LOGS[_sync_context_key(client_id)] = []
+        _set_progresso(client_id, _criar_progresso("Preparando", 0, 0, 0, "Iniciando sincronizaÃƒÂ§ÃƒÂ£o."))
+        _sync_log(client_id, "[SYNC] Iniciando sincronizaÃƒÂ§ÃƒÂ£o")
     if not req.loja or req.loja == "__todas":
         raise HTTPException(status_code=400, detail="Selecione uma loja para sincronizar.")
     if not req.data_inicio or not req.data_fim:
@@ -44125,6 +47819,14 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
 
     if status_nf_saida == 401:
         raise HTTPException(status_code=401, detail="Token Bling expirado ao consultar NF-e de saÃƒÂ­da. RefaÃƒÂ§a a conexÃƒÂ£o em IntegraÃƒÂ§ÃƒÂµes.")
+    if status_nf_saida == 403:
+        _sync_log(
+            client_id,
+            "[SYNC] Etapa 1.5: NF-e de saída bloqueada pela Bling (403/FORBIDDEN). "
+            "Continuando a sincronização apenas com os pedidos."
+        )
+        status_nf_saida = 200
+        registros_nf_saida = []
 
     registros = registros or []
     registros_nf_saida = registros_nf_saida or []
@@ -44155,7 +47857,14 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
 
     registros = registros or []
     _sync_log(client_id, f"[SYNC] Etapa 1: Listagem de Vendas - {len(registros)} registros encontrados (Status: {status_api})")
-    _sync_log(client_id, f"[SYNC] Unidades de negÃƒÂ³cio identificadas: {len(unidades_cache)} - {list(unidades_cache.values())}")
+    unidades_identificadas = sorted({
+        str(r.get("unidade_negocio") or "").strip()
+        for r in registros
+        if str(r.get("unidade_negocio") or "").strip()
+    })
+    if not unidades_identificadas and unidades_cache:
+        unidades_identificadas = sorted({str(v or "").strip() for v in unidades_cache.values() if str(v or "").strip()})
+    _sync_log(client_id, f"[SYNC] Unidades de negÃƒÂ³cio identificadas: {len(unidades_identificadas)} - {unidades_identificadas}")
     _set_progresso(client_id, _criar_progresso("Vendas", 0, 0, 35, f"{len(registros)} vendas encontradas. Processando lotes..."))
 
     # Salva em DB segregado por loja
@@ -44365,6 +48074,8 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
                         _sync_log(client_id, "[SYNC] Etapa 2.6: IDs de nota fiscal retornaram 404 na Bling (histÃƒÂ³rico nÃ£o disponÃƒÂ­vel por ID).")
             else:
                 _sync_log(client_id, "[SYNC] Etapa 2.6: sem NF pendente para enriquecer no perÃƒÂ­odo.")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao salvar vendas: {str(e)}")
     finally:
@@ -44478,18 +48189,37 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
 
             unidade_det = str(nota.get("unidade_negocio") or "")
             loja_desc_det = ""
+            loja_id_det = ""
+            unidade_id_det = ""
             loja_det = nf_detalhe.get("loja") or {}
             if isinstance(loja_det, dict):
+                loja_id_det = str(loja_det.get("id") or "").strip()
                 unidade_obj = loja_det.get("unidadeNegocio") or {}
                 if isinstance(unidade_obj, dict):
+                    unidade_id_det = str(unidade_obj.get("id") or "").strip()
                     unidade_det = str(unidade_obj.get("nome") or unidade_obj.get("descricao") or unidade_det).strip()
                 loja_desc_det = str(loja_det.get("descricao") or "").strip()
                 if not unidade_det:
                     unidade_det = loja_desc_det
+            intermediador_det = nf_detalhe.get("intermediador") or {}
+            intermediador_nome_det = ""
+            intermediador_cnpj_det = ""
+            if isinstance(intermediador_det, dict):
+                intermediador_nome_det = _normalizar_nome_loja_virtual_candidato(intermediador_det.get("nomeUsuario"))
+                intermediador_cnpj_det = str(intermediador_det.get("cnpj") or "").strip()
+            unidade_resolvida_det = _resolver_nome_loja_virtual(
+                mapa_lojas_cliente,
+                loja_id=loja_id_det,
+                unidade_id=unidade_id_det,
+                nome_oficial=unidade_det or loja_desc_det,
+                intermediador_nome=intermediador_nome_det,
+                intermediador_cnpj=intermediador_cnpj_det,
+                canal=loja_desc_det,
+            )
 
             origem_det = _extrair_codigo_origem_nf(nf_detalhe) or nota.get("origem_codigo")
             devolucao_det = _eh_devolucao_nota_entrada(natureza_det, unidade_det, loja_desc_det, str(finalidade_det or ""))
-            unidade_virtual_det = _normalizar_unidade_devolucao_entrada(unidade_det, natureza_det, loja_desc_det)
+            unidade_virtual_det = _normalizar_unidade_devolucao_entrada(unidade_resolvida_det or unidade_det, natureza_det, loja_desc_det)
 
             # Atualiza metadados da nota principal antes de persistir.
             nota["natureza_operacao"] = natureza_det
@@ -44759,6 +48489,42 @@ async def api_medias_compras_visao(
                 return (0, int(somente_digitos), sku_txt)
             return (1, sku_txt)
 
+        def _normalizar_chave_cadastro(valor: str) -> str:
+            texto = unicodedata.normalize("NFKD", str(valor or "").strip().lower())
+            texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+            texto = re.sub(r"[^a-z0-9]+", " ", texto)
+            return re.sub(r"\s+", " ", texto).strip()
+
+        def _pick_cadastro_valor(row, mapa_colunas: dict, aliases: list[str]) -> str:
+            for alias in aliases:
+                col = mapa_colunas.get(_normalizar_chave_cadastro(alias))
+                if col is None:
+                    continue
+                valor = str(row.get(col, "") or "").strip()
+                if valor:
+                    return valor
+            return ""
+
+        def _primeiro_titulo_lista(valor: str) -> str:
+            texto = str(valor or "").strip()
+            if not texto:
+                return ""
+            for parte in re.split(r"\|\||\n|;", texto):
+                titulo = str(parte or "").strip()
+                if titulo:
+                    return titulo
+            return texto
+
+        def _titulo_venda_valido(valor: str) -> str:
+            titulo = re.sub(r"\s+", " ", str(valor or "").strip())
+            if not titulo:
+                return ""
+            titulo_norm = normalizar_texto(titulo).strip().lower()
+            invalidos = {"-", "produto s descricao", "produto s descricao", "produto sem descricao", "sem descricao"}
+            if titulo_norm in invalidos:
+                return ""
+            return titulo
+
         meses_ref = _meses_referencia(meses)
         inicio_periodo = f"{meses_ref[0]}-01"
         fim_periodo = datetime.now().strftime("%Y-%m-%d")
@@ -44769,6 +48535,7 @@ async def api_medias_compras_visao(
         # Vendas por SKU e por mÃƒÂªs (somatÃƒÂ³rio de quantidade), consolidando todos os bancos do tenant.
         db_paths = _listar_bancos_vendas_tenant(client_id, loja_sel)
         vendas_por_sku = {}
+        titulos_vendas_por_sku = {}
         ids_vendas_processados = set()
 
         for db_vendas in db_paths:
@@ -44786,6 +48553,8 @@ async def api_medias_compras_visao(
                     SELECT
                         id_unico,
                         sku,
+                        data AS data_venda,
+                        COALESCE(produto, '') AS produto,
                         strftime('%Y-%m', date(data)) AS mes_ref,
                         COALESCE(quantidade, 0) AS qtd
                     FROM vendas
@@ -44816,6 +48585,15 @@ async def api_medias_compras_visao(
                     ids_vendas_processados.add(chave_unica)
 
                     sku_norm = _normalizar_sku_mes(sku_original)
+                    titulo_venda = _titulo_venda_valido(r["produto"])
+                    data_venda = str(r["data_venda"] or "").strip()
+                    if titulo_venda:
+                        atual = titulos_vendas_por_sku.get(sku_norm) or {}
+                        if not atual or data_venda >= str(atual.get("data", "") or ""):
+                            titulos_vendas_por_sku[sku_norm] = {
+                                "titulo": titulo_venda,
+                                "data": data_venda,
+                            }
                     if sku_norm not in vendas_por_sku:
                         vendas_por_sku[sku_norm] = {
                             "sku": sku_norm,
@@ -44823,6 +48601,40 @@ async def api_medias_compras_visao(
                         }
                     if mes_ref in vendas_por_sku[sku_norm]["vendas_mensais"]:
                         vendas_por_sku[sku_norm]["vendas_mensais"][mes_ref] += qtd
+
+                query_titulos = (
+                    """
+                    SELECT
+                        sku,
+                        data AS data_venda,
+                        COALESCE(produto, '') AS produto
+                    FROM vendas
+                    WHERE sku IS NOT NULL
+                      AND trim(sku) != ''
+                      AND trim(COALESCE(produto, '')) != ''
+                    """
+                )
+                params_titulos = []
+                filtro_titulos_sql, filtro_titulos_params = _sql_filtro_loja_vendas(loja_sel)
+                if filtro_titulos_sql:
+                    query_titulos += filtro_titulos_sql
+                    params_titulos.extend(filtro_titulos_params)
+                query_titulos += " ORDER BY date(data) DESC, data DESC"
+
+                for r in cur.execute(query_titulos, params_titulos):
+                    sku_titulo_raw = str(r["sku"] or "").strip()
+                    if not sku_titulo_raw:
+                        continue
+                    sku_titulo_norm = _normalizar_sku_mes(sku_titulo_raw)
+                    titulo_venda = _titulo_venda_valido(r["produto"])
+                    data_venda = str(r["data_venda"] or "").strip()
+                    if titulo_venda:
+                        atual = titulos_vendas_por_sku.get(sku_titulo_norm) or {}
+                        if not atual or data_venda >= str(atual.get("data", "") or ""):
+                            titulos_vendas_por_sku[sku_titulo_norm] = {
+                                "titulo": titulo_venda,
+                                "data": data_venda,
+                            }
             finally:
                 conn.close()
 
@@ -44864,13 +48676,26 @@ async def api_medias_compras_visao(
 
         # Dados do cadastro por SKU (foto e tÃƒÂ­tulo do anuncio).
         cadastro_por_sku = {}
+        cadastro_fallback_por_sku = {}
+        mapa_fotos_cadastro = _cadastro_mapa_fotos_locais(client_id)
         arquivo_cadastro = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
-        if arquivo_cadastro and os.path.exists(arquivo_cadastro):
+        caminhos_cadastro = []
+        for caminho_cad in (
+            arquivo_cadastro,
+            os.path.join(PASTA_INFO, "default", "cadastro_produtos.csv"),
+            ARQUIVO_DB_CADASTRO_PRODUTOS,
+        ):
+            if caminho_cad and os.path.exists(caminho_cad) and caminho_cad not in caminhos_cadastro:
+                caminhos_cadastro.append(caminho_cad)
+
+        for idx_cadastro, caminho_cadastro in enumerate(caminhos_cadastro):
+            alvo_cadastro = cadastro_por_sku if idx_cadastro == 0 else cadastro_fallback_por_sku
             try:
-                df_cad = pd.read_csv(arquivo_cadastro, dtype=str).fillna("")
+                df_cad = pd.read_csv(caminho_cadastro, dtype=str).fillna("")
                 if not df_cad.empty:
                     df_cad.columns = [str(c).strip().lower() for c in df_cad.columns]
-                    col_sku_cad = "sku" if "sku" in df_cad.columns else None
+                    mapa_colunas_cad = {_normalizar_chave_cadastro(c): c for c in df_cad.columns}
+                    col_sku_cad = mapa_colunas_cad.get("sku")
                     if col_sku_cad:
                         for _, row in df_cad.iterrows():
                             sku_raw = str(row.get(col_sku_cad, "") or "").strip()
@@ -44881,27 +48706,35 @@ async def api_medias_compras_visao(
                                 continue
 
                             foto = str(row.get("foto", "") or "").strip()
-                            titulos_mlb = str(row.get("titulos_anuncios_mlb", "") or "").strip()
-                            nome = str(row.get("nome", "") or "").strip()
-                            produto = str(row.get("produto", "") or "").strip()
+                            if not foto:
+                                foto = _cadastro_resolver_foto_local(mapa_fotos_cadastro, sku_norm)
 
-                            titulo_anuncio = ""
-                            if titulos_mlb:
-                                for parte in re.split(r"\|\||\n|;", titulos_mlb):
-                                    p = str(parte or "").strip()
-                                    if p:
-                                        titulo_anuncio = p
-                                        break
-                            if not titulo_anuncio:
-                                titulo_anuncio = nome or produto
+                            titulos_mlb = _pick_cadastro_valor(row, mapa_colunas_cad, [
+                                "titulos_anuncios_mlb", "titulos anuncios mlb", "titulo anuncio", "titulo do anuncio",
+                                "titulo do anúncio", "titulo mlb", "title", "titulo",
+                            ])
+                            titulo_anuncio = _primeiro_titulo_lista(titulos_mlb)
+                            titulo_cadastro = _pick_cadastro_valor(row, mapa_colunas_cad, [
+                                "produto bling", "produtos bling", "produto_bling", "nome_bling",
+                                "titulo do produto em ingles", "titulo em ingles", "titulo ingles",
+                                "cg product name", "product name", "nome", "produto",
+                                "cg tradução ptbr ou nome na bling", "cg denominacao do produto",
+                                "cg denominação do produto",
+                            ])
 
-                            cadastro_por_sku[sku_norm] = {
-                                "foto": foto,
-                                "titulo_anuncio": titulo_anuncio,
-                            }
+                            atual = alvo_cadastro.setdefault(sku_norm, {"foto": "", "titulo_anuncio": "", "titulo_cadastro": ""})
+                            if not atual.get("foto") and foto:
+                                atual["foto"] = foto
+                            if not atual.get("titulo_anuncio") and titulo_anuncio:
+                                atual["titulo_anuncio"] = titulo_anuncio
+                            if not atual.get("titulo_cadastro") and titulo_cadastro:
+                                atual["titulo_cadastro"] = titulo_cadastro
             except Exception:
                 # Se cadastro estiver invalido, segue sem quebrar a tela.
-                cadastro_por_sku = cadastro_por_sku or {}
+                if idx_cadastro == 0:
+                    cadastro_por_sku = cadastro_por_sku or {}
+                else:
+                    cadastro_fallback_por_sku = cadastro_fallback_por_sku or {}
 
         todos_skus = set(vendas_por_sku.keys()) | set(saldo_por_sku.keys()) | set(cadastro_por_sku.keys()) | set(transito_por_sku.keys()) | set(ultima_venda_por_sku.keys())
         itens = []
@@ -44925,10 +48758,25 @@ async def api_medias_compras_visao(
                 fator_crescimento=1.0,
             )
 
+            foto_cadastro = str(cadastro_por_sku.get(sku, {}).get("foto", "") or "").strip()
+            if not foto_cadastro:
+                foto_cadastro = _cadastro_resolver_foto_local(mapa_fotos_cadastro, sku)
+
+            cad_principal = cadastro_por_sku.get(sku, {}) or {}
+            cad_fallback = cadastro_fallback_por_sku.get(sku, {}) or {}
+            titulo_venda = str((titulos_vendas_por_sku.get(sku, {}) or {}).get("titulo", "") or "").strip()
+            titulo_anuncio = (
+                str(cad_principal.get("titulo_anuncio", "") or "").strip()
+                or str(cad_fallback.get("titulo_anuncio", "") or "").strip()
+                or titulo_venda
+                or str(cad_principal.get("titulo_cadastro", "") or "").strip()
+                or str(cad_fallback.get("titulo_cadastro", "") or "").strip()
+            )
+
             itens.append({
                 "sku": sku,
-                "foto": str(cadastro_por_sku.get(sku, {}).get("foto", "") or ""),
-                "titulo_anuncio": str(cadastro_por_sku.get(sku, {}).get("titulo_anuncio", "") or ""),
+                "foto": foto_cadastro,
+                "titulo_anuncio": titulo_anuncio,
                 "vendas_mensais": {m: round(float(vendas_mensais.get(m, 0) or 0), 2) for m in meses_ref},
                 "total_vendas_periodo": round(total_periodo, 2),
                 "saldo_atual_estoque": round(saldo_atual, 2),
@@ -45216,13 +49064,13 @@ def _meses_sem_vender_desde(data_iso: str | None) -> int:
 def _mensagem_sem_venda(meses_sem_vender: int) -> str:
     meses = int(meses_sem_vender or 0)
     if meses >= 999:
-        return "Sem histÃƒÂ³rico de venda"
+        return "Sem histórico de venda"
     if meses > 6:
-        return f"HÃƒÂ¡ {meses} meses sem vender"
+        return f"Há {meses} meses sem vender"
     if meses >= 6:
-        return "HÃƒÂ¡ 6 meses sem vender"
+        return "Há 6 meses sem vender"
     if meses >= 3:
-        return f"HÃƒÂ¡ {meses} meses sem vender"
+        return f"Há {meses} meses sem vender"
     return ""
 
 
@@ -47465,6 +51313,18 @@ async def servir_imagem_ia(filename: str):
         raise HTTPException(status_code=404, detail="Imagem gerada nÃƒÆ’Ã‚Â£o encontrada")
 
     response = FileResponse(caminho_arquivo, media_type="image/png")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+@app.get("/ia-sidebar.js")
+async def servir_ia_sidebar_js():
+    caminho = os.path.join("static", "ia-sidebar.js")
+    if not os.path.exists(caminho):
+        raise HTTPException(status_code=404, detail="Arquivo do assistente IA nao encontrado")
+    response = FileResponse(caminho, media_type="application/javascript; charset=utf-8")
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"

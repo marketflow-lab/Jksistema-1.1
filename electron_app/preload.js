@@ -23,7 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showEmbeddedMlBrowser: (url, bounds) => ipcRenderer.invoke('embedded-ml-browser-show', url, bounds),
     positionEmbeddedMlBrowser: (bounds) => ipcRenderer.invoke('embedded-ml-browser-position', bounds),
     hideEmbeddedMlBrowser: () => ipcRenderer.invoke('embedded-ml-browser-hide'),
-    executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code)
+    executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code),
+    importCredentials: () => ipcRenderer.invoke('import-credentials')
 });
 
 function isMercadoLivreHost(hostname) {

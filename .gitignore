@@ -22,3 +22,7 @@ electron_app/dist-client-setup/
 electron_app/dist-client-setup.zip
 backups/cloud_server_20260601_082817/
 backups/local_before_pesquisa_restore_*/
+
+# Pacotes criptografados de credenciais locais
+*.jkcred
+credenciais-exportadas/

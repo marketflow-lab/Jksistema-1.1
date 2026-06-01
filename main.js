@@ -24,6 +24,7 @@ const { pathToFileURL } = require('url');
 // Evita crash silencioso de GPU em alguns ambientes Windows.
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-http-cache');
 
 const JK_APP_ROOT_DIR = __dirname;
 const JK_ELECTRON_USER_DATA_DIR = process.env.JK_ELECTRON_USER_DATA_DIR || path.join(JK_APP_ROOT_DIR, 'info', 'electron_user_data');
@@ -40,8 +41,10 @@ let internalBrowserWindow = null;
 let embeddedMlBrowserView = null;
 let embeddedMlBrowserOwner = null;
 let chromeExtensionsLoadPromise = null;
+let chromeExtensionSessionEventsRegistered = false;
 const mlItemInfoCache = new Map();
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
+const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 
 function logElectronLifecycle(...args) {
     const message = `[Electron ${new Date().toISOString()}] ${args.map(value => {
@@ -189,6 +192,48 @@ function getAppRootDir() {
     return JK_APP_ROOT_DIR;
 }
 
+function getImportCredentialsBatPath() {
+    const candidates = [
+        path.join(getAppRootDir(), 'ImportarCredenciais.bat'),
+        path.join(__dirname, 'ImportarCredenciais.bat'),
+        path.join(process.resourcesPath || '', 'ImportarCredenciais.bat')
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return '';
+}
+
+async function openCredentialsImporter() {
+    const batPath = getImportCredentialsBatPath();
+    if (!batPath) {
+        throw new Error('ImportarCredenciais.bat não foi encontrado na pasta do sistema.');
+    }
+    if (process.platform === 'win32') {
+        const child = spawn('cmd.exe', ['/d', '/c', 'start', '', batPath], {
+            cwd: path.dirname(batPath),
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: false,
+            env: {
+                ...process.env,
+                JK_NODE_BIN: process.execPath
+            }
+        });
+        child.unref();
+    } else {
+        const result = await shell.openPath(batPath);
+        if (result) {
+            throw new Error(result);
+        }
+    }
+    return {
+        success: true,
+        path: batPath,
+        message: 'Importador aberto. Siga as instruções na janela para restaurar as credenciais.'
+    };
+}
+
 function getChromeExtensionsRoots() {
     const roots = [
         process.env.JK_CHROME_EXTENSIONS_DIR,
@@ -198,10 +243,69 @@ function getChromeExtensionsRoots() {
     return Array.from(new Set(roots.map(root => path.resolve(root))));
 }
 
+function compareVersionStrings(left, right) {
+    const a = String(left || '').split('.').map(value => Number(value) || 0);
+    const b = String(right || '').split('.').map(value => Number(value) || 0);
+    const size = Math.max(a.length, b.length);
+    for (let i = 0; i < size; i += 1) {
+        const diff = (a[i] || 0) - (b[i] || 0);
+        if (diff) return diff;
+    }
+    return 0;
+}
+
+function findInstalledChromeExtensionVersions(extensionId) {
+    const chromeUserData = process.env.LOCALAPPDATA
+        ? path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data')
+        : '';
+    if (!chromeUserData || !fs.existsSync(chromeUserData)) return [];
+
+    const candidates = [];
+    for (const profile of fs.readdirSync(chromeUserData, { withFileTypes: true })) {
+        if (!profile.isDirectory()) continue;
+        if (profile.name !== 'Default' && !/^Profile\s+\d+$/i.test(profile.name)) continue;
+        const extensionRoot = path.join(chromeUserData, profile.name, 'Extensions', extensionId);
+        if (!fs.existsSync(extensionRoot)) continue;
+        for (const versionEntry of fs.readdirSync(extensionRoot, { withFileTypes: true })) {
+            if (!versionEntry.isDirectory()) continue;
+            const dir = path.join(extensionRoot, versionEntry.name);
+            const manifestPath = path.join(dir, 'manifest.json');
+            if (!fs.existsSync(manifestPath)) continue;
+            let stat = null;
+            try { stat = fs.statSync(manifestPath); } catch (_err) {}
+            candidates.push({
+                dir,
+                profile: profile.name,
+                version: versionEntry.name.replace(/_\d+$/i, ''),
+                mtimeMs: stat ? stat.mtimeMs : 0
+            });
+        }
+    }
+
+    return candidates
+        .sort((left, right) => {
+            const versionDiff = compareVersionStrings(right.version, left.version);
+            if (versionDiff) return versionDiff;
+            return (right.mtimeMs || 0) - (left.mtimeMs || 0);
+        })
+        .map(item => item.dir);
+}
+
+function getChromeExtensionManifestIdentity(extensionDir) {
+    try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
+        return manifest.key || manifest.update_url && manifest.name || manifest.name || extensionDir;
+    } catch (_err) {
+        return extensionDir;
+    }
+}
+
 function findUnpackedChromeExtensions() {
     const candidates = [];
+    const explicitRoots = process.env.JK_CHROME_EXTENSIONS_DIR ? [path.resolve(process.env.JK_CHROME_EXTENSIONS_DIR)] : [];
+    const chromeInstalledExtensions = findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID);
 
-    for (const root of getChromeExtensionsRoots()) {
+    for (const root of [...explicitRoots, ...chromeInstalledExtensions, ...getChromeExtensionsRoots()]) {
         if (!fs.existsSync(root)) continue;
 
         const rootManifest = path.join(root, 'manifest.json');
@@ -219,14 +323,24 @@ function findUnpackedChromeExtensions() {
         }
     }
 
-    return Array.from(new Set(candidates));
+    const seen = new Set();
+    const unique = [];
+    for (const candidate of Array.from(new Set(candidates.map(item => path.resolve(item))))) {
+        const identity = getChromeExtensionManifestIdentity(candidate);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        unique.push(candidate);
+    }
+    return unique;
 }
 
 async function loadChromeExtensionsForMlSession() {
     const ses = getMlSession();
+    registerChromeExtensionSessionEvents(ses);
     const extensionDirs = findUnpackedChromeExtensions();
 
     if (!extensionDirs.length) {
+        logElectronLifecycle('chrome-extensions-none-found');
         console.log('[Extensoes] Nenhuma extensao descompactada encontrada em extensoes_chrome.');
         return [];
     }
@@ -236,12 +350,51 @@ async function loadChromeExtensionsForMlSession() {
         try {
             const ext = await ses.loadExtension(extensionDir, { allowFileAccess: true });
             loaded.push(ext);
+            logElectronLifecycle('chrome-extension-loaded-by-script', {
+                id: ext && ext.id,
+                name: ext && ext.name,
+                path: extensionDir,
+                url: ext && ext.url
+            });
             console.log(`[Extensoes] Carregada: ${ext.name || ext.id} (${extensionDir})`);
         } catch (err) {
+            logElectronLifecycle('chrome-extension-load-failed', {
+                path: extensionDir,
+                error: err && err.message ? err.message : String(err)
+            });
             console.error(`[Extensoes] Falha ao carregar ${extensionDir}:`, err && err.message ? err.message : err);
         }
     }
     return loaded;
+}
+
+function registerChromeExtensionSessionEvents(ses) {
+    if (!ses || chromeExtensionSessionEventsRegistered) return;
+    chromeExtensionSessionEventsRegistered = true;
+    ses.on('extension-loaded', (_event, ext) => {
+        logElectronLifecycle('chrome-extension-loaded', {
+            id: ext && ext.id,
+            name: ext && ext.name,
+            path: ext && ext.path,
+            url: ext && ext.url
+        });
+    });
+    ses.on('extension-ready', (_event, ext) => {
+        logElectronLifecycle('chrome-extension-ready', {
+            id: ext && ext.id,
+            name: ext && ext.name,
+            path: ext && ext.path,
+            url: ext && ext.url
+        });
+    });
+    ses.on('extension-unloaded', (_event, ext) => {
+        logElectronLifecycle('chrome-extension-unloaded', {
+            id: ext && ext.id,
+            name: ext && ext.name,
+            path: ext && ext.path,
+            url: ext && ext.url
+        });
+    });
 }
 
 function ensureChromeExtensionsForMlSession() {
@@ -252,6 +405,17 @@ function ensureChromeExtensionsForMlSession() {
         });
     }
     return chromeExtensionsLoadPromise;
+}
+
+function getLoadedChromeExtensionsForMlSession() {
+    const ses = getMlSession();
+    if (!ses || typeof ses.getAllExtensions !== 'function') return [];
+    return ses.getAllExtensions().map(ext => ({
+        id: ext && ext.id,
+        name: ext && ext.name,
+        path: ext && ext.path,
+        url: ext && ext.url
+    }));
 }
 
 function getMachineInfo() {
@@ -361,7 +525,7 @@ function openMercadoLivreAdInChrome(targetUrl) {
 function isAllowedNavigationUrl(targetUrl) {
     const value = String(targetUrl || '').trim();
     if (!value) return true;
-    return /^(https?:|about:blank|data:text\/html)/i.test(value);
+    return /^(https?:|about:blank|data:text\/html|chrome-extension:)/i.test(value);
 }
 
 function getNavigationEventUrl(urlOrDetails, maybeDetails) {
@@ -509,7 +673,8 @@ function normalizarBoundsNavegadorMl(bounds) {
     return { x, y, width, height };
 }
 
-function ensureEmbeddedMlBrowser(parent) {
+function ensureEmbeddedMlBrowser(parent, options = {}) {
+    const shouldAttach = options.attach !== false;
     const owner = parent && !parent.isDestroyed() ? parent : mainWindow;
     if (!owner || owner.isDestroyed()) {
         throw new Error('Janela principal indisponivel para abrir o navegador do Mercado Livre.');
@@ -529,6 +694,13 @@ function ensureEmbeddedMlBrowser(parent) {
         embeddedMlBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
             logElectronLifecycle('embedded-ml-browser-fail-load', { errorCode, errorDescription, validatedURL });
         });
+    }
+    if (!shouldAttach) {
+        if (embeddedMlBrowserOwner && !embeddedMlBrowserOwner.isDestroyed()) {
+            try { embeddedMlBrowserOwner.removeBrowserView(embeddedMlBrowserView); } catch (_err) {}
+        }
+        embeddedMlBrowserOwner = null;
+        return embeddedMlBrowserView;
     }
     if (embeddedMlBrowserOwner && embeddedMlBrowserOwner !== owner && !embeddedMlBrowserOwner.isDestroyed()) {
         try { embeddedMlBrowserOwner.removeBrowserView(embeddedMlBrowserView); } catch (_err) {}
@@ -590,7 +762,7 @@ function createWindow() {
         }
     });
 
-    const localUrlBase = process.env.JK_APP_URL || 'http://127.0.0.1:8001/frontend_index.html';
+    const localUrlBase = process.env.JK_APP_URL || 'http://127.0.0.1:8001/dashboard.html';
     const localUrl = `${localUrlBase}${localUrlBase.includes('?') ? '&' : '?'}_jk_nocache=${Date.now()}`;
     loadElectronTabbedShell(win, localUrl);
     
@@ -738,12 +910,22 @@ app.whenReady().then(async () => {
     ipcMain.handle('get-browser-session-partition', () => {
         return getBrowserSessionPartition();
     });
+    ipcMain.handle('ensure-browser-extensions', async () => {
+        await ensureChromeExtensionsForMlSession();
+        return {
+            success: true,
+            extensions: getLoadedChromeExtensionsForMlSession()
+        };
+    });
     ipcMain.handle('flush-browser-session', async () => {
         await flushPersistentSessions();
         return { success: true };
     });
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();
+    });
+    ipcMain.handle('import-credentials', async () => {
+        return await openCredentialsImporter();
     });
     ipcMain.handle('ml-public-item-info', async (_event, itemId) => {
         const cleanId = String(itemId || '').trim().toUpperCase();
@@ -861,8 +1043,11 @@ app.whenReady().then(async () => {
         }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-        const view = ensureEmbeddedMlBrowser(parent);
-        view.setBounds(normalizarBoundsNavegadorMl(bounds));
+        const background = !!(bounds && bounds.background);
+        const view = ensureEmbeddedMlBrowser(parent, { attach: !background });
+        if (!background) {
+            view.setBounds(normalizarBoundsNavegadorMl(bounds));
+        }
         const currentUrl = view.webContents.getURL();
         if (currentUrl !== url) {
             await view.webContents.loadURL(url);
@@ -870,6 +1055,10 @@ app.whenReady().then(async () => {
         return { success: true, url: view.webContents.getURL() || url };
     });
     ipcMain.handle('embedded-ml-browser-position', async (event, bounds) => {
+        if (bounds && bounds.background) {
+            hideEmbeddedMlBrowser();
+            return { success: true };
+        }
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const view = ensureEmbeddedMlBrowser(parent);
         view.setBounds(normalizarBoundsNavegadorMl(bounds));

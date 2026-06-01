@@ -4,7 +4,10 @@
   "description": "Launcher para JK Sistema",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "credenciais:listar": "node scripts/credenciais.js list",
+    "credenciais:exportar": "node scripts/credenciais.js export",
+    "credenciais:importar": "node scripts/credenciais.js import"
   },
   "author": "JK",
   "license": "ISC",

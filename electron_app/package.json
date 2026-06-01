@@ -49,6 +49,14 @@
         "to": "electron_tab_preload.js"
       },
       {
+        "from": "../ImportarCredenciais.bat",
+        "to": "ImportarCredenciais.bat"
+      },
+      {
+        "from": "../scripts/credenciais.js",
+        "to": "scripts/credenciais.js"
+      },
+      {
         "from": "../extensoes_chrome",
         "to": "extensoes_chrome"
       },

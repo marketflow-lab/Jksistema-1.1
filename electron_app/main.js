@@ -418,6 +418,48 @@ function getAppRootDir() {
     return JK_APP_ROOT_DIR;
 }
 
+function getImportCredentialsBatPath() {
+    const candidates = [
+        path.join(getAppRootDir(), 'ImportarCredenciais.bat'),
+        path.join(__dirname, 'ImportarCredenciais.bat'),
+        path.join(process.resourcesPath || '', 'ImportarCredenciais.bat')
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return '';
+}
+
+async function openCredentialsImporter() {
+    const batPath = getImportCredentialsBatPath();
+    if (!batPath) {
+        throw new Error('ImportarCredenciais.bat não foi encontrado na pasta do sistema.');
+    }
+    if (process.platform === 'win32') {
+        const child = spawn('cmd.exe', ['/d', '/c', 'start', '', batPath], {
+            cwd: path.dirname(batPath),
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: false,
+            env: {
+                ...process.env,
+                JK_NODE_BIN: process.execPath
+            }
+        });
+        child.unref();
+    } else {
+        const result = await shell.openPath(batPath);
+        if (result) {
+            throw new Error(result);
+        }
+    }
+    return {
+        success: true,
+        path: batPath,
+        message: 'Importador aberto. Siga as instruções na janela para restaurar as credenciais.'
+    };
+}
+
 function readJsonFile(filePath) {
     try {
         if (!filePath || !fs.existsSync(filePath)) return null;
@@ -1599,6 +1641,9 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();
+    });
+    ipcMain.handle('import-credentials', async () => {
+        return await openCredentialsImporter();
     });
     ipcMain.handle('check-for-updates', async () => {
         return await checkForUpdates(true);

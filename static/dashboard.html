@@ -53,6 +53,163 @@
             overflow-x: hidden;
         }
 
+        .user-sidebar {
+            position: fixed;
+            left: 0;
+            top: 20px;
+            bottom: 20px;
+            width: 224px;
+            box-sizing: border-box;
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding: 18px 16px;
+            border: 1px solid rgba(127, 188, 255, 0.24);
+            border-left: 0;
+            border-radius: 0 16px 16px 0;
+            background: linear-gradient(180deg, rgba(11, 24, 43, 0.94), rgba(8, 17, 32, 0.96));
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+            backdrop-filter: blur(10px);
+            transform: translateX(-202px);
+            transition: transform 0.22s ease, box-shadow 0.22s ease;
+            pointer-events: none;
+        }
+
+        .user-sidebar.open {
+            transform: translateX(0);
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.44);
+            pointer-events: auto;
+        }
+
+        .user-sidebar-trigger {
+            position: fixed;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 14px;
+            z-index: 45;
+            background: transparent;
+        }
+
+        .user-sidebar-peek {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            width: 22px;
+            min-height: 108px;
+            display: grid;
+            place-items: center;
+            color: #9bd1ff;
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            writing-mode: vertical-rl;
+            text-transform: uppercase;
+            transform: translateY(-50%);
+            border-left: 1px solid rgba(127, 188, 255, 0.22);
+            background: rgba(79, 172, 254, 0.08);
+            pointer-events: none;
+        }
+
+        .user-sidebar.open .user-sidebar-peek {
+            opacity: 0;
+        }
+
+        .user-sidebar-brand {
+            color: #9bd1ff;
+            font-size: 0.78rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .user-sidebar-profile {
+            display: grid;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .user-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            color: #06111f;
+            background: linear-gradient(135deg, #62d6ff, #61e2ad);
+            font-weight: 900;
+            font-size: 1.1rem;
+            box-shadow: 0 10px 24px rgba(79, 172, 254, 0.22);
+        }
+
+        .user-name {
+            margin: 0;
+            color: #f4f9ff;
+            font-size: 1.02rem;
+            font-weight: 850;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+
+        .user-email {
+            margin: 3px 0 0;
+            color: rgba(217, 234, 255, 0.74);
+            font-size: 0.78rem;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+        }
+
+        .user-sidebar-details {
+            display: grid;
+            gap: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.09);
+        }
+
+        .user-info-row {
+            display: grid;
+            gap: 3px;
+            min-width: 0;
+        }
+
+        .user-info-label {
+            color: rgba(155, 209, 255, 0.78);
+            font-size: 0.68rem;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .user-info-value {
+            color: #eef7ff;
+            font-size: 0.84rem;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .user-sidebar-spacer {
+            flex: 1;
+        }
+
+        .user-sidebar .sidebar-logout {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            box-shadow: 0 10px 20px rgba(255, 107, 107, 0.18);
+        }
+
+        .user-sidebar-actions {
+            display: grid;
+            gap: 8px;
+        }
+
+        .user-sidebar-actions button {
+            width: 100%;
+        }
+
         body::selection {
             background: rgba(79, 172, 254, 0.3);
             color: #fff;
@@ -256,6 +413,26 @@
             text-align: left;
         }
 
+        .dashboard-empty-state {
+            grid-column: 1 / -1;
+            display: grid;
+            justify-items: start;
+            gap: 14px;
+            color: var(--muted);
+            font-size: 1.02rem;
+            line-height: 1.45;
+        }
+
+        .dashboard-empty-state p {
+            margin: 0;
+        }
+
+        .dashboard-empty-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
         .logout {
             text-align: center;
             margin-top: 30px;
@@ -279,6 +456,97 @@
             box-shadow: 0 14px 28px rgba(255, 107, 107, 0.3);
         }
 
+        .sidebar-password,
+        .sidebar-import-credentials,
+        .modal-secondary {
+            background: rgba(79, 172, 254, 0.12);
+            color: #d9ecff;
+            border-color: rgba(127, 188, 255, 0.34);
+            box-shadow: none;
+        }
+
+        .sidebar-password:hover,
+        .sidebar-import-credentials:hover,
+        .modal-secondary:hover {
+            background: rgba(79, 172, 254, 0.2);
+            box-shadow: 0 10px 22px rgba(79, 172, 254, 0.14);
+        }
+
+        .password-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 80;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            background: rgba(3, 8, 17, 0.72);
+            backdrop-filter: blur(4px);
+        }
+
+        .password-modal.open {
+            display: flex;
+        }
+
+        .password-card {
+            width: min(430px, calc(100vw - 32px));
+            border: 1px solid rgba(127, 188, 255, 0.28);
+            border-radius: 16px;
+            background: linear-gradient(180deg, rgba(13, 28, 50, 0.98), rgba(8, 17, 32, 0.98));
+            box-shadow: 0 24px 56px rgba(0, 0, 0, 0.5);
+            padding: 20px;
+        }
+
+        .password-card h2 {
+            margin: 0 0 14px;
+            color: #9bd1ff;
+            font-size: 1.24rem;
+        }
+
+        .password-card label {
+            display: grid;
+            gap: 6px;
+            margin-top: 12px;
+            color: rgba(217, 234, 255, 0.8);
+            font-size: 0.84rem;
+            font-weight: 800;
+        }
+
+        .password-card input {
+            width: 100%;
+            box-sizing: border-box;
+            border: 1px solid rgba(127, 188, 255, 0.28);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.06);
+            color: #f4f9ff;
+            padding: 11px 12px;
+            outline: none;
+        }
+
+        .password-card input:focus {
+            border-color: rgba(79, 172, 254, 0.78);
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.14);
+        }
+
+        .password-message {
+            min-height: 18px;
+            margin: 12px 0 0;
+            color: #ffb0b0;
+            font-size: 0.85rem;
+            font-weight: 700;
+        }
+
+        .password-message.success {
+            color: #7ee8b2;
+        }
+
+        .password-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 18px;
+        }
+
         @keyframes cardIn {
             from {
                 opacity: 0;
@@ -298,6 +566,48 @@
         @media (max-width: 720px) {
             body {
                 padding: 22px 14px;
+            }
+
+            .user-sidebar {
+                position: relative;
+                left: auto;
+                top: auto;
+                bottom: auto;
+                width: auto;
+                transform: none;
+                pointer-events: auto;
+                margin: 0 auto 16px;
+                max-width: 1160px;
+                display: grid;
+                grid-template-columns: 1fr auto;
+                align-items: center;
+            }
+
+            .user-sidebar-trigger {
+                display: none;
+            }
+
+            .user-sidebar-profile {
+                grid-template-columns: 44px minmax(0, 1fr);
+                align-items: center;
+            }
+
+            .user-avatar {
+                width: 44px;
+                height: 44px;
+                border-radius: 12px;
+            }
+
+            .user-sidebar-brand,
+            .user-sidebar-details,
+            .user-sidebar-spacer,
+            .user-sidebar-peek {
+                display: none;
+            }
+
+            .user-sidebar .sidebar-logout {
+                width: auto;
+                min-width: 84px;
             }
 
             .grid {
@@ -327,6 +637,51 @@
 
         body.modo-mobile {
             padding: 14px 10px 22px;
+        }
+
+        body.modo-mobile .user-sidebar {
+            position: relative;
+            left: auto;
+            top: auto;
+            bottom: auto;
+            width: auto;
+            transform: none;
+            pointer-events: auto;
+            margin: 0 0 14px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            padding: 14px;
+        }
+
+        body.modo-mobile .user-sidebar-trigger {
+            display: none;
+        }
+
+        body.modo-mobile .user-sidebar-profile {
+            grid-template-columns: 42px minmax(0, 1fr);
+            align-items: center;
+        }
+
+        body.modo-mobile .user-avatar {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            font-size: 1rem;
+        }
+
+        body.modo-mobile .user-sidebar-brand,
+        body.modo-mobile .user-sidebar-details,
+        body.modo-mobile .user-sidebar-spacer,
+        body.modo-mobile .user-sidebar-peek {
+            display: none;
+        }
+
+        body.modo-mobile .user-sidebar .sidebar-logout {
+            width: auto;
+            min-width: 78px;
+            min-height: 40px;
+            font-size: 0.86rem;
         }
 
         body.modo-mobile .hero {
@@ -386,6 +741,20 @@
             font-size: 0.98rem;
         }
 
+        body:not(.modo-mobile) .user-sidebar {
+            transform: translate3d(-224px, 0, 0) !important;
+            pointer-events: none !important;
+        }
+
+        body:not(.modo-mobile).sidebar-open .user-sidebar {
+            transform: translate3d(0, 0, 0) !important;
+            pointer-events: auto !important;
+        }
+
+        body:not(.modo-mobile).sidebar-open .user-sidebar-peek {
+            opacity: 0;
+        }
+
         .card[data-key="analise_promo"] { --module: #4facfe; --module-alt: #9ed8ff; --module-soft: rgba(79, 172, 254, 0.3); --module-glow: rgba(79, 172, 254, 0.2); }
         .card[data-key="renovacao_fixa"] { --module: #66c2ff; --module-alt: #b2e4ff; --module-soft: rgba(102, 194, 255, 0.3); --module-glow: rgba(102, 194, 255, 0.2); }
         .card[data-key="anuncios_ml"] { --module: #3fc0d8; --module-alt: #99ecf8; --module-soft: rgba(63, 192, 216, 0.3); --module-glow: rgba(63, 192, 216, 0.2); }
@@ -393,6 +762,7 @@
         .card[data-key="integracao"] { --module: #35b6a6; --module-alt: #9ef0e6; --module-soft: rgba(53, 182, 166, 0.3); --module-glow: rgba(53, 182, 166, 0.2); }
         .card[data-key="cadastro"] { --module: #6fb1ff; --module-alt: #c5e1ff; --module-soft: rgba(111, 177, 255, 0.3); --module-glow: rgba(111, 177, 255, 0.2); }
         .card[data-key="estoque"] { --module: #5cb7ff; --module-alt: #b7e2ff; --module-soft: rgba(92, 183, 255, 0.3); --module-glow: rgba(92, 183, 255, 0.2); }
+        .card[data-key="mercado_full"] { --module: #2fd3ff; --module-alt: #c9f6ff; --module-soft: rgba(47, 211, 255, 0.32); --module-glow: rgba(47, 211, 255, 0.22); }
         .card[data-key="vendas"] { --module: #f5a84b; --module-alt: #ffe2ad; --module-soft: rgba(245, 168, 75, 0.32); --module-glow: rgba(245, 168, 75, 0.22); }
         .card[data-key="favoritos"] { --module: #f2c94c; --module-alt: #fff0b7; --module-soft: rgba(242, 201, 76, 0.32); --module-glow: rgba(242, 201, 76, 0.22); }
         .card[data-key="perguntas_pos_venda"] { --module: #38d4ff; --module-alt: #bff4ff; --module-soft: rgba(56, 212, 255, 0.32); --module-glow: rgba(56, 212, 255, 0.22); }
@@ -406,6 +776,39 @@
 </head>
 <body>
 
+<div class="user-sidebar-trigger" id="user-sidebar-trigger" aria-hidden="true"></div>
+<aside class="user-sidebar" aria-label="Informações do usuário">
+    <div class="user-sidebar-peek">Usuário</div>
+    <div class="user-sidebar-brand">JK Sistema</div>
+    <div class="user-sidebar-profile">
+        <div class="user-avatar" id="user-avatar">U</div>
+        <div>
+            <p class="user-name" id="user-name">Usuário</p>
+            <p class="user-email" id="user-email"></p>
+        </div>
+    </div>
+    <div class="user-sidebar-details">
+        <div class="user-info-row">
+            <span class="user-info-label">Cliente</span>
+            <span class="user-info-value" id="user-client">-</span>
+        </div>
+        <div class="user-info-row">
+            <span class="user-info-label">Acesso</span>
+            <span class="user-info-value" id="user-access">-</span>
+        </div>
+        <div class="user-info-row">
+            <span class="user-info-label">Máquina</span>
+            <span class="user-info-value" id="user-machine">-</span>
+        </div>
+    </div>
+    <div class="user-sidebar-spacer"></div>
+    <div class="user-sidebar-actions">
+        <button id="btn-importar-credenciais" class="sidebar-import-credentials" type="button" onclick="importarCredenciais()">Importar credenciais</button>
+        <button class="sidebar-password" type="button" onclick="abrirTrocaSenha()">Trocar senha</button>
+        <button class="sidebar-logout" type="button" onclick="sair()">Sair</button>
+    </div>
+</aside>
+
 <div class="container">
     <div class="hero">
         <h1>🚀 JK Sistema de Gestão</h1>
@@ -413,10 +816,29 @@
     </div>
     
     <div id="cards" class="grid"></div>
+</div>
 
-    <div class="logout">
-        <button onclick="sair()">Sair</button>
-    </div>
+<div class="password-modal" id="password-modal" aria-hidden="true">
+    <form class="password-card" id="password-form">
+        <h2>Trocar senha</h2>
+        <label>
+            Senha atual
+            <input id="senha-atual" type="password" autocomplete="current-password" required>
+        </label>
+        <label>
+            Nova senha
+            <input id="senha-nova" type="password" autocomplete="new-password" minlength="6" required>
+        </label>
+        <label>
+            Confirmar nova senha
+            <input id="senha-confirmar" type="password" autocomplete="new-password" minlength="6" required>
+        </label>
+        <p class="password-message" id="password-message"></p>
+        <div class="password-actions">
+            <button class="modal-secondary" type="button" onclick="fecharTrocaSenha()">Cancelar</button>
+            <button type="submit" id="password-submit">Salvar</button>
+        </div>
+    </form>
 </div>
 
 <script>
@@ -470,6 +892,7 @@
         { key: 'integracao', href: 'integracoes.html', title: '🔗 Integrações', desc: 'Gerenciar conexões com Bling, ML, etc.' },
         { key: 'cadastro', href: 'cadastro.html', title: '🧾 Cadastro', desc: 'Cadastro manual de produtos.' },
         { key: 'estoque', href: 'estoque.html', title: '📦 Estoque', desc: 'Consulta rápida do estoque consolidado.' },
+        { key: 'mercado_full', href: 'full.html', title: '🚚 Full', desc: 'Controle e acompanhamento do estoque Full.' },
         { key: 'vendas', href: 'vendas.html', title: '💰 Vendas', desc: 'Histórico de pedidos e itens.' },
         { key: 'favoritos', href: 'favoritos.html', title: '⭐ Favoritos ML', desc: 'Pesquisa e ranking de anúncios no Mercado Livre.' },
         { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '💬 Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
@@ -490,11 +913,203 @@
         return 0;
     });
 
+    function iniciaisUsuario(nome, email) {
+        const base = String(nome || email || 'Usuario').trim();
+        const partes = base.split(/\s+/).filter(Boolean);
+        if (partes.length >= 2) return (partes[0][0] + partes[1][0]).toUpperCase();
+        return base.slice(0, 2).toUpperCase();
+    }
+
+    function preencherSidebarUsuario() {
+        if (!userData) return;
+        const nome = String(userData.name || userData.username || 'Usuário').trim();
+        const email = String(userData.email || userData.username || '').trim();
+        const cliente = String(userData.client_id || 'default').trim();
+        const maquina = String(userData.machine_id || '').trim();
+        const avatar = document.getElementById('user-avatar');
+        const nameEl = document.getElementById('user-name');
+        const emailEl = document.getElementById('user-email');
+        const clientEl = document.getElementById('user-client');
+        const accessEl = document.getElementById('user-access');
+        const machineEl = document.getElementById('user-machine');
+        if (avatar) avatar.textContent = iniciaisUsuario(nome, email);
+        if (nameEl) nameEl.textContent = nome;
+        if (emailEl) emailEl.textContent = email;
+        if (clientEl) clientEl.textContent = cliente || '-';
+        if (accessEl) accessEl.textContent = canSeeAll ? 'Completo' : `${enabled.length} módulos`;
+        if (machineEl) {
+            machineEl.textContent = maquina ? maquina.slice(0, 18) : '-';
+            machineEl.title = maquina || '';
+        }
+    }
+
+    preencherSidebarUsuario();
+
+    async function importarCredenciais() {
+        const api = window.electronAPI;
+        const botao = document.getElementById('btn-importar-credenciais');
+
+        if (!api || typeof api.importCredentials !== 'function') {
+            alert('Esta opção está disponível no aplicativo desktop. Se estiver no navegador, execute ImportarCredenciais.bat na pasta do sistema.');
+            return;
+        }
+
+        const confirmar = confirm('Vou abrir o importador local de credenciais. Deixe o arquivo credenciais-jk.jkcred na pasta do sistema e informe a senha quando a janela abrir.');
+        if (!confirmar) return;
+
+        try {
+            if (botao) {
+                botao.disabled = true;
+                botao.textContent = 'Abrindo...';
+            }
+            const resultado = await api.importCredentials();
+            const mensagem = (resultado && resultado.message) || 'Importador de credenciais aberto.';
+            alert(`${mensagem}\n\nQuando a importação terminar, saia e entre novamente para recarregar as permissões.`);
+        } catch (err) {
+            alert((err && err.message) || 'Não foi possível abrir o importador de credenciais.');
+        } finally {
+            if (botao) {
+                botao.disabled = false;
+                botao.textContent = 'Importar credenciais';
+            }
+        }
+    }
+
+    function abrirTrocaSenha() {
+        const modal = document.getElementById('password-modal');
+        const form = document.getElementById('password-form');
+        const msg = document.getElementById('password-message');
+        if (!modal) return;
+        if (form) form.reset();
+        if (msg) {
+            msg.textContent = '';
+            msg.classList.remove('success');
+        }
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        setTimeout(() => document.getElementById('senha-atual')?.focus(), 30);
+    }
+
+    function fecharTrocaSenha() {
+        const modal = document.getElementById('password-modal');
+        if (!modal) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+
+    function mostrarMensagemSenha(texto, sucesso = false) {
+        const msg = document.getElementById('password-message');
+        if (!msg) return;
+        msg.textContent = texto || '';
+        msg.classList.toggle('success', !!sucesso);
+    }
+
+    async function salvarNovaSenha(event) {
+        event.preventDefault();
+        const atual = document.getElementById('senha-atual')?.value || '';
+        const nova = document.getElementById('senha-nova')?.value || '';
+        const confirmar = document.getElementById('senha-confirmar')?.value || '';
+        const botao = document.getElementById('password-submit');
+
+        if (nova.length < 6) {
+            mostrarMensagemSenha('A nova senha deve ter pelo menos 6 caracteres.');
+            return;
+        }
+        if (nova !== confirmar) {
+            mostrarMensagemSenha('A confirmação da senha não confere.');
+            return;
+        }
+
+        try {
+            if (botao) botao.disabled = true;
+            mostrarMensagemSenha('Salvando...');
+            const resp = await fetch('/api/auth/change-password', {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    current_password: atual,
+                    new_password: nova,
+                    confirm_password: confirmar
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Não foi possível trocar a senha.');
+            }
+            mostrarMensagemSenha(data.message || 'Senha alterada com sucesso.', true);
+            setTimeout(fecharTrocaSenha, 900);
+        } catch (err) {
+            mostrarMensagemSenha(err.message || 'Não foi possível trocar a senha.');
+        } finally {
+            if (botao) botao.disabled = false;
+        }
+    }
+
+    document.getElementById('password-form')?.addEventListener('submit', salvarNovaSenha);
+    document.getElementById('password-modal')?.addEventListener('click', (event) => {
+        if (event.target && event.target.id === 'password-modal') fecharTrocaSenha();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') fecharTrocaSenha();
+    });
+
+    (function controlarSidebarRecolhivel() {
+        const sidebar = document.querySelector('.user-sidebar');
+        const trigger = document.getElementById('user-sidebar-trigger');
+        if (!sidebar || document.body.classList.contains('modo-mobile')) return;
+        let timerFechar = null;
+
+        function abrir() {
+            clearTimeout(timerFechar);
+            document.body.classList.add('sidebar-open');
+            sidebar.classList.add('open');
+            sidebar.style.transform = 'translate3d(0, 0, 0)';
+            sidebar.style.pointerEvents = 'auto';
+        }
+
+        function fechar(rapido = false) {
+            clearTimeout(timerFechar);
+            timerFechar = setTimeout(() => {
+                if (sidebar.matches(':hover')) return;
+                document.body.classList.remove('sidebar-open');
+                sidebar.classList.remove('open');
+                sidebar.style.transform = 'translate3d(-224px, 0, 0)';
+                sidebar.style.pointerEvents = 'none';
+                sidebar.querySelectorAll('button, input').forEach(el => el.blur());
+            }, rapido ? 0 : 120);
+        }
+
+        trigger?.addEventListener('mouseenter', abrir);
+        sidebar.addEventListener('mouseleave', fechar);
+        document.body.classList.remove('sidebar-open');
+        sidebar.classList.remove('open');
+        sidebar.style.transform = 'translate3d(-224px, 0, 0)';
+        sidebar.style.pointerEvents = 'none';
+        document.addEventListener('mousemove', (event) => {
+            if (event.clientX <= 12) {
+                abrir();
+                return;
+            }
+            if (document.body.classList.contains('sidebar-open')) {
+                const rect = sidebar.getBoundingClientRect();
+                const foraDaSidebar = event.clientX > rect.right + 8 || event.clientY < rect.top || event.clientY > rect.bottom;
+                if (foraDaSidebar) fechar(true);
+            }
+        });
+    })();
+
     const cards = document.getElementById('cards');
     if (!enabled.length) {
-        const p = document.createElement('p');
-        p.textContent = 'Nenhum módulo habilitado para seu usuário.';
-        cards.appendChild(p);
+        const empty = document.createElement('div');
+        empty.className = 'dashboard-empty-state';
+        empty.innerHTML = `
+            <p>Nenhum módulo habilitado para seu usuário.</p>
+            <div class="dashboard-empty-actions">
+                <button class="sidebar-import-credentials" type="button" onclick="importarCredenciais()">Importar credenciais</button>
+                <button class="modal-secondary" type="button" onclick="sair()">Sair e entrar novamente</button>
+            </div>
+        `;
+        cards.appendChild(empty);
     } else {
         enabled.forEach(mod => {
             const a = document.createElement('a');

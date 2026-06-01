@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMac: () => ipcRenderer.invoke('get-mac'),
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
+    ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     flushBrowserSession: () => ipcRenderer.invoke('flush-browser-session'),
     getMlPublicItemInfo: (itemId) => ipcRenderer.invoke('ml-public-item-info', itemId),
     getMlBrowserItemInfo: (itemId, url) => ipcRenderer.invoke('ml-browser-item-info', itemId, url),
@@ -13,7 +14,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showEmbeddedMlBrowser: (url, bounds) => ipcRenderer.invoke('embedded-ml-browser-show', url, bounds),
     positionEmbeddedMlBrowser: (bounds) => ipcRenderer.invoke('embedded-ml-browser-position', bounds),
     hideEmbeddedMlBrowser: () => ipcRenderer.invoke('embedded-ml-browser-hide'),
-    executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code)
+    executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code),
+    importCredentials: () => ipcRenderer.invoke('import-credentials')
 });
 
 function isMercadoLivreHost(hostname) {
