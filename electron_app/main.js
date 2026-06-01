@@ -363,12 +363,9 @@ function registerAutoUpdateEvents() {
             updateInfo: normalizeUpdateInfo(info),
             autoInstall: true
         });
-        const timer = setTimeout(() => {
-            installDownloadedUpdateSafely(info).catch((err) => {
-                logElectronLifecycle('auto-update-auto-install-error', err);
-            });
-        }, 1200);
-        if (typeof timer.unref === 'function') timer.unref();
+        installDownloadedUpdateSafely(info).catch((err) => {
+            logElectronLifecycle('auto-update-auto-install-error', err);
+        });
     });
     return true;
 }
@@ -2188,6 +2185,7 @@ function loadElectronTabbedShell(win, appUrl) {
 
 function ensureInternalBrowser(parent) {
     if (internalBrowserWindow && !internalBrowserWindow.isDestroyed()) {
+        internalBrowserWindow.webContents.__jkAllowMlAdNavigation = true;
         if (internalBrowserWindow.isMinimized()) {
             internalBrowserWindow.restore();
         }
@@ -2207,6 +2205,7 @@ function ensureInternalBrowser(parent) {
             session: getMlSession()
         }
     });
+    internalBrowserWindow.webContents.__jkAllowMlAdNavigation = true;
     internalBrowserWindow.setMenuBarVisibility(false);
     internalBrowserWindow.on('closed', () => {
         internalBrowserWindow = null;
@@ -2240,11 +2239,13 @@ function ensureEmbeddedMlBrowser(parent, options = {}) {
                 session: getMlSession()
             }
         });
+        embeddedMlBrowserView.webContents.__jkAllowMlAdNavigation = true;
         embeddedMlBrowserView.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         embeddedMlBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
             logElectronLifecycle('embedded-ml-browser-fail-load', { errorCode, errorDescription, validatedURL });
         });
     }
+    embeddedMlBrowserView.webContents.__jkAllowMlAdNavigation = true;
     if (!shouldAttach) {
         if (embeddedMlBrowserOwner && !embeddedMlBrowserOwner.isDestroyed()) {
             try { embeddedMlBrowserOwner.removeBrowserView(embeddedMlBrowserView); } catch (_err) {}
@@ -2527,9 +2528,6 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('embedded-ml-browser-show', async (event, targetUrl, bounds) => {
         const url = normalizeTargetUrl(targetUrl);
-        if (isMercadoLivreAdUrl(url)) {
-            return await openUrlInGoogleChrome(url);
-        }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const background = !!(bounds && bounds.background);
@@ -2565,9 +2563,6 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('open-internal-browser', async (event, targetUrl) => {
         const url = normalizeTargetUrl(targetUrl);
-        if (isMercadoLivreAdUrl(url)) {
-            return await openUrlInGoogleChrome(url);
-        }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || null;
         const internalBrowser = ensureInternalBrowser(parent);
