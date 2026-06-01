@@ -459,6 +459,7 @@
         .sidebar-password,
         .sidebar-update,
         .sidebar-import-credentials,
+        .sidebar-drive-sync,
         .modal-secondary {
             background: rgba(79, 172, 254, 0.12);
             color: #d9ecff;
@@ -469,6 +470,7 @@
         .sidebar-password:hover,
         .sidebar-update:hover,
         .sidebar-import-credentials:hover,
+        .sidebar-drive-sync:hover,
         .modal-secondary:hover {
             background: rgba(79, 172, 254, 0.2);
             box-shadow: 0 10px 22px rgba(79, 172, 254, 0.14);
@@ -806,6 +808,7 @@
     <div class="user-sidebar-spacer"></div>
     <div class="user-sidebar-actions">
         <button id="btn-importar-credenciais" class="sidebar-import-credentials" type="button" onclick="importarCredenciais()">Importar credenciais</button>
+        <button id="btn-sincronizar-drive" class="sidebar-drive-sync" type="button" onclick="sincronizarDriveBackup(true)">Sincronizar Drive</button>
         <button id="btn-verificar-atualizacao" class="sidebar-update" type="button" onclick="verificarAtualizacao()">Verificar atualizacao</button>
         <button class="sidebar-password" type="button" onclick="abrirTrocaSenha()">Trocar senha</button>
         <button class="sidebar-logout" type="button" onclick="sair()">Sair</button>
@@ -947,6 +950,53 @@
     }
 
     preencherSidebarUsuario();
+
+    async function chamarDriveSync(endpoint) {
+        const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: obterAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+            throw new Error(data.detail || data.message || 'Nao foi possivel sincronizar com o Google Drive.');
+        }
+        return data;
+    }
+
+    async function sincronizarDriveBackup(manual = false) {
+        const botao = document.getElementById('btn-sincronizar-drive');
+        try {
+            if (botao && manual) {
+                botao.disabled = true;
+                botao.textContent = 'Sincronizando...';
+            }
+            let data = await chamarDriveSync('/api/drive-sync/auto');
+            if (data.action === 'conflict' && manual) {
+                const enviarLocal = confirm('Existe um backup diferente no Google Drive e tambem ha dados locais nesta maquina. Deseja enviar os dados desta maquina para o Drive agora?');
+                if (enviarLocal) {
+                    data = await chamarDriveSync('/api/drive-sync/backup');
+                }
+            }
+            if (manual) {
+                alert(data.message || 'Sincronizacao do Drive concluida.');
+            } else if (data.action && data.action !== 'synced' && data.action !== 'not_linked') {
+                console.info('[Drive Sync]', data.message || data.action);
+            }
+        } catch (err) {
+            if (manual) {
+                alert((err && err.message) || 'Nao foi possivel sincronizar com o Google Drive.');
+            } else {
+                console.warn('[Drive Sync]', err);
+            }
+        } finally {
+            if (botao && manual) {
+                botao.disabled = false;
+                botao.textContent = 'Sincronizar Drive';
+            }
+        }
+    }
+
+    setTimeout(() => sincronizarDriveBackup(false), 1800);
 
     async function importarCredenciais() {
         const api = window.electronAPI;

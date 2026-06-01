@@ -217,6 +217,80 @@
             transform: none;
         }
 
+        .auth-divider {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 16px 0 12px;
+            color: rgba(240, 247, 255, 0.74);
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+
+        .auth-divider::before,
+        .auth-divider::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.16);
+        }
+
+        .google-login-wrapper {
+            margin-top: 2px;
+            text-align: center;
+        }
+
+        .google-login-wrapper.disabled {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+
+        .google-login-wrapper.not-configured {
+            opacity: 0.82;
+        }
+
+        #google-login-button {
+            display: flex;
+            justify-content: center;
+            min-height: 44px;
+        }
+
+        .google-oauth-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: #ffffff;
+            color: #263238;
+            letter-spacing: 0;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+        }
+
+        .google-oauth-button:hover {
+            background: #f8fafc;
+            color: #111827;
+        }
+
+        .google-mark {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            color: #4285f4;
+            background: #ffffff;
+            box-shadow: inset 0 0 0 1px rgba(66, 133, 244, 0.25);
+        }
+
+        .google-login-hint {
+            margin-top: 8px;
+            color: rgba(240, 247, 255, 0.7);
+            font-size: 0.78rem;
+            line-height: 1.35;
+        }
+
         .button-label {
             transition: opacity 0.2s ease;
         }
@@ -472,6 +546,16 @@
                 <span class="button-loader-text">Autenticando...</span>
             </span>
         </button>
+        <div id="google-login-wrapper" class="google-login-wrapper">
+            <div class="auth-divider"><span>ou</span></div>
+            <div id="google-login-button">
+                <button id="google-oauth-button" class="google-oauth-button" type="button" onclick="entrarComGoogle()">
+                    <span class="google-mark">G</span>
+                    <span>Entrar com Google</span>
+                </button>
+            </div>
+            <div class="google-login-hint">Use o e-mail Google cadastrado no seu usuário.</div>
+        </div>
         <div class="auth-status" id="auth-status">Validando credenciais e preparando seu acesso</div>
         <p class="error" id="error-msg"></p>
     </div>
@@ -498,12 +582,14 @@
             const button = document.getElementById('login-button');
             const username = document.getElementById('username');
             const password = document.getElementById('password');
+            const googleWrapper = document.getElementById('google-login-wrapper');
 
             if (!container || !button || !username || !password) {
                 return;
             }
 
             container.classList.toggle('authenticating', ativo);
+            if (googleWrapper) googleWrapper.classList.toggle('disabled', ativo);
             button.disabled = ativo;
             username.disabled = ativo;
             password.disabled = ativo;
@@ -688,6 +774,188 @@
             }
         }
 
+        function limparErroGoogleLogin() {
+            const errorMsg = document.getElementById('error-msg');
+            if (!errorMsg) return;
+            errorMsg.textContent = '';
+            errorMsg.style.display = 'none';
+        }
+
+        function mostrarErroGoogleLogin(mensagem) {
+            const errorMsg = document.getElementById('error-msg');
+            if (!errorMsg) return;
+            errorMsg.textContent = mensagem || 'Nao foi possivel entrar com Google.';
+            errorMsg.style.display = 'block';
+        }
+
+        function definirStatusLoginGoogle(mensagem) {
+            const status = document.getElementById('auth-status');
+            if (status && mensagem) status.textContent = mensagem;
+        }
+
+        function esperarLoginGoogle(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function lerRespostaGoogleLogin(response) {
+            if (!response.ok) {
+                let errorDetail = "Erro no servidor (" + response.status + ")";
+                try {
+                    const errJson = await response.json();
+                    if (errJson.detail) {
+                        errorDetail = Array.isArray(errJson.detail)
+                            ? errJson.detail.map(e => e.msg).join(", ")
+                            : (typeof errJson.detail === 'object' ? JSON.stringify(errJson.detail) : errJson.detail);
+                    }
+                } catch(e) {}
+                throw new Error(errorDetail);
+            }
+            return response.json();
+        }
+
+        async function concluirLoginGoogle(data) {
+            localStorage.setItem('user_data', JSON.stringify(data.user_data));
+            if (data.access_token) {
+                localStorage.setItem('access_token', data.access_token);
+            } else {
+                localStorage.removeItem('access_token');
+            }
+            localStorage.setItem('permissions', JSON.stringify(data.permissions || {}));
+            await mostrarApresentacaoAntesDeEntrar();
+            window.location.href = 'dashboard.html';
+        }
+
+        async function aguardarResultadoGoogleLogin(state) {
+            for (let tentativa = 0; tentativa < 180; tentativa += 1) {
+                const resp = await fetch('/api/auth/google/result/' + encodeURIComponent(state), { cache: 'no-store' });
+                const data = await lerRespostaGoogleLogin(resp);
+                if (!data.pending) {
+                    if (data.success) {
+                        await concluirLoginGoogle(data);
+                        return;
+                    }
+                    throw new Error(data.message || 'Conta Google nao autorizada.');
+                }
+                await esperarLoginGoogle(1000);
+            }
+            throw new Error('Tempo esgotado aguardando o login Google.');
+        }
+
+        async function autenticarComGoogleCredential(response) {
+            limparErroGoogleLogin();
+            if (window.location.protocol === 'file:') {
+                alert("ERRO DE ACESSO\n\nUse o aplicativo instalado ou o endereco correto do sistema.");
+                return;
+            }
+
+            const credential = response && response.credential;
+            if (!credential) {
+                mostrarErroGoogleLogin('Nao foi possivel receber o login do Google.');
+                return;
+            }
+
+            try {
+                setAutenticando(true);
+                const machineId = await obterIdentificacaoMaquina();
+                const resp = await fetch('/api/auth/google', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ credential, machine_id: machineId })
+                });
+                const data = await lerRespostaGoogleLogin(resp);
+                if (data.success) {
+                    await concluirLoginGoogle(data);
+                    return;
+                }
+                setAutenticando(false);
+                mostrarErroGoogleLogin(data.message || 'Conta Google nao autorizada.');
+            } catch (e) {
+                setAutenticando(false);
+                console.error(e);
+                mostrarErroGoogleLogin(e.message === "Failed to fetch" ? "Erro de conexao. O servidor esta rodando?" : e.message);
+            }
+        }
+
+        async function entrarComGoogle() {
+            limparErroGoogleLogin();
+            if (window.location.protocol === 'file:') {
+                alert("ERRO DE ACESSO\n\nUse o aplicativo instalado ou o endereco correto do sistema.");
+                return;
+            }
+
+            try {
+                setAutenticando(true);
+                const machineId = await obterIdentificacaoMaquina();
+                if (window.electronAPI && typeof window.electronAPI.openExternalChrome === 'function') {
+                    const resp = await fetch('/api/auth/google/start?mode=json&machine_id=' + encodeURIComponent(machineId || ''), { cache: 'no-store' });
+                    const data = await lerRespostaGoogleLogin(resp);
+                    if (!data.success || !data.auth_url || !data.state) {
+                        throw new Error(data.message || 'Nao foi possivel iniciar o login Google.');
+                    }
+                    definirStatusLoginGoogle('Finalize o login Google no navegador externo.');
+                    await window.electronAPI.openExternalChrome(data.auth_url);
+                    await aguardarResultadoGoogleLogin(data.state);
+                    return;
+                }
+                window.location.href = '/api/auth/google/start?machine_id=' + encodeURIComponent(machineId || '');
+            } catch (e) {
+                setAutenticando(false);
+                definirStatusLoginGoogle('Validando credenciais e preparando seu acesso');
+                console.error(e);
+                mostrarErroGoogleLogin(e.message || 'Nao foi possivel iniciar o login Google.');
+            }
+        }
+
+        function aguardarGoogleIdentity(tentativas = 40) {
+            return new Promise((resolve) => {
+                const checar = () => {
+                    if (window.google && window.google.accounts && window.google.accounts.id) {
+                        resolve(window.google.accounts.id);
+                        return;
+                    }
+                    tentativas -= 1;
+                    if (tentativas <= 0) {
+                        resolve(null);
+                        return;
+                    }
+                    setTimeout(checar, 150);
+                };
+                checar();
+            });
+        }
+
+        async function carregarGoogleLogin() {
+            const wrapper = document.getElementById('google-login-wrapper');
+            const buttonHost = document.getElementById('google-login-button');
+            if (!wrapper || !buttonHost) return;
+
+            try {
+                const resp = await fetch('/api/auth/google/config', { cache: 'no-store' });
+                const cfg = await resp.json().catch(() => ({}));
+                wrapper.style.display = 'block';
+                wrapper.classList.toggle('not-configured', !cfg.oauth_enabled);
+                const hint = wrapper.querySelector('.google-login-hint');
+                if (hint) {
+                    hint.textContent = cfg.oauth_enabled
+                        ? 'Use o e-mail Google cadastrado no seu usuário.'
+                        : 'Login Google precisa do Client ID e Client Secret configurados no servidor.';
+                }
+            } catch (e) {
+                console.warn('Login Google indisponivel:', e);
+                wrapper.style.display = 'block';
+                wrapper.classList.add('not-configured');
+            }
+
+            const params = new URLSearchParams(window.location.search || '');
+            const googleError = params.get('google_error');
+            if (googleError) {
+                mostrarErroGoogleLogin(googleError);
+                params.delete('google_error');
+                const cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash;
+                window.history.replaceState(null, document.title, cleanUrl);
+            }
+        }
+
         document.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter') return;
 
@@ -701,6 +969,8 @@
             event.preventDefault();
             fazerLogin();
         });
+
+        carregarGoogleLogin();
     </script>
 </body>
 </html>

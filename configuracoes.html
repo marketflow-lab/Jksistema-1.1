@@ -165,14 +165,14 @@
                 <div>
                     <label class="label" for="iaModeloPadrao">IA padrão geral</label>
                     <select id="iaModeloPadrao">
-                        <option value="vertex:gemini-2.5-pro">Vertex Gemini 2.5 Pro</option>
+                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
                     </select>
                     <div class="hint">Usada como fallback quando uma função não tiver modelo próprio configurado.</div>
                 </div>
                 <div>
                     <label class="label" for="iaModeloPerguntas">IA que responde perguntas</label>
                     <select id="iaModeloPerguntas">
-                        <option value="vertex:gemini-2.5-pro">Vertex Gemini 2.5 Pro</option>
+                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
                     </select>
                     <div class="hint">Usada nas respostas de perguntas e pós-venda do Mercado Livre.</div>
                 </div>
@@ -186,13 +186,42 @@
                 <div>
                     <label class="label" for="iaModeloFavoritos">IA que ajuda a fazer favoritos</label>
                     <select id="iaModeloFavoritos">
-                        <option value="vertex:gemini-2.5-pro">Vertex Gemini 2.5 Pro</option>
+                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
                     </select>
                     <label class="check-item" style="margin-top: 10px;">
                         <input id="iaFavoritosUsarImagem" type="checkbox">
                         <span>Usar imagem para comparar os anúncios</span>
                     </label>
                     <div class="hint">Quando ativo, essa preferência fica salva para a IA de Favoritos usar imagem na comparação dos anúncios.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaVertexProjectId">Projeto Vertex AI</label>
+                    <input id="iaVertexProjectId" type="text" placeholder="bot-ai-c2" autocomplete="off">
+                    <div class="hint">Projeto do Google Cloud usado pelo Vertex AI.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaVertexLocation">Região Vertex AI</label>
+                    <input id="iaVertexLocation" type="text" placeholder="global" autocomplete="off">
+                    <div class="hint">Use global quando o agente/modelo estiver no endpoint global.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaVertexModel">Modelo Vertex</label>
+                    <input id="iaVertexModel" type="text" placeholder="gemini-2.5-flash" autocomplete="off">
+                    <div class="hint">Modelo usado no endpoint Vertex. Ex.: gemini-2.5-flash.</div>
+                </div>
+                <div>
+                    <label class="label" for="iaVertexServiceAccountEmail">Conta de serviço</label>
+                    <input id="iaVertexServiceAccountEmail" type="email" placeholder="vertex-express@bot-ai-c2.iam.gserviceaccount.com" autocomplete="off">
+                    <div class="hint">Opcional. Usada quando houver permissão para autenticar por essa conta.</div>
+                </div>
+                <div style="grid-column: 1 / -1;">
+                    <label class="label" for="iaAgentApiKey">Chave do agente / Vertex</label>
+                    <input id="iaAgentApiKey" type="password" placeholder="Deixe em branco para manter a chave salva" autocomplete="new-password">
+                    <label class="check-item" style="margin-top: 10px;">
+                        <input id="iaAgentApiKeyLimpar" type="checkbox">
+                        <span>Limpar chave salva</span>
+                    </label>
+                    <div id="iaAgentApiKeyStatus" class="hint">A chave nao e exibida depois de salva.</div>
                 </div>
                 <div style="grid-column: 1 / -1;">
                     <label class="label">IAs ativas no sistema (global)</label>
@@ -206,15 +235,11 @@
                             <span>DeepSeek ativa</span>
                         </label>
                         <label class="check-item">
-                            <input id="iaGeminiAtiva" type="checkbox">
-                            <span>Gemini API ativa</span>
-                        </label>
-                        <label class="check-item">
                             <input id="iaVertexAtiva" type="checkbox">
                             <span>Vertex AI ativa</span>
                         </label>
                     </div>
-                    <div class="hint">Quando uma IA for desativada aqui, ela deixa de ser usada em todo o sistema ate ser reativada.</div>
+                    <div class="hint">A Gemini API direta fica fora da seleção; Vertex, OpenAI e DeepSeek podem continuar ativos.</div>
                 </div>
             </div>
         </div>
@@ -248,6 +273,9 @@
 
                         <label class="label">Nome</label>
                         <input id="name" type="text" placeholder="Nome exibido">
+
+                        <label class="label">E-mail Google</label>
+                        <input id="email" type="email" placeholder="email@empresa.com">
 
                         <div class="grid-2">
                             <div>
@@ -329,6 +357,13 @@
     const selectIaModeloPerguntas = document.getElementById('iaModeloPerguntas');
     const selectIaModeloChat = document.getElementById('iaModeloChat');
     const selectIaModeloFavoritos = document.getElementById('iaModeloFavoritos');
+    const inputIaVertexProjectId = document.getElementById('iaVertexProjectId');
+    const inputIaVertexLocation = document.getElementById('iaVertexLocation');
+    const inputIaVertexModel = document.getElementById('iaVertexModel');
+    const inputIaVertexServiceAccountEmail = document.getElementById('iaVertexServiceAccountEmail');
+    const inputIaAgentApiKey = document.getElementById('iaAgentApiKey');
+    const checkIaAgentApiKeyLimpar = document.getElementById('iaAgentApiKeyLimpar');
+    const iaAgentApiKeyStatus = document.getElementById('iaAgentApiKeyStatus');
     const checkIaFavoritosUsarImagem = document.getElementById('iaFavoritosUsarImagem');
     const checkIaOpenaiAtiva = document.getElementById('iaOpenaiAtiva');
     const checkIaDeepseekAtiva = document.getElementById('iaDeepseekAtiva');
@@ -349,6 +384,7 @@
     const formTitle = document.getElementById('formTitle');
     const usernameInput = document.getElementById('username');
     const nameInput = document.getElementById('name');
+    const emailInput = document.getElementById('email');
     const clientIdInput = document.getElementById('clientId');
     const validUntilInput = document.getElementById('validUntil');
     const passwordInput = document.getElementById('password');
@@ -368,7 +404,7 @@
 
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
-        'etiquetas', 'favoritos', 'anuncios_ml', 'medias_compras',
+        'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
         'cadastro', 'impostos', 'simulador', 'configuracoes', 'importacoes', 'full'
     ];
 
@@ -422,9 +458,17 @@
         grupo.appendChild(opt);
     }
 
-    function preencherSelectModeloIA(selectEl, grupos, selecionado, fallbackValue = 'vertex:gemini-2.5-pro') {
+    function preencherSelectModeloIA(selectEl, grupos, selecionado, fallbackValue = 'vertex:gemini-2.5-flash') {
         if (!selectEl) return;
-        const modeloSelecionado = String(selecionado || fallbackValue).trim();
+        let modeloSelecionado = String(selecionado || fallbackValue).trim();
+        if (modeloSelecionado && !modeloSelecionado.toLowerCase().startsWith('vertex:')) {
+            const modeloLower = modeloSelecionado.toLowerCase();
+            if (modeloLower.startsWith('gemini-')) {
+                modeloSelecionado = `vertex:${modeloSelecionado}`;
+            } else if (!modeloLower.startsWith('gpt-') && !modeloLower.startsWith('deepseek-')) {
+                modeloSelecionado = fallbackValue;
+            }
+        }
         selectEl.innerHTML = '';
         let contemSelecionado = false;
         grupos.forEach(grupoInfo => {
@@ -452,12 +496,18 @@
     async function carregarModelosIA(selecionados = {}) {
         const fallback = [
             { label: 'Vertex AI', itens: [
-                { name: 'vertex:gemini-2.5-pro', display_name: 'Vertex Gemini 2.5 Pro' },
                 { name: 'vertex:gemini-2.5-flash', display_name: 'Vertex Gemini 2.5 Flash' },
+                { name: 'vertex:gemini-2.5-pro', display_name: 'Vertex Gemini 2.5 Pro' },
             ]},
             { label: 'OpenAI', itens: [
                 { name: 'gpt-5.4-nano', display_name: 'GPT-5.4 Nano' },
                 { name: 'gpt-5.4-mini', display_name: 'GPT-5.4 Mini' },
+                { name: 'gpt-5.4', display_name: 'GPT-5.4' },
+                { name: 'gpt-5.5', display_name: 'GPT-5.5' },
+            ]},
+            { label: 'DeepSeek', itens: [
+                { name: 'deepseek-v4-flash', display_name: 'DS V4 Flash' },
+                { name: 'deepseek-v4-pro', display_name: 'DS V4 Pro' },
             ]},
         ];
 
@@ -468,7 +518,6 @@
                 const data = await resp.json();
                 grupos = [
                     { label: 'Vertex AI', itens: data.vertex || [] },
-                    { label: 'Gemini API', itens: data.gemini || [] },
                     { label: 'OpenAI', itens: data.openai || [] },
                     { label: 'DeepSeek', itens: data.deepseek || [] },
                 ];
@@ -476,16 +525,17 @@
         } catch (e) {}
 
         const cfg = typeof selecionados === 'string' ? { padrao: selecionados } : (selecionados || {});
-        preencherSelectModeloIA(selectIaModelo, grupos, cfg.padrao || 'vertex:gemini-2.5-pro', 'vertex:gemini-2.5-pro');
-        preencherSelectModeloIA(selectIaModeloPerguntas, grupos, cfg.perguntas || cfg.padrao || 'vertex:gemini-2.5-pro', 'vertex:gemini-2.5-pro');
+        preencherSelectModeloIA(selectIaModelo, grupos, cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
+        preencherSelectModeloIA(selectIaModeloPerguntas, grupos, cfg.perguntas || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
         preencherSelectModeloIA(selectIaModeloChat, grupos, cfg.chat || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
-        preencherSelectModeloIA(selectIaModeloFavoritos, grupos, cfg.favoritos || cfg.padrao || 'vertex:gemini-2.5-pro', 'vertex:gemini-2.5-pro');
+        preencherSelectModeloIA(selectIaModeloFavoritos, grupos, cfg.favoritos || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
     }
 
     function labelPermissao(key) {
         const map = {
             analise_promo: 'Análise Promo', renovacao_fixa: 'Renovação', vendas: 'Vendas', estoque: 'Estoque',
-            integracao: 'Integrações', etiquetas: 'Etiquetas', full: 'Administrador', favoritos: 'Favoritos',
+            integracao: 'Integrações', etiquetas: 'Etiquetas', mercado_full: 'Full', full: 'Administrador', favoritos: 'Favoritos',
+            perguntas_pos_venda: 'Perguntas/Pós-venda',
             anuncios_ml: 'Anúncios ML', medias_compras: 'Médias/Compras', cadastro: 'Cadastro', impostos: 'Impostos',
             simulador: 'Simulador', configuracoes: 'Configurações', importacoes: 'Importações'
         };
@@ -561,6 +611,7 @@
         usernameInput.disabled = false;
         usernameInput.value = '';
         nameInput.value = '';
+        emailInput.value = '';
         clientIdInput.value = proximoNumeroCliente();
         validUntilInput.value = '';
         passwordInput.value = '';
@@ -594,7 +645,7 @@
             const numFormatado = String(user.client_id || '').padStart(6, '0');
             item.innerHTML = `
                 <div class="name">#${numFormatado} — ${user.username}</div>
-                <div class="meta">${user.name || ''} • ${user.active ? 'Ativo' : 'Inativo'} • Dispositivos: ${user.machine_count || 0}/${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div>
+                <div class="meta">${user.name || ''} • ${user.email || 'sem e-mail Google'} • ${user.active ? 'Ativo' : 'Inativo'} • Dispositivos: ${user.machine_count || 0}/${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div>
             `;
             item.addEventListener('click', () => preencherFormularioUsuario(user));
             usersList.appendChild(item);
@@ -607,6 +658,7 @@
         usernameInput.disabled = false;
         usernameInput.value = user.username || '';
         nameInput.value = user.name || '';
+        emailInput.value = user.email || '';
         clientIdInput.value = user.client_id || 'default';
         validUntilInput.value = normalizarDataSistema(user.valid_until || '');
         passwordInput.value = '';
@@ -640,7 +692,7 @@
             const cfg = await resp.json();
             const janela = Number(cfg && cfg.auto_sync_estoque_janela_minutos);
             inputJanela.value = (Number.isFinite(janela) && janela >= 1) ? Math.round(janela) : 30;
-            const modeloIA = String(cfg && cfg.ia_modelo_padrao || 'vertex:gemini-2.5-pro').trim();
+            const modeloIA = String(cfg && cfg.ia_modelo_padrao || 'vertex:gemini-2.5-flash').trim();
             const modeloPerguntas = String(cfg && cfg.ia_modelo_perguntas || modeloIA).trim();
             const modeloChat = String(cfg && cfg.ia_modelo_chat || modeloIA || 'vertex:gemini-2.5-flash').trim();
             const modeloFavoritos = String(cfg && cfg.ia_modelo_favoritos || modeloIA).trim();
@@ -654,11 +706,22 @@
             if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
             if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
             if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
+            if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(cfg?.ia_vertex_project_id || 'bot-ai-c2').trim();
+            if (inputIaVertexLocation) inputIaVertexLocation.value = String(cfg?.ia_vertex_location || 'global').trim();
+            if (inputIaVertexModel) inputIaVertexModel.value = String(cfg?.ia_vertex_model || modeloChat.replace(/^vertex:/, '') || 'gemini-2.5-flash').trim();
+            if (inputIaVertexServiceAccountEmail) inputIaVertexServiceAccountEmail.value = String(cfg?.ia_vertex_service_account_email || 'vertex-express@bot-ai-c2.iam.gserviceaccount.com').trim();
+            if (inputIaAgentApiKey) inputIaAgentApiKey.value = '';
+            if (checkIaAgentApiKeyLimpar) checkIaAgentApiKeyLimpar.checked = false;
+            if (iaAgentApiKeyStatus) {
+                iaAgentApiKeyStatus.textContent = cfg?.ia_agent_api_key_configurada
+                    ? 'Ha uma chave salva. Digite outra apenas se quiser substituir.'
+                    : 'Nenhuma chave salva. Se usar chave de agente/Vertex, informe aqui.';
+            }
             if (checkIaFavoritosUsarImagem) checkIaFavoritosUsarImagem.checked = !!(cfg && cfg.ia_favoritos_usar_imagem);
             if (checkIaOpenaiAtiva) checkIaOpenaiAtiva.checked = (cfg?.ia_openai_ativa !== false);
             if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (cfg?.ia_deepseek_ativa !== false);
-            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = (cfg?.ia_gemini_ativa !== false);
-            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (cfg?.ia_vertex_ativa !== false);
+            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = false;
+            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = true;
             setStatus('Configurações carregadas.', 'success');
         } catch (e) {
             setStatus(`Erro ao carregar configurações: ${e.message}`, 'error');
@@ -682,15 +745,21 @@
                 headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
                 body: JSON.stringify({
                     auto_sync_estoque_janela_minutos: Math.round(valor),
-                    ia_modelo_padrao: selectIaModelo ? String(selectIaModelo.value || 'vertex:gemini-2.5-pro').trim() : 'vertex:gemini-2.5-pro',
-                    ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-pro').trim() : 'vertex:gemini-2.5-pro',
+                    ia_modelo_padrao: selectIaModelo ? String(selectIaModelo.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_chat: selectIaModeloChat ? String(selectIaModeloChat.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
-                    ia_modelo_favoritos: selectIaModeloFavoritos ? String(selectIaModeloFavoritos.value || 'vertex:gemini-2.5-pro').trim() : 'vertex:gemini-2.5-pro',
+                    ia_modelo_favoritos: selectIaModeloFavoritos ? String(selectIaModeloFavoritos.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_vertex_project_id: inputIaVertexProjectId ? String(inputIaVertexProjectId.value || '').trim() : '',
+                    ia_vertex_location: inputIaVertexLocation ? String(inputIaVertexLocation.value || 'global').trim() : 'global',
+                    ia_vertex_model: inputIaVertexModel ? String(inputIaVertexModel.value || 'gemini-2.5-flash').trim() : 'gemini-2.5-flash',
+                    ia_vertex_service_account_email: inputIaVertexServiceAccountEmail ? String(inputIaVertexServiceAccountEmail.value || '').trim() : '',
+                    ia_agent_api_key: inputIaAgentApiKey ? String(inputIaAgentApiKey.value || '').trim() : '',
+                    ia_agent_api_key_limpar: checkIaAgentApiKeyLimpar ? !!checkIaAgentApiKeyLimpar.checked : false,
                     ia_favoritos_usar_imagem: checkIaFavoritosUsarImagem ? !!checkIaFavoritosUsarImagem.checked : false,
                     ia_openai_ativa: checkIaOpenaiAtiva ? !!checkIaOpenaiAtiva.checked : true,
                     ia_deepseek_ativa: checkIaDeepseekAtiva ? !!checkIaDeepseekAtiva.checked : true,
-                    ia_gemini_ativa: checkIaGeminiAtiva ? !!checkIaGeminiAtiva.checked : true,
-                    ia_vertex_ativa: checkIaVertexAtiva ? !!checkIaVertexAtiva.checked : true
+                    ia_gemini_ativa: false,
+                    ia_vertex_ativa: true
                 })
             });
             const data = await resp.json().catch(() => ({}));
@@ -705,11 +774,22 @@
             if (modeloPerguntasSalvo && selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntasSalvo;
             if (modeloChatSalvo && selectIaModeloChat) selectIaModeloChat.value = modeloChatSalvo;
             if (modeloFavoritosSalvo && selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritosSalvo;
+            if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(data?.configuracoes?.ia_vertex_project_id || '').trim();
+            if (inputIaVertexLocation) inputIaVertexLocation.value = String(data?.configuracoes?.ia_vertex_location || 'global').trim();
+            if (inputIaVertexModel) inputIaVertexModel.value = String(data?.configuracoes?.ia_vertex_model || '').trim();
+            if (inputIaVertexServiceAccountEmail) inputIaVertexServiceAccountEmail.value = String(data?.configuracoes?.ia_vertex_service_account_email || '').trim();
+            if (inputIaAgentApiKey) inputIaAgentApiKey.value = '';
+            if (checkIaAgentApiKeyLimpar) checkIaAgentApiKeyLimpar.checked = false;
+            if (iaAgentApiKeyStatus) {
+                iaAgentApiKeyStatus.textContent = data?.configuracoes?.ia_agent_api_key_configurada
+                    ? 'Chave do agente salva.'
+                    : 'Nenhuma chave do agente salva.';
+            }
             if (checkIaFavoritosUsarImagem) checkIaFavoritosUsarImagem.checked = !!data?.configuracoes?.ia_favoritos_usar_imagem;
             if (checkIaOpenaiAtiva) checkIaOpenaiAtiva.checked = (data?.configuracoes?.ia_openai_ativa !== false);
             if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (data?.configuracoes?.ia_deepseek_ativa !== false);
-            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = (data?.configuracoes?.ia_gemini_ativa !== false);
-            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (data?.configuracoes?.ia_vertex_ativa !== false);
+            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = false;
+            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = true;
             setStatus(`Configuração salva com sucesso (${salvo} min). IA perguntas: ${modeloPerguntasSalvo || 'padrão'}; chat: ${modeloChatSalvo || 'padrão'}; favoritos: ${modeloFavoritosSalvo || 'padrão'}.`, 'success');
         } catch (e) {
             setStatus(`Erro ao salvar configurações: ${e.message}`, 'error');
@@ -738,6 +818,7 @@
             original_username: currentUser,
             password: passwordInput.value,
             name: nameInput.value.trim(),
+            email: emailInput.value.trim(),
             client_id: clientIdInput.value.trim() || 'default',
             valid_until: normalizarDataSistema(validUntilInput.value),
             machine_id: machineIdInput.value.trim(),

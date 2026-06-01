@@ -1,0 +1,3933 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Full - JK Sistema</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 22px;
+            min-height: 100vh;
+            background: #0e1117;
+            color: #f2f7ff;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 18px;
+        }
+        h1 {
+            margin: 0;
+            color: #9bdcff;
+            font-size: 2rem;
+        }
+        .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            border: 1px solid rgba(79, 172, 254, 0.75);
+            background: #17324b;
+            color: #ffffff;
+            padding: 9px 14px;
+            border-radius: 7px;
+            font-weight: 700;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .btn:hover {
+            background: #23517a;
+        }
+        .module-tabs {
+            display: flex;
+            gap: 8px;
+            margin: 0 0 16px;
+            overflow-x: auto;
+            padding-bottom: 2px;
+        }
+        .module-tab {
+            align-items: center;
+            border: 1px solid rgba(79, 172, 254, 0.3);
+            border-radius: 8px;
+            background: #121a28;
+            color: #b9d7f3;
+            cursor: pointer;
+            display: inline-flex;
+            font-size: 0.94rem;
+            font-weight: 800;
+            gap: 8px;
+            min-height: 40px;
+            padding: 0 14px;
+        }
+        .module-tab.active {
+            background: linear-gradient(135deg, rgba(79, 172, 254, 0.28), rgba(95, 84, 235, 0.3));
+            border-color: rgba(79, 172, 254, 0.78);
+            color: #ffffff;
+            box-shadow: 0 0 0 1px rgba(79, 172, 254, 0.12);
+        }
+        .module-panel[hidden] {
+            display: none;
+        }
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+        input, select {
+            min-height: 40px;
+            border: 1px solid rgba(155, 220, 255, 0.22);
+            border-radius: 7px;
+            background: #171d2a;
+            color: #f2f7ff;
+            padding: 8px 10px;
+        }
+        #busca {
+            min-width: min(360px, 100%);
+        }
+        .lojas-panel {
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            border-radius: 8px;
+            background: #151c28;
+            padding: 13px 14px;
+            margin-bottom: 14px;
+        }
+        .lojas-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .lojas-header strong {
+            color: #d7f2ff;
+            font-size: 1rem;
+        }
+        .lojas-header span {
+            color: #9bb8d7;
+            font-size: 0.88rem;
+        }
+        .lojas-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 10px;
+        }
+        .account-selector-panel {
+            margin-top: 12px;
+        }
+        .loja-chip {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+            min-height: 58px;
+            width: 100%;
+            border: 1px solid rgba(111, 230, 176, 0.34);
+            border-radius: 8px;
+            background: rgba(36, 94, 65, 0.34);
+            color: #f4fff9;
+            padding: 10px 12px;
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-align: left;
+            cursor: pointer;
+        }
+        .loja-chip:hover,
+        .loja-chip.selected {
+            border-color: rgba(47, 211, 255, 0.72);
+            background: rgba(47, 211, 255, 0.16);
+            box-shadow: 0 0 0 1px rgba(47, 211, 255, 0.14);
+        }
+        .loja-chip small {
+            color: #b9f4d6;
+            font-size: 0.74rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .loja-chip.all-accounts {
+            border-color: rgba(121, 130, 255, 0.42);
+            background: rgba(93, 90, 242, 0.22);
+        }
+        .loja-chip.empty {
+            border-color: rgba(155, 184, 215, 0.28);
+            background: rgba(23, 29, 42, 0.82);
+            color: #c5cfda;
+            border-radius: 8px;
+            cursor: default;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .summary-card {
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            border-radius: 8px;
+            background: #171d2a;
+            padding: 12px 14px;
+        }
+        .summary-card span {
+            display: block;
+            color: #9bb8d7;
+            font-size: 0.84rem;
+            margin-bottom: 5px;
+        }
+        .summary-card strong {
+            display: block;
+            font-size: 1.28rem;
+            color: #ffffff;
+        }
+        .coverage-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 0 0 14px;
+        }
+        .coverage-chip {
+            align-items: center;
+            border: 1px solid rgba(155, 184, 215, 0.18);
+            border-radius: 999px;
+            background: #f4f6fb;
+            color: #10213d;
+            cursor: pointer;
+            display: inline-flex;
+            gap: 8px;
+            min-height: 32px;
+            padding: 0 12px;
+            font-size: 0.8rem;
+            font-weight: 900;
+        }
+        .coverage-chip.active {
+            box-shadow: 0 0 0 2px rgba(93, 90, 242, 0.2);
+            transform: translateY(-1px);
+        }
+        .coverage-chip:focus-visible,
+        .coverage-stack button:focus-visible,
+        .coverage-mini-actions button:focus-visible {
+            outline: 2px solid #5d5af2;
+            outline-offset: 2px;
+        }
+        .coverage-chip strong {
+            align-items: center;
+            background: #ffffff;
+            border-radius: 999px;
+            display: inline-flex;
+            font-size: 0.72rem;
+            min-width: 24px;
+            justify-content: center;
+            padding: 3px 7px;
+        }
+        .coverage-chip[data-kind="todos"] { background: #5d5af2; color: #ffffff; }
+        .coverage-chip[data-kind="sem_estoque"] { color: #657181; }
+        .coverage-chip[data-kind="critico"] { color: #e33d52; }
+        .coverage-chip[data-kind="baixo"] { color: #ba6a10; }
+        .coverage-chip[data-kind="ideal"] { color: #11854f; }
+        .coverage-chip[data-kind="alto"] { color: #0d91b8; }
+        .coverage-chip[data-kind="muito_alto"] { color: #5d5af2; }
+        .coverage-chip[data-kind="excessivo"] { color: #6938c4; }
+        .coverage-chip[data-kind="sem_venda"] { color: #e24d73; }
+        .coverage-panel {
+            border: 1px solid rgba(226, 232, 240, 0.9);
+            border-radius: 12px;
+            background: #ffffff;
+            color: #243047;
+            margin: 0 0 14px;
+            overflow: hidden;
+            padding: 18px 22px 22px;
+        }
+        .coverage-panel-header {
+            align-items: center;
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            margin-bottom: 18px;
+        }
+        .coverage-panel-title {
+            align-items: center;
+            color: #60708f;
+            display: flex;
+            font-size: 1.18rem;
+            font-weight: 900;
+            gap: 10px;
+        }
+        .coverage-panel-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .coverage-action {
+            border: 1px solid #5d5af2;
+            border-radius: 999px;
+            background: #ffffff;
+            color: #5d5af2;
+            cursor: pointer;
+            font-weight: 900;
+            min-height: 36px;
+            padding: 0 16px;
+        }
+        .coverage-action.active {
+            background: #5d5af2;
+            color: #ffffff;
+        }
+        .coverage-bars {
+            display: grid;
+            gap: 20px;
+            margin-bottom: 18px;
+        }
+        .coverage-bar-head {
+            align-items: center;
+            color: #65718c;
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 0.84rem;
+            font-weight: 900;
+            margin-bottom: 8px;
+        }
+        .coverage-bar-sub {
+            color: #99a4b8;
+            font-size: 0.78rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .coverage-stack {
+            background: #dfe4ef;
+            border-radius: 999px;
+            display: flex;
+            height: 26px;
+            overflow: hidden;
+        }
+        .coverage-stack span,
+        .coverage-stack button {
+            align-items: center;
+            border: 0;
+            color: #ffffff;
+            cursor: pointer;
+            display: flex;
+            font-size: 0.72rem;
+            font-weight: 900;
+            justify-content: center;
+            min-width: 3px;
+            padding: 0;
+        }
+        .coverage-stack button:hover {
+            filter: brightness(1.08);
+        }
+        .coverage-stack button.active {
+            box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85);
+        }
+        .cov-gray { background: #737d8a; }
+        .cov-red { background: #df3448; }
+        .cov-green { background: #28a94e; }
+        .cov-blue { background: #1677f2; }
+        .coverage-cards {
+            display: grid;
+            gap: 14px;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            margin-top: 18px;
+        }
+        .coverage-card {
+            border: 1px solid #d9e0ee;
+            border-radius: 12px;
+            background: #f8fafc;
+            min-height: 230px;
+            padding: 16px 16px 18px;
+        }
+        .coverage-card.risk { background: #fff3f4; border-color: #ffd2d7; }
+        .coverage-card.ideal { background: #f1fbf4; border-color: #cdeed6; }
+        .coverage-card.capital { background: #eef5ff; border-color: #c8ddff; }
+        .coverage-card h3 {
+            color: #51607c;
+            font-size: 0.9rem;
+            margin: 0 0 14px;
+            text-align: center;
+        }
+        .coverage-card-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+        .coverage-card-metrics span {
+            color: #a0aabd;
+            display: block;
+            font-size: 0.76rem;
+            font-weight: 800;
+        }
+        .coverage-card-metrics strong {
+            color: #1f2f4a;
+            display: block;
+            font-size: 1rem;
+        }
+        .coverage-card.risk .coverage-card-metrics strong { color: #df3448; }
+        .coverage-card.ideal .coverage-card-metrics strong { color: #21a64c; }
+        .coverage-card.capital .coverage-card-metrics strong { color: #1677f2; }
+        .coverage-card-note {
+            border-top: 1px solid #d9e0ee;
+            color: #8c97ac;
+            font-size: 0.76rem;
+            font-weight: 700;
+            padding-top: 10px;
+            line-height: 1.45;
+        }
+        .coverage-detail-actions {
+            align-items: center;
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin: 10px 0 8px;
+        }
+        .coverage-detail-actions .btn {
+            background: #ffffff;
+            border-color: #5d5af2;
+            color: #5d5af2;
+        }
+        .coverage-detail-actions .btn.active {
+            background: #5d5af2;
+            color: #ffffff;
+        }
+        .coverage-detail-table {
+            margin-top: 8px;
+        }
+        .coverage-detail-table table {
+            min-width: 1480px;
+        }
+        .coverage-detail-table th {
+            background: #5d5af2;
+            color: #ffffff;
+        }
+        .coverage-detail-table td {
+            background: #ffffff;
+            color: #51607c;
+            border-bottom: 1px solid #dfe5ef;
+        }
+        .coverage-month-cell {
+            min-width: 110px;
+            text-align: right;
+        }
+        .coverage-month-value {
+            color: #243047;
+            font-weight: 900;
+            display: block;
+        }
+        .coverage-month-sub {
+            color: #7e8aa3;
+            display: block;
+            font-size: 0.76rem;
+            font-weight: 800;
+            margin-top: 2px;
+        }
+        .coverage-month-empty {
+            color: #a0aabd;
+        }
+        .coverage-product {
+            align-items: center;
+            display: flex;
+            gap: 10px;
+        }
+        .coverage-product img {
+            background: #f2f5fa;
+            border-radius: 6px;
+            height: 42px;
+            object-fit: cover;
+            width: 42px;
+        }
+        .coverage-code {
+            color: #1677f2;
+            font-weight: 900;
+        }
+        .coverage-badge {
+            border-radius: 999px;
+            color: #ffffff;
+            display: inline-flex;
+            font-size: 0.72rem;
+            font-weight: 900;
+            min-height: 22px;
+            padding: 3px 8px;
+        }
+        .coverage-badge.sem_estoque { background: #737d8a; }
+        .coverage-badge.critico { background: #df3448; }
+        .coverage-badge.baixo { background: #f2a23a; }
+        .coverage-badge.ideal { background: #28a94e; }
+        .coverage-badge.alto { background: #12b9d6; }
+        .coverage-badge.muito_alto { background: #5d5af2; }
+        .coverage-badge.excessivo { background: #713fc6; }
+        .coverage-badge.sem_venda { background: #f06284; }
+        .coverage-mini-actions {
+            display: grid;
+            gap: 4px;
+            grid-template-columns: repeat(3, 32px);
+        }
+        .coverage-mini-actions button {
+            border: 1px solid #5d5af2;
+            border-radius: 5px;
+            background: #ffffff;
+            color: #5d5af2;
+            cursor: pointer;
+            font-size: 0.72rem;
+            font-weight: 900;
+            height: 28px;
+        }
+        .status {
+            min-height: 38px;
+            border: 1px solid rgba(155, 220, 255, 0.16);
+            border-radius: 8px;
+            background: #141a26;
+            padding: 10px 12px;
+            margin-bottom: 14px;
+            color: #9bdcff;
+        }
+        .status.error {
+            border-color: rgba(255, 102, 102, 0.55);
+            background: #2a1118;
+            color: #ff9b9b;
+        }
+        .status.empty {
+            color: #c5cfda;
+        }
+        .table-wrap {
+            overflow: auto;
+            border: 1px solid rgba(79, 172, 254, 0.18);
+            border-radius: 8px;
+            background: #111827;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1120px;
+        }
+        th, td {
+            padding: 11px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            text-align: left;
+            white-space: nowrap;
+        }
+        th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #17324b;
+            color: #cdeeff;
+            font-size: 0.86rem;
+        }
+        tbody tr:hover {
+            background: rgba(79, 172, 254, 0.08);
+        }
+        .num {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        .sku {
+            color: #ffffff;
+            font-weight: 700;
+        }
+        .title {
+            white-space: normal;
+            min-width: 260px;
+            max-width: 520px;
+        }
+        .thumb {
+            width: 42px;
+            height: 42px;
+            object-fit: cover;
+            border-radius: 6px;
+            background: #ffffff;
+            display: block;
+        }
+        .link {
+            color: #9bdcff;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .link:hover {
+            text-decoration: underline;
+        }
+        .variation-toggle {
+            margin-top: 8px;
+            border: 1px solid rgba(47, 211, 255, 0.45);
+            border-radius: 999px;
+            background: rgba(47, 211, 255, 0.12);
+            color: #c9f6ff;
+            padding: 5px 10px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .variation-toggle[aria-expanded="true"] {
+            background: rgba(47, 211, 255, 0.26);
+            color: #ffffff;
+        }
+        .variation-row td {
+            padding: 0;
+            background: #0d1522;
+        }
+        .variation-panel {
+            padding: 12px 14px 15px;
+            border-top: 1px solid rgba(47, 211, 255, 0.2);
+            border-bottom: 1px solid rgba(47, 211, 255, 0.18);
+        }
+        .variation-title {
+            display: inline-flex;
+            align-items: center;
+            min-height: 28px;
+            border: 1px solid rgba(47, 211, 255, 0.34);
+            border-bottom: 0;
+            border-radius: 8px 8px 0 0;
+            background: #17324b;
+            color: #d7f2ff;
+            padding: 6px 12px;
+            font-weight: 800;
+        }
+        .variation-table-wrap {
+            overflow-x: auto;
+            border: 1px solid rgba(47, 211, 255, 0.22);
+            border-radius: 0 8px 8px 8px;
+        }
+        .variation-table {
+            min-width: 900px;
+            background: #101a2a;
+        }
+        .variation-table th {
+            background: #14283e;
+            color: #cdeeff;
+            position: static;
+        }
+        .variation-table th,
+        .variation-table td {
+            padding: 9px 10px;
+            font-size: 0.88rem;
+        }
+        .sales-view {
+            display: grid;
+            gap: 14px;
+        }
+        .sales-topbar {
+            align-items: center;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: space-between;
+        }
+        .sales-title h2 {
+            color: #dff5ff;
+            font-size: 1.55rem;
+            margin: 0 0 4px;
+        }
+        .sales-title span {
+            color: #9bb8d7;
+            font-size: 0.9rem;
+        }
+        .sales-actions {
+            align-items: center;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .sales-actions label {
+            color: #bfd6ef;
+            font-size: 0.88rem;
+            font-weight: 700;
+        }
+        .sales-actions select {
+            min-width: 220px;
+        }
+        .state-select {
+            display: none;
+        }
+        .sales-primary {
+            border-color: rgba(113, 99, 255, 0.85);
+            background: #5d5af2;
+        }
+        .sales-tags {
+            border-color: rgba(52, 211, 153, 0.62);
+            background: rgba(16, 185, 129, 0.14);
+            color: #a7f3d0;
+        }
+        .sales-card {
+            border: 1px solid rgba(121, 130, 255, 0.28);
+            border-radius: 12px;
+            background: #f7f8ff;
+            color: #213047;
+            overflow: hidden;
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+        }
+        .sales-card-header {
+            align-items: center;
+            background: #5a5cf2;
+            color: #ffffff;
+            display: flex;
+            justify-content: space-between;
+            min-height: 58px;
+            padding: 14px 18px;
+        }
+        .sales-card-header strong {
+            font-size: 1.12rem;
+        }
+        .sales-card-body {
+            display: grid;
+            gap: 22px;
+            grid-template-columns: minmax(280px, 0.95fr) minmax(340px, 1.05fr);
+            padding: 20px 22px 24px;
+        }
+        .sales-metrics {
+            display: grid;
+            gap: 0;
+        }
+        .sales-metric {
+            align-items: center;
+            border-bottom: 1px solid #dfe3ef;
+            display: grid;
+            grid-template-columns: minmax(150px, 1fr) auto auto;
+            gap: 10px;
+            min-height: 54px;
+        }
+        .sales-metric:last-child {
+            border-bottom: 0;
+        }
+        .sales-metric span {
+            color: #435171;
+            font-size: 0.94rem;
+        }
+        .sales-metric strong {
+            color: #172842;
+            font-size: 1.16rem;
+            white-space: nowrap;
+        }
+        .sales-trend {
+            align-items: center;
+            border-radius: 999px;
+            display: inline-flex;
+            font-size: 0.78rem;
+            font-weight: 900;
+            min-height: 22px;
+            padding: 0 8px;
+        }
+        .sales-trend.up {
+            background: rgba(16, 185, 129, 0.12);
+            color: #087f5b;
+        }
+        .sales-trend.down {
+            background: rgba(239, 68, 68, 0.12);
+            color: #d42d5b;
+        }
+        .sales-info {
+            align-items: center;
+            border: 1px solid #6b7aa0;
+            border-radius: 999px;
+            color: #405276;
+            display: inline-flex;
+            font-size: 0.76rem;
+            font-weight: 900;
+            height: 18px;
+            justify-content: center;
+            width: 18px;
+        }
+        .day-progress {
+            margin-top: 18px;
+        }
+        .day-progress-track {
+            background: #d8dce8;
+            border-radius: 999px;
+            height: 4px;
+            overflow: hidden;
+        }
+        .day-progress-fill {
+            background: #655ff5;
+            height: 100%;
+            width: 0;
+        }
+        .day-progress-label {
+            color: #8b95ad;
+            font-size: 0.82rem;
+            margin-top: 8px;
+        }
+        .sales-chart {
+            min-height: 270px;
+            position: relative;
+        }
+        .sales-chart canvas {
+            height: 270px !important;
+            width: 100% !important;
+        }
+        .comparison-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .comparison-card {
+            border: 1px solid rgba(226, 232, 240, 0.9);
+            border-radius: 12px;
+            background: #ffffff;
+            color: #243047;
+            padding: 15px 16px;
+        }
+        .comparison-card strong {
+            display: block;
+            font-size: 0.92rem;
+            margin-bottom: 7px;
+        }
+        .comparison-value {
+            font-size: 1.18rem;
+            font-weight: 900;
+        }
+        .comparison-value.up {
+            color: #0f9f6e;
+        }
+        .comparison-value.down {
+            color: #d42d5b;
+        }
+        .sales-status {
+            border: 1px solid rgba(79, 172, 254, 0.2);
+            border-radius: 8px;
+            background: #111827;
+            color: #9bdcff;
+            min-height: 38px;
+            padding: 10px 12px;
+        }
+        .sales-status.error {
+            border-color: rgba(255, 102, 102, 0.55);
+            background: #2a1118;
+            color: #ff9b9b;
+        }
+        .abc-view {
+            display: grid;
+            gap: 14px;
+        }
+        .abc-table table {
+            min-width: 1080px;
+        }
+        .abc-table th {
+            background: #5d5af2;
+            color: #ffffff;
+            text-align: center;
+        }
+        .abc-table td {
+            background: #ffffff;
+            border-bottom: 1px solid #dfe5ef;
+            color: #243047;
+            vertical-align: middle;
+        }
+        .abc-total-row td {
+            background: #d2d8e2;
+            color: #42506a;
+            font-weight: 900;
+        }
+        .abc-product {
+            align-items: center;
+            display: grid;
+            gap: 10px;
+            grid-template-columns: 54px minmax(160px, 1fr);
+            min-width: 260px;
+        }
+        .abc-product img {
+            background: #f2f5fa;
+            border-radius: 6px;
+            height: 46px;
+            object-fit: cover;
+            width: 46px;
+        }
+        .abc-code {
+            color: #2164f3;
+            display: block;
+            font-weight: 900;
+            margin-bottom: 2px;
+        }
+        .abc-status {
+            color: #5d6882;
+            display: block;
+            font-size: 0.78rem;
+        }
+        .abc-price {
+            color: #4d5c7a;
+            font-size: 0.78rem;
+            font-weight: 800;
+            margin-top: 8px;
+        }
+        .abc-promo {
+            border: 0;
+            background: transparent;
+            color: #4d5af2;
+            cursor: pointer;
+            font-size: 0.76rem;
+            font-weight: 900;
+            margin-top: 6px;
+            padding: 0;
+            text-decoration: underline;
+        }
+        .abc-period {
+            align-items: stretch;
+            display: grid;
+            grid-template-columns: 18px minmax(120px, 1fr);
+            gap: 10px;
+            min-width: 160px;
+        }
+        .abc-letter {
+            align-items: center;
+            color: #ffffff;
+            display: flex;
+            font-weight: 900;
+            justify-content: center;
+            min-height: 86px;
+        }
+        .abc-letter.a { background: #008c1f; }
+        .abc-letter.b { background: #f1e800; color: #1f2f4a; }
+        .abc-letter.c { background: #ff1e2d; }
+        .abc-letter.o { background: #8b008f; }
+        .abc-values {
+            align-self: center;
+            color: #243047;
+            line-height: 1.35;
+        }
+        .abc-values strong {
+            display: block;
+            font-weight: 900;
+        }
+        .abc-actions {
+            display: grid;
+            gap: 5px;
+            grid-template-columns: repeat(3, 34px);
+            justify-content: center;
+        }
+        .abc-actions button {
+            border: 1px solid #5d5af2;
+            border-radius: 5px;
+            background: #ffffff;
+            color: #5d5af2;
+            cursor: pointer;
+            font-size: 0.72rem;
+            font-weight: 900;
+            height: 30px;
+        }
+        .abc-sort {
+            align-items: center;
+            color: #5d5af2;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 0.86rem;
+            font-weight: 900;
+            justify-content: flex-end;
+        }
+        .abc-sort label {
+            align-items: center;
+            cursor: pointer;
+            display: inline-flex;
+            gap: 5px;
+        }
+        .send-full-card {
+            border: 1px solid rgba(121, 130, 255, 0.28);
+            border-radius: 12px;
+            background: #f7f8ff;
+            color: #213047;
+            overflow: hidden;
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+        }
+        .send-full-body {
+            display: grid;
+            gap: 14px;
+            padding: 18px 20px 22px;
+        }
+        .send-full-summary {
+            color: #435171;
+            font-size: 0.95rem;
+            font-weight: 700;
+        }
+        .send-full-table {
+            margin: 0;
+        }
+        .transito-grid {
+            display: grid;
+            gap: 18px;
+            grid-template-columns: minmax(320px, 1.05fr) minmax(280px, 1fr);
+        }
+        .transito-upload-box,
+        .transito-help,
+        .transito-calendar-card,
+        .transito-list-card,
+        .transito-manual-panel,
+        .transito-products-panel {
+            background: #ffffff;
+            border: 1px solid #dce2f0;
+            border-radius: 12px;
+            box-shadow: 0 16px 36px rgba(38, 48, 85, 0.12);
+            color: #253047;
+        }
+        .transito-upload-box {
+            align-items: center;
+            border: 2px dashed #9a94ff;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 330px;
+            padding: 30px;
+            text-align: center;
+        }
+        .transito-upload-box.dragover {
+            background: #f2f0ff;
+            border-color: #5d5af2;
+        }
+        .transito-upload-icon {
+            color: #7875ff;
+            font-size: 4rem;
+            line-height: 1;
+        }
+        .transito-upload-box h3 {
+            color: #35415b;
+            font-size: 1.35rem;
+            margin: 16px 0 5px;
+        }
+        .transito-upload-box p,
+        .transito-help p,
+        .transito-step small {
+            color: #717b91;
+            font-weight: 700;
+            margin: 0;
+        }
+        .transito-upload-actions {
+            align-items: center;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        .transito-help {
+            padding: 22px;
+        }
+        .transito-help h3,
+        .transito-list-head h3 {
+            color: #253047;
+            margin: 0;
+        }
+        .transito-step {
+            display: grid;
+            gap: 9px;
+            grid-template-columns: 28px 1fr;
+            margin-top: 16px;
+        }
+        .transito-step b {
+            align-items: center;
+            background: #5d5af2;
+            border-radius: 50%;
+            color: #ffffff;
+            display: flex;
+            font-size: 0.86rem;
+            height: 24px;
+            justify-content: center;
+            width: 24px;
+        }
+        .transito-doc-note {
+            background: #f6f8ff;
+            border-left: 4px solid #5d5af2;
+            border-radius: 8px;
+            color: #53617b;
+            font-size: 0.86rem;
+            font-weight: 800;
+            margin-top: 18px;
+            padding: 12px;
+        }
+        .transito-manual-panel {
+            margin-top: 18px;
+            padding: 18px;
+        }
+        .transito-form-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
+        }
+        .transito-form-grid label {
+            color: #4d5b77;
+            display: grid;
+            font-size: 0.78rem;
+            font-weight: 900;
+            gap: 6px;
+            text-transform: uppercase;
+        }
+        .transito-form-grid textarea {
+            min-height: 92px;
+            resize: vertical;
+        }
+        .transito-form-grid .wide {
+            grid-column: 1 / -1;
+        }
+        .transito-calendar-card {
+            background: #7d76d6;
+            margin-top: 18px;
+            padding: 16px;
+        }
+        .transito-calendar-head {
+            align-items: center;
+            color: #ffffff;
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .transito-calendar-title {
+            font-size: 1.25rem;
+            font-weight: 900;
+            text-transform: uppercase;
+        }
+        .transito-calendar-meta {
+            align-items: center;
+            color: #eef3ff;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: -4px 0 12px;
+        }
+        .transito-calendar-meta span,
+        .transito-calendar-meta small {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 900;
+            padding: 5px 9px;
+        }
+        .transito-calendar-meta small {
+            font-weight: 800;
+            opacity: 0.92;
+        }
+        .transito-calendar-meta .warn {
+            background: rgba(255, 176, 32, 0.2);
+            border-color: rgba(255, 176, 32, 0.4);
+        }
+        .transito-calendar-grid {
+            background: #ffffff;
+            border-radius: 10px;
+            display: grid;
+            gap: 5px;
+            grid-template-columns: repeat(7, minmax(92px, 1fr));
+            overflow: hidden;
+            padding: 12px;
+        }
+        .transito-weekday {
+            background: #ecebff;
+            border-radius: 6px;
+            color: #5d5af2;
+            font-size: 0.78rem;
+            font-weight: 900;
+            padding: 8px;
+            text-align: center;
+        }
+        .transito-day {
+            background: #ffffff;
+            border: 1px solid #edf0f6;
+            border-radius: 6px;
+            min-height: 92px;
+            padding: 8px;
+        }
+        .transito-day.other { color: #aab2c2; background: #f7f8fb; }
+        .transito-day.business-day { background: #f6fff9; border-color: #bfead3; }
+        .transito-day.weekend { background: #fff7db; border-color: #ffe596; }
+        .transito-day.holiday { background: #fff0f3; border-color: #ffb5c1; }
+        .transito-day.today { background: #6664e8; color: #ffffff; }
+        .transito-day strong { display: block; font-size: 1.05rem; margin-bottom: 5px; }
+        .transito-day-label {
+            border-radius: 999px;
+            display: inline-flex;
+            font-size: 0.62rem;
+            font-weight: 900;
+            margin: 0 0 4px;
+            max-width: 100%;
+            overflow: hidden;
+            padding: 2px 6px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .transito-day-label.business { background: #dff7e9; color: #147046; }
+        .transito-day-label.holiday { background: #ffd9df; color: #a32135; }
+        .transito-day.today .transito-day-label.business,
+        .transito-day.today .transito-day-label.holiday {
+            background: rgba(255, 255, 255, 0.22);
+            color: #ffffff;
+        }
+        .transito-day-tag {
+            border-radius: 5px;
+            cursor: pointer;
+            display: block;
+            font-size: 0.68rem;
+            font-weight: 900;
+            margin-top: 4px;
+            overflow: hidden;
+            padding: 3px 5px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .transito-status {
+            border-radius: 999px;
+            color: #ffffff;
+            display: inline-flex;
+            font-size: 0.75rem;
+            font-weight: 900;
+            padding: 4px 8px;
+        }
+        .transito-calendar-kind {
+            border-radius: 999px;
+            display: inline-flex;
+            font-size: 0.75rem;
+            font-weight: 900;
+            padding: 4px 8px;
+        }
+        .transito-calendar-kind.business { background: #dff7e9; color: #147046; }
+        .transito-calendar-kind.weekend { background: #fff7db; color: #946400; }
+        .transito-calendar-kind.holiday { background: #ffd9df; color: #a32135; }
+        .st-aguardando_inicio { background: #ffb020; }
+        .st-em_processamento { background: #5d5af2; }
+        .st-finalizando { background: #17b6d8; }
+        .st-finalizado,
+        .st-recebido { background: #16a56f; }
+        .st-recebimento_pendente { background: #f35f86; }
+        .st-inativo { background: #9aa3b2; }
+        .transito-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .transito-list-card,
+        .transito-products-panel {
+            margin-top: 18px;
+            padding: 18px;
+        }
+        .transito-list-head {
+            align-items: center;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .transito-sort {
+            display: inline-flex;
+            gap: 0;
+        }
+        .transito-sort button {
+            border-radius: 0;
+        }
+        .transito-sort button:first-child { border-radius: 8px 0 0 8px; }
+        .transito-sort button:last-child { border-radius: 0 8px 8px 0; }
+        .transito-list {
+            display: grid;
+            gap: 12px;
+        }
+        .transito-card {
+            align-items: center;
+            background: #ffffff;
+            border: 1px solid #e3e8f3;
+            border-left: 4px solid #6d7482;
+            border-radius: 10px;
+            display: grid;
+            gap: 14px;
+            grid-template-columns: minmax(160px, 1fr) auto;
+            padding: 16px 18px;
+        }
+        .transito-card-title {
+            color: #34405a;
+            font-weight: 900;
+        }
+        .transito-card-meta {
+            color: #68758d;
+            display: flex;
+            flex-wrap: wrap;
+            font-size: 0.86rem;
+            font-weight: 800;
+            gap: 12px;
+            margin-top: 8px;
+        }
+        .transito-card-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+        .transito-products-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .transito-product-row {
+            background: #f6f8ff;
+            border-radius: 8px;
+            color: #34405a;
+            display: grid;
+            gap: 10px;
+            grid-template-columns: 110px 1fr 80px;
+            padding: 10px 12px;
+        }
+        @media (max-width: 720px) {
+            body { padding: 14px; }
+            .header { align-items: flex-start; flex-direction: column; }
+            h1 { font-size: 1.62rem; }
+            .actions, .btn, input, select { width: 100%; }
+            .module-tabs { width: 100%; }
+            .module-tab { flex: 1; justify-content: center; }
+            .sales-card-body { grid-template-columns: 1fr; padding: 16px; }
+            .comparison-grid { grid-template-columns: 1fr; }
+            .sales-actions, .sales-actions select { width: 100%; }
+            .coverage-panel { padding: 14px; }
+            .coverage-panel-header { align-items: flex-start; flex-direction: column; }
+            .coverage-panel-actions, .coverage-action { width: 100%; }
+            .coverage-cards { grid-template-columns: 1fr; }
+            .abc-sort { justify-content: flex-start; }
+            .transito-grid, .transito-form-grid, .transito-card, .transito-product-row { grid-template-columns: 1fr; }
+            .transito-calendar-grid { grid-template-columns: repeat(7, minmax(42px, 1fr)); }
+            .transito-day { min-height: 70px; padding: 5px; }
+            .transito-day-tag { display: none; }
+        }
+        @media (max-width: 980px) {
+            .sales-card-body { grid-template-columns: 1fr; }
+            .comparison-grid { grid-template-columns: 1fr; }
+            .coverage-cards { grid-template-columns: 1fr 1fr; }
+            .transito-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 720px) {
+            .coverage-cards { grid-template-columns: 1fr; }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="/auth.js?v=20260417f"></script>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Full</h1>
+        <div class="actions">
+            <a class="btn" href="/dashboard.html">Home</a>
+            <a class="btn" href="/dashboard.html">Voltar</a>
+            <button class="btn" id="btnAtualizar" type="button">Atualizar</button>
+        </div>
+    </div>
+
+    <div class="module-tabs" role="tablist" aria-label="Areas do modulo Full">
+        <button class="module-tab active" type="button" data-full-tab="estoque" role="tab" aria-selected="true">Estoque Full</button>
+        <button class="module-tab" type="button" data-full-tab="enviar" role="tab" aria-selected="false">Enviar Full</button>
+        <button class="module-tab" type="button" data-full-tab="vendas" role="tab" aria-selected="false">Vendas</button>
+        <button class="module-tab" type="button" data-full-tab="abc" role="tab" aria-selected="false">Curva ABC</button>
+        <button class="module-tab" type="button" data-full-tab="transito" role="tab" aria-selected="false">Upload Envios em Transito</button>
+    </div>
+
+    <section class="module-panel" id="panelEstoque" data-full-panel="estoque">
+    <div id="status" class="status">Carregando dados do Full...</div>
+
+    <div class="lojas-panel">
+        <div class="lojas-header">
+            <strong>Lojas com Mercado Livre vinculado</strong>
+            <span id="lojasMlTotal">Carregando...</span>
+        </div>
+        <div id="lojasMlLista" class="lojas-list" data-account-cards="estoque"></div>
+    </div>
+
+    <div class="toolbar">
+        <input id="busca" type="search" placeholder="Buscar por SKU, titulo ou MLB">
+        <select id="ordenar">
+            <option value="estoque_desc">Estoque Full maior</option>
+            <option value="estoque_asc">Estoque Full menor</option>
+            <option value="preco_desc">Preco maior</option>
+            <option value="preco_asc">Preco menor</option>
+            <option value="sku_az">SKU A-Z</option>
+            <option value="titulo_az">Titulo A-Z</option>
+        </select>
+    </div>
+
+    <div class="summary" id="resumo"></div>
+
+    <div class="coverage-chips" id="fullCoverageChips"></div>
+
+    <section class="coverage-panel" id="fullCoveragePanel">
+        <div class="coverage-panel-header">
+            <div class="coverage-panel-title">
+                <span aria-hidden="true">♡</span>
+                <span>Saude Atual da Cobertura de Estoque Full</span>
+            </div>
+            <div class="coverage-panel-actions">
+                <button class="coverage-action active" id="btnCoverageSummary" type="button">Resumo</button>
+                <button class="coverage-action" id="btnCoverageDetails" type="button">Detalhado</button>
+            </div>
+        </div>
+
+        <div class="coverage-bars">
+            <div>
+                <div class="coverage-bar-head">
+                    <span>Cobertura do faturamento</span>
+                    <span id="coverageRevenueTotal">R$ 0,00</span>
+                </div>
+                <div class="coverage-bar-sub" id="coverageRevenueSub">Selecione uma loja para calcular cobertura adequada.</div>
+                <div class="coverage-stack" id="coverageRevenueStack"></div>
+            </div>
+            <div>
+                <div class="coverage-bar-head">
+                    <span>Giro do estoque</span>
+                    <span id="coverageStockTotal">R$ 0,00</span>
+                </div>
+                <div class="coverage-bar-sub" id="coverageTurnoverSub">Vendas dos ultimos 60 dias por SKU Full.</div>
+                <div class="coverage-stack" id="coverageTurnoverStack"></div>
+            </div>
+        </div>
+
+        <div class="coverage-cards" id="fullCoverageCards"></div>
+
+        <div class="coverage-detail-actions">
+            <button class="btn active" id="btnSortCoverageDays" type="button">Ordenar por DIAS de ESTOQUE</button>
+            <button class="btn" id="btnSortCoverageSales" type="button">Ordenar por VENDA</button>
+            <button class="btn" id="btnExportCoverageFull" type="button">Exportar</button>
+        </div>
+
+        <div class="table-wrap coverage-detail-table" id="coverageDetailTable">
+            <table>
+                <thead>
+                    <tr id="fullCoverageHeaderRow">
+                        <th>Produto</th>
+                        <th>Codigo ML</th>
+                        <th>SKU</th>
+                        <th class="num">Vendas 60 dias</th>
+                        <th class="num">Transito</th>
+                        <th class="num">Estoque</th>
+                        <th>Cobertura</th>
+                        <th class="num">Vendas (R$)</th>
+                        <th>Acoes</th>
+                    </tr>
+                </thead>
+                <tbody id="fullCoverageTableBody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Foto</th>
+                    <th>MLB</th>
+                    <th>SKU</th>
+                    <th>Titulo</th>
+                    <th>Loja</th>
+                    <th class="num">Estoque Full</th>
+                    <th class="num">Vendidos</th>
+                    <th class="num">Preco</th>
+                    <th>Status</th>
+                    <th>Tipo</th>
+                    <th>Link</th>
+                </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+        </table>
+    </div>
+    </section>
+
+    <section class="module-panel sales-view" id="panelVendas" data-full-panel="vendas" hidden>
+        <div class="sales-topbar">
+            <div class="sales-title">
+                <h2>Visao Geral das Vendas</h2>
+                <span>Resumo de vendas Full com base nas vendas sincronizadas.</span>
+            </div>
+            <div class="sales-actions">
+                <select id="fullSalesAccount" class="state-select" aria-hidden="true" tabindex="-1">
+                    <option value="__todas">Todas as contas</option>
+                </select>
+                <button class="btn sales-primary" id="btnAplicarVendasFull" type="button">Atualizar dados</button>
+                <button class="btn sales-tags" type="button">Tags</button>
+            </div>
+        </div>
+
+        <div class="lojas-panel account-selector-panel">
+            <div class="lojas-header">
+                <strong>Selecione a conta</strong>
+                <span id="lojasMlTotalVendas">Carregando...</span>
+            </div>
+            <div id="lojasMlListaVendas" class="lojas-list" data-account-cards="vendas"></div>
+        </div>
+
+        <div id="fullSalesStatus" class="sales-status">Abra a aba Vendas para carregar o painel.</div>
+
+        <div class="sales-card">
+            <div class="sales-card-header">
+                <strong>Como estao as vendas hoje?</strong>
+                <span aria-hidden="true">⚙</span>
+            </div>
+            <div class="sales-card-body">
+                <div>
+                    <div class="sales-metrics">
+                        <div class="sales-metric">
+                            <span>Total Vendido Hoje</span>
+                            <strong id="fullSalesToday">R$ 0,00</strong>
+                            <span class="sales-trend" id="fullSalesTrend">0%</span>
+                        </div>
+                        <div class="sales-metric">
+                            <span>Pedidos</span>
+                            <strong id="fullSalesOrders">0</strong>
+                            <span class="sales-info" title="Pedidos unicos quando o numero do pedido estiver disponivel.">i</span>
+                        </div>
+                        <div class="sales-metric">
+                            <span>Ticket Medio</span>
+                            <strong id="fullSalesTicket">R$ 0,00</strong>
+                            <span class="sales-info" title="Total vendido dividido pelos pedidos.">i</span>
+                        </div>
+                        <div class="sales-metric">
+                            <span>Projecao para Hoje (linear)</span>
+                            <strong id="fullSalesProjection">R$ 0,00</strong>
+                            <span class="sales-info" title="Projecao baseada no percentual do dia ja decorrido.">i</span>
+                        </div>
+                        <div class="sales-metric">
+                            <span>Projecao Avancada (forecasting)</span>
+                            <strong id="fullSalesForecast">R$ 0,00</strong>
+                            <span class="sales-info" title="Combina ritmo atual com referencia de ontem.">i</span>
+                        </div>
+                    </div>
+                    <div class="day-progress">
+                        <div class="day-progress-track"><div class="day-progress-fill" id="fullDayProgressFill"></div></div>
+                        <div class="day-progress-label" id="fullDayProgressLabel">0% do dia decorrido</div>
+                    </div>
+                </div>
+
+                <div class="sales-chart">
+                    <canvas id="fullSalesChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="comparison-grid">
+            <div class="comparison-card">
+                <strong>Comparacao com Ano Passado</strong>
+                <div class="comparison-value" id="fullSalesYearComparison">0%</div>
+            </div>
+            <div class="comparison-card">
+                <strong>Comparacao com Mes Passado</strong>
+                <div class="comparison-value" id="fullSalesMonthComparison">0%</div>
+            </div>
+            <div class="comparison-card">
+                <strong>Comparacao com Semana Passada</strong>
+                <div class="comparison-value" id="fullSalesWeekComparison">0%</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module-panel send-full-view" id="panelEnviar" data-full-panel="enviar" hidden>
+        <div class="sales-topbar">
+            <div class="sales-title">
+                <h2>Enviar Full</h2>
+                <span>Selecione a conta para carregar os itens Full e preparar a conferencia de envio.</span>
+            </div>
+            <div class="sales-actions">
+                <button class="btn sales-primary" id="btnAplicarEnviarFull" type="button">Atualizar dados</button>
+            </div>
+        </div>
+
+        <div class="lojas-panel account-selector-panel">
+            <div class="lojas-header">
+                <strong>Selecione a conta</strong>
+                <span id="lojasMlTotalEnviar">Carregando...</span>
+            </div>
+            <div id="lojasMlListaEnviar" class="lojas-list" data-account-cards="enviar"></div>
+        </div>
+
+        <div id="fullSendStatus" class="sales-status">Selecione uma conta para carregar os itens Full.</div>
+
+        <div class="send-full-card">
+            <div class="sales-card-header">
+                <strong>Itens da conta selecionada</strong>
+                <span aria-hidden="true">Full</span>
+            </div>
+            <div class="send-full-body">
+                <div class="send-full-summary" id="fullSendAccountSummary">Nenhuma conta selecionada.</div>
+                <div class="table-wrap send-full-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>MLB</th>
+                                <th>SKU</th>
+                                <th>Titulo</th>
+                                <th class="num">Estoque Full</th>
+                                <th class="num">Indisponivel</th>
+                                <th class="num">Total Full</th>
+                                <th>Inventory ID</th>
+                                <th>Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fullSendTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="module-panel transito-view" id="panelTransito" data-full-panel="transito" hidden>
+        <div class="sales-topbar">
+            <div class="sales-title">
+                <h2>Upload Envios em Transito</h2>
+                <span>Controle local dos PDFs de envio Full, conferencia de produtos e acompanhamento do recebimento.</span>
+            </div>
+            <div class="sales-actions">
+                <a class="btn" href="https://www.mercadolivre.com.br/vendas/envios" target="_blank" rel="noopener">Abrir envios ML</a>
+                <button class="btn sales-primary" id="btnAtualizarTransitoFull" type="button">Atualizar envios</button>
+            </div>
+        </div>
+
+        <div class="lojas-panel account-selector-panel">
+            <div class="lojas-header">
+                <strong>Selecione a conta</strong>
+                <span id="lojasMlTotalTransito">Carregando...</span>
+            </div>
+            <div id="lojasMlListaTransito" class="lojas-list" data-account-cards="transito"></div>
+        </div>
+
+        <div id="fullTransitoStatus" class="sales-status">Selecione uma conta ou envie PDFs para iniciar o controle.</div>
+
+        <div class="transito-grid">
+            <div class="transito-upload-box" id="transitoDropZone">
+                <div class="transito-upload-icon" aria-hidden="true">⇧</div>
+                <h3>Arraste seus PDFs aqui</h3>
+                <p>ou clique para selecionar arquivos</p>
+                <p>Maximo de 20 arquivos PDF por vez</p>
+                <input id="transitoFileInput" type="file" accept="application/pdf,.pdf" multiple hidden>
+                <div class="transito-upload-actions">
+                    <button class="btn sales-primary" id="btnTransitoSelectFiles" type="button">Selecionar arquivos</button>
+                    <button class="btn" id="btnTransitoManual" type="button">Preencher manualmente</button>
+                </div>
+            </div>
+
+            <aside class="transito-help">
+                <h3>Como funciona?</h3>
+                <div class="transito-step"><b>1</b><div><strong>Acesse o Mercado Livre</strong><small>Va para sua area de envios Full no Seller Center.</small></div></div>
+                <div class="transito-step"><b>2</b><div><strong>Baixe os PDFs</strong><small>Use envios com recebimento pendente ou recebido.</small></div></div>
+                <div class="transito-step"><b>3</b><div><strong>Faca o upload</strong><small>Arraste os PDFs ou selecione os arquivos.</small></div></div>
+                <div class="transito-step"><b>4</b><div><strong>Confirme os dados</strong><small>Revise produtos, SKUs e quantidades extraidas.</small></div></div>
+                <div class="transito-step"><b>5</b><div><strong>Informe recebimentos</strong><small>Atualize o status conforme o ML processar os envios.</small></div></div>
+                <div class="transito-doc-note">
+                    Pela API oficial, o Full permite consultar estoque e operacoes. A criacao/envio do estoque ao Full deve ser feita no Seller Center.
+                    <a class="link" href="https://developers.mercadolivre.com.br/pt_br/envios-fulfillment" target="_blank" rel="noopener">Ver documentacao</a>
+                </div>
+            </aside>
+        </div>
+
+        <div class="transito-manual-panel" id="transitoManualPanel" hidden>
+            <input id="transitoManualId" type="hidden">
+            <div class="transito-form-grid">
+                <label>Envio
+                    <input id="transitoManualCodigo" type="text" placeholder="#68190865">
+                </label>
+                <label>Data
+                    <input id="transitoManualData" type="date">
+                </label>
+                <label>Status
+                    <select id="transitoManualStatus">
+                        <option value="aguardando_inicio">Aguardando inicio</option>
+                        <option value="em_processamento">Em processamento</option>
+                        <option value="finalizando">Finalizando</option>
+                        <option value="finalizado">Finalizado</option>
+                        <option value="recebimento_pendente">Recebimento pendente</option>
+                        <option value="recebido">Recebido</option>
+                        <option value="inativo">Inativo</option>
+                    </select>
+                </label>
+                <label>Unidades
+                    <input id="transitoManualUnidades" type="number" min="0" step="1" placeholder="0">
+                </label>
+                <label class="wide">Itens
+                    <textarea id="transitoManualItens" placeholder="SKU; Produto; Quantidade&#10;ABC123; Produto exemplo; 10"></textarea>
+                </label>
+                <label class="wide">Observacoes
+                    <textarea id="transitoManualObs" placeholder="Notas internas sobre este envio"></textarea>
+                </label>
+            </div>
+            <div class="transito-upload-actions">
+                <button class="btn sales-primary" id="btnTransitoSalvarManual" type="button">Salvar envio</button>
+                <button class="btn" id="btnTransitoCancelarManual" type="button">Cancelar</button>
+            </div>
+        </div>
+
+        <section class="transito-calendar-card">
+            <div class="transito-calendar-head">
+                <button class="btn" id="btnTransitoMesAnterior" type="button">Anterior</button>
+                <div class="transito-calendar-title" id="transitoCalendarTitle">MES</div>
+                <button class="btn" id="btnTransitoProximoMes" type="button">Proximo</button>
+            </div>
+            <div class="transito-calendar-meta" id="transitoCalendarMeta">
+                <span>Buscando feriados e dias comerciais...</span>
+            </div>
+            <div class="transito-calendar-grid" id="transitoCalendarGrid"></div>
+            <div class="transito-legend">
+                <span class="transito-status st-aguardando_inicio">Aguardando inicio</span>
+                <span class="transito-status st-em_processamento">Em processamento</span>
+                <span class="transito-status st-finalizando">Finalizando</span>
+                <span class="transito-status st-finalizado">Finalizado</span>
+                <span class="transito-status st-recebimento_pendente">Recebimento pendente</span>
+                <span class="transito-status st-recebido">Recebido</span>
+                <span class="transito-calendar-kind business">Dia comercial</span>
+                <span class="transito-calendar-kind weekend">Fim de semana</span>
+                <span class="transito-calendar-kind holiday">Feriado nacional</span>
+            </div>
+        </section>
+
+        <section class="transito-products-panel" id="transitoProductsPanel" hidden></section>
+
+        <section class="transito-list-card">
+            <div class="transito-list-head">
+                <div>
+                    <h3>Envios inativos no momento</h3>
+                    <span id="transitoTotalInativos">0 envios</span>
+                </div>
+                <input id="transitoBusca" type="search" placeholder="Buscar por envio, SKU, Codigo ML ou MLB">
+                <div class="transito-sort">
+                    <button class="btn sales-primary" id="btnTransitoSortEnvio" type="button">Envio</button>
+                    <button class="btn" id="btnTransitoSortData" type="button">Data</button>
+                </div>
+            </div>
+            <div class="transito-list" id="transitoInativosList"></div>
+        </section>
+    </section>
+
+    <section class="module-panel abc-view" id="panelAbc" data-full-panel="abc" hidden>
+        <div class="sales-topbar">
+            <div class="sales-title">
+                <h2>Curva ABC</h2>
+                <span>Classificacao por anuncio Full nas janelas 120/90, 90/60, 60/30 e 30/0 dias.</span>
+            </div>
+            <div class="sales-actions">
+                <select id="fullAbcAccount" class="state-select" aria-hidden="true" tabindex="-1">
+                    <option value="__todas">Todas as contas</option>
+                </select>
+                <button class="btn sales-primary" id="btnAplicarAbcFull" type="button">Atualizar dados</button>
+            </div>
+        </div>
+
+        <div class="lojas-panel account-selector-panel">
+            <div class="lojas-header">
+                <strong>Selecione a conta</strong>
+                <span id="lojasMlTotalAbc">Carregando...</span>
+            </div>
+            <div id="lojasMlListaAbc" class="lojas-list" data-account-cards="abc"></div>
+        </div>
+
+        <div id="fullAbcStatus" class="sales-status">Abra a aba Curva ABC para carregar os anuncios.</div>
+
+        <div class="abc-sort">
+            <span>Ordenar por:</span>
+            <label><input type="radio" name="abcOrderFull" value="valor"> Valor</label>
+            <label><input type="radio" name="abcOrderFull" value="quantidade" checked> Quantidade</label>
+        </div>
+
+        <div class="table-wrap abc-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Anuncio</th>
+                        <th>Vendas 120/90</th>
+                        <th>Vendas 90/60</th>
+                        <th>Vendas 60/30</th>
+                        <th>Vendas 30/0</th>
+                        <th>Acoes</th>
+                    </tr>
+                </thead>
+                <tbody id="fullAbcTableBody"></tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+<script>
+    const statusEl = document.getElementById('status');
+    const lojasMlTotalEl = document.getElementById('lojasMlTotal');
+    const lojasMlTotalVendasEl = document.getElementById('lojasMlTotalVendas');
+    const lojasMlTotalEnviarEl = document.getElementById('lojasMlTotalEnviar');
+    const lojasMlTotalAbcEl = document.getElementById('lojasMlTotalAbc');
+    const lojasMlTotalTransitoEl = document.getElementById('lojasMlTotalTransito');
+    const lojasMlListaEl = document.getElementById('lojasMlLista');
+    const lojasMlListaVendasEl = document.getElementById('lojasMlListaVendas');
+    const lojasMlListaEnviarEl = document.getElementById('lojasMlListaEnviar');
+    const lojasMlListaAbcEl = document.getElementById('lojasMlListaAbc');
+    const lojasMlListaTransitoEl = document.getElementById('lojasMlListaTransito');
+    const resumoEl = document.getElementById('resumo');
+    const tbody = document.getElementById('tbody');
+    const buscaEl = document.getElementById('busca');
+    const ordenarEl = document.getElementById('ordenar');
+    const btnAtualizar = document.getElementById('btnAtualizar');
+    const tabButtons = Array.from(document.querySelectorAll('[data-full-tab]'));
+    const tabPanels = Array.from(document.querySelectorAll('[data-full-panel]'));
+    const fullSalesAccountEl = document.getElementById('fullSalesAccount');
+    const btnAplicarVendasFull = document.getElementById('btnAplicarVendasFull');
+    const fullSalesStatusEl = document.getElementById('fullSalesStatus');
+    const fullSalesTodayEl = document.getElementById('fullSalesToday');
+    const fullSalesTrendEl = document.getElementById('fullSalesTrend');
+    const fullSalesOrdersEl = document.getElementById('fullSalesOrders');
+    const fullSalesTicketEl = document.getElementById('fullSalesTicket');
+    const fullSalesProjectionEl = document.getElementById('fullSalesProjection');
+    const fullSalesForecastEl = document.getElementById('fullSalesForecast');
+    const fullDayProgressFillEl = document.getElementById('fullDayProgressFill');
+    const fullDayProgressLabelEl = document.getElementById('fullDayProgressLabel');
+    const fullSalesYearComparisonEl = document.getElementById('fullSalesYearComparison');
+    const fullSalesMonthComparisonEl = document.getElementById('fullSalesMonthComparison');
+    const fullSalesWeekComparisonEl = document.getElementById('fullSalesWeekComparison');
+    const btnAplicarEnviarFull = document.getElementById('btnAplicarEnviarFull');
+    const fullSendStatusEl = document.getElementById('fullSendStatus');
+    const fullSendAccountSummaryEl = document.getElementById('fullSendAccountSummary');
+    const fullSendTableBodyEl = document.getElementById('fullSendTableBody');
+    const btnAtualizarTransitoFull = document.getElementById('btnAtualizarTransitoFull');
+    const fullTransitoStatusEl = document.getElementById('fullTransitoStatus');
+    const transitoDropZone = document.getElementById('transitoDropZone');
+    const transitoFileInput = document.getElementById('transitoFileInput');
+    const btnTransitoSelectFiles = document.getElementById('btnTransitoSelectFiles');
+    const btnTransitoManual = document.getElementById('btnTransitoManual');
+    const transitoManualPanel = document.getElementById('transitoManualPanel');
+    const transitoManualId = document.getElementById('transitoManualId');
+    const transitoManualCodigo = document.getElementById('transitoManualCodigo');
+    const transitoManualData = document.getElementById('transitoManualData');
+    const transitoManualStatus = document.getElementById('transitoManualStatus');
+    const transitoManualUnidades = document.getElementById('transitoManualUnidades');
+    const transitoManualItens = document.getElementById('transitoManualItens');
+    const transitoManualObs = document.getElementById('transitoManualObs');
+    const btnTransitoSalvarManual = document.getElementById('btnTransitoSalvarManual');
+    const btnTransitoCancelarManual = document.getElementById('btnTransitoCancelarManual');
+    const transitoCalendarTitle = document.getElementById('transitoCalendarTitle');
+    const transitoCalendarMeta = document.getElementById('transitoCalendarMeta');
+    const transitoCalendarGrid = document.getElementById('transitoCalendarGrid');
+    const btnTransitoMesAnterior = document.getElementById('btnTransitoMesAnterior');
+    const btnTransitoProximoMes = document.getElementById('btnTransitoProximoMes');
+    const transitoProductsPanel = document.getElementById('transitoProductsPanel');
+    const transitoBusca = document.getElementById('transitoBusca');
+    const transitoTotalInativos = document.getElementById('transitoTotalInativos');
+    const transitoInativosList = document.getElementById('transitoInativosList');
+    const btnTransitoSortEnvio = document.getElementById('btnTransitoSortEnvio');
+    const btnTransitoSortData = document.getElementById('btnTransitoSortData');
+    const fullAbcAccountEl = document.getElementById('fullAbcAccount');
+    const btnAplicarAbcFull = document.getElementById('btnAplicarAbcFull');
+    const fullAbcStatusEl = document.getElementById('fullAbcStatus');
+    const fullAbcTableBodyEl = document.getElementById('fullAbcTableBody');
+    const abcOrderInputs = Array.from(document.querySelectorAll('input[name="abcOrderFull"]'));
+    const fullCoverageChipsEl = document.getElementById('fullCoverageChips');
+    const coverageRevenueTotalEl = document.getElementById('coverageRevenueTotal');
+    const coverageRevenueSubEl = document.getElementById('coverageRevenueSub');
+    const coverageRevenueStackEl = document.getElementById('coverageRevenueStack');
+    const coverageStockTotalEl = document.getElementById('coverageStockTotal');
+    const coverageTurnoverSubEl = document.getElementById('coverageTurnoverSub');
+    const coverageTurnoverStackEl = document.getElementById('coverageTurnoverStack');
+    const fullCoverageCardsEl = document.getElementById('fullCoverageCards');
+    const fullCoverageHeaderRowEl = document.getElementById('fullCoverageHeaderRow');
+    const fullCoverageTableBodyEl = document.getElementById('fullCoverageTableBody');
+    const btnSortCoverageDays = document.getElementById('btnSortCoverageDays');
+    const btnSortCoverageSales = document.getElementById('btnSortCoverageSales');
+    const btnExportCoverageFull = document.getElementById('btnExportCoverageFull');
+    const btnCoverageSummary = document.getElementById('btnCoverageSummary');
+    const btnCoverageDetails = document.getElementById('btnCoverageDetails');
+    const coverageDetailTable = document.getElementById('coverageDetailTable');
+    const CONTA_TODAS_FULL = '__todas';
+    const FULL_CACHE_PREFIX = 'jk_full_cache_v1';
+    const FULL_CACHE_TTL_MS = 30 * 60 * 1000;
+    const FULL_CACHE_TTL_VENDAS_HOJE_MS = 5 * 60 * 1000;
+    const FULL_CACHE_TTL_HISTORICO_MS = 6 * 60 * 60 * 1000;
+    const FULL_CACHE_TTL_FERIADOS_MS = 30 * 24 * 60 * 60 * 1000;
+    const fullMemoryCache = new Map();
+    let dados = [];
+    let lojasMl = [];
+    let lojaSelecionada = '';
+    let abaAtiva = 'estoque';
+    let carregando = false;
+    let variacoesAbertas = new Set();
+    let vendasFullCarregado = false;
+    let vendasFullChart = null;
+    let vendasFull60Map = new Map();
+    let vendasFull60Ready = false;
+    let vendasFullMesesMap = new Map();
+    let vendasFullMesesReady = false;
+    let mesesCoberturaFull = [];
+    let coberturaRowsAtuais = [];
+    let coberturaSort = 'dias';
+    let coberturaFiltroAtivo = 'todos';
+    let abcCarregado = false;
+    let abcRows = [];
+    let abcOrder = 'quantidade';
+    let enviarFullContaSelecionada = '';
+    let enviarFullDados = [];
+    let transitoContaSelecionada = '';
+    let transitoEnvios = [];
+    let transitoCalendarDate = new Date();
+    let transitoCalendarioComercial = null;
+    let transitoCalendarioComercialLoadingKey = '';
+    let transitoSort = 'envio';
+    let transitoCarregado = false;
+
+    function safeJsonParse(value, fallback) {
+        try { return JSON.parse(value); } catch (_e) { return fallback; }
+    }
+
+    function usuarioCacheFull() {
+        const user = safeJsonParse(localStorage.getItem('user_data') || '{}', {});
+        return String(user.client_id || user.tenant_id || user.username || user.email || user.id || 'default').trim() || 'default';
+    }
+
+    function chaveCacheFull(tipo, partes = []) {
+        const escopo = usuarioCacheFull().replace(/[^\w.-]+/g, '_');
+        const detalhe = (Array.isArray(partes) ? partes : [partes])
+            .map(item => encodeURIComponent(String(item ?? '').trim()))
+            .join(':');
+        return `${FULL_CACHE_PREFIX}:${escopo}:${tipo}${detalhe ? ':' + detalhe : ''}`;
+    }
+
+    function lerCacheFull(chave, ttlMs = FULL_CACHE_TTL_MS) {
+        const agora = Date.now();
+        const emMemoria = fullMemoryCache.get(chave);
+        if (emMemoria && (agora - emMemoria.ts) <= ttlMs) return emMemoria.data;
+        if (emMemoria) fullMemoryCache.delete(chave);
+        try {
+            const item = safeJsonParse(localStorage.getItem(chave) || 'null', null);
+            if (!item || !item.ts || (agora - item.ts) > ttlMs) {
+                localStorage.removeItem(chave);
+                return null;
+            }
+            fullMemoryCache.set(chave, item);
+            return item.data;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    function salvarCacheFull(chave, data) {
+        const item = { ts: Date.now(), data };
+        fullMemoryCache.set(chave, item);
+        try {
+            localStorage.setItem(chave, JSON.stringify(item));
+        } catch (_e) {
+            // Dados muito grandes continuam disponiveis no cache em memoria desta sessao.
+        }
+    }
+
+    async function fetchJsonFullCached(chave, url, options = {}) {
+        const ttlMs = Number(options.ttlMs || FULL_CACHE_TTL_MS);
+        if (!options.force) {
+            const cached = lerCacheFull(chave, ttlMs);
+            if (cached !== null) return cached;
+        }
+        const resp = await fetch(url, { headers: obterAuthHeaders(), cache: 'no-store' });
+        if (!resp.ok) {
+            const detail = await resp.text();
+            throw new Error(detail || `HTTP ${resp.status}`);
+        }
+        const payload = await resp.json();
+        salvarCacheFull(chave, payload);
+        return payload;
+    }
+
+    function setStatus(texto, tipo = '') {
+        statusEl.className = 'status' + (tipo ? ' ' + tipo : '');
+        statusEl.textContent = texto || '';
+    }
+
+    function setSalesStatus(texto, tipo = '') {
+        if (!fullSalesStatusEl) return;
+        fullSalesStatusEl.className = 'sales-status' + (tipo ? ' ' + tipo : '');
+        fullSalesStatusEl.textContent = texto || '';
+    }
+
+    function setAbcStatus(texto, tipo = '') {
+        if (!fullAbcStatusEl) return;
+        fullAbcStatusEl.className = 'sales-status' + (tipo ? ' ' + tipo : '');
+        fullAbcStatusEl.textContent = texto || '';
+    }
+
+    function setSendStatus(texto, tipo = '') {
+        if (!fullSendStatusEl) return;
+        fullSendStatusEl.className = 'sales-status' + (tipo ? ' ' + tipo : '');
+        fullSendStatusEl.textContent = texto || '';
+    }
+
+    function setTransitoStatus(texto, tipo = '') {
+        if (!fullTransitoStatusEl) return;
+        fullTransitoStatusEl.className = 'sales-status' + (tipo ? ' ' + tipo : '');
+        fullTransitoStatusEl.textContent = texto || '';
+    }
+
+    function trocarAbaFull(nome) {
+        abaAtiva = ['estoque', 'enviar', 'vendas', 'abc', 'transito'].includes(nome) ? nome : 'estoque';
+        tabButtons.forEach(btn => {
+            const active = btn.dataset.fullTab === abaAtiva;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        tabPanels.forEach(panel => {
+            const active = panel.dataset.fullPanel === abaAtiva;
+            panel.hidden = !active;
+        });
+        if (abaAtiva === 'vendas' && !vendasFullCarregado) {
+            carregarVendasFull();
+        }
+        if (abaAtiva === 'enviar') {
+            renderEnviarFull(enviarFullDados);
+            if (enviarFullContaSelecionada && !enviarFullDados.length) carregarEnviarFull();
+        }
+        if (abaAtiva === 'abc' && !abcCarregado) {
+            carregarCurvaAbcFull();
+        }
+        if (abaAtiva === 'transito' && !transitoCarregado) {
+            carregarTransitoFull();
+        }
+    }
+
+    function escapeHtml(valor) {
+        return String(valor ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
+
+    function numero(valor) {
+        if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+        const texto = String(valor ?? '').trim();
+        if (!texto) return 0;
+        const normalizado = texto.replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '');
+        const n = Number(normalizado);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function primeiro(row, campos) {
+        for (const campo of campos) {
+            const valor = row && row[campo];
+            if (valor !== undefined && valor !== null && String(valor).trim() !== '') return valor;
+        }
+        return '';
+    }
+
+    function idAnuncio(row) { return String(primeiro(row, ['id', 'item_id', 'mlb']) || '').trim(); }
+    function sku(row) { return String(primeiro(row, ['sku_display', 'sku', 'SKU', 'seller_sku', 'codigo', 'Codigo']) || '').trim(); }
+    function titulo(row) { return String(primeiro(row, ['title', 'titulo', 'titulo_anuncio', 'nome', 'produto', 'descricao']) || '-').trim(); }
+    function loja(row) { return String(primeiro(row, ['loja_sync', 'loja', 'Loja']) || '-').trim(); }
+    function foto(row) { return String(primeiro(row, ['thumbnail', 'secure_thumbnail', 'foto', 'image']) || '').trim(); }
+    function estoqueFull(row) { return numero(primeiro(row, ['available_quantity', 'saldo_full', 'estoque_full', 'full', 'fulfillment', 'quantidade_full'])); }
+    function vendidos(row) { return numero(primeiro(row, ['sold_quantity', 'vendidos', 'sales'])); }
+    function preco(row) { return numero(primeiro(row, ['price', 'preco', 'valor'])); }
+    function statusAnuncio(row) { return String(primeiro(row, ['status', 'situacao']) || '-').trim(); }
+    function tipoAnuncio(row) { return String(primeiro(row, ['listing_type_name', 'listing_type_id']) || '-').trim(); }
+    function linkAnuncio(row) { return String(primeiro(row, ['permalink', 'link', 'url']) || '').trim(); }
+    function variacoes(row) {
+        return Array.isArray(row?.variations) ? row.variations.filter(item => item && typeof item === 'object') : [];
+    }
+    function chaveVariacoes(row, indice) {
+        return idAnuncio(row) || `${loja(row)}-${sku(row)}-${indice}`;
+    }
+    function tituloVariacao(row, indice) {
+        return String(primeiro(row, ['title', 'titulo', 'name']) || `Variação ${indice + 1}`).trim();
+    }
+    function idVariacao(row) { return String(primeiro(row, ['id', 'variation_id']) || '-').trim(); }
+    function skuVariacao(row) { return String(primeiro(row, ['sku', 'seller_sku', 'codigo']) || '-').trim(); }
+    function inventoryVariacao(row) { return String(primeiro(row, ['inventory_id']) || '-').trim(); }
+    function estoqueVariacao(row) { return numero(primeiro(row, ['full_available_quantity', 'available_quantity', 'saldo_full'])); }
+    function indisponivelVariacao(row) { return numero(primeiro(row, ['full_not_available_quantity', 'not_available_quantity'])); }
+    function totalVariacao(row) { return numero(primeiro(row, ['full_total_quantity', 'total_quantity'])) || estoqueVariacao(row) + indisponivelVariacao(row); }
+    function vendidosVariacao(row) { return numero(primeiro(row, ['sold_quantity', 'vendidos', 'sales'])); }
+    function precoVariacao(row, anuncio) { return numero(primeiro(row, ['price', 'preco', 'valor'])) || preco(anuncio); }
+
+    function formatarNumero(valor) {
+        return Number(valor || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+    }
+
+    function formatarMoeda(valor) {
+        return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function hojeISO() {
+        const d = new Date();
+        const tz = d.getTimezoneOffset() * 60000;
+        return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+    }
+
+    function dataISO(date) {
+        const d = new Date(date);
+        const tz = d.getTimezoneOffset() * 60000;
+        return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+    }
+
+    function somarDiasISO(iso, dias) {
+        const d = new Date(`${iso}T12:00:00`);
+        d.setDate(d.getDate() + dias);
+        return dataISO(d);
+    }
+
+    function labelMesCurto(date) {
+        const nomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        return `${nomes[date.getMonth()]}/${String(date.getFullYear()).slice(-2)}`;
+    }
+
+    function ultimosSeisMesesFull() {
+        const hoje = new Date(`${hojeISO()}T12:00:00`);
+        const meses = [];
+        for (let i = 5; i >= 0; i--) {
+            const inicio = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1, 12, 0, 0);
+            const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() - i + 1, 0, 12, 0, 0);
+            const fim = i === 0 ? hoje : fimMes;
+            const key = `${inicio.getFullYear()}-${String(inicio.getMonth() + 1).padStart(2, '0')}`;
+            meses.push({
+                key,
+                label: labelMesCurto(inicio),
+                inicio: dataISO(inicio),
+                fim: dataISO(fim)
+            });
+        }
+        return meses;
+    }
+
+    function mesmoDiaMesAnteriorISO(iso) {
+        const d = new Date(`${iso}T12:00:00`);
+        d.setMonth(d.getMonth() - 1);
+        return dataISO(d);
+    }
+
+    function mesmoDiaAnoAnteriorISO(iso) {
+        const d = new Date(`${iso}T12:00:00`);
+        d.setFullYear(d.getFullYear() - 1);
+        return dataISO(d);
+    }
+
+    function parametrosVendasFull(dataInicio, dataFim, conta = '') {
+        const params = new URLSearchParams();
+        params.set('data_inicio', dataInicio);
+        params.set('data_fim', dataFim);
+        params.set('resolver_nf', 'false');
+        params.set('unidade_negocio', '__ml_loja_full');
+        const contaSelecionada = conta || (fullSalesAccountEl ? String(fullSalesAccountEl.value || '') : '');
+        if (contaSelecionada && contaSelecionada !== CONTA_TODAS_FULL) params.set('loja', contaSelecionada);
+        return params;
+    }
+
+    async function buscarVendasFull(dataInicio, dataFim, conta = '', force = false) {
+        const params = parametrosVendasFull(dataInicio, dataFim, conta);
+        const hoje = hojeISO();
+        const ttlMs = dataInicio <= hoje && dataFim >= hoje ? FULL_CACHE_TTL_VENDAS_HOJE_MS : FULL_CACHE_TTL_HISTORICO_MS;
+        const payload = await fetchJsonFullCached(
+            chaveCacheFull('vendas', [params.toString()]),
+            `/api/vendas?${params.toString()}`,
+            { ttlMs, force }
+        );
+        return Array.isArray(payload) ? payload : [];
+    }
+
+    function totalVendido(lista) {
+        return lista.reduce((acc, row) => acc + numero(row.valor), 0);
+    }
+
+    function totalPedidos(lista) {
+        const ids = new Set();
+        lista.forEach(row => {
+            const id = String(primeiro(row, ['numero', 'pedido', 'id_pedido', 'id']) || '').trim();
+            if (id) ids.add(id);
+        });
+        return ids.size || lista.length;
+    }
+
+    function horaVenda(row) {
+        const dataRaw = String(primeiro(row, ['data', 'data_venda', 'created_at']) || '').trim();
+        const matchHora = dataRaw.match(/\b(\d{1,2}):\d{2}/);
+        if (matchHora) {
+            const h = Number(matchHora[1]);
+            return Number.isFinite(h) ? Math.max(0, Math.min(23, h)) : 0;
+        }
+        const d = new Date(dataRaw);
+        if (!Number.isNaN(d.getTime())) return d.getHours();
+        return 0;
+    }
+
+    function serieHoraria(lista) {
+        const valores = Array.from({ length: 24 }, () => 0);
+        lista.forEach(row => {
+            valores[horaVenda(row)] += numero(row.valor);
+        });
+        return valores;
+    }
+
+    function percentualDiaDecorrido() {
+        const agora = new Date();
+        const minutos = (agora.getHours() * 60) + agora.getMinutes() + (agora.getSeconds() / 60);
+        return Math.max(1, Math.min(100, (minutos / 1440) * 100));
+    }
+
+    function variacaoPercentual(atual, anterior) {
+        if (!Number(anterior)) return null;
+        return ((Number(atual || 0) - Number(anterior || 0)) / Math.abs(Number(anterior))) * 100;
+    }
+
+    function renderPercentual(el, valor) {
+        if (!el) return;
+        if (valor === null || !Number.isFinite(valor)) {
+            el.textContent = 'Sem base';
+            el.classList.remove('up', 'down');
+            return;
+        }
+        const classe = valor >= 0 ? 'up' : 'down';
+        el.textContent = `${valor >= 0 ? '+' : ''}${valor.toFixed(1)}%`;
+        el.classList.toggle('up', classe === 'up');
+        el.classList.toggle('down', classe === 'down');
+    }
+
+    function renderGraficoVendasFull(hojeValores, ontemValores) {
+        const canvas = document.getElementById('fullSalesChart');
+        if (!canvas || typeof Chart === 'undefined') return;
+        const ctx = canvas.getContext('2d');
+        if (vendasFullChart) vendasFullChart.destroy();
+        vendasFullChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`),
+                datasets: [
+                    {
+                        label: 'Hoje',
+                        data: hojeValores,
+                        borderColor: '#45c7c9',
+                        backgroundColor: 'rgba(69, 199, 201, 0.12)',
+                        tension: 0.35,
+                        fill: true,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    },
+                    {
+                        label: 'Ontem',
+                        data: ontemValores,
+                        borderColor: '#b79cff',
+                        backgroundColor: 'rgba(183, 156, 255, 0.1)',
+                        borderDash: [5, 5],
+                        tension: 0.35,
+                        fill: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#405276', usePointStyle: true } },
+                    tooltip: {
+                        callbacks: {
+                            label: context => `${context.dataset.label}: ${formatarMoeda(context.parsed.y || 0)}`
+                        }
+                    }
+                },
+                scales: {
+                    x: { ticks: { color: '#5d6885', maxRotation: 50 }, grid: { color: '#e1e5ef' } },
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: '#5d6885', callback: value => formatarMoeda(value) },
+                        grid: { color: '#e1e5ef' }
+                    }
+                }
+            }
+        });
+    }
+
+    function renderSelectContasFull(selectEl) {
+        if (!selectEl) return;
+        const atual = selectEl.value || CONTA_TODAS_FULL;
+        const opcoes = [`<option value="${CONTA_TODAS_FULL}">Todas as contas</option>`].concat(
+            lojasMl.map(item => {
+                const nome = String(item.nome || '').trim();
+                return nome ? `<option value="${escapeHtml(nome)}">${escapeHtml(nome)}</option>` : '';
+            }).filter(Boolean)
+        );
+        selectEl.innerHTML = opcoes.join('');
+        if ([...selectEl.options].some(opt => opt.value === atual)) {
+            selectEl.value = atual;
+        }
+    }
+
+    function renderContasVendasFull() {
+        renderSelectContasFull(fullSalesAccountEl);
+        renderSelectContasFull(fullAbcAccountEl);
+    }
+
+    function totalContasTextoFull() {
+        return lojasMl.length ? `${lojasMl.length} loja(s) vinculada(s)` : 'Nenhuma loja vinculada';
+    }
+
+    function atualizarTotaisContasFull() {
+        [lojasMlTotalEl, lojasMlTotalVendasEl, lojasMlTotalEnviarEl, lojasMlTotalAbcEl, lojasMlTotalTransitoEl].forEach(el => {
+            if (el) el.textContent = totalContasTextoFull();
+        });
+    }
+
+    function renderAccountCardsFull(container, aba, selecionada, options = {}) {
+        if (!container) return;
+        const cards = [];
+        if (options.allowAll) {
+            const selected = selecionada === CONTA_TODAS_FULL ? ' selected' : '';
+            cards.push(`
+                <button class="loja-chip all-accounts${selected}" type="button" data-account-card="1" data-account-tab="${aba}" data-conta="${CONTA_TODAS_FULL}">
+                    <span>Todas as contas</span>
+                    <small>Consolidado</small>
+                </button>
+            `);
+        }
+        lojasMl.forEach(item => {
+            const nomeRaw = String(item.nome || '').trim();
+            if (!nomeRaw) return;
+            const nome = escapeHtml(nomeRaw);
+            const userId = item.user_id ? `<small>ID ${escapeHtml(item.user_id)}</small>` : '<small>ML conectado</small>';
+            const selected = nomeRaw === selecionada ? ' selected' : '';
+            cards.push(`<button class="loja-chip${selected}" type="button" data-account-card="1" data-account-tab="${aba}" data-conta="${nome}" data-loja="${nome}"><span>${nome}</span>${userId}</button>`);
+        });
+        if (!cards.length) {
+            container.innerHTML = `<span class="loja-chip empty">${escapeHtml(options.emptyText || 'Nenhuma loja com Mercado Livre autenticado em Integracoes.')}</span>`;
+            return;
+        }
+        container.innerHTML = cards.join('');
+    }
+
+    function renderTodosCardsContasFull() {
+        renderAccountCardsFull(lojasMlListaEl, 'estoque', lojaSelecionada, {
+            emptyText: 'Nenhuma loja com Mercado Livre autenticado em Integracoes.'
+        });
+        renderAccountCardsFull(lojasMlListaVendasEl, 'vendas', fullSalesAccountEl ? fullSalesAccountEl.value || CONTA_TODAS_FULL : CONTA_TODAS_FULL, { allowAll: true });
+        renderAccountCardsFull(lojasMlListaEnviarEl, 'enviar', enviarFullContaSelecionada, {
+            emptyText: 'Nenhuma loja com Mercado Livre autenticado em Integracoes.'
+        });
+        renderAccountCardsFull(lojasMlListaAbcEl, 'abc', fullAbcAccountEl ? fullAbcAccountEl.value || CONTA_TODAS_FULL : CONTA_TODAS_FULL, { allowAll: true });
+        renderAccountCardsFull(lojasMlListaTransitoEl, 'transito', transitoContaSelecionada, {
+            emptyText: 'Nenhuma loja com Mercado Livre autenticado em Integracoes.'
+        });
+    }
+
+    const coberturaCategorias = {
+        todos: { label: 'Todos', className: '', ordem: -1 },
+        sem_estoque: { label: 'Sem Estoque', className: '', ordem: 0 },
+        critico: { label: 'Critico', className: 'risk', ordem: 1 },
+        baixo: { label: 'Baixo', className: 'risk', ordem: 2 },
+        ideal: { label: 'Ideal', className: 'ideal', ordem: 3 },
+        alto: { label: 'Alto', className: 'capital', ordem: 4 },
+        muito_alto: { label: 'Muito Alto', className: 'capital', ordem: 5 },
+        excessivo: { label: 'Excessivo', className: 'capital', ordem: 6 },
+        sem_venda: { label: 'Sem Venda', className: 'capital', ordem: 7 }
+    };
+
+    const coberturaFiltros = {
+        todos: ['sem_estoque', 'critico', 'baixo', 'ideal', 'alto', 'muito_alto', 'excessivo', 'sem_venda'],
+        sem_estoque: ['sem_estoque'],
+        critico: ['critico'],
+        baixo: ['baixo'],
+        ideal: ['ideal'],
+        alto: ['alto'],
+        muito_alto: ['muito_alto'],
+        excessivo: ['excessivo'],
+        sem_venda: ['sem_venda'],
+        risco: ['critico', 'baixo'],
+        capital: ['alto', 'muito_alto', 'excessivo', 'sem_venda']
+    };
+
+    function chaveSkuFull(row) {
+        return String(sku(row) || '').trim().toUpperCase();
+    }
+
+    function montarMapaVendasSku(lista) {
+        const mapa = new Map();
+        (Array.isArray(lista) ? lista : []).forEach(row => {
+            const key = String(primeiro(row, ['sku', 'SKU', 'codigo']) || '').trim().toUpperCase();
+            if (!key) return;
+            const atual = mapa.get(key) || { qtd: 0, valor: 0, pedidos: new Set() };
+            atual.qtd += numero(row.quantidade);
+            atual.valor += numero(row.valor);
+            const pedido = String(primeiro(row, ['numero', 'pedido', 'id_pedido', 'id']) || '').trim();
+            if (pedido) atual.pedidos.add(pedido);
+            mapa.set(key, atual);
+        });
+        return mapa;
+    }
+
+    function chaveMesVenda(row) {
+        const dataRaw = String(primeiro(row, ['data', 'data_venda', 'created_at']) || '').trim();
+        const match = dataRaw.match(/^(\d{4})-(\d{2})/);
+        if (match) return `${match[1]}-${match[2]}`;
+        const matchBr = dataRaw.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+        if (matchBr) return `${matchBr[3]}-${matchBr[2]}`;
+        const data = new Date(dataRaw);
+        if (Number.isNaN(data.getTime())) return '';
+        return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    function montarMapaVendasMensaisSku(lista) {
+        const mapa = new Map();
+        (Array.isArray(lista) ? lista : []).forEach(row => {
+            const key = String(primeiro(row, ['sku', 'SKU', 'codigo']) || '').trim().toUpperCase();
+            const mesKey = chaveMesVenda(row);
+            if (!key || !mesKey) return;
+            const porMes = mapa.get(key) || {};
+            const atual = porMes[mesKey] || { qtd: 0, valor: 0 };
+            atual.qtd += numero(row.quantidade);
+            atual.valor += numero(row.valor);
+            porMes[mesKey] = atual;
+            mapa.set(key, porMes);
+        });
+        return mapa;
+    }
+
+    function vendaMensalFull(skuKey, mesKey) {
+        return (vendasFullMesesMap.get(String(skuKey || '').toUpperCase()) || {})[mesKey] || { qtd: 0, valor: 0 };
+    }
+
+    function colspanCoberturaFull() {
+        return 9 + (mesesCoberturaFull.length || 6);
+    }
+
+    function renderHeaderCoberturaFull() {
+        if (!fullCoverageHeaderRowEl) return;
+        if (!mesesCoberturaFull.length) mesesCoberturaFull = ultimosSeisMesesFull();
+        const meses = mesesCoberturaFull.map(mes => `<th class="num coverage-month-cell">${escapeHtml(mes.label)}</th>`).join('');
+        fullCoverageHeaderRowEl.innerHTML = `
+            <th>Produto</th>
+            <th>Codigo ML</th>
+            <th>SKU</th>
+            <th class="num">Vendas 60 dias</th>
+            ${meses}
+            <th class="num">Transito</th>
+            <th class="num">Estoque</th>
+            <th>Cobertura</th>
+            <th class="num">Vendas (R$)</th>
+            <th>Acoes</th>
+        `;
+    }
+
+    function categoriaCobertura(estoque, vendas60) {
+        if (estoque <= 0) return 'sem_estoque';
+        if (vendas60 <= 0) return 'sem_venda';
+        const dias = estoque / Math.max(vendas60 / 60, 0.0001);
+        if (dias <= 10) return 'critico';
+        if (dias <= 15) return 'baixo';
+        if (dias <= 45) return 'ideal';
+        if (dias <= 60) return 'alto';
+        if (dias <= 75) return 'muito_alto';
+        return 'excessivo';
+    }
+
+    function diasCoberturaTexto(row) {
+        if (row.categoria === 'sem_venda') return 'Sem venda';
+        if (!Number.isFinite(row.diasCobertura)) return '∞ dias';
+        return `${formatarNumero(row.diasCobertura)} dias`;
+    }
+
+    function montarLinhasCobertura(lista) {
+        return (Array.isArray(lista) ? lista : []).map((row, indice) => {
+            const key = chaveSkuFull(row);
+            const venda = vendasFull60Map.get(key) || { qtd: 0, valor: 0, pedidos: new Set() };
+            const estoque = estoqueFull(row);
+            const vendas60 = venda.qtd || 0;
+            const mediaDia = vendas60 / 60;
+            const dias = estoque <= 0 ? 0 : (mediaDia > 0 ? estoque / mediaDia : Infinity);
+            const categoria = categoriaCobertura(estoque, vendas60);
+            const precoUnit = preco(row);
+            return {
+                row,
+                indice,
+                categoria,
+                sku: key,
+                estoque,
+                vendas60,
+                valor60: venda.valor || 0,
+                pedidos60: venda.pedidos ? venda.pedidos.size : 0,
+                estoqueValor: estoque * precoUnit,
+                diasCobertura: dias,
+                giro: mediaDia,
+                preco: precoUnit
+            };
+        });
+    }
+
+    function somaLinhas(rows, campo) {
+        return rows.reduce((acc, item) => acc + Number(item[campo] || 0), 0);
+    }
+
+    function filtrarLinhasCobertura(keys) {
+        const set = new Set(keys);
+        return coberturaRowsAtuais.filter(item => set.has(item.categoria));
+    }
+
+    function pct(valor, total) {
+        if (!total) return 0;
+        return Math.max(0, Math.min(100, (Number(valor || 0) / Number(total)) * 100));
+    }
+
+    function keysFiltroCobertura(filtro = coberturaFiltroAtivo) {
+        return coberturaFiltros[filtro] || coberturaFiltros.todos;
+    }
+
+    function chipCoberturaAtivo(key) {
+        if (coberturaFiltroAtivo === key) return true;
+        if (coberturaFiltroAtivo === 'todos') return key === 'todos';
+        const keys = keysFiltroCobertura(coberturaFiltroAtivo);
+        return key !== 'todos' && keys.length > 1 && keys.includes(key);
+    }
+
+    function linhasCoberturaFiltradas(rows = coberturaRowsAtuais) {
+        if (coberturaFiltroAtivo === 'todos') return rows.slice();
+        const keys = new Set(keysFiltroCobertura());
+        return rows.filter(item => keys.has(item.categoria));
+    }
+
+    function abrirDetalhesCobertura() {
+        if (!btnCoverageSummary || !btnCoverageDetails || !coverageDetailTable) return;
+        btnCoverageDetails.classList.add('active');
+        btnCoverageSummary.classList.remove('active');
+        coverageDetailTable.hidden = false;
+    }
+
+    function aplicarFiltroCobertura(filtro) {
+        coberturaFiltroAtivo = coberturaFiltros[filtro] ? filtro : 'todos';
+        renderChipsCobertura(coberturaRowsAtuais);
+        renderResumoCobertura(coberturaRowsAtuais);
+        renderTabelaCobertura();
+        abrirDetalhesCobertura();
+    }
+
+    function renderStack(el, segmentos, totalBase) {
+        if (!el) return;
+        if (!totalBase) {
+            el.innerHTML = '<button type="button" class="cov-gray" data-coverage-filter="todos" style="width:100%">0%</button>';
+            return;
+        }
+        el.innerHTML = segmentos.map(seg => {
+            const p = pct(seg.valor, totalBase);
+            const label = p >= 6 ? `${Math.round(p)}%` : '';
+            const active = coberturaFiltroAtivo === seg.filter ? ' active' : '';
+            const title = `${seg.title || 'Filtro'}: ${formatarNumero(p)}%`;
+            return `<button type="button" class="${seg.className}${active}" data-coverage-filter="${escapeHtml(seg.filter || 'todos')}" style="width:${Math.max(p, p > 0 ? 2 : 0)}%" title="${escapeHtml(title)}">${label}</button>`;
+        }).join('');
+    }
+
+    function renderChipsCobertura(rows) {
+        if (!fullCoverageChipsEl) return;
+        const contagens = Object.keys(coberturaCategorias).reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
+        contagens.todos = rows.length;
+        rows.forEach(item => { contagens[item.categoria] = (contagens[item.categoria] || 0) + 1; });
+        const ordem = ['todos', 'sem_estoque', 'critico', 'baixo', 'ideal', 'alto', 'muito_alto', 'excessivo', 'sem_venda'];
+        fullCoverageChipsEl.innerHTML = ordem.map(key => `
+            <button class="coverage-chip${chipCoberturaAtivo(key) ? ' active' : ''}" type="button" data-coverage-filter="${key}" data-kind="${key}">
+                ${escapeHtml(coberturaCategorias[key].label)}
+                <strong>${formatarNumero(contagens[key] || 0)}</strong>
+            </button>
+        `).join('');
+    }
+
+    function renderCardsCobertura() {
+        if (!fullCoverageCardsEl) return;
+        const cards = [
+            {
+                title: 'Em Ruptura',
+                keys: ['sem_estoque'],
+                className: '',
+                amea: ['Perda de posicionamento e vendas', 'Clientes sem estoque para atender'],
+                oportunidades: ['Repor estoque com urgencia', 'Revisar previsao de demanda']
+            },
+            {
+                title: 'Em Risco',
+                keys: ['critico', 'baixo'],
+                className: 'risk',
+                amea: ['Pode virar ruptura se nao repor', 'Risco de perder momentum e posicionamento'],
+                oportunidades: ['Reposicao urgente para manter vendas', 'Aumentar margem para desacelerar giro']
+            },
+            {
+                title: 'Cobertura Ideal',
+                keys: ['ideal'],
+                className: 'ideal',
+                amea: ['Queda de giro pode levar rapidamente ao excesso', 'Vendas acima do esperado podem causar ruptura'],
+                oportunidades: ['Manter estrategia atual', 'Monitoramento continuo para se manter aqui']
+            },
+            {
+                title: 'Capital Imobilizado',
+                keys: ['alto', 'muito_alto', 'excessivo', 'sem_venda'],
+                className: 'capital',
+                amea: ['Capital parado sem retorno', 'Taxas de armazenagem e perda de nota Full'],
+                oportunidades: ['Promocoes e Ads para girar estoque', 'Otimizar anuncios para aumentar vendas']
+            }
+        ];
+        fullCoverageCardsEl.innerHTML = cards.map(card => {
+            const rows = filtrarLinhasCobertura(card.keys);
+            const faturamento = somaLinhas(rows, 'valor60');
+            const estoqueValor = somaLinhas(rows, 'estoqueValor');
+            const giroMedio = rows.filter(item => Number.isFinite(item.diasCobertura) && item.diasCobertura > 0)
+                .reduce((acc, item, _idx, arr) => acc + (item.diasCobertura / arr.length), 0);
+            return `
+                <article class="coverage-card ${card.className}">
+                    <h3>${escapeHtml(card.title)}</h3>
+                    <div class="coverage-card-metrics">
+                        <div><span>Faturamento</span><strong>${formatarMoeda(faturamento)}</strong></div>
+                        <div><span>Estoque</span><strong>${formatarMoeda(estoqueValor)}</strong></div>
+                    </div>
+                    <div class="coverage-card-note">
+                        <strong>${formatarNumero(rows.length)} SKUs</strong>${giroMedio ? ` - Giro: ${formatarNumero(giroMedio)} dias` : ''}
+                        <br><br><strong>Ameacas</strong><br>- ${card.amea.map(escapeHtml).join('<br>- ')}
+                        <br><strong>Oportunidades</strong><br>- ${card.oportunidades.map(escapeHtml).join('<br>- ')}
+                    </div>
+                </article>
+            `;
+        }).join('');
+    }
+
+    function renderResumoCobertura(rows) {
+        const totalRevenue = somaLinhas(rows, 'valor60');
+        const totalStock = somaLinhas(rows, 'estoqueValor');
+        const semEstoque = filtrarLinhasCobertura(['sem_estoque']);
+        const risco = filtrarLinhasCobertura(['critico', 'baixo']);
+        const ideal = filtrarLinhasCobertura(['ideal']);
+        const capital = filtrarLinhasCobertura(['alto', 'muito_alto', 'excessivo', 'sem_venda']);
+
+        coverageRevenueTotalEl.textContent = formatarMoeda(totalRevenue);
+        coverageStockTotalEl.textContent = formatarMoeda(totalStock);
+        const coberturaAdequada = pct(somaLinhas(ideal, 'valor60'), totalRevenue);
+        coverageRevenueSubEl.textContent = `${formatarNumero(coberturaAdequada)}% do faturamento com cobertura ideal.`;
+        const giroSaudavel = pct(somaLinhas([...ideal, ...risco], 'estoqueValor'), totalStock);
+        coverageTurnoverSubEl.textContent = `${formatarNumero(giroSaudavel)}% do estoque em giro monitorado nos ultimos 60 dias.`;
+
+        renderStack(coverageRevenueStackEl, [
+            { className: 'cov-gray', filter: 'sem_estoque', title: 'Sem estoque', valor: totalRevenue ? somaLinhas(semEstoque, 'valor60') : semEstoque.length },
+            { className: 'cov-red', filter: 'risco', title: 'Em risco', valor: totalRevenue ? somaLinhas(risco, 'valor60') : risco.length },
+            { className: 'cov-green', filter: 'ideal', title: 'Cobertura ideal', valor: totalRevenue ? somaLinhas(ideal, 'valor60') : ideal.length },
+            { className: 'cov-blue', filter: 'capital', title: 'Capital imobilizado', valor: totalRevenue ? somaLinhas(capital, 'valor60') : capital.length }
+        ], totalRevenue || rows.length);
+
+        renderStack(coverageTurnoverStackEl, [
+            { className: 'cov-gray', filter: 'sem_estoque', title: 'Sem estoque', valor: totalStock ? somaLinhas(semEstoque, 'estoqueValor') : semEstoque.length },
+            { className: 'cov-red', filter: 'risco', title: 'Em risco', valor: totalStock ? somaLinhas(risco, 'estoqueValor') : risco.length },
+            { className: 'cov-green', filter: 'ideal', title: 'Cobertura ideal', valor: totalStock ? somaLinhas(ideal, 'estoqueValor') : ideal.length },
+            { className: 'cov-blue', filter: 'capital', title: 'Capital imobilizado', valor: totalStock ? somaLinhas(capital, 'estoqueValor') : capital.length }
+        ], totalStock || rows.length);
+
+        renderCardsCobertura();
+    }
+
+    function linhasCoberturaOrdenadas() {
+        const ordem = coberturaCategorias;
+        return linhasCoberturaFiltradas().sort((a, b) => {
+            if (coberturaSort === 'venda') return b.valor60 - a.valor60 || a.sku.localeCompare(b.sku, 'pt-BR', { numeric: true });
+            const ordemDiff = (ordem[a.categoria]?.ordem ?? 99) - (ordem[b.categoria]?.ordem ?? 99);
+            const diasA = Number.isFinite(a.diasCobertura) ? a.diasCobertura : 99999;
+            const diasB = Number.isFinite(b.diasCobertura) ? b.diasCobertura : 99999;
+            return ordemDiff || diasA - diasB || a.sku.localeCompare(b.sku, 'pt-BR', { numeric: true });
+        });
+    }
+
+    function renderTabelaCobertura() {
+        if (!fullCoverageTableBodyEl) return;
+        renderHeaderCoberturaFull();
+        const rows = linhasCoberturaOrdenadas();
+        if (!rows.length) {
+            fullCoverageTableBodyEl.innerHTML = `<tr><td colspan="${colspanCoberturaFull()}">${lojaSelecionada ? 'Nenhum SKU encontrado para o filtro de cobertura selecionado.' : 'Selecione uma loja para calcular a cobertura Full.'}</td></tr>`;
+            return;
+        }
+        fullCoverageTableBodyEl.innerHTML = rows.map(item => {
+            const row = item.row;
+            const categoria = coberturaCategorias[item.categoria] || coberturaCategorias.sem_venda;
+            const vendasMensais = mesesCoberturaFull.map(mes => {
+                const vendaMes = vendaMensalFull(item.sku, mes.key);
+                const semVenda = !vendaMes.qtd && !vendaMes.valor;
+                return `
+                    <td class="num coverage-month-cell ${semVenda ? 'coverage-month-empty' : ''}">
+                        <span class="coverage-month-value">${formatarMoeda(vendaMes.valor)}</span>
+                        <span class="coverage-month-sub">${formatarNumero(vendaMes.qtd)} un.</span>
+                    </td>
+                `;
+            }).join('');
+            return `
+                <tr>
+                    <td>
+                        <div class="coverage-product">
+                            ${foto(row) ? `<img src="${escapeHtml(foto(row))}" alt="">` : '<span class="thumb"></span>'}
+                            <span>${escapeHtml(titulo(row))}</span>
+                        </div>
+                    </td>
+                    <td><span class="coverage-code">${escapeHtml(idAnuncio(row) || '-')}</span></td>
+                    <td>${escapeHtml(item.sku || '-')}</td>
+                    <td class="num">${formatarNumero(item.vendas60)}</td>
+                    ${vendasMensais}
+                    <td class="num">0</td>
+                    <td class="num">${formatarNumero(item.estoque)}</td>
+                    <td><span class="coverage-badge ${item.categoria}">${escapeHtml(categoria.label)}</span> ${escapeHtml(diasCoberturaTexto(item))}</td>
+                    <td class="num">${formatarMoeda(item.valor60)}</td>
+                    <td>
+                        <div class="coverage-mini-actions">
+                            <button type="button" title="Anuncio" data-coverage-action="ads" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">ADS</button>
+                            <button type="button" title="Promocao e margem" data-coverage-action="percent" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">%</button>
+                            <button type="button" title="Grafico" data-coverage-action="chart" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">|||</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function renderCoberturaFull(lista) {
+        const base = Array.isArray(lista) ? lista : [];
+        coberturaRowsAtuais = montarLinhasCobertura(base);
+        renderChipsCobertura(coberturaRowsAtuais);
+        renderResumoCobertura(coberturaRowsAtuais);
+        renderTabelaCobertura();
+        if (!lojaSelecionada) {
+            fullCoverageTableBodyEl.innerHTML = `<tr><td colspan="${colspanCoberturaFull()}">Selecione uma loja para ver a saude do estoque Full.</td></tr>`;
+            return;
+        }
+        if (!vendasFull60Ready || !vendasFullMesesReady) {
+            fullCoverageTableBodyEl.innerHTML = `<tr><td colspan="${colspanCoberturaFull()}">Carregando vendas Full dos ultimos 6 meses...</td></tr>`;
+        }
+    }
+
+    async function carregarCoberturaFull(force = false) {
+        mesesCoberturaFull = ultimosSeisMesesFull();
+        vendasFull60Ready = false;
+        vendasFullMesesReady = false;
+        vendasFull60Map = new Map();
+        vendasFullMesesMap = new Map();
+        renderHeaderCoberturaFull();
+        renderCoberturaFull(dados);
+        if (!lojaSelecionada) return;
+        try {
+            const fim = hojeISO();
+            const inicio = somarDiasISO(fim, -59);
+            const inicioSeisMeses = mesesCoberturaFull[0]?.inicio || inicio;
+            const [vendas60, vendasSeisMeses] = await Promise.all([
+                buscarVendasFull(inicio, fim, lojaSelecionada, force),
+                buscarVendasFull(inicioSeisMeses, fim, lojaSelecionada, force)
+            ]);
+            vendasFull60Map = montarMapaVendasSku(vendas60);
+            vendasFullMesesMap = montarMapaVendasMensaisSku(vendasSeisMeses);
+            vendasFull60Ready = true;
+            vendasFullMesesReady = true;
+            const termo = buscaEl.value.trim().toLowerCase();
+            const listaAtual = termo
+                ? dados.filter(row => [idAnuncio(row), sku(row), titulo(row), loja(row), statusAnuncio(row)]
+                    .some(valor => String(valor).toLowerCase().includes(termo)))
+                : dados;
+            renderCoberturaFull(ordenarLista(listaAtual));
+        } catch (e) {
+            vendasFull60Ready = true;
+            vendasFullMesesReady = true;
+            fullCoverageTableBodyEl.innerHTML = `<tr><td colspan="${colspanCoberturaFull()}">Nao foi possivel carregar vendas mensais Full: ${escapeHtml(e.message || e)}</td></tr>`;
+        }
+    }
+
+    function exportarCoberturaFull() {
+        const rows = linhasCoberturaOrdenadas();
+        if (!rows.length) return;
+        renderHeaderCoberturaFull();
+        const mesesHeader = mesesCoberturaFull.flatMap(mes => [`${mes.label} Qtd`, `${mes.label} Valor`]);
+        const header = ['Produto', 'Codigo ML', 'SKU', 'Vendas 60 dias', ...mesesHeader, 'Transito', 'Estoque', 'Cobertura', 'Vendas R$'];
+        const linhas = rows.map(item => [
+            titulo(item.row),
+            idAnuncio(item.row),
+            item.sku,
+            item.vendas60,
+            ...mesesCoberturaFull.flatMap(mes => {
+                const vendaMes = vendaMensalFull(item.sku, mes.key);
+                return [vendaMes.qtd, vendaMes.valor];
+            }),
+            0,
+            item.estoque,
+            diasCoberturaTexto(item),
+            item.valor60
+        ].map(valor => `"${String(valor ?? '').replace(/"/g, '""')}"`).join(';'));
+        const blob = new Blob([[header.join(';'), ...linhas].join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `cobertura_full_${lojaSelecionada || 'todas'}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    function abrirModuloFullAcao(url, title) {
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({
+                    channel: 'jk-open-module-tab',
+                    payload: { url, title }
+                }, '*');
+                return;
+            }
+        } catch (_e) {}
+        window.location.href = url;
+    }
+
+    function executarAcaoCobertura(action, skuValor, mlbValor) {
+        const qs = new URLSearchParams();
+        if (skuValor) qs.set('sku', skuValor);
+        if (mlbValor) qs.set('mlb', mlbValor);
+        if (action === 'percent') {
+            abrirModuloFullAcao(`/frontend_promo.html?${qs.toString()}`, skuValor ? `Promocao ${skuValor}` : 'Promocao ML');
+            return;
+        }
+        if (action === 'chart') {
+            abrirModuloFullAcao(`/vendas_sku.html?${qs.toString()}`, skuValor ? `Vendas SKU ${skuValor}` : 'Vendas por SKU');
+            return;
+        }
+        if (action === 'ads') {
+            abrirModuloFullAcao(`/anunciosml.html?${qs.toString()}`, skuValor ? `Anuncios ${skuValor}` : 'Anuncios ML');
+        }
+    }
+
+    async function buscarAnunciosFullLoja(nomeLoja, force = false) {
+        const nome = String(nomeLoja || '').trim();
+        if (!nome) return [];
+        const payload = await fetchJsonFullCached(
+            chaveCacheFull('anuncios', [nome]),
+            `/api/full/anuncios?loja=${encodeURIComponent(nome)}`,
+            { ttlMs: FULL_CACHE_TTL_MS, force }
+        );
+        const lista = Array.isArray(payload) ? payload : (Array.isArray(payload.results) ? payload.results : []);
+        return lista.map(item => ({ ...item, loja_sync: loja(item) === '-' ? nome : loja(item) }));
+    }
+
+    async function buscarAnunciosCurvaAbc(conta, force = false) {
+        const contaSelecionada = String(conta || CONTA_TODAS_FULL);
+        if (contaSelecionada !== CONTA_TODAS_FULL) return buscarAnunciosFullLoja(contaSelecionada, force);
+        const lojas = lojasMl.map(item => String(item.nome || '').trim()).filter(Boolean);
+        if (!lojas.length) return [];
+        const resultados = await Promise.allSettled(lojas.map(nome => buscarAnunciosFullLoja(nome, force)));
+        const falhas = resultados.filter(item => item.status === 'rejected');
+        if (falhas.length && falhas.length === resultados.length) {
+            throw new Error('Nao foi possivel consultar os anuncios Full das contas.');
+        }
+        return resultados.flatMap(item => item.status === 'fulfilled' ? item.value : []);
+    }
+
+    function periodoCurvaAbc() {
+        const fim = hojeISO();
+        return [
+            { key: 'p12090', label: '120/90', inicio: somarDiasISO(fim, -119), fim: somarDiasISO(fim, -90) },
+            { key: 'p9060', label: '90/60', inicio: somarDiasISO(fim, -89), fim: somarDiasISO(fim, -60) },
+            { key: 'p6030', label: '60/30', inicio: somarDiasISO(fim, -59), fim: somarDiasISO(fim, -30) },
+            { key: 'p300', label: '30/0', inicio: somarDiasISO(fim, -29), fim }
+        ];
+    }
+
+    function aplicarClasseAbc(rows, periodKey) {
+        const total = rows.reduce((acc, item) => acc + Number(item.periodos[periodKey]?.[abcOrder] || 0), 0);
+        const ordenados = rows.slice().sort((a, b) => Number(b.periodos[periodKey]?.[abcOrder] || 0) - Number(a.periodos[periodKey]?.[abcOrder] || 0));
+        let acumulado = 0;
+        ordenados.forEach(item => {
+            const metrica = Number(item.periodos[periodKey]?.[abcOrder] || 0);
+            if (!total || metrica <= 0) {
+                item.periodos[periodKey].classe = 'O';
+                return;
+            }
+            const antes = acumulado / total;
+            acumulado += metrica;
+            if (antes < 0.8) item.periodos[periodKey].classe = 'A';
+            else if (antes < 0.95) item.periodos[periodKey].classe = 'B';
+            else item.periodos[periodKey].classe = 'C';
+        });
+    }
+
+    function montarRowsCurvaAbc(anuncios, mapasPorPeriodo) {
+        const periodos = periodoCurvaAbc();
+        const rows = anuncios.map(row => {
+            const key = chaveSkuFull(row);
+            const periodosRow = {};
+            periodos.forEach(periodo => {
+                const venda = mapasPorPeriodo[periodo.key]?.get(key) || { qtd: 0, valor: 0 };
+                periodosRow[periodo.key] = {
+                    valor: venda.valor || 0,
+                    quantidade: venda.qtd || 0,
+                    classe: 'O'
+                };
+            });
+            return { row, sku: key, periodos: periodosRow };
+        });
+        periodos.forEach(periodo => aplicarClasseAbc(rows, periodo.key));
+        return rows;
+    }
+
+    function ordenarRowsAbc(rows) {
+        return rows.slice().sort((a, b) => {
+            const atualA = Number(a.periodos.p300?.[abcOrder] || 0);
+            const atualB = Number(b.periodos.p300?.[abcOrder] || 0);
+            return atualB - atualA || String(a.sku || '').localeCompare(String(b.sku || ''), 'pt-BR', { numeric: true });
+        });
+    }
+
+    function renderCelulaPeriodoAbc(item, periodKey) {
+        const data = item.periodos[periodKey] || { valor: 0, quantidade: 0, classe: 'O' };
+        const letra = String(data.classe || 'O').toLowerCase();
+        return `
+            <div class="abc-period">
+                <span class="abc-letter ${letra}">${escapeHtml(data.classe || 'O')}</span>
+                <div class="abc-values">
+                    <strong>${formatarMoeda(data.valor)}</strong>
+                    <span>Unidades: ${formatarNumero(data.quantidade)}</span>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderCurvaAbc() {
+        if (!fullAbcTableBodyEl) return;
+        const rows = ordenarRowsAbc(abcRows);
+        if (!rows.length) {
+            fullAbcTableBodyEl.innerHTML = '<tr><td colspan="6">Nenhum anuncio Full encontrado para montar a Curva ABC.</td></tr>';
+            return;
+        }
+        const periodos = periodoCurvaAbc();
+        const totalRow = `
+            <tr class="abc-total-row">
+                <td>Totais</td>
+                ${periodos.map(periodo => {
+                    const valor = rows.reduce((acc, item) => acc + Number(item.periodos[periodo.key]?.valor || 0), 0);
+                    const qtd = rows.reduce((acc, item) => acc + Number(item.periodos[periodo.key]?.quantidade || 0), 0);
+                    return `<td>${formatarMoeda(valor)}<br>Unidades: ${formatarNumero(qtd)}</td>`;
+                }).join('')}
+                <td>Ordenado por ${abcOrder === 'valor' ? 'valor' : 'quantidade'}</td>
+            </tr>
+        `;
+        fullAbcTableBodyEl.innerHTML = totalRow + rows.map(item => {
+            const row = item.row;
+            return `
+                <tr>
+                    <td>
+                        <div class="abc-product">
+                            ${foto(row) ? `<img src="${escapeHtml(foto(row))}" alt="">` : '<span class="thumb"></span>'}
+                            <div>
+                                <span class="abc-code">${escapeHtml(idAnuncio(row) || '-')}</span>
+                                <span class="abc-status">${escapeHtml(statusAnuncio(row) || '-')}</span>
+                                <div class="abc-price">Preco: ${formatarMoeda(preco(row))}</div>
+                                <button class="abc-promo" type="button" data-coverage-action="percent" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">Promocoes</button>
+                            </div>
+                        </div>
+                    </td>
+                    ${periodos.map(periodo => `<td>${renderCelulaPeriodoAbc(item, periodo.key)}</td>`).join('')}
+                    <td>
+                        <div class="abc-actions">
+                            <button type="button" data-coverage-action="ads" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">ADS</button>
+                            <button type="button" data-coverage-action="chart" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">|||</button>
+                            <button type="button" data-coverage-action="percent" data-sku="${escapeHtml(item.sku)}" data-mlb="${escapeHtml(idAnuncio(row) || '')}">%</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    async function carregarCurvaAbcFull(force = false) {
+        abcCarregado = true;
+        const conta = fullAbcAccountEl ? String(fullAbcAccountEl.value || CONTA_TODAS_FULL) : CONTA_TODAS_FULL;
+        if (btnAplicarAbcFull) btnAplicarAbcFull.disabled = true;
+        setAbcStatus('Carregando anuncios e vendas para Curva ABC...');
+        if (fullAbcTableBodyEl) fullAbcTableBodyEl.innerHTML = '<tr><td colspan="6">Carregando Curva ABC...</td></tr>';
+        try {
+            if (!lojasMl.length) await carregarLojasMl(force);
+            const periodos = periodoCurvaAbc();
+            const [anuncios, ...vendasPorPeriodo] = await Promise.all([
+                buscarAnunciosCurvaAbc(conta, force),
+                ...periodos.map(periodo => buscarVendasFull(periodo.inicio, periodo.fim, conta, force))
+            ]);
+            const mapasPorPeriodo = {};
+            periodos.forEach((periodo, index) => {
+                mapasPorPeriodo[periodo.key] = montarMapaVendasSku(vendasPorPeriodo[index] || []);
+            });
+            abcRows = montarRowsCurvaAbc(anuncios, mapasPorPeriodo);
+            renderCurvaAbc();
+            setAbcStatus(`${abcRows.length} anuncio(s) Full analisados na Curva ABC.`);
+        } catch (e) {
+            abcRows = [];
+            renderCurvaAbc();
+            setAbcStatus(e && e.message ? `Erro ao carregar Curva ABC: ${e.message}` : 'Erro ao carregar Curva ABC.', 'error');
+        } finally {
+            if (btnAplicarAbcFull) btnAplicarAbcFull.disabled = false;
+        }
+    }
+
+    async function carregarVendasFull(force = false) {
+        vendasFullCarregado = true;
+        setSalesStatus('Carregando vendas Full...');
+        if (btnAplicarVendasFull) btnAplicarVendasFull.disabled = true;
+        try {
+            const hoje = hojeISO();
+            const ontem = somarDiasISO(hoje, -1);
+            const semanaPassada = somarDiasISO(hoje, -7);
+            const mesPassado = mesmoDiaMesAnteriorISO(hoje);
+            const anoPassado = mesmoDiaAnoAnteriorISO(hoje);
+
+            const [vendasHoje, vendasOntem, vendasSemana, vendasMes, vendasAno] = await Promise.all([
+                buscarVendasFull(hoje, hoje, '', force),
+                buscarVendasFull(ontem, ontem, '', force),
+                buscarVendasFull(semanaPassada, semanaPassada, '', force),
+                buscarVendasFull(mesPassado, mesPassado, '', force),
+                buscarVendasFull(anoPassado, anoPassado, '', force)
+            ]);
+
+            const totalHoje = totalVendido(vendasHoje);
+            const totalOntem = totalVendido(vendasOntem);
+            const pedidosHoje = totalPedidos(vendasHoje);
+            const ticket = pedidosHoje ? totalHoje / pedidosHoje : 0;
+            const progresso = percentualDiaDecorrido();
+            const projecaoLinear = totalHoje ? totalHoje / (progresso / 100) : 0;
+            const projecaoAvancada = totalHoje ? (projecaoLinear * 0.68) + (Math.max(totalOntem, totalHoje) * 0.32) : 0;
+
+            fullSalesTodayEl.textContent = formatarMoeda(totalHoje);
+            fullSalesOrdersEl.textContent = pedidosHoje.toLocaleString('pt-BR');
+            fullSalesTicketEl.textContent = formatarMoeda(ticket);
+            fullSalesProjectionEl.textContent = formatarMoeda(projecaoLinear);
+            fullSalesForecastEl.textContent = formatarMoeda(projecaoAvancada);
+            fullDayProgressFillEl.style.width = `${progresso.toFixed(1)}%`;
+            fullDayProgressLabelEl.textContent = `${progresso.toFixed(1)}% do dia decorrido`;
+
+            renderPercentual(fullSalesTrendEl, variacaoPercentual(totalHoje, totalOntem));
+            renderPercentual(fullSalesWeekComparisonEl, variacaoPercentual(totalHoje, totalVendido(vendasSemana)));
+            renderPercentual(fullSalesMonthComparisonEl, variacaoPercentual(totalHoje, totalVendido(vendasMes)));
+            renderPercentual(fullSalesYearComparisonEl, variacaoPercentual(totalHoje, totalVendido(vendasAno)));
+            renderGraficoVendasFull(serieHoraria(vendasHoje), serieHoraria(vendasOntem));
+
+            const conta = fullSalesAccountEl && fullSalesAccountEl.value !== CONTA_TODAS_FULL ? ` em ${fullSalesAccountEl.value}` : '';
+            setSalesStatus(`Vendas Full atualizadas para hoje${conta}.`);
+        } catch (e) {
+            setSalesStatus(e && e.message ? `Erro ao carregar vendas Full: ${e.message}` : 'Erro ao carregar vendas Full.', 'error');
+        } finally {
+            if (btnAplicarVendasFull) btnAplicarVendasFull.disabled = false;
+        }
+    }
+
+    function setTabelaMensagem(texto) {
+        tbody.innerHTML = `<tr><td colspan="11">${escapeHtml(texto)}</td></tr>`;
+    }
+
+    function renderEnviarFull(lista = enviarFullDados) {
+        if (!fullSendAccountSummaryEl || !fullSendTableBodyEl) return;
+        const rows = Array.isArray(lista) ? lista : [];
+        if (!enviarFullContaSelecionada) {
+            fullSendAccountSummaryEl.textContent = 'Nenhuma conta selecionada.';
+            fullSendTableBodyEl.innerHTML = '<tr><td colspan="8">Selecione uma conta para carregar os itens Full.</td></tr>';
+            return;
+        }
+        const totalEstoque = rows.reduce((acc, row) => acc + estoqueFull(row), 0);
+        const totalGeral = rows.reduce((acc, row) => acc + totalVariacao(row), 0);
+        fullSendAccountSummaryEl.textContent = `${enviarFullContaSelecionada}: ${rows.length} item(ns), estoque disponivel ${formatarNumero(totalEstoque)}, total Full ${formatarNumero(totalGeral)}.`;
+        if (!rows.length) {
+            fullSendTableBodyEl.innerHTML = '<tr><td colspan="8">Nenhum item Full carregado para esta conta.</td></tr>';
+            return;
+        }
+        fullSendTableBodyEl.innerHTML = rows.map(row => `
+            <tr>
+                <td class="sku">${escapeHtml(idAnuncio(row) || '-')}</td>
+                <td class="sku">${escapeHtml(sku(row) || '-')}</td>
+                <td class="title">${escapeHtml(titulo(row))}</td>
+                <td class="num">${formatarNumero(estoqueFull(row))}</td>
+                <td class="num">${formatarNumero(indisponivelVariacao(row))}</td>
+                <td class="num">${formatarNumero(totalVariacao(row))}</td>
+                <td class="sku">${escapeHtml(primeiro(row, ['inventory_id']) || '-')}</td>
+                <td>${linkAnuncio(row) ? `<a class="link" href="${escapeHtml(linkAnuncio(row))}" target="_blank" rel="noopener">Abrir</a>` : '-'}</td>
+            </tr>
+        `).join('');
+    }
+
+    async function carregarEnviarFull(force = false) {
+        const conta = String(enviarFullContaSelecionada || '').trim();
+        if (!conta) {
+            enviarFullDados = [];
+            renderEnviarFull([]);
+            setSendStatus('Selecione uma conta para carregar os itens Full.', 'empty');
+            return;
+        }
+        if (btnAplicarEnviarFull) btnAplicarEnviarFull.disabled = true;
+        setSendStatus(`Carregando itens Full de ${conta}...`);
+        renderEnviarFull(enviarFullDados);
+        try {
+            enviarFullDados = await buscarAnunciosFullLoja(conta, force);
+            renderEnviarFull(enviarFullDados);
+            setSendStatus(`${enviarFullDados.length} item(ns) Full carregado(s) para ${conta}.`);
+        } catch (e) {
+            enviarFullDados = [];
+            renderEnviarFull([]);
+            setSendStatus(e && e.message ? `Erro ao carregar Enviar Full: ${e.message}` : 'Erro ao carregar Enviar Full.', 'error');
+        } finally {
+            if (btnAplicarEnviarFull) btnAplicarEnviarFull.disabled = false;
+        }
+    }
+
+    const transitoStatusLabels = {
+        aguardando_inicio: 'Aguardando inicio',
+        em_processamento: 'Em processamento',
+        finalizando: 'Finalizando',
+        finalizado: 'Finalizado',
+        recebimento_pendente: 'Recebimento pendente',
+        recebido: 'Recebido',
+        inativo: 'Inativo'
+    };
+
+    function transitoStatusLabel(status) {
+        return transitoStatusLabels[status] || transitoStatusLabels.aguardando_inicio;
+    }
+
+    function transitoDataBR(iso) {
+        const texto = String(iso || '').slice(0, 10);
+        const m = texto.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
+    }
+
+    function transitoMesLabel(date) {
+        const nomes = ['Janeiro', 'Fevereiro', 'Marco', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+        return `${nomes[date.getMonth()]} ${date.getFullYear()}`;
+    }
+
+    function transitoFiltrarPorConta(lista) {
+        const conta = String(transitoContaSelecionada || '').trim();
+        if (!conta) return lista;
+        return lista.filter(item => String(item.loja || '').trim() === conta);
+    }
+
+    function transitoCalendarioKey(date = transitoCalendarDate) {
+        const d = new Date(date);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    function transitoCalendarioPayloadAtual(payload = transitoCalendarioComercial) {
+        if (!payload) return false;
+        return `${payload.ano}-${String(payload.mes).padStart(2, '0')}` === transitoCalendarioKey();
+    }
+
+    function transitoMapaCalendarioComercial() {
+        if (!transitoCalendarioPayloadAtual()) return new Map();
+        return new Map((transitoCalendarioComercial.dias || []).map(item => [String(item.data || ''), item]));
+    }
+
+    function atualizarResumoCalendarioTransito() {
+        if (!transitoCalendarMeta) return;
+        const key = transitoCalendarioKey();
+        if (transitoCalendarioComercialLoadingKey === key && !transitoCalendarioPayloadAtual()) {
+            transitoCalendarMeta.innerHTML = '<span>Buscando feriados e dias comerciais...</span>';
+            return;
+        }
+        if (!transitoCalendarioPayloadAtual()) {
+            transitoCalendarMeta.innerHTML = '<span>Calendario comercial pendente</span>';
+            return;
+        }
+        const resumo = transitoCalendarioComercial.resumo || {};
+        const diasComerciais = Number(resumo.dias_comerciais || 0);
+        const feriados = Number(resumo.feriados || 0);
+        const erros = Array.isArray(transitoCalendarioComercial.erros)
+            ? transitoCalendarioComercial.erros.filter(Boolean)
+            : [];
+        transitoCalendarMeta.innerHTML = [
+            `<span>${formatarNumero(diasComerciais)} dias comerciais</span>`,
+            `<span>${feriados ? `${formatarNumero(feriados)} feriado(s)` : 'Sem feriados nacionais'}</span>`,
+            '<small>Feriados nacionais via BrasilAPI</small>',
+            erros.length ? `<small class="warn">${escapeHtml(erros[0])}</small>` : ''
+        ].filter(Boolean).join('');
+    }
+
+    async function carregarCalendarioComercialTransito(force = false) {
+        const mesAtual = new Date(transitoCalendarDate.getFullYear(), transitoCalendarDate.getMonth(), 1);
+        const ano = mesAtual.getFullYear();
+        const mes = mesAtual.getMonth() + 1;
+        const key = `${ano}-${String(mes).padStart(2, '0')}`;
+        if (!force && transitoCalendarioPayloadAtual() && transitoCalendarioKey() === key) {
+            atualizarResumoCalendarioTransito();
+            return;
+        }
+        if (!force && transitoCalendarioComercialLoadingKey === key) return;
+        transitoCalendarioComercialLoadingKey = key;
+        atualizarResumoCalendarioTransito();
+        try {
+            const payload = await fetchJsonFullCached(
+                chaveCacheFull('calendario_comercial', [ano, mes]),
+                `/api/full/calendario-comercial?ano=${ano}&mes=${mes}`,
+                { ttlMs: FULL_CACHE_TTL_FERIADOS_MS, force }
+            );
+            if (transitoCalendarioKey() !== key) return;
+            transitoCalendarioComercial = payload;
+        } catch (e) {
+            if (transitoCalendarioKey() === key) {
+                transitoCalendarioComercial = {
+                    ano,
+                    mes,
+                    dias: [],
+                    resumo: { dias_comerciais: 0, feriados: 0, fins_semana: 0 },
+                    erros: [e && e.message ? e.message : 'Nao foi possivel carregar feriados.']
+                };
+            }
+        } finally {
+            if (transitoCalendarioComercialLoadingKey === key) transitoCalendarioComercialLoadingKey = '';
+            renderCalendarioTransito();
+        }
+    }
+
+    async function fetchTransitoFull(url, options = {}) {
+        const headers = obterAuthHeaders(options.headers || {});
+        const resp = await fetch(url, { ...options, headers, cache: 'no-store' });
+        if (!resp.ok) {
+            let msg = `HTTP ${resp.status}`;
+            try {
+                const payload = await resp.json();
+                msg = payload.detail || payload.message || msg;
+            } catch (_e) {}
+            throw new Error(msg);
+        }
+        return resp;
+    }
+
+    async function carregarTransitoFull(force = false) {
+        transitoCarregado = true;
+        if (btnAtualizarTransitoFull) btnAtualizarTransitoFull.disabled = true;
+        setTransitoStatus('Carregando envios em transito...');
+        try {
+            if (!lojasMl.length && force) await carregarLojasMl(true);
+            const resp = await fetchTransitoFull('/api/full/envios-transito?status=all');
+            const payload = await resp.json();
+            transitoEnvios = Array.isArray(payload.results) ? payload.results : [];
+            renderTransitoFull({ forceCalendario: force });
+            const filtrados = transitoFiltrarPorConta(transitoEnvios);
+            setTransitoStatus(`${filtrados.length} envio(s) carregado(s)${transitoContaSelecionada ? ` para ${transitoContaSelecionada}` : ''}.`);
+        } catch (e) {
+            transitoEnvios = [];
+            renderTransitoFull({ forceCalendario: force });
+            setTransitoStatus(e && e.message ? `Erro ao carregar envios: ${e.message}` : 'Erro ao carregar envios.', 'error');
+        } finally {
+            if (btnAtualizarTransitoFull) btnAtualizarTransitoFull.disabled = false;
+        }
+    }
+
+    function renderTransitoFull(options = {}) {
+        renderCalendarioTransito();
+        carregarCalendarioComercialTransito(Boolean(options.forceCalendario));
+        renderInativosTransito();
+    }
+
+    function renderCalendarioTransito() {
+        if (!transitoCalendarGrid || !transitoCalendarTitle) return;
+        const mesAtual = new Date(transitoCalendarDate.getFullYear(), transitoCalendarDate.getMonth(), 1);
+        transitoCalendarTitle.textContent = transitoMesLabel(mesAtual);
+        atualizarResumoCalendarioTransito();
+        const diasSemana = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB'];
+        const inicio = new Date(mesAtual);
+        inicio.setDate(1 - inicio.getDay());
+        const ativos = transitoFiltrarPorConta(transitoEnvios).filter(item => item.ativo && item.status !== 'inativo');
+        const porDia = {};
+        ativos.forEach(item => {
+            const key = String(item.data_envio || item.created_at || '').slice(0, 10);
+            if (!key) return;
+            (porDia[key] ||= []).push(item);
+        });
+        const diasComerciais = transitoMapaCalendarioComercial();
+        const hoje = hojeISO();
+        const partes = diasSemana.map(dia => `<div class="transito-weekday">${dia}</div>`);
+        for (let i = 0; i < 42; i++) {
+            const dia = new Date(inicio);
+            dia.setDate(inicio.getDate() + i);
+            const key = dataISO(dia);
+            const enviosDia = porDia[key] || [];
+            const infoComercial = diasComerciais.get(key);
+            const mesDoCalendario = dia.getMonth() === mesAtual.getMonth() && dia.getFullYear() === mesAtual.getFullYear();
+            const fimSemana = infoComercial ? Boolean(infoComercial.fim_semana) : dia.getDay() === 0 || dia.getDay() === 6;
+            const feriado = mesDoCalendario && infoComercial ? Boolean(infoComercial.feriado) : false;
+            const diaComercial = mesDoCalendario && infoComercial ? Boolean(infoComercial.dia_comercial) : (mesDoCalendario && !fimSemana);
+            const nomeFeriado = String(infoComercial?.nome_feriado || '').trim();
+            const etiquetaDia = feriado
+                ? `<span class="transito-day-label holiday" title="${escapeHtml(nomeFeriado || 'Feriado nacional')}">${escapeHtml(nomeFeriado || 'Feriado')}</span>`
+                : (diaComercial ? '<span class="transito-day-label business">Dia comercial</span>' : '');
+            const classes = [
+                'transito-day',
+                !mesDoCalendario ? 'other' : '',
+                diaComercial ? 'business-day' : '',
+                fimSemana ? 'weekend' : '',
+                feriado ? 'holiday' : '',
+                key === hoje ? 'today' : ''
+            ].filter(Boolean).join(' ');
+            partes.push(`
+                <div class="${classes}">
+                    <strong>${dia.getDate()}</strong>
+                    ${etiquetaDia}
+                    ${enviosDia.slice(0, 3).map(item => `<span class="transito-day-tag st-${escapeHtml(item.status || 'aguardando_inicio')}" data-transito-open="${escapeHtml(item.id)}" title="${escapeHtml(item.codigo_envio || '')}">${escapeHtml(item.codigo_envio || '-')}: ${formatarNumero(item.total_unidades || 0)} un.</span>`).join('')}
+                    ${enviosDia.length > 3 ? `<span class="transito-day-tag st-em_processamento">+${enviosDia.length - 3} envio(s)</span>` : ''}
+                </div>
+            `);
+        }
+        transitoCalendarGrid.innerHTML = partes.join('');
+    }
+
+    function renderInativosTransito() {
+        if (!transitoInativosList) return;
+        const termo = transitoBusca ? transitoBusca.value.trim().toLowerCase() : '';
+        let rows = transitoFiltrarPorConta(transitoEnvios).filter(item => !item.ativo || item.status === 'inativo');
+        if (termo) {
+            rows = rows.filter(item => {
+                const itens = Array.isArray(item.itens) ? item.itens : [];
+                const textoItens = itens.map(i => `${i.sku || ''} ${i.mlb || ''} ${i.produto || ''}`).join(' ');
+                return [item.codigo_envio, item.loja, item.status, textoItens].some(v => String(v || '').toLowerCase().includes(termo));
+            });
+        }
+        rows.sort((a, b) => {
+            if (transitoSort === 'data') return String(b.data_envio || '').localeCompare(String(a.data_envio || '')) || String(b.codigo_envio || '').localeCompare(String(a.codigo_envio || ''));
+            return String(a.codigo_envio || '').localeCompare(String(b.codigo_envio || ''), 'pt-BR', { numeric: true });
+        });
+        if (transitoTotalInativos) transitoTotalInativos.textContent = `${rows.length} envio(s)`;
+        if (!rows.length) {
+            transitoInativosList.innerHTML = '<div class="transito-card"><div>Nenhum envio inativo encontrado.</div></div>';
+            return;
+        }
+        transitoInativosList.innerHTML = rows.map(item => `
+            <article class="transito-card" data-transito-id="${item.id}">
+                <div>
+                    <div class="transito-card-title">#${escapeHtml(item.codigo_envio || item.id)}</div>
+                    <div class="transito-card-meta">
+                        <span>${formatarNumero(item.total_unidades || 0)} unidades</span>
+                        <span>${transitoDataBR(item.data_envio)}</span>
+                        <span>${escapeHtml(item.loja || 'Sem conta')}</span>
+                        <span class="transito-status st-${escapeHtml(item.status || 'inativo')}">${escapeHtml(transitoStatusLabel(item.status || 'inativo'))}</span>
+                    </div>
+                </div>
+                <div class="transito-card-actions">
+                    <button class="btn" type="button" data-transito-action="edit">Editar</button>
+                    <button class="btn" type="button" data-transito-action="products">Lista</button>
+                    ${item.arquivo_pdf ? '<button class="btn" type="button" data-transito-action="pdf">PDF</button>' : ''}
+                    <button class="btn" type="button" data-transito-action="reactivate">Reativar</button>
+                    <button class="btn" type="button" data-transito-action="delete">Excluir</button>
+                </div>
+            </article>
+        `).join('');
+    }
+
+    function transitoItemPorId(id) {
+        return transitoEnvios.find(item => String(item.id) === String(id));
+    }
+
+    function abrirManualTransito(item = null) {
+        if (!transitoManualPanel) return;
+        const envio = item || {};
+        transitoManualId.value = envio.id || '';
+        transitoManualCodigo.value = envio.codigo_envio || '';
+        transitoManualData.value = String(envio.data_envio || hojeISO()).slice(0, 10);
+        transitoManualStatus.value = envio.status || 'aguardando_inicio';
+        transitoManualUnidades.value = envio.total_unidades || '';
+        transitoManualObs.value = envio.observacoes || '';
+        const itens = Array.isArray(envio.itens) ? envio.itens : [];
+        transitoManualItens.value = itens.map(i => `${i.sku || ''}; ${i.produto || ''}; ${i.quantidade || 0}`).join('\n');
+        transitoManualPanel.hidden = false;
+        transitoManualCodigo.focus();
+    }
+
+    function fecharManualTransito() {
+        if (!transitoManualPanel) return;
+        transitoManualPanel.hidden = true;
+        [transitoManualId, transitoManualCodigo, transitoManualData, transitoManualUnidades, transitoManualItens, transitoManualObs].forEach(el => { if (el) el.value = ''; });
+        if (transitoManualStatus) transitoManualStatus.value = 'aguardando_inicio';
+    }
+
+    function parseItensManualTransito() {
+        return String(transitoManualItens?.value || '').split(/\r?\n/).map(linha => {
+            const partes = linha.split(';').map(p => p.trim());
+            if (!partes.some(Boolean)) return null;
+            return { sku: partes[0] || '', produto: partes[1] || '', quantidade: numero(partes[2] || 0), variacao: '', mlb: '' };
+        }).filter(Boolean);
+    }
+
+    async function salvarManualTransito() {
+        const id = String(transitoManualId?.value || '').trim();
+        const payload = {
+            codigo_envio: transitoManualCodigo.value.trim(),
+            loja: transitoContaSelecionada,
+            data_envio: transitoManualData.value || hojeISO(),
+            status: transitoManualStatus.value || 'aguardando_inicio',
+            total_unidades: numero(transitoManualUnidades.value),
+            observacoes: transitoManualObs.value.trim(),
+            ativo: transitoManualStatus.value !== 'inativo',
+            itens: parseItensManualTransito()
+        };
+        if (!payload.codigo_envio) {
+            setTransitoStatus('Informe o numero do envio.', 'error');
+            return;
+        }
+        try {
+            const options = {
+                method: id ? 'PATCH' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            };
+            const url = id ? `/api/full/envios-transito/${encodeURIComponent(id)}` : '/api/full/envios-transito/manual';
+            await fetchTransitoFull(url, options);
+            fecharManualTransito();
+            await carregarTransitoFull(true);
+            setTransitoStatus('Envio salvo com sucesso.');
+        } catch (e) {
+            setTransitoStatus(e && e.message ? `Erro ao salvar envio: ${e.message}` : 'Erro ao salvar envio.', 'error');
+        }
+    }
+
+    async function uploadTransitoPdfs(files) {
+        const lista = Array.from(files || []).filter(file => /\.pdf$/i.test(file.name || ''));
+        if (!lista.length) {
+            setTransitoStatus('Selecione ao menos um PDF valido.', 'error');
+            return;
+        }
+        if (lista.length > 20) {
+            setTransitoStatus('Envie no maximo 20 PDFs por vez.', 'error');
+            return;
+        }
+        const form = new FormData();
+        lista.forEach(file => form.append('files', file));
+        form.append('loja', transitoContaSelecionada || '');
+        setTransitoStatus(`Enviando ${lista.length} PDF(s)...`);
+        try {
+            await fetchTransitoFull('/api/full/envios-transito/upload', { method: 'POST', body: form });
+            await carregarTransitoFull(true);
+            setTransitoStatus(`${lista.length} PDF(s) processado(s). Confira os dados extraidos.`);
+        } catch (e) {
+            setTransitoStatus(e && e.message ? `Erro no upload: ${e.message}` : 'Erro no upload dos PDFs.', 'error');
+        }
+    }
+
+    function mostrarProdutosTransito(item) {
+        if (!transitoProductsPanel || !item) return;
+        const itens = Array.isArray(item.itens) ? item.itens : [];
+        transitoProductsPanel.hidden = false;
+        transitoProductsPanel.innerHTML = `
+            <div class="transito-list-head">
+                <div>
+                    <h3>Produtos do envio #${escapeHtml(item.codigo_envio || item.id)}</h3>
+                    <span>${formatarNumero(item.total_unidades || 0)} unidade(s), ${itens.length} produto(s)</span>
+                </div>
+                <button class="btn" type="button" id="btnFecharProdutosTransito">Fechar</button>
+            </div>
+            <div class="transito-products-list">
+                ${itens.length ? itens.map(prod => `
+                    <div class="transito-product-row">
+                        <strong>${escapeHtml(prod.sku || '-')}</strong>
+                        <span>${escapeHtml(prod.produto || '-')}</span>
+                        <span>${formatarNumero(prod.quantidade || 0)} un.</span>
+                    </div>
+                `).join('') : '<div class="transito-product-row"><span>Nenhum produto extraido. Edite o envio para preencher manualmente.</span></div>'}
+            </div>
+        `;
+        document.getElementById('btnFecharProdutosTransito')?.addEventListener('click', () => {
+            transitoProductsPanel.hidden = true;
+        });
+    }
+
+    async function baixarPdfTransito(item) {
+        if (!item) return;
+        try {
+            const resp = await fetchTransitoFull(`/api/full/envios-transito/${encodeURIComponent(item.id)}/pdf`);
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            window.open(url, '_blank');
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+        } catch (e) {
+            setTransitoStatus(e && e.message ? `Erro ao abrir PDF: ${e.message}` : 'Erro ao abrir PDF.', 'error');
+        }
+    }
+
+    async function acaoTransito(id, action) {
+        const item = transitoItemPorId(id);
+        if (!item) return;
+        if (action === 'products') {
+            mostrarProdutosTransito(item);
+            return;
+        }
+        if (action === 'edit') {
+            abrirManualTransito(item);
+            return;
+        }
+        if (action === 'pdf') {
+            baixarPdfTransito(item);
+            return;
+        }
+        try {
+            if (action === 'reactivate') {
+                await fetchTransitoFull(`/api/full/envios-transito/${encodeURIComponent(id)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ativo: true, status: 'aguardando_inicio' })
+                });
+                await carregarTransitoFull(true);
+                setTransitoStatus('Envio reativado.');
+            }
+            if (action === 'delete') {
+                if (!confirm('Excluir este envio definitivamente?')) return;
+                await fetchTransitoFull(`/api/full/envios-transito/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                await carregarTransitoFull(true);
+                setTransitoStatus('Envio excluido.');
+            }
+        } catch (e) {
+            setTransitoStatus(e && e.message ? `Erro na acao: ${e.message}` : 'Erro ao atualizar envio.', 'error');
+        }
+    }
+
+    function renderLinhaVariacoes(row) {
+        const lista = variacoes(row);
+        if (!lista.length) return '';
+        const linhas = lista.map((variacao, indice) => `
+            <tr>
+                <td>${escapeHtml(tituloVariacao(variacao, indice))}</td>
+                <td class="sku">${escapeHtml(idVariacao(variacao))}</td>
+                <td class="sku">${escapeHtml(skuVariacao(variacao))}</td>
+                <td>${escapeHtml(inventoryVariacao(variacao))}</td>
+                <td class="num">${formatarNumero(estoqueVariacao(variacao))}</td>
+                <td class="num">${formatarNumero(indisponivelVariacao(variacao))}</td>
+                <td class="num">${formatarNumero(totalVariacao(variacao))}</td>
+                <td class="num">${formatarNumero(vendidosVariacao(variacao))}</td>
+                <td class="num">${formatarMoeda(precoVariacao(variacao, row))}</td>
+            </tr>
+        `).join('');
+        return `
+            <tr class="variation-row">
+                <td colspan="11">
+                    <div class="variation-panel">
+                        <div class="variation-title">Variações de ${escapeHtml(idAnuncio(row) || titulo(row))}</div>
+                        <div class="variation-table-wrap">
+                            <table class="variation-table">
+                                <thead>
+                                    <tr>
+                                        <th>Variação</th>
+                                        <th>ID variação</th>
+                                        <th>SKU</th>
+                                        <th>Inventory ID</th>
+                                        <th class="num">Estoque Full</th>
+                                        <th class="num">Indisponível</th>
+                                        <th class="num">Total Full</th>
+                                        <th class="num">Vendidos</th>
+                                        <th class="num">Preço</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${linhas}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+
+    function renderLojasMl() {
+        renderContasVendasFull();
+        atualizarTotaisContasFull();
+        renderTodosCardsContasFull();
+    }
+
+    function ordenarLista(lista) {
+        const modo = ordenarEl.value;
+        return lista.slice().sort((a, b) => {
+            if (modo === 'estoque_asc') return estoqueFull(a) - estoqueFull(b) || sku(a).localeCompare(sku(b), 'pt-BR', { numeric: true });
+            if (modo === 'preco_desc') return preco(b) - preco(a) || sku(a).localeCompare(sku(b), 'pt-BR', { numeric: true });
+            if (modo === 'preco_asc') return preco(a) - preco(b) || sku(a).localeCompare(sku(b), 'pt-BR', { numeric: true });
+            if (modo === 'sku_az') return sku(a).localeCompare(sku(b), 'pt-BR', { numeric: true });
+            if (modo === 'titulo_az') return titulo(a).localeCompare(titulo(b), 'pt-BR', { numeric: true });
+            return estoqueFull(b) - estoqueFull(a) || sku(a).localeCompare(sku(b), 'pt-BR', { numeric: true });
+        });
+    }
+
+    function filtrar() {
+        const termo = buscaEl.value.trim().toLowerCase();
+        let lista = dados;
+        if (termo) {
+            lista = lista.filter(row => [idAnuncio(row), sku(row), titulo(row), loja(row), statusAnuncio(row)]
+                .some(valor => String(valor).toLowerCase().includes(termo)));
+        }
+        lista = ordenarLista(lista);
+        renderResumo(lista);
+        renderTabela(lista);
+        renderCoberturaFull(lista);
+        if (!lojaSelecionada) {
+            setStatus('Clique em uma loja para buscar os anuncios Full pelo Mercado Livre.', 'empty');
+            return;
+        }
+        setStatus(lista.length ? `${lista.length} anuncio(s) Full encontrados em ${lojaSelecionada}.` : `Nenhum anuncio Full encontrado em ${lojaSelecionada}.`, lista.length ? '' : 'empty');
+    }
+
+    function renderResumo(lista) {
+        const totalEstoque = lista.reduce((acc, row) => acc + estoqueFull(row), 0);
+        const totalVendidos = lista.reduce((acc, row) => acc + vendidos(row), 0);
+        const valorEstoque = lista.reduce((acc, row) => acc + (estoqueFull(row) * preco(row)), 0);
+        resumoEl.innerHTML = [
+            ['Loja selecionada', lojaSelecionada || '-'],
+            ['Anuncios Full', lista.length],
+            ['Estoque Full', formatarNumero(totalEstoque)],
+            ['Vendidos', formatarNumero(totalVendidos)],
+            ['Valor estoque', formatarMoeda(valorEstoque)],
+            ['Lojas ML', lojasMl.length],
+        ].map(([label, valor]) => `<div class="summary-card"><span>${label}</span><strong>${valor}</strong></div>`).join('');
+    }
+
+    function renderTabela(lista) {
+        if (!lista.length) {
+            setTabelaMensagem(lojaSelecionada ? 'Nenhum anuncio Full para exibir.' : 'Selecione uma loja para consultar os anuncios Full.');
+            return;
+        }
+        tbody.innerHTML = lista.map((row, indice) => {
+            const listaVariacoes = variacoes(row);
+            const chave = chaveVariacoes(row, indice);
+            const aberta = variacoesAbertas.has(chave);
+            const botaoVariacoes = listaVariacoes.length
+                ? `<button class="variation-toggle" type="button" data-variation-key="${escapeHtml(chave)}" aria-expanded="${aberta ? 'true' : 'false'}">Variações (${listaVariacoes.length})</button>`
+                : '';
+            const linhaPrincipal = `
+                <tr>
+                    <td>${foto(row) ? `<img class="thumb" src="${escapeHtml(foto(row))}" alt="">` : '-'}</td>
+                    <td class="sku">${escapeHtml(idAnuncio(row) || '-')}</td>
+                    <td class="sku"><div>${escapeHtml(sku(row) || '-')}</div>${botaoVariacoes}</td>
+                    <td class="title">${escapeHtml(titulo(row))}</td>
+                    <td>${escapeHtml(loja(row))}</td>
+                    <td class="num">${formatarNumero(estoqueFull(row))}</td>
+                    <td class="num">${formatarNumero(vendidos(row))}</td>
+                    <td class="num">${formatarMoeda(preco(row))}</td>
+                    <td>${escapeHtml(statusAnuncio(row))}</td>
+                    <td>${escapeHtml(tipoAnuncio(row))}</td>
+                    <td>${linkAnuncio(row) ? `<a class="link" href="${escapeHtml(linkAnuncio(row))}" target="_blank" rel="noopener">Abrir</a>` : '-'}</td>
+                </tr>
+            `;
+            return linhaPrincipal + (listaVariacoes.length && aberta ? renderLinhaVariacoes(row) : '');
+        }).join('');
+    }
+
+    async function carregarLojasMl(force = false) {
+        setStatus('Carregando lojas com Mercado Livre vinculado...');
+        btnAtualizar.disabled = true;
+        try {
+            const lojasPayload = await fetchJsonFullCached(
+                chaveCacheFull('lojas'),
+                '/api/full/lojas-mercadolivre',
+                { ttlMs: FULL_CACHE_TTL_MS, force }
+            );
+            lojasMl = Array.isArray(lojasPayload) ? lojasPayload : (Array.isArray(lojasPayload.lojas) ? lojasPayload.lojas : []);
+            if (lojaSelecionada && !lojasMl.some(item => String(item.nome || '') === lojaSelecionada)) {
+                lojaSelecionada = '';
+                dados = [];
+                variacoesAbertas.clear();
+            }
+            if (enviarFullContaSelecionada && !lojasMl.some(item => String(item.nome || '') === enviarFullContaSelecionada)) {
+                enviarFullContaSelecionada = '';
+                enviarFullDados = [];
+            }
+            if (transitoContaSelecionada && !lojasMl.some(item => String(item.nome || '') === transitoContaSelecionada)) {
+                transitoContaSelecionada = '';
+            }
+            renderLojasMl();
+            renderResumo(dados);
+            renderCoberturaFull(dados);
+            renderEnviarFull(enviarFullDados);
+            renderTransitoFull();
+            if (!lojaSelecionada) {
+                setTabelaMensagem('Clique em uma loja para consultar os anuncios Full.');
+                setStatus(lojasMl.length ? 'Clique em uma loja para buscar os anuncios Full pelo Mercado Livre.' : 'Nenhuma loja com Mercado Livre vinculado.', lojasMl.length ? 'empty' : 'error');
+            }
+        } catch (e) {
+            dados = [];
+            lojasMl = [];
+            lojaSelecionada = '';
+            enviarFullContaSelecionada = '';
+            enviarFullDados = [];
+            transitoContaSelecionada = '';
+            transitoEnvios = [];
+            variacoesAbertas.clear();
+            renderLojasMl();
+            renderResumo([]);
+            renderCoberturaFull([]);
+            renderEnviarFull([]);
+            renderTransitoFull();
+            setTabelaMensagem('Nenhum item para exibir.');
+            setStatus(e && e.message ? e.message : 'Erro ao carregar lojas do Mercado Livre.', 'error');
+        } finally {
+            btnAtualizar.disabled = false;
+        }
+    }
+
+    async function carregarAnunciosLoja(nomeLoja, force = false) {
+        const nome = String(nomeLoja || '').trim();
+        if (!nome || carregando) return;
+        lojaSelecionada = nome;
+        dados = [];
+        vendasFull60Map = new Map();
+        vendasFull60Ready = false;
+        variacoesAbertas.clear();
+        buscaEl.value = '';
+        carregando = true;
+        btnAtualizar.disabled = true;
+        renderLojasMl();
+        renderResumo([]);
+        renderCoberturaFull([]);
+        setTabelaMensagem(`Buscando anuncios Full da loja ${nome}...`);
+        setStatus(`Buscando anuncios Full da loja ${nome} pelo Mercado Livre...`);
+        try {
+            dados = await buscarAnunciosFullLoja(nome, force);
+            filtrar();
+            carregarCoberturaFull(force);
+        } catch (e) {
+            dados = [];
+            vendasFull60Map = new Map();
+            vendasFull60Ready = false;
+            renderResumo([]);
+            renderCoberturaFull([]);
+            setTabelaMensagem('Nenhum anuncio Full para exibir.');
+            setStatus(e && e.message ? e.message : 'Erro ao carregar anuncios Full da loja.', 'error');
+        } finally {
+            carregando = false;
+            btnAtualizar.disabled = false;
+        }
+    }
+
+    function selecionarContaFull(aba, conta) {
+        const valor = String(conta || '').trim();
+        if (!valor) return;
+        if (aba === 'estoque') {
+            carregarAnunciosLoja(valor);
+            return;
+        }
+        if (aba === 'vendas') {
+            if (fullSalesAccountEl) fullSalesAccountEl.value = valor || CONTA_TODAS_FULL;
+            vendasFullCarregado = false;
+            renderLojasMl();
+            carregarVendasFull();
+            return;
+        }
+        if (aba === 'abc') {
+            if (fullAbcAccountEl) fullAbcAccountEl.value = valor || CONTA_TODAS_FULL;
+            abcCarregado = false;
+            renderLojasMl();
+            carregarCurvaAbcFull();
+            return;
+        }
+        if (aba === 'enviar') {
+            if (valor === CONTA_TODAS_FULL) return;
+            enviarFullContaSelecionada = valor;
+            enviarFullDados = [];
+            renderLojasMl();
+            carregarEnviarFull();
+        }
+        if (aba === 'transito') {
+            if (valor === CONTA_TODAS_FULL) return;
+            transitoContaSelecionada = valor;
+            renderLojasMl();
+            renderTransitoFull();
+            carregarTransitoFull(true);
+        }
+    }
+
+    if (!verificarSessao()) {
+        // verificarSessao redireciona quando nao ha token.
+    } else {
+        const permissoes = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
+        if (!(permissoes.full === true || permissoes.mercado_full === true)) {
+            lojasMl = [];
+            lojaSelecionada = '';
+            variacoesAbertas.clear();
+            renderLojasMl();
+            renderResumo([]);
+            renderCoberturaFull([]);
+            renderEnviarFull([]);
+            renderTransitoFull();
+            setTabelaMensagem('Sem permissao para exibir os anuncios Full.');
+            setStatus('Seu usuario nao tem permissao para acessar o modulo Full.', 'error');
+        } else {
+            carregarLojasMl();
+        }
+    }
+
+    buscaEl.addEventListener('input', filtrar);
+    ordenarEl.addEventListener('change', filtrar);
+    tbody.addEventListener('click', (event) => {
+        const botao = event.target.closest('[data-variation-key]');
+        if (!botao) return;
+        const chave = botao.dataset.variationKey || '';
+        if (!chave) return;
+        if (variacoesAbertas.has(chave)) {
+            variacoesAbertas.delete(chave);
+        } else {
+            variacoesAbertas.add(chave);
+        }
+        filtrar();
+    });
+    document.querySelectorAll('[data-account-cards]').forEach(container => {
+        container.addEventListener('click', (event) => {
+            const card = event.target.closest('[data-account-card]');
+            if (!card) return;
+            selecionarContaFull(card.dataset.accountTab || container.dataset.accountCards || 'estoque', card.dataset.conta || card.dataset.loja || '');
+        });
+    });
+    tabButtons.forEach(btn => {
+        btn.addEventListener('click', () => trocarAbaFull(btn.dataset.fullTab || 'estoque'));
+    });
+    if (btnAplicarVendasFull) {
+        btnAplicarVendasFull.addEventListener('click', () => carregarVendasFull(true));
+    }
+    if (btnAplicarEnviarFull) {
+        btnAplicarEnviarFull.addEventListener('click', () => carregarEnviarFull(true));
+    }
+    if (btnAplicarAbcFull) {
+        btnAplicarAbcFull.addEventListener('click', () => carregarCurvaAbcFull(true));
+    }
+    if (btnAtualizarTransitoFull) {
+        btnAtualizarTransitoFull.addEventListener('click', () => carregarTransitoFull(true));
+    }
+    if (btnTransitoSelectFiles && transitoFileInput) {
+        btnTransitoSelectFiles.addEventListener('click', () => transitoFileInput.click());
+        transitoFileInput.addEventListener('change', () => {
+            uploadTransitoPdfs(transitoFileInput.files);
+            transitoFileInput.value = '';
+        });
+    }
+    if (transitoDropZone) {
+        transitoDropZone.addEventListener('click', (event) => {
+            if (event.target.closest('button')) return;
+            transitoFileInput?.click();
+        });
+        ['dragenter', 'dragover'].forEach(evt => {
+            transitoDropZone.addEventListener(evt, event => {
+                event.preventDefault();
+                transitoDropZone.classList.add('dragover');
+            });
+        });
+        ['dragleave', 'drop'].forEach(evt => {
+            transitoDropZone.addEventListener(evt, event => {
+                event.preventDefault();
+                transitoDropZone.classList.remove('dragover');
+            });
+        });
+        transitoDropZone.addEventListener('drop', event => uploadTransitoPdfs(event.dataTransfer?.files));
+    }
+    if (btnTransitoManual) btnTransitoManual.addEventListener('click', () => abrirManualTransito());
+    if (btnTransitoSalvarManual) btnTransitoSalvarManual.addEventListener('click', salvarManualTransito);
+    if (btnTransitoCancelarManual) btnTransitoCancelarManual.addEventListener('click', fecharManualTransito);
+    if (btnTransitoMesAnterior) {
+        btnTransitoMesAnterior.addEventListener('click', () => {
+            transitoCalendarDate = new Date(transitoCalendarDate.getFullYear(), transitoCalendarDate.getMonth() - 1, 1);
+            renderCalendarioTransito();
+            carregarCalendarioComercialTransito();
+        });
+    }
+    if (btnTransitoProximoMes) {
+        btnTransitoProximoMes.addEventListener('click', () => {
+            transitoCalendarDate = new Date(transitoCalendarDate.getFullYear(), transitoCalendarDate.getMonth() + 1, 1);
+            renderCalendarioTransito();
+            carregarCalendarioComercialTransito();
+        });
+    }
+    if (transitoCalendarGrid) {
+        transitoCalendarGrid.addEventListener('click', event => {
+            const tag = event.target.closest('[data-transito-open]');
+            if (!tag) return;
+            const item = transitoItemPorId(tag.dataset.transitoOpen);
+            if (item) mostrarProdutosTransito(item);
+        });
+    }
+    if (transitoBusca) transitoBusca.addEventListener('input', renderInativosTransito);
+    if (btnTransitoSortEnvio) {
+        btnTransitoSortEnvio.addEventListener('click', () => {
+            transitoSort = 'envio';
+            btnTransitoSortEnvio.classList.add('sales-primary');
+            btnTransitoSortData?.classList.remove('sales-primary');
+            renderInativosTransito();
+        });
+    }
+    if (btnTransitoSortData) {
+        btnTransitoSortData.addEventListener('click', () => {
+            transitoSort = 'data';
+            btnTransitoSortData.classList.add('sales-primary');
+            btnTransitoSortEnvio?.classList.remove('sales-primary');
+            renderInativosTransito();
+        });
+    }
+    if (transitoInativosList) {
+        transitoInativosList.addEventListener('click', event => {
+            const btn = event.target.closest('[data-transito-action]');
+            if (!btn) return;
+            const card = btn.closest('[data-transito-id]');
+            if (!card) return;
+            acaoTransito(card.dataset.transitoId, btn.dataset.transitoAction);
+        });
+    }
+    abcOrderInputs.forEach(input => {
+        input.addEventListener('change', () => {
+            abcOrder = input.value === 'valor' ? 'valor' : 'quantidade';
+            periodoCurvaAbc().forEach(periodo => aplicarClasseAbc(abcRows, periodo.key));
+            renderCurvaAbc();
+        });
+    });
+    if (btnSortCoverageDays) {
+        btnSortCoverageDays.addEventListener('click', () => {
+            coberturaSort = 'dias';
+            btnSortCoverageDays.classList.add('active');
+            if (btnSortCoverageSales) btnSortCoverageSales.classList.remove('active');
+            renderTabelaCobertura();
+        });
+    }
+    if (btnSortCoverageSales) {
+        btnSortCoverageSales.addEventListener('click', () => {
+            coberturaSort = 'venda';
+            btnSortCoverageSales.classList.add('active');
+            if (btnSortCoverageDays) btnSortCoverageDays.classList.remove('active');
+            renderTabelaCobertura();
+        });
+    }
+    if (btnExportCoverageFull) {
+        btnExportCoverageFull.addEventListener('click', exportarCoberturaFull);
+    }
+    if (fullCoverageChipsEl) {
+        fullCoverageChipsEl.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-coverage-filter]');
+            if (!btn) return;
+            aplicarFiltroCobertura(btn.dataset.coverageFilter || 'todos');
+        });
+    }
+    [coverageRevenueStackEl, coverageTurnoverStackEl].forEach(el => {
+        if (!el) return;
+        el.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-coverage-filter]');
+            if (!btn) return;
+            aplicarFiltroCobertura(btn.dataset.coverageFilter || 'todos');
+        });
+    });
+    if (fullCoverageTableBodyEl) {
+        fullCoverageTableBodyEl.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-coverage-action]');
+            if (!btn) return;
+            executarAcaoCobertura(btn.dataset.coverageAction || '', btn.dataset.sku || '', btn.dataset.mlb || '');
+        });
+    }
+    if (fullAbcTableBodyEl) {
+        fullAbcTableBodyEl.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-coverage-action]');
+            if (!btn) return;
+            executarAcaoCobertura(btn.dataset.coverageAction || '', btn.dataset.sku || '', btn.dataset.mlb || '');
+        });
+    }
+    if (btnCoverageSummary && btnCoverageDetails && coverageDetailTable) {
+        btnCoverageSummary.addEventListener('click', () => {
+            btnCoverageSummary.classList.add('active');
+            btnCoverageDetails.classList.remove('active');
+            coverageDetailTable.hidden = true;
+        });
+        btnCoverageDetails.addEventListener('click', () => {
+            btnCoverageDetails.classList.add('active');
+            btnCoverageSummary.classList.remove('active');
+            coverageDetailTable.hidden = false;
+        });
+        coverageDetailTable.hidden = true;
+    }
+    btnAtualizar.addEventListener('click', () => {
+        if (abaAtiva === 'vendas') {
+            carregarVendasFull(true);
+            return;
+        }
+        if (abaAtiva === 'enviar') {
+            carregarEnviarFull(true);
+            return;
+        }
+        if (abaAtiva === 'abc') {
+            carregarCurvaAbcFull(true);
+            return;
+        }
+        if (abaAtiva === 'transito') {
+            carregarTransitoFull(true);
+            return;
+        }
+        if (lojaSelecionada) {
+            carregarAnunciosLoja(lojaSelecionada, true);
+            return;
+        }
+        carregarLojasMl(true);
+    });
+</script>
+</body>
+</html>

@@ -359,7 +359,10 @@ function registerAutoUpdateEvents() {
         sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
     });
     autoUpdater.on('update-downloaded', (info) => {
-        sendUpdateStatus('downloaded', { updateInfo: normalizeUpdateInfo(info) });
+        sendUpdateStatus('downloaded', {
+            updateInfo: normalizeUpdateInfo(info),
+            autoInstall: true
+        });
         const timer = setTimeout(() => {
             installDownloadedUpdateSafely(info).catch((err) => {
                 logElectronLifecycle('auto-update-auto-install-error', err);

@@ -460,6 +460,47 @@ function obterAuthHeaders(extra) {
     return headers;
 }
 
+(function initDriveBackupAutomatico() {
+    if (window.__jkDriveBackupAutoInit) return;
+    window.__jkDriveBackupAutoInit = true;
+
+    const INTERVALO_MS = 5 * 60 * 1000;
+    let executando = false;
+    let ultimaExecucao = 0;
+
+    async function executarBackupSeMudou(motivo) {
+        if (executando || !obterToken() || tokenSessaoExpirado()) return null;
+        if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimaExecucao < 30000) return null;
+        ultimaExecucao = agora;
+        executando = true;
+        try {
+            const resp = await fetch('/api/drive-sync/backup-if-changed', {
+                method: 'POST',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && data.action && !['synced', 'not_linked', 'empty'].includes(data.action)) {
+                console.info('[Drive Sync]', data.message || data.action);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Drive Sync]', err);
+            return null;
+        } finally {
+            executando = false;
+        }
+    }
+
+    window.jkDriveBackupNow = () => executarBackupSeMudou('manual');
+    setTimeout(() => executarBackupSeMudou('inicio'), 60000);
+    setInterval(() => executarBackupSeMudou('intervalo'), INTERVALO_MS);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') executarBackupSeMudou('hidden');
+    });
+})();
+
 /** Remove dados de sessão e redireciona para login. */
 function encerrarSessao() {
     localStorage.removeItem('access_token');
