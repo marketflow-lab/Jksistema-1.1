@@ -166,6 +166,29 @@
         }
         .btn-primary:hover { background: #000; }
         .status { margin-top: 10px; color: #555; }
+        .status.status-running,
+        .status.status-success,
+        .status.status-error {
+            border: 1px solid #d7e6fb;
+            border-radius: 8px;
+            padding: 10px 12px;
+            line-height: 1.4;
+        }
+        .status.status-running {
+            background: #eff6ff;
+            border-color: #bfdbfe;
+            color: #1d4ed8;
+        }
+        .status.status-success {
+            background: #ecfdf5;
+            border-color: #a7f3d0;
+            color: #047857;
+        }
+        .status.status-error {
+            background: #fef2f2;
+            border-color: #fecaca;
+            color: #b91c1c;
+        }
 
         table {
             width: 100%;
@@ -3335,8 +3358,11 @@
         const SKU_API_PAGE_SIZE = 20;
         const ML_FAVORITOS_HISTORICO_MAX = 30;
         const ML_FAVORITOS_HISTORICO_ANUNCIOS_MAX = 60;
+        const ML_FAVORITOS_TIMEOUT_PESQUISA_MS = 180000;
+        const ML_FAVORITOS_TIMEOUT_RANKING_MS = 480000;
+        const ML_FAVORITOS_CANCELAMENTO_FORCADO_MS = 15000;
         const AVANT_PRO_LOGIN_EMAIL = 'fredyn-lefer@hotmail.com';
-        const AVANT_PRO_ESPERA_POS_CLIQUE_MS = 2800;
+        const AVANT_PRO_ESPERA_POS_CLIQUE_MS = 4200;
         const AVANT_PRO_ESTABILIDADE_MIN_MS = 900;
         const AVANT_PRO_ESTABILIDADE_MS = 800;
         const AVANT_PRO_ESTABILIDADE_MAX_MS = 3600;
@@ -3398,12 +3424,16 @@
         let mlFavoritosExecucaoEmSegundoPlano = false;
         let mlFavoritosCancelado = false;
         let mlFavoritosAbortController = null;
+        let mlFavoritosEtapaAbortController = null;
         let mlFavoritosResultadosPorSku = new Map();
         let mlFavoritosOpcoesPromocaoPorSku = new Map();
         let mlFavoritosOpcoesPromocaoAtual = null;
         let mlFavoritosTiposRankingEmExecucao = new Set();
         let mlFavoritosBalloonTimer = null;
         let mlFavoritosPerguntaResolver = null;
+        let mlFavoritosUltimoStatusTexto = '';
+        let mlFavoritosUltimoStatusEm = 0;
+        let mlFavoritosCancelamentoTimer = null;
         let mlHistoricoFavoritosCache = [];
         let mlHistoricoFavoritosServidorCarregado = false;
         let mlHistoricoFavoritosSaveTimer = null;
@@ -5891,9 +5921,33 @@
                 if (!value) return true;
                 return /^(https?:\/\/|about:blank$|chrome-extension:\/\/)/i.test(value);
             };
+            const isBlockedAvantPopupUrl = (targetUrl) => {
+                const value = String(targetUrl || '').trim();
+                if (!value || /^about:blank$/i.test(value) || /^chrome-extension:/i.test(value)) return false;
+                try {
+                    const url = new URL(value, ML_DEFAULT_URL);
+                    const host = String(url.hostname || '').toLowerCase();
+                    const text = `${host}${url.pathname}${url.search}${url.hash}`.toLowerCase();
+                    if (/mercadolivre\.com\.br$|mercadolibre\.com$/i.test(host)) return false;
+                    if (host.includes('avantpro') && /auth|login|entrar|signin|oauth|callback|mercadolivre|mercadolibre/.test(text)) return false;
+                    if (
+                        host === 'youtube.com' || host.endsWith('.youtube.com') ||
+                        host === 'youtu.be' ||
+                        host === 'whatsapp.com' || host.endsWith('.whatsapp.com') ||
+                        host === 'wa.me' ||
+                        host.includes('web.whatsapp') ||
+                        host.includes('hostinger')
+                    ) {
+                        return true;
+                    }
+                    return /suporte|support|ajuda|help|tutorial|introducao|introdução|curso|youtube|whatsapp|wa\.me/.test(text);
+                } catch (_err) {
+                    return false;
+                }
+            };
             const blockIfExternalProtocol = (event) => {
                 const targetUrl = event && event.url ? event.url : '';
-                if (!isAllowedWebUrl(targetUrl)) {
+                if (!isAllowedWebUrl(targetUrl) || isBlockedAvantPopupUrl(targetUrl)) {
                     event.preventDefault();
                 }
             };
@@ -5922,7 +5976,7 @@
             mlWebviewEl.addEventListener('new-window', (event) => {
                 if (event && event.url) {
                     event.preventDefault();
-                    if (isAllowedWebUrl(event.url)) {
+                    if (isAllowedWebUrl(event.url) && !isBlockedAvantPopupUrl(event.url)) {
                         navegarMlWebview(event.url).catch(() => {});
                     }
                 }
@@ -6996,11 +7050,57 @@
                     (function () {
                         var clicked = 0;
                         var forceClick = ${opcoes.forcarCliqueAvant ? 'true' : 'false'};
-                        var nodes = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a'));
+                        var normalize = function (value) {
+                            var text = String(value || '');
+                            try { text = text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (e) {}
+                            return text.toLowerCase().replace(/\\s+/g, ' ').trim();
+                        };
+                        var attrText = function (node) {
+                            if (!node || !node.getAttribute) return '';
+                            return [
+                                node.getAttribute('id'),
+                                node.getAttribute('class'),
+                                node.getAttribute('title'),
+                                node.getAttribute('aria-label'),
+                                node.getAttribute('data-testid')
+                            ].filter(Boolean).join(' ');
+                        };
+                        var hasAvantMarker = function (node) {
+                            var root = node && node.closest && node.closest('[class*="avant"], [id*="avant"], [data-testid*="avant"], [aria-label*="avant"]');
+                            return /avant\\s*pro|avantpro|avant/i.test(attrText(node) + ' ' + attrText(root));
+                        };
+                        var fecharModalComparadorAvant = function () {
+                            var dialogs = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], .andes-modal, .andes-modal__container, .avantpro-modal-root, body'));
+                            for (var i = 0; i < dialogs.length; i += 1) {
+                                var dialog = dialogs[i];
+                                var text = normalize(dialog && dialog.innerText || '');
+                                if (!/limite\\s+de\\s+anuncios|limite\\s+de\\s+an[uú]ncios|remover\\s+todos/.test(text)) continue;
+                                var buttons = Array.prototype.slice.call(dialog.querySelectorAll('button, [role="button"], a'));
+                                var close = buttons.find(function (btn) {
+                                    var label = normalize((btn.innerText || btn.textContent || '') + ' ' + attrText(btn));
+                                    return /cancelar|fechar|close|x/.test(label) && !/remover\\s+todos/.test(label);
+                                });
+                                if (close) {
+                                    try { close.click(); return true; } catch (e) {}
+                                }
+                            }
+                            return false;
+                        };
+                        var shouldClickAvant = function (node) {
+                            var text = normalize((node && (node.innerText || node.textContent)) || '');
+                            var attrs = normalize(attrText(node));
+                            var full = text + ' ' + attrs;
+                            if (node && node.matches && node.matches('.avantpro-load-data-btn, .avantpro-product-info-load-btn, #carregarDadosAvantpro')) return true;
+                            if (/carregar\\s+dados\\s+avant|carregar\\s+dados|buscar\\s+dados|atualizar\\s+dados|mostrar\\s+dados|ver\\s+dados|load\\s+data|load-data|product\\s+info\\s+load|product-info-load/.test(full)) return true;
+                            if (hasAvantMarker(node) && /carregar\\s+dados|buscar\\s+dados|atualizar\\s+dados|mostrar\\s+dados|ver\\s+dados|load\\s+data|load-data|product\\s+info\\s+load|product-info-load/.test(full)) return true;
+                            if (/^carregar\\s+dados$|^buscar\\s+dados$|^atualizar\\s+dados$|^mostrar\\s+dados$|^ver\\s+dados$/.test(text) && /avant/i.test(String(document.body && document.body.innerText || ''))) return true;
+                            return false;
+                        };
+                        fecharModalComparadorAvant();
+                        var nodes = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"], .avantpro-load-data-btn, .avantpro-product-info-load-btn, #carregarDadosAvantpro'));
                         nodes.forEach(function (node) {
-                            var text = String(node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
-                            if (!text || (!forceClick && node.dataset.jkAvantClicked === '1')) return;
-                            if (/carregar\\s+dados\\s+avant|informa[cç][oõ]es\\s+avant/i.test(text)) {
+                            if (!node || (!forceClick && node.dataset.jkAvantClicked === '1')) return;
+                            if (shouldClickAvant(node)) {
                                 node.dataset.jkAvantClicked = '1';
                                 window.__JK_AVANT_PRO_CLICKED_AT = Date.now();
                                 try { node.click(); clicked += 1; } catch (e) {}
@@ -7038,16 +7138,29 @@
                     var maxWaitMs = ${JSON.stringify(maxWaitMs)};
                     var pollMs = ${JSON.stringify(pollMs)};
                     var sleep = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
+                    var clickLoadButtons = function () {
+                        var nodes = Array.prototype.slice.call(document.querySelectorAll('.avantpro-load-data-btn, .avantpro-product-info-load-btn, #carregarDadosAvantpro'));
+                        nodes.forEach(function (node) {
+                            if (!node || node.dataset.jkAvantClicked === '1') return;
+                            node.dataset.jkAvantClicked = '1';
+                            window.__JK_AVANT_PRO_CLICKED_AT = Date.now();
+                            try { node.click(); } catch (e) {}
+                        });
+                    };
                     var snapshot = function () {
+                        clickLoadButtons();
                         var rows = Array.prototype.slice.call(document.querySelectorAll('.avantpro-product-info-row'));
-                        if (!rows.length) return '';
-                        return rows.map(function (row) {
+                        var rowText = rows.map(function (row) {
                             var label = row.querySelector('.avantpro-product-info-row-label');
                             var value = row.querySelector('.avantpro-product-info-row-value');
                             var labelText = String(label && label.textContent || '').replace(/\\s+/g, ' ').trim();
                             var valueText = String(value && value.textContent || '').replace(/\\s+/g, ' ').trim();
                             return labelText || valueText ? [labelText, valueText].join('=') : '';
-                        }).filter(Boolean).join('|');
+                        }).filter(Boolean);
+                        var listingText = Array.prototype.slice.call(document.querySelectorAll('[data-avantpro-content], .avantpro-listing-cell'))
+                            .map(function (node) { return String(node && node.textContent || '').replace(/\\s+/g, ' ').trim(); })
+                            .filter(function (text) { return /vendid|vendas|visitas|full|premium|classico|clássico|r\\$|media|m[eé]dia/i.test(text); });
+                        return rowText.concat(listingText).join('|');
                     };
                     var inicio = Date.now();
                     var ultimo = snapshot();
@@ -10068,10 +10181,11 @@
                         var ctx = contextText(input);
                         var isSearch = /search|buscar|pesquisar|as_word|\\bq\\b/.test(attrs);
                         var looksEmail = input.type === 'email' || /email|e-mail|mail/.test(attrs + ' ' + ctx);
-                        var hasAvantContext = rootHasStrongAvantContext(input) || (recentAvantClick && !isMlLoginField(input, ctx));
+                        var mlLoginField = isMlLoginField(input, ctx);
+                        var hasAvantContext = rootHasStrongAvantContext(input) || (!mlLoginField && avantPattern.test(ctx)) || (recentAvantClick && !mlLoginField);
                         if (isMercadoLivreHost && !hasAvantContext) return false;
                         if (isSearch || !looksEmail || !hasAvantContext) return false;
-                        return !isMlLoginField(input, ctx);
+                        return !mlLoginField;
                     });
                     if (!emailInput) {
                         return { success: false, reason: 'campo_email_avant_nao_encontrado', url: href, avantDetectado: !!(isAuthUrl || hasAvantDom || recentAvantClick) };
@@ -10146,10 +10260,74 @@
             (async function () {
                 try {
                     var sleep = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
-                    for (var wait = 0; wait < 24; wait += 1) {
-                        if (document.querySelector('.ui-pdp-seller__header__title, .ui-pdp-seller__link-trigger, .ui-pdp-seller__nickname, [data-testid="seller-info"], [class*="avantpro"], [id*="avantpro"], .created-time-card')) break;
+                    var normalizeClickText = function (value) {
+                        var text = String(value || '');
+                        try { text = text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (e) {}
+                        return text.toLowerCase().replace(/\\s+/g, ' ').trim();
+                    };
+                    var attrClickText = function (node) {
+                        if (!node || !node.getAttribute) return '';
+                        return [
+                            node.getAttribute('id'),
+                            node.getAttribute('class'),
+                            node.getAttribute('title'),
+                            node.getAttribute('aria-label'),
+                            node.getAttribute('data-testid')
+                        ].filter(Boolean).join(' ');
+                    };
+                    var fecharModalComparadorAvant = function () {
+                        var dialogs = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], .andes-modal, .andes-modal__container, .avantpro-modal-root, body'));
+                        for (var i = 0; i < dialogs.length; i += 1) {
+                            var dialog = dialogs[i];
+                            var text = normalizeClickText(dialog && dialog.innerText || '');
+                            if (!/limite\\s+de\\s+anuncios|limite\\s+de\\s+an[uú]ncios|remover\\s+todos/.test(text)) continue;
+                            var buttons = Array.prototype.slice.call(dialog.querySelectorAll('button, [role="button"], a'));
+                            var close = buttons.find(function (btn) {
+                                var label = normalizeClickText((btn.innerText || btn.textContent || '') + ' ' + attrClickText(btn));
+                                return /cancelar|fechar|close|x/.test(label) && !/remover\\s+todos/.test(label);
+                            });
+                            if (close) {
+                                try { close.click(); return true; } catch (e) {}
+                            }
+                        }
+                        return false;
+                    };
+                    var clickAvantButtons = function () {
+                        fecharModalComparadorAvant();
+                        var clicked = 0;
+                        var bodyHasAvant = /avant/i.test(String(document.body && document.body.innerText || ''));
+                        var nodes = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"], .avantpro-load-data-btn, .avantpro-product-info-load-btn, #carregarDadosAvantpro'));
+                        for (var i = 0; i < nodes.length; i += 1) {
+                            var node = nodes[i];
+                            if (!node || node.dataset.jkAvantClicked === '1') continue;
+                            var text = normalizeClickText((node.innerText || node.textContent || node.value || ''));
+                            var attrs = normalizeClickText(attrClickText(node));
+                            var root = node.closest && node.closest('[class*="avant"], [id*="avant"], [data-testid*="avant"], [aria-label*="avant"]');
+                            var full = text + ' ' + attrs + ' ' + normalizeClickText(attrClickText(root));
+                            var markedAvant = /avant\\s*pro|avantpro|avant/i.test(full);
+                            var genericDataButton = /^carregar\\s+dados$|^buscar\\s+dados$|^atualizar\\s+dados$|^mostrar\\s+dados$|^ver\\s+dados$/.test(text);
+                            var directLoadButton = node.matches && node.matches('.avantpro-load-data-btn, .avantpro-product-info-load-btn, #carregarDadosAvantpro');
+                            if (
+                                directLoadButton ||
+                                /carregar\\s+dados\\s+avant|carregar\\s+dados|buscar\\s+dados|atualizar\\s+dados|mostrar\\s+dados|ver\\s+dados|load\\s+data|load-data|product\\s+info\\s+load|product-info-load/.test(full) ||
+                                (markedAvant && /carregar\\s+dados|buscar\\s+dados|atualizar\\s+dados|mostrar\\s+dados|ver\\s+dados|load\\s+data|load-data|product\\s+info\\s+load|product-info-load/.test(full)) ||
+                                (genericDataButton && bodyHasAvant)
+                            ) {
+                                node.dataset.jkAvantClicked = '1';
+                                window.__JK_AVANT_PRO_CLICKED_AT = Date.now();
+                                try { node.click(); clicked += 1; } catch (e) {}
+                            }
+                        }
+                        return clicked;
+                    };
+                    clickAvantButtons();
+                    for (var wait = 0; wait < 32; wait += 1) {
+                        fecharModalComparadorAvant();
+                        if (document.querySelector('.ui-pdp-seller__header__title, .ui-pdp-seller__link-trigger, .ui-pdp-seller__nickname, [data-testid="seller-info"], .avantpro-product-info-row, .created-time-card, [data-avantpro-content], .avantpro-listing-cell')) break;
+                        if (wait === 4 || wait === 12 || wait === 22) clickAvantButtons();
                         await sleep(250);
                     }
+                    await sleep(600);
                     var html = String(document.documentElement && document.documentElement.outerHTML ? document.documentElement.outerHTML : '');
                     var decodedHtml = html
                         .replace(/\\\\u002F/g, '/')
@@ -12385,8 +12563,43 @@
                 .filter(item => mlSkuSidebarSelecionados.has(item.chave));
         }
 
+        function atualizarStatusPersistenteFavoritos(mensagem, opcoes = {}) {
+            const texto = String(mensagem || '').trim();
+            if (texto) {
+                mlFavoritosUltimoStatusTexto = texto;
+                mlFavoritosUltimoStatusEm = Date.now();
+            }
+            const elementos = [mlFavoritosStatusEl, favMlStatusEl].filter(Boolean);
+            elementos.forEach(el => {
+                if (texto) el.textContent = texto;
+                const deveMostrar = !!(texto || mlFavoritosEmExecucao);
+                el.classList.toggle('hidden', !deveMostrar);
+                el.classList.toggle('status-running', !!(mlFavoritosEmExecucao && !opcoes.erro && !opcoes.sucesso && !opcoes.finalizado));
+                el.classList.toggle('status-success', !!opcoes.sucesso);
+                el.classList.toggle('status-error', !!opcoes.erro);
+            });
+        }
+
+        function limparTimerCancelamentoFavoritos() {
+            if (mlFavoritosCancelamentoTimer) {
+                clearTimeout(mlFavoritosCancelamentoTimer);
+                mlFavoritosCancelamentoTimer = null;
+            }
+        }
+
+        function finalizarEstadoVisualFavoritos() {
+            limparTimerCancelamentoFavoritos();
+            mlFavoritosEmExecucao = false;
+            mlFavoritosExecucaoEmSegundoPlano = false;
+            mlFavoritosCancelado = false;
+            mlFavoritosAbortController = null;
+            mlFavoritosEtapaAbortController = null;
+            atualizarFiltroAzulFavoritos();
+            atualizarContadorSkuSidebarSelecionados();
+        }
+
         function mostrarBalaoFavoritosStatus(mensagem, opcoes = {}) {
-            if (mlFavoritosStatusEl) mlFavoritosStatusEl.textContent = mensagem || '';
+            atualizarStatusPersistenteFavoritos(mensagem, opcoes);
             if (!mlFavoritosBalloonEl || !mlFavoritosBalloonTextEl) return;
             const deveOcultarNavegador = !!(opcoes.ocultarNavegador || opcoes.manterAcoes);
             if (deveOcultarNavegador) {
@@ -12798,7 +13011,65 @@
         }
 
         function sinalFavoritosAtual() {
-            return mlFavoritosAbortController ? mlFavoritosAbortController.signal : undefined;
+            return mlFavoritosEtapaAbortController
+                ? mlFavoritosEtapaAbortController.signal
+                : (mlFavoritosAbortController ? mlFavoritosAbortController.signal : undefined);
+        }
+
+        function formatarTempoLimiteFavoritos(ms) {
+            const segundos = Math.max(1, Math.round(Number(ms || 0) / 1000));
+            if (segundos >= 60) {
+                const minutos = Math.round(segundos / 60);
+                return `${minutos} minuto(s)`;
+            }
+            return `${segundos} segundo(s)`;
+        }
+
+        function criarErroTimeoutFavoritos(rotulo, ms) {
+            const erro = new Error(`${rotulo} passou de ${formatarTempoLimiteFavoritos(ms)}. Pulei esta etapa para nao travar o sistema.`);
+            erro.timeoutFavoritos = true;
+            return erro;
+        }
+
+        async function executarEtapaFavoritosComTimeout(rotulo, ms, trabalho) {
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const controllerAnterior = mlFavoritosEtapaAbortController;
+            const sinalGlobal = mlFavoritosAbortController ? mlFavoritosAbortController.signal : null;
+            let timeoutId = null;
+            const abortarEtapa = () => {
+                try { if (controller) controller.abort(); } catch (_err) {}
+            };
+            if (controller) {
+                mlFavoritosEtapaAbortController = controller;
+                if (sinalGlobal && typeof sinalGlobal.addEventListener === 'function') {
+                    sinalGlobal.addEventListener('abort', abortarEtapa, { once: true });
+                }
+            }
+            const promessaTrabalho = Promise.resolve().then(trabalho);
+            promessaTrabalho.catch(() => {});
+            const promessaTimeout = new Promise((_, reject) => {
+                timeoutId = setTimeout(() => {
+                    abortarEtapa();
+                    reject(criarErroTimeoutFavoritos(rotulo, ms));
+                }, ms);
+            });
+            try {
+                return await Promise.race([promessaTrabalho, promessaTimeout]);
+            } catch (err) {
+                if (mlFavoritosCancelado || (err && err.canceladoFavoritos)) throw err;
+                if (err && err.name === 'AbortError' && controller && controller.signal.aborted) {
+                    throw criarErroTimeoutFavoritos(rotulo, ms);
+                }
+                throw err;
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId);
+                if (sinalGlobal && typeof sinalGlobal.removeEventListener === 'function') {
+                    sinalGlobal.removeEventListener('abort', abortarEtapa);
+                }
+                if (mlFavoritosEtapaAbortController === controller) {
+                    mlFavoritosEtapaAbortController = controllerAnterior;
+                }
+            }
         }
 
         function cancelarFavoritosEmExecucao() {
@@ -12809,10 +13080,25 @@
                     mlFavoritosAbortController.abort();
                 } catch (_err) {}
             }
+            if (mlFavoritosEtapaAbortController) {
+                try {
+                    mlFavoritosEtapaAbortController.abort();
+                } catch (_err) {}
+            }
             atualizarContadorSkuSidebarSelecionados();
             mostrarBalaoFavoritosStatus('Cancelando favoritos... a etapa atual sera interrompida assim que possivel.', {
                 tempoMs: 4500
             });
+            limparTimerCancelamentoFavoritos();
+            mlFavoritosCancelamentoTimer = setTimeout(() => {
+                if (!mlFavoritosEmExecucao || !mlFavoritosCancelado) return;
+                finalizarEstadoVisualFavoritos();
+                fecharBalaoResultadosMl({ forcar: true });
+                mostrarBalaoFavoritosStatus('Favoritos cancelado. Liberei a tela; se algum navegador interno ainda estiver fechando, ele sera descartado automaticamente.', {
+                    tempoMs: 7000,
+                    finalizado: true
+                });
+            }, ML_FAVORITOS_CANCELAMENTO_FORCADO_MS);
         }
 
         function obterCadastroSkuFavoritos(sku, loja = '') {
@@ -14721,7 +15007,21 @@
                     for (const pesquisa of info.termos) {
                         verificarCancelamentoFavoritos();
                         mostrarBalaoFavoritosStatus(`SKU ${info.sku}: pesquisando Pesquisa ${pesquisa.campo} - ${pesquisa.termo}`);
-                        const anuncios = await buscarAnunciosFavoritosPorTermo(pesquisa.termo);
+                        let anuncios = [];
+                        try {
+                            anuncios = await executarEtapaFavoritosComTimeout(
+                                `SKU ${info.sku}: Pesquisa ${pesquisa.campo}`,
+                                ML_FAVORITOS_TIMEOUT_PESQUISA_MS,
+                                () => buscarAnunciosFavoritosPorTermo(pesquisa.termo)
+                            );
+                        } catch (err) {
+                            if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) throw err;
+                            if (!(err && err.timeoutFavoritos)) throw err;
+                            mostrarBalaoFavoritosStatus(`SKU ${info.sku}: Pesquisa ${pesquisa.campo} passou do limite de ${formatarTempoLimiteFavoritos(ML_FAVORITOS_TIMEOUT_PESQUISA_MS)}. Continuando com as outras pesquisas.`, {
+                                erro: true,
+                                tempoMs: 7000
+                            });
+                        }
                         verificarCancelamentoFavoritos();
                         anuncios.forEach(anuncio => {
                             coletados.push(normalizarAnuncioFavoritosPesquisa(anuncio, info.sku, pesquisa));
@@ -14732,7 +15032,20 @@
                         .filter(anuncio => anuncio && !tituloPareceFiltroOuCategoriaMl(anuncio.titulo));
                     mostrarBalaoFavoritosStatus(`SKU ${info.sku}: enriquecendo ${unicos.length} anuncio(s) para calcular ranking...`);
                     verificarCancelamentoFavoritos();
-                    await enriquecerAnunciosFavoritosRanking(unicos);
+                    try {
+                        await executarEtapaFavoritosComTimeout(
+                            `SKU ${info.sku}: enriquecimento do ranking`,
+                            ML_FAVORITOS_TIMEOUT_RANKING_MS,
+                            () => enriquecerAnunciosFavoritosRanking(unicos)
+                        );
+                    } catch (err) {
+                        if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) throw err;
+                        if (!(err && err.timeoutFavoritos)) throw err;
+                        mostrarBalaoFavoritosStatus(`SKU ${info.sku}: enriquecimento passou do limite de ${formatarTempoLimiteFavoritos(ML_FAVORITOS_TIMEOUT_RANKING_MS)}. Vou rankear com os dados ja coletados.`, {
+                            erro: true,
+                            tempoMs: 8000
+                        });
+                    }
                     verificarCancelamentoFavoritos();
                     const anunciosNovos = unicos.filter(anuncioFavoritosProdutoNovo);
                     const removidosPorCondicao = unicos.length - anunciosNovos.length;
@@ -14748,11 +15061,15 @@
                     };
                     if (usarIaRanking) {
                         try {
-                            filtroIa = await filtrarAnunciosFavoritosPorIa(info, rankingBase, {
-                                usarIa: true,
-                                itemSidebar: item,
-                                maxConfirmados: 8
-                            });
+                            filtroIa = await executarEtapaFavoritosComTimeout(
+                                `SKU ${info.sku}: comparacao da IA`,
+                                ML_FAVORITOS_TIMEOUT_RANKING_MS,
+                                () => filtrarAnunciosFavoritosPorIa(info, rankingBase, {
+                                    usarIa: true,
+                                    itemSidebar: item,
+                                    maxConfirmados: 8
+                                })
+                            );
                         } catch (err) {
                             if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) throw err;
                             console.warn('IA de favoritos falhou; mantendo ranking normal:', err);
@@ -14785,7 +15102,8 @@
 
                 const totalAnuncios = grupos.reduce((acc, grupo) => acc + (grupo.anuncios || []).length, 0);
                 mostrarBalaoFavoritosStatus(`Favoritos concluido: ${grupos.length} SKU(s), ${totalAnuncios} anuncio(s) rankeado(s).`, {
-                    tempoMs: 7000
+                    tempoMs: 7000,
+                    sucesso: true
                 });
                 registrarHistoricoFavoritos(grupos);
                 const grupoParaAbrir = grupos.find(grupo => grupo && grupo.sku && Array.isArray(grupo.anuncios) && grupo.anuncios.length)
@@ -14803,10 +15121,7 @@
                     });
                 }
                 const finalizouEmSegundoPlano = mlFavoritosExecucaoEmSegundoPlano;
-                mlFavoritosEmExecucao = false;
-                mlFavoritosExecucaoEmSegundoPlano = false;
-                atualizarFiltroAzulFavoritos();
-                atualizarContadorSkuSidebarSelecionados();
+                finalizarEstadoVisualFavoritos();
                 esconderBalaoFavoritosStatus();
                 fecharBalaoResultadosMl({ forcar: true });
                 if (!finalizouEmSegundoPlano) mudarAba('favoritos');
@@ -14814,7 +15129,8 @@
                 if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) {
                     if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Favoritos cancelado';
                     mostrarBalaoFavoritosStatus('Favoritos cancelado pelo usuario.', {
-                        tempoMs: 5000
+                        tempoMs: 5000,
+                        finalizado: true
                     });
                 } else {
                     if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Erro ao fazer favoritos';
@@ -14823,12 +15139,7 @@
                     });
                 }
             } finally {
-                mlFavoritosEmExecucao = false;
-                mlFavoritosExecucaoEmSegundoPlano = false;
-                mlFavoritosCancelado = false;
-                mlFavoritosAbortController = null;
-                atualizarFiltroAzulFavoritos();
-                atualizarContadorSkuSidebarSelecionados();
+                finalizarEstadoVisualFavoritos();
             }
         }
 
@@ -14873,10 +15184,24 @@
                 for (const pesquisa of termos) {
                     verificarCancelamentoFavoritos();
                     mostrarBalaoFavoritosStatus(`Ranqueamento avulso: pesquisando Pesquisa ${pesquisa.campo} - ${pesquisa.termo}`);
-                    const anuncios = await buscarAnunciosFavoritosPorTermo(pesquisa.termo, {
-                        titulo: 'Ranqueamento avulso',
-                        subtitulo: `Pesquisa ${pesquisa.campo}: ${pesquisa.termo}`
-                    });
+                    let anuncios = [];
+                    try {
+                        anuncios = await executarEtapaFavoritosComTimeout(
+                            `Ranqueamento avulso: Pesquisa ${pesquisa.campo}`,
+                            ML_FAVORITOS_TIMEOUT_PESQUISA_MS,
+                            () => buscarAnunciosFavoritosPorTermo(pesquisa.termo, {
+                                titulo: 'Ranqueamento avulso',
+                                subtitulo: `Pesquisa ${pesquisa.campo}: ${pesquisa.termo}`
+                            })
+                        );
+                    } catch (err) {
+                        if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) throw err;
+                        if (!(err && err.timeoutFavoritos)) throw err;
+                        mostrarBalaoFavoritosStatus(`Ranqueamento avulso: Pesquisa ${pesquisa.campo} passou do limite de ${formatarTempoLimiteFavoritos(ML_FAVORITOS_TIMEOUT_PESQUISA_MS)}. Continuando.`, {
+                            erro: true,
+                            tempoMs: 7000
+                        });
+                    }
                     verificarCancelamentoFavoritos();
                     anuncios.forEach(anuncio => {
                         coletados.push(normalizarAnuncioFavoritosPesquisa(anuncio, skuRanking, pesquisa));
@@ -14887,7 +15212,20 @@
                     .filter(anuncio => anuncio && !tituloPareceFiltroOuCategoriaMl(anuncio.titulo));
                 mostrarBalaoFavoritosStatus(`Ranqueamento avulso: enriquecendo ${unicos.length} anuncio(s)...`);
                 verificarCancelamentoFavoritos();
-                await enriquecerAnunciosFavoritosRanking(unicos);
+                try {
+                    await executarEtapaFavoritosComTimeout(
+                        'Ranqueamento avulso: enriquecimento do ranking',
+                        ML_FAVORITOS_TIMEOUT_RANKING_MS,
+                        () => enriquecerAnunciosFavoritosRanking(unicos)
+                    );
+                } catch (err) {
+                    if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) throw err;
+                    if (!(err && err.timeoutFavoritos)) throw err;
+                    mostrarBalaoFavoritosStatus(`Ranqueamento avulso: enriquecimento passou do limite de ${formatarTempoLimiteFavoritos(ML_FAVORITOS_TIMEOUT_RANKING_MS)}. Vou rankear com os dados ja coletados.`, {
+                        erro: true,
+                        tempoMs: 8000
+                    });
+                }
                 verificarCancelamentoFavoritos();
                 const anunciosNovos = unicos.filter(anuncioFavoritosProdutoNovo);
                 const tituloAvulso = String(opcoes.titulo || '').trim()
@@ -14924,21 +15262,21 @@
                     carregarFavoritosAnunciosSku(grupoRanking.sku, grupoRanking.loja || favMlLojaSelecionada);
                 }
                 mostrarBalaoFavoritosStatus(`Ranqueamento avulso concluido: ${grupoRanking.anuncios.length} anuncio(s) rankeado(s).`, {
-                    tempoMs: 7000
+                    tempoMs: 7000,
+                    sucesso: true
                 });
                 if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Ranqueamento avulso concluido';
                 if (mlWorkModalSubtitleEl) mlWorkModalSubtitleEl.textContent = `${grupoRanking.anuncios.length} anuncio(s) rankeado(s).`;
                 const finalizouEmSegundoPlano = mlFavoritosExecucaoEmSegundoPlano;
-                mlFavoritosEmExecucao = false;
-                mlFavoritosExecucaoEmSegundoPlano = false;
-                atualizarFiltroAzulFavoritos();
+                finalizarEstadoVisualFavoritos();
                 esconderBalaoFavoritosStatus();
                 fecharBalaoResultadosMl({ forcar: true });
                 if (!finalizouEmSegundoPlano) mudarAba('favoritos');
             } catch (err) {
                 if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) {
                     mostrarBalaoFavoritosStatus('Ranqueamento avulso cancelado pelo usuario.', {
-                        tempoMs: 5000
+                        tempoMs: 5000,
+                        finalizado: true
                     });
                 } else {
                     mostrarBalaoFavoritosStatus(`Erro no rankeamento avulso: ${err && err.message ? err.message : err}`, {
@@ -14946,11 +15284,7 @@
                     });
                 }
             } finally {
-                mlFavoritosEmExecucao = false;
-                mlFavoritosExecucaoEmSegundoPlano = false;
-                mlFavoritosCancelado = false;
-                mlFavoritosAbortController = null;
-                atualizarFiltroAzulFavoritos();
+                finalizarEstadoVisualFavoritos();
             }
         }
 
@@ -15958,7 +16292,8 @@
             abrirBalaoResultadosMl({
                 titulo: opcoes.titulo || 'Navegador do Mercado Livre',
                 subtitulo: opcoes.subtitulo || url,
-                mostrarFavoritos: !!opcoes.mostrarFavoritos
+                mostrarFavoritos: !!opcoes.mostrarFavoritos,
+                browserCompleto: true
             });
 
             if (hasInternalBrowserApi || usarNavegadorMlNoShellElectron()) {

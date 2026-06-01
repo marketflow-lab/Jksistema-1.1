@@ -1701,6 +1701,42 @@ function isMercadoLivreAdUrl(targetUrl) {
     }
 }
 
+function isAvantProAuthUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        const host = String(url.hostname || '').toLowerCase();
+        const text = `${host}${url.pathname}${url.search}${url.hash}`.toLowerCase();
+        return host.includes('avantpro')
+            && (/auth|login|entrar|signin|oauth|callback|mercadolivre|mercadolibre/.test(text));
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isBlockedAutomationPopupUrl(targetUrl) {
+    const raw = String(targetUrl || '').trim();
+    if (!raw || /^about:blank$/i.test(raw) || /^data:/i.test(raw) || /^chrome-extension:/i.test(raw)) return false;
+    try {
+        const url = new URL(normalizeTargetUrl(raw));
+        const host = String(url.hostname || '').toLowerCase();
+        const text = `${host}${url.pathname}${url.search}${url.hash}`.toLowerCase();
+        if (isMercadoLivreHost(host) || isAvantProAuthUrl(url.href)) return false;
+        if (
+            host === 'youtube.com' || host.endsWith('.youtube.com') ||
+            host === 'youtu.be' ||
+            host === 'whatsapp.com' || host.endsWith('.whatsapp.com') ||
+            host === 'wa.me' ||
+            host.includes('web.whatsapp') ||
+            host.includes('hostinger')
+        ) {
+            return true;
+        }
+        return /suporte|support|ajuda|help|tutorial|introducao|introdução|curso|youtube|whatsapp|wa\.me/.test(text);
+    } catch (_err) {
+        return false;
+    }
+}
+
 function chromeExecutableCandidates() {
     return [
         process.env.CHROME_PATH,
@@ -2370,6 +2406,11 @@ app.whenReady().then(async () => {
     app.on('web-contents-created', (_event, contents) => {
         contents.on('will-navigate', (event, urlOrDetails) => {
             const url = getNavigationEventUrl(urlOrDetails);
+            if (isBlockedAutomationPopupUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-automation-navigation', { url });
+                return;
+            }
             if (isMercadoLivreAdUrl(url) && !contents.__jkAllowMlAdNavigation) {
                 event.preventDefault();
                 openMercadoLivreAdInChrome(url);
@@ -2382,6 +2423,11 @@ app.whenReady().then(async () => {
 
         contents.on('will-frame-navigate', (event, urlOrDetails, maybeDetails) => {
             const url = getNavigationEventUrl(urlOrDetails, maybeDetails);
+            if (isBlockedAutomationPopupUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-automation-frame-navigation', { url });
+                return;
+            }
             if (!isAllowedNavigationUrl(url)) {
                 event.preventDefault();
             }
@@ -2389,6 +2435,10 @@ app.whenReady().then(async () => {
 
         if (typeof contents.setWindowOpenHandler === 'function') {
             contents.setWindowOpenHandler(({ url }) => {
+                if (isBlockedAutomationPopupUrl(url)) {
+                    logElectronLifecycle('blocked-automation-popup', { url });
+                    return { action: 'deny' };
+                }
                 if (isMercadoLivreAdUrl(url) && !contents.__jkAllowMlAdNavigation) {
                     openMercadoLivreAdInChrome(url);
                     return { action: 'deny' };

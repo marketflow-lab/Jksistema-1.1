@@ -96,6 +96,18 @@
     const btnPaginaProxima = document.getElementById('btnPaginaProxima');
     const pageInfo = document.getElementById('pageInfo');
     const spinnerHtml = '<span class="spinner"></span>';
+    const ROTULOS_COLUNAS_ESTOQUE = {
+        sku: 'SKU',
+        lojasync: 'Loja Sync',
+        lastupdate: 'Última atualização',
+        idbling: 'ID Bling',
+        nomebling: 'Nome Bling',
+        situacaobling: 'Situação Bling',
+        ncmbling: 'NCM Bling',
+        saldoloja: 'Saldo Loja',
+        saldofull: 'Saldo Full',
+        saldototal: 'Saldo Total'
+    };
     let dados = [];
     let clientId = null;
     let lojaSelecionada = '__todas';
@@ -106,6 +118,35 @@
     let progressTimer = null;
     let autoSyncSolicitado = false;
     let janelaAutoSyncMinutos = 30;
+
+    function corrigirTextoQuebrado(texto) {
+        let atual = String(texto ?? '');
+        for (let i = 0; i < 2 && /[ÃÂâ]/.test(atual); i += 1) {
+            try {
+                const bytes = Uint8Array.from(Array.from(atual, ch => ch.charCodeAt(0) & 0xff));
+                const decodificado = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                if (!decodificado || decodificado === atual) break;
+                atual = decodificado;
+            } catch (_e) {
+                break;
+            }
+        }
+        return atual;
+    }
+
+    function chaveRotuloColunaEstoque(coluna) {
+        return String(coluna || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9]/g, '')
+            .toLowerCase();
+    }
+
+    function obterRotuloColunaEstoque(coluna) {
+        const chave = chaveRotuloColunaEstoque(coluna);
+        if (ROTULOS_COLUNAS_ESTOQUE[chave]) return ROTULOS_COLUNAS_ESTOQUE[chave];
+        return String(coluna || '').replace(/_/g, ' ');
+    }
 
     async function carregarConfiguracoesGlobais() {
         try {
@@ -129,9 +170,9 @@
     function renderProgresso(progress, logs) {
         if (!progress) return;
         const percent = Math.max(0, Math.min(100, Number(progress.percentual || 0)));
-        const logsList = (logs || []).slice(-8).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${l}</div>`).join('');
+        const logsList = (logs || []).slice(-8).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${corrigirTextoQuebrado(l)}</div>`).join('');
         statusEl.className = 'status-bar loading';
-        statusEl.innerHTML = `${spinnerHtml}<strong>${progress.mensagem || 'Atualizando estoque...'}</strong>
+        statusEl.innerHTML = `${spinnerHtml}<strong>${corrigirTextoQuebrado(progress.mensagem || 'Atualizando estoque...')}</strong>
             <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
                 <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
             </div>
@@ -162,7 +203,7 @@
             if (!payload.active && progress) {
                 if (Number(progress.percentual || 0) >= 100) {
                     statusEl.className = 'status-bar success';
-                    statusEl.textContent = `${progress.mensagem || 'Estoque atualizado.'}`;
+                    statusEl.textContent = corrigirTextoQuebrado(progress.mensagem || 'Estoque atualizado.');
                     await carregar(false);
                     setTimeout(() => {
                         statusEl.className = 'status-bar';
@@ -170,7 +211,7 @@
                     }, 3500);
                 } else if ((progress.etapa || '').toLowerCase() === 'erro') {
                     statusEl.className = 'status-bar error';
-                    statusEl.textContent = `${progress.mensagem || 'Falha na atualização do estoque.'}`;
+                    statusEl.textContent = corrigirTextoQuebrado(progress.mensagem || 'Falha na atualização do estoque.');
                 }
                 pararMonitoramentoProgresso();
             }
@@ -260,7 +301,7 @@
             }
         } catch (e) {
             statusEl.className = 'status-bar error';
-            statusEl.textContent = `Erro ao sincronizar: ${e.message}`;
+            statusEl.textContent = `Erro ao sincronizar: ${corrigirTextoQuebrado(e.message)}`;
             setSyncButton(false);
         }
     }
@@ -322,7 +363,7 @@
         const trHead = document.createElement('tr');
         cols.forEach(col => {
             const th = document.createElement('th');
-            th.textContent = col;
+            th.textContent = obterRotuloColunaEstoque(col);
             trHead.appendChild(th);
         });
         tHead.appendChild(trHead);
@@ -514,7 +555,7 @@
             salvarPreferenciaLoja();
         } catch (e) {
             statusEl.className = 'status-bar error';
-            statusEl.textContent = `Erro ao carregar lojas: ${e.message}`;
+            statusEl.textContent = `Erro ao carregar lojas: ${corrigirTextoQuebrado(e.message)}`;
         }
     }
 
@@ -539,7 +580,7 @@
             }
         } catch (e) {
             statusEl.className = 'status-bar error';
-            statusEl.textContent = `Erro ao carregar estoque: ${e.message}`;
+            statusEl.textContent = `Erro ao carregar estoque: ${corrigirTextoQuebrado(e.message)}`;
         }
     }
 
@@ -598,5 +639,4 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
 

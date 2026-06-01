@@ -34861,7 +34861,7 @@ def _favoritos_ml_verificar_efetivacao(
             "promotion_discount_raw": desconto_raw,
             "attempt": tentativa + 1,
         }
-        if (promocao_ok or promocao_por_preco_ok) and preco_anuncio_ok and preco_promocional_ok:
+        if (promocao_ok or promocao_por_preco_ok) and preco_anuncio_ok and preco_promocional_ok and desconto_ok:
             ultimo["success"] = True
             return ultimo, cfg
 

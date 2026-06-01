@@ -193,6 +193,7 @@
             font-weight: 600;
             font-size: 12px;
             display: inline-block;
+            cursor: pointer;
         }
         .expandable-content {
             display: none;
@@ -209,6 +210,52 @@
         }
         .details-row {
             background: #f8f9fa;
+        }
+        .details-wrapper {
+            display: grid;
+            gap: 12px;
+        }
+        .devolucao-card {
+            background: #fff;
+            border: 1px solid #e3e7ef;
+            border-radius: 8px;
+            padding: 14px;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+        }
+        .devolucao-card-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            color: #25364a;
+            font-weight: 700;
+        }
+        .devolucao-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px 14px;
+        }
+        .devolucao-field {
+            min-width: 0;
+        }
+        .devolucao-field .label {
+            color: #6b7280;
+            font-size: 11px;
+            font-weight: 700;
+            margin-bottom: 3px;
+            text-transform: uppercase;
+        }
+        .devolucao-field .value {
+            color: #1f2937;
+            font-size: 13px;
+            font-weight: 600;
+            word-break: break-word;
+        }
+        .devolucao-desc {
+            border-top: 1px solid #edf0f4;
+            margin-top: 12px;
+            padding-top: 12px;
         }
         .empty {
             text-align: center;
@@ -303,7 +350,9 @@
 
         function formatarData(dataString) {
             if (!dataString) return '';
-            const partes = dataString.split('-');
+            const data = String(dataString).slice(0, 10);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return String(dataString);
+            const partes = data.split('-');
             return `${partes[2]}/${partes[1]}/${partes[0]}`;
         }
 
@@ -312,6 +361,71 @@
                 style: 'currency',
                 currency: 'BRL'
             }).format(valor || 0);
+        }
+
+        function formatarQuantidade(valor) {
+            const numero = Number(valor || 0) || 0;
+            return new Intl.NumberFormat('pt-BR', {
+                minimumFractionDigits: Number.isInteger(numero) ? 0 : 2,
+                maximumFractionDigits: 2
+            }).format(numero);
+        }
+
+        function escaparHtml(valor) {
+            return String(valor ?? '').replace(/[&<>"']/g, (char) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[char]));
+        }
+
+        function textoInfo(valor) {
+            const texto = String(valor ?? '').trim();
+            return texto || '-';
+        }
+
+        function campoDetalhe(rotulo, valor) {
+            return `
+                <div class="devolucao-field">
+                    <div class="label">${escaparHtml(rotulo)}</div>
+                    <div class="value">${escaparHtml(textoInfo(valor))}</div>
+                </div>
+            `;
+        }
+
+        function renderizarCardDevolucao(item, indice) {
+            const numeroNota = textoInfo(item && item.numero_nota);
+            const dataEmissao = formatarData(item && item.data_emissao) || '-';
+            const titulo = numeroNota !== '-' ? `NF ${numeroNota}` : `Devolução ${indice + 1}`;
+
+            return `
+                <div class="devolucao-card">
+                    <div class="devolucao-card-head">
+                        <span>${escaparHtml(titulo)}</span>
+                        <span>${escaparHtml(dataEmissao)}</span>
+                    </div>
+                    <div class="devolucao-grid">
+                        ${campoDetalhe('NF', item && item.numero_nota)}
+                        ${campoDetalhe('Origem', item && item.origem_codigo)}
+                        ${campoDetalhe('Data', dataEmissao)}
+                        ${campoDetalhe('SKU', item && item.sku)}
+                        ${campoDetalhe('Quantidade', formatarQuantidade(item && item.quantidade))}
+                        ${campoDetalhe('Valor unitário', formatarMoeda(item && item.valor_unitario))}
+                        ${campoDetalhe('Valor total', formatarMoeda(item && item.valor_total))}
+                        ${campoDetalhe('Fornecedor', item && item.fornecedor)}
+                        ${campoDetalhe('Loja', item && item.loja_conta)}
+                        ${campoDetalhe('Unidade', item && item.unidade_negocio)}
+                        ${campoDetalhe('Tipo de devolução', item && item.unidade_negocio_virtual)}
+                        ${campoDetalhe('Natureza', item && item.natureza_operacao)}
+                        ${campoDetalhe('Finalidade', item && item.finalidade_operacao)}
+                    </div>
+                    <div class="devolucao-desc">
+                        ${campoDetalhe('Descrição', item && item.descricao)}
+                    </div>
+                </div>
+            `;
         }
 
         function salvarFiltros() {
@@ -411,11 +525,11 @@
                 html += `
                     <tr class="group-row" onclick="toggleDetalhes('${index}')">
                         <td><span class="expand-icon" id="expand-${index}">▶</span></td>
-                        <td><span class="sku-badge">${sku}</span></td>
-                        <td>${descricao}</td>
+                        <td><span class="sku-badge" title="Clique para ver todas as devoluções deste SKU">${escaparHtml(sku)}</span></td>
+                        <td>${escaparHtml(descricao)}</td>
                         <td>${qtd}</td>
                         <td>${formatarMoeda(valor)}</td>
-                        <td>${fornecedores}</td>
+                        <td>${escaparHtml(fornecedores)}</td>
                     </tr>
                     <tr class="expandable-content details-row" id="details-${index}" style="display: none;">
                         <td colspan="6">
@@ -441,31 +555,27 @@
 
             if (detalhe.classList.contains('visible')) {
                 detalhe.classList.remove('visible');
+                detalhe.style.display = 'none';
                 expand.classList.remove('expanded');
             } else {
                 detalhe.classList.add('visible');
+                detalhe.style.display = 'table-row';
                 expand.classList.add('expanded');
 
                 const itensDiv = document.getElementById(`itens-${index}`);
                 if (!itensDiv.classList.contains('loaded')) {
                     const itens = await carregarItensDoSku(grupo.sku);
-                    let tabelaItens = '<table style="width: 100%; font-size: 12px;"><thead><tr style="background: #f0f0f0;"><th style="padding: 8px; text-align: left;">NF</th><th>Data</th><th>Quantidade</th><th>Valor Unit.</th><th>Valor Total</th><th>Fornecedor</th></tr></thead><tbody>';
-                    
-                    itens.forEach(item => {
-                        tabelaItens += `
-                            <tr style="border-bottom: 1px solid #eee;">
-                                <td style="padding: 8px;">${item.numero_nota || '-'}</td>
-                                <td>${formatarData(item.data_emissao) || '-'}</td>
-                                <td>${item.quantidade || 0}</td>
-                                <td>${formatarMoeda(item.valor_unitario || 0)}</td>
-                                <td>${formatarMoeda(item.valor_total || 0)}</td>
-                                <td>${item.fornecedor || '-'}</td>
-                            </tr>
-                        `;
-                    });
-                    
-                    tabelaItens += '</tbody></table>';
-                    itensDiv.innerHTML = tabelaItens;
+                    if (!itens.length) {
+                        itensDiv.innerHTML = '<div class="empty">Nenhuma devolução encontrada para este SKU.</div>';
+                        itensDiv.classList.add('loaded');
+                        return;
+                    }
+
+                    itensDiv.innerHTML = `
+                        <div class="details-wrapper">
+                            ${itens.map((item, itemIndex) => renderizarCardDevolucao(item, itemIndex)).join('')}
+                        </div>
+                    `;
                     itensDiv.classList.add('loaded');
                 }
             }
@@ -486,5 +596,3 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
-

@@ -240,6 +240,7 @@
         .mode-tab { border:1px solid var(--border); background:rgba(21, 40, 66, 0.92); color:var(--text); border-radius:6px; padding:9px 14px; cursor:pointer; font-weight:700; }
         .mode-tab.active { background:var(--accent-strong); color:#fff; border-color:rgba(255,255,255,0.35); }
         .api-grid { display:grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.3fr) minmax(220px, 1.3fr) minmax(130px, 0.6fr); gap:12px; margin: 0 auto 14px; align-items:end; }
+        .api-main-grid { grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.2fr); max-width:760px; }
         .api-field { text-align:left; }
         .api-field label { display:block; margin-bottom:6px; color:var(--muted); font-weight:600; }
         .api-field select,
@@ -270,13 +271,106 @@
             border:1px solid rgba(126, 181, 231, 0.22);
             background:rgba(18, 40, 64, 0.72);
             color:var(--muted);
-            display:flex;
-            align-items:center;
+            display:block;
+            max-height:360px;
+            overflow:auto;
+        }
+        .api-promo-card-section {
+            max-width:980px;
+            margin:0 auto 14px;
         }
         .api-promo-empty {
             color:var(--muted);
             font-size:0.92rem;
             padding:8px 2px;
+        }
+        .api-promo-toolbar {
+            display:flex;
+            justify-content:space-between;
+            align-items:flex-start;
+            gap:10px;
+            margin-bottom:10px;
+        }
+        .api-promo-title {
+            color:#e7f2ff;
+            font-size:0.92rem;
+            font-weight:800;
+            line-height:1.35;
+        }
+        .api-promo-counter {
+            display:block;
+            color:#a9c9ea;
+            font-size:0.78rem;
+            font-weight:600;
+            margin-top:2px;
+        }
+        .api-promo-actions {
+            display:flex;
+            align-items:center;
+            gap:6px;
+            flex:0 0 auto;
+        }
+        .api-promo-select-action {
+            border:1px solid rgba(126, 181, 231, 0.35);
+            background:rgba(28, 162, 255, 0.12);
+            color:#d8ecff;
+            border-radius:6px;
+            padding:5px 8px;
+            font-size:0.76rem;
+            font-weight:800;
+            cursor:pointer;
+        }
+        .api-promo-select-action:hover {
+            background:rgba(28, 162, 255, 0.2);
+            color:#fff;
+        }
+        .api-promo-select-action:disabled {
+            opacity:0.45;
+            cursor:not-allowed;
+        }
+        .api-promo-list {
+            display:grid;
+            grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));
+            gap:10px;
+        }
+        .api-promo-check {
+            display:grid;
+            grid-template-columns:18px minmax(0, 1fr);
+            gap:8px;
+            align-items:flex-start;
+            padding:12px;
+            border:1px solid rgba(126, 181, 231, 0.18);
+            border-radius:6px;
+            background:rgba(7, 18, 31, 0.28);
+            cursor:pointer;
+        }
+        .api-promo-check:hover {
+            border-color:rgba(126, 181, 231, 0.4);
+            background:rgba(7, 18, 31, 0.42);
+        }
+        .api-promo-check input {
+            width:16px;
+            height:16px;
+            margin-top:2px;
+            accent-color:#1ca2ff;
+        }
+        .api-promo-check-text {
+            min-width:0;
+        }
+        .api-promo-check-name {
+            display:block;
+            color:#e7f2ff;
+            font-size:0.84rem;
+            font-weight:700;
+            line-height:1.35;
+            overflow-wrap:anywhere;
+        }
+        .api-promo-check-counts {
+            display:block;
+            color:#9fbedd;
+            font-size:0.76rem;
+            line-height:1.35;
+            margin-top:2px;
         }
         .api-extra-files { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin:12px 0 14px; text-align:left; }
         .api-file-row { padding:12px; border:1px solid rgba(126, 181, 231, 0.2); border-radius:6px; background:rgba(18, 40, 64, 0.45); transition:border-color .18s ease, box-shadow .18s ease, background .18s ease; }
@@ -456,6 +550,179 @@
             background: rgba(31, 11, 20, 0.96);
         }
         .api-status-bar.is-error .api-status-progress { background: linear-gradient(90deg, #ff6b6b, #ff9f7a); }
+        .promo-result-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 10020;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(3, 9, 18, 0.62);
+            backdrop-filter: blur(5px);
+        }
+        .promo-result-modal.hidden { display: none; }
+        .promo-result-card {
+            width: min(760px, calc(100vw - 48px));
+            max-height: calc(100vh - 48px);
+            overflow: auto;
+            border-radius: 12px;
+            border: 1px solid rgba(126, 181, 231, 0.34);
+            background: linear-gradient(165deg, rgba(12, 24, 41, 0.98), rgba(17, 34, 58, 0.98));
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+        }
+        .promo-result-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            padding: 20px 22px 16px;
+            border-bottom: 1px solid rgba(126, 181, 231, 0.22);
+        }
+        .promo-result-kicker {
+            color: #7bcfff;
+            font-size: 0.78rem;
+            font-weight: 800;
+            letter-spacing: 0;
+            text-transform: uppercase;
+        }
+        .promo-result-title {
+            margin: 4px 0 5px;
+            color: #f6fbff;
+            font-size: 1.2rem;
+            line-height: 1.25;
+        }
+        .promo-result-subtitle {
+            color: #b8d2ee;
+            font-size: 0.92rem;
+            line-height: 1.45;
+        }
+        .promo-result-close {
+            flex: 0 0 auto;
+            width: 34px;
+            height: 34px;
+            border-radius: 8px;
+            border: 1px solid rgba(126, 181, 231, 0.36);
+            background: rgba(18, 40, 64, 0.84);
+            color: #eaf3ff;
+            cursor: pointer;
+            font-size: 1.1rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+        .promo-result-body {
+            padding: 18px 22px 20px;
+        }
+        .promo-result-stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .promo-result-stat {
+            border-radius: 8px;
+            border: 1px solid rgba(126, 181, 231, 0.22);
+            background: rgba(11, 22, 38, 0.72);
+            padding: 12px;
+        }
+        .promo-result-stat strong {
+            display: block;
+            color: #ffffff;
+            font-size: 1.45rem;
+            line-height: 1;
+        }
+        .promo-result-stat span {
+            display: block;
+            margin-top: 5px;
+            color: #9cb7d7;
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+        .promo-result-stat--success strong { color: #7ee8a2; }
+        .promo-result-stat--fail strong { color: #ff9f9f; }
+        .promo-result-stat--ignored strong { color: #ffd166; }
+        .promo-result-note {
+            margin: 0 0 14px;
+            color: #d8ecff;
+            font-size: 0.92rem;
+            line-height: 1.45;
+        }
+        .promo-result-section-title {
+            margin: 0 0 8px;
+            color: #f3fbff;
+            font-size: 0.96rem;
+            font-weight: 800;
+        }
+        .promo-result-reasons {
+            display: grid;
+            gap: 8px;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+        .promo-result-reason {
+            border: 1px solid rgba(126, 181, 231, 0.22);
+            border-radius: 8px;
+            background: rgba(9, 18, 31, 0.78);
+            padding: 10px 12px;
+        }
+        .promo-result-reason-main {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .promo-result-reason-text {
+            color: #eaf3ff;
+            font-size: 0.9rem;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+        .promo-result-reason-count {
+            flex: 0 0 auto;
+            border-radius: 999px;
+            background: rgba(28, 162, 255, 0.16);
+            border: 1px solid rgba(99, 187, 255, 0.32);
+            color: #bfe0ff;
+            padding: 4px 8px;
+            font-size: 0.78rem;
+            font-weight: 800;
+        }
+        .promo-result-examples {
+            margin-top: 7px;
+            color: #8fb3d8;
+            font-size: 0.78rem;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+        .promo-result-empty {
+            color: #9cb7d7;
+            font-size: 0.9rem;
+            padding: 10px 0 2px;
+        }
+        .promo-result-actions {
+            display: flex;
+            justify-content: flex-end;
+            padding: 0 22px 20px;
+        }
+        .promo-result-ok {
+            min-width: 118px;
+            border: 1px solid rgba(126, 181, 231, 0.32);
+            border-radius: 8px;
+            background: linear-gradient(105deg, #1ca2ff, #63bbff);
+            color: #ffffff;
+            cursor: pointer;
+            font-weight: 800;
+            padding: 10px 16px;
+        }
+        @media (max-width: 760px) {
+            .promo-result-modal { padding: 14px; }
+            .promo-result-card { width: 100%; max-height: calc(100vh - 28px); }
+            .promo-result-head { padding: 16px; }
+            .promo-result-body { padding: 14px 16px 16px; }
+            .promo-result-stats { grid-template-columns: 1fr; }
+            .promo-result-actions { padding: 0 16px 16px; }
+            .promo-result-ok { width: 100%; }
+        }
         .mlb-output { margin-top: 14px; text-align: left; border: 1px solid var(--border); border-radius: 8px; background: rgba(12, 24, 41, 0.88); padding: 12px; }
         .mlb-output pre { margin: 0; max-height: 420px; overflow: auto; background: rgba(9, 18, 31, 0.92); border: 1px solid rgba(126, 181, 231, 0.24); border-radius: 6px; padding: 10px; color: #d9ebff; font-size: 0.84rem; }
         .mlb-summary { display:grid; grid-template-columns: repeat(3, minmax(150px, 1fr)); gap:8px; margin-bottom: 10px; }
@@ -559,6 +826,30 @@
     </div>
 </div>
 
+<div id="promoResultModal" class="promo-result-modal hidden" aria-hidden="true">
+    <div class="promo-result-card" role="dialog" aria-modal="true" aria-labelledby="promoResultTitle">
+        <div class="promo-result-head">
+            <div>
+                <div class="promo-result-kicker">Mercado Livre</div>
+                <h2 id="promoResultTitle" class="promo-result-title">Resultado da campanha</h2>
+                <div id="promoResultSubtitle" class="promo-result-subtitle"></div>
+            </div>
+            <button class="promo-result-close" type="button" onclick="fecharResultadoParticipacaoPromocoes()" aria-label="Fechar">x</button>
+        </div>
+        <div class="promo-result-body">
+            <div id="promoResultStats" class="promo-result-stats"></div>
+            <p id="promoResultNote" class="promo-result-note"></p>
+            <div id="promoResultReasonsWrap">
+                <h3 class="promo-result-section-title">Motivos principais</h3>
+                <ul id="promoResultReasons" class="promo-result-reasons"></ul>
+            </div>
+        </div>
+        <div class="promo-result-actions">
+            <button class="promo-result-ok" type="button" onclick="fecharResultadoParticipacaoPromocoes()">OK</button>
+        </div>
+    </div>
+</div>
+
 <div class="container">
     <div style="display: flex; justify-content: space-between; align-items: center; gap:8px; flex-wrap:wrap;">
         <h1>Análise de Promoção</h1>
@@ -586,7 +877,7 @@
 
     <div id="painelApi" class="upload-section">
         <h3>Analisar via API</h3>
-        <div class="api-grid">
+        <div class="api-grid api-main-grid">
             <div class="api-field">
                 <label for="apiLojaSelect">Loja</label>
                 <select id="apiLojaSelect" onchange="carregarPromocoesApi()"></select>
@@ -595,10 +886,10 @@
                 <label for="apiPromoASelect">Promoção 1</label>
                 <select id="apiPromoASelect"></select>
             </div>
-            <div class="api-field">
-                <label for="apiPromoBSelect">Promoções 2</label>
-                <div id="apiPromoBSelect" class="api-promo-summary"></div>
-            </div>
+        </div>
+        <div class="api-field api-promo-card-section">
+            <label for="apiPromoBSelect">Promoções 2</label>
+            <div id="apiPromoBSelect" class="api-promo-summary"></div>
         </div>
         <div class="api-file-action-row">
             <button class="btn btn-primary" onclick="processarAnaliseApi()">ANALISAR VIA API</button>
@@ -744,6 +1035,9 @@
     let pendingWidthPrefs = null;
     let saveWidthPrefsTimer = null;
     let apiPromoBCampaigns = [];
+    let apiPromoBSelectedIds = new Set();
+    let apiPromoBPendingSelectedIds = null;
+    let apiPromoBSelectionTouched = false;
     let apiAnalisesPorCampanha = [];
     let apiAnaliseAtiva = 0;
     let apiAnaliseJobPolling = null;
@@ -758,6 +1052,10 @@
     let apiAutoNextRunAt = 0;
     let apiAnaliseCancelada = false;
     let apiAnaliseResolveAtual = null;
+    let apiAnalisePollingInFlight = false;
+    let apiAnalisePollingRetryCount = 0;
+    const API_ANALISE_POLL_INTERVAL_MS = 3000;
+    const API_ANALISE_POLL_MAX_RETRIES = 8;
     const API_AUTO_DEFAULT_INTERVAL_MIN = 60;
     const API_AUTO_MIN_INTERVAL_MIN = 1;
     const API_AUTO_MAX_TIMEOUT_MS = 2140000000;
@@ -1027,6 +1325,7 @@
             lastJobStatus: String(cfg.last_job_status || ''),
             lastJobMessage: String(cfg.last_job_message || ''),
             lastError: String(cfg.last_error || ''),
+            promocoesBMeta: Array.isArray(cfg.promocoes_b_meta) ? cfg.promocoes_b_meta : [],
             updatedAt: Number(cfg.updated_at || 0),
             due: cfg.due === true,
         };
@@ -1066,6 +1365,11 @@
         if (enabledEl) enabledEl.checked = !!prefs.enabled;
         if (approvalEl) approvalEl.checked = prefs.approvalRequired !== false;
         aplicarApiAutoIntervalPrefs(prefs);
+        const promoIds = getApiPromoBIdsFromMeta(prefs.promocoesBMeta);
+        if (promoIds.size && !apiPromoBSelectionTouched) {
+            apiPromoBPendingSelectedIds = promoIds;
+            renderApiPromoBButtons(apiPromoBCampaigns);
+        }
         persistApiAutoPrefsObject(prefs);
         if (prefs.enabled) {
             apiAutoNextRunAt = Number(prefs.nextRunAt || 0);
@@ -1312,8 +1616,11 @@
     function limparPollingAnaliseApi() {
         if (apiAnaliseJobPolling) {
             clearInterval(apiAnaliseJobPolling);
+            clearTimeout(apiAnaliseJobPolling);
             apiAnaliseJobPolling = null;
         }
+        apiAnalisePollingInFlight = false;
+        apiAnalisePollingRetryCount = 0;
     }
 
     function resolverAcompanhamentoAnaliseApi(resultado) {
@@ -1431,7 +1738,138 @@
         return pct !== null ? pct : null;
     }
 
+    function coletarFalhasParticipacaoPromocoes(result, limite = 8) {
+        const erros = [];
+        const coletar = (itemId, erro) => {
+            const texto = String(erro || '').trim();
+            if (!texto) return;
+            const mlb = String(itemId || '').trim();
+            erros.push({ itemId: mlb, erro: texto });
+        };
+        if (Array.isArray(result?.detalhes) && result.detalhes.length) {
+            result.detalhes.forEach((det) => {
+                const deveExplicar = det?.ignored === true || det?.success === false || det?.ok === false;
+                const erro = det?.error || det?.erro || det?.detail || (deveExplicar ? det?.message : '');
+                coletar(det?.item_id || det?.mlb, erro);
+            });
+        } else if (Array.isArray(result?.promocoes)) {
+            result.promocoes.forEach((promo) => {
+                (Array.isArray(promo?.erros) ? promo.erros : []).forEach((erro) => {
+                    const texto = String(erro || '').trim();
+                    const match = texto.match(/^(ML[A-Z]?\d+)\s*:\s*(.*)$/i);
+                    coletar(match ? match[1] : '', match ? match[2] : texto);
+                });
+            });
+        }
+        if (!erros.length) return { total: 0, grupos: [] };
+        const grupos = new Map();
+        erros.forEach(({ itemId, erro }) => {
+            const chave = erro.replace(/\s+/g, ' ').slice(0, 260);
+            const atual = grupos.get(chave) || { qtd: 0, exemplos: [] };
+            atual.qtd += 1;
+            if (itemId && atual.exemplos.length < 5 && !atual.exemplos.includes(itemId)) atual.exemplos.push(itemId);
+            grupos.set(chave, atual);
+        });
+        return {
+            total: erros.length,
+            grupos: Array.from(grupos.entries())
+            .sort((a, b) => b[1].qtd - a[1].qtd)
+            .slice(0, limite)
+                .map(([erro, info]) => ({ erro, ...info })),
+        };
+    }
+
+    function resumirFalhasParticipacaoPromocoes(result, limite = 6) {
+        const resumo = coletarFalhasParticipacaoPromocoes(result, limite);
+        const linhas = resumo.grupos.map((info) => {
+            const exemplos = info.exemplos.length ? ` Ex.: ${info.exemplos.join(', ')}` : '';
+            return `- ${info.qtd} anuncio(s): ${info.erro}${exemplos}`;
+        });
+        return linhas.length ? `\nMotivos principais:\n${linhas.join('\n')}` : '';
+    }
+
+    function formatarMensagemParticipacaoPromocoes(prefixo, result) {
+        const sucesso = Number(result?.total_sucesso || 0);
+        const falha = Number(result?.total_falha || 0);
+        const ignorados = Number(result?.total_ignorados || 0);
+        return `${prefixo}: ${sucesso} sucesso(s), ${falha} falha(s), ${ignorados} ignorado(s).`;
+    }
+
+    function sincronizarAnaliseAtivaComCurrentData() {
+        if (!Array.isArray(apiAnalisesPorCampanha)) return;
+        const idx = Number(apiAnaliseAtiva || 0);
+        const analise = apiAnalisesPorCampanha[idx];
+        if (!analise || !Array.isArray(currentData)) return;
+        analise.data = currentData;
+    }
+
+    function obterLinhasAnaliseParaEnvio(analise, idx) {
+        if (Number(idx) === Number(apiAnaliseAtiva) && Array.isArray(currentData)) {
+            return currentData;
+        }
+        return Array.isArray(analise?.data) ? analise.data : [];
+    }
+
+    function fecharResultadoParticipacaoPromocoes() {
+        const modal = document.getElementById('promoResultModal');
+        if (!modal) return;
+        modal.classList.add('hidden');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+
+    function mostrarResultadoParticipacaoPromocoes(titulo, result, opcoes = {}) {
+        const modal = document.getElementById('promoResultModal');
+        if (!modal) return;
+        const titleEl = document.getElementById('promoResultTitle');
+        const subtitleEl = document.getElementById('promoResultSubtitle');
+        const statsEl = document.getElementById('promoResultStats');
+        const noteEl = document.getElementById('promoResultNote');
+        const reasonsWrapEl = document.getElementById('promoResultReasonsWrap');
+        const reasonsEl = document.getElementById('promoResultReasons');
+        const sucesso = Number(result?.total_sucesso || 0);
+        const falha = Number(result?.total_falha || 0);
+        const ignorados = Number(result?.total_ignorados || 0);
+        const resumo = coletarFalhasParticipacaoPromocoes(result, 8);
+        const temPendencias = falha > 0 || ignorados > 0 || resumo.grupos.length > 0;
+
+        if (titleEl) titleEl.textContent = titulo || 'Resultado da campanha';
+        if (subtitleEl) {
+            subtitleEl.textContent = opcoes.subtitulo || (
+                temPendencias
+                    ? 'Alguns anúncios não foram alterados pelo Mercado Livre. Confira o resumo abaixo.'
+                    : 'Todos os anúncios enviados foram processados pelo Mercado Livre.'
+            );
+        }
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <div class="promo-result-stat promo-result-stat--success"><strong>${sucesso}</strong><span>Sucesso</span></div>
+                <div class="promo-result-stat promo-result-stat--fail"><strong>${falha}</strong><span>Falha</span></div>
+                <div class="promo-result-stat promo-result-stat--ignored"><strong>${ignorados}</strong><span>Ignorados</span></div>
+            `;
+        }
+        if (noteEl) {
+            noteEl.textContent = temPendencias
+                ? 'Itens ignorados normalmente já estão participando, pendentes ou não estão elegíveis para a campanha selecionada.'
+                : 'Nenhum motivo de bloqueio foi retornado para esta operação.';
+        }
+        if (reasonsWrapEl) reasonsWrapEl.style.display = resumo.grupos.length ? '' : 'none';
+        if (reasonsEl) {
+            reasonsEl.innerHTML = resumo.grupos.map((info) => `
+                <li class="promo-result-reason">
+                    <div class="promo-result-reason-main">
+                        <div class="promo-result-reason-text">${escapeHtml(info.erro)}</div>
+                        <div class="promo-result-reason-count">${info.qtd} anúncio(s)</div>
+                    </div>
+                    ${info.exemplos.length ? `<div class="promo-result-examples">Exemplos: ${escapeHtml(info.exemplos.join(', '))}</div>` : ''}
+                </li>
+            `).join('');
+        }
+        modal.classList.remove('hidden');
+        modal.setAttribute('aria-hidden', 'false');
+    }
+
     function montarPayloadParticipacoesPromocoes(indiceCampanha = null) {
+        sincronizarAnaliseAtivaComCurrentData();
         const loja = document.getElementById('apiLojaSelect')?.value || '';
         const analises = Array.isArray(apiAnalisesPorCampanha) && apiAnalisesPorCampanha.length
             ? apiAnalisesPorCampanha
@@ -1440,20 +1878,22 @@
 
         analises.forEach((analise, idx) => {
             if (indiceCampanha !== null && Number(indiceCampanha) !== idx) return;
-            const rows = Array.isArray(analise?.data) ? analise.data : [];
+            const rows = obterLinhasAnaliseParaEnvio(analise, idx);
             const campanha = findApiPromoBCampaignById(analise?.promo_b_id) || {};
             const promotionId = String(analise?.promo_b_id || campanha?.id || '').trim();
             const promotionType = String(analise?.promo_b_type || campanha?.type || campanha?.promotion_type || '').trim();
             const nome = String(analise?.promo_b_nome || campanha?.name || campanha?.title || `Promocao ${idx + 1}`).trim();
             const items = rows.map((row) => {
-                const decisao = getValorLinhaPromoAuto(row, ['Ação', 'Acao', 'Participar ou não', 'Participar ou nao']);
+                const decisao = getDecisaoLinhaPromoAuto(row);
                 if (!isDecisaoParticipar(decisao)) return null;
                 const itemId = getValorLinhaPromoAuto(row, ['MLB', 'mlb', 'Item ID', 'item_id', 'Anúncio', 'Anuncio']);
                 if (!itemId) return null;
                 const dealPrice = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['Preço Final ML', 'Preco Final ML', 'Preco final ML', 'Preço Final Promoção 2', 'Preco Final Promocao 2']));
                 const discountPct = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['ML % Campanha', '% Fixa', 'Desconto ML %', 'discount_percentage', 'percentual']));
+                const offerId = getValorLinhaPromoAuto(row, ['offer_id', 'offerId', 'Offer ID', 'Oferta ID', 'ref_id', 'refId']);
                 return {
                     item_id: itemId,
+                    offer_id: offerId,
                     deal_price: dealPrice,
                     discount_percentage: discountPct,
                     sku: getValorLinhaPromoAuto(row, ['SKU', 'sku']),
@@ -1474,6 +1914,60 @@
         return { loja, promocoes };
     }
 
+    async function iniciarEAcompanharParticipacaoPromocoes(payload, fallbackMessage = 'Entrando nas promocoes...') {
+        const startResp = await fetch('/api/promo/aplicar-participacoes/start', {
+            method: 'POST',
+            headers: getAuthHeadersWithClient({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(payload),
+        });
+        const startPayload = await startResp.json().catch(() => ({}));
+        if (!startResp.ok) {
+            throw new Error(buildApiErrorMessage(startResp, startPayload, fallbackMessage));
+        }
+        const jobId = String(startPayload.job_id || '').trim();
+        if (!jobId) {
+            throw new Error('O servidor nao retornou o job de entrada nas promocoes.');
+        }
+        atualizarStatusAutomacaoPromo(startPayload.message || fallbackMessage);
+        atualizarApiStatusBar({
+            title: 'Entrando nas promocoes',
+            status: startPayload.status || 'queued',
+            progress: Number(startPayload.progress || 0),
+            message: startPayload.message || fallbackMessage,
+            force: true,
+        });
+
+        while (true) {
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+            const resp = await fetch(`/api/promo/aplicar-participacoes/jobs/${encodeURIComponent(jobId)}`, {
+                headers: getAuthHeadersWithClient(),
+            });
+            const job = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                throw new Error(buildApiErrorMessage(resp, job, 'Erro ao consultar entrada nas promocoes'));
+            }
+            const status = String(job.status || '').toLowerCase();
+            const progress = Number(job.progress || 0);
+            const message = job.message || fallbackMessage;
+            atualizarStatusAutomacaoPromo(`${message}${progress ? ` (${progress}%)` : ''}`);
+            atualizarApiStatusBar({
+                title: status === 'completed' ? 'Entrada concluida' : (status === 'error' ? 'Erro ao entrar nas promocoes' : 'Entrando nas promocoes'),
+                status,
+                progress,
+                message,
+                updated_at: job.updated_at,
+                force: true,
+            });
+            if (status === 'completed') {
+                ocultarApiStatusBarDepois(2500);
+                return job.result || {};
+            }
+            if (status === 'error' || status === 'failed' || status === 'canceled' || status === 'cancelled') {
+                throw new Error(job.error || message || 'Erro ao entrar nas promocoes.');
+            }
+        }
+    }
+
     async function executarParticipacaoAutomaticaPromocoes() {
         const prefs = getApiAutoPrefs();
         if (!prefs.enabled) return null;
@@ -1491,19 +1985,12 @@
             }
         }
         atualizarStatusAutomacaoPromo(`Entrando em ${total} anuncio(s) nas promocoes...`);
-        const resp = await fetch('/api/promo/aplicar-participacoes', {
-            method: 'POST',
-            headers: getAuthHeadersWithClient({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify(payload),
-        });
-        const result = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-            throw new Error(buildApiErrorMessage(resp, result, 'Erro ao entrar nas promocoes'));
-        }
-        const msg = `Entrada concluida: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
-        atualizarStatusAutomacaoPromo(msg);
-        if (Number(result.total_falha || 0) > 0) {
-            alert(`${msg}\nAlguns anuncios nao foram aceitos pelo Mercado Livre.`);
+        const result = await iniciarEAcompanharParticipacaoPromocoes(payload, 'Entrando nas promocoes...');
+        const msg = formatarMensagemParticipacaoPromocoes('Entrada concluida', result);
+        const resumoFalhas = resumirFalhasParticipacaoPromocoes(result);
+        atualizarStatusAutomacaoPromo(`${msg}${resumoFalhas ? ' Veja os motivos no resumo.' : ''}`);
+        if (Number(result.total_falha || 0) > 0 || Number(result.total_ignorados || 0) > 0) {
+            mostrarResultadoParticipacaoPromocoes('Entrada concluída nas promoções', result);
         }
         return result;
     }
@@ -1527,21 +2014,14 @@
 
         atualizarStatusAutomacaoPromo(`Confirmando participação em ${total} anúncio(s) da campanha ${nome}...`);
         try {
-            const resp = await fetch('/api/promo/aplicar-participacoes', {
-                method: 'POST',
-                headers: getAuthHeadersWithClient({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify(payload),
-            });
-            const result = await resp.json().catch(() => ({}));
-            if (!resp.ok) {
-                throw new Error(buildApiErrorMessage(resp, result, 'Erro ao confirmar participação'));
-            }
-            const msg = `Campanha ${nome}: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
-            analise.participacao_confirmada = Number(result.total_falha || 0) === 0;
+            const result = await iniciarEAcompanharParticipacaoPromocoes(payload, `Confirmando participacao na campanha ${nome}...`);
+            const msg = formatarMensagemParticipacaoPromocoes(`Campanha ${nome}`, result);
+            analise.participacao_confirmada = Number(result.total_falha || 0) === 0 && Number(result.total_sucesso || 0) > 0;
             analise.participacao_resultado = result;
             renderApiAnalysisTabs();
-            atualizarStatusAutomacaoPromo(msg);
-            alert(Number(result.total_falha || 0) > 0 ? `${msg}\nAlguns anúncios não foram aceitos pelo Mercado Livre.` : msg);
+            const resumoFalhas = resumirFalhasParticipacaoPromocoes(result);
+            atualizarStatusAutomacaoPromo(`${msg}${resumoFalhas ? ' Veja os motivos no resumo.' : ''}`);
+            mostrarResultadoParticipacaoPromocoes(`Campanha ${nome}`, result);
         } catch (err) {
             atualizarStatusAutomacaoPromo(`Erro ao confirmar participação: ${err && err.message ? err.message : err}`);
             alert(err && err.message ? err.message : 'Erro ao confirmar participação.');
@@ -1605,8 +2085,7 @@
             decisao = 'Não participar';
         }
 
-        row['Ação'] = decisao;
-        row['Participar ou não'] = decisao;
+        setDecisaoLinhaPromoAuto(row, decisao);
     }
 
     function normalizeApiDatasetRules(dataRows) {
@@ -1622,6 +2101,31 @@
         const normalized = upperRaw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         const negativa = normalized.includes('NAO') || upperRaw.includes('NÃO') || upperRaw.includes('NÃ');
         return normalized.includes('PARTICIPAR') && !negativa;
+    }
+
+    const PROMO_DECISAO_ALIASES = ['Ação', 'Acao', 'Participar ou não', 'Participar ou nao', 'acao'];
+
+    function getDecisaoLinhaPromoAuto(row) {
+        if (!row || typeof row !== 'object') return '';
+        const acao = row['Ação'];
+        if (acao !== null && acao !== undefined && String(acao).trim() !== '') return String(acao).trim();
+        const participarOuNao = row['Participar ou não'];
+        if (participarOuNao !== null && participarOuNao !== undefined && String(participarOuNao).trim() !== '') {
+            return String(participarOuNao).trim();
+        }
+        return getValorLinhaPromoAuto(row, PROMO_DECISAO_ALIASES);
+    }
+
+    function setDecisaoLinhaPromoAuto(row, decisao) {
+        if (!row || typeof row !== 'object') return row;
+        Object.keys(row).forEach((key) => {
+            if (PROMO_DECISAO_ALIASES.some((alias) => _keysAreEquivalent(key, alias))) {
+                row[key] = decisao;
+            }
+        });
+        row['Ação'] = decisao;
+        row['Participar ou não'] = decisao;
+        return row;
     }
 
     function _normalizeLookupKeyBase(value) {
@@ -1715,21 +2219,18 @@
         (currentData || []).forEach((r) => {
             const status = String(r['Status'] ?? '').trim().toLowerCase();
             if (status !== 'ativo') {
-                r['Ação'] = 'Não participar';
-                r['Participar ou não'] = 'Não participar';
+                setDecisaoLinhaPromoAuto(r, 'Não participar');
                 return;
             }
             const margem = parsePercentValue(r['Margem']);
             const margemMl = parsePercentValue(r['Margem ML']);
             if (margem === null || margemMl === null) {
-                r['Ação'] = 'Não participar';
-                r['Participar ou não'] = 'Não participar';
+                setDecisaoLinhaPromoAuto(r, 'Não participar');
                 return;
             }
             const participar = margemMl > margem;
             const decisao = participar ? 'Participar' : 'Não participar';
-            r['Ação'] = decisao;
-            r['Participar ou não'] = decisao;
+            setDecisaoLinhaPromoAuto(r, decisao);
         });
     }
 
@@ -2708,6 +3209,53 @@
         return hasPromoCounts(campanha) ? `${formatPromoOption(campanha)} · ${formatPromoCountsLabel(campanha)}` : formatPromoOption(campanha);
     }
 
+    function normalizeApiPromoBId(id) {
+        return String(id || '').trim();
+    }
+
+    function getApiPromoBIdsFromMeta(metaList) {
+        const ids = new Set();
+        if (!Array.isArray(metaList)) return ids;
+        metaList.forEach((meta) => {
+            if (!meta || typeof meta !== 'object') return;
+            const id = normalizeApiPromoBId(meta.promo_b_id || meta.value || meta.id || meta.promotion_id);
+            if (id) ids.add(id);
+        });
+        return ids;
+    }
+
+    function getApiPromoBCampaignIdSet(campanhas = apiPromoBCampaigns) {
+        const ids = new Set();
+        (Array.isArray(campanhas) ? campanhas : []).forEach((campanha) => {
+            const id = normalizeApiPromoBId(campanha?.id);
+            if (id) ids.add(id);
+        });
+        return ids;
+    }
+
+    function syncApiPromoBSelectionWithCampaigns(campanhas) {
+        const idsDisponiveis = getApiPromoBCampaignIdSet(campanhas);
+        if (apiPromoBPendingSelectedIds && !apiPromoBSelectionTouched) {
+            apiPromoBSelectedIds = new Set([...apiPromoBPendingSelectedIds].filter((id) => idsDisponiveis.has(id)));
+            apiPromoBPendingSelectedIds = null;
+            return;
+        }
+        apiPromoBSelectedIds = new Set([...apiPromoBSelectedIds].filter((id) => idsDisponiveis.has(id)));
+    }
+
+    function setApiPromoBSelection(ids, touched = true) {
+        const idsDisponiveis = getApiPromoBCampaignIdSet();
+        apiPromoBSelectedIds = new Set([...ids].map(normalizeApiPromoBId).filter((id) => id && idsDisponiveis.has(id)));
+        if (touched) apiPromoBSelectionTouched = true;
+        renderApiPromoBButtons(apiPromoBCampaigns);
+        const enabledEl = document.getElementById('apiAutoWorkEnabled');
+        if (touched && enabledEl?.checked) {
+            salvarApiAutoPrefsServidor().catch((e) => {
+                atualizarStatusAutomacaoPromo(e.message || 'Erro ao salvar campanhas selecionadas.');
+            });
+        }
+    }
+
     function findApiPromoBCampaignById(id) {
         const target = String(id || '').trim();
         if (!target || !Array.isArray(apiPromoBCampaigns)) return null;
@@ -2752,6 +3300,7 @@
     }
 
     function getApiPromoBSelections() {
+        const selectedIds = apiPromoBSelectedIds instanceof Set ? apiPromoBSelectedIds : new Set();
         return Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns.map((campanha) => ({
             value: String(campanha?.id || '').trim(),
             promoType: String(campanha?.type || campanha?.promotion_type || '').trim(),
@@ -2760,7 +3309,7 @@
             matchName: String(campanha?.name || campanha?.title || campanha?.id || '').trim(),
             activeCount: resolvePromoActiveCount(campanha),
             eligibleCount: resolvePromoEligibleCount(campanha),
-        })).filter((item) => item.value) : [];
+        })).filter((item) => item.value && selectedIds.has(item.value)) : [];
     }
 
     function normalizePromoMatchText(raw) {
@@ -2880,10 +3429,12 @@
         apiPromoBCampaigns = lista;
         if (!lista.length) {
             apiPromoBCampaigns = [];
-            wrap.innerHTML = 'Nenhuma campanha criada pelo Mercado Livre.';
+            apiPromoBSelectedIds = new Set();
+            wrap.innerHTML = '<div class="api-promo-empty">Nenhuma campanha criada pelo Mercado Livre.</div>';
             renderApiPromoBFiles();
             return;
         }
+        syncApiPromoBSelectionWithCampaigns(lista);
         const totalAtivos = lista.reduce((sum, campanha) => {
             const count = resolvePromoActiveCount(campanha);
             return count === null ? sum : sum + count;
@@ -2894,7 +3445,50 @@
         }, 0);
         const temAtivos = lista.some((campanha) => resolvePromoActiveCount(campanha) !== null);
         const temElegiveis = lista.some((campanha) => resolvePromoEligibleCount(campanha) !== null);
-        wrap.textContent = `${lista.length} campanhas criadas pelo Mercado Livre serão consideradas automaticamente. Ativos: ${temAtivos ? totalAtivos : '-'} | Elegíveis: ${temElegiveis ? totalElegiveis : '-'}.`;
+        const selecionadas = getApiPromoBSelections();
+        const todasSelecionadas = selecionadas.length === lista.length;
+        wrap.innerHTML = `
+            <div class="api-promo-toolbar">
+                <div class="api-promo-title">
+                    Marque as campanhas do Mercado Livre para analisar
+                    <span class="api-promo-counter">${selecionadas.length}/${lista.length} selecionada(s) · Ativos: ${temAtivos ? totalAtivos : '-'} | Elegíveis: ${temElegiveis ? totalElegiveis : '-'}</span>
+                </div>
+                <div class="api-promo-actions">
+                    <button type="button" class="api-promo-select-action" data-api-promo-action="all" ${todasSelecionadas ? 'disabled' : ''}>Todos</button>
+                    <button type="button" class="api-promo-select-action" data-api-promo-action="none" ${!selecionadas.length ? 'disabled' : ''}>Limpar</button>
+                </div>
+            </div>
+            <div class="api-promo-list">
+                ${lista.map((campanha) => {
+                    const id = normalizeApiPromoBId(campanha.id);
+                    const checked = apiPromoBSelectedIds.has(id);
+                    return `
+                        <label class="api-promo-check">
+                            <input type="checkbox" data-api-promo-b-id="${escapeHtml(id)}" ${checked ? 'checked' : ''}>
+                            <span class="api-promo-check-text">
+                                <span class="api-promo-check-name">${escapeHtml(formatPromoOption(campanha))}</span>
+                                <span class="api-promo-check-counts">${escapeHtml(formatPromoCountsLabel(campanha))}</span>
+                            </span>
+                        </label>
+                    `;
+                }).join('')}
+            </div>
+        `;
+        wrap.querySelectorAll('[data-api-promo-b-id]').forEach((checkbox) => {
+            checkbox.addEventListener('change', () => {
+                const id = normalizeApiPromoBId(checkbox.getAttribute('data-api-promo-b-id'));
+                const next = new Set(apiPromoBSelectedIds);
+                if (checkbox.checked) next.add(id);
+                else next.delete(id);
+                setApiPromoBSelection(next, true);
+            });
+        });
+        wrap.querySelector('[data-api-promo-action="all"]')?.addEventListener('click', () => {
+            setApiPromoBSelection(getApiPromoBCampaignIdSet(), true);
+        });
+        wrap.querySelector('[data-api-promo-action="none"]')?.addEventListener('click', () => {
+            setApiPromoBSelection(new Set(), true);
+        });
         renderApiPromoBFiles();
     }
 
@@ -3042,12 +3636,15 @@
         const updatedAt = Number(payload.updated_at || 0);
         const ageText = updatedAt > 0 ? `Atualizado ha ${Math.max(0, Math.floor(Date.now() / 1000 - updatedAt))}s` : '';
 
-        let title = 'Analise via API';
-        if (status === 'queued') title = 'Na fila';
-        if (status === 'running') title = 'Analisando via API';
-        if (status === 'completed') title = 'Analise concluida';
-        if (status === 'canceled' || status === 'cancelled') title = 'Analise cancelada';
-        if (status === 'error') title = 'Erro na analise';
+        let title = String(payload.title || '').trim();
+        if (!title) {
+            title = 'Analise via API';
+            if (status === 'queued') title = 'Na fila';
+            if (status === 'running') title = 'Analisando via API';
+            if (status === 'completed') title = 'Analise concluida';
+            if (status === 'canceled' || status === 'cancelled') title = 'Analise cancelada';
+            if (status === 'error') title = 'Erro na analise';
+        }
 
         bar.style.display = '';
         bar.classList.remove('is-hidden');
@@ -3137,14 +3734,17 @@
                 });
                 const payload = await resp.json().catch(() => ({}));
                 if (!resp.ok || !payload.success) {
-                    throw new Error(payload.detail || 'Erro ao consultar o andamento da análise.');
+                    throw new Error(payload.detail || 'Erro ao consultar o andamento da analise.');
                 }
 
+                apiAnalisePollingRetryCount = 0;
                 const status = String(payload.status || '').toLowerCase();
                 const progress = Number(payload.progress || 0);
-                const message = payload.message || 'Processando análise em segundo plano...';
-                loading.textContent = `${message} ${progress ? `(${progress}%)` : ''}`.trim();
-                loading.style.display = 'block';
+                const message = payload.message || 'Processando analise em segundo plano...';
+                if (loading) {
+                    loading.textContent = `${message} ${progress ? `(${progress}%)` : ''}`.trim();
+                    loading.style.display = 'block';
+                }
                 renderApiJobDetails(payload);
                 atualizarApiStatusBar({
                     status,
@@ -3182,12 +3782,12 @@
                     };
                     renderTable(currentData);
                     renderApiAnalysisTabs();
-                    loading.style.display = 'none';
+                    if (loading) loading.style.display = 'none';
                     if (loadingDetails) {
                         loadingDetails.style.display = 'none';
                         loadingDetails.innerHTML = '';
                     }
-                    resultsArea.style.display = 'block';
+                    if (resultsArea) resultsArea.style.display = 'block';
                     atualizarApiStatusBar({
                         status: 'completed',
                         progress: 100,
@@ -3200,12 +3800,12 @@
                 } else if (status === 'canceled' || status === 'cancelled') {
                     limparPollingAnaliseApi();
                     setApiCancelButtonVisible(false);
-                    loading.style.display = 'none';
+                    if (loading) loading.style.display = 'none';
                     if (loadingDetails) {
                         loadingDetails.style.display = 'none';
                         loadingDetails.innerHTML = '';
                     }
-                    errorMsg.style.display = 'none';
+                    if (errorMsg) errorMsg.style.display = 'none';
                     atualizarApiStatusBar({
                         status: 'canceled',
                         progress: 100,
@@ -3219,38 +3819,60 @@
                 } else if (status === 'error') {
                     limparPollingAnaliseApi();
                     setApiCancelButtonVisible(false);
-                    loading.style.display = 'none';
+                    if (loading) loading.style.display = 'none';
                     if (loadingDetails) {
                         loadingDetails.style.display = 'none';
                         loadingDetails.innerHTML = '';
                     }
-                    errorMsg.textContent = payload.error || payload.message || 'Erro ao processar a análise em segundo plano.';
-                    errorMsg.style.display = 'block';
+                    const erroTexto = payload.error || payload.message || 'Erro ao processar a analise em segundo plano.';
+                    if (errorMsg) {
+                        errorMsg.textContent = erroTexto;
+                        errorMsg.style.display = 'block';
+                    }
                     atualizarApiStatusBar({
                         status: 'error',
                         progress: 100,
-                        message: errorMsg.textContent,
+                        message: erroTexto,
                         logs: payload.logs,
                         updated_at: payload.updated_at,
                     });
-                    return { status: 'error', payload, error: errorMsg.textContent };
+                    return { status: 'error', payload, error: erroTexto };
                 }
             } catch (e) {
+                const mensagem = String(e?.message || 'Erro ao consultar o andamento da analise.');
+                const erroTransitorio =
+                    /timeout|timed out|failed to fetch|network|503|502|504|worker dedicado|connection|conexao/i.test(mensagem);
+                if (erroTransitorio && apiAnalisePollingRetryCount < API_ANALISE_POLL_MAX_RETRIES) {
+                    apiAnalisePollingRetryCount += 1;
+                    const aviso = 'Mercado Livre demorou para responder, tentando novamente...';
+                    if (loading) {
+                        loading.textContent = `${aviso} (${apiAnalisePollingRetryCount}/${API_ANALISE_POLL_MAX_RETRIES})`;
+                        loading.style.display = 'block';
+                    }
+                    atualizarApiStatusBar({
+                        status: 'running',
+                        progress: 0,
+                        message: aviso,
+                    });
+                    return null;
+                }
                 limparPollingAnaliseApi();
                 setApiCancelButtonVisible(false);
-                loading.style.display = 'none';
+                if (loading) loading.style.display = 'none';
                 if (loadingDetails) {
                     loadingDetails.style.display = 'none';
                     loadingDetails.innerHTML = '';
                 }
-                errorMsg.textContent = e.message || 'Erro ao consultar o andamento da análise.';
-                errorMsg.style.display = 'block';
+                if (errorMsg) {
+                    errorMsg.textContent = mensagem;
+                    errorMsg.style.display = 'block';
+                }
                 atualizarApiStatusBar({
                     status: 'error',
                     progress: 100,
-                    message: errorMsg.textContent,
+                    message: mensagem,
                 });
-                return { status: 'error', error: errorMsg.textContent };
+                return { status: 'error', error: mensagem };
             }
             return null;
         };
@@ -3259,13 +3881,29 @@
         if (finalizado) return finalizado;
         return new Promise((resolve) => {
             apiAnaliseResolveAtual = resolve;
-            apiAnaliseJobPolling = setInterval(async () => {
+            const agendarProxima = (delayMs = API_ANALISE_POLL_INTERVAL_MS) => {
+                if (apiAnaliseCancelada) return;
+                apiAnaliseJobPolling = setTimeout(tick, delayMs);
+            };
+            const tick = async () => {
+                if (apiAnalisePollingInFlight) {
+                    agendarProxima(API_ANALISE_POLL_INTERVAL_MS);
+                    return;
+                }
+                apiAnalisePollingInFlight = true;
                 const final = await consultar();
+                apiAnalisePollingInFlight = false;
                 if (final) {
                     apiAnaliseResolveAtual = null;
                     resolve(final);
+                    return;
                 }
-            }, 3000);
+                const retryDelay = apiAnalisePollingRetryCount > 0
+                    ? Math.min(12000, API_ANALISE_POLL_INTERVAL_MS * (apiAnalisePollingRetryCount + 1))
+                    : API_ANALISE_POLL_INTERVAL_MS;
+                agendarProxima(retryDelay);
+            };
+            agendarProxima(API_ANALISE_POLL_INTERVAL_MS);
         });
     }
 
@@ -3276,6 +3914,10 @@
         if (!selectA || !selectB) return;
         selectA.innerHTML = '<option value="">Carregando...</option>';
         selectB.innerHTML = '<div class="api-promo-empty">Carregando...</div>';
+        apiPromoBCampaigns = [];
+        apiPromoBSelectedIds = new Set();
+        apiPromoBPendingSelectedIds = null;
+        apiPromoBSelectionTouched = false;
         renderApiPromoBFiles();
         if (!loja) return;
         try {
@@ -3297,20 +3939,11 @@
                 optA.dataset.promoType = promoType === '-' ? '' : promoType;
                 selectA.appendChild(optA);
             });
-            campanhasB.forEach((campanha) => {
-                if (!campanha || !campanha.id) return;
-                const optB = document.createElement('option');
-                optB.value = campanha.id;
-                optB.textContent = formatPromoOption(campanha);
-                const promoType = campanha.type || campanha.promotion_type || '';
-                optB.dataset.promoType = promoType === '-' ? '' : promoType;
-                selectB.appendChild(optB);
-            });
             if (!campanhasA.length) {
                 selectA.innerHTML = '<option value="">Nenhuma promoção do usuário</option>';
             }
             renderApiPromoBButtons(campanhasB);
-            if (apiAutoInicializada && getApiAutoPrefs().enabled) {
+            if (apiAutoInicializada && getApiAutoPrefs().enabled && getApiPromoBSelections().length) {
                 salvarApiAutoPrefsServidor().catch(() => {});
             }
             carregarContagensCampanhasApi(loja).then((countsByCampaignId) => {
@@ -3318,7 +3951,7 @@
                 if ((document.getElementById('apiLojaSelect')?.value || '') !== loja) return;
                 const campanhasComContagem = campanhasB.map((campanha) => applyPromoCounts(campanha, countsByCampaignId));
                 renderApiPromoBButtons(campanhasComContagem);
-                if (apiAutoInicializada && getApiAutoPrefs().enabled) {
+                if (apiAutoInicializada && getApiAutoPrefs().enabled && getApiPromoBSelections().length) {
                     salvarApiAutoPrefsServidor().catch(() => {});
                 }
             }).catch(() => {});
@@ -3687,7 +4320,7 @@
                 td.style.textAlign = col.key === 'Título' ? 'left' : 'center';
                 if (col.editable) {
                     const select = document.createElement('select');
-                    const decisaoAtual = row['Ação'] || row['Participar ou não'] || '';
+                    const decisaoAtual = getDecisaoLinhaPromoAuto(row);
                     const isParticipar = isDecisaoParticipar(decisaoAtual);
                     select.className = `decision-select ${isParticipar ? 'participar' : 'nao-participar'}`;
                     select.style.cursor = 'pointer';
@@ -3709,8 +4342,10 @@
                     select.addEventListener('change', function() {
                         const val = this.value;
                         const isPart = val === 'Participar';
-                        currentData[dataIndex]['Ação'] = val;
-                        currentData[dataIndex]['Participar ou não'] = val;
+                        const alvo = currentData[dataIndex] || row;
+                        setDecisaoLinhaPromoAuto(alvo, val);
+                        setDecisaoLinhaPromoAuto(row, val);
+                        sincronizarAnaliseAtivaComCurrentData();
                         this.className = `decision-select ${isPart ? 'participar' : 'nao-participar'}`;
                         this.parentElement.style.backgroundColor = '#fff3cd';
                         updateMetrics();
@@ -3780,7 +4415,7 @@
     function updateMetrics() {
         const total = currentData.length;
         const part = currentData.filter(r => {
-            return isDecisaoParticipar(r['Ação'] || r['Participar ou não'] || "");
+            return isDecisaoParticipar(getDecisaoLinhaPromoAuto(r));
         }).length;
 
         document.getElementById('totalAnuncios').textContent = total;
@@ -3795,7 +4430,7 @@
         const fonte = dadosOverride || analise.data || [];
         const linhasExport = fonte.map((r) => {
             const out = Object.assign({}, r);
-            out['Ação'] = r['Ação'] || r['Participar ou não'] || '';
+            out['Ação'] = getDecisaoLinhaPromoAuto(r);
             out['Participar ou não'] = out['Ação'];
             return out;
         });
@@ -3858,7 +4493,7 @@
             tableColumns.forEach((col) => {
                 rowOut[col.key] = r[col.key] ?? '';
             });
-            rowOut['Participar ou não'] = (r['Ação'] || r['Participar ou não'] || 'Participar');
+            rowOut['Participar ou não'] = (getDecisaoLinhaPromoAuto(r) || 'Participar');
             return rowOut;
         });
 
@@ -3896,7 +4531,7 @@
     }
 
     function copiarDecisoes() {
-        const decisoes = currentData.map(r => (r['Ação'] || r['Participar ou não'] || 'Participar'));
+        const decisoes = currentData.map(r => (getDecisaoLinhaPromoAuto(r) || 'Participar'));
         const textToCopy = decisoes.join("\n");
         navigator.clipboard.writeText(textToCopy).then(() => {
             alert("Decisões copiadas para a área de transferência!");

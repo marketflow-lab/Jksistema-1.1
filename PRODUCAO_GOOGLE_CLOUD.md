@@ -42,7 +42,7 @@ Ele faz o build no repositório `jk-sistema` e publica a imagem com `--image`.
 
 ## Pos-deploy
 
-1. Configure o callback do Mercado Livre como:
+1. Configure o callback do Bling e do Mercado Livre como:
 
 ```text
 https://jk-sistema-api-1077918177671.southamerica-east1.run.app/auth/callback
@@ -54,7 +54,7 @@ https://jk-sistema-api-1077918177671.southamerica-east1.run.app/auth/callback
 gcloud.cmd run services update jk-sistema-api ^
   --project jk-sistema-prod-20260525 ^
   --region southamerica-east1 ^
-  --update-env-vars JK_REDIRECT_URI=https://SUA_URL_DO_CLOUD_RUN/auth/callback
+  --update-env-vars JK_REDIRECT_URI=https://SUA_URL_DO_CLOUD_RUN/auth/callback,JK_BLING_REDIRECT_URI=https://SUA_URL_DO_CLOUD_RUN/auth/callback,JK_AUTO_NGROK_REDIRECT=false
 ```
 
 ## Observacoes

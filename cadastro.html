@@ -71,6 +71,11 @@
         .foto-thumb:hover { transform:scale(2.6); z-index:50; box-shadow:0 10px 24px rgba(0,0,0,.55); }
         .foto-link { color:#9bd1ff; text-decoration:none; font-weight:600; }
         .foto-link:hover { text-decoration:underline; }
+        .custo-lojas-td { white-space:normal; min-width:220px; max-width:340px; }
+        .custo-lojas { display:flex; flex-direction:column; gap:4px; line-height:1.25; }
+        .custo-lojas div { display:flex; justify-content:space-between; gap:10px; }
+        .custo-lojas .loja { color:#9bd1ff; font-weight:600; }
+        .custo-lojas .valor { color:#e5e5e5; text-align:right; }
 
         @media (max-width: 980px) {
             .layout { grid-template-columns: 1fr; }
@@ -201,6 +206,9 @@
     let paginaCustosAtual = 1;
     let clientId = null;
     let produtos = [];
+    let lojasIntegradasCustos = [];
+    let lojasIntegradasCustosKeys = new Set();
+    let lojasIntegradasCustosPorKey = new Map();
     let colunasTabela = [];
     let colunasTabelaKey = '';
     const largurasColunas = JSON.parse(localStorage.getItem(LS_LARGURAS_KEY) || '{}');
@@ -213,7 +221,8 @@
         'sku', 'foto', 'produto_bling', 'nome', 'produto', 'ncm', 'cest', 'categoria', 'custo', 'preco', 'descricao', 'imposto', 'updated_at'
     ];
     const colunasOcultas = new Set([
-        'marca', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'custos_frete_mlb', 'modalidades_mlb', 'gtins_mlb'
+        'marca', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'custos_frete_mlb', 'modalidades_mlb', 'gtins_mlb',
+        'custos_por_loja', 'tem_custo_loja', 'loja_custo'
     ]);
 
     function colunaEhIndesejada(coluna) {
@@ -266,6 +275,42 @@
             .replace(/[^a-z0-9]/g, '');
     }
 
+    function corrigirTextoQuebrado(valor) {
+        let texto = String(valor || '');
+        const substituicoes = {
+            '\u00e3\u00a7': 'ç',
+            '\u00e3\u00a3': 'ã',
+            '\u00e3\u00a1': 'á',
+            '\u00e3\u00a2': 'â',
+            '\u00e3\u00a9': 'é',
+            '\u00e3\u00aa': 'ê',
+            '\u00e3\u00ad': 'í',
+            '\u00e3\u00b3': 'ó',
+            '\u00e3\u00b4': 'ô',
+            '\u00e3\u00ba': 'ú',
+            '\u00e2\u20ac\u201c': '-',
+            '\u00e2\u20ac\u201d': '-',
+            '\u00e2\u20ac\u0153': '"',
+            '\u00e2\u20ac\ufffd': '"',
+            '\u00e2\u20ac\u2122': "'",
+            '\u00e2\u20ac\u00a2': '-'
+        };
+        Object.entries(substituicoes).forEach(([errado, correto]) => {
+            texto = texto.split(errado).join(correto);
+        });
+        for (let i = 0; i < 2 && /[\u00c3\u00c2\ufffd]/.test(texto); i++) {
+            try {
+                const bytes = Array.from(texto, ch => `%${ch.charCodeAt(0).toString(16).padStart(2, '0')}`).join('');
+                const corrigido = decodeURIComponent(bytes);
+                if (!corrigido || corrigido === texto) break;
+                texto = corrigido;
+            } catch (e) {
+                break;
+            }
+        }
+        return texto;
+    }
+
     function normalizarLegendaColuna(coluna) {
         const mapa = {
             sku: 'SKU',
@@ -287,15 +332,15 @@
             updated_at: 'Atualizado em'
         };
         if (mapa[coluna]) return mapa[coluna];
-        return String(coluna || '')
+        return corrigirTextoQuebrado(String(coluna || '')
             .replace(/^cg_/i, '')
             .replace(/_/g, ' ')
             .replace(/\s+/g, ' ')
-            .trim();
+            .trim());
     }
 
     function escaparHtml(valor) {
-        return String(valor || '')
+        return corrigirTextoQuebrado(valor)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
@@ -316,8 +361,52 @@
         return `/api/cadastro/foto-arquivo/${encodeURIComponent(nomeArquivo)}`;
     }
 
+    function formatarImposto(valor) {
+        if (valor === null || valor === undefined || valor === '') return '';
+        const texto = String(valor).trim();
+        if (!texto) return '';
+        if (texto.includes('%')) return texto;
+        const num = Number(texto.replace(',', '.'));
+        if (!Number.isFinite(num)) return texto;
+        return `${num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+    }
+
+    function renderCampoPorLojaProduto(item, campo, formatador) {
+        const lojas = obterLojasIntegradasProduto(item);
+        const linhas = lojas
+            .map(loja => {
+                const dados = obterDadosCustoLoja(item, loja);
+                const valor = dados && dados[campo] !== undefined ? dados[campo] : '';
+                if (valor === null || valor === undefined || String(valor).trim() === '') return null;
+                return { loja, valor };
+            })
+            .filter(Boolean);
+        if (!linhas.length) return '';
+
+        return `<div class="custo-lojas">${linhas.map(({ loja, valor }) => (
+            `<div><span class="loja">${escaparHtml(loja)}</span><span class="valor">${escaparHtml(formatador(valor))}</span></div>`
+        )).join('')}</div>`;
+    }
+
+    function classeCelula(coluna, item) {
+        if (coluna === 'foto') return 'foto-td';
+        if (coluna === 'custo' && renderCampoPorLojaProduto(item, 'custo', formatarNumero)) return 'custo-lojas-td';
+        if (coluna === 'imposto' && renderCampoPorLojaProduto(item, 'imposto', formatarImposto)) return 'custo-lojas-td';
+        return '';
+    }
+
     function renderConteudoCelula(coluna, item) {
-        if (coluna === 'custo' || coluna === 'preco') {
+        if (coluna === 'custo') {
+            const custosPorLoja = renderCampoPorLojaProduto(item, 'custo', formatarNumero);
+            if (custosPorLoja) return custosPorLoja;
+            return escaparHtml(formatarNumero(item[coluna]));
+        }
+        if (coluna === 'imposto') {
+            const impostosPorLoja = renderCampoPorLojaProduto(item, 'imposto', formatarImposto);
+            if (impostosPorLoja) return impostosPorLoja;
+            return escaparHtml(formatarImposto(item[coluna]));
+        }
+        if (coluna === 'preco') {
             return escaparHtml(formatarNumero(item[coluna]));
         }
         if (coluna === 'sku') {
@@ -476,7 +565,7 @@
         if (totalPaginas <= 1) return;
 
         const btnAnterior = document.createElement('button');
-        btnAnterior.textContent = '? Anterior';
+        btnAnterior.textContent = 'Anterior';
         btnAnterior.disabled = paginaAtual === 1;
         btnAnterior.addEventListener('click', () => { paginaAtual--; renderTabela(false); window.scrollTo(0,0); });
         paginacaoEl.appendChild(btnAnterior);
@@ -507,7 +596,7 @@
         }
 
         const btnProximo = document.createElement('button');
-        btnProximo.textContent = 'Próximo ?';
+        btnProximo.textContent = 'Próximo';
         btnProximo.disabled = paginaAtual === totalPaginas;
         btnProximo.addEventListener('click', () => { paginaAtual++; renderTabela(false); window.scrollTo(0,0); });
         paginacaoEl.appendChild(btnProximo);
@@ -590,7 +679,7 @@
         lista.forEach(item => {
             const tr = document.createElement('tr');
             tr.innerHTML = colunasTabela.map(col => {
-                return `<td class="${col === 'foto' ? 'foto-td' : ''}">${renderConteudoCelula(col, item)}</td>`;
+                return `<td class="${classeCelula(col, item)}">${renderConteudoCelula(col, item)}</td>`;
             }).join('');
             frag.appendChild(tr);
         });
@@ -637,15 +726,7 @@
     }
 
     function obterLojasCustos() {
-        const lojas = new Set();
-        produtos.forEach(item => {
-            obterLojaProduto(item)
-                .split('|')
-                .map(v => v.trim())
-                .filter(Boolean)
-                .forEach(v => lojas.add(v));
-        });
-        return Array.from(lojas).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        return [...lojasIntegradasCustos];
     }
 
     function normalizarLojaCusto(valor) {
@@ -654,6 +735,45 @@
             .replace(/[\u0300-\u036f]/g, '')
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '');
+    }
+
+    function lojaCustoEstaIntegrada(loja) {
+        const chave = normalizarLojaCusto(loja);
+        return !!chave && lojasIntegradasCustosKeys.has(chave);
+    }
+
+    function dividirLojas(valor) {
+        return String(valor || '')
+            .split('|')
+            .map(v => v.trim())
+            .filter(Boolean);
+    }
+
+    function adicionarLojaIntegrada(setLojas, loja) {
+        const nome = String(loja || '').trim();
+        const chave = normalizarLojaCusto(nome);
+        const nomeIntegrado = lojasIntegradasCustosPorKey.get(chave);
+        if (nomeIntegrado && lojaCustoEstaIntegrada(nome)) {
+            setLojas.add(nomeIntegrado);
+        }
+    }
+
+    function obterLojasIntegradasProduto(item) {
+        const lojas = new Set();
+        [
+            item?.loja_sync,
+            item?.loja,
+            item?.conta,
+            item?.loja_conta,
+            item?.seller
+        ].forEach(valor => dividirLojas(valor).forEach(loja => adicionarLojaIntegrada(lojas, loja)));
+
+        const mapa = item && item.custos_por_loja;
+        if (mapa && typeof mapa === 'object') {
+            Object.values(mapa).forEach(dados => adicionarLojaIntegrada(lojas, dados && dados.loja_sync));
+        }
+
+        return Array.from(lojas).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
     }
 
     function obterDadosCustoLoja(item, loja) {
@@ -667,21 +787,32 @@
 
     function aplicarDadosCustoLoja(item, loja) {
         const dados = obterDadosCustoLoja(item, loja);
-        if (!dados) return { ...item, loja_custo: loja };
+        if (!dados) {
+            return {
+                ...item,
+                loja_custo: loja,
+                custo: '',
+                preco: '',
+                imposto: '',
+                updated_at: '',
+                tem_custo_loja: false
+            };
+        }
         return {
             ...item,
             loja_custo: loja,
-            custo: dados.custo !== undefined ? dados.custo : item.custo,
-            preco: dados.preco !== undefined ? dados.preco : item.preco,
-            imposto: dados.imposto !== undefined ? dados.imposto : item.imposto,
-            updated_at: dados.updated_at || item.updated_at
+            custo: dados.custo !== undefined ? dados.custo : '',
+            preco: dados.preco !== undefined ? dados.preco : '',
+            imposto: dados.imposto !== undefined ? dados.imposto : '',
+            updated_at: dados.updated_at || '',
+            tem_custo_loja: true
         };
     }
 
     function expandirCustosPorLoja(lista) {
         return lista.flatMap(item => {
-            const lojas = obterLojaProduto(item).split('|').map(v => v.trim()).filter(Boolean);
-            if (!lojas.length) return [{ ...item, loja_custo: 'Sem loja' }];
+            const lojas = obterLojasIntegradasProduto(item);
+            if (!lojas.length) return [];
             return lojas.map(loja => aplicarDadosCustoLoja(item, loja));
         });
     }
@@ -689,7 +820,11 @@
     function atualizarFiltroLojasCustos() {
         const valorAtual = lojaCustosSelect.value || '';
         const lojas = obterLojasCustos();
-        lojaCustosSelect.innerHTML = '<option value="">Todas as lojas</option>' + lojas
+        if (!lojas.length) {
+            lojaCustosSelect.innerHTML = '<option value="">Nenhuma loja integrada</option>';
+            return;
+        }
+        lojaCustosSelect.innerHTML = '<option value="">Todas as lojas integradas</option>' + lojas
             .map(loja => `<option value="${escaparHtml(loja)}">${escaparHtml(loja)}</option>`)
             .join('');
         if (valorAtual && lojas.includes(valorAtual)) {
@@ -701,7 +836,8 @@
         const termoTexto = normalizarBuscaTexto(filtroCustos.value);
         const termoSku = normalizarBuscaSku(filtroCustos.value);
         const lojaSelecionada = String(lojaCustosSelect.value || '').trim();
-        const listaBase = expandirCustosPorLoja(produtos);
+        const listaBase = expandirCustosPorLoja(produtos)
+            .filter(item => lojaSelecionada || item.tem_custo_loja);
         const listaCompleta = (termoTexto
             ? listaBase.filter(item => {
                 const skuBruto = String(item?.sku || '');
@@ -834,6 +970,42 @@
         tBodyMlb.appendChild(frag);
     }
 
+    function lojaTemIntegracaoAtiva(loja) {
+        const integracoes = loja && loja.integracoes;
+        if (!integracoes || typeof integracoes !== 'object') return false;
+
+        return Object.entries(integracoes).some(([servico, cfg]) => {
+            if (String(servico || '').toLowerCase() === 'criacao') return false;
+            if (!cfg || typeof cfg !== 'object') return false;
+            if (cfg.connected === false) return false;
+            if (cfg.connected === true) return true;
+            if (String(cfg.status || '').toLowerCase() === 'conectado') return true;
+            return Boolean(cfg.access_token || cfg.refresh_token || cfg.api_key || cfg.token);
+        });
+    }
+
+    async function carregarLojasIntegradasCustos() {
+        try {
+            const resp = await fetch('/api/lojas', { headers: obterAuthHeaders() });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const lojas = await resp.json();
+            lojasIntegradasCustos = (Array.isArray(lojas) ? lojas : [])
+                .filter(lojaTemIntegracaoAtiva)
+                .map(loja => String(loja?.nome || '').trim())
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+            lojasIntegradasCustosKeys = new Set(lojasIntegradasCustos.map(normalizarLojaCusto).filter(Boolean));
+            lojasIntegradasCustosPorKey = new Map(
+                lojasIntegradasCustos.map(nome => [normalizarLojaCusto(nome), nome]).filter(([chave]) => Boolean(chave))
+            );
+        } catch (e) {
+            console.warn('Nao foi possivel carregar lojas integradas:', e);
+            lojasIntegradasCustos = [];
+            lojasIntegradasCustosKeys = new Set();
+            lojasIntegradasCustosPorKey = new Map();
+        }
+    }
+
     async function carregarProdutos(opcoes = {}) {
         setStatus('Carregando produtos...', 'loading');
         btnAtualizar.disabled = true;
@@ -849,6 +1021,7 @@
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             produtos = await resp.json();
+            await carregarLojasIntegradasCustos();
             atualizarFiltroLojasCustos();
             renderTabela();
             renderCustos();
@@ -968,6 +1141,12 @@
 
             const formData = new FormData();
             formData.append('arquivo', arquivo);
+            const lojaSelecionada = String(lojaCustosSelect.value || '').trim();
+            if (!lojaSelecionada) {
+                throw new Error('Selecione uma loja para salvar custo e imposto por conta.');
+            }
+            formData.append('loja', lojaSelecionada);
+            formData.append('modo', 'custos');
 
             const resp = await fetch('/api/cadastro/importar-colunas', {
                 method: 'POST',
