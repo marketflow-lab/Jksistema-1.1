@@ -1,11 +1,12 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:publish": "electron-builder --publish always"
   },
   "author": "JK",
   "license": "ISC",
@@ -14,6 +15,7 @@
     "electron-builder": "^24.9.1"
   },
   "dependencies": {
+    "electron-updater": "^6.3.9"
   },
   "build": {
     "directories": {
@@ -22,6 +24,14 @@
     "appId": "com.jksistema.cliente",
     "productName": "JK Sistema Cliente",
     "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "marketflow-lab",
+        "repo": "Jksistema-1.1",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",

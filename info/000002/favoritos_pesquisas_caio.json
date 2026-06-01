@@ -1,15 +1,15 @@
 {
   "pesquisas": {
-    "jkpecas::001": {
+    "sku::001": {
       "loja": "JK Peças",
       "sku": "001",
       "produto": "Cebolão Radiador Cebolinha Honda Cb500 Shadow Hornet Cbr900",
       "pesquisa_1": "Cebolão sensor de temperatura Honda Cb500 2002",
       "pesquisa_2": "37760-mt2-003",
       "pesquisa_3": "sensor cebolinha do radiador HONDA CBR 1100",
-      "updated_at": "2026-05-26T12:56:08"
+      "updated_at": "2026-05-28T13:35:41"
     },
-    "jkpecas::002": {
+    "sku::002": {
       "loja": "JK Peças",
       "sku": "002",
       "produto": "Tampa Portinhola Tanque Combustivel Ford Focus 2009-2013",
@@ -18,34 +18,43 @@
       "pesquisa_3": "tampinha gasolina focus 2009",
       "updated_at": "2026-05-21T12:42:20"
     },
-    "jkpecas::005": {
-      "loja": "JK Peças",
+    "sku::005": {
+      "loja": "Uai Mineirinho",
       "sku": "005",
-      "produto": "Sensor Pressão Flauta Turbo Ford Ranger 3.0 Troller T4",
-      "pesquisa_1": "Sensor Pressão Flauta Ford Ranger 2008",
-      "pesquisa_2": "Original",
-      "pesquisa_3": "sensor pressao rail troller t4 2008",
-      "updated_at": "2026-05-21T11:32:48"
+      "produto": "Sensor Tubo Rail Ranger Troller 3.0 Original Novo 5ws40039",
+      "pesquisa_1": "Sensor Pressão Flauta Common Rail Ranger Troller 3.0 Diesel",
+      "pesquisa_2": "Sensor Tubo Rail Ranger Troller 3.0 Original Novo 5ws40039",
+      "pesquisa_3": "Sensor Flauta Rail Ranger Troller 3.0 Mwm 55pp02-03",
+      "updated_at": "2026-05-27T18:56:46"
     },
-    "jkpecas::008": {
-      "loja": "JK Peças",
+    "sku::008": {
+      "loja": "Uai Mineirinho",
       "sku": "008",
       "produto": "Base Para Antena Carros Ford Focus Mondeo Ka Fiesta Preto",
-      "pesquisa_1": "Base antena Ford Focus 2008",
-      "pesquisa_2": "Base antena Ford Focus 20012",
-      "pesquisa_3": "base antena Ford Fiesta Street sedan 2002primeira geração",
-      "updated_at": "2026-05-21T12:44:06"
+      "pesquisa_1": "Base Para Antena Carros Ford Focus Mondeo Ka Fiesta",
+      "pesquisa_2": "Base Oval Antena Teto Focus Anos 00 Á 13",
+      "pesquisa_3": "Base Para Antena Ford Fiesta Ka Mondeo Escort Focus",
+      "updated_at": "2026-05-27T18:59:20"
     },
-    "jkpecas::100": {
-      "loja": "JK Peças",
+    "sku::008-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "008-K",
+      "produto": "Base E Haste Antena Dianteira Teto Rosca Focus 2008 A 2013 Preto",
+      "pesquisa_1": "Base E Haste Antena Dianteira Teto Rosca Focus 2008 A 2013",
+      "pesquisa_2": "Base E Haste Da Antena Dianteira Focus 2011 2012 2013",
+      "pesquisa_3": "Base E Haste Da Antena Dianteira Focus 2010 2011 2012 2013",
+      "updated_at": "2026-05-27T19:00:19"
+    },
+    "sku::100": {
+      "loja": "Uai Mineirinho",
       "sku": "100",
-      "produto": "Cabo Auxiliar Para Radio Original Do Fiat Punto Promoção",
-      "pesquisa_1": "Cabo Auxiliar Rádio Original Fiat Punto 2012",
-      "pesquisa_2": "Cabo Auxiliar Som Original Fiat Punto",
-      "pesquisa_3": "Cabo aux som do Punto",
-      "updated_at": "2026-05-21T11:34:32"
+      "produto": "Cabo Auxiliar Aux Cd Original Fiat Punto Linea P2 Stereo",
+      "pesquisa_1": "Cabo Auxiliar Carro Fiat Para Rádio Original Punto Palio",
+      "pesquisa_2": "Cabo Auxiliar P2 Fiat Punto Linea",
+      "pesquisa_3": "Cabo Auxiliar Aux Cd Original Fiat Punto Linea P2 Stereo",
+      "updated_at": "2026-05-27T19:58:02"
     },
-    "jkpecas::1017": {
+    "sku::1017": {
       "loja": "JK Peças",
       "sku": "1017",
       "produto": "Jogo 4x Calota Central Roda Bmw X1 320i 328i 68mm Original",
@@ -54,7 +63,7 @@
       "pesquisa_3": "calotinha roda bmw 328i",
       "updated_at": "2026-05-21T11:34:32"
     },
-    "jkpecas::103": {
+    "sku::103": {
       "loja": "JK Peças",
       "sku": "103",
       "produto": "Mini Bomba D'água 22w 5m 800l/h 24v Dc Solar/bateria/convers",
@@ -63,16 +72,16 @@
       "pesquisa_3": "bomba dagua pra placa solar",
       "updated_at": "2026-05-21T11:37:25"
     },
-    "jkpecas::105": {
-      "loja": "JK Peças",
+    "sku::105": {
+      "loja": "Uai Mineirinho",
       "sku": "105",
-      "produto": "Boia Sensor Nivel Combustível Honda Crv 2007 A 2011 Gasolina",
-      "pesquisa_1": "Boia Sensor Nivel Combustível Honda Crv 2009",
-      "pesquisa_2": "2007/2008/2009/2010/2011",
-      "pesquisa_3": "Boia tanque CRV 2009",
-      "updated_at": "2026-05-21T11:37:25"
+      "produto": "Boia Sensor De Nível De Combustivel Honda Crv 2007 A 2011",
+      "pesquisa_1": "Boia Sensor Nivel Combustível Honda Cr-v Crv 2007 2010 2011",
+      "pesquisa_2": "Boia Sensor De Nível De Combustivel Honda Crv 2007 A 2011",
+      "pesquisa_3": "Sensor Nivel Combustivel Honda Crv 2.0 2007 2008 2009 10 11",
+      "updated_at": "2026-05-27T19:58:43"
     },
-    "jkpecas::1055": {
+    "sku::1055": {
       "loja": "JK Peças",
       "sku": "1055",
       "produto": "Modulo Ventoinha Passat Jetta Golf Tiguan Audi 1k0959455",
@@ -81,25 +90,25 @@
       "pesquisa_3": "central ventoinha tiguan",
       "updated_at": "2026-05-21T11:37:25"
     },
-    "jkpecas::107": {
-      "loja": "JK Peças",
+    "sku::107": {
+      "loja": "Uai Mineirinho",
       "sku": "107",
       "produto": "Manopla Cromada Voyage / Gol / Saveiro G5 E G6 Original Preto",
-      "pesquisa_1": "Manopla Cromada Volkswagen Gol 2014",
-      "pesquisa_2": "Bola Cambio Gol G5 G6",
-      "pesquisa_3": "bola do cambio saveiro 2014",
-      "updated_at": "2026-05-21T11:39:29"
+      "pesquisa_1": "Manopla Coifa Marcha Gol Saveiro Voyage G5 G6 G7 2009/2019",
+      "pesquisa_2": "Manopla + Coifa Marcha Gol Sav Voy G5 G6 G7 Preto Com Preto",
+      "pesquisa_3": "Manopla Bola De Câmbio Vw Gol Voyage Saveiro G5 G6 Polo Fox",
+      "updated_at": "2026-05-27T19:59:35"
     },
-    "jkpecas::107-1": {
-      "loja": "JK Peças",
+    "sku::107-1": {
+      "loja": "Uai Mineirinho",
       "sku": "107-1",
-      "produto": "Manopla Bola Câmbio Manual 6 Amarok 2011 2012 2013 2014 2015 Preto",
-      "pesquisa_1": "Manopla Bola Câmbio Volkswagen Amarok 2011",
-      "pesquisa_2": "Manopla Câmbio Amarok 6 Marchas",
-      "pesquisa_3": "bola de cambio amarok 2014",
-      "updated_at": "2026-05-21T11:39:29"
+      "produto": "Manopla Bola Do Câmbio Manual Volkswagen Amarok 6 Marchas",
+      "pesquisa_1": "Manopla Bola De Cambio Manual 06 Marchas Volkswagen Amarok",
+      "pesquisa_2": "Manopla Bola Câmbio Manual 6 Marcha Fox 2015/2022",
+      "pesquisa_3": "Manopla Bola Câmbio Manual 6 Marchas Volkswagen Amarok",
+      "updated_at": "2026-05-27T20:00:19"
     },
-    "jkpecas::1119": {
+    "sku::1119": {
       "loja": "JK Peças",
       "sku": "1119",
       "produto": "Jogo Velas Iridium Para Santa Fé 3.5 V6 285 Cv 2009/2011",
@@ -108,7 +117,7 @@
       "pesquisa_3": "vela iridium santa fe 3.5 2010",
       "updated_at": "2026-05-21T11:39:29"
     },
-    "jkpecas::1131": {
+    "sku::1131": {
       "loja": "JK Peças",
       "sku": "1131",
       "produto": "Amortecedor A Gás Caçamba Chevrolet S10 Lt Ltz 2013 2022",
@@ -117,7 +126,7 @@
       "pesquisa_3": "Pistão tampa caçamba S10 2018",
       "updated_at": "2026-05-21T11:42:18"
     },
-    "jkpecas::1133": {
+    "sku::1133": {
       "loja": "JK Peças",
       "sku": "1133",
       "produto": "Reservatório Carvão Ativo Canister Jetta 2.0 Audi Tfsi",
@@ -126,7 +135,7 @@
       "pesquisa_3": "Canister Audi A3 2015",
       "updated_at": "2026-05-21T11:42:18"
     },
-    "jkpecas::1143": {
+    "sku::1143": {
       "loja": "JK Peças",
       "sku": "1143",
       "produto": "Sensor De Pressão Map Coletor Bosch Renault Master 2.5 04/12",
@@ -135,43 +144,43 @@
       "pesquisa_3": "sensor map master 2010",
       "updated_at": "2026-05-21T11:42:18"
     },
-    "jkpecas::115": {
-      "loja": "JK Peças",
+    "sku::115": {
+      "loja": "Uai Mineirinho",
       "sku": "115",
-      "produto": "Mangueira Tubo Saída Calor Tbi Sonic Cruze Tracker 12/16",
-      "pesquisa_1": "Mangueira Tubo Saída Calor Tbi Chevrolet Cruze 2014",
-      "pesquisa_2": "Original",
-      "pesquisa_3": "mangueirinha tbi tracker 2015",
-      "updated_at": "2026-05-21T11:43:42"
+      "produto": "Mangueira Saída Tubo Corpo Borboleta Tbi Cruze Sonic Tracker",
+      "pesquisa_1": "Tubo Saída Corpo Borboleta Tbi Sonic 2012 13 2014 55559353",
+      "pesquisa_2": "Mangueira Tubo Saída Corpo Borboleta Tbi Cruze Sonic Tracker",
+      "pesquisa_3": "Mangueira Tubo Saída Calor Tbi Sonic 2012 2013 2014 55559353",
+      "updated_at": "2026-05-28T10:09:09"
     },
-    "jkpecas::116": {
-      "loja": "JK Peças",
+    "sku::116": {
+      "loja": "Uai Mineirinho",
       "sku": "116",
-      "produto": "Mangueira Retorno Reservatório Água Cruze 1.8 55579102",
-      "pesquisa_1": "Mangueira Retorno Reservatório Água Chevrolet Cruze 2012",
-      "pesquisa_2": "Original",
-      "pesquisa_3": "Mangueira retorno agua Tracker 2015",
-      "updated_at": "2026-05-21T11:43:42"
+      "produto": "Mangueira Retorno Reservatório Água Gm Cruze Tracker Saída",
+      "pesquisa_1": "Mangueira Retorno Reservatório Água Cruze 1.8 55579102",
+      "pesquisa_2": "Mangueira Retorno Reservatório De Água 1.8 Cruze 55579102",
+      "pesquisa_3": "Mangueira Retorno Reservatório Água Gm Cruze Tracker Saída",
+      "updated_at": "2026-05-28T10:10:20"
     },
-    "jkpecas::12": {
-      "loja": "JK Peças",
+    "sku::12": {
+      "loja": "Uai Mineirinho",
       "sku": "12",
-      "produto": "Bomba Combustivel Gasolina Honda Vt Shadow 600 1996 À 2005",
-      "pesquisa_1": "Bomba Combustivel hadow 600 2001",
-      "pesquisa_2": "Bomba Gasolina Shadow 600",
-      "pesquisa_3": "bomba gasolina shadow 600 2001",
-      "updated_at": "2026-05-21T12:44:22"
+      "produto": "Bomba Shadow 600 Combustivel Gasolina Honda Modelo Original",
+      "pesquisa_1": "Bomba Combustivel Gasolina Honda Shadow Vt 600 1996 À 2005",
+      "pesquisa_2": "Bomba Combustivel Gasolina Honda Shadow Vt 600 1996 À 2005",
+      "pesquisa_3": "Bomba Combustivel Gasolina Honda Shadow Vt 600 1996 À 2005",
+      "updated_at": "2026-05-27T19:18:29"
     },
-    "jkpecas::120": {
-      "loja": "JK Peças",
+    "sku::120": {
+      "loja": "Uai Mineirinho",
       "sku": "120",
-      "produto": "Junta Da Válvula Vtec New Civic 2007 2008 2009 2010",
-      "pesquisa_1": "Junta Válvula Vtec Honda New Civic 2007",
-      "pesquisa_2": "15825-P2M-005",
-      "pesquisa_3": "junta solenoide vtec civic 2003",
-      "updated_at": "2026-05-21T11:45:52"
+      "produto": "Kit Junta Vtec Válvula Selenoide Civic Ex 2001 A 2005 - 1.7",
+      "pesquisa_1": "Kit Junta Vtec Válvula Selenoide Civic Ex 2001 A 2005 - 1.7",
+      "pesquisa_2": "Junta Da Válvula Vtec Civic Ex 2001 A 2005 - 1.7",
+      "pesquisa_3": "Kit Junta Da Válvula Vtec Civic Ex 1998-2005 1.6 E 1.7 Oem",
+      "updated_at": "2026-05-28T10:11:50"
     },
-    "jkpecas::124": {
+    "sku::124": {
       "loja": "JK Peças",
       "sku": "124",
       "produto": "Aparelho Anti Latido Cão Repelente Ultrassônico Cachorro Pet Preto",
@@ -180,25 +189,25 @@
       "pesquisa_3": "Apito adestrar cachorro",
       "updated_at": "2026-05-21T11:45:52"
     },
-    "jkpecas::124-1": {
-      "loja": "JK Peças",
+    "sku::124-1": {
+      "loja": "Uai Mineirinho",
       "sku": "124-1",
-      "produto": "Aparelho Anti Latido Ultrasonico Apito Adestramento Cães Amarelo",
-      "pesquisa_1": "Aparelho Anti Latido Ultrasonico Olyuen",
-      "pesquisa_2": "Apito Adestramento Cães",
-      "pesquisa_3": "aparelho pra parar latido de cachorro",
-      "updated_at": "2026-05-21T11:45:52"
+      "produto": "Coleira Ultrassônica Anti-latido Para Cães Gptrend Amarelo",
+      "pesquisa_1": "Aparelho Anti Latido Ultrasonico Apito Adestramento Cães",
+      "pesquisa_2": "Aparelho Ultrassônico Anti Latido Portátil Olyuen",
+      "pesquisa_3": "Coleira Ultrassônica Anti-latido Para Cães Gptrend",
+      "updated_at": "2026-05-28T10:18:25"
     },
-    "jkpecas::126": {
+    "sku::126": {
       "loja": "JK Peças",
       "sku": "126",
       "produto": "Vibrador Recarregável U C Clitóris Casal Usb Tipo We-vibe Violeta-escuro",
-      "pesquisa_1": "Produto não automotivo",
-      "pesquisa_2": "Vibrador Tipo We-vibe",
+      "pesquisa_1": "Vibradores Rabbit Para Casal Motor Potente - We Tokyo Vibe",
+      "pesquisa_2": "Vibrador Recarregável U C Clitóris Casal Usb Tipo We-vibe",
       "pesquisa_3": "vibrador casal tipo we vibe",
-      "updated_at": "2026-05-21T11:48:26"
+      "updated_at": "2026-05-29T14:33:44"
     },
-    "jkpecas::129": {
+    "sku::129": {
       "loja": "JK Peças",
       "sku": "129",
       "produto": "Scanner Detector Tubo Cano Água Pvc Parede Madeira Fio Metal",
@@ -207,7 +216,7 @@
       "pesquisa_3": "Aparelho pra achar cano na parede",
       "updated_at": "2026-05-21T11:48:26"
     },
-    "jkpecas::129-3": {
+    "sku::129-3": {
       "loja": "JK Peças",
       "sku": "129-3",
       "produto": "Scanner Detector Parede Tubo Cano Pvc Água Madeira Fio Metal",
@@ -216,16 +225,16 @@
       "pesquisa_3": "aparelho achar cano parede",
       "updated_at": "2026-05-21T11:48:26"
     },
-    "jkpecas::134": {
-      "loja": "JK Peças",
+    "sku::134": {
+      "loja": "Uai Mineirinho",
       "sku": "134",
       "produto": "Mangueira Retorno Bico Injetor Sprinter 311 415 515 2012-19",
-      "pesquisa_1": "Mangueira Retorno Bico Injetor Mercedes Sprinter 311 2015",
-      "pesquisa_2": "2012-19",
-      "pesquisa_3": "mangueira retorno bico sprinter 415 2015",
-      "updated_at": "2026-05-21T11:49:42"
+      "pesquisa_1": "Mangueira De Retorno Dos Bicos Sprinter 415/515 Original",
+      "pesquisa_2": "Mangueira De Retorno Dos Bicos Sprinter 311 / 415 / 515",
+      "pesquisa_3": "Mangueira Retorno Bico Injetor Sprinter 311 415 515 2012-19",
+      "updated_at": "2026-05-28T10:20:04"
     },
-    "jkpecas::135": {
+    "sku::135": {
       "loja": "JK Peças",
       "sku": "135",
       "produto": "Boia Sensor Nivel Combustível Honda Crv 2007 A 2011 Gasolina",
@@ -234,34 +243,34 @@
       "pesquisa_3": "boia do tanque crv 2009",
       "updated_at": "2026-05-21T11:49:42"
     },
-    "jkpecas::137": {
-      "loja": "JK Peças",
+    "sku::137": {
+      "loja": "Uai Mineirinho",
       "sku": "137",
       "produto": "Valvula Reguladora Pressao Rail Flauta Bosch 1110010028",
-      "pesquisa_1": "Valvula Reguladora Pressao Rail Ford F350 2015",
-      "pesquisa_2": "10.160",
-      "pesquisa_3": "valvula ponta flauta delivery 9.160 2015",
-      "updated_at": "2026-05-21T11:49:42"
+      "pesquisa_1": "Válvula Retenção Flauta De Combustível 1110010028 Original",
+      "pesquisa_2": "Valvula Reguladora Rail Retenção Flauta Bosch 1110010028",
+      "pesquisa_3": "Valvula Reguladora Pressao Rail Flauta Bosch 1110010028",
+      "updated_at": "2026-05-28T10:20:56"
     },
-    "jkpecas::139": {
-      "loja": "JK Peças",
+    "sku::139": {
+      "loja": "Uai Mineirinho",
       "sku": "139",
-      "produto": "Sensor Map Cummins Bosch 0281002576",
-      "pesquisa_1": "Sensor Map Ford Cargo 815 2008",
-      "pesquisa_2": "0281002576",
-      "pesquisa_3": "Sensor de pressão motor Cummins",
-      "updated_at": "2026-05-21T11:51:48"
+      "produto": "Sensor Map Bosch Para Veículos Cummins 0281002576",
+      "pesquisa_1": "Sensor Map Isb Cummins 0281002576 Bosch Novo Original",
+      "pesquisa_2": "Sensor Map Cummins Bosch 0281002576",
+      "pesquisa_3": "Sensor Map Bosch Para Veículos Cummins 0281002576",
+      "updated_at": "2026-05-28T10:22:25"
     },
-    "jkpecas::141": {
-      "loja": "JK Peças",
+    "sku::141": {
+      "loja": "Uai Mineirinho",
       "sku": "141",
-      "produto": "Hub Usb-c 8 Em 1 Com Hdmi 4k E Rj45 Para Macbook Pro Dell Cinza",
-      "pesquisa_1": "Bomba Combustivel Honda Shadow 600 1999",
-      "pesquisa_2": "Hub USB-C HDMI RJ45",
-      "pesquisa_3": "bomba gasolina shadow 600",
-      "updated_at": "2026-05-21T11:51:48"
+      "produto": "Hub Rj45 2 Usb-c Hdmi Cinza 13cm 8 Conectores Cinza",
+      "pesquisa_1": "Hub 8 Em 1 Type-c Hdmi 4k Rj45 Internet Macbook Pro M1 Air",
+      "pesquisa_2": "Hub Usb C 8 Portas 4k Carregador 2 Usb-c 3.0 Rj45 Lan",
+      "pesquisa_3": "Adaptador Hub Para Macbook Air M1 M2 8 Em 1 Usb-c Hdmi 4k",
+      "updated_at": "2026-05-28T10:25:05"
     },
-    "jkpecas::1461": {
+    "sku::1461": {
       "loja": "JK Peças",
       "sku": "1461",
       "produto": "Torneira De Combustível / Gasolina Cb500 Todas - 1º Linha",
@@ -270,16 +279,16 @@
       "pesquisa_3": "registro gasolina cb 500 2001",
       "updated_at": "2026-05-21T11:51:48"
     },
-    "jkpecas::147-K4": {
+    "sku::147-K4": {
       "loja": "JK Peças",
       "sku": "147-K4",
       "produto": "Jogo 4 Vela Captiva 2.4 2011 A 2016 185cv 12620540 Original",
-      "pesquisa_1": "Jogo 4 Vela Chevrolet Captiva 2012",
-      "pesquisa_2": "2011/2016",
-      "pesquisa_3": "Jogo vela Captiva Sport 2014",
-      "updated_at": "2026-05-21T11:53:30"
+      "pesquisa_1": "Jogo 4 Vela Captiva 2.4 2011 A 2016 185cv 12620540 Original",
+      "pesquisa_2": "Jogo Vela Ignição Captiva 2.4 2011 2012 2013 2014 2015 2016",
+      "pesquisa_3": "Jogo 4 Vela Ignição Captiva 2.4 2011 A 2016 12620540",
+      "updated_at": "2026-05-29T14:34:33"
     },
-    "jkpecas::1477": {
+    "sku::1477": {
       "loja": "JK Peças",
       "sku": "1477",
       "produto": "Torneira Registro Combustivel Suzuki Gsxf 750 Gsx750f Até 97",
@@ -288,7 +297,7 @@
       "pesquisa_3": "Torneira gasolina Katana 750 1996",
       "updated_at": "2026-05-21T11:53:30"
     },
-    "jkpecas::1489": {
+    "sku::1489": {
       "loja": "JK Peças",
       "sku": "1489",
       "produto": "Seta Retrovisor Sequencial Led Ford Focus Mk2mk3 2008 A 2018 Dourado-escuro",
@@ -297,16 +306,16 @@
       "pesquisa_3": "Pisca retrovisor Focus 2010",
       "updated_at": "2026-05-21T11:53:30"
     },
-    "jkpecas::149-K4": {
-      "loja": "JK Peças",
+    "sku::149-K4": {
+      "loja": "Uai Mineirinho",
       "sku": "149-K4",
-      "produto": "Jogo Vela Iridium Ngk Lzfr6ai Airtrek Grandis 2.4",
-      "pesquisa_1": "Vela Iridium Mitsubishi Airtrek 2007",
-      "pesquisa_2": "Lzfr6ai",
-      "pesquisa_3": "velas iridium grandis 2.4",
-      "updated_at": "2026-05-21T11:55:57"
+      "produto": "4 Vela Iridium Ngk Lzfr6ai Airtrek Grandis 2.4",
+      "pesquisa_1": "Jogo De Vela Original Ngk Airtrek 2.4 2005 2006 2007 2008.",
+      "pesquisa_2": "Jogo De Vela Original Ngk Airtrek 2.4 2003 2004 2005 2006.",
+      "pesquisa_3": "Jogo Vela Ignição Iridum Mitsubishi Grandis Outlander 2.4",
+      "updated_at": "2026-05-28T10:25:48"
     },
-    "jkpecas::1497": {
+    "sku::1497": {
       "loja": "JK Peças",
       "sku": "1497",
       "produto": "Receptor Transmissor Veicular Com Bluetooth Fm Mp3 Usb Pendr",
@@ -315,7 +324,7 @@
       "pesquisa_3": "Aparelho bluetooth para Gol 2009",
       "updated_at": "2026-05-21T11:55:57"
     },
-    "jkpecas::1499": {
+    "sku::1499": {
       "loja": "JK Peças",
       "sku": "1499",
       "produto": "Tampa Corrente Completa Orig Volkswagen Jetta Tiguan Tsi",
@@ -324,16 +333,16 @@
       "pesquisa_3": "tampa do comando jetta tsi",
       "updated_at": "2026-05-21T11:55:57"
     },
-    "jkpecas::150": {
-      "loja": "JK Peças",
+    "sku::150": {
+      "loja": "Uai Mineirinho",
       "sku": "150",
-      "produto": "Tampa Reservatório Água Radiador Cobalt Onix Prisma S10 Spin",
-      "pesquisa_1": "Tampa reservatório água radiador Chevrolet Cobalt 2014",
-      "pesquisa_2": "13502353",
-      "pesquisa_3": "tampinha da agua s10 2013",
-      "updated_at": "2026-05-21T11:57:33"
+      "produto": "Tampa Radiador Gm Original Para Cobalt Onix Prisma S10 Spin",
+      "pesquisa_1": "Tampa Reservatorio Onix Spin Cobalt Cruze Tracker S10 Prisma",
+      "pesquisa_2": "Tampa Reservatório Água Radiador Cobalt Onix Prisma S10 Spin",
+      "pesquisa_3": "Tampa Reservatório Água Radiador Onix Cobalt C Gm Original",
+      "updated_at": "2026-05-28T10:26:59"
     },
-    "jkpecas::1505": {
+    "sku::1505": {
       "loja": "JK Peças",
       "sku": "1505",
       "produto": "Valvula Reguladora Sprinter 415 515 311 Original A6510740084",
@@ -342,7 +351,7 @@
       "pesquisa_3": "Regulador de pressão Sprinter 515 2013",
       "updated_at": "2026-05-21T11:57:33"
     },
-    "jkpecas::1509": {
+    "sku::1509": {
       "loja": "JK Peças",
       "sku": "1509",
       "produto": "",
@@ -351,7 +360,7 @@
       "pesquisa_3": "Miolo da chave HB20",
       "updated_at": "2026-05-21T11:57:33"
     },
-    "jkpecas::151": {
+    "sku::151": {
       "loja": "JK Peças",
       "sku": "151",
       "produto": "Vela De Ignicao Bosch Zr5tpp33-s 12120037580 Bmw",
@@ -360,34 +369,34 @@
       "pesquisa_3": "vela bmw",
       "updated_at": "2026-05-21T11:58:52"
     },
-    "jkpecas::151-K6": {
-      "loja": "JK Peças",
+    "sku::151-K6": {
+      "loja": "Uai Mineirinho",
       "sku": "151-K6",
       "produto": "Jogo Vela Ignicao Bmw X3 X4 X5 X6 35i M 135i 335i 2010 6uni",
-      "pesquisa_1": "Jogo Vela Ignicao Bmw 335i 2010",
-      "pesquisa_2": "F20/F21",
-      "pesquisa_3": "jogo vela bmw 535i 2011",
-      "updated_at": "2026-05-21T11:58:52"
+      "pesquisa_1": "Jogo Vela Ignicao Bmw X3 X4 X5 X6 35i M 135i 335i 2010 6uni",
+      "pesquisa_2": "Jogo 6 Velas Para Bmw 330i 320i 530i 525i - 12120037244 N54",
+      "pesquisa_3": "Jogo Vela Ignição Ngk Tucson Sportage Santa Fé Sonata 2.7 V6",
+      "updated_at": "2026-05-28T10:34:26"
     },
-    "jkpecas::152": {
+    "sku::152": {
       "loja": "JK Peças",
       "sku": "152",
       "produto": "Vela Ignição Pfr5n11 Platinun 1 Unidade",
-      "pesquisa_1": "Vela Ignição Nissan Sentra 2008",
-      "pesquisa_2": "Pfr5n11",
+      "pesquisa_1": "Vela Ignição Pfr5n11 Platinun 1 Unidade",
+      "pesquisa_2": "Vela De Ignição Compatível Com 1403",
       "pesquisa_3": "vela do civic 2005",
-      "updated_at": "2026-05-21T11:58:52"
+      "updated_at": "2026-05-29T14:35:01"
     },
-    "jkpecas::152-K6": {
-      "loja": "JK Peças",
+    "sku::152-K6": {
+      "loja": "Uai Mineirinho",
       "sku": "152-K6",
-      "produto": "Jogo Velas Iridium Para Santa Fé 3.5 V6 285 Cv 2009/2011",
-      "pesquisa_1": "Velas Iridium Hyundai Santa Fé 2010",
-      "pesquisa_2": "PFR5N-11",
-      "pesquisa_3": "vela sportage v6 2008",
-      "updated_at": "2026-05-21T12:00:20"
+      "produto": "Jogo Original Velas Para  Hyundai Santa Fe 2.7 V6 2000 2001",
+      "pesquisa_1": "Jogo 6 Vela De Ignição Iridium Santa Fé 2.7 V6 2008 2009",
+      "pesquisa_2": "Jogo 6 Velas Original Iridium Santa Fé 2.7 V6 2005 A 2013",
+      "pesquisa_3": "06 Velas Ignição Para Hyundai Kia 2.7/3.2 Pfr5n11 Platinun",
+      "updated_at": "2026-05-28T10:35:22"
     },
-    "jkpecas::153": {
+    "sku::153": {
       "loja": "JK Peças",
       "sku": "153",
       "produto": "Bomba Combustível P/ Ford Focus 2.0 16v Duratec 2009 Gasoli",
@@ -396,25 +405,25 @@
       "pesquisa_3": "bomba gasolina focus 2009",
       "updated_at": "2026-05-21T12:00:20"
     },
-    "jkpecas::154": {
-      "loja": "JK Peças",
+    "sku::154": {
+      "loja": "Uai Mineirinho",
       "sku": "154",
-      "produto": "Sensor Map/ Pressão Turbina Mitsubishi L200 2.5 Diesel",
-      "pesquisa_1": "Sensor Map Mitsubishi L200 Sport 2008",
-      "pesquisa_2": "Sensor Pressão Turbina L200",
-      "pesquisa_3": "sensor map pajero sport 2011",
-      "updated_at": "2026-05-21T12:00:20"
+      "produto": "",
+      "pesquisa_1": "Sensor Modulador Turbina L200 Pajero Sport 2.5 Diesel",
+      "pesquisa_2": "Sensor Map/ Pressão Turbina Mitsubishi L200 Outdoor 2.5",
+      "pesquisa_3": "Sensor Modulador Turbina L200 Pajero Sport 2.5 Diesel",
+      "updated_at": "2026-05-28T10:36:22"
     },
-    "jkpecas::155": {
-      "loja": "JK Peças",
+    "sku::155": {
+      "loja": "Uai Mineirinho",
       "sku": "155",
-      "produto": "Conversor De Tensão Mercedes W205 C180 C200 C250 2059053414 Preto",
-      "pesquisa_1": "Conversor De Tensão Mercedes C180 2015",
-      "pesquisa_2": "2059053414",
-      "pesquisa_3": "conversor voltagem mercedes c250",
-      "updated_at": "2026-05-21T12:02:49"
+      "produto": "Bateria Auxiliar Mercedes C180 C200 C250 C300 W205 Original Preto",
+      "pesquisa_1": "Bateria Auxiliar Mercedes A2059053414 C180 C200 C250 W205",
+      "pesquisa_2": "Bateria Auxiliar Mercedes C180 C200 C250 C300 A2059053414",
+      "pesquisa_3": "Bateria Auxiliar Mercedes C180 C200 C250 C300 W205 Original",
+      "updated_at": "2026-05-28T10:38:25"
     },
-    "jkpecas::1567": {
+    "sku::1567": {
       "loja": "JK Peças",
       "sku": "1567",
       "produto": "Esquadro Digital Laser Grau Laser Nível Horizontal Vertical",
@@ -423,7 +432,7 @@
       "pesquisa_3": "Laser de pedreiro",
       "updated_at": "2026-05-21T12:02:49"
     },
-    "jkpecas::1569": {
+    "sku::1569": {
       "loja": "JK Peças",
       "sku": "1569",
       "produto": "Sensor Nível Boia Combustível Ix35 Gasolina 2010/ Sportage",
@@ -432,16 +441,16 @@
       "pesquisa_3": "Boia tanque Sportage 2011",
       "updated_at": "2026-05-21T12:02:49"
     },
-    "jkpecas::158": {
-      "loja": "JK Peças",
+    "sku::158": {
+      "loja": "Uai Mineirinho",
       "sku": "158",
-      "produto": "Sensor Pressao Rail Flauta Master 2.5 0281002908 0281002734",
-      "pesquisa_1": "Sensor Pressao Rail Flauta Renault Master 2005",
-      "pesquisa_2": "2005/2008",
-      "pesquisa_3": "sensor flauta s10 2007",
-      "updated_at": "2026-05-21T12:04:36"
+      "produto": "Sensor Pressão Flauta Rail Renault 2.5 0281002908 Original",
+      "pesquisa_1": "Sensor Pressao Rail Flauta Master 2.5 0281002908 0281002734",
+      "pesquisa_2": "Sensor Pressao Rail Flauta Master 2.5 0281002908 0281002734",
+      "pesquisa_3": "Sensor De Pressão Flauta S10 Blazer Frontier 2.8 Mwm",
+      "updated_at": "2026-05-28T10:39:11"
     },
-    "jkpecas::1583": {
+    "sku::1583": {
       "loja": "JK Peças",
       "sku": "1583",
       "produto": "Botão Freio Mão Estacionamento Honda Hrv 2016 2017 2018 2019",
@@ -450,7 +459,7 @@
       "pesquisa_3": "botão freio de mão hrv 2017",
       "updated_at": "2026-05-21T12:04:36"
     },
-    "jkpecas::1589": {
+    "sku::1589": {
       "loja": "JK Peças",
       "sku": "1589",
       "produto": "Display Tela Lcd Velocímetro Painel Ford Focus Titanium Cinza",
@@ -459,7 +468,7 @@
       "pesquisa_3": "Visor computador de bordo Focus",
       "updated_at": "2026-05-21T12:04:36"
     },
-    "jkpecas::159": {
+    "sku::159": {
       "loja": "JK Peças",
       "sku": "159",
       "produto": "Vibrador Recarregável U C Clitóris Casal Usb Tipo We-vibe Violeta-escuro",
@@ -468,7 +477,7 @@
       "pesquisa_3": "Vibrador casal tipo we vibe",
       "updated_at": "2026-05-21T12:07:59"
     },
-    "jkpecas::1591": {
+    "sku::1591": {
       "loja": "JK Peças",
       "sku": "1591",
       "produto": "Lanterna De Freio E Pisca Moto Custom Cafe Racer Fita 48 Led Vermelho",
@@ -477,7 +486,7 @@
       "pesquisa_3": "Fita led cafe racer",
       "updated_at": "2026-05-21T12:07:59"
     },
-    "jkpecas::1593": {
+    "sku::1593": {
       "loja": "JK Peças",
       "sku": "1593",
       "produto": "Comando Botão Vidro Eletrico Citroen C4 Vtr 2 Portas 06 A 09",
@@ -486,7 +495,7 @@
       "pesquisa_3": "interruptor vidro c4 vtr 2008",
       "updated_at": "2026-05-21T12:07:59"
     },
-    "jkpecas::1595": {
+    "sku::1595": {
       "loja": "JK Peças",
       "sku": "1595",
       "produto": "Reator Farol Lampada Xenon D3s Mercedes Benz A2229003300 Q02",
@@ -495,7 +504,7 @@
       "pesquisa_3": "Reator xenon Mercedes",
       "updated_at": "2026-05-21T12:09:30"
     },
-    "jkpecas::1599": {
+    "sku::1599": {
       "loja": "JK Peças",
       "sku": "1599",
       "produto": "Tampa Esguicho Farol Bmw 320i 318i E90 2009 2010 2011 2012",
@@ -504,34 +513,34 @@
       "pesquisa_3": "tampinha esguicho farol bmw 318i 2011",
       "updated_at": "2026-05-21T12:09:30"
     },
-    "jkpecas::16": {
-      "loja": "JK Peças",
+    "sku::16": {
+      "loja": "Uai Mineirinho",
       "sku": "16",
-      "produto": "Cebolão Interruptor Ventoinha Honda Civic 1.7 2001 2002 2003",
-      "pesquisa_1": "Cebolão Interruptor Ventoinha Honda Fit 2004",
-      "pesquisa_2": "cebolinha radiador civic 2002",
-      "pesquisa_3": "cebolão civic 2003",
-      "updated_at": "2026-05-26T13:08:52"
+      "produto": "Cebolão Interruptor Ventoinha Honda Civic Accord 96 97 98 99",
+      "pesquisa_1": "Sensor Cebolão Ventoinha Radiador Honda Civic 1.7 Fit Crv",
+      "pesquisa_2": "Sensor Cebolão Radiador Honda Civic 1.7 2002 2003 2004 2005",
+      "pesquisa_3": "Sensor Cebolão Ventoinha Radiador Honda Civic Fit Accord Crv",
+      "updated_at": "2026-05-27T19:22:20"
     },
-    "jkpecas::160": {
+    "sku::160": {
       "loja": "JK Peças",
       "sku": "160",
       "produto": "Ponteira De Escapamento Inox Honda Civic G10 2017 18 19 20",
-      "pesquisa_1": "Ponteira de Escapamento Honda Civic 2017",
-      "pesquisa_2": "Ponteira Inox Civic G10",
-      "pesquisa_3": "Ponta escape Civic 2018",
-      "updated_at": "2026-05-21T12:11:27"
+      "pesquisa_1": "Ponteira De Escapamento Inox Honda Civic G10 2017 18 19 20",
+      "pesquisa_2": "Acessorios Ponteira Escape Honda Civic Touring Turbo G10",
+      "pesquisa_3": "Ponteira Escape Angular Toyota Yaris Corolla Sw4",
+      "updated_at": "2026-05-29T14:37:18"
     },
-    "jkpecas::160-K": {
+    "sku::160-K": {
       "loja": "JK Peças",
       "sku": "160-K",
       "produto": "Par Ponteira De Escape  Honda Civic Touring Turbo G10",
-      "pesquisa_1": "Ponteira De Escape Honda Civic Touring 2016",
-      "pesquisa_2": "Civic Touring Turbo",
-      "pesquisa_3": "Saida de escape Civic 2017",
-      "updated_at": "2026-05-21T12:11:27"
+      "pesquisa_1": "Acessorio Honda Civic Touring Turbo G10 Ponteira Azulada Par",
+      "pesquisa_2": "Ponteira De Escape Honda Civic Touring Turbo G10 Par",
+      "pesquisa_3": "Ponteiras Honda Civic Touring G10 Turbo Aço Inox Par",
+      "updated_at": "2026-05-29T14:38:04"
     },
-    "jkpecas::1603": {
+    "sku::1603": {
       "loja": "JK Peças",
       "sku": "1603",
       "produto": "Resistência Ventoinha Peugeot Citroen 307 408 Ds3 C3 C4 308",
@@ -540,7 +549,7 @@
       "pesquisa_3": "Resistência do ventilador Peugeot 408",
       "updated_at": "2026-05-21T12:11:27"
     },
-    "jkpecas::1605": {
+    "sku::1605": {
       "loja": "JK Peças",
       "sku": "1605",
       "produto": "Reator Led Xenon Mercedes A200 Cla200 A2189009303 Nov",
@@ -549,7 +558,7 @@
       "pesquisa_3": "Centralina do farol CLA200",
       "updated_at": "2026-05-21T12:12:54"
     },
-    "jkpecas::161": {
+    "sku::161": {
       "loja": "JK Peças",
       "sku": "161",
       "produto": "Suporte Tampa Tanque Ford Focus 2009-2019",
@@ -558,7 +567,7 @@
       "pesquisa_3": "Apoio tampa combustivel Focus 2010",
       "updated_at": "2026-05-21T12:12:54"
     },
-    "jkpecas::1617": {
+    "sku::1617": {
       "loja": "JK Peças",
       "sku": "1617",
       "produto": "Botão Alavanca Câmbio Automático Honda Accord 1998-2002",
@@ -567,7 +576,7 @@
       "pesquisa_3": "Botão da alavanca Accord 1999",
       "updated_at": "2026-05-21T12:12:54"
     },
-    "jkpecas::1627": {
+    "sku::1627": {
       "loja": "JK Peças",
       "sku": "1627",
       "produto": "Sensor Pressao Oleo Cherokee Sport 4.0l De 97 À 00 2 Pinos",
@@ -576,7 +585,7 @@
       "pesquisa_3": "cebolinha oleo cherokee 99",
       "updated_at": "2026-05-21T12:15:14"
     },
-    "jkpecas::1629": {
+    "sku::1629": {
       "loja": "JK Peças",
       "sku": "1629",
       "produto": "Selim Banco Acento Aranha Tipo Fibra De Carbono Speed Ou Mtb Cinza",
@@ -585,7 +594,7 @@
       "pesquisa_3": "Banco aranha mtb",
       "updated_at": "2026-05-21T12:15:14"
     },
-    "jkpecas::163": {
+    "sku::163": {
       "loja": "JK Peças",
       "sku": "163",
       "produto": "Piloto Automático Controle De Velocidade Focus Mk2,5",
@@ -594,7 +603,7 @@
       "pesquisa_3": "comando piloto automatico focus 2010",
       "updated_at": "2026-05-21T12:15:14"
     },
-    "jkpecas::1631": {
+    "sku::1631": {
       "loja": "JK Peças",
       "sku": "1631",
       "produto": "Olho De Gato Refletor Para-choque Traseiro Bmw 320i",
@@ -603,7 +612,7 @@
       "pesquisa_3": "lanterna parachoque bmw 320i",
       "updated_at": "2026-05-21T12:17:47"
     },
-    "jkpecas::1635": {
+    "sku::1635": {
       "loja": "JK Peças",
       "sku": "1635",
       "produto": "Bico Aspersor Nebulizador 1/2 Latão Metal Regul",
@@ -612,7 +621,7 @@
       "pesquisa_3": "esguicho de metal pra jardim",
       "updated_at": "2026-05-21T12:17:47"
     },
-    "jkpecas::1659": {
+    "sku::1659": {
       "loja": "JK Peças",
       "sku": "1659",
       "produto": "Esteira Do Câmbio Automático Jetta Bora Polo Mk4 Tiptronic",
@@ -621,7 +630,7 @@
       "pesquisa_3": "Acabamento da alavanca Bora 2008",
       "updated_at": "2026-05-21T12:17:47"
     },
-    "jkpecas::1661": {
+    "sku::1661": {
       "loja": "JK Peças",
       "sku": "1661",
       "produto": "Suporte Adaptador Celular Gps Para Bmw R 1250 R 1200 Gs Preto",
@@ -630,61 +639,61 @@
       "pesquisa_3": "porta celular gs 1200",
       "updated_at": "2026-05-21T12:19:42"
     },
-    "jkpecas::167": {
+    "sku::167": {
       "loja": "JK Peças",
       "sku": "167",
       "produto": "Extensor Válvula Bico Pneu 90o Bike Moto Carro Adaptador Prateado",
-      "pesquisa_1": "Extensor bico pneu 90 graus Toyota Hilux 2019",
-      "pesquisa_2": "Bico Pneu 90 Graus",
-      "pesquisa_3": "bico torto pra encher pneu de moto",
-      "updated_at": "2026-05-21T12:19:42"
+      "pesquisa_1": "Extensor Válvula Bico Pneu 90o Bike Moto Carro Adaptador",
+      "pesquisa_2": "Extensor Válvula Bico Pneu Moto Bike Carro Caminhão (1 Pç)",
+      "pesquisa_3": "Válvula Bico Extensor Pneu 90 Graus Ar Moto Carro",
+      "updated_at": "2026-05-29T15:50:16"
     },
-    "jkpecas::167-1": {
+    "sku::167-1": {
       "loja": "JK Peças",
       "sku": "167-1",
       "produto": "Extensor Válvula Bico Pneu 45 Graus Silver Moto Adaptador Prateado",
-      "pesquisa_1": "Extensor Válvula Bico Pneu Honda CG 160 2022",
-      "pesquisa_2": "Adaptador Bico Pneu 45 Graus",
-      "pesquisa_3": "Bico torto pneu moto",
-      "updated_at": "2026-05-21T12:19:42"
+      "pesquisa_1": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto Adaptador",
+      "pesquisa_2": "Alongador Bico Do Pneu Válvula Moto Carro Bike 45 Graus",
+      "pesquisa_3": "Extensor Válvula Bico Pneu 45 Graus Gold Bike Moto Adaptador",
+      "updated_at": "2026-05-29T15:54:07"
     },
-    "jkpecas::167-1K": {
+    "sku::167-1K": {
       "loja": "JK Peças",
       "sku": "167-1K",
       "produto": "Par Alongador Bico Do Pneu Válvula Moto Carro Bike 45 Graus",
-      "pesquisa_1": "Alongador Válvula Pneu Honda CG 160 2019",
-      "pesquisa_2": "Bico Válvula 45 Graus",
-      "pesquisa_3": "Pito torto pneu moto",
-      "updated_at": "2026-05-21T12:22:06"
+      "pesquisa_1": "2x Extensor Válvula Bico Pneu 45° Bike Moto",
+      "pesquisa_2": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto Adaptador",
+      "pesquisa_3": "Valvula Extensor Bico Pneu Moto Carro Bike 45 Graus Par",
+      "updated_at": "2026-05-29T15:54:50"
     },
-    "jkpecas::167-2": {
+    "sku::167-2": {
       "loja": "JK Peças",
       "sku": "167-2",
       "produto": "Extensor Válvula Bico 135° Silver Para Bicicleta Prateado",
-      "pesquisa_1": "Extensor Válvula Bico 135° Caloi 10 2022",
-      "pesquisa_2": "Bico 135 Graus",
-      "pesquisa_3": "bico curvo pra encher pneu bike",
-      "updated_at": "2026-05-21T12:22:06"
+      "pesquisa_1": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto Adaptador",
+      "pesquisa_2": "Extensor Válvula Bico Pneu 45 Graus Gold Bike Moto Adaptador",
+      "pesquisa_3": "Válvula Extensora 135° Silver Para Bicicleta",
+      "updated_at": "2026-05-29T15:55:58"
     },
-    "jkpecas::167-2K": {
+    "sku::167-2K": {
       "loja": "JK Peças",
       "sku": "167-2K",
       "produto": "Par Extensor Válvula Bico 135 Graus Silver Moto Adaptador Prateado",
-      "pesquisa_1": "Extensor Válvula Bico Honda CG 160 2022",
-      "pesquisa_2": "Extensor Bico 135 Graus",
-      "pesquisa_3": "pito curvo pneu moto",
-      "updated_at": "2026-05-21T12:22:06"
+      "pesquisa_1": "Par Extensor Válvula Bico 135 Graus Silver Moto Adaptador",
+      "pesquisa_2": "2 Extensor Válvula Bico De Pneu 90 Graus",
+      "pesquisa_3": "Extensor Válvula Bico Pneu 135 Graus Moto Adaptador",
+      "updated_at": "2026-05-29T15:57:02"
     },
-    "jkpecas::167-K": {
+    "sku::167-K": {
       "loja": "JK Peças",
       "sku": "167-K",
       "produto": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto Adaptador Prateado",
-      "pesquisa_1": "Extensor válvula bico pneu Honda CG 160 2022",
-      "pesquisa_2": "Adaptador Válvula 90 Graus",
-      "pesquisa_3": "bico torto pra carro",
-      "updated_at": "2026-05-21T12:24:18"
+      "pesquisa_1": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto Adaptador",
+      "pesquisa_2": "Extensor Válvula Bico Pneu Moto Bike Carro Caminhão (2 Pçs)",
+      "pesquisa_3": "2x Extensor Válvula Bico Pneu 90 Graus Bike Moto",
+      "updated_at": "2026-05-29T15:52:10"
     },
-    "jkpecas::1687": {
+    "sku::1687": {
       "loja": "JK Peças",
       "sku": "1687",
       "produto": "",
@@ -693,16 +702,16 @@
       "pesquisa_3": "Motor de passo Camry 1994",
       "updated_at": "2026-05-21T12:24:18"
     },
-    "jkpecas::169-K": {
-      "loja": "JK Peças",
+    "sku::169-K": {
+      "loja": "Uai Mineirinho",
       "sku": "169-K",
-      "produto": "Válvula Bico Esportivo Pneu Moto 90 Graus Alumínio (par)",
-      "pesquisa_1": "Válvula bico pneu Honda Hornet 2012",
-      "pesquisa_2": "11.3mm",
-      "pesquisa_3": "pito 90 graus pneu kawasaki",
-      "updated_at": "2026-05-21T12:24:18"
+      "produto": "Válvulas Bico Esportivo Para Pneu De Moto 90 Graus (par)",
+      "pesquisa_1": "Par De Valvulas Bico Pneu Esportivo 90 Graus Aluminio",
+      "pesquisa_2": "Válvulas Bico Esportivo Para Pneu De Moto 90 Graus (par)",
+      "pesquisa_3": "Válvula Bico Esportivo Pneu Moto 90 Graus Alumínio ( Par )",
+      "updated_at": "2026-05-28T11:32:44"
     },
-    "jkpecas::1691": {
+    "sku::1691": {
       "loja": "JK Peças",
       "sku": "1691",
       "produto": "Tampa Combustível Land Rover - Range Rover E Discovery 3 4",
@@ -711,16 +720,16 @@
       "pesquisa_3": "tampa do tanque discovery 4",
       "updated_at": "2026-05-21T12:26:09"
     },
-    "jkpecas::170-K4": {
+    "sku::170-K4": {
       "loja": "JK Peças",
       "sku": "170-K4",
       "produto": "Jogo De Velas Ignição Original Toyota Corolla 2002/08 4un",
-      "pesquisa_1": "Jogo De Velas Ignição Toyota Corolla 2005",
-      "pesquisa_2": "erente",
-      "pesquisa_3": "kit vela fielder 2006",
-      "updated_at": "2026-05-21T12:26:09"
+      "pesquisa_1": "Jogo Vela De Ignição Corolla 1.6 E 1.8 Gasolina 2003 A 2011",
+      "pesquisa_2": "Vela De Ignicao - Toyota Corolla 1.6l/1.8l 16v 1992 Ate 1997",
+      "pesquisa_3": "Sensor Pressão Flauta Rail Blazer S10 Frontier 2.8 Original",
+      "updated_at": "2026-05-29T15:59:58"
     },
-    "jkpecas::1701": {
+    "sku::1701": {
       "loja": "JK Peças",
       "sku": "1701",
       "produto": "Sensor Velocidade Completo Pinhão Frontier 2.8 Até 2007",
@@ -729,7 +738,7 @@
       "pesquisa_3": "Pinhão sensor velocidade frontier 2006",
       "updated_at": "2026-05-21T12:26:09"
     },
-    "jkpecas::1713": {
+    "sku::1713": {
       "loja": "JK Peças",
       "sku": "1713",
       "produto": "Capa Cromada Maçaneta 4 Portas E Tampa Mala Dodge Ram 2500",
@@ -738,7 +747,7 @@
       "pesquisa_3": "puxador cromado ram 2500",
       "updated_at": "2026-05-21T12:28:09"
     },
-    "jkpecas::1717": {
+    "sku::1717": {
       "loja": "JK Peças",
       "sku": "1717",
       "produto": "Moldura Aplique Friso Retrovisor Cromado Jeep Compass",
@@ -747,16 +756,16 @@
       "pesquisa_3": "capa retrovisor cromada compass 2019",
       "updated_at": "2026-05-21T12:28:09"
     },
-    "jkpecas::173": {
-      "loja": "JK Peças",
+    "sku::173": {
+      "loja": "Uai Mineirinho",
       "sku": "173",
       "produto": "Modulo Ventoinha Passat Jetta Golf Tiguan Audi 1k0959455",
-      "pesquisa_1": "Modulo Ventoinha Volkswagen Passat 2008",
-      "pesquisa_2": "original",
-      "pesquisa_3": "Central ventoinha Tiguan 2012",
-      "updated_at": "2026-05-21T12:28:09"
+      "pesquisa_1": "Módulo Ventoinha Para Passat Jetta, Golf, Tiguan",
+      "pesquisa_2": "Modulo Ventoinha Passat Jetta Golf Tiguan Audi 1k0959455",
+      "pesquisa_3": "Modulo Ventoinha Passat Jetta Golf Tiguan 1k0959455",
+      "updated_at": "2026-05-28T11:35:28"
     },
-    "jkpecas::1733": {
+    "sku::1733": {
       "loja": "JK Peças",
       "sku": "1733",
       "produto": "Cebolinha Direção Hidarulica Azera Sonata 57535 3k00",
@@ -765,7 +774,7 @@
       "pesquisa_3": "Cebolinha do Azera",
       "updated_at": "2026-05-21T12:30:26"
     },
-    "jkpecas::1737": {
+    "sku::1737": {
       "loja": "JK Peças",
       "sku": "1737",
       "produto": "Fluxo De Ar Renault Master 2.5 16v Diesel De 2009 A 2015",
@@ -774,7 +783,7 @@
       "pesquisa_3": "Sensor MAF Master 2.5 2012",
       "updated_at": "2026-05-21T12:30:26"
     },
-    "jkpecas::1743": {
+    "sku::1743": {
       "loja": "JK Peças",
       "sku": "1743",
       "produto": "Emblema Logo Estrela Capo Mercedes-benz 44mm Cinza",
@@ -783,7 +792,7 @@
       "pesquisa_3": "mira capo mercedes",
       "updated_at": "2026-05-21T12:30:26"
     },
-    "jkpecas::1747": {
+    "sku::1747": {
       "loja": "JK Peças",
       "sku": "1747",
       "produto": "Interruptor Botão Vidro Sprinter 311 415 515 Direito Passage",
@@ -792,7 +801,7 @@
       "pesquisa_3": "botao vidro eletrico sprinter 415",
       "updated_at": "2026-05-21T12:32:56"
     },
-    "jkpecas::1749": {
+    "sku::1749": {
       "loja": "JK Peças",
       "sku": "1749",
       "produto": "Snow Foam Esguicho Shampoozeira Lavagem Cera Reservatório",
@@ -801,7 +810,7 @@
       "pesquisa_3": "Canhão de espuma automotivo",
       "updated_at": "2026-05-21T12:32:56"
     },
-    "jkpecas::1753": {
+    "sku::1753": {
       "loja": "JK Peças",
       "sku": "1753",
       "produto": "Bomba Filtro Combustivel Land Rover Evoque Nova Gasolina Com Filtro",
@@ -810,16 +819,16 @@
       "pesquisa_3": "bomba gasolina evoque 2015",
       "updated_at": "2026-05-21T12:32:56"
     },
-    "jkpecas::176": {
+    "sku::176": {
       "loja": "JK Peças",
       "sku": "176",
       "produto": "",
-      "pesquisa_1": "Sensor De Pressão Combustível Ford Ranger 2013",
-      "pesquisa_2": "85pp40-02",
-      "pesquisa_3": "sensor pressao combustivel transit 2013",
-      "updated_at": "2026-05-21T12:34:15"
+      "pesquisa_1": "Sensor Da Flauta Rail Ford Ranger 2.2 Troller 3.2 55pp40-01",
+      "pesquisa_2": "Sensor Da Flauta Combustível Nova Ranger 2.2 3.2 85pp40-02",
+      "pesquisa_3": "Sensor Flauta Rail Ford Ranger Transit 2.2/3.2 85pp40-02",
+      "updated_at": "2026-05-29T16:01:28"
     },
-    "jkpecas::1773": {
+    "sku::1773": {
       "loja": "JK Peças",
       "sku": "1773",
       "produto": "Esteira Do Câmbio Automático Volvo C30 V50 S40 C70 - 8699465 Preto",
@@ -828,25 +837,25 @@
       "pesquisa_3": "Acabamento cambio volvo v50",
       "updated_at": "2026-05-21T12:34:15"
     },
-    "jkpecas::18": {
-      "loja": "JK Peças",
+    "sku::18": {
+      "loja": "Uai Mineirinho",
       "sku": "18",
-      "produto": "Bomba Combustível P/ Ford Focus 2.0 16v Duratec 2009 Gasoli",
-      "pesquisa_1": "Bomba Combustível Ford Focus 2009",
-      "pesquisa_2": "2008/2009",
-      "pesquisa_3": "bomba gasolina focus 2008",
-      "updated_at": "2026-05-21T12:34:15"
+      "produto": "Bomba Combustível Ford Focus 2.0 16v Duratec 08/09 Gasolina",
+      "pesquisa_1": "Bomba Combustível Ford Focus 2.0 16v Duratec 08/09 Gasolina",
+      "pesquisa_2": "Bomba Combustível P/ Ford Focus 2.0 16v Duratec 2009 Gasoli",
+      "pesquisa_3": "Bomba Combustível + Boia Completa P/ Ford Focus 2.0 16v 2009",
+      "updated_at": "2026-05-27T19:23:58"
     },
-    "jkpecas::181": {
-      "loja": "JK Peças",
+    "sku::181": {
+      "loja": "Uai Mineirinho",
       "sku": "181",
-      "produto": "Seta Retrovisor Sequencial Led Ford Focus Mk2mk3 2008 A 2018 Dourado-escuro",
-      "pesquisa_1": "Seta Retrovisor Ford Focus 2008",
-      "pesquisa_2": "Original",
-      "pesquisa_3": "pisca espelho focus ghia 2010",
-      "updated_at": "2026-05-21T12:35:51"
+      "produto": "Par Pisca Seta Espelho Retrovisor Ford Focus Modelo Original",
+      "pesquisa_1": "Seta Pisca Retrovisor Led Sequencial Ford Focus 2009 A 2019",
+      "pesquisa_2": "Seta Pisca Retrovisor Ford Focus Mk2 Mk3 - Sequencial Start",
+      "pesquisa_3": "Par Pisca Seta Sequencial Retrovisor Focus 2014 2015 2016",
+      "updated_at": "2026-05-28T11:39:04"
     },
-    "jkpecas::1865": {
+    "sku::1865": {
       "loja": "JK Peças",
       "sku": "1865",
       "produto": "Comando Do Vidro Elétrico P/ Ford Ranger 2012 2013 2014 2015",
@@ -855,16 +864,25 @@
       "pesquisa_3": "botoeira vidro ranger 2013",
       "updated_at": "2026-05-21T12:35:51"
     },
-    "jkpecas::187": {
-      "loja": "JK Peças",
+    "sku::187": {
+      "loja": "Uai Mineirinho",
       "sku": "187",
-      "produto": "Sensor De Pressão Map Coletor Bosch Renault Master 2.5 04/12",
-      "pesquisa_1": "Sensor Pressão Map Coletor Renault Master 2008",
-      "pesquisa_2": "0281002573",
-      "pesquisa_3": "sensor map master van curta 2007",
-      "updated_at": "2026-05-21T12:35:51"
+      "produto": "Sensor Map Master Dci 16v - 0281002573",
+      "pesquisa_1": "Sensor Map Master 2.5 16v Dci - 8200194432",
+      "pesquisa_2": "Sensor Map Bosch Master Dci 16v Original 789123400224",
+      "pesquisa_3": "Sensor Map Master Dci 16v - 0281002573",
+      "updated_at": "2026-05-28T11:40:30"
     },
-    "jkpecas::1885": {
+    "sku::188": {
+      "loja": "Uai Mineirinho",
+      "sku": "188",
+      "produto": "Kit Junta Da Bomba De Vácuo Jetta New Beetle - 07k145215a",
+      "pesquisa_1": "Kit Junta Da Bomba De Vácuo Jetta/new Beetle 07k145215a",
+      "pesquisa_2": "Kit Junta Bomba Vácuo Jetta Variant New Beetle 2.5 20v 5 Cil",
+      "pesquisa_3": "Kit Junta Da Bomba De Vácuo Jetta New Beetle - 07k145215a",
+      "updated_at": "2026-05-28T11:41:38"
+    },
+    "sku::1885": {
       "loja": "JK Peças",
       "sku": "1885",
       "produto": "Válvula De Vácuo Coletor De Admissão Cruze Sonic Tracker Gm",
@@ -873,7 +891,7 @@
       "pesquisa_3": "valvula vacuo tracker",
       "updated_at": "2026-05-21T12:37:53"
     },
-    "jkpecas::1887": {
+    "sku::1887": {
       "loja": "JK Peças",
       "sku": "1887",
       "produto": "",
@@ -882,7 +900,7 @@
       "pesquisa_3": "Retentor comando valvula tracker",
       "updated_at": "2026-05-21T12:37:53"
     },
-    "jkpecas::1889": {
+    "sku::1889": {
       "loja": "JK Peças",
       "sku": "1889",
       "produto": "Mangueira Filtro De Ar Mercedes A200 Cla200 Gla200 2013/2018",
@@ -891,25 +909,592 @@
       "pesquisa_3": "mangote filtro ar gla200 2016",
       "updated_at": "2026-05-21T12:37:53"
     },
-    "carlosjose::251": {
-      "loja": "Carlos José",
+    "sku::189-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "189-1",
+      "produto": "Amortecedor Gás Hilux 789123400224 2 Unid.",
+      "pesquisa_1": "Amortecedor Tampa Caçamba Ranger 3.2 Diesel Cofap Original",
+      "pesquisa_2": "Amortecedor Tampa Caçamba Chevrolet S10 Lt Ltz 2013/2021 1un",
+      "pesquisa_3": "Mola Gás Tampa Caçamba Ranger 13 14 15 16 17 18 2019 1 Unida",
+      "updated_at": "2026-05-28T11:42:54"
+    },
+    "sku::189-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "189-2",
+      "produto": "Amortecedor Gás Hilux 789123400224 2 Unid.",
+      "pesquisa_1": "Amortecedor Tampa Caçamba Ranger 3.2 Diesel Cofap Original",
+      "pesquisa_2": "Mola Gás Tampa Caçamba Ranger 13 14 15 16 17 18 2019 1 Unida",
+      "pesquisa_3": "Amortecedor Tampa Caçamba Ranger 2.2 3.2 Diesel 2013 A 2019",
+      "updated_at": "2026-05-28T11:47:58"
+    },
+    "sku::189-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "189-K",
+      "produto": "Amortecedor Mola Gás Tampa Caçamba Ranger S10 Hilux Nissan",
+      "pesquisa_1": "Par Amortecedor Tampa Caçamba Gás S10 Hilux 2013-2023",
+      "pesquisa_2": "Par Amortecedor Mola Gás Tampa Caçamba-ranger-s10-hilux 2und",
+      "pesquisa_3": "Amortecedor Mola Gás Tampa Caçamba Ranger S10 Hilux Nissan",
+      "updated_at": "2026-05-28T11:48:48"
+    },
+    "sku::19-1": {
+      "loja": "JK Peças",
+      "sku": "19-1",
+      "produto": "Manopla Cambio Aut Citroën C4 Pallas/hatch Original Deckas Preto",
+      "pesquisa_1": "Manopla Câmbio Automático Citroen C4 C5 Peugeot 307 408 Capa",
+      "pesquisa_2": "Manopla Bola Cambio Automático Para Citroen C4 2007/2011",
+      "pesquisa_3": "Manopla Bola Cambio Automático Para C4 2009 2010 2011",
+      "updated_at": "2026-05-29T14:23:43"
+    },
+    "sku::190": {
+      "loja": "Uai Mineirinho",
+      "sku": "190",
+      "produto": "",
+      "pesquisa_1": "Filtro Canister Vw Jetta Tsi 2.0 2011 / 2012 1k0201801e",
+      "pesquisa_2": "Reservatorio De Carvao Canister Jetta 2.0 Tsi De 2011 À 2017",
+      "pesquisa_3": "Reservatorio Carvão Canister A3 2.0 Jetta 2.0 2.5 Fusca Tsi",
+      "updated_at": "2026-05-28T11:49:57"
+    },
+    "sku::192": {
+      "loja": "Uai Mineirinho",
+      "sku": "192",
+      "produto": "Torneira Combustivel Gasolina Cb 500 (todas)",
+      "pesquisa_1": "Torneira Gasolina Combustivel Cb 500 (todas)",
+      "pesquisa_2": "Torneira Combustivel Cb 500 Hornet Ate 07 Rosca 21mm",
+      "pesquisa_3": "Torneira De Combustível Honda Cb 500 Original",
+      "updated_at": "2026-05-28T11:50:41"
+    },
+    "sku::194-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "194-K",
+      "produto": "Fita Led Automotiva Farol Seta Sequencial Drl Ghost 60cm",
+      "pesquisa_1": "Fita Led Drl Efeito Ghost Start Apresentação Seta Sequencial",
+      "pesquisa_2": "Fita Led Automotiva Farol Seta Sequencial Drl Ghost 60cm",
+      "pesquisa_3": "Fita De Led Dual Color Drl Farol E Seta Dianteiro",
+      "updated_at": "2026-05-28T12:18:07"
+    },
+    "sku::195": {
+      "loja": "Uai Mineirinho",
+      "sku": "195",
+      "produto": "Lampada Xenon D4s E D4r 35w 6000k Corolla Camry Hilux Subar",
+      "pesquisa_1": "Lampadas Farol Xenon Hilux 6000k D4s 35w Original Sw4",
+      "pesquisa_2": "Lâmpada Xenon D4s 35w 6000k Branco Frio Toyota Hilux Camry",
+      "pesquisa_3": "Lampada Xenon D4s Ou D4r 35w 6000k Corolla Camry Hilux Subar",
+      "updated_at": "2026-05-28T12:27:31"
+    },
+    "sku::195-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "195-K",
+      "produto": "Lâmpada Xenon D4s 6000k Branco-frio Super Vision.",
+      "pesquisa_1": "Par Lampadas Xenon D4s Toyota Corolla Hilux Sw4 6.000k",
+      "pesquisa_2": "Par Lâmpadas Xenon D4s 6000k 35w Toyota Camry Hilux Sw4",
+      "pesquisa_3": "Par Lâmpada Xenon D4s 6000k Toyota Hilux Sw4 Camry",
+      "updated_at": "2026-05-28T12:39:58"
+    },
+    "sku::196": {
+      "loja": "Uai Mineirinho",
+      "sku": "196",
+      "produto": "Torneira De Combustivel P/suzuki Gsxf 750 Gsx750f De 89 A 97",
+      "pesquisa_1": "Torneira Gasolina Combustivel Suzuki Gsxf 750 Gsx750f Katana",
+      "pesquisa_2": "Torneira De Combustivel P/suzuki Gsxf 750 Gsx750f De 89 A 97",
+      "pesquisa_3": "Torneira Registro Combustivel Suzuki Gsxf 750 Gsx750f",
+      "updated_at": "2026-05-28T12:41:40"
+    },
+    "sku::198-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "198-2",
+      "produto": "Maçaneta Externa Kia Sorento Dianteira Esquerda 82650-3e000",
+      "pesquisa_1": "Maçaneta Externa Kia Sorento Dianteira Esquerda 82650-3e000",
+      "pesquisa_2": "Maçaneta Externa Kia Sorento 2004 A 2009 Dianteira Esquerda",
+      "pesquisa_3": "Maçaneta Externa Kia Sorento 2004 A 2009 Dianteira Esquerda",
+      "updated_at": "2026-05-28T12:43:37"
+    },
+    "sku::198-3": {
+      "loja": "Uai Mineirinho",
+      "sku": "198-3",
+      "produto": "Maçaneta Externa Para Kia Sorento Traseira Direita",
+      "pesquisa_1": "Maçaneta Externa Kia Sorento 2003 A 2009 Traseira Direita",
+      "pesquisa_2": "Maçaneta Porta Traseira Direita Sorento 2007 2008 2009",
+      "pesquisa_3": "Maçaneta Externa Para Kia Sorento Traseira Direita Preta 03",
+      "updated_at": "2026-05-28T12:47:47"
+    },
+    "sku::198-4": {
+      "loja": "Uai Mineirinho",
+      "sku": "198-4",
+      "produto": "Maçaneta Externa Para Kia Sorento Traseira Esquerda 2003",
+      "pesquisa_1": "Maçaneta Externa Kia Sorento Traseira Esquerda",
+      "pesquisa_2": "Maçaneta Externa Traseira Esquerda Para Kia Sorento",
+      "pesquisa_3": "Maçaneta Externa Kia Sorento Traseira Esquerda Preta 2003/",
+      "updated_at": "2026-05-28T12:48:54"
+    },
+    "sku::199": {
+      "loja": "JK Peças",
+      "sku": "199",
+      "produto": "",
+      "pesquisa_1": "Atuador Marcha Lenta Toyota Corolla 1 6 16v 93 96 2227015010",
+      "pesquisa_2": "Atuador Marcha Lenta Corolla 1 8 16v De 03 À 08 22270 0d040",
+      "pesquisa_3": "Atuador Marcha Lenta Corolla 1 6 1 8 93 À 97 Camry 92 À 96",
+      "updated_at": "2026-05-29T16:06:37"
+    },
+    "sku::20": {
+      "loja": "Uai Mineirinho",
+      "sku": "20",
+      "produto": "Sensor Nível Ford Focus 2.0 Duratec 2008/2009 Gasolina",
+      "pesquisa_1": "Sensor Nível Ford Focus 2.0 Duratec 2008/2009 Gasolina",
+      "pesquisa_2": "Sensor De Nível Ford Focus 2.0 Duratec 2008/2009 Gasolina",
+      "pesquisa_3": "Boia Sensor Nivel Combustível Focus 2.0 Duratec 08/09 Gas",
+      "updated_at": "2026-05-27T19:27:46"
+    },
+    "sku::200": {
+      "loja": "Uai Mineirinho",
+      "sku": "200",
+      "produto": "Display Tela Lcd Velocímetro Painel Ford Focus Titanium Preto",
+      "pesquisa_1": "Display Tela Lcd Velocímetro Painel Ford Focus Titanium",
+      "pesquisa_2": "Display Lcd Multimidia Original Ford Ranger Xlt 2013 A 2017",
+      "pesquisa_3": "Display (lcd) Velocímetro Painel Ford Focus Titanium",
+      "updated_at": "2026-05-28T12:52:04"
+    },
+    "sku::203": {
+      "loja": "JK Peças",
+      "sku": "203",
+      "produto": "Valvula Reguladora Sprinter 415 515 311 Original A6510740084",
+      "pesquisa_1": "Válvula Reguladora Hr Bongo Sprinter 415 515 2 5 28233374",
+      "pesquisa_2": "Valvula Reguladora Bomba Hr Kia Bongo Sprinter 9109 946 C/nf",
+      "pesquisa_3": "Válvula Reguladora Sprinter 2 2 415 515 Hr 2.5 7135 818",
+      "updated_at": "2026-05-29T16:08:04"
+    },
+    "sku::208": {
+      "loja": "Uai Mineirinho",
+      "sku": "208",
+      "produto": "Tampa Corrente Completa Orig Volkswagen Jetta Tiguan Tsi Preto",
+      "pesquisa_1": "Tampa Lateral Comando + Junta Jetta Tiguan 2.0 Tsi A3 A4 Q3",
+      "pesquisa_2": "Tampa Corrente Comando Motor Audi A3 A4 A5 A6 A8 Q3 Q5",
+      "pesquisa_3": "Tampa Corrente Comando Audi A3 A4 A5 Q3 Q5 Tt 2.0 Tsi 09-14",
+      "updated_at": "2026-05-28T12:53:18"
+    },
+    "sku::210": {
+      "loja": "JK Peças",
+      "sku": "210",
+      "produto": "Adaptador Carregador Transmissor Usb Bluetooth Veicular Fm",
+      "pesquisa_1": "Carregador Usb P/ Carro Mp3 Transmissor Fm Sem Fio Bluetooth",
+      "pesquisa_2": "Comutador Partida Ignição Hyundai Hb20s 2012 2013 2014 2015",
+      "pesquisa_3": "Receptor Transmissor Veicular Carregador Bluetooth Usb Mp3",
+      "updated_at": "2026-05-29T16:08:49"
+    },
+    "sku::214": {
+      "loja": "Uai Mineirinho",
+      "sku": "214",
+      "produto": "",
+      "pesquisa_1": "Comutador Partida Ignição Hb20 1.0 2013 Em Diante",
+      "pesquisa_2": "Comutador Partida Ignição Para Hyundai Hb20 1.0 1.6 Todos",
+      "pesquisa_3": "Comutador Partida Ignição Hb20 1.0 1.6 Todos",
+      "updated_at": "2026-05-28T12:54:32"
+    },
+    "sku::218": {
+      "loja": "Uai Mineirinho",
+      "sku": "218",
+      "produto": "Esquadro Digital Abs Lv-01 Laser Nível Horizontal Vertical",
+      "pesquisa_1": "Nível Laser Infravermelho ABS Esquadro Digital 2 Linhas 10m LV-01",
+      "pesquisa_2": "Nível Laser B-Max Linha 2 Linhas Esquadro 90 Graus 10m",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T12:55:19"
+    },
+    "sku::219-K4": {
+      "loja": "JK Peças",
+      "sku": "219-K4",
+      "produto": "Jogo 4 Velas Ignição Hyundai I30, Elantra, Hb20 Original",
+      "pesquisa_1": "Jodo Vela Iridium Laser Hyundai Elantra 1.8 2012 2013 2014",
+      "pesquisa_2": "Jogo 4 Velas Ngk Iridium Kia Sportage 2.0 Flex 2011 A 2023 Este produto está indisponível no momento.",
+      "pesquisa_3": "Jogo 4 Velas Ngk Iridium Kia Sportage 2.0 Flex 2011 A 2023",
+      "updated_at": "2026-05-29T16:11:22"
+    },
+    "sku::219-K6": {
+      "loja": "JK Peças",
+      "sku": "219-K6",
+      "produto": "Jogo De Velas Ignição Hyundai Santa Fé 3.5 V6 2009 Em Diante",
+      "pesquisa_1": "Jogo De Velas Ignição Hyundai Santa Fé 3.5 V6 2009 Em Diante",
+      "pesquisa_2": "Jogo 6 Velas Hyundai Azera 3.0 V6 2012 A 2020 Ngk Iridium",
+      "pesquisa_3": "Jogo De Vela Original Bosch Sorento Sportage Sonata Ix35",
+      "updated_at": "2026-05-29T16:12:29"
+    },
+    "sku::220-K6": {
+      "loja": "JK Peças",
+      "sku": "220-K6",
+      "produto": "Jogo Velas Iridium Para Hyundai Santa Fé 2.7 V6 2008",
+      "pesquisa_1": "Jogo Velas Iridium Para Hyundai Santa Fé 2.7 V6 2008",
+      "pesquisa_2": "Jogo 6 Velas Santa Fé 2.7 V6 2006 2007 2008 2009 Llfr5b-11",
+      "pesquisa_3": "Jogo 6 Vela De Ignição Hyundai Santa Fé 2.7 V6 Ilfr5b-11",
+      "updated_at": "2026-05-29T16:13:19"
+    },
+    "sku::221": {
+      "loja": "Uai Mineirinho",
+      "sku": "221",
+      "produto": "Placa Lanterna Led Bmw X3 2011 2012 2013 2014 2015 2016 2017",
+      "pesquisa_1": "Placa Circuito Lanterna Led Bmw X3 F25 2010 A 2017 Motorista",
+      "pesquisa_2": "Circuito Lanterna Led Bmw X3 F25 2010 2011 2012 2013 Á 2017",
+      "pesquisa_3": "Placa Para Lanterna Led Bmw X3 2011 A 2017 100% Nova Premium",
+      "updated_at": "2026-05-28T13:00:07"
+    },
+    "sku::222-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "222-1",
+      "produto": "Pisca Seta Retrovisor Sonata Lado Direito Carona Original Es Cinza",
+      "pesquisa_1": "Placa Para Lanterna Led Bmw X3 2011 A 2017 100% Nova Premium",
+      "pesquisa_2": "Pisca Seta Retrovisor Sonata Lado Direito Carona Original Es",
+      "pesquisa_3": "Pisca Seta Retrovisor Hyundai Sonata 11 2012 13 14 15 Direit",
+      "updated_at": "2026-05-28T13:02:55"
+    },
+    "sku::222-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "222-2",
+      "produto": "Pisca Retrovisor Lado Esquerdo Sonata 2011 2012 2013 14 15",
+      "pesquisa_1": "Pisca Retrovisor Lado Esquerdo Sonata 2011 2012 2013 14 15",
+      "pesquisa_2": "Pisca Seta Retrovisor Sonata 2011 2012 2013 2014 Unidade",
+      "pesquisa_3": "Pisca Retrovisor Lado Esquerdo Sonata 2011 2012 2013 2014 15",
+      "updated_at": "2026-05-28T13:05:27"
+    },
+    "sku::222-K": {
+      "loja": "JK Peças",
+      "sku": "222-K",
+      "produto": "Par Pisca Seta Retrovisor Hyundai Sonata 11 2012 13 14 15 16 Cinza",
+      "pesquisa_1": "Par Pisca Seta Retrovisor Hyundai Sonata 11 2012 13 14 15 16",
+      "pesquisa_2": "Par Pisca Seta Retrovisor Hyundai Sonata 11-16",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T16:15:28"
+    },
+    "sku::223": {
+      "loja": "Uai Mineirinho",
+      "sku": "223",
+      "produto": "Sensor Nível Boia Combustível Ix35 Gasolina 2010/ Sportage",
+      "pesquisa_1": "Boia Sensor De Nivel Combustível Para Hyundai Ix35 Gasolina",
+      "pesquisa_2": "Sensor Nível Boia Combustível Ix35 Gasolina 2010/ Sportage",
+      "pesquisa_3": "Boia Sensor De Nivel Combustível Para Ix35 Gasolina",
+      "updated_at": "2026-05-28T13:10:39"
+    },
+    "sku::225": {
+      "loja": "Uai Mineirinho",
+      "sku": "225",
+      "produto": "55574685 Tubo Agua Ate O Tbi Sonic /cruze",
+      "pesquisa_1": "Válvula Canister Jetta Tiguan Audi Passat 2.0 Tsi 05e906517a",
+      "pesquisa_2": "Válvula Canister Jetta 2.5 Passat 2.0 2006 A 2010 06e906517a",
+      "pesquisa_3": "Válvula Canister Jetta 2.5 2006 2007 08 2009 2010 06e906517",
+      "updated_at": "2026-05-28T13:11:18"
+    },
+    "sku::227-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "227-1",
+      "produto": "Manopla De Câmbio Abs 54132-s84-a81za Honda Accord",
+      "pesquisa_1": "Botão Alavanca Câmbio Com Mola Honda Accord 1998 99 Até 2001",
+      "pesquisa_2": "Botão Shifter De Câmbio Honda Accord 94/02 Ex, Ent. Imediata",
+      "pesquisa_3": "Abs 54132-s84-a81za Manoplas De Câmbio Metal/plástico",
+      "updated_at": "2026-05-28T13:12:09"
+    },
+    "sku::227-2": {
+      "loja": "JK Peças",
+      "sku": "227-2",
+      "produto": "Botão Alavanca Câmbio Automático Honda Accord 1998-2002",
+      "pesquisa_1": "Botão Alavanca Câmbio Automático Honda Accord 1998-2002",
+      "pesquisa_2": "Botão Alavanca Câmbio Automático Honda Accord 2003 2004 2005",
+      "pesquisa_3": "Botão Da Alavanca Do Câmbio Automático Honda Accord 03-05",
+      "updated_at": "2026-05-29T16:16:52"
+    },
+    "sku::228": {
+      "loja": "Uai Mineirinho",
+      "sku": "228",
+      "produto": "1pisca 48 Led Fita Flexível Seta Lanterna Freio Moto Custom",
+      "pesquisa_1": "1pisca 48 Led Fita Flexível Seta Lanterna Freio Moto Custom",
+      "pesquisa_2": "Farol Lanterna Fita Led Traseira Pisca Moto Custom Harley",
+      "pesquisa_3": "Pisca 48 Led Moto Fita Flexível Seta Lanterna Freio Custom",
+      "updated_at": "2026-05-28T13:13:06"
+    },
+    "sku::23": {
+      "loja": "JK Peças",
+      "sku": "23",
+      "produto": "Botao Piloto Automático Controle Velocidade Focus Mk 2,5",
+      "pesquisa_1": "Botao Piloto Automático Controle Velocidade Focus Mk 2 5",
+      "pesquisa_2": "Botao Piloto Automático Controle Velocidade Ford Focus",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:24:31"
+    },
+    "sku::230-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "230-1",
+      "produto": "Tampa Esguicho Farol Direito Bmw 320 325 2008 2009 2010 2011",
+      "pesquisa_1": "Tampa Esguicho Água Farol Bmw 320i 325i 330i 335i 08 A 2011",
+      "pesquisa_2": "Tampa Esguicho Farol Direito Bmw 320 325 2008 2009 2010 2011",
+      "pesquisa_3": "Tampa Do Parachoque Bmw 320i 318i E90 2009 2010 2011 2012",
+      "updated_at": "2026-05-28T13:14:08"
+    },
+    "sku::230-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "230-2",
+      "produto": "Tampa Esguicho Farol Direito Bmw 320 325 2008 2009 2010 2011",
+      "pesquisa_1": "Tampa Esguicho Água Farol Bmw 320i 325i 330i 335i 08 A 2011",
+      "pesquisa_2": "Tampa Esguicho Farol Direito Bmw 320 325 2008 2009 2010 2011",
+      "pesquisa_3": "Tampa Do Parachoque Bmw 320i 318i E90 2009 2010 2011 2012",
+      "updated_at": "2026-05-28T13:45:36"
+    },
+    "sku::230-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "230-K",
+      "produto": "Tampa Do Parachoque Bmw 320i 318i E90 2009 2010 2011 2012 Preto",
+      "pesquisa_1": "Par Tampa Parachoque Bmw 320i 318i E90 2009 10 11 12 Oferta",
+      "pesquisa_2": "Tampa Do Parachoque Bmw 320i 318i E90 2009 2010 2011 2012",
+      "pesquisa_3": "Tampa Esguicho Parachoque Bmw E90 Lci 2008-2012",
+      "updated_at": "2026-05-28T13:47:23"
+    },
+    "sku::231": {
+      "loja": "Uai Mineirinho",
+      "sku": "231",
+      "produto": "Sincronizador Calibrador Tpms Sensor Pneu Gm Cobalt S10 Onix",
+      "pesquisa_1": "Botão Comando Freio Mão Honda Hrv 2015 2016 2017 2018 2019..",
+      "pesquisa_2": "Botão Freio Mão Honda Hrv Brake Hold Interruptor Console New",
+      "pesquisa_3": "Botão Comando Freio Mão Honda Hrv Original 2016 2017 2018 19",
+      "updated_at": "2026-05-28T13:52:35"
+    },
+    "sku::231-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "231-1",
+      "produto": "Botao Comando Freio Mao Honda Hr-v 2015-2019 Original 12v",
+      "pesquisa_1": "Interruptor Botão Comand Freio De Mão P/ Honda Hrv 2016 2021",
+      "pesquisa_2": "Botão Comando Freio Mão Honda Hrv Original 2016 2017 2018 19",
+      "pesquisa_3": "Botão Comando Freio De Mão Eletrônico Honda Hr-v 2015 A 2020",
+      "updated_at": "2026-05-28T13:53:36"
+    },
+    "sku::232-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "232-1",
+      "produto": "Apoio De Braço Lateral Bmw 51417279316 Preto",
+      "pesquisa_1": "Par Puxador Porta Dianteira Bmw 320i 328i 335i 316i F30 F31.",
+      "pesquisa_2": "Par Puxador Dianteiro Porta Bmw F30 320i 328i 335i 2013-2018",
+      "pesquisa_3": "Par Puxador Porta Dianteira Bmw 320i 328i 335i 2011 A 2015",
+      "updated_at": "2026-05-28T13:54:45"
+    },
+    "sku::232-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "232-2",
+      "produto": "Par Puxador Porta Traseira Bmw 320i 328i 335i 2011 A 2015 Preto",
+      "pesquisa_1": "Par Puxador Porta Traseira Bmw 320i 328i 335i 2011 A 2015",
+      "pesquisa_2": "Par Puxador Portas Traseiras Bmw 320i 328i 330i F30 13 A 18",
+      "pesquisa_3": "Par Puxador Porta Traseira Bmw 320i 328i 335i 2013 A 2018",
+      "updated_at": "2026-05-28T13:56:34"
+    },
+    "sku::232-5": {
+      "loja": "Uai Mineirinho",
+      "sku": "232-5",
+      "produto": "Apoio De Braço Lateral Bmw 51417279316 Preto",
+      "pesquisa_1": "Par Puxador Porta Dianteira Bmw 320i 328i 335i 316i F30 F31.",
+      "pesquisa_2": "Par Puxador Dianteiro Porta Bmw F30 320i 328i 335i 2013-2018",
+      "pesquisa_3": "Par Puxador Porta Dianteira Bmw 320i 328i 335i 2011 A 2015",
+      "updated_at": "2026-05-28T13:56:01"
+    },
+    "sku::234": {
+      "loja": "Uai Mineirinho",
+      "sku": "234",
+      "produto": "Comando Botão Vidro Eletrico Citroen C4 Vtr 2 Portas 06 A 09",
+      "pesquisa_1": "Comando Botão Vidro Eletrico Para Citroen C4 Hatch Pallas",
+      "pesquisa_2": "Comando Botao Vidro Eletrico C4 Exclusive Pallas",
+      "pesquisa_3": "Botão Comando Vidro Elétrico Citroen C4 Vtr Motorista Novo",
+      "updated_at": "2026-05-28T13:57:04"
+    },
+    "sku::236": {
+      "loja": "Uai Mineirinho",
+      "sku": "236",
+      "produto": "Resistência Da Ventoinha Peugeot 206 207 307 Citroen Picasso",
+      "pesquisa_1": "Resistencia Da Ventoinha Citroen Ds3 C3 C4 Aircross",
+      "pesquisa_2": "Resistência Da Ventoinha 308 2012 2013 2014 2015 9673999980",
+      "pesquisa_3": "Resistência Ventoinha Peugeot Citroen 307 308 408 Ds3 C3 C4",
+      "updated_at": "2026-05-28T13:58:00"
+    },
+    "sku::238-1": {
+      "loja": "JK Peças",
+      "sku": "238-1",
+      "produto": "Tela Grade Parachoque Dianteiro Renegade 15 2016 2017 2018",
+      "pesquisa_1": "Tela Grade Parachoque Dianteiro Renegade 2015 2016 2017 2018",
+      "pesquisa_2": "Refletor Olho De Gato Jeep 1245567890098 Retangular",
+      "pesquisa_3": "Tela Parachoque Dianteiro Renegade 15 2016 2017 2018 Direito",
+      "updated_at": "2026-05-29T16:19:03"
+    },
+    "sku::238-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "238-2",
+      "produto": "Tela Grade Parachoque Dianteiro Renegade 2015 A 2018",
+      "pesquisa_1": "Moldura Grade Parachoque Jeep Renegade 2015 2016 2017 2018",
+      "pesquisa_2": "Tela Grade Parachoque Dianteiro Renegade 15 2016 2017 2018.;",
+      "pesquisa_3": "Tela Grade Parachoque Dianteiro Renegade 2015 2016 2017 2018",
+      "updated_at": "2026-05-28T14:00:58"
+    },
+    "sku::238-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "238-K",
+      "produto": "Par Tela Parachoque Jeep Renegade 15 16 17 18 19 Novas!!",
+      "pesquisa_1": "Par Tela Grade Para Choque Dianteira Jeep Renegade 16...",
+      "pesquisa_2": "Par Tampa Tela Grade Para-choque Jeep Renegade 2015 16 2018",
+      "pesquisa_3": "Par Tampa Tela Grade Parachoque Jeep Renegade 2015 2016 2018",
+      "updated_at": "2026-05-28T14:01:40"
+    },
+    "sku::239-1": {
+      "loja": "JK Peças",
+      "sku": "239-1",
+      "produto": "Olho De Gato Refletor Para-choque Traseiro Bmw 320i",
+      "pesquisa_1": "Olho Gato Refletor Parachoque Bmw 320i 328i 335i F30 Peças",
+      "pesquisa_2": "Olho De Gato Refletor Para-choque Traseiro Bmw 320i",
+      "pesquisa_3": "Olho Gato Refletor Parachoque Traseiro Bmw 320i 328i 335i",
+      "updated_at": "2026-05-29T16:20:17"
+    },
+    "sku::239-2": {
+      "loja": "JK Peças",
+      "sku": "239-2",
+      "produto": "Olho De Gato Refletor Para-choque Traseiro Bmw 320i",
+      "pesquisa_1": "Olho Gato Refletor Parachoque Bmw 320i 328i 335i F30 Peças",
+      "pesquisa_2": "Olho De Gato Refletor Para-choque Traseiro Bmw 320i",
+      "pesquisa_3": "Olho Gato Refletor Parachoque Traseiro Bmw 320i 328i 335i",
+      "updated_at": "2026-05-29T16:20:52"
+    },
+    "sku::239-K": {
+      "loja": "JK Peças",
+      "sku": "239-K",
+      "produto": "Par Refletor Parachoque Traseiro Bmw 320i 328i 2013 14 2015",
+      "pesquisa_1": "Par Refletor Parachoque Traseiro Bmw 320i 328i 2013 14 2015",
+      "pesquisa_2": "Refletor Traseiro Bmw F30 316i 320i 328i 335i Lado Direito",
+      "pesquisa_3": "Par Lanterna Refletor Parachoque Traseiro Bmw 320i 2012 2015",
+      "updated_at": "2026-05-29T16:21:26"
+    },
+    "sku::241": {
+      "loja": "Uai Mineirinho",
+      "sku": "241",
+      "produto": "Suporte Celular Gps Moto Bmw R1200gs R1250gs F700gs F750gs",
+      "pesquisa_1": "Adaptador Gps Suporte Celular Moto Bmw 1200 1250 R1200 R1250",
+      "pesquisa_2": "Suporte Celular Moto Para Bmw R1200gs F700/800 Preto",
+      "pesquisa_3": "Suporte Celular Moto Gps Bmw R 1200 R 1250 Gs F 850 F 800",
+      "updated_at": "2026-05-28T14:03:06"
+    },
+    "sku::241-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "241-1",
+      "produto": "Suporte Celular Para Moto Bmw R1200gs R1250gs F850gs 22mm Preto",
+      "pesquisa_1": "Adaptador Smartphone Suporte Gps Bmw R1250 R1200 F850 Gs Adv",
+      "pesquisa_2": "Suporte Celular Para Moto Bmw R1200gs R1250gs F850gs 22mm",
+      "pesquisa_3": "Suporte Celular Gps Bmw R 1200 R 1250 F850 F800 Gs Indução",
+      "updated_at": "2026-05-28T14:05:23"
+    },
+    "sku::243": {
+      "loja": "Uai Mineirinho",
+      "sku": "243",
+      "produto": "",
+      "pesquisa_1": "Sensor Pressao Oleo Cherokee Sport 4.0l De 97 À 00 2 Pinos",
+      "pesquisa_2": "Sensor Pressão Óleo Grand Cherokee / Sport 4.0 5.2 5.9",
+      "pesquisa_3": "Sensor De Pressão Óleo Dakota 2.5 3.9 V6 5.2 De 1998 À 2002",
+      "updated_at": "2026-05-28T14:06:41"
+    },
+    "sku::244": {
+      "loja": "JK Peças",
+      "sku": "244",
+      "produto": "Tampa Combustível Land Rover - Range Rover E Discovery 3 4",
+      "pesquisa_1": "Tampa Combustível Land Rover Range Rover E Discovery 3 4",
+      "pesquisa_2": "Tampa Combustível Land Rover Discovery 3 4 E Range Rover",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T16:24:10"
+    },
+    "sku::245": {
+      "loja": "Uai Mineirinho",
+      "sku": "245",
+      "produto": "Esteira Câmbio Automático Jetta Bora Golf Mk4 Passat",
+      "pesquisa_1": "Esteira Câmbio Automático Jetta Bora Polo Mk4 Tiptronic",
+      "pesquisa_2": "Esteira Câmbio Automático Jetta Bora Golf Mk4 Passat 98-10",
+      "pesquisa_3": "Esteira Câmbio Automático Jetta Bora Golf Mk4 Passat",
+      "updated_at": "2026-05-28T14:08:30"
+    },
+    "sku::246": {
+      "loja": "Uai Mineirinho",
+      "sku": "246",
+      "produto": "Esteira De Câmbio Automático Volvo C30 V50 S40 C70 8699465",
+      "pesquisa_1": "Esteira Cambio Volvo S40 C70 C30 V50 8699465",
+      "pesquisa_2": "Esteira Cambio Volvo C30 2007/2013 8699465",
+      "pesquisa_3": "Esteira De Câmbio Automático Volvo C30 V50 S40 C70 8699465",
+      "updated_at": "2026-05-28T14:10:24"
+    },
+    "sku::248": {
+      "loja": "Uai Mineirinho",
+      "sku": "248",
+      "produto": "Sensor Velocidade Completo Pinhão Frontier 2.8 Até 2007",
+      "pesquisa_1": "Sensor Velocidade Completo Pinhão Frontier 2.8 Até 2007",
+      "pesquisa_2": "Sensor Velocidade Nissan Frontier Xterra 2.8 Mwm 2501074p01",
+      "pesquisa_3": "Tampa Do Esguicho Farol Azera 3.0 V6 De 2012 À 2014 Direito",
+      "updated_at": "2026-05-28T14:11:22"
+    },
+    "sku::250-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "250-1",
+      "produto": "Tampa Esguicho Lavador Farol Lado Direito Azera 2012 2013 14 Direito",
+      "pesquisa_1": "Tampa Esguicho Farol Direito Bmw X1 2010 2011 2012 2013 2014",
+      "pesquisa_2": "Limpador Esguicho Agua Farol Xenon Hyundai Vera Cruz 06 A 13",
+      "pesquisa_3": "Tampa Lavador Esguicho Farol Hyundai Azera 2012 À 2014",
+      "updated_at": "2026-05-28T14:11:59"
+    },
+    "sku::250-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "250-2",
+      "produto": "Tampa Esguicho Lavador Farol Esquerdo Azera 2012 A 2014 Preto Esquerdo",
+      "pesquisa_1": "Tampa Esguicho Lavador Farol Esquerdo Azera 2012 Ate 2014",
+      "pesquisa_2": "Tampa Esguicho Lavador Farol L Esquerdo Azera 2012 2013 2014",
+      "pesquisa_3": "Tampa Esguicho Lavador Farol Esquerdo Azera 2012 A 2014",
+      "updated_at": "2026-05-28T14:13:06"
+    },
+    "sku::250-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "250-K",
+      "produto": "Par Tampa Parachoque Esguicho Farol Azera 2012 2013 2014",
+      "pesquisa_1": "Tampa Parachoque Azera 2012 2013 2014 Esguicho Farol",
+      "pesquisa_2": "Par Tampa Parachoque Esguicho Farol Azera 2011-2014",
+      "pesquisa_3": "Par Tampa Parachoque Esguicho Farol Azera 2012 2013 2014",
+      "updated_at": "2026-05-28T14:21:59"
+    },
+    "sku::251": {
+      "loja": "Uai Mineirinho",
       "sku": "251",
-      "produto": "Bico Aspersor Nebulizador 1/2 Latão Metal Regul",
+      "produto": "Bico Aspersor Nebulizador 1/2 Latão Metal Regulável",
       "pesquisa_1": "Bico Aspersor Nebulizador Irrigação Pulverização Regulável",
-      "pesquisa_2": "Bico Aspersor Nebulizador 1/2 Latão Metal Regulável",
-      "pesquisa_3": "Bico Aspersor Nebulizador 1/2 Latão Metal Regul",
-      "updated_at": "2026-05-21T15:33:32"
+      "pesquisa_2": "Bico Aspersor Nebulizador Metal 1/2 Regulável Irrigação",
+      "pesquisa_3": "Bico Aspersor Nebulizador 1/2 Latão Metal Regulável",
+      "updated_at": "2026-05-28T14:23:57"
     },
-    "carlosjose::252-2": {
-      "loja": "Carlos José",
+    "sku::252-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "252-1",
+      "produto": "Tampa Lavador Esguicho Farol Direito Focus 2014 A 2015 Preto Direito",
+      "pesquisa_1": "Tampa Esguicho Parachoque Focus 2014 2015 Lado Direito",
+      "pesquisa_2": "Tampa Lavador Esguicho Farol Direito Focus 2014 A 2015",
+      "pesquisa_3": "Tampa Esguicho Direito Parachoque Focus 2014-2015",
+      "updated_at": "2026-05-28T14:25:07"
+    },
+    "sku::252-2": {
+      "loja": "Uai Mineirinho",
       "sku": "252-2",
-      "produto": "Tampa Esguicho Lavador De Farol Focus Esquerdo 2012-2015 Esquerdo",
-      "pesquisa_1": "646210",
-      "pesquisa_2": "Tampa Esguicho Lavador Farol Ford Focus 2014 Esquerdo",
+      "produto": "Tampa Esguicho Lavador Farol Ford Focus 2014 Esquerdo Preto Esquerdo",
+      "pesquisa_1": "Tampa Esguicho Lavador Farol Ford Focus 2014 Esquerdo",
+      "pesquisa_2": "Tampa Esguicho Farol Esquerdo Ford Focus 2016 2017 2018 2019",
       "pesquisa_3": "Tampa Lavador Esguicho Farol Esquerdo Focus 2014 A 2015",
-      "updated_at": "2026-05-21T16:24:48"
+      "updated_at": "2026-05-28T14:25:49"
     },
-    "uaimineirinho::256": {
+    "sku::252-K": {
+      "loja": "JK Peças",
+      "sku": "252-K",
+      "produto": "Par Tampa Esguicho Farol Ford Focus 2014 E 2015",
+      "pesquisa_1": "Par De Tampas Esguicho Lavador Do Farol Focus 2013 2014 2015",
+      "pesquisa_2": "Tampa Esguicho Lavador Farol Focus 2014 2015 O Par",
+      "pesquisa_3": "Par Tampa Esguicho Farol Ford Focus 2014 E 2015",
+      "updated_at": "2026-05-29T16:25:28"
+    },
+    "sku::254-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "254-1",
+      "produto": "Bomba Filtro Combustivel Land Rover Evoque Nova Gasolina Com Filtro",
+      "pesquisa_1": "Bomba Filtro Combustivel Land Rover Evoque Nova Gasolina",
+      "pesquisa_2": "Bomba Filtro Combustível Land Rover Evoque Gasolina Lr057235",
+      "pesquisa_3": "Bomba Combustível Range Rover Evoque 2.0 Turbo 2012 A 2018",
+      "updated_at": "2026-05-28T14:27:15"
+    },
+    "sku::256": {
       "loja": "Uai Mineirinho",
       "sku": "256",
       "produto": "Prg Snow Foam Esguicho 1l Shampoo Para Veículos",
@@ -918,16 +1503,97 @@
       "pesquisa_3": "Esguicho Snow Foam Prg Com Reservatório Para Lavagem",
       "updated_at": "2026-05-22T07:15:37"
     },
-    "uaimineirinho::257-1": {
+    "sku::257": {
+      "loja": "Uai Mineirinho",
+      "sku": "257",
+      "produto": "Interruptor Interrupitor Vidro Elétrico Sprinter A9065451913",
+      "pesquisa_1": "Botão Vidro Elétrico Sprinter 311/415/515 Lado (passageiro)",
+      "pesquisa_2": "Interruptor Interrupitor Vidro Elétrico Sprinter A9065451913",
+      "pesquisa_3": "Botão Vidro Elétrico Sprinter 415/515 - Direito (passageiro)",
+      "updated_at": "2026-05-28T16:24:45"
+    },
+    "sku::257-1": {
       "loja": "Uai Mineirinho",
       "sku": "257-1",
       "produto": "Botão Vidro Elétrico Simples Mercedes-benz Sprinter 415 515",
       "pesquisa_1": "Botão Vidro Elétrico Simples Mercedes-benz Sprinter 415 515",
       "pesquisa_2": "Botão Comando Vidro Mercedes Sprinter 415 2015 A 2019",
-      "pesquisa_3": "9065450913",
-      "updated_at": "2026-05-22T07:48:43"
+      "pesquisa_3": "Botão Comando Vidro Elétrico Passageiro Sprinter A9065450913",
+      "updated_at": "2026-05-28T16:25:55"
     },
-    "uaimineirinho::273": {
+    "sku::259": {
+      "loja": "Uai Mineirinho",
+      "sku": "259",
+      "produto": "Acessórios Aplique Braço Retrovisor Jeep Compass 2016 À 2022",
+      "pesquisa_1": "Aplique Braço Retrovisor Compass 2017 A 2026 Cromado",
+      "pesquisa_2": "Aplique Do Braço Retrovisor Compass 2017 À 2026 Cromado",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T16:27:03"
+    },
+    "sku::264": {
+      "loja": "JK Peças",
+      "sku": "264",
+      "produto": "Cebolinha Sensor Direção Hidráulica Orig Azera 575353k000",
+      "pesquisa_1": "Cebolinha Sensor Direção Hidráulica Orig Azera 575353k000",
+      "pesquisa_2": "Cebolinha Direção Hidarulica Azera Sonata 57535 3k00 Novo",
+      "pesquisa_3": "Cebolinha Direção Hidráulica Hyundai Azera Sonata Original",
+      "updated_at": "2026-05-29T16:26:31"
+    },
+    "sku::268": {
+      "loja": "Uai Mineirinho",
+      "sku": "268",
+      "produto": "Emblema Capo Mercedes C180 C200 C220 C250 C280 C300 Alemanha Prateado",
+      "pesquisa_1": "Emblema Capô Mercedes Benz C180 C200 C220 C230 C240 Original",
+      "pesquisa_2": "Emblema Capô Mercedes C180 C200 C220 C250 C280 C300 C350",
+      "pesquisa_3": "Emblema Original Capô Mercedes Benz C180 C200 C220 C230 C240",
+      "updated_at": "2026-05-28T16:28:46"
+    },
+    "sku::27-1": {
+      "loja": "JK Peças",
+      "sku": "27-1",
+      "produto": "Engrenagem Caixa De Transferencia Bmw X3 3.0",
+      "pesquisa_1": "Engrenagem Caixa De Transferencia Bmw X3 3.0",
+      "pesquisa_2": "Engrenagem Caixa De Transferência Bmw X3 X5 X6 2004 2013",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:25:04"
+    },
+    "sku::27-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "27-2",
+      "produto": "Engrenagem Atuador Caixa De Transferência Bmw X3 X5 X6",
+      "pesquisa_1": "Engrenagem Caixa De Transferência Bmw X3 X5 X6 Servo Atuador",
+      "pesquisa_2": "Engrenagem Atuador Caixa De Transferência Bmw X3 X5 X6",
+      "pesquisa_3": "7891234000224",
+      "updated_at": "2026-05-27T19:28:26"
+    },
+    "sku::27-K": {
+      "loja": "JK Peças",
+      "sku": "27-K",
+      "produto": "Engrenagem Caixa Transferência Bmw X3 X5 X6 Servo Atuador",
+      "pesquisa_1": "Engrenagem Caixa Transferência Bmw X3 X5 X6 Servo Atuador",
+      "pesquisa_2": "Engrenagem Caixa De Transferência Bmw X3 X5 X6 Servo Atuador",
+      "pesquisa_3": "Kit Engrenagem Motor Caixa De Transferência Bmw X3 X5 X6",
+      "updated_at": "2026-05-29T14:25:35"
+    },
+    "sku::272-K4": {
+      "loja": "Uai Mineirinho",
+      "sku": "272-K4",
+      "produto": "Filtro Peneira Eixo Balanceador Fusca Jetta Passat Tiguan 4",
+      "pesquisa_1": "4 Filtro Peneira Eixo Balanceador Jetta Passat Tiguan A3 A4",
+      "pesquisa_2": "Filtro Peneira Eixo Balanceador Jetta Passat Tiguan A5 A3 Q3",
+      "pesquisa_3": "Filtro Peneira Eixo Balanceador Fusca Jetta Passat Tiguan 4",
+      "updated_at": "2026-05-28T16:44:44"
+    },
+    "sku::272-K8": {
+      "loja": "Uai Mineirinho",
+      "sku": "272-K8",
+      "produto": "Filtro De Óleo Brazlandia Tsi Tfsi 06h103081 Jetta Passat",
+      "pesquisa_1": "Filtro De Óleo Brazlandia Tsi Tfsi 06h103081 Jetta Passat",
+      "pesquisa_2": "Filtro Peneira Eixo Balanceador Jetta Passat Tiguan A3 A4 Q3",
+      "pesquisa_3": "Filtro Peneira Eixo Balanceador Vw Jetta Golf Tiguan Beetle",
+      "updated_at": "2026-05-28T16:45:21"
+    },
+    "sku::273": {
       "loja": "Uai Mineirinho",
       "sku": "273",
       "produto": "Comando Botão Vidro Eletrico Ford Ranger 2012 2013 2014 2015",
@@ -936,16 +1602,106 @@
       "pesquisa_3": "Botao Ranger Interruptor Vidro Eletrico Comando Cabine Dupla",
       "updated_at": "2026-05-22T07:59:45"
     },
-    "uaimineirinho::280": {
+    "sku::274": {
+      "loja": "Uai Mineirinho",
+      "sku": "274",
+      "produto": "",
+      "pesquisa_1": "Sensor Temperatura Evaporador Ar Condicionado Hb20 1.0 1.6",
+      "pesquisa_2": "Sensor Temperatura Ar Condicionado Evaporador Hyundai Hb20",
+      "pesquisa_3": "Sensor Temperatura Ar Condicionado Para Sportage Tucson Ix35",
+      "updated_at": "2026-05-28T16:46:30"
+    },
+    "sku::275-19": {
+      "loja": "Uai Mineirinho",
+      "sku": "275-19",
+      "produto": "Puxador Interno Porta Bmw 528i 535i 550i M5 Ostra 2011-2016 Bege",
+      "pesquisa_1": "Puxador Interno Porta Bmw Série 5 520 523 525 528 530 535",
+      "pesquisa_2": "Puxador Interno Porta Bmw 528i 535i 550i M5 Ostra 2011-2016",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T16:48:04"
+    },
+    "sku::275-5": {
+      "loja": "Uai Mineirinho",
+      "sku": "275-5",
+      "produto": "Puxador Interno Porta Bmw 528i 535i 550i M5 2011-2016 Bege Bege",
+      "pesquisa_1": "Puxador Interno Porta Bmw 528i 535i 550i M5 2011-2016 Bege",
+      "pesquisa_2": "Puxador Interno Porta Bmw Série 5 520 523 525 528 530 535",
+      "pesquisa_3": "Puxador Interno Porta Bmw 528i 535i 550i M5 Bege 2011 - 2016",
+      "updated_at": "2026-05-28T16:47:16"
+    },
+    "sku::276": {
+      "loja": "Uai Mineirinho",
+      "sku": "276",
+      "produto": "Comando Botão Vidro Elétrico Sorento 2011 2012 2013 2014",
+      "pesquisa_1": "Comando Vidro Elétrico Para Kia Sorento 2011/2014 ( 2 Auto )",
+      "pesquisa_2": "Comando Vidro Elétrico Deckas Kia Sorento 2011-2014 Top",
+      "pesquisa_3": "Comando Botão Vidro Elétrico Sorento 2011 2012 2013 2014",
+      "updated_at": "2026-05-28T16:48:50"
+    },
+    "sku::277": {
+      "loja": "Uai Mineirinho",
+      "sku": "277",
+      "produto": "Mangueira Filtro Ar Tbi Mercedes C180 2010 2011 2012 2013 14",
+      "pesquisa_1": "Mangueira Filtro Ar Tbi Mercedes C180 2010 2011 2012 2013 14",
+      "pesquisa_2": "Mangueira Filtro Ar Tbi Mercedes C180 C200 C250 2010- 2014",
+      "pesquisa_3": "Mercedes Mangueira Filtro Ar Tbi C180 C200 C250 2010 A 2014!",
+      "updated_at": "2026-05-28T16:50:13"
+    },
+    "sku::278": {
+      "loja": "Uai Mineirinho",
+      "sku": "278",
+      "produto": "Mangueira De Entrada De Ar Mercedes A200 B200 Cla E Gla",
+      "pesquisa_1": "Duto Mangueira Entrada Ar Gla200 Cla200 A200 B200",
+      "pesquisa_2": "Duto Mangueira Entrada Filtro Ar Gla200 Gla250 W156",
+      "pesquisa_3": "Mangueira Filtro De Ar Mercedes A200 Cla200 Gla200 2013/2018",
+      "updated_at": "2026-05-28T16:51:33"
+    },
+    "sku::279": {
+      "loja": "Uai Mineirinho",
+      "sku": "279",
+      "produto": "Duto Filtro Entrada Ar Mecedes A180 A200 A250 B180 B200 Gla",
+      "pesquisa_1": "Duto Mangueira Entrada Ar Mercedes B200 Gla200 A200 Cla200",
+      "pesquisa_2": "Duto Filtro Entrada Ar Mecedes A180 A200 A250 B180 B200 Gla",
+      "pesquisa_3": "Mangueira Duto Entrada Ar Mercedes A180 A200 A250 B180 B200",
+      "updated_at": "2026-05-28T16:52:24"
+    },
+    "sku::280": {
       "loja": "Uai Mineirinho",
       "sku": "280",
       "produto": "Retentor Comando Válvulas Cruze 1.8 2012 2013 2014 2015 2016",
-      "pesquisa_1": "55563374",
+      "pesquisa_1": "Retentor Comando Válvulas Cruze 1.8 2012 2013 2014 2015 2016",
       "pesquisa_2": "Par Retentor Comando Válvulas Cruze Sonic Tracker 55563374",
       "pesquisa_3": "Retentor Comando Válvulas Cruze Tracker 1.8 Sonic 1.6 Ecotec",
-      "updated_at": "2026-05-25T08:17:59"
+      "updated_at": "2026-05-28T16:53:07"
     },
-    "uaimineirinho::285": {
+    "sku::280-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "280-K",
+      "produto": "Par Retentor Do Comando De Valvulas Cruze 2012/2016 55563374",
+      "pesquisa_1": "Par Retentor Do Comando De Valvulas Cruze 2012/2016 55563374",
+      "pesquisa_2": "Retentor Do Comando De Válvulas Cruze 2012/2016 55563374",
+      "pesquisa_3": "90280463 55563374",
+      "updated_at": "2026-05-28T16:53:41"
+    },
+    "sku::281": {
+      "loja": "Uai Mineirinho",
+      "sku": "281",
+      "produto": "Válvula Vácuo Coletor Admissão Gm Sonic Cruze Tracker",
+      "pesquisa_1": "Válvula Vácuo Coletor Admissão Gm Sonic 1 6 16v 55568437",
+      "pesquisa_2": "Válvula Vácuo Do Coletor Admissão Sonic Cruze 1 6 1 8 12 16",
+      "pesquisa_3": "Válvula De Vácuo Do Coletor Admissão Gm Cruze Sonic Tracker",
+      "updated_at": "2026-05-28T16:55:34"
+    },
+    "sku::282": {
+      "loja": "Uai Mineirinho",
+      "sku": "282",
+      "produto": "Roda Fonica Ssangyong Actyon Kyron Rexton Korando 4151009000",
+      "pesquisa_1": "Roda Fonica Ssangyong Actyon Kyron Rexton Korando 4151009000",
+      "pesquisa_2": "Roda Fônica Ssangyong Actyon Kyron Rexton Korando Original",
+      "pesquisa_3": "4151009000 4151009100",
+      "updated_at": "2026-05-28T16:56:24"
+    },
+    "sku::285": {
       "loja": "Uai Mineirinho",
       "sku": "285",
       "produto": "Comando Vidro Eletrico Para Kia Sorento 2010 A 2014",
@@ -954,7 +1710,61 @@
       "pesquisa_3": "935702p010 93570-2p010",
       "updated_at": "2026-05-25T09:19:16"
     },
-    "uaimineirinho::294": {
+    "sku::286": {
+      "loja": "Uai Mineirinho",
+      "sku": "286",
+      "produto": "Válvula Regulagem Banco A Ar Volvo Fh Fm Scania 124 Mb Axor",
+      "pesquisa_1": "Válvula Regulagem Banco A Ar Volvo Fh Fm Scania 124 Mb Axor",
+      "pesquisa_2": "Valvula Nivel Banco Volvo Fh Vm Sc 124 Serie Pgr Mb Axor",
+      "pesquisa_3": "Valvula Nivel Banco Ar Volvo Fh Vm Sc 124 Serie Pgr Mb Axor",
+      "updated_at": "2026-05-28T16:57:59"
+    },
+    "sku::287": {
+      "loja": "Uai Mineirinho",
+      "sku": "287",
+      "produto": "Medidor Fluxo De Ar Pajero Tr4 Io E5t08471 Md343605 Original",
+      "pesquisa_1": "Medidor Fluxo Ar Original Pajero Tr4 E5t08471 Md343605",
+      "pesquisa_2": "Medidor Fluxo Air Flow Para Pajero Tr4 Io Lancer 2000 Á 15",
+      "pesquisa_3": "Medidor Fluxo De Ar Pajero Tr4 2.0 16v 2002/2013 Mitsubishi",
+      "updated_at": "2026-05-28T16:58:44"
+    },
+    "sku::290": {
+      "loja": "Uai Mineirinho",
+      "sku": "290",
+      "produto": "Bsm Caixa Fusiveis B5 (b2 B3) Citroen C3 2008 2009 2010 2011",
+      "pesquisa_1": "Caixa Bsm Peugeot B3 B4 B5 206, 207, 307 1.4 E 1.6 Citroen",
+      "pesquisa_2": "Modulo B5 B3 B2 Bsm Caixa Fusivel Peugeot 207 307 Citroen C3",
+      "pesquisa_3": "Caixa De Fusíveis Original Gptrend Peugeot Citroen B3 B5",
+      "updated_at": "2026-05-28T16:59:16"
+    },
+    "sku::291": {
+      "loja": "JK Peças",
+      "sku": "291",
+      "produto": "Placa De Fusivel Bateria Peugeot 3008 Citroen C4 Picasso",
+      "pesquisa_1": "Módulo Placa Fusíveis Bateria Peugeot 3008 C4 Picasso 6500gr",
+      "pesquisa_2": "Módulo Placa De Fusíveis Bateria Peugeot 3008 Citroen C4",
+      "pesquisa_3": "Placa Fusíveis Bateria Peugeot 3008 C4 Picasso 28236841 Bpga",
+      "updated_at": "2026-05-29T16:29:15"
+    },
+    "sku::291-1": {
+      "loja": "JK Peças",
+      "sku": "291-1",
+      "produto": "Módulo Placa De Fusíveis Bateria Peugeot 3008 Citroen C4",
+      "pesquisa_1": "Módulo Placa Fusíveis Bateria Peugeot 3008 C4 Picasso 6500gr",
+      "pesquisa_2": "Módulo Placa De Fusíveis Bateria Peugeot 3008 Citroen C4",
+      "pesquisa_3": "Placa Fusíveis Bateria Peugeot 3008 C4 Picasso 28236841 Bpga",
+      "updated_at": "2026-05-29T16:30:19"
+    },
+    "sku::292": {
+      "loja": "Uai Mineirinho",
+      "sku": "292",
+      "produto": "Sensor Nível Óleo 2.0 16v Peugeot Citroën 1131e5",
+      "pesquisa_1": "Sensor Nivel Oleo 307 308 408 C4 Pallas Lounge Picasso 2.0",
+      "pesquisa_2": "Sensor Pressão Óleo Carter Al4 Peugeot Citroën 1131e5",
+      "pesquisa_3": "Sensor Nível Óleo Carter Xsara Picasso 307 308 408 2.0 16v",
+      "updated_at": "2026-05-28T17:00:06"
+    },
+    "sku::294": {
       "loja": "Uai Mineirinho",
       "sku": "294",
       "produto": "Tubo Cano Óleo Retorno Turbina Peugeot Thp 308 408 508 3008",
@@ -963,15 +1773,2058 @@
       "pesquisa_3": "Tubo Cano Óleo Retorno Turbina Peugeot Thp 308 408 508 3008",
       "updated_at": "2026-05-25T10:39:05"
     },
-    "uaimineirinho::307-1": {
+    "sku::295": {
+      "loja": "Uai Mineirinho",
+      "sku": "295",
+      "produto": "Bomba De Vácuo Para Peugeot E Citroen Thp 1.6 16v Turbo 3008",
+      "pesquisa_1": "Bomba De Vácuo Peugeot E Citroen Thp 1.6 16v Turbo 3008 Ds3",
+      "pesquisa_2": "Bomba De Vácuo Para Peugeot E Citroen Thp 1.6 16v Turbo 3008",
+      "pesquisa_3": "Bomba Vácuo Peugeot Citroen Thp 1.6 16v Turbo Ds3 C4 Rcz",
+      "updated_at": "2026-05-28T17:01:23"
+    },
+    "sku::297-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "297-K",
+      "produto": "Par Esguicho Agua Brucutu Cruze 2012 2013 2014 2015 2016",
+      "pesquisa_1": "Par Esguicho Brucutu Agua Parabrisa Cruze 12 13 14 15 16",
+      "pesquisa_2": "Par Esguicho Agua Brucutu Cruze 2012 2013 2014 2015 2016",
+      "pesquisa_3": "Par Esguicho Brucutu Cruze 95979017 2012 2013 2014 2015 2016",
+      "updated_at": "2026-05-28T17:03:03"
+    },
+    "sku::298-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "298-K",
+      "produto": "02 Esguicho Brucutu Para Brisas Tucson Kia Sportage",
+      "pesquisa_1": "02 Esguicho Brucutu Para Brisas Tucson Kia Sportage",
+      "pesquisa_2": "02 Esguicho Brucutu Para Brisas Hyunday Tucson Kia Sportage",
+      "pesquisa_3": "2 Brucutu Para Hyundai Tucson 2005 - 2016 Par Esguicho Água",
+      "updated_at": "2026-05-28T17:03:59"
+    },
+    "sku::299-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "299-1",
+      "produto": "Interruptor Chave Farol Milha Neblina Luz Golf Tiguan Jetta",
+      "pesquisa_1": "Interruptor Chave Farol Milha Neblina Luz Golf Tiguan Jetta",
+      "pesquisa_2": "Chave Botão Farol Função Automático Golf Jetta Polo Amarok",
+      "pesquisa_3": "Chave Interruptor Luz Farol Milha Neblina Jetta Passat Golf",
+      "updated_at": "2026-05-28T17:05:05"
+    },
+    "sku::303": {
+      "loja": "Uai Mineirinho",
+      "sku": "303",
+      "produto": "Válvula Vácuo Tração Eixo Dianteiro S10 Blazer 4x4 98 A 2011",
+      "pesquisa_1": "Cuica Diafragma Atuador Vácuo Da Tração S10 Blazer Até 2011",
+      "pesquisa_2": "Válvula Vácuo Tração Eixo Dianteiro S10 Blazer 4x4 98 A 2011",
+      "pesquisa_3": "Válvula De Vácuo Tração Eixo Dianteiro S10 Blazer 4x4 98/11",
+      "updated_at": "2026-05-28T17:05:37"
+    },
+    "sku::307-1": {
       "loja": "Uai Mineirinho",
       "sku": "307-1",
       "produto": "Carcaça Válvula Termostática 308, 3008 408 C4 Ds3 1.6 Thp",
-      "pesquisa_1": "Carcaça Termostática Ds3 Ds4 Ds5 3008 308 4008 C4 1 6 Thp",
+      "pesquisa_1": "Carcaça Termostática Ds3 Ds4 Ds5 3008 308 4008 C4 16 Thp",
       "pesquisa_2": "Carcaça Válvula Termostática 308 3008 408 C4 Ds3 1 6 Thp",
-      "pesquisa_3": "Carcaça Termostática Ds3 Ds4 Ds5 3008 308 4008 C4 1 6 Thp",
-      "updated_at": "2026-05-25T16:20:00"
+      "pesquisa_3": "11537534521 9810916980",
+      "updated_at": "2026-05-28T17:07:25"
+    },
+    "sku::307-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "307-2",
+      "produto": "Chicote P/ Carcaça Válvula Termostática Peugeot 308/408 Thp",
+      "pesquisa_1": "Chicote Plug Conector Peugeot Citroen 1.6 16v Thp 9804315380",
+      "pesquisa_2": "Chicote Valvula Termostatica Motores Thp 9804315380",
+      "pesquisa_3": "Chicote Válvula Termostática Sensor Temperatura Thp 1.6 Turb",
+      "updated_at": "2026-05-28T17:10:18"
+    },
+    "sku::307-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "307-K",
+      "produto": "Carcaça Válvula Termostática Thp 1.6 Turbo Ds3 308 3008 4008",
+      "pesquisa_1": "Carcaca Valvula Termostatica + Chicote 1.6 Thp Peugeot 3008",
+      "pesquisa_2": "Carcaça Valvula Termostatica Thp 1.6 16v Ds3 308 Cooper C4",
+      "pesquisa_3": "Carcaça Válvula Termostática 308, 3008 408 C4 Ds3 1.6 Thp",
+      "updated_at": "2026-05-28T17:11:24"
+    },
+    "sku::308": {
+      "loja": "Uai Mineirinho",
+      "sku": "308",
+      "produto": "Filete Maçaneta Toyota Corolla 2015 Á 2019",
+      "pesquisa_1": "Filete Maçaneta Toyota Corolla 2015 Á 2019",
+      "pesquisa_2": "Filete Maçaneta Cromado Inox Corolla 2015-2019",
+      "pesquisa_3": "Filete Maçaneta Toyota Corolla Cromado 3m 2015 2019",
+      "updated_at": "2026-05-28T17:14:19"
+    },
+    "sku::308-1": {
+      "loja": "JK Peças",
+      "sku": "308-1",
+      "produto": "Filete Maçaneta Cromado Inox Corolla 2015-2019",
+      "pesquisa_1": "Aplique Capa Cromada Maçaneta New Novo Corolla 2015 A 2019",
+      "pesquisa_2": "Kit Aplique Cromado Capa Das Maçaneta Corolla 2015 Até 2019",
+      "pesquisa_3": "Filete Maçaneta Cromado Inox Corolla 2015-2019",
+      "updated_at": "2026-05-29T16:33:51"
+    },
+    "sku::309.1": {
+      "loja": "Uai Mineirinho",
+      "sku": "309.1",
+      "produto": "Válvula Reguladora Hr Bongo Sprinter 415 515 2.5 28233374",
+      "pesquisa_1": "Válvula Reguladora Hr Bongo Sprinter 415 515 2.5 28233374 (Usado)",
+      "pesquisa_2": "Válvula Reguladora Hr Bongo Sprinter 415 515 2.5 28233374",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T17:21:45"
+    },
+    "sku::310": {
+      "loja": "Uai Mineirinho",
+      "sku": "310",
+      "produto": "Fluxo De Ar Suzuki Vitara E Chevrolet Tracker L4 1.6 Com Nf",
+      "pesquisa_1": "Sensor Medidor Maf Fluxo Ar J20a Tracker Grand Vitara",
+      "pesquisa_2": "Medidor Fluxo Ar Maf Vitara E Tracker 1.6 E 2.0 16v Gasolina",
+      "pesquisa_3": "Sensor Maf Fluxo Ar Tracker 2008",
+      "updated_at": "2026-05-28T17:24:01"
+    },
+    "sku::312": {
+      "loja": "Uai Mineirinho",
+      "sku": "312",
+      "produto": "Esteira Do Câmbio Automático Peugeot 307 E Citroen C4",
+      "pesquisa_1": "Esteira Do Câmbio Automático Peugeot 307 E Citroen C4",
+      "pesquisa_2": "Esteira Guarda Pó Alavanca Cambio Peugeot Ou Citroen.",
+      "pesquisa_3": "Esteira Alavanca Câmbio Peugeot 307 308 408 Citroën C3 C4",
+      "updated_at": "2026-05-28T17:30:27"
+    },
+    "sku::313": {
+      "loja": "Uai Mineirinho",
+      "sku": "313",
+      "produto": "Alavanca Câmbio Automático Pajero Preto Gptrend",
+      "pesquisa_1": "Alavanca Do Cambio Automático Pajero Full Esteira Deslizante",
+      "pesquisa_2": "Par Esteira Capa Alavanca Câmbio Automático Pajero Full",
+      "pesquisa_3": "Deslizante / Esteira Alavanca Cambio Automático Pajero Full",
+      "updated_at": "2026-05-28T17:40:39"
+    },
+    "sku::313-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "313-1",
+      "produto": "Esteira Deslizante Alavanca Da Tração Mitsubishi Pajero Full Preto",
+      "pesquisa_1": "Esteira Da Alavanca Tração 4x4 Pajero Full 08/21 Original",
+      "pesquisa_2": "Esteira Deslizante Alavanca Da Tração Mitsubishi Pajero Full",
+      "pesquisa_3": "Esteira Alavanca Do 4x4 Pajero Full 2008 A 2021",
+      "updated_at": "2026-05-28T17:48:37"
+    },
+    "sku::314-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "314-K",
+      "produto": "Fivela Lingueta Cinto Segurança Anti-som Hilux 1 Par",
+      "pesquisa_1": "Fivela Lingueta Cinto Segurança Anti-som Hilux 1 Par",
+      "pesquisa_2": "Par Trava Fivela Cinto Anti Som Da Hilux",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T17:49:30"
+    },
+    "sku::315-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "315-K",
+      "produto": "Par Cinto Anti Alarme Toyota Corolla Adaptador Cinto",
+      "pesquisa_1": "Par Cinto Anti Alarme Toyota Corolla Adaptador Cinto",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T17:50:54"
+    },
+    "sku::316": {
+      "loja": "Uai Mineirinho",
+      "sku": "316",
+      "produto": "Sensor Direção Hidráulica Renault Clio Sandero Logan Scenic",
+      "pesquisa_1": "Interruptor Pressão Direção Hidráulica Renault Todos",
+      "pesquisa_2": "Sensor Pressão Direção Hidráulica Renault Clio Logan Sandero",
+      "pesquisa_3": "Sensor Direção Hidráulica Renault Clio Sandero Logan Scenic",
+      "updated_at": "2026-05-28T17:51:39"
+    },
+    "sku::318": {
+      "loja": "Uai Mineirinho",
+      "sku": "318",
+      "produto": "Fechadura Tampa Porta-malas Hb20s Sedan 81230-1s100",
+      "pesquisa_1": "Fechadura Trava Porta Malas Hb20 Sedan 2013 A 2019",
+      "pesquisa_2": "Fechadura Trava Porta Malas Hyundai Hb20 Sedan 2013 A 2019",
+      "pesquisa_3": "Fechadura Elétrica Porta Mala Hb20 Sedan 2016 2017 2018 2019",
+      "updated_at": "2026-05-28T17:53:53"
+    },
+    "sku::319": {
+      "loja": "Uai Mineirinho",
+      "sku": "319",
+      "produto": "Sensor Pressão Pneu Para Hyundai Creta Tucson Tpms Stinger",
+      "pesquisa_1": "Cilindro Atuador Hidráulico Meriva Easytronic Novo Original",
+      "pesquisa_2": "Cilindro Atuador Hidráulico Meriva Easytronic Original",
+      "pesquisa_3": "Cilindro Atuador Hidráulico Módulo Embreag Meriva Easytronic",
+      "updated_at": "2026-05-28T17:54:47"
+    },
+    "sku::32-K": {
+      "loja": "JK Peças",
+      "sku": "32-K",
+      "produto": "Radiador Honda Cb 600 Hornet 2005 2006 2007 ( Novo )",
+      "pesquisa_1": "Radiador Para Honda Cb 600 Hornet 2005 2006 2007 ( Novo )",
+      "pesquisa_2": "Radiador Cebolinha Honda Cb 600 Hornet 2005 2006 2007",
+      "pesquisa_3": "Radiador Honda Cb 600 Hornet 2005 A 2007",
+      "updated_at": "2026-05-29T14:26:26"
+    },
+    "sku::320": {
+      "loja": "Uai Mineirinho",
+      "sku": "320",
+      "produto": "Lâmpada Xenon Hid D1s 6000k Branco Frio 308 408 Par",
+      "pesquisa_1": "2 Farol Xenon D1s Fluence Mini Cooper Kia Citroen Volvo",
+      "pesquisa_2": "Lâmpada Xenon D1s 6000k Farol Kia Sorento 2010 2011 2012 Par",
+      "pesquisa_3": "Par Lâmpada Farol Xênon Peugeot 408 508 5008 C4 6000k Hid",
+      "updated_at": "2026-05-28T17:58:45"
+    },
+    "sku::320-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "320-1",
+      "produto": "Par Lâmpada Xenon D1s 8000k Farol Direcional C4 Hatch Pallas",
+      "pesquisa_1": "Par Lâmpada D1s Xenon Hyundai Azera Sonata Bmw Citroen Volvo",
+      "pesquisa_2": "Par Lâmpada Xenon D1s 8000k Farol Direcional C4 Hatch Pallas",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-28T18:00:12"
+    },
+    "sku::321-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "321-1",
+      "produto": "Spoiler Para-choque Golf Gti Mk7 2013 Direito Original Vw",
+      "pesquisa_1": "Moldura Parachoque Inferior Dir Dianteiro Golf Gti Mk7 2014",
+      "pesquisa_2": "Spoiler Parachoque Inferior Esq Dianteiro Golf Gti Mk7 2016",
+      "pesquisa_3": "Spoiler Dianteiro Golf Mk7 2013 2014 2015 2016 2017 Novo",
+      "updated_at": "2026-05-28T18:01:28"
+    },
+    "sku::321-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "321-2",
+      "produto": "Spoiler Para-choque Golf Gti Mk7 2013 Direito Original Vw",
+      "pesquisa_1": "Spoiler Parachoque Golf Gti Mk7 2015 2016 Esquerdo Original",
+      "pesquisa_2": "Spoiler Dianteiro Parachoque Golf Gti 2014 2017 2018 Carona",
+      "pesquisa_3": "Spoiler Friso Inferior Golf Gti 2014 2015 2016 2017 2018",
+      "updated_at": "2026-05-29T10:12:50"
+    },
+    "sku::321-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "321-K",
+      "produto": "Spoiler Parachoque Dianteiro Golf Gti Mk7 2017 Par Original Preto",
+      "pesquisa_1": "Spoiler Parachoque Dianteiro Golf Gti Mk7 2015 2016 Original",
+      "pesquisa_2": "Spoiler Parachoque Dianteiro Golf Gti Mk7 2017 Par Original",
+      "pesquisa_3": "Spoiler Parachoque Golf Gti Mk7 13 Á 17 Esq/dir Par Original",
+      "updated_at": "2026-05-28T18:07:16"
+    },
+    "sku::324": {
+      "loja": "Uai Mineirinho",
+      "sku": "324",
+      "produto": "Tampa Filtro Ar Condicionado Fusca, Tsi Jetta Passat Tiguan",
+      "pesquisa_1": "Tampa Caixa Filtro Ar Interno Vw Jetta 1.4 Tfsi 2016 A 2017",
+      "pesquisa_2": "1k0819422b Tampa Protetora Do Filtro De Ar Do Motor De Carro",
+      "pesquisa_3": "Tampa Filtro Ar Jetta Tiguan Fusca Novo Original 1k0819422b",
+      "updated_at": "2026-05-29T11:34:53"
+    },
+    "sku::325-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "325-1",
+      "produto": "Tampa Motor Amortecedor Audi 8k0803593/4 1m Borracha",
+      "pesquisa_1": "Tampa Amortecedor Audi A4 A5 B8 B8 8k0803593 8k0803594",
+      "pesquisa_2": "Tampa Motor Amortecedor Audi A4 A5 B8 B8 8k0803593 8k0803594",
+      "pesquisa_3": "8K0803593 4",
+      "updated_at": "2026-05-26T11:30:41"
+    },
+    "sku::325-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "325-2",
+      "produto": "Tampa Motor Amortecedor Audi 8k0803593/4 1m Borracha",
+      "pesquisa_1": "Tampa Amortecedor Audi A4 A5 2009 A 2014 B8 B8.5",
+      "pesquisa_2": "Tampa Motor Amortecedor Audi A4 A5 B8 B8 8k0803593 8k0803594",
+      "pesquisa_3": "Tampa Motor Amortecedor Audi 8k0803593/4 1m Borracha",
+      "updated_at": "2026-05-28T18:09:03"
+    },
+    "sku::326": {
+      "loja": "Uai Mineirinho",
+      "sku": "326",
+      "produto": "Difusor Saída Ar Console Central Traseiro Jetta Variant 2.5",
+      "pesquisa_1": "Difusor Grade Saída Ar Console Central Traseiro Jetta 2 5",
+      "pesquisa_2": "Difusor Ar Console Central Jetta 2 5 Original",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T11:35:44"
+    },
+    "sku::327": {
+      "loja": "Uai Mineirinho",
+      "sku": "327",
+      "produto": "Flange De Água Cabeçote Alumínio Jetta Passat Tiguan 2.0 Tsi",
+      "pesquisa_1": "Flange D Agua Cabeçote Fusca Jetta Passat Tsi Tiguan Audi A3",
+      "pesquisa_2": "Conexão Flange De Água Cabeçote Jetta Passat Tiguan 2.0 Tsi",
+      "pesquisa_3": "Flange De Agua Cabeçote A3 Q3 Tiguan Passat Golf Fusca Jetta",
+      "updated_at": "2026-05-28T18:19:04"
+    },
+    "sku::33": {
+      "loja": "Uai Mineirinho",
+      "sku": "33",
+      "produto": "Mangueira Da Carcaça Valvula Term Ao Tbi Sonic Cruze Tracker",
+      "pesquisa_1": "Mangueira Da Carcaça Valvula Term Ao Tbi Sonic Cruze Tracker",
+      "pesquisa_2": "55574685 Tubo Agua Ate O Tbi Sonic /cruze",
+      "pesquisa_3": "Mangueira Agua Aquecedor Cruze 1.8 Sonic 55574685 Original",
+      "updated_at": "2026-05-27T19:29:09"
+    },
+    "sku::331-1": {
+      "loja": "JK Peças",
+      "sku": "331-1",
+      "produto": "Fivela Cala Alarme  Anulador Anti Apito Som Cinto Segurança",
+      "pesquisa_1": "Fivela Cala Alarme Anulador Anti Apito Som Cinto Segurança",
+      "pesquisa_2": "Trava Fivela Cinto De Segurança Anti Alarme Corolla Hilux",
+      "pesquisa_3": "Fivela Lingueta Cinto Segurança Anti Som Universal",
+      "updated_at": "2026-05-29T16:44:43"
+    },
+    "sku::331-1-K": {
+      "loja": "JK Peças",
+      "sku": "331-1-K",
+      "produto": "Par De Fivela Adaptador Anti Alarme Sonoro Universal",
+      "pesquisa_1": "Par Fivela Anti Alarme Anulador Som Cinto De Segurança",
+      "pesquisa_2": "Par Fivela Anti Alarme Anulador Som Apito Cinto De Segurança",
+      "pesquisa_3": "Par Fivela Anti Alarme Cinto De Segurança Anulador Apito Som",
+      "updated_at": "2026-05-29T16:46:07"
+    },
+    "sku::337": {
+      "loja": "Uai Mineirinho",
+      "sku": "337",
+      "produto": "Válvula Controle Óleo Comando Passat Jetta Tiguan 06h109257",
+      "pesquisa_1": "Válvula Controle Comando Vw/audi Jetta/passat/a4/tiguan/tsi",
+      "pesquisa_2": "Válvula Controle Óleo Comando Passat Jetta Tiguan 06h109257",
+      "pesquisa_3": "Valvula Controle Comando Jetta Tsi Tiguan Passat 06h109257",
+      "updated_at": "2026-05-29T11:36:51"
+    },
+    "sku::341": {
+      "loja": "Uai Mineirinho",
+      "sku": "341",
+      "produto": "Filtro Combustível Bmw F30 320i 328i Flex 2015 2016 2017 18",
+      "pesquisa_1": "Filtro Combustivel Bmw X1 X3 118 320 120 318 16127233840",
+      "pesquisa_2": "Filtros Combustível Bmw 120i 320i 325i X1 Modelos Actveflex",
+      "pesquisa_3": "Filtro Combustível N20 118i 120i 320i 328i X1 X2 X3 X4 Mann",
+      "updated_at": "2026-05-28T18:21:15"
+    },
+    "sku::342": {
+      "loja": "Uai Mineirinho",
+      "sku": "342",
+      "produto": "Marcador Medidor Digital Nível De Combustível Universal",
+      "pesquisa_1": "Marcador Medidor Combustível Digital Moto Carro Barco Full",
+      "pesquisa_2": "Marcador Medidor Sensor Nível Combustível Digital Universal",
+      "pesquisa_3": "Marcador Medidor Sensor Nível De Combustível Digital",
+      "updated_at": "2026-05-28T18:22:05"
+    },
+    "sku::343": {
+      "loja": "Uai Mineirinho",
+      "sku": "343",
+      "produto": "Boia Medidor Nivel Tanque Combustível Pajero Full Todas",
+      "pesquisa_1": "Sensor Nivel Boia Combustível Mitsubishi Pajero Full Todas",
+      "pesquisa_2": "Boia Nível Sensor Medidor Tanque Pajero Full Nova Mr342870",
+      "pesquisa_3": "Boia Nivel Sensor Medidor Tanque Pajero Full - Mr342870",
+      "updated_at": "2026-05-28T18:27:09"
+    },
+    "sku::344": {
+      "loja": "Uai Mineirinho",
+      "sku": "344",
+      "produto": "Roda Livre Automatica F250 F350 F4000 2006-2011",
+      "pesquisa_1": "Roda Livre F250 F350 F4000 2006/2017 1 Unidade",
+      "pesquisa_2": "Roda Livre Dianteira Ford F250 F350 F4000 4x4 4wd",
+      "pesquisa_3": "Roda Livre Automatica F250 F350 F4000 2006-2011",
+      "updated_at": "2026-05-28T18:29:00"
+    },
+    "sku::344-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "344-K",
+      "produto": "Par Tração De Roda F250 F350 F4000 4x4",
+      "pesquisa_1": "Roda Livre F250 F350 F4000 2006/2017 2 Unidades",
+      "pesquisa_2": "Par Tração De Roda F250 F350 F4000 4x4",
+      "pesquisa_3": "Roda Livre Avm 439 Original (jg) Ford F250 F350 F4000",
+      "updated_at": "2026-05-28T18:30:16"
+    },
+    "sku::345": {
+      "loja": "Uai Mineirinho",
+      "sku": "345",
+      "produto": "Sensor Tps Posição Borboleta Honda Civic 96 97 98 A 2000",
+      "pesquisa_1": "Detector Testador Teste De Vela De Ignição Motor Carro Barco",
+      "pesquisa_2": "Testador Teste Centelha Velas Ignição Automotiva Carro Moto",
+      "pesquisa_3": "Testador Teste Centelha Faísca Vela Ignição Carro Moto 220v",
+      "updated_at": "2026-05-28T18:32:57"
+    },
+    "sku::346": {
+      "loja": "Uai Mineirinho",
+      "sku": "346",
+      "produto": "Jogo De Anel De Vedação Do Resfriador Dodge Journey 3.6 2011",
+      "pesquisa_1": "Anel Vedação Completo Resfriador Trocador Calor Journey 3 6",
+      "pesquisa_2": "Anel Vedação Completo Resfriador Trocador Journey 3 6 Ate 13",
+      "pesquisa_3": "Jogo Anel Vedação Completo Resfriador Trocador Journey 3 6",
+      "updated_at": "2026-05-29T11:40:21"
+    },
+    "sku::347": {
+      "loja": "Uai Mineirinho",
+      "sku": "347",
+      "produto": "Jogo Anel Vedação Resfriador Trocador Calor Jeep Journey 3.6",
+      "pesquisa_1": "Jogo Anel Vedação Resfriador Trocador Calor Jeep Journey 3.6",
+      "pesquisa_2": "Jogo Anel Vedação Resfriador Trocador De Calor Jouney 3.6",
+      "pesquisa_3": "Jogo Anel Vedação Resfriador Trocador Calor G.cherokee 3.6",
+      "updated_at": "2026-05-28T18:40:18"
+    },
+    "sku::349": {
+      "loja": "Uai Mineirinho",
+      "sku": "349",
+      "produto": "Moldura Ponteira Escapamento Mercedes Amg Glc Class A B C E Cinza",
+      "pesquisa_1": "Moldura Ponteira Escapamento Amg W205 Glc Classe A B C E",
+      "pesquisa_2": "Ponteira Escape Amg W205 Glc Classe A B C E",
+      "pesquisa_3": "Moldura Ponteira Escapamento Mercedes Amg Glc Class A B C E",
+      "updated_at": "2026-05-28T18:49:48"
+    },
+    "sku::35": {
+      "loja": "JK Peças",
+      "sku": "35",
+      "produto": "Sensor Direção Hidráulica Peugeot Citroen 206 207 306 307",
+      "pesquisa_1": "Sensor Direção Hidráulica Peugeot 206 2005",
+      "pesquisa_2": "9677899580",
+      "pesquisa_3": "sensor direção picasso 2007",
+      "updated_at": "2026-05-29T15:52:06"
+    },
+    "sku::352": {
+      "loja": "Uai Mineirinho",
+      "sku": "352",
+      "produto": "Botão Vidro Elétrico Mercedes Sprinter 2.2 Com Retrovisor",
+      "pesquisa_1": "Botão Vidro Elétrico Mercedes Sprinter 2.2 Com Retrovisor",
+      "pesquisa_2": "Painel Interruptor Vidro Eletrico Sprinter 415 2013 A 2021",
+      "pesquisa_3": "Interruptor Sprinter 2012 A 2019 03 Pinos Eletrico",
+      "updated_at": "2026-05-28T18:53:31"
+    },
+    "sku::353": {
+      "loja": "Uai Mineirinho",
+      "sku": "353",
+      "produto": "Filtro De Óleo Haldex Original Para Audi Q3 Tiguan Passat Cc",
+      "pesquisa_1": "Filtro De Óleo 114388 Para Audi Q3, Tiguan, Passat",
+      "pesquisa_2": "Filtro Haldex Tiguan 4 Motion Para Audi Q3 Tiguan Passat",
+      "pesquisa_3": "Filtro De Óleo Haldex Original Para Audi Q3 Tiguan Passat Cc",
+      "updated_at": "2026-05-28T18:54:50"
+    },
+    "sku::354": {
+      "loja": "Uai Mineirinho",
+      "sku": "354",
+      "produto": "Sensor Do Nivel Combustivel Pajero Gls-b 2.8 Diesel 90 A 00",
+      "pesquisa_1": "Sensor Do Nivel Combustivel Pajero Gls-b 2.8 Diesel 90 A 00",
+      "pesquisa_2": "Boia Sensor Nivel Tanque Pajero 3.0 3.5 Gls Glx Mb571603",
+      "pesquisa_3": "Medidor De Combustivel Pajero Gls-b 2.8 8v Diesel 90 A 2000",
+      "updated_at": "2026-05-29T11:42:01"
+    },
+    "sku::355": {
+      "loja": "JK Peças",
+      "sku": "355",
+      "produto": "Botão Vidro Elétrico Sprinter 311 415 515 2013 Com Retovisor",
+      "pesquisa_1": "Botao Vidro Eletrico Esq Sprinter 311 313 415 515 13/14/15..",
+      "pesquisa_2": "Botão Vidro Elétrico Sprinter 311 415 515 2013 Com Retovisor",
+      "pesquisa_3": "Botão Comando Vidro Eletrico Motorista Sprinter",
+      "updated_at": "2026-05-29T16:49:37"
+    },
+    "sku::357": {
+      "loja": "Uai Mineirinho",
+      "sku": "357",
+      "produto": "Emblema Tanque Bmw Moto F800 Gs 1200 Aluminium 1unid Preto",
+      "pesquisa_1": "Broca De Furo Espiral Plantio Fácil Tulipa Vegetais E Planta",
+      "pesquisa_2": "Broca Jardim Espiral Ferramenta Escavadeira Buraco Plantio",
+      "pesquisa_3": "Super Broca Helicoidal P/ Solo Terra Jardim Espiral Metal",
+      "updated_at": "2026-05-29T11:43:11"
+    },
+    "sku::358": {
+      "loja": "Uai Mineirinho",
+      "sku": "358",
+      "produto": "Caneta Pencil Stylus 1.0mm P/ Apple iPad Com Palm Rejection",
+      "pesquisa_1": "Caneta Stylus Com Palm Rejection Ipad 9 Geração 10.2",
+      "pesquisa_2": "Caneta Touch Para Tablet Universal Samsung Tab A9 Android",
+      "pesquisa_3": "Caneta Stylus Universal Alta Precisão Para Tablet Positivo Android Ios Kateluo Branco",
+      "updated_at": "2026-05-26T14:13:43"
+    },
+    "sku::360": {
+      "loja": "Uai Mineirinho",
+      "sku": "360",
+      "produto": "",
+      "pesquisa_1": "Retentor Do Virabrequim Civic 1.6 16v 1999 2000 Sabó",
+      "pesquisa_2": "Retentor Do Virabrequim Lado Volante Civic 1.7 2001 A 2005",
+      "pesquisa_3": "Retentor Virabrequim Lado Volante Civic 1.6 E 1.7 80x100x10",
+      "updated_at": "2026-05-29T11:44:17"
+    },
+    "sku::361": {
+      "loja": "Uai Mineirinho",
+      "sku": "361",
+      "produto": "Display Tela Satlink Lcd 6906 6908 6909 6912 6918 Original",
+      "pesquisa_1": "Display Tela Full Hd Lcd Satlink Ws 6960 6999 4.3 Original",
+      "pesquisa_2": "Display Tela Satlink Lcd 6906 6908 6909 6912 6918 Original",
+      "pesquisa_3": "Tela Display Lcd Satlink 4.3 Ws-6979 Ws-6999 Ws-6951 St5150",
+      "updated_at": "2026-05-29T11:45:25"
+    },
+    "sku::363": {
+      "loja": "Uai Mineirinho",
+      "sku": "363",
+      "produto": "Comando Som Volante L200 Triton Pajero Dakar Outlender",
+      "pesquisa_1": "Par Comando Botão Som Volante Pajero Dakar L200 Triton Asx",
+      "pesquisa_2": "Par Comando Cruzeiro Som Volante Pajero L200 Outlander Asx",
+      "pesquisa_3": "Comando Som Volante L200 Triton Pajero Dakar Outlender",
+      "updated_at": "2026-05-29T11:46:08"
+    },
+    "sku::364-1": {
+      "loja": "JK Peças",
+      "sku": "364-1",
+      "produto": "Adaptador Sem Fio Wireless Qi Indução Receptor Universal",
+      "pesquisa_1": "Adaptador Receptor Carregador Indução Wireless Micro Usb",
+      "pesquisa_2": "Adaptador Sem Fio Wireless Qi Indução Receptor Universal",
+      "pesquisa_3": "Receptor Carregador Adaptador Sem Fio Wireless Qi Indução Nf",
+      "updated_at": "2026-05-29T16:50:33"
+    },
+    "sku::365": {
+      "loja": "Uai Mineirinho",
+      "sku": "365",
+      "produto": "Flange Bomba Combustivel Tampa Focus 2.0 16v Duratec 200809",
+      "pesquisa_1": "Flange Bomba Combustível Tampa Focus 2.0 16v Duratec 2008 09",
+      "pesquisa_2": "Flange Bomba Combustivel Tampa Focus 2.0 16v Duratec",
+      "pesquisa_3": "Flange Bomba Combustivel Tampa Focus 2.0 16v Duratec 200809",
+      "updated_at": "2026-05-29T11:47:27"
+    },
+    "sku::366": {
+      "loja": "Uai Mineirinho",
+      "sku": "366",
+      "produto": "Display Lcd Tela Do Painel Computador Bordo Ford Focus 09/13 Preto",
+      "pesquisa_1": "Display Lcd - Focus Ford 2009 A 2012",
+      "pesquisa_2": "Display Lcd Painel Instrumentos Computador Bordo Ford Focus",
+      "pesquisa_3": "Display Lcd Painel Instrumentos Ford Focus Computador Bordo",
+      "updated_at": "2026-05-29T11:48:28"
+    },
+    "sku::367-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "367-K",
+      "produto": "Roda Livre Original Para Ford Ranger - Cubo De Roda",
+      "pesquisa_1": "Roda Livre Manual Avm Ford Ranger Tração 4x4",
+      "pesquisa_2": "Roda Livre Manual Avm 470 Ford Ranger 4x4",
+      "pesquisa_3": "Roda Livre Avm 470 Original (o Par) - Ford Ranger",
+      "updated_at": "2026-05-29T11:49:27"
+    },
+    "sku::368": {
+      "loja": "Uai Mineirinho",
+      "sku": "368",
+      "produto": "Atuador De Marcha Lenta Corolla 1.8 16v 2003 2004 2005 2006",
+      "pesquisa_1": "Atuador Marcha Lenta Corolla 1.8 16v De 03 À 08 22270-0d040",
+      "pesquisa_2": "Atuador Marcha Lenta Para Corolla 1.8 16v (2003 A 2009)",
+      "pesquisa_3": "Atuador De Marcha Lenta Corolla 1.8 16v 2003 2004 2005 2006",
+      "updated_at": "2026-05-29T11:50:06"
+    },
+    "sku::369": {
+      "loja": "Uai Mineirinho",
+      "sku": "369",
+      "produto": "Tubo Bypass Bomba D'água Grand Cherokee 3.0 2015 68211200ac Preto",
+      "pesquisa_1": "Cano Tubo Bomba Água P/ Jeep Grand Cherokee E Dodge Ram 3.0",
+      "pesquisa_2": "Tubo Bypass Bomba De Agua Grand Cherokee 3.0 V6 Diesel 2015",
+      "pesquisa_3": "Tubo Bypass Bomba De Agua Grand Cherokee 3.0 V6 Diesel 2015",
+      "updated_at": "2026-05-29T11:50:45"
+    },
+    "sku::37": {
+      "loja": "Uai Mineirinho",
+      "sku": "37",
+      "produto": "Sensor De Rotação Câmbio Automático A3 Golf Bora 01m927321b",
+      "pesquisa_1": "Sensor De Rotação Câmbio Automático A3 Golf Bora 01m927321b",
+      "pesquisa_2": "Sensor De Velocidade Cambio Automático 01m Vw Audi Bora A3",
+      "pesquisa_3": "Sensor De Velocidade Cambio Automático 01m Vw Audi Bora A3",
+      "updated_at": "2026-05-27T19:35:43"
+    },
+    "sku::371": {
+      "loja": "Uai Mineirinho",
+      "sku": "371",
+      "produto": "Flange Conexão Mangueira Radiador Freemont Journey",
+      "pesquisa_1": "Flange Conexão Mangueira Radiador Freemont Journey",
+      "pesquisa_2": "Tubo Bocal Conexão Mangueira Radiador Freemont 2.4 16v 2012/",
+      "pesquisa_3": "Flange / Tubo Conexão Mangueira Radiador Freemont Journey",
+      "updated_at": "2026-05-29T11:58:40"
+    },
+    "sku::372": {
+      "loja": "Uai Mineirinho",
+      "sku": "372",
+      "produto": "Tubo Conexão Mangueira Radiador Freemont 2.4 2012 2013 2014",
+      "pesquisa_1": "Tubo Conexão Mangueira Radiador Freemont 2.4 2012 2013 2014",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T12:02:27"
+    },
+    "sku::373": {
+      "loja": "JK Peças",
+      "sku": "373",
+      "produto": "",
+      "pesquisa_1": "Carcaça Válvula Termostática Fiat Freemont 2.4 Jeep Compass",
+      "pesquisa_2": "Carcaça Valvula Termostatica Freemont 2.4 Compass 2.0 11/16",
+      "pesquisa_3": "Carcaça Termostática Válvula Freemont 2.4 16v 2012 À 2015",
+      "updated_at": "2026-05-29T16:52:43"
+    },
+    "sku::374-1": {
+      "loja": "JK Peças",
+      "sku": "374-1",
+      "produto": "Grade Inferior Milha Bmw Série 3 E90 Lci 2009 A 2012 Premium",
+      "pesquisa_1": "Grade Inferior Farol Milha Bmw E90 320i 325i 330i 08-12",
+      "pesquisa_2": "Grade Inferior Farol Milha Bmw Par 320i 325i 330i E-90",
+      "pesquisa_3": "Grade Inferior Milha Bmw Série 3 E90 Lci 2009 A 2012 Premium",
+      "updated_at": "2026-05-29T16:57:29"
+    },
+    "sku::374-2": {
+      "loja": "JK Peças",
+      "sku": "374-2",
+      "produto": "Grade Inferior Milha Bmw Série 3 E90 Lci 2009 A 2012 Premium",
+      "pesquisa_1": "Grade Inferior Farol Milha Bmw E90 320i 325i 330i 08-12",
+      "pesquisa_2": "Grade Inferior Farol Milha Bmw Par 320i 325i 330i E-90",
+      "pesquisa_3": "Grade Inferior Milha Bmw Série 3 E90 Lci 2009 A 2012 Premium",
+      "updated_at": "2026-05-29T16:58:10"
+    },
+    "sku::374-K": {
+      "loja": "JK Peças",
+      "sku": "374-K",
+      "produto": "Grade Inferior Farol Milha Bmw  Par 320i 325i 330i E-90 Ambos Lados",
+      "pesquisa_1": "Par Moldura Parachoque Bmw 318i 320i 325i 2009 Até 2012",
+      "pesquisa_2": "Grade Inferior Farol Milha Bmw Par 320i 325i 330i E-90",
+      "pesquisa_3": "Par Grade Inferior Milha Bmw 320i 325i 2009 Até 2012 E90",
+      "updated_at": "2026-05-29T16:59:02"
+    },
+    "sku::375-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "375-1",
+      "produto": "Pisca Seta Retrovisor Para Kia Sorento 2011 À 2015",
+      "pesquisa_1": "Seta Pisca Retrovisor Para Kia Sorento 2009/2015",
+      "pesquisa_2": "Pisca Seta Retrovisor Para Kia Sorento Direito 2010 Até 2015",
+      "pesquisa_3": "Seta Pisca Retrovisor 789123400224 Carro/camionete",
+      "updated_at": "2026-05-29T12:05:20"
+    },
+    "sku::376": {
+      "loja": "Uai Mineirinho",
+      "sku": "376",
+      "produto": "Bobina De Ignição Mercury Optimax Efi Motor Popa Garantia",
+      "pesquisa_1": "Bobina Ignição Mercury Optimax 115hp/300hp Dfi(8m0077471)",
+      "pesquisa_2": "Bobina Motor Popa Mercury 75 A 300hp (optimax- Efi)",
+      "pesquisa_3": "Bobina Ignição Motor Popa Mercury Efi Optimax 2004 Em Diante",
+      "updated_at": "2026-05-29T12:08:02"
+    },
+    "sku::377-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "377-2",
+      "produto": "Luz Submarina Subaquática 27 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_1": "Luz Subaquática Submarina 27 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_2": "Luz Subaquática Submarina 27 Led's12v Barcos /lanchas /iates",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T12:11:11"
+    },
+    "sku::377-2-K4": {
+      "loja": "Uai Mineirinho",
+      "sku": "377-2-K4",
+      "produto": "Kit 4 Luz Subaquática 27 Led 12v 24v Barco Lancha Iate",
+      "pesquisa_1": "Kit 4 Luz Subaquática 27 Led 12v 24v Barco Lancha Iate",
+      "pesquisa_2": "Kit 4 Luz Subaquática 27 Led 12v 24v Barco Lancha Iate",
+      "pesquisa_3": "Kit 4 Luz Subaquática 27 Led 12v 24v Barco Lancha Iate",
+      "updated_at": "2026-05-26T17:45:37"
+    },
+    "sku::377-4": {
+      "loja": "Uai Mineirinho",
+      "sku": "377-4",
+      "produto": "Luz Submarina Subaquática 27 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_1": "Luz Subaquática Submarina 27 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_2": "Luz Subaquática Submarina 27 Led's12v Barcos /lanchas /iates",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T12:11:37"
+    },
+    "sku::377-4-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "377-4-K",
+      "produto": "Par De Luz Lâmpada Subaquática Azul 27 Leds Lancha Jet Ski  Azul",
+      "pesquisa_1": "Par De Luz Lâmpada Subaquática Azul 27 Leds Lancha Jet Ski",
+      "pesquisa_2": "Kit 2 Luz Subaquática 27 Led 12v 24v Barco Lancha Iate",
+      "pesquisa_3": "Par De Luz Lâmpada Subaquática Azul 27 Leds Lancha Barco",
+      "updated_at": "2026-05-29T12:13:06"
+    },
+    "sku::379-1": {
+      "loja": "JK Peças",
+      "sku": "379-1",
+      "produto": "Anéis Vedação Mangueira Intercooler Frontier 2.3 Lado Esquer Preto",
+      "pesquisa_1": "Anéis Vedação Mangueira Intercooler Frontier 2.3 Lado Esquer",
+      "pesquisa_2": "Kit Aneis Vedação Mangueira Intercooler Frontier 2.5 190cv",
+      "pesquisa_3": "Kit Anéis Vedação Da Mangueira Intercooler Frontier 2.5 190",
+      "updated_at": "2026-05-29T17:02:58"
+    },
+    "sku::379-2": {
+      "loja": "JK Peças",
+      "sku": "379-2",
+      "produto": "Presilhas Mangueira Intercooler Frontier 2.5 190 Cv Preto",
+      "pesquisa_1": "Anéis + Travas Da Mangueira Sprinter 311 313 415 2.2 Biturbo",
+      "pesquisa_2": "Kit Travas Presilhas Mangueira Intercooler Frontier 2.5 2013",
+      "pesquisa_3": "Trava Presilha Mangueira Intercooler Frontier 2.5 2013/2014",
+      "updated_at": "2026-05-29T17:07:01"
+    },
+    "sku::379-3": {
+      "loja": "JK Peças",
+      "sku": "379-3",
+      "produto": "Kit Reparo Da Mangueira Sprinter 415 515 2.2 Biturbo Preto",
+      "pesquisa_1": "Anéis + Travas Da Mangueira Sprinter 311 313 415 2 2 Biturbo",
+      "pesquisa_2": "Kit Reparo Da Mangueira Sprinter 415 515 2 2 Biturbo",
+      "pesquisa_3": "Kit Reparo Da Mangueira Sprinter 415 515 2 2 Biturbo Delphi",
+      "updated_at": "2026-05-29T17:10:26"
+    },
+    "sku::379-4": {
+      "loja": "JK Peças",
+      "sku": "379-4",
+      "produto": "Trava Mangueira Da Turbina (maior Ou Menor) Sprinter 415 515",
+      "pesquisa_1": "Trava Mangueira Da Turbina (maior Ou Menor) Sprinter 415 515",
+      "pesquisa_2": "Trava Mangueira Da Turbina Sprinter 415 515",
+      "pesquisa_3": "Trava Da Mangueira Da Turbina (menor) Sprinter 415 515",
+      "updated_at": "2026-05-29T17:11:06"
+    },
+    "sku::379-5": {
+      "loja": "JK Peças",
+      "sku": "379-5",
+      "produto": "",
+      "pesquisa_1": "Travas + Anéis Mangueira Nissan Frontier 2 3 Biturbo 2016",
+      "pesquisa_2": "Kit Anéis Presilhas Mangueira Intercooler Frontier 2 5 190",
+      "pesquisa_3": "Kit Anéis Presilhas Mangueira Intercooler Frontier 2 5 190cv",
+      "updated_at": "2026-05-29T17:13:16"
+    },
+    "sku::380": {
+      "loja": "Uai Mineirinho",
+      "sku": "380",
+      "produto": "Painel Elétrico 5 Chaves 2 Usb Com Voltímetro Lancha Barco",
+      "pesquisa_1": "Painel Elétrico Com Voltímetro 5 Chaves 2 Usb Lancha Barco",
+      "pesquisa_2": "Painel De Interruptores De 5 Posições Usb Voltímetro Navio",
+      "pesquisa_3": "Painel Elétrico 5 Chaves 2 Usb Com Voltímetro 12-24v",
+      "updated_at": "2026-05-29T12:17:25"
+    },
+    "sku::381": {
+      "loja": "Uai Mineirinho",
+      "sku": "381",
+      "produto": "Painel Elétrico 6 Chaves  Usb Tomada Voltímetro Lancha Barco",
+      "pesquisa_1": "Painel Elétrico Led Usb Voltímetro 6 Chaves Náutico Lancha",
+      "pesquisa_2": "Painel Elétrico 6 Chaves Usb Tomada Voltímetro Lancha Barco",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T12:22:17"
+    },
+    "sku::382": {
+      "loja": "Uai Mineirinho",
+      "sku": "382",
+      "produto": "Bomba Combustível Gasolina Motor Popa Johnson Evinrude 15hp",
+      "pesquisa_1": "Bomba De Combustível Motor De Popa Johnson Evinrude 9 9 15hp",
+      "pesquisa_2": "Bomba Gasolina Combustivel Evinrude/ Johnson 6 Hp 8 Hp 15 Hp",
+      "pesquisa_3": "Bomba Combustível Gasolina Motor De Popa Johnson Evinrude 15",
+      "updated_at": "2026-05-26T18:26:53"
+    },
+    "sku::384": {
+      "loja": "Uai Mineirinho",
+      "sku": "384",
+      "produto": "Mangueira Turbina Frontier 2012 A 2016, Nova Importada",
+      "pesquisa_1": "Mangueira Intercooler Turbina Frontier 2.5 2013 2014 A 2016",
+      "pesquisa_2": "Mangueira Intercooler Turbina Frontier 2013 2014 2015 2016",
+      "pesquisa_3": "Mangueira Turbina Frontier 2012 A 2016, Nova Importada",
+      "updated_at": "2026-05-29T12:42:57"
+    },
+    "sku::385-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "385-2",
+      "produto": "Luz Azul Subaquática 42 Leds 12v Para Barcos",
+      "pesquisa_1": "Luz Subaquática Submarina Azul 42 Led's 12v Lanchas Iates",
+      "pesquisa_2": "Luz Subaquática Submarina 42 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_3": "Luz Azul Subaquática 42 Leds 12v Para Barcos",
+      "updated_at": "2026-05-29T12:44:58"
+    },
+    "sku::385-3": {
+      "loja": "JK Peças",
+      "sku": "385-3",
+      "produto": "Luz Subaquática Submarina 42 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_1": "Luz Subaquática Submarina 42 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T17:18:54"
+    },
+    "sku::385-4": {
+      "loja": "Uai Mineirinho",
+      "sku": "385-4",
+      "produto": "Luz Azul Subaquática 42 Leds 12v Para Barcos",
+      "pesquisa_1": "Luz Subaquática Submarina Azul 42 Led's 12v Lanchas Iates",
+      "pesquisa_2": "Luz Subaquática Submarina 42 Led's 12v Barcos Lanchas Iates",
+      "pesquisa_3": "Luz Azul Subaquática 42 Leds 12v Para Barcos",
+      "updated_at": "2026-05-29T12:50:08"
+    },
+    "sku::391": {
+      "loja": "Uai Mineirinho",
+      "sku": "391",
+      "produto": "Ventosa Manual, Alça/bomba Em Plástico Industrial -máx 250kg",
+      "pesquisa_1": "Ventosa Profissional Sucção Vácuo Vidro Mármore 200kg Metal",
+      "pesquisa_2": "Ventosa Profissional Sucção A Vácuo 200kg Vidro Porcelanato",
+      "pesquisa_3": "8inch Vácuo Ventosa 200kg Capacidade De Rolamento Heavy Duty",
+      "updated_at": "2026-05-29T12:51:23"
+    },
+    "sku::392-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "392-1",
+      "produto": "Amortecedor Tampa Da Caçamba Traseira Toyota Hilux 2016 2023",
+      "pesquisa_1": "Amortecedor A Gás Para Caçamba Toyota Hilux 2016 2022",
+      "pesquisa_2": "Amortecedor Tampa Da Caçamba Traseira Toyota Hilux 2016 2023",
+      "pesquisa_3": "Amortecedor A Gás De Caçamba Para Hilux 2016 Em Diante",
+      "updated_at": "2026-05-29T12:53:24"
+    },
+    "sku::392-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "392-K",
+      "produto": "Par De Amortecedores A Gás Para Caçamba Da Hilux 2016 A 2021",
+      "pesquisa_1": "Par Amortecedor Tampa Traseira Toyota Hilux 2015 Á 2022",
+      "pesquisa_2": "Par Amortecedor Da Tampa Da Caçamba Toyota Hilux Revo Vo6",
+      "pesquisa_3": "Par Amortecedor Tampa Caçamba Toyota Hilux 2016 A 2023",
+      "updated_at": "2026-05-29T13:02:42"
+    },
+    "sku::396": {
+      "loja": "Uai Mineirinho",
+      "sku": "396",
+      "produto": "Kit 100 Presilhas Grampos Fixadores Automotivos Acabamentos",
+      "pesquisa_1": "Kit 100 Presilhas Grampos Fixadores Carro Veiculo Parabarro",
+      "pesquisa_2": "Kit 100 Presilha Grampo Parabarro Parachoque Universal Carro",
+      "pesquisa_3": "Kit 100 Presilhas Grampos Fixadores Automotivos Acabamentos",
+      "updated_at": "2026-05-29T13:10:19"
+    },
+    "sku::397": {
+      "loja": "Uai Mineirinho",
+      "sku": "397",
+      "produto": "Kit Presilhas Fixadores Acabamentos Parabarro Carro Veiculos",
+      "pesquisa_1": "Kit 100 Presilha Grampo Parabarro Parachoque Universal Carro",
+      "pesquisa_2": "Kit 100 Presilhas Grampos Fixadores Carro Veiculo Parabarro",
+      "pesquisa_3": "Kit 100 Presilha Grampo Parabarro Parachoque Universal",
+      "updated_at": "2026-05-27T14:07:43"
+    },
+    "sku::398": {
+      "loja": "Uai Mineirinho",
+      "sku": "398",
+      "produto": "Comando Botão Vidro Motorista P/ Fluence 2012 2013 2014 2016",
+      "pesquisa_1": "Interruptor Vidro Elétrico Renault Fluence 2012 13 14 15 16",
+      "pesquisa_2": "Comando Botão Vidro Motorista Renault Fluence 2012 A 2016",
+      "pesquisa_3": "Comando Botão Vidro Motorista P/ Fluence 2012 2013 2014 2016",
+      "updated_at": "2026-05-29T13:11:31"
+    },
+    "sku::4-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "4-1",
+      "produto": "Cambio Manual Manopla Ford Focus 2009 A 2013 Preto",
+      "pesquisa_1": "Manopla Cambio Manual Ford Focus 2009 2010 2011 2012 2013",
+      "pesquisa_2": "Manopla De Câmbio Ford Focus Ano 2009 Até 2019",
+      "pesquisa_3": "Manopla Bola Câmbio Preta Ford Ka Hatch Sedan 2015 16 A 2019",
+      "updated_at": "2026-05-27T18:47:55"
+    },
+    "sku::4-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "4-2",
+      "produto": "Manopla Bola Cambio Focus Ford Ka 2008 A 2012 Preto",
+      "pesquisa_1": "Manopla Bola Cambio Focus Ford Ka 2008 A 2012",
+      "pesquisa_2": "Bola Cambio Manopla Focus Ford Ka 2008 A 2012",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-27T18:48:45"
+    },
+    "sku::401": {
+      "loja": "Uai Mineirinho",
+      "sku": "401",
+      "produto": "Interruptor Botoes Comando Vidro Peugeot 408 Não Rebatível",
+      "pesquisa_1": "Iinterruptor Botoes Comando Vidro Dianteiro Esq. Peugeot 308",
+      "pesquisa_2": "Interruptor Vidro Dianteiro Esquerdo Peugeot 308",
+      "pesquisa_3": "Interruptor Botoes Comando Vidro Dianteiro Peugeot 308 408",
+      "updated_at": "2026-05-27T14:23:57"
+    },
+    "sku::402": {
+      "loja": "Uai Mineirinho",
+      "sku": "402",
+      "produto": "Botao Interruptor Vidro Eletrico Peugeot 206 C Retrovisor",
+      "pesquisa_1": "Botão Interruptor Vidro Elétrico Peugeot 206 Com Retrovisor",
+      "pesquisa_2": "Botão Vidro Elétrico Peugeot 206 207 Todos Com Retrovisor",
+      "pesquisa_3": "Botao Interruptor Vidro Eletrico Peugeot 206 C Retrovisor",
+      "updated_at": "2026-05-29T13:19:53"
+    },
+    "sku::403": {
+      "loja": "Uai Mineirinho",
+      "sku": "403",
+      "produto": "Comando Interruptor Vidro Eletrico Fh Fm Nh 20455317",
+      "pesquisa_1": "Botão Vidro Elétrico Duplo Caminhão Volvo Fh12 Fm12 Nh12",
+      "pesquisa_2": "Comando Botao Interr Vidro Eletrico Motorista Volvo Fh Fm Nh",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T13:27:02"
+    },
+    "sku::405": {
+      "loja": "Uai Mineirinho",
+      "sku": "405",
+      "produto": "Comando Vidro Elétrico S10 2012 2013 2014 2015 2016 Completo",
+      "pesquisa_1": "Botão Vidro Eletrico S10 Nova 2012 2013 2014 2015 94728492",
+      "pesquisa_2": "Comando Vidro Eletrico S10 Nova 2012 2013 2014 2015 94728492",
+      "pesquisa_3": "Comando Vidro Elétrico S10 2012 2013 2014 2015 2016 Completo",
+      "updated_at": "2026-05-29T13:28:26"
+    },
+    "sku::406": {
+      "loja": "Uai Mineirinho",
+      "sku": "406",
+      "produto": "Tampa Tanque Kawasaki Zx6 Z800 Z750 Z1000 Er6n 636 Preto",
+      "pesquisa_1": "Tampa Do Tanque Combustível Kawasaki Zx1100 Zx11 Zx6 Zx7 Zx9",
+      "pesquisa_2": "Tampa Do Tanque Kawasaki Zx6 Z800 Z750 Z1000 Er6n 636",
+      "pesquisa_3": "Tampa Tanque Kawasaki Zx6 Z800 Z750 Z1000 Er6n 636",
+      "updated_at": "2026-05-29T13:32:07"
+    },
+    "sku::407": {
+      "loja": "Uai Mineirinho",
+      "sku": "407",
+      "produto": "Sensor De Temperatura E Umidade Tuya- Alexa E Google Home",
+      "pesquisa_1": "Sensor De Temperatura E Umidade Wi-fi - Alexa E Google Home",
+      "pesquisa_2": "Sensor Temperatura Wifi Lcd Umidade Tuya Alexa E Google Home",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T13:33:01"
+    },
+    "sku::408": {
+      "loja": "JK Peças",
+      "sku": "408",
+      "produto": "Kit 415 Presilhas Grampos Fixadores Parabarro Carro + Chave",
+      "pesquisa_1": "Kit 415 Presilhas Grampos Fixadores Automotivo Carro + Chave",
+      "pesquisa_2": "Kit 415 Presilhas Grampos Fixadores Parabarro Carro + Chave",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T17:21:45"
+    },
+    "sku::410": {
+      "loja": "Uai Mineirinho",
+      "sku": "410",
+      "produto": "Mangueira Filtro Ar Tbi Honda Civic 1.8 2012 2013 2014 2015",
+      "pesquisa_1": "Mangueira Filtro Ar Tbi Honda Civic 2012/2016 17225r1aa01",
+      "pesquisa_2": "Mangueira Tubo Filtro Ar Tbi Honda Civic G9 2.0 2012 Á 2016",
+      "pesquisa_3": "Mangueira Filtro Ar Tbi Honda Civic 2012 2016 2.0",
+      "updated_at": "2026-05-29T13:36:34"
+    },
+    "sku::411": {
+      "loja": "JK Peças",
+      "sku": "411",
+      "produto": "Carburador Honda Biz 100 Sundown Web 100 Dream C100 98a 2005",
+      "pesquisa_1": "Carburador Honda Biz-100 1998 A 2005 Mod Original",
+      "pesquisa_2": "Carburador Honda Biz-100 1998 A 2005 Mod Original",
+      "pesquisa_3": "Carburador Biz 100 1998 Ate 2001 2002 2003 2004 2005 - Scud",
+      "updated_at": "2026-05-29T17:22:44"
+    },
+    "sku::412-1": {
+      "loja": "JK Peças",
+      "sku": "412-1",
+      "produto": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_1": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_2": "Enxada Rotativa Para Roçadeira Stihl 360mm Grande",
+      "pesquisa_3": "Enxada Rotativa Para Roçadeira Stihl Fs80 Fs85 Fs120 Fs200",
+      "updated_at": "2026-05-29T17:27:47"
+    },
+    "sku::412-2": {
+      "loja": "JK Peças",
+      "sku": "412-2",
+      "produto": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_1": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_2": "Enxada Rotativa Para Roçadeira Stihl 360mm Grande",
+      "pesquisa_3": "Enxada Rotativa Para Roçadeira Stihl Fs80 Fs85 Fs120 Fs200",
+      "updated_at": "2026-05-29T17:28:28"
+    },
+    "sku::412-3": {
+      "loja": "JK Peças",
+      "sku": "412-3",
+      "produto": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_1": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_2": "Enxada Rotativa Para Roçadeira Stihl 360mm Grande",
+      "pesquisa_3": "Enxada Rotativa Para Roçadeira Stihl Fs80 Fs85 Fs120 Fs200",
+      "updated_at": "2026-05-29T17:41:02"
+    },
+    "sku::412-4": {
+      "loja": "JK Peças",
+      "sku": "412-4",
+      "produto": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_1": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_2": "Enxada Rotativa Para Roçadeira Stihl 360mm Grande",
+      "pesquisa_3": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "updated_at": "2026-05-29T17:41:34"
+    },
+    "sku::412-5": {
+      "loja": "JK Peças",
+      "sku": "412-5",
+      "produto": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_1": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_2": "Enxada Rotativa Para Roçadeira Stihl 360mm Grande",
+      "pesquisa_3": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "updated_at": "2026-05-29T17:42:01"
+    },
+    "sku::412-6": {
+      "loja": "JK Peças",
+      "sku": "412-6",
+      "produto": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_1": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "pesquisa_2": "Enxada Rotativa Para Roçadeira Stihl 360mm Grande",
+      "pesquisa_3": "Enxada Rotativa Para Roçadeira Stihl Fs160 Fs220 Fs280 Fs290",
+      "updated_at": "2026-05-29T17:42:41"
+    },
+    "sku::413": {
+      "loja": "JK Peças",
+      "sku": "413",
+      "produto": "Válvula Redutora/reguladora Pressão C/ Manômetro 3/4 Deckas",
+      "pesquisa_1": "Válvula Redutora Reguladora De Pressão 3/4 C/manômetro Prate",
+      "pesquisa_2": "Válvula Redutora Reguladora De Pressão 3/4 C/manômetro",
+      "pesquisa_3": "Válvula Redutora Reguladora De Pressão 3/4 Manômetro Deckas",
+      "updated_at": "2026-05-29T17:43:30"
+    },
+    "sku::415": {
+      "loja": "Uai Mineirinho",
+      "sku": "415",
+      "produto": "Tela Touch Screen De Toque Mp5 Multimidia Citroen C4 Lounge Preto",
+      "pesquisa_1": "Tela Touch Screen P/ Multimidia Peugeot 2008 208 2013 Á 2017",
+      "pesquisa_2": "Tela Touch Screen Multimídia Peugeot 2008 208 2018 2019 2020",
+      "pesquisa_3": "Tela Touch Screen De Toque Mp5 Multimidia Citroen C4 Lounge",
+      "updated_at": "2026-05-29T13:40:54"
+    },
+    "sku::416": {
+      "loja": "JK Peças",
+      "sku": "416",
+      "produto": "Friso Cromado Moldura Grade Civic 2017 2018 2019 G10 Cinza",
+      "pesquisa_1": "Friso Da Grade Cromado Dianteira Civic 2017 2018 2019",
+      "pesquisa_2": "Grade Cromado Dianteira Civic 2017 2018 2019",
+      "pesquisa_3": "Friso Cromado Moldura Grade Civic 2017 2018 2019 G10",
+      "updated_at": "2026-05-29T17:44:49"
+    },
+    "sku::417": {
+      "loja": "JK Peças",
+      "sku": "417",
+      "produto": "",
+      "pesquisa_1": "Radiador De Arrefecimento Jac J3 1.4 1.5 Anos 2010 A 2018",
+      "pesquisa_2": "Radiador De Arrefecimento Jac J3 1.4 1.5 12/18 Gas. G-8004",
+      "pesquisa_3": "Radiador Jac J3 1.4 1.5 2011 2012 2013 2014 2015 Manual",
+      "updated_at": "2026-05-29T17:45:41"
+    },
+    "sku::417-2": {
+      "loja": "JK Peças",
+      "sku": "417-2",
+      "produto": "Tampa Radiador Honda New Civic City Fit Pressão De 1.1 Bar",
+      "pesquisa_1": "Tampa Do Radiador De Água Jac J2 Nova Original - 1.1 Bar",
+      "pesquisa_2": "Tampa Radiador Honda New Civic City Fit Pressão De 1.1 Bar",
+      "pesquisa_3": "Tampa Sistema Arrefecimento Honda 1.1 Bar Civic Fit Accord",
+      "updated_at": "2026-05-29T17:46:31"
+    },
+    "sku::420": {
+      "loja": "Uai Mineirinho",
+      "sku": "420",
+      "produto": "Brake Light Luz De Freio Polo Hatch 2003 A 2015 6qe945097",
+      "pesquisa_1": "Brake Light Luz Freio Traseiro P/ Vw Polo Hatch 2003-2015",
+      "pesquisa_2": "Brake Light Luz De Freio Polo Hatch 2003 A 2015 Original Vw",
+      "pesquisa_3": "Lanterna De Freio Tampa Traseira Polo Hatch 2003 Até 2015",
+      "updated_at": "2026-05-29T13:43:18"
+    },
+    "sku::422": {
+      "loja": "JK Peças",
+      "sku": "422",
+      "produto": "Disco Enxada Rotativa Roçadeira Capina Grama Universal",
+      "pesquisa_1": "Disco Para Enxada Roçadeira Rotativa Universal",
+      "pesquisa_2": "Disco Enxada Rotativa Roçadeira Capina Grama Universal",
+      "pesquisa_3": "Disco De Roçadeira Enxada Rotativa Universal Para Capinagem",
+      "updated_at": "2026-05-29T17:47:17"
+    },
+    "sku::422-K": {
+      "loja": "JK Peças",
+      "sku": "422-K",
+      "produto": "2 Un Disco Enxada Rotativa Para Roçadeira Universal",
+      "pesquisa_1": "2 Un Disco Enxada Rotativa Para Roçadeira Universal",
+      "pesquisa_2": "Enxada Rotativa Roçadeira Disco Capina Grama Universal 2 Un",
+      "pesquisa_3": "2 Un Enxada Rotativa Roçadeira Disco Capina Grama Universal",
+      "updated_at": "2026-05-29T17:48:08"
+    },
+    "sku::423": {
+      "loja": "Uai Mineirinho",
+      "sku": "423",
+      "produto": "Protetor De Farol Bmw R1200gs R1250gs Lc Policarbonato Transparente",
+      "pesquisa_1": "Protetor Farol Bmw R1200gs R1250gs Lc Policarbonato",
+      "pesquisa_2": "Protetor De Farol Para Bmw R1200gs R1250gs Lc Policarbonato",
+      "pesquisa_3": "Protetor De Farol Bmw R1200gs R1250gs Lc Policarbonato",
+      "updated_at": "2026-05-29T13:45:48"
+    },
+    "sku::423-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "423-2",
+      "produto": "Protetor Farol Bmw R1250gs R1200gs R1250 R1200 Gs 1250 1200  Fumê",
+      "pesquisa_1": "Proteção De Farol Gs1250 Gs Bmw R1200 Protetor Acrilico Fumê",
+      "pesquisa_2": "Protetor De Farol R 1200 Gs Bmw R1200 Protetor Fumê",
+      "pesquisa_3": "Protetor De Farol R 1250 Gs Bmw R1250gsa Fumê Acrilico",
+      "updated_at": "2026-05-29T13:46:52"
+    },
+    "sku::425": {
+      "loja": "JK Peças",
+      "sku": "425",
+      "produto": "Mangueira Intercooler Ranger 2.2 Alta Performance Silicone Preto",
+      "pesquisa_1": "Mangueira Intercooler Admissão Ranger 2.2 - Siliconada",
+      "pesquisa_2": "Mangueira Intercooler Ranger 2.2 - Silicone",
+      "pesquisa_3": "Mangote Intercooler Ranger 2.2 2013 Em Diante Ab396k683ce",
+      "updated_at": "2026-05-29T17:48:59"
+    },
+    "sku::425-1": {
+      "loja": "JK Peças",
+      "sku": "425-1",
+      "produto": "Mangueira Intercooler Admissão Ranger 3.2 2013/2014 Silicone Preto",
+      "pesquisa_1": "Mangueira Intercooler Admissão Ranger 3.2 2013/2014 Silicone",
+      "pesquisa_2": "Mangueira Intercooler Admissão Ford Ranger 3.2 Ab396k683bf",
+      "pesquisa_3": "Mangueira Intercooler Admissão Ranger 3.2 2013-2023 Original",
+      "updated_at": "2026-05-29T17:49:52"
+    },
+    "sku::425-2": {
+      "loja": "JK Peças",
+      "sku": "425-2",
+      "produto": "Mangueira Intercooler Ranger 3.2 2013 Á 2021 Envio Imediato Preto",
+      "pesquisa_1": "Mangueira Intercooler Nova Ranger 3.2 (2013/...) Ab396k683bf",
+      "pesquisa_2": "Mangueira Intercooler Admissão Ranger 3.2 2015/2023 Silicone",
+      "pesquisa_3": "Mangueira Intercooler Ranger 3.2 2013-2017 Silicone",
+      "updated_at": "2026-05-29T17:52:02"
+    },
+    "sku::426-1": {
+      "loja": "JK Peças",
+      "sku": "426-1",
+      "produto": "Seta Retrovisor Sequencial Dinâmica Golf Mk7 Mk7.5 Jetta Gli",
+      "pesquisa_1": "Seta Retrovisor Sequencial Dinâmica Golf Mk7 Gti Jetta Gli",
+      "pesquisa_2": "Seta Retrovisor Sequencial Dinâmica Golf Mk7 Mk7 5 Jetta Gli",
+      "pesquisa_3": "Seta Sequencial Golf Gti Tsi Jetta Gli Mk7 Mk7.5 Dinâmica",
+      "updated_at": "2026-05-29T17:53:00"
+    },
+    "sku::426-2": {
+      "loja": "JK Peças",
+      "sku": "426-2",
+      "produto": "Seta Retrovisor Sequencial Dinâmica Golf Mk7 Mk7.5 Jetta Gli",
+      "pesquisa_1": "Seta Sequencial Golf Gti Tsi Jetta Gli Mk7 Mk7.5 Dinâmica",
+      "pesquisa_2": "Seta Retrovisor Sequencial Dinâmica Golf Mk7 Mk7.5 Jetta Gli",
+      "pesquisa_3": "Seta Pisca Retrovisor Led Sequencial Golf Gti Mk7 Jetta Gli",
+      "updated_at": "2026-05-29T17:54:00"
+    },
+    "sku::426-K": {
+      "loja": "JK Peças",
+      "sku": "426-K",
+      "produto": "Seta Retrovisor Sequencial Dinâmica Golf Mk7 Gti Jetta Gli Laranja",
+      "pesquisa_1": "Par Pisca Seta Sequencial Retrovisor Bmw G20 340 440i 320 M3",
+      "pesquisa_2": "Seta Pisca Retrovisor Led Sequencial Golf Gti Mk7 Jetta Gli",
+      "pesquisa_3": "Seta Sequencial Golf Gti Tsi Jetta Gli Mk7 Mk7 5 Dinâmica",
+      "updated_at": "2026-05-29T17:58:49"
+    },
+    "sku::427": {
+      "loja": "JK Peças",
+      "sku": "427",
+      "produto": "Seta Pisca Sequencial Vw Golf Mk4 Amarok Passat Bora Seat Laranja",
+      "pesquisa_1": "Par Pisca Dinâmico Vw Golf 2003 Sapão Seta Sequencial",
+      "pesquisa_2": "Pisca Lateral Seta Vw Volks Amarok Polo Golf Jetta Passat",
+      "pesquisa_3": "Seta Pisca Sequencial Vw Golf Mk4 Amarok Passat Bora Seat",
+      "updated_at": "2026-05-29T18:22:02"
+    },
+    "sku::428-1": {
+      "loja": "JK Peças",
+      "sku": "428-1",
+      "produto": "Guia Farol Dianteiro Hrv Hr-v 2015 2016 17 Á 2019",
+      "pesquisa_1": "Guia Farol Dianteiro Direito Honda Hr-v 2015 2016 2017 2018",
+      "pesquisa_2": "Guia Farol Dianteiro Dianteiro Hrv Hr-v 2015 2016 17 Á 2019",
+      "pesquisa_3": "Guia Farol Dianteiro Dianteiro Hr-v 2015 2016 2017 2018 2019",
+      "updated_at": "2026-05-29T18:25:49"
+    },
+    "sku::428-2": {
+      "loja": "JK Peças",
+      "sku": "428-2",
+      "produto": "Guia Farol Dianteiro Hrv Hr-v 2015 2016 17 Á 2019",
+      "pesquisa_1": "Guia Farol Dianteiro Dianteiro Hrv Hr-v 2015 2016 17 Á 2019",
+      "pesquisa_2": "Guia Farol Dianteiro Direito Honda Hr-v 2015 2016 2017 2018",
+      "pesquisa_3": "Guia Farol Dianteiro Dianteiro Hr-v 2015 2016 2017 2018 2019",
+      "updated_at": "2026-05-29T18:27:42"
+    },
+    "sku::428-K": {
+      "loja": "JK Peças",
+      "sku": "428-K",
+      "produto": "Par Guia Farol Dianteiro Hrv Hr-v 2015 2016 2017 2018 2019",
+      "pesquisa_1": "Par Guia Farol Dianteiro Hrv Hr-v 2015 2016 2017 2018 2019",
+      "pesquisa_2": "Par Guia Farol Dianteiro Dianteiro Hr-v 2015 2016 2017 2018 2019",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T18:28:19"
+    },
+    "sku::429": {
+      "loja": "JK Peças",
+      "sku": "429",
+      "produto": "Capa Esteira Alavanca Câmbio L200 Triton Ou Pajero Dakar Preto",
+      "pesquisa_1": "Capa Esteira Alavanca Câmbio L200 Triton Ou Pajero Dakar",
+      "pesquisa_2": "Esteira Alavanca Câmbio Automático L200 Triton Pajero Dakar",
+      "pesquisa_3": "Esteira Alavanca Câmbio Mitsubishi L200 Triton Pajero Dakar",
+      "updated_at": "2026-05-29T18:29:10"
+    },
+    "sku::430": {
+      "loja": "JK Peças",
+      "sku": "430",
+      "produto": "Grade Dianteira Toyota Corolla 2015 2016 2017 Cromada Prateado Cromado",
+      "pesquisa_1": "Grade Frontal Radiador Etios 2013 A 2015 2016 2017 Cromada",
+      "pesquisa_2": "Grade Dianteira Corolla 2015 2016 2017 Cromada",
+      "pesquisa_3": "Grade Dianteira Toyota Corolla 2015 2016 2017 Cromada",
+      "updated_at": "2026-05-29T18:30:08"
+    },
+    "sku::431": {
+      "loja": "JK Peças",
+      "sku": "431",
+      "produto": "Grade Dianteira Cromada Corolla 2017 2018 2019 Prateado Cromado",
+      "pesquisa_1": "Grade Dianteira Corolla Ano 2017 Modelo 2018 2019 Cromada",
+      "pesquisa_2": "Grade Dianteira Cromada Corolla 2017 2018 2019",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T18:36:15"
+    },
+    "sku::432": {
+      "loja": "JK Peças",
+      "sku": "432",
+      "produto": "Escova De Aço Para Roçadeira Profissional Universal 1 Pol",
+      "pesquisa_1": "Escova De Aço Para Roçadeiras Limpa Pavers Calçada",
+      "pesquisa_2": "Escova De Aço Para Roçadeiras Limpa Pavers Calçada Universal",
+      "pesquisa_3": "Escova De Aço Rotativa Aparador Para Roçadeira 6 Polegadas",
+      "updated_at": "2026-05-29T18:37:20"
+    },
+    "sku::434": {
+      "loja": "Uai Mineirinho",
+      "sku": "434",
+      "produto": "Trava Elétrica Porta Malas Ecosport 2013 2014 2015 2016 2020",
+      "pesquisa_1": "Motor Trava Elétrica Tampa Porta Malas Ecosport 2013 - 2020",
+      "pesquisa_2": "Atuador Da Tampa Traseira Ecosport 2012 A 2019 Cn1z.14a626.a",
+      "pesquisa_3": "Trava Elétrica Porta Malas Ecosport 2013 2014 2015 2016 2020",
+      "updated_at": "2026-05-29T13:48:14"
+    },
+    "sku::435-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "435-1",
+      "produto": "Pisca Retrovisor Esquerdo Para Hyundai Ix35 Original Dourado-escuro",
+      "pesquisa_1": "Pisca Retrovisor Hyundai Ix35 Lado Direito Novo Importado",
+      "pesquisa_2": "Pisca Seta Retrovisor P/ Hyundai Ix35 2015 2016 2017 2018 19",
+      "pesquisa_3": "Pisca Retrovisor Ix35 2011 2012 2013 2014 2015 Lado Direito",
+      "updated_at": "2026-05-29T13:49:54"
+    },
+    "sku::435-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "435-2",
+      "produto": "Pisca Retrovisor Esquerdo Para Hyundai Ix35 Original Dourado-escuro",
+      "pesquisa_1": "Pisca Retrovisor Ix35 2011 2012 2013 2014 2015 Lado Esquerdo",
+      "pesquisa_2": "Pisca Retrovisor Hyundai Ix35 Lado Esquerdo Novo Importado",
+      "pesquisa_3": "Pisca Seta Retrovisor P/ Hyundai Ix35 2015 2016 2017 2018 19",
+      "updated_at": "2026-05-29T13:52:57"
+    },
+    "sku::435-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "435-K",
+      "produto": "Pisca Seta Retrovisor P/ Hyundai Ix35 2010 Até 2019 Novo",
+      "pesquisa_1": "Par Pisca Seta Retrovisor P/ Hyundai I30 2009 2010 2011 2012",
+      "pesquisa_2": "Par Pisca Retrovisor Para Hyundai Ix35 2011 2012 2013 14 15",
+      "pesquisa_3": "Pisca Retrovisor Ix35 2011 2012 2013 2014 2015 Lado Direito",
+      "updated_at": "2026-05-29T13:53:43"
+    },
+    "sku::436-1": {
+      "loja": "JK Peças",
+      "sku": "436-1",
+      "produto": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5,5mm Ou 6mm. 9 Estrias",
+      "pesquisa_1": "Adaptador Luva Roçadeira 9 Estrias De Enxada Rotativa Arador",
+      "pesquisa_2": "Adaptador Luva Roçadeira Cardam Stihl Stihl Fs160/220/280",
+      "pesquisa_3": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5 5mm Ou 6mm",
+      "updated_at": "2026-05-29T18:38:30"
+    },
+    "sku::436-2": {
+      "loja": "JK Peças",
+      "sku": "436-2",
+      "produto": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5,5mm Ou 6mm. 7 Estrias",
+      "pesquisa_1": "Estator Completo Dafra Speed 150 2008 2009 2010 Á 2015 Pulsa",
+      "pesquisa_2": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5,5mm Ou 6mm",
+      "pesquisa_3": "Estator Dafra Speed 150 Sundown Hunter Max 125 Kansas 150",
+      "updated_at": "2026-05-29T18:39:13"
+    },
+    "sku::436-3": {
+      "loja": "JK Peças",
+      "sku": "436-3",
+      "produto": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5,5mm Ou 6mm. 6mm Quadrado",
+      "pesquisa_1": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5,5mm Ou 6mm.",
+      "pesquisa_2": "Adaptador Luva Roçadeira 9 Estrias De Enxada Rotativa Arador",
+      "pesquisa_3": "Adaptador Luva Roçadeira Cardam Stihl Stihl Fs160/220/280",
+      "updated_at": "2026-05-29T18:40:00"
+    },
+    "sku::436-4": {
+      "loja": "JK Peças",
+      "sku": "436-4",
+      "produto": "",
+      "pesquisa_1": "Adaptador Luva Roçadeira Cardam Stihl Quadrado 5,5mm Ou 6mm.",
+      "pesquisa_2": "Adaptador Luva Roçadeira 9 Estrias De Enxada Rotativa Arador",
+      "pesquisa_3": "Adaptador Luva Roçadeira Cardam Stihl Stihl Fs160/220/280",
+      "updated_at": "2026-05-29T18:41:11"
+    },
+    "sku::437": {
+      "loja": "JK Peças",
+      "sku": "437",
+      "produto": "Estator Completo Dafra Speed 150 2008 2009 2010 Á 2015 Pulsa",
+      "pesquisa_1": "Estator Dafra Speed 150 Sundown Hunter Max 125 Kansas 150",
+      "pesquisa_2": "Estator Completo Dafra Speed 150 2008 2009 2010 Á 2015 Pulsa",
+      "pesquisa_3": "Estator Speed150 2007 2008 2009 2010 2011 2012 A 2015",
+      "updated_at": "2026-05-29T18:42:04"
+    },
+    "sku::438": {
+      "loja": "JK Peças",
+      "sku": "438",
+      "produto": "Máscara Facial Roçadeira Epi Olhos Filtro Brinde Preto",
+      "pesquisa_1": "Estator Dafra Speed 150 Sundown Hunter Max 125 Kansas 150",
+      "pesquisa_2": "Estator Completo Dafra Speed 150 2008 2009 2010 Á 2015 Pulsa",
+      "pesquisa_3": "Estator Dafra Speed150 2007 2008 2009 2010 2011 2012 A 2015",
+      "updated_at": "2026-05-29T18:43:01"
+    },
+    "sku::44-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "44-1",
+      "produto": "Valvula Moduladora Solenoide Turbina Nissan Frontier 16v 2.5",
+      "pesquisa_1": "Valvula Solenoide Moduladora Turbina Niss Frontier 2.5 2007.",
+      "pesquisa_2": "Valvula Solenoide Moduladora Turbina Niss Frontier 2.5 16v",
+      "pesquisa_3": "Valvula Moduladora Solenóide Turbina Frontier 2.5",
+      "updated_at": "2026-05-27T19:37:11"
+    },
+    "sku::44-K": {
+      "loja": "JK Peças",
+      "sku": "44-K",
+      "produto": "Jogo Vela Ignicao Iridium Compatível Bmw 118i 120i 318i 320i",
+      "pesquisa_1": "Jogo Vela Ignicao Iridium Compatível Bmw 118i 120i 318i 320i",
+      "pesquisa_2": "Jogo 2 Velas Ignição Iridium Ix Vulcan Vn 900 2009 2010 2011",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:27:32"
+    },
+    "sku::44-K4": {
+      "loja": "JK Peças",
+      "sku": "44-K4",
+      "produto": "Jogo Vela Ignicao Iridium Para Bmw 05/12 118i 120i 318i 320i",
+      "pesquisa_1": "Jogo Vela Ignicao Iridium Ngk Bmw 05/12 118i 120i 318i 320i",
+      "pesquisa_2": "Jogo Velas De Ignição Bmw 118i 120i 320i X1 Z4 2.0 Gasolina",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:28:17"
+    },
+    "sku::44-K6": {
+      "loja": "JK Peças",
+      "sku": "44-K6",
+      "produto": "Jogo 6 Velas Ignicao Iridium Para Bmw 05/12 118i 120i 318i",
+      "pesquisa_1": "Jogo 6 Velas Ignicao Iridium Para Bmw 05/12 118i 120i 318i",
+      "pesquisa_2": "Jogo Vela Ignição Iridium Captiva Omega 3.6 V6 24v 2008/2011",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:28:57"
+    },
+    "sku::442": {
+      "loja": "Uai Mineirinho",
+      "sku": "442",
+      "produto": "Macaco Automotivo Tipo Bolsa Ar Pneumático Sanfonado 3 Ton",
+      "pesquisa_1": "Macaco Pneumático Garrafa 3 Toneladas Rotta Bolsa 3 Gomos 15-40cm",
+      "pesquisa_2": "Macaco Pneumático Rotta Bolsa 3 Gomos 3 Toneladas 40cm",
+      "pesquisa_3": "Macaco Pneumatico Ar Bolsa 3 Ton Sanfona Garrafa Carro Gomos",
+      "updated_at": "2026-05-29T13:55:37"
+    },
+    "sku::443": {
+      "loja": "JK Peças",
+      "sku": "443",
+      "produto": "Controle Remoto Ponte Rolante Talha 2 Transmissores F21-e1b 220v",
+      "pesquisa_1": "Controle Remoto Ponte Rolante Talha 2 Transmissores F21-e1b",
+      "pesquisa_2": "Controle Remoto Ponte Rolante Industrial Talha (2 Controles)",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T18:44:01"
+    },
+    "sku::444-K2-1": {
+      "loja": "JK Peças",
+      "sku": "444-K2-1",
+      "produto": "Kit Disco Enxada+ Escova De Aço Roçadeira Rotativa Universal",
+      "pesquisa_1": "Kit Disco Enxada+ Escova De Aço Roçadeira Rotativa Universal",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T18:44:31"
+    },
+    "sku::445": {
+      "loja": "JK Peças",
+      "sku": "445",
+      "produto": "Cofre Caixa Guarda Chave Com Senha Segredo Parede Airbnb Top Preto",
+      "pesquisa_1": "Cofre Caixa Guarda Chave Com Senha Segredo Parede Airbnb Top",
+      "pesquisa_2": "Cofre Caixa Guarda Chave Senha Parede Lockbox Todo Em Metal",
+      "pesquisa_3": "Mini Cofre Todo Em Metal Guarda Chaves Parede Airbnb Joias",
+      "updated_at": "2026-05-29T18:45:03"
+    },
+    "sku::447": {
+      "loja": "Uai Mineirinho",
+      "sku": "447",
+      "produto": "Capa Aplique Puxador Maçaneta Porta Luvas Polo 2003 A 2012",
+      "pesquisa_1": "Maçaneta Porta Luvas Polo 2003 A 2012 Puxador Interno",
+      "pesquisa_2": "Capa Aplique Puxador Maçaneta Porta Luvas Polo 2003 A 2012",
+      "pesquisa_3": "Maçaneta Puxador Fecho Porta Luvas Polo 2007 2008 2009 2010",
+      "updated_at": "2026-05-29T13:56:18"
+    },
+    "sku::448": {
+      "loja": "JK Peças",
+      "sku": "448",
+      "produto": "Console Do Teto C/ Porta Óculos Ford Ranger - 12/23 Original",
+      "pesquisa_1": "Console Do Teto Com Porta Oculos Ranger 2013 2014 2015 Ford",
+      "pesquisa_2": "Console Do Teto Porta Oculo Ford Ranger 2012 A 2023 Original",
+      "pesquisa_3": "Console Teto Porta Óculos Nova Ranger 2013 2014 2015 2016",
+      "updated_at": "2026-06-01T11:23:57"
+    },
+    "sku::449-1": {
+      "loja": "JK Peças",
+      "sku": "449-1",
+      "produto": "Grade Superior Cruze 2010 2011 2012 2013 2014 Friso Cromado Preto Cromado",
+      "pesquisa_1": "Grade Superior Cruze Hatch/sedan 2010 2011 2012 2013 2014",
+      "pesquisa_2": "Grade Superior Cruze 2010 2011 2012 2013 2014 Friso Cromado",
+      "pesquisa_3": "Grade Para Choque Superior Cruze Fr Cromado 10/14 Cód 12102",
+      "updated_at": "2026-06-01T11:23:01"
+    },
+    "sku::449-K": {
+      "loja": "JK Peças",
+      "sku": "449-K",
+      "produto": "Kit Grade Inferior + Grade Superior Chevrolet Malibu 2013 Cinza",
+      "pesquisa_1": "Kit Grade Inferior + Grade Superior Chevrolet Malibu 2013",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-06-01T11:22:10"
+    },
+    "sku::450": {
+      "loja": "JK Peças",
+      "sku": "450",
+      "produto": "Bomba De Direção Hidráulica Peugeot 206 / 207",
+      "pesquisa_1": "Bomba Direção Hidraulica Peugeot 206 207 1.4 1.6 Xsara 1.6",
+      "pesquisa_2": "Bomba De Direção Hidráulica Peugeot 206 / 207",
+      "pesquisa_3": "Bomba De Direção Hidráulica Peugeot 206 207 Citroen Xsara",
+      "updated_at": "2026-06-01T11:21:35"
+    },
+    "sku::451-1": {
+      "loja": "JK Peças",
+      "sku": "451-1",
+      "produto": "Bandeja Dianteira L Direito Fusion 2013 2014 2015 16",
+      "pesquisa_1": "Braco Bandeja Dianteira Direita Fusion 2013 2014 2015",
+      "pesquisa_2": "Bandeja Dianteira Lado Direito Fusion 2013 2014 2015 2016",
+      "pesquisa_3": "Bandeja Dianteira Ford Fusion Lado Direito 2013 A 2017",
+      "updated_at": "2026-06-01T11:21:00"
+    },
+    "sku::451-2": {
+      "loja": "JK Peças",
+      "sku": "451-2",
+      "produto": "Bandeja Dianteira L Direito Fusion 2013 2014 2015 16",
+      "pesquisa_1": "Braco Bandeja Dianteira Direita Fusion 2013 2014 2015",
+      "pesquisa_2": "Bandeja Dianteira Lado Direito Fusion 2013 2014 À 2019",
+      "pesquisa_3": "Bandeja Balança Fusion 2.0 16v Dianteira Inferior Ld 13/19",
+      "updated_at": "2026-06-01T11:20:04"
+    },
+    "sku::451-K": {
+      "loja": "JK Peças",
+      "sku": "451-K",
+      "produto": "Bandeja Balança Dianteira Fusion 2013 2014 2015 2016 Par",
+      "pesquisa_1": "Par Bandeja Balança Inferior Completa Fusion 2013 Até 2017",
+      "pesquisa_2": "Bandeja Balança Dianteira Fusion 2013 2014 2015 2016 Par",
+      "pesquisa_3": "Par Bandeja Fusion Dianteira 2.0/2.5 16v/3.0 2013 Até 2018",
+      "updated_at": "2026-06-01T11:19:30"
+    },
+    "sku::452": {
+      "loja": "JK Peças",
+      "sku": "452",
+      "produto": "Reservatório Direção Hidráulica Para Ford Fiesta 2002 A 2014",
+      "pesquisa_1": "Reservatório Direção Hidráulica Para Ford Fiesta 2002 A 2014",
+      "pesquisa_2": "Reservatorio Direcao Hidraulica Ford Fiesta 1.0 E 1.6 02/14",
+      "pesquisa_3": "Reservatório Óleo Direção Hidráulica Fiesta Rocam 2002-2014",
+      "updated_at": "2026-06-01T11:18:49"
+    },
+    "sku::453": {
+      "loja": "JK Peças",
+      "sku": "453",
+      "produto": "Lamina-motopoda- Podador Galhos- Serra-p/roçadeira 6 Laminas",
+      "pesquisa_1": "Lâmina 6 Pontas Canivete Roçadeira Stihl Fs160 Fs220 Fs280",
+      "pesquisa_2": "Lâmina 6 Pontas Canivete Roçadeira Stihl Fs160/220/280",
+      "pesquisa_3": "Lamina-motopoda- Podador Galhos- Serra-p/roçadeira 6 Laminas",
+      "updated_at": "2026-06-01T11:17:14"
+    },
+    "sku::456": {
+      "loja": "JK Peças",
+      "sku": "456",
+      "produto": "Alavanca Puxador Do Freio De Mão Estacioname Jac J3 Original",
+      "pesquisa_1": "Alavanca Do Freio De Mão - Jac J3",
+      "pesquisa_2": "Alavanca Do Freio De Mão Jac J3 2010 Ao 2013 Original",
+      "pesquisa_3": "Alavanca Puxador Do Freio De Mão Estacioname Jac J3 Original",
+      "updated_at": "2026-06-01T11:14:10"
+    },
+    "sku::457-1": {
+      "loja": "JK Peças",
+      "sku": "457-1",
+      "produto": "Grade Mercedes W205 C180 C200 C250 Gtr Amg Black Piano Preto Preto Brilhante",
+      "pesquisa_1": "Grade Mercedes W205 C180 C200 C250 Gtr Amg Black Piano",
+      "pesquisa_2": "Grade Amg Gt R Mercedes W205 C180 C200 C250 | 2015 - 2018",
+      "pesquisa_3": "Acessorios Mercedes W205 C180 C200 C250 Gtr Amg Grade Black",
+      "updated_at": "2026-06-01T11:11:46"
+    },
+    "sku::457-2": {
+      "loja": "JK Peças",
+      "sku": "457-2",
+      "produto": "Acessorios Mercedes W205 C180 C200 C250 Gtr Amg Grade Chrome Prateado Cromado",
+      "pesquisa_1": "Acessorios Mercedes W205 C180 C200 C250 Gtr Amg Grade Chrome",
+      "pesquisa_2": "Grade Mercedes W205 C180 C200 C250 C300 C400 C450 Gtr Amg",
+      "pesquisa_3": "Acessorios Mercedes W205 C180 C200 C250 Gtr Amg Grade Black",
+      "updated_at": "2026-06-01T11:11:00"
+    },
+    "sku::458-1": {
+      "loja": "JK Peças",
+      "sku": "458-1",
+      "produto": "Grade Dianteira Gptrend Para Honda City 2015-2017 Preto Cromado",
+      "pesquisa_1": "Grade Honda City Preta 2016 2017 2018 Nova",
+      "pesquisa_2": "Grade Dianteira Gptrend Para Honda City 2015-2017",
+      "pesquisa_3": "Grade Dianteira Preta Honda City 2015 2016 2017 Preto Fosco",
+      "updated_at": "2026-06-01T11:10:07"
+    },
+    "sku::458-2": {
+      "loja": "JK Peças",
+      "sku": "458-2",
+      "produto": "Friso Cromado Da Grade Honda City 2015 A 2017 Nova Cromado Prateado",
+      "pesquisa_1": "Friso Cromado Da Grade Honda City 2015 A 2017 Nova",
+      "pesquisa_2": "Friso Cromado Da Grade Honda City 2015 A 2017 Nova Cromado",
+      "pesquisa_3": "Friso Cromado Superior Grade Honda City 2015-2017",
+      "updated_at": "2026-06-01T11:06:23"
+    },
+    "sku::458-3": {
+      "loja": "JK Peças",
+      "sku": "458-3",
+      "produto": "Emblema Grade Para-choque Para Honda City 2015 2016 2017",
+      "pesquisa_1": "Emblema Logo H Da Grade Dianteira Honda City 2015 2016 2017",
+      "pesquisa_2": "Emblema Grade Honda City 2015 2016 2017 2018",
+      "pesquisa_3": "Emblema Grade City 2015 2016 2017 2018",
+      "updated_at": "2026-06-01T11:04:45"
+    },
+    "sku::458-K": {
+      "loja": "JK Peças",
+      "sku": "458-K",
+      "produto": "Grade Frontal City Ano 2015 2016 2017 Friso Cromado Preto Preto Cromado",
+      "pesquisa_1": "Grade Honda City 2015 2016 Completa Com Emblema",
+      "pesquisa_2": "Grade Honda City Preta Com Friso Cromado 2015 2016 2017",
+      "pesquisa_3": "Grade Frontal City Ano 2015 2016 2017 Friso Cromado",
+      "updated_at": "2026-06-01T11:00:58"
+    },
+    "sku::459": {
+      "loja": "JK Peças",
+      "sku": "459",
+      "produto": "Filtro Lubrifil Eliminador De Água E Óleo Compressor 1/4",
+      "pesquisa_1": "Filtro Regulador Evotek 1/4 Ar Compressor C/ Manômetro",
+      "pesquisa_2": "Filtro Regulador Deckas Afr-2000 1/4 Com Manometro 150 Psi",
+      "pesquisa_3": "Filtro Lubrifil Eliminador De Água E Óleo Compressor 1/4",
+      "updated_at": "2026-06-01T10:58:56"
+    },
+    "sku::46": {
+      "loja": "Uai Mineirinho",
+      "sku": "46",
+      "produto": "Sensor Pressão Pneu Captiva Camaro Cruze Malibu 2007",
+      "pesquisa_1": "Sensor Pressão Do Pneu Tpms Gm Captiva Camaro Malibu",
+      "pesquisa_2": "Sensor Tpms Pressão Pneus Captiva Equinox Malibu 13598771",
+      "pesquisa_3": "Sensor Pressão Pneu Tpms Captiva Camaro Cruze Malibu 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016 2017 2.4 3.0 3.6",
+      "updated_at": "2026-05-27T19:38:04"
+    },
+    "sku::460": {
+      "loja": "JK Peças",
+      "sku": "460",
+      "produto": "Bomba Submersa Inox 12v/24v Transferência Óleo Diesel Água",
+      "pesquisa_1": "Bomba Submersa 12v Transferência Óleo Diesel Água",
+      "pesquisa_2": "Bomba Submersa 12v 30lt Min Abastecimento Água/óleo Diesel",
+      "pesquisa_3": "",
+      "updated_at": "2026-06-01T10:58:03"
+    },
+    "sku::461": {
+      "loja": "JK Peças",
+      "sku": "461",
+      "produto": "Conector / Borne / Terminal De Bateria / Engate Rápido - Par",
+      "pesquisa_1": "Conector / Borne / Terminal De Bateria / Engate Rápido - Par",
+      "pesquisa_2": "2 Conector Terminal Reforçado Bateria C/ Engate Rápido Carro",
+      "pesquisa_3": "Conector Terminal Bateria Engate Rápido Automotiva Com Chave",
+      "updated_at": "2026-06-01T10:55:31"
+    },
+    "sku::462": {
+      "loja": "Uai Mineirinho",
+      "sku": "462",
+      "produto": "Sensor Bateria Dodge Journey Freemont Toro Compass Renegade",
+      "pesquisa_1": "Sensor Bateria Novo Polo Negativo Ford Ranger Eb3t-10c652-aa",
+      "pesquisa_2": "Sensor Bateria Dodge Journey Freemont Toro Compass Cherokee",
+      "pesquisa_3": "Sensor Bateria Polo Negativo Ford Ranger Eb3t-10c652-aa Novo",
+      "updated_at": "2026-05-29T13:58:03"
+    },
+    "sku::467": {
+      "loja": "Uai Mineirinho",
+      "sku": "467",
+      "produto": "Valvula Diafragma Para Peugeot E Thp Citroen Flex 308 3008",
+      "pesquisa_1": "Valvula Diafragma Peugeot E Citroen Thp Flex 308 C4 3008",
+      "pesquisa_2": "Valvula Diafragma Para Peugeot E Citroen Thp Flex 308 3008.",
+      "pesquisa_3": "Valvula Diafragma Peugeot Citroen Thp Flex 308 C4 3008 408",
+      "updated_at": "2026-05-29T13:58:46"
+    },
+    "sku::468": {
+      "loja": "Uai Mineirinho",
+      "sku": "468",
+      "produto": "Comando Vidro Elétrico Hb20 2012 2013 2014 2015 935701s005",
+      "pesquisa_1": "Comando Controle Botao Vidro Eletrico Hb20 2017 2018 2019",
+      "pesquisa_2": "Comando Botão Hb20 Vidro Elétrico Interruptor 2014 Até 2019",
+      "pesquisa_3": "Comando Vidro Elétrico Hb20 2012 2013 2014 2015 935701s005",
+      "updated_at": "2026-05-29T13:59:51"
+    },
+    "sku::469": {
+      "loja": "Uai Mineirinho",
+      "sku": "469",
+      "produto": "Controlador De Válvula Inteligente Tuya Wifi Alexa Google Home 1 1/2",
+      "pesquisa_1": "Controlador Smart Zigbee Válvula Esférica 1 1/2\" Tuya Alexa",
+      "pesquisa_2": "Controlador Inteligente Válvula Registro Zigbee Tuya Alexa",
+      "pesquisa_3": "Controle De Válvula Wifi Inteligente Registro De Água Ou Gás",
+      "updated_at": "2026-05-29T14:03:09"
+    },
+    "sku::47": {
+      "loja": "Uai Mineirinho",
+      "sku": "47",
+      "produto": "Sensor Pressão Pneu Para Creta 2016 A 2020",
+      "pesquisa_1": "Sensor Pressão Pneu Creta 2016 2017 2018 2019 2020",
+      "pesquisa_2": "Sensor Pressão Pneu Parahyund Creta 2016 2017 2018 2019 2020",
+      "pesquisa_3": "Sensor De Pressão Pneu Tpms Creta Nova Tucson Sonata Hyundai 2015 2016 2017 2018 2019 2020 433mhz Válvula Stinger",
+      "updated_at": "2026-05-27T19:38:50"
+    },
+    "sku::471": {
+      "loja": "Uai Mineirinho",
+      "sku": "471",
+      "produto": "Painel Instrumentos Cg 160 Titan Fan Esd Ex 2020 2021 2022",
+      "pesquisa_1": "Painel Digital Moto Honda Cg/titan/fan 160 Ex 2016-22 Novo",
+      "pesquisa_2": "Painel Completo Titan 160 2016 Á 2017 Mod Original",
+      "pesquisa_3": "Painel 160 Completo Fan Titan Esd 2015 À 2019",
+      "updated_at": "2026-05-29T14:05:17"
+    },
+    "sku::473": {
+      "loja": "JK Peças",
+      "sku": "473",
+      "produto": "Manta Anti Chama Fire Blanket 1,20 X 1,80m Deckas",
+      "pesquisa_1": "Manta Anti Chama Fire Blanket 1,20 X 1,80 M",
+      "pesquisa_2": "Manta Anti Chama Fire Blanket 1,20 X 1,80m Br100",
+      "pesquisa_3": "Manta Anti Chama Fire Blanket 1,20 X 1,80m Seaflo",
+      "updated_at": "2026-06-01T10:53:10"
+    },
+    "sku::474": {
+      "loja": "Uai Mineirinho",
+      "sku": "474",
+      "produto": "Motor Com Redução Motoredutor Dc 24v 82rpm 100501924 24v",
+      "pesquisa_1": "Motor Redutor Motoredutor 24v Dc 82 Rpm Alto Torque 82rpm",
+      "pesquisa_2": "Motor Redutor Motoredutor 24v Dc 82 Rpm Alto Torque 35 Nm",
+      "pesquisa_3": "Motor Com Redução Motoredutor Dc 24v 82rpm 100501924",
+      "updated_at": "2026-05-29T14:05:57"
+    },
+    "sku::475": {
+      "loja": "Uai Mineirinho",
+      "sku": "475",
+      "produto": "Motor Redutor Motoredutor 24v Dc 160 Rpm Alto Torque 160rpm 12v",
+      "pesquisa_1": "Motor Redutor Motoredutor 24v Dc 160 Rpm Alto Torque 160rpm",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:11:25"
+    },
+    "sku::476": {
+      "loja": "Uai Mineirinho",
+      "sku": "476",
+      "produto": "Motor 12v Dc 45 Rpm Com Caixa De Redução 45rpm Alto Torque",
+      "pesquisa_1": "Motor 12v Dc 45 Rpm Com Caixa De Redução 45rpm Alto Torque",
+      "pesquisa_2": "Motor E Transmissão Parafusadeira Black Decker Gc1200",
+      "pesquisa_3": "Motor 12v Dc 45 Rpm Com Caixa De Redução 45rpm Alto Torque E",
+      "updated_at": "2026-05-29T14:13:11"
+    },
+    "sku::477": {
+      "loja": "Uai Mineirinho",
+      "sku": "477",
+      "produto": "Motor 12v Dc Redução 90rpm Alto Torque Eixo 10mm 12v",
+      "pesquisa_1": "Motor 12v Dc Redução 90rpm Alto Torque Eixo 10mm",
+      "pesquisa_2": "Motor 12v Dc 90 Rpm Com Caixa De Redução Alto Torque",
+      "pesquisa_3": "Motor 12v Dc 90 Rpm Com Caixa De Redução 90rpm Alto Torque",
+      "updated_at": "2026-05-29T14:14:26"
+    },
+    "sku::479": {
+      "loja": "Uai Mineirinho",
+      "sku": "479",
+      "produto": "Mochila Flexível Anti-incêndio 20l Deckas Amarelo",
+      "pesquisa_1": "Mochila Flexível Anti-incêndio 20l Deckas",
+      "pesquisa_2": "Mochila Flexível Anti-incêndio 20l",
+      "pesquisa_3": "Mochila Flexível Anti-incêndio 21lt Ecofire 431.25 Guarany",
+      "updated_at": "2026-05-29T14:15:18"
+    },
+    "sku::479-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "479-K",
+      "produto": "2 Mochila Flexível Anti-incêndio 20l Deckas Amarelo",
+      "pesquisa_1": "2 Mochila Flexível Anti-incêndio 20l Deckas",
+      "pesquisa_2": "Kit 2 Mochila Flexível Anti-incêndio 20l Deckas",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:16:04"
+    },
+    "sku::479-K3": {
+      "loja": "Uai Mineirinho",
+      "sku": "479-K3",
+      "produto": "3 Mochila Flexível Anti-incêndio 20l Deckas Amarelo",
+      "pesquisa_1": "3 Mochila Flexível Anti-incêndio 20l Deckas",
+      "pesquisa_2": "Kit 3 Mochila Flexível Anti-incêndio 20l Deckas",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:17:02"
+    },
+    "sku::479-K5": {
+      "loja": "Uai Mineirinho",
+      "sku": "479-K5",
+      "produto": "Kit 5 Mochila Flexível Anti-incêndio 20l Deckas Amarelo",
+      "pesquisa_1": "Kit 5 Mochila Flexível Anti-incêndio 20l Deckas",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:17:29"
+    },
+    "sku::480": {
+      "loja": "Uai Mineirinho",
+      "sku": "480",
+      "produto": "Motor Motoredutor 12v Dc 40 Rpm Torque 35nm - Motor Redução",
+      "pesquisa_1": "Motor Motoredutor 12v Dc 40 Rpm Torque 35nm - Motor Redução",
+      "pesquisa_2": "Motor Redutor Motoredutor 12v Dc 30 Rpm Alto Torque 50 Nm Motoredutor Corrente Continua 12v 30rpm",
+      "pesquisa_3": "Motor Com Redução Dc 12v 40rpm Alto Torque Motor 12v 40 Rpm",
+      "updated_at": "2026-05-29T14:17:52"
+    },
+    "sku::481": {
+      "loja": "Uai Mineirinho",
+      "sku": "481",
+      "produto": "Motor Redutor Motoredutor 12v Dc 20 Rpm Alto Torque 12v",
+      "pesquisa_1": "Motor Redutor Motoredutor 12v Dc 20 Rpm Alto Torque",
+      "pesquisa_2": "Motor Com Redução Dc 12v 40rpm Alto Torque Motor 12v 40 Rpm",
+      "pesquisa_3": "Motor Caixa De Redução Motoredutor 12v Dc 20 Rpm 22nm",
+      "updated_at": "2026-05-29T14:18:25"
+    },
+    "sku::482": {
+      "loja": "Uai Mineirinho",
+      "sku": "482",
+      "produto": "Motoredutor Deckas 12v Dc 60 Rpm Alto Torque Industrial 24v",
+      "pesquisa_1": "Motoredutor Deckas 12v Dc 60 Rpm Alto Torque Industrial",
+      "pesquisa_2": "Motor Com Redução Motoredutor Dc 12v 60rpm Alto Torque",
+      "pesquisa_3": "Motor Com Redução Dc 12v 60rpm Alto Torque Motor 12v 60 Rpm",
+      "updated_at": "2026-05-29T14:18:56"
+    },
+    "sku::484-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "484-1",
+      "produto": "Cadeira De Escritório Cadeira Executiva Ergonômica Preto Tecido",
+      "pesquisa_1": "Cadeira De Escritório Qualiflex Executiva Ergonômica N17",
+      "pesquisa_2": "Cadeira Escritório Ergonomica Scarparo Executiva N17 Preta com Apoio Reclinável",
+      "pesquisa_3": "Cadeira Presidente Giratória C/ Lamina E Braço Regulavel Cor Preto",
+      "updated_at": "2026-05-29T14:20:26"
+    },
+    "sku::484-2": {
+      "loja": "Uai Mineirinho",
+      "sku": "484-2",
+      "produto": "Cadeira Executiva Ergonomica Qualiflex Azul Azul Tecido",
+      "pesquisa_1": "Cadeira Executiva Giratória Back System Azul Trendminas",
+      "pesquisa_2": "Cadeira Escritório Ergonomica Scarparo Executiva N17 Preta com Apoio Reclinável",
+      "pesquisa_3": "Cadeira Presidente Giratória C/ Lamina E Braço Regulavel Cor Preto",
+      "updated_at": "2026-05-29T14:20:59"
+    },
+    "sku::49": {
+      "loja": "Uai Mineirinho",
+      "sku": "49",
+      "produto": "Bucha Reparo Da Coluna Direção Elétrica I30 Elantra Soul",
+      "pesquisa_1": "Bucha Reparo Da Coluna De Direção Eletrica I30 2.0 2009/2012",
+      "pesquisa_2": "Bucha Reparo Da Coluna Direção Elétrica I30 Elantra Soul",
+      "pesquisa_3": "Bucha Coluna Direção Hyundai I30 Azera Veloster Sonata",
+      "updated_at": "2026-05-27T19:39:31"
+    },
+    "sku::506": {
+      "loja": "JK Peças",
+      "sku": "506",
+      "produto": "Manopla Câmbio Gptrend Spin Cobalt Tracker Onix Prisma Preto",
+      "pesquisa_1": "Manopla Câmbio Automático Spin Cobalt Tracker Prisma Onix",
+      "pesquisa_2": "Manopla Câmbio Automático Spin Onix Cobalt Tracker Prisma",
+      "pesquisa_3": "Manopla Câmbio Automático Spin Tracker Cobalt Onix Prisma",
+      "updated_at": "2026-06-01T10:51:53"
+    },
+    "sku::507": {
+      "loja": "JK Peças",
+      "sku": "507",
+      "produto": "Manopla Do Câmbio Automático P/chevrolet Cruze 2017 A 2023 Preto",
+      "pesquisa_1": "Alavanca Manopla Marcha Cambio Automático Gm Cruze 2017 2018",
+      "pesquisa_2": "Alavanca Manopla Marcha Cambio Gm Cruze 1.4 2017 - 2023",
+      "pesquisa_3": "Alavanca Manopla Cambio Cruze 1.4 2017 - 2023 Black Piano Gm",
+      "updated_at": "2026-06-01T10:50:04"
+    },
+    "sku::511": {
+      "loja": "JK Peças",
+      "sku": "511",
+      "produto": "Tampa Do Parabarro Mercedes Gla Gla200 2016 2018 2019 2020",
+      "pesquisa_1": "Tampa Do Parabarro Mercedes Gla Gla200 2013 2014 2015 2016",
+      "pesquisa_2": "Tampa Do Parabarro Mercedes Gla Gla200 2016 2018 2019 2020",
+      "pesquisa_3": "Tampa Do Parabarro Mercedes Gla Gla200 2016 A 2020",
+      "updated_at": "2026-06-01T10:48:44"
+    },
+    "sku::512-K": {
+      "loja": "JK Peças",
+      "sku": "512-K",
+      "produto": "Par Dobradiças Braço Do Capô Para Civic G10 2017 Até 2021",
+      "pesquisa_1": "Par Dobradiça Capô Honda Civic 2017 2018 2019 2020 2021 G10",
+      "pesquisa_2": "Par Dobradiça Braço Do Capô Honda Civic G10 2017-2021",
+      "pesquisa_3": "Par Braco Dobradiça Capo Civic 2017 2018 2019 2020 2021",
+      "updated_at": "2026-06-01T10:35:05"
+    },
+    "sku::513-K": {
+      "loja": "JK Peças",
+      "sku": "513-K",
+      "produto": "Par Dobradiça Capô City 2015 2016 2017 2018 2019 2020 2021",
+      "pesquisa_1": "Par Dobradiça Capô Honda City 2015 2016 2017 2018 2020 2021",
+      "pesquisa_2": "Par Braco Dobradiça Honda City 2015 2016 2017 2018 2019 2020",
+      "pesquisa_3": "",
+      "updated_at": "2026-06-01T10:33:47"
+    },
+    "sku::514": {
+      "loja": "JK Peças",
+      "sku": "514",
+      "produto": "Lanterna Brake Light Vermelha Tampa Traseiro Hilux 15/24",
+      "pesquisa_1": "Break Light Hilux 2016 2017 2018 2019 2020 Luz Tampa Traseir",
+      "pesquisa_2": "Lanterna Break Light Hilux 2016 2017 2018 Tampa Traseira",
+      "pesquisa_3": "Lanterna Brake Light Vermelha Tampa Traseiro Hilux 15-24",
+      "updated_at": "2026-06-01T10:31:20"
+    },
+    "sku::515": {
+      "loja": "JK Peças",
+      "sku": "515",
+      "produto": "Suporte Placa Dianteira Jeep Compass Serie S Flex T270 22 23 Preto",
+      "pesquisa_1": "Suporte Placa Dianteira Jeep Compass Sport Flex T270 22 23",
+      "pesquisa_2": "Suporte Placa Dianteira Jeep Compass Serie S Flex T270 22 23",
+      "pesquisa_3": "Suporte Placa Dianteira Compass 1.3 Turbo Flex - 60950907",
+      "updated_at": "2026-06-01T10:29:59"
+    },
+    "sku::516-K": {
+      "loja": "JK Peças",
+      "sku": "516-K",
+      "produto": "Par Dobradiça Capô Honda Civic 2012 2013 2014 2015 2016 G9",
+      "pesquisa_1": "Par Dobradiça Capô Honda Civic 2012 2013 2014 2015 2016 G9",
+      "pesquisa_2": "Par Braco Dobradiça Capo Civic 2012 2013 2014 2015 2016",
+      "pesquisa_3": "Par Dobradiça Braço Capô Civic G9 2012 2013 2014 2015 2016",
+      "updated_at": "2026-06-01T10:24:05"
+    },
+    "sku::517-K": {
+      "loja": "JK Peças",
+      "sku": "517-K",
+      "produto": "Par Guia Dianteiro Elantra 2012 2013 2014 2015 2016",
+      "pesquisa_1": "Par Guia Suporte Parachoque Dianteiro Elantra 2012 A 2016",
+      "pesquisa_2": "Par Guia Parachoque Dianteiro Elantra 2011 2012 2013 2014",
+      "pesquisa_3": "Par Guia Dianteiro Elantra 2012 2013 2014 2015 2016",
+      "updated_at": "2026-06-01T10:22:39"
+    },
+    "sku::518-K": {
+      "loja": "JK Peças",
+      "sku": "518-K",
+      "produto": "Par Guia Suporte Garra Parachoque Dianteiro Honda Crv 2007 2",
+      "pesquisa_1": "Par Guia Parachoque Dianteiro Crv 2007 2008 2009 2010 2011",
+      "pesquisa_2": "Par Guia Suporte Garra Parachoque Dianteiro Crv 2007/2011",
+      "pesquisa_3": "Par Guia Suporte Garra Parachoque Dianteiro Honda Crv 2007 2008 2009 2010 2011 Novo ( Lado Esquerdo E Direito)",
+      "updated_at": "2026-06-01T10:19:05"
+    },
+    "sku::519": {
+      "loja": "JK Peças",
+      "sku": "519",
+      "produto": "Botão Vidro Elétrico Passageiro Voyager Ram Nitro Liberty",
+      "pesquisa_1": "Comando Botão Vidro Elétrico 09-16 Dodge Journey 2.7 3.6",
+      "pesquisa_2": "Botão Vidro Elétrico Passageiro Town & Country Journey Ram",
+      "pesquisa_3": "Botão Vidro Elétrico Passageiro Voyager Ram Nitro Liberty",
+      "updated_at": "2026-06-01T10:18:25"
+    },
+    "sku::52": {
+      "loja": "Uai Mineirinho",
+      "sku": "52",
+      "produto": "Motor Partida Ktm 2t Exc 200 300 Xcw 250 300 Novo 410 Watts",
+      "pesquisa_1": "Motor Partida Arranque Ktm 2t Exc 200 300 2008 A 2016",
+      "pesquisa_2": "Motor Partida Ktm 2t Exc 200 300 Xcw 250 300 Novo",
+      "pesquisa_3": "Motor Partida Ktm 2t Exc 200 300 Xcw 250 300 Novo 410 Watts",
+      "updated_at": "2026-05-27T19:40:27"
+    },
+    "sku::52-1": {
+      "loja": "JK Peças",
+      "sku": "52-1",
+      "produto": "Motor Arranque Partida Ktm 2 Tempo Ktm 250 Xc Ktm 300 Xc",
+      "pesquisa_1": "Motor Arranque Partida Ktm 2 Tempo 250 300 17-20",
+      "pesquisa_2": "Motor Arranque Partida Ktm 2 Tempo Ktm 250 Xc Ktm 300 Xc",
+      "pesquisa_3": "Motor Arranque Partida Ktm 250 300 2 Tempos (17-20)",
+      "updated_at": "2026-05-29T14:29:43"
+    },
+    "sku::520-1": {
+      "loja": "JK Peças",
+      "sku": "520-1",
+      "produto": "Comando Botão Vidro Eletrico Mercedes C180 C200 C250 2015/16",
+      "pesquisa_1": "Botão Vidro Elétrico Comando C180 C200 C250 C300 Interruptor",
+      "pesquisa_2": "Comando Botão Vidro Eletrico Mercedes C180 C200 C250 2015/16",
+      "pesquisa_3": "Botão De Comando Vidro Elétrico C180 C200 2015 A 2019",
+      "updated_at": "2026-06-01T10:17:22"
+    },
+    "sku::520-2": {
+      "loja": "JK Peças",
+      "sku": "520-2",
+      "produto": "Botão Vidro Elétrico C180 C200 C250 C300 2015 À 2019 Preto",
+      "pesquisa_1": "Comando Botão Vidro Elétrico Mercedes C180 C200 2015/18 Bege",
+      "pesquisa_2": "Botão Vidro Elétrico C180 C200 C250 C300 2015 À 2019 Preto",
+      "pesquisa_3": "Botão Comando Vidro Elétrico Mercedes C180 2018 2019 2020",
+      "updated_at": "2026-06-01T10:16:44"
+    },
+    "sku::520-3": {
+      "loja": "JK Peças",
+      "sku": "520-3",
+      "produto": "Comando Vidro Elétrico Mercedes C200 2013 Até 2020 S/reb.",
+      "pesquisa_1": "Comando Botão Vidro Elétrico Mercedes C180 C200 2015/18 Bege",
+      "pesquisa_2": "Comando Vidro Elétrico Mercedes C200 2013 Até 2020 S/reb.",
+      "pesquisa_3": "Comando De Vidro Elétrico Mercedes Glc250 Glc300 Glc43 Bege",
+      "updated_at": "2026-06-01T10:15:55"
+    },
+    "sku::53": {
+      "loja": "Uai Mineirinho",
+      "sku": "53",
+      "produto": "",
+      "pesquisa_1": "Mangueira Filtro Ar Tbi Sentra 2007 2008 2009 2010 2011 2012",
+      "pesquisa_2": "Mangueira Filtro Ar Tbi Nissan Sentra 1.8 2.0 2007/2013",
+      "pesquisa_3": "Mangueira Filtro Ar Tbi Nissan Sentra 2.0 16v 2007 Ate 2013",
+      "updated_at": "2026-05-27T19:41:49"
+    },
+    "sku::55": {
+      "loja": "JK Peças",
+      "sku": "55",
+      "produto": "Rolamento Coxin Mancal Com Coifa Cardan Touareg Cayenne Q7",
+      "pesquisa_1": "Coxim Rolamento Do Cardan Mancal Porsche Cayenne 7l6521102q",
+      "pesquisa_2": "Rolamento Coxin Mancal Cardan Touareg Cayenne Q7",
+      "pesquisa_3": "Rolamento Coxin Mancal Com Coifa Cardan Touareg Cayenne Q7",
+      "updated_at": "2026-05-29T14:30:47"
+    },
+    "sku::59": {
+      "loja": "Uai Mineirinho",
+      "sku": "59",
+      "produto": "Sensor Tps Posição Borboleta Honda Civic 96 97 98 A 2000",
+      "pesquisa_1": "Sensor Tps Posição Borboleta Honda Civic 96 97 98 A 2000",
+      "pesquisa_2": "Sensor Tps Posição Borboleta Honda Civic 96 97 98 99 00",
+      "pesquisa_3": "Sensor Tps Posição Borboleta Honda Civic 92 93 94 95 96 4376",
+      "updated_at": "2026-05-27T19:43:21"
+    },
+    "sku::61": {
+      "loja": "Uai Mineirinho",
+      "sku": "61",
+      "produto": "Suporte Tampa Tanque Ford Focus 2009-2019",
+      "pesquisa_1": "Suporte Tampa Tanque Ford Focus 2009 Á 2019",
+      "pesquisa_2": "Suporte Tampa Tanque Ford Focus 2009 Á 2019 Preto",
+      "pesquisa_3": "Suporte Tampa Tanque Focus 2009... 2014 2015 2016 2017 2019",
+      "updated_at": "2026-05-27T19:45:06"
+    },
+    "sku::62": {
+      "loja": "Uai Mineirinho",
+      "sku": "62",
+      "produto": "Manopla Câmbio Automático Ford Focus 2009 2010 11 12 13 Capa Preto",
+      "pesquisa_1": "Manopla Cambio Automatico Ford Focus 09 2010 2011 2012 2013",
+      "pesquisa_2": "Manopla Cambio Automático Preta Ford Focus Ano 2008 Até 2013",
+      "pesquisa_3": "Manopla Câmbio Automático Ford Focus 2009 2010 11 12 13 Capa",
+      "updated_at": "2026-05-27T19:47:05"
+    },
+    "sku::66": {
+      "loja": "Uai Mineirinho",
+      "sku": "66",
+      "produto": "Filtro De Combustível Original Freelander 2 / Evoque 2.0 16v",
+      "pesquisa_1": "Tampa Bomba Combustível Evoque 2.0 Gasolina 2012 2013 2014",
+      "pesquisa_2": "Filtro De Combustível Original Freelander 2 / Evoque 2.0 16v",
+      "pesquisa_3": "Flange Tampa Bomba Combustivel Evoque 2.0 Freelander 2 3.2",
+      "updated_at": "2026-05-27T19:47:50"
+    },
+    "sku::70": {
+      "loja": "Uai Mineirinho",
+      "sku": "70",
+      "produto": "Roda Livre Automática Nissan Frontier 2.8 X-terra Navara Preto",
+      "pesquisa_1": "Roda Livre Automática Nissan Frontier 2.8 X-terra Navara",
+      "pesquisa_2": "Roda Livre Automatica Nissan Frontier Xterra 2.8 Mwm 02 A 07",
+      "pesquisa_3": "Roda Livre Automatica Nissan Frontier Xterra 2.8 Mwm 02 A 07",
+      "updated_at": "2026-05-27T19:48:28"
+    },
+    "sku::70-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "70-K",
+      "produto": "Par De Roda Livre Automática Gptrend Frontier 2.8 Preto",
+      "pesquisa_1": "Par Roda Livre Automática Nissan Frontier X-terra Navara 2pç",
+      "pesquisa_2": "Par De Roda Livre Automática Gptrend Frontier 2.8",
+      "pesquisa_3": "Par Roda Livre Automática Nissan Frontier X-terra Pick Up",
+      "updated_at": "2026-05-27T19:49:28"
+    },
+    "sku::71": {
+      "loja": "Uai Mineirinho",
+      "sku": "71",
+      "produto": "Alavanca Manopla Do Freio De Mão Civic 2006 2009 2010 2011",
+      "pesquisa_1": "Manopla Do Freio De Mão Civic 2006 2009 2010 2011 Alavanca",
+      "pesquisa_2": "Kit Capa Freio De Mão Compatível Civic 2006 A 2011",
+      "pesquisa_3": "Kit Acabamento Alavanca Freio Mão Honda New Civic 2007-2011",
+      "updated_at": "2026-05-27T19:50:14"
+    },
+    "sku::78": {
+      "loja": "Uai Mineirinho",
+      "sku": "78",
+      "produto": "Bomba D'agua Solar, Aquario, Alta Pressão 12v Dc 19w Mo",
+      "pesquisa_1": "Bomba D'agua Solar, Aquario, Alta Pressão 12v/24v Dc 19w",
+      "pesquisa_2": "Bomba D'agua Solar, Aquario, Alta Pressão 12v/24v Dc 19w Motor Sem Escova (elevaçao Ate 6m)",
+      "pesquisa_3": "Mini Bomba D'agua 12 Volts 600-800 Litros/h Coluna 4m-5m 19w",
+      "updated_at": "2026-05-27T19:50:58"
+    },
+    "sku::79": {
+      "loja": "Uai Mineirinho",
+      "sku": "79",
+      "produto": "Bomba D'agua Solar, Aquario, Alta Pressão 12v Dc 19w Mo",
+      "pesquisa_1": "Bomba D'agua Solar, Aquario, Alta Pressão 12v/24v Dc 19w",
+      "pesquisa_2": "Bomba D'agua Solar, Aquario, Alta Pressão 12v/24v Dc 19w Motor Sem Escova (elevaçao Ate 6m)",
+      "pesquisa_3": "Mini Bomba D'agua 12 Volts 600-800 Litros/h Coluna 4m-5m 19w",
+      "updated_at": "2026-05-27T19:51:40"
+    },
+    "sku::80": {
+      "loja": "Uai Mineirinho",
+      "sku": "80",
+      "produto": "Válvula Termostática Land Rover Freelander 2 3.2 Volvo Xc60",
+      "pesquisa_1": "Válvula Termostática Freelander 2 Motor 3.2 2009 2010 2011",
+      "pesquisa_2": "Válvula Termostática Para Land Rover Freelander 2 3.2 07a14",
+      "pesquisa_3": "Válvula Termostática Volvo Xc60 Xc70 560 580 V60 V70 3.0 3.2",
+      "updated_at": "2026-05-27T19:52:15"
+    },
+    "sku::81": {
+      "loja": "Uai Mineirinho",
+      "sku": "81",
+      "produto": "Lâmpada Xênon D4r Toyota Corolla Seg Altis Farol Baixo 2010",
+      "pesquisa_1": "Lampada Xenon D4s Ou D4r 35w 6000k Corolla Camry Hilux Subar",
+      "pesquisa_2": "Lâmpada D4r Xenon Original Toyota Corolla Seg Alti 6000k 1un",
+      "pesquisa_3": "Lampada Xenon D4r 35w 6000k Branca Para Corolla Camry Hilux",
+      "updated_at": "2026-05-27T19:52:41"
+    },
+    "sku::81-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "81-K",
+      "produto": "Jogo 2 Lâmpada Xenon Farol Corolla Seg Altis D4r 6000k Toyot",
+      "pesquisa_1": "Par Lampada Xenon Corolla D4r 35w Altis Seg Original Toyota",
+      "pesquisa_2": "Jogo 2 Lâmpada Xenon Farol Corolla Seg Altis D4r 6000k Toyot",
+      "pesquisa_3": "Par De Lampada Xenon D4r Toyota Corolla Altis 2011 2012 2013",
+      "updated_at": "2026-05-27T19:53:17"
+    },
+    "sku::82": {
+      "loja": "Uai Mineirinho",
+      "sku": "82",
+      "produto": "Lampada Xenon D4r 35w 4300k Corolla, Camry, Hilux Subaro 1un",
+      "pesquisa_1": "Lâmpada Shocklight Xenon D4r 4300k 35w 12v Luz Amarela",
+      "pesquisa_2": "",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-27T19:54:10"
+    },
+    "sku::82-K": {
+      "loja": "Uai Mineirinho",
+      "sku": "82-K",
+      "produto": "Lampada Xenon D4r 35w 4300k Corolla Camry Hilux Subaro 2un",
+      "pesquisa_1": "Par Lâmpadas Xenon D4r 4300k 35w Toyota Corolla Hilux Sw4",
+      "pesquisa_2": "Par Lâmpada D4r 4300k 12v 35w Luz Branca Neutra Corolla Hilu",
+      "pesquisa_3": "Par Lâmpadas Xenon D4r 4300k 35w Toyota Corolla Hilux Sw4",
+      "updated_at": "2026-05-27T19:54:44"
+    },
+    "sku::94-1": {
+      "loja": "JK Peças",
+      "sku": "94-1",
+      "produto": "Emblemas Lateral Grade Traseiro Rline Modelo 2021",
+      "pesquisa_1": "Emblema Grade Lateral R-line Polo Jetta Golf Tiguan",
+      "pesquisa_2": "Emblemas Lateral Grade Traseiro Rline Modelo 2021",
+      "pesquisa_3": "",
+      "updated_at": "2026-05-29T14:32:10"
+    },
+    "sku::94-3": {
+      "loja": "Uai Mineirinho",
+      "sku": "94-3",
+      "produto": "Emblema Lateral Preto Porta Vw Tiguan 2018 Mk2 All Space Preto",
+      "pesquisa_1": "Emblema Lateral Preto Porta Vw Tiguan 2018 Mk2 All Space",
+      "pesquisa_2": "Emblema Acessorio Lateral Porta Vw Tiguan 2018 Mk2 All Space",
+      "pesquisa_3": "Emblema Lateral Todo Preto Porta Vw Tiguan 2018 All Space",
+      "updated_at": "2026-05-27T19:55:27"
+    },
+    "sku::99": {
+      "loja": "Uai Mineirinho",
+      "sku": "99",
+      "produto": "Sincronizador Calibrador Tpms Sensor Pneu Gm Cobalt S10 Onix",
+      "pesquisa_1": "Sincronizador Calibrador Tpms Sensor Pneu Gm Cobalt S10 Onix",
+      "pesquisa_2": "El-50449 Sensor Sincronizador Pressão Pneus Ford Fusion Edge",
+      "pesquisa_3": "Sincronizador Calibrador Sensor Pressão Pneu Tpms Ford C/ Nf",
+      "updated_at": "2026-05-27T19:56:33"
+    },
+    "sku::99-1": {
+      "loja": "Uai Mineirinho",
+      "sku": "99-1",
+      "produto": "Ferramenta De Ativação Sensor Pressão Pneu Tpms Gm El 50448",
+      "pesquisa_1": "Ferramenta De Ativação Sensor Pressão Pneu Tpms Gm El 50448",
+      "pesquisa_2": "Ferramenta Sincronizadora Ativação Sensor Pressão Pneu Tpms",
+      "pesquisa_3": "Ferramenta Ativação Sensor Pressão Pneu Tpms Sincronizador",
+      "updated_at": "2026-05-27T19:57:13"
     }
   },
-  "updated_at": "2026-05-26T13:08:52"
+  "updated_at": "2026-06-01T08:42:08"
 }

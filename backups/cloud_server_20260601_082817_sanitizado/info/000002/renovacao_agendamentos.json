@@ -1,0 +1,152 @@
+{
+  "agendamentos": [
+    {
+      "enabled": false,
+      "loja": "Carlos José",
+      "campanha_id": "C-MLB3646809",
+      "nome": "Promo Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-20T10:33:28",
+      "last_run_key": null,
+      "last_result": null,
+      "last_error": ""
+    },
+    {
+      "enabled": false,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB4170657",
+      "nome": "FULL DESOVA 18-24 Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-20T10:44:54",
+      "last_run_key": null,
+      "last_result": null,
+      "last_error": ""
+    },
+    {
+      "enabled": false,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB3646012",
+      "nome": "Promo Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-30T13:10:38",
+      "last_run_key": "2026-05",
+      "last_result": {
+        "executed_at": "2026-05-30T18:01:19",
+        "nova_campanha": {
+          "id": "C-MLB4200924",
+          "nome": "Promo Junho",
+          "start_date": "2026-06-01T03:00:00Z",
+          "finish_date": "2026-06-30T02:59:59Z",
+          "existente": true
+        },
+        "campanha_existente": true,
+        "total_origem": 75,
+        "mlbs_ja_presentes": 74,
+        "faltantes": 1,
+        "incluidos": 1,
+        "falhas_total": 0
+      },
+      "last_error": ""
+    },
+    {
+      "enabled": false,
+      "loja": "Uai Mineirinho",
+      "campanha_id": "C-MLB3647368",
+      "nome": "Promo Junho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-30T13:47:02",
+      "last_run_key": "2026-05",
+      "last_result": {
+        "executed_at": "2026-05-30T18:07:16",
+        "nova_campanha": {
+          "id": "C-MLB3973332",
+          "nome": "Promo Junho",
+          "start_date": "2026-06-01T03:00:00Z",
+          "finish_date": "2026-07-01T02:59:59Z",
+          "existente": true
+        },
+        "campanha_existente": true,
+        "total_origem": 59,
+        "mlbs_ja_presentes": 59,
+        "faltantes": 0,
+        "incluidos": 0,
+        "falhas_total": 0
+      },
+      "last_error": ""
+    },
+    {
+      "enabled": true,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB4200924",
+      "nome": "Promo Julho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-30T18:11:19",
+      "last_run_key": "2026-05",
+      "last_result": {
+        "executed_at": "2026-05-30T18:06:09",
+        "nova_campanha": {
+          "id": "C-MLB4318820",
+          "nome": "Promo Julho",
+          "start_date": "2026-07-01T00:00:00",
+          "finish_date": "2026-07-15T23:59:59",
+          "existente": false
+        },
+        "campanha_existente": false,
+        "total_origem": 76,
+        "mlbs_ja_presentes": 0,
+        "faltantes": 76,
+        "incluidos": 57,
+        "falhas_total": 19
+      },
+      "last_error": ""
+    },
+    {
+      "enabled": true,
+      "loja": "JK Peças",
+      "campanha_id": "C-MLB4318820",
+      "nome": "Promo Agosto",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-30T18:11:19",
+      "last_run_key": "2026-05",
+      "last_result": null,
+      "last_error": ""
+    },
+    {
+      "enabled": true,
+      "loja": "Uai Mineirinho",
+      "campanha_id": "C-MLB3973332",
+      "nome": "Promo Julho",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-30T18:11:19",
+      "last_run_key": "2026-05",
+      "last_result": {
+        "executed_at": "2026-05-30T18:11:19",
+        "nova_campanha": {
+          "id": "C-MLB4318849",
+          "nome": "Promo Julho",
+          "start_date": "2026-07-01T00:00:00",
+          "finish_date": "2026-07-15T23:59:59",
+          "existente": false
+        },
+        "campanha_existente": false,
+        "total_origem": 60,
+        "mlbs_ja_presentes": 0,
+        "faltantes": 60,
+        "incluidos": 52,
+        "falhas_total": 8
+      },
+      "last_error": ""
+    },
+    {
+      "enabled": true,
+      "loja": "Uai Mineirinho",
+      "campanha_id": "C-MLB4318849",
+      "nome": "Promo Agosto",
+      "promotion_type": "SELLER_CAMPAIGN",
+      "updated_at": "2026-05-30T18:11:19",
+      "last_run_key": "2026-05",
+      "last_result": null,
+      "last_error": ""
+    }
+  ]
+}

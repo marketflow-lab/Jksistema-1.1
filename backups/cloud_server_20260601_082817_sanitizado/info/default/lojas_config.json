@@ -1,0 +1,30 @@
+[
+  {
+    "nome": "Deckas",
+    "integracoes": {
+      "mercadolivre": {
+        "id": "2030250326260024",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": true,
+        "updated_at": "1777032607.7168448",
+        "user_id": 2594469855,
+        "app_id": "2030250326260024",
+        "client_secret": "***REDACTED***"
+      },
+      "bling": {
+        "id": "8b064f8ee198c3ce2fe001b5864e719832944ad5",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": true,
+        "updated_at": "1769686196.4136841"
+      },
+      "mercadoturbo": {
+        "token": "***REDACTED***",
+        "connected": true
+      }
+    }
+  }
+]

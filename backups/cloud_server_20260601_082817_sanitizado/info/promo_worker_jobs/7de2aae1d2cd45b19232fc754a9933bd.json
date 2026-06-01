@@ -1,0 +1,270 @@
+{
+  "client_id": "000002",
+  "loja": "JK Peças",
+  "status": "running",
+  "progress": 73,
+  "message": "Em processamento... Montando analise 5/30 com dados da API...",
+  "created_at": 1779825721.7255504,
+  "cancel_requested": false,
+  "logs": [
+    {
+      "ts": 1779825833.7705772,
+      "message": "Consultando dados de 4 anuncio(s) da Promocao 2...",
+      "progress": 56,
+      "details": {
+        "solicitacao_atual": 2,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 4
+      }
+    },
+    {
+      "ts": 1779825834.147722,
+      "message": "Montando analise 2/30 com dados da API...",
+      "progress": 71,
+      "details": {
+        "solicitacao_atual": 2,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 4
+      }
+    },
+    {
+      "ts": 1779825835.8221927,
+      "message": "Consultando Promocao 2 3/30: PROMO BLING ABR26 - started (P-MLB17449016)",
+      "progress": 37,
+      "details": {
+        "solicitacao_atual": 3,
+        "solicitacoes_total": 30,
+        "promo_b": "P-MLB17449016"
+      }
+    },
+    {
+      "ts": 1779825837.9354658,
+      "message": "Consultando dados de 4 anuncio(s) da Promocao 2...",
+      "progress": 57,
+      "details": {
+        "solicitacao_atual": 3,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 4
+      }
+    },
+    {
+      "ts": 1779825838.2679384,
+      "message": "Montando analise 3/30 com dados da API...",
+      "progress": 72,
+      "details": {
+        "solicitacao_atual": 3,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 4
+      }
+    },
+    {
+      "ts": 1779825839.8563855,
+      "message": "Consultando Promocao 2 4/30: Venda Mais Audio Maio26 - started (P-MLB17543010)",
+      "progress": 38,
+      "details": {
+        "solicitacao_atual": 4,
+        "solicitacoes_total": 30,
+        "promo_b": "P-MLB17543010"
+      }
+    },
+    {
+      "ts": 1779825841.631319,
+      "message": "Consultando dados de 2 anuncio(s) da Promocao 2...",
+      "progress": 57,
+      "details": {
+        "solicitacao_atual": 4,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 2
+      }
+    },
+    {
+      "ts": 1779825841.9665267,
+      "message": "Montando analise 4/30 com dados da API...",
+      "progress": 72,
+      "details": {
+        "solicitacao_atual": 4,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 2
+      }
+    },
+    {
+      "ts": 1779825843.4295735,
+      "message": "Em processamento... Montando analise 4/30 com dados da API...",
+      "progress": 72
+    },
+    {
+      "ts": 1779825843.6388302,
+      "message": "Consultando Promocao 2 5/30: Meli Essencial Maio - started (P-MLB17519170)",
+      "progress": 39,
+      "details": {
+        "solicitacao_atual": 5,
+        "solicitacoes_total": 30,
+        "promo_b": "P-MLB17519170"
+      }
+    },
+    {
+      "ts": 1779825851.8486927,
+      "message": "Consultando dados de 752 anuncio(s) da Promocao 2...",
+      "progress": 58,
+      "details": {
+        "solicitacao_atual": 5,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 752
+      }
+    },
+    {
+      "ts": 1779825854.444057,
+      "message": "Montando analise 5/30 com dados da API...",
+      "progress": 73,
+      "details": {
+        "solicitacao_atual": 5,
+        "solicitacoes_total": 30,
+        "itens_solicitacao": 752
+      }
+    },
+    {
+      "ts": 1779825858.5948248,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779825873.7591956,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779825888.90201,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779825910.842917,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779825943.342904,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779825978.8429284,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826007.3429208,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826042.0429726,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826068.8428912,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826092.0430136,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826138.4429276,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826162.9428911,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826187.1428895,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826225.4505653,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826254.6429963,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826293.84287,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826333.3429585,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826361.4429245,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826413.9428885,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826441.2429352,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826471.3428855,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826499.4429157,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826538.1430824,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826578.0429945,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826657.1429384,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826687.3429134,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826743.7429707,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    },
+    {
+      "ts": 1779826782.2429373,
+      "message": "Em processamento... Montando analise 5/30 com dados da API...",
+      "progress": 73
+    }
+  ],
+  "result": null,
+  "error": null,
+  "updated_at": 1779826782.24296,
+  "worker_thread": "promo-api-job-7de2aae1"
+}

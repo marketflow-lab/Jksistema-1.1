@@ -1,0 +1,116 @@
+[
+  {
+    "nome": "JK Peças",
+    "integracoes": {
+      "mercadolivre": {
+        "id": "6098878445709862",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": true,
+        "updated_at": "1780298571.075272",
+        "user_id": 588182191,
+        "app_id": "6098878445709862",
+        "client_secret": "***REDACTED***",
+        "site_id": "MLB"
+      },
+      "bling": {
+        "connected": false,
+        "access_token": "***REDACTED***",
+        "api_key": "***REDACTED***",
+        "legacy_source": "bling_conf.json"
+      }
+    }
+  },
+  {
+    "nome": "Uai Mineirinho",
+    "integracoes": {
+      "criacao": {
+        "data": "2026-05-18 16:26:56.368864"
+      },
+      "mercadolivre": {
+        "connected": true,
+        "id": "7999590330049592",
+        "app_id": "7999590330049592",
+        "secret": "***REDACTED***",
+        "client_secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "user_id": 375033834,
+        "status": "conectado",
+        "motivo": "",
+        "scope": "offline_access read urn:global:admin:info:/read-only urn:global:admin:info:/read-write urn:global:admin:oauth:/read-only urn:global:admin:oauth:/read-write urn:global:admin:users:/read-only urn:ml:all:comunication:/read-write urn:ml:all:publish-sync:/read-write urn:ml:mktp:ads:/read-write urn:ml:mktp:comunication:/read-write urn:ml:mktp:offers:/read-write urn:ml:mktp:orders-shipments:/read-write urn:ml:mktp:publish-sync:/read-write urn:ml:vis:comunication:/read-write urn:ml:vis:publish-sync:/read-write write",
+        "updated_at": "1780298589.907654",
+        "site_id": "MLB"
+      },
+      "bling": {
+        "id": "15b374274692278391fdab768165205db7f0e1df",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": true,
+        "updated_at": "1779998450.8491912"
+      }
+    }
+  },
+  {
+    "nome": "Carlos José",
+    "integracoes": {
+      "criacao": {
+        "data": "2026-05-18 16:27:03.912136"
+      },
+      "bling": {
+        "id": "4ec013e3758e3e6cc9f4280b7fc902e61ad86402",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": true,
+        "updated_at": "1779877348.9662404"
+      },
+      "mercadolivre": {
+        "id": "72549672428910",
+        "app_id": "72549672428910",
+        "secret": "***REDACTED***",
+        "client_secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "user_id": 1275608482,
+        "connected": true,
+        "updated_at": "1780298618.214403",
+        "site_id": "MLB"
+      }
+    }
+  },
+  {
+    "nome": "Deckas",
+    "integracoes": {
+      "criacao": {
+        "data": "2026-05-19 14:09:06.045051"
+      },
+      "bling": {
+        "id": "8b064f8ee198c3ce2fe001b5864e719832944ad5",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": true,
+        "updated_at": "1769686196.4136841"
+      },
+      "mercadolivre": {
+        "id": "2030250326260024",
+        "app_id": "2030250326260024",
+        "secret": "***REDACTED***",
+        "client_secret": "***REDACTED***",
+        "connected": true,
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "user_id": 2594469855,
+        "updated_at": "1780298660.374513",
+        "site_id": "MLB"
+      },
+      "mercadoturbo": {
+        "token": "***REDACTED***",
+        "connected": true
+      }
+    }
+  }
+]

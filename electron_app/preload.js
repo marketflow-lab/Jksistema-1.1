@@ -5,7 +5,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
     getClientConfig: () => ipcRenderer.invoke('get-client-config'),
     saveClientConfig: (appUrl) => ipcRenderer.invoke('save-client-config', appUrl),
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    onAutoUpdateStatus: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('auto-update-status', listener);
+        return () => ipcRenderer.removeListener('auto-update-status', listener);
+    },
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
+    ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     flushBrowserSession: () => ipcRenderer.invoke('flush-browser-session'),
     getMlPublicItemInfo: (itemId) => ipcRenderer.invoke('ml-public-item-info', itemId),
     getMlBrowserItemInfo: (itemId, url) => ipcRenderer.invoke('ml-browser-item-info', itemId, url),

@@ -1,0 +1,10 @@
+{
+  "client_id": "000002",
+  "loja": "JK Peças",
+  "servico": "bling",
+  "id": "8b064f8ee198c3ce2fe001b5864e719832944ad5",
+  "secret": "***REDACTED***",
+  "state": "bQHNmb0ycyQ3lTn_GIIP15te5Nt7AYZt",
+  "redirect_uri": "https://jk-sistema-api-1077918177671.southamerica-east1.run.app/auth/callback",
+  "created_at": 1780077341.132326
+}

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "scopes": {
+    "JK Peças::caio": {
+      "ambiente": "prod",
+      "client_id": "yyp2KHWlRLFTXNdR2M5Ews2W09-dooUS",
+      "client_secret": "***REDACTED***",
+      "role_type": "IMPEXP",
+      "authorization_header_type": "***REDACTED***",
+      "codigo_pais_padrao": 741,
+      "tipo_operacao_padrao": "I",
+      "regime_tributario": "simples"
+    }
+  },
+  "meta": {
+    "last_scope_key": "JK Peças::caio"
+  }
+}

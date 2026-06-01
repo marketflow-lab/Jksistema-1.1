@@ -14,19 +14,26 @@ if (!electron || !electron.app) {
     process.exit(0);
 }
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, net, shell } = electron;
+const { app, BrowserWindow, BrowserView, ipcMain, session, net, shell, dialog } = electron;
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
+let autoUpdater = null;
+try {
+    ({ autoUpdater } = require('electron-updater'));
+} catch (err) {
+    console.warn('[Atualizacao] electron-updater indisponivel:', err && err.message ? err.message : err);
+}
 
 // Evita crash silencioso de GPU em alguns ambientes Windows.
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-http-cache');
 app.setName('JK Sistema Cliente');
 
-const JK_DEFAULT_APP_URL = 'https://jk-sistema-api-1077918177671.southamerica-east1.run.app/frontend_index.html';
+const JK_DEFAULT_APP_URL = 'https://jk-sistema-api-1077918177671.southamerica-east1.run.app/dashboard.html';
 
 function resolveAppRootDir() {
     const candidates = [
@@ -68,9 +75,13 @@ let internalBrowserWindow = null;
 let embeddedMlBrowserView = null;
 let embeddedMlBrowserOwner = null;
 let chromeExtensionsLoadPromise = null;
+let chromeExtensionSessionEventsRegistered = false;
+let updateEventsRegistered = false;
+let updateCheckInProgress = false;
 const mlItemInfoCache = new Map();
 const ML_ITEM_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
+const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 
 function logElectronLifecycle(...args) {
     const logDir = path.join(getAppRootDir(), 'logs');
@@ -200,6 +211,174 @@ function _cacheSet(cacheMap, key, value) {
     cacheMap.set(key, { at: _cacheNowMs(), value });
 }
 
+function normalizeUpdateInfo(info) {
+    if (!info || typeof info !== 'object') {
+        return null;
+    }
+    return {
+        version: info.version || '',
+        releaseName: info.releaseName || '',
+        releaseDate: info.releaseDate || '',
+        files: Array.isArray(info.files) ? info.files.length : 0
+    };
+}
+
+function getUpdateErrorMessage(err) {
+    if (!err) return 'Erro desconhecido ao verificar atualizacao.';
+    return String(err.message || err).slice(0, 500);
+}
+
+function sendUpdateStatus(status, payload = {}) {
+    const message = { status, ...payload };
+    logElectronLifecycle('auto-update-status', message);
+    for (const win of BrowserWindow.getAllWindows()) {
+        try {
+            if (!win.isDestroyed()) {
+                win.webContents.send('auto-update-status', message);
+            }
+        } catch (_err) {}
+    }
+}
+
+function registerAutoUpdateEvents() {
+    if (!autoUpdater || updateEventsRegistered) return false;
+    updateEventsRegistered = true;
+
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.allowPrerelease = false;
+
+    autoUpdater.on('checking-for-update', () => {
+        sendUpdateStatus('checking');
+    });
+    autoUpdater.on('update-available', (info) => {
+        sendUpdateStatus('available', { updateInfo: normalizeUpdateInfo(info) });
+    });
+    autoUpdater.on('update-not-available', (info) => {
+        sendUpdateStatus('not-available', { updateInfo: normalizeUpdateInfo(info) });
+    });
+    autoUpdater.on('download-progress', (progress) => {
+        sendUpdateStatus('downloading', {
+            percent: Math.round(Number(progress && progress.percent || 0)),
+            transferred: progress && progress.transferred || 0,
+            total: progress && progress.total || 0
+        });
+    });
+    autoUpdater.on('error', (err) => {
+        sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+        const version = info && info.version ? ` ${info.version}` : '';
+        sendUpdateStatus('downloaded', { updateInfo: normalizeUpdateInfo(info) });
+        dialog.showMessageBox({
+            type: 'info',
+            buttons: ['Reiniciar agora', 'Depois'],
+            defaultId: 0,
+            cancelId: 1,
+            title: 'Atualizacao pronta',
+            message: `Uma nova versao${version} foi baixada.`,
+            detail: 'Reinicie o aplicativo para instalar a atualizacao.'
+        }).then((result) => {
+            if (result.response === 0) {
+                autoUpdater.quitAndInstall(false, true);
+            }
+        }).catch((err) => {
+            logElectronLifecycle('auto-update-dialog-error', err);
+        });
+    });
+    return true;
+}
+
+async function checkForUpdates(manual = false) {
+    if (!app.isPackaged) {
+        const result = {
+            success: false,
+            skipped: true,
+            reason: 'Atualizacao automatica funciona apenas no app instalado.'
+        };
+        if (manual) {
+            await dialog.showMessageBox({
+                type: 'info',
+                title: 'Atualizacao',
+                message: result.reason
+            });
+        }
+        return result;
+    }
+    if (!autoUpdater) {
+        const result = {
+            success: false,
+            skipped: true,
+            reason: 'electron-updater nao esta disponivel neste pacote.'
+        };
+        if (manual) {
+            await dialog.showMessageBox({
+                type: 'warning',
+                title: 'Atualizacao indisponivel',
+                message: result.reason
+            });
+        }
+        return result;
+    }
+    if (updateCheckInProgress) {
+        return { success: true, checking: true };
+    }
+
+    registerAutoUpdateEvents();
+    updateCheckInProgress = true;
+    try {
+        const result = await autoUpdater.checkForUpdates();
+        if (manual && !(result && result.updateInfo && result.updateInfo.version && result.updateInfo.version !== app.getVersion())) {
+            await dialog.showMessageBox({
+                type: 'info',
+                title: 'Atualizacao',
+                message: 'Voce ja esta usando a versao mais recente.'
+            });
+        }
+        return {
+            success: true,
+            updateInfo: normalizeUpdateInfo(result && result.updateInfo)
+        };
+    } catch (err) {
+        const message = getUpdateErrorMessage(err);
+        sendUpdateStatus('error', { error: message });
+        if (manual) {
+            await dialog.showMessageBox({
+                type: 'warning',
+                title: 'Erro ao verificar atualizacao',
+                message
+            });
+        }
+        return {
+            success: false,
+            error: message
+        };
+    } finally {
+        updateCheckInProgress = false;
+    }
+}
+
+function scheduleAutoUpdateCheck() {
+    if (process.env.JK_DISABLE_AUTO_UPDATE === '1') {
+        logElectronLifecycle('auto-update-disabled-by-env');
+        return;
+    }
+    if (!app.isPackaged || !autoUpdater) {
+        logElectronLifecycle('auto-update-skipped', {
+            packaged: app.isPackaged,
+            updaterAvailable: !!autoUpdater
+        });
+        return;
+    }
+    registerAutoUpdateEvents();
+    const timer = setTimeout(() => {
+        checkForUpdates(false).catch((err) => {
+            sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
+        });
+    }, 8000);
+    if (typeof timer.unref === 'function') timer.unref();
+}
+
 function getMlSession() {
     if (!mlSession) {
         mlSession = session.fromPartition(JK_BROWSER_SESSION_PARTITION);
@@ -281,7 +460,7 @@ function ensureUserConfigFile(paths) {
     const bundled = readJsonFile(paths.bundledConfig) || readJsonFile(paths.devConfig);
     writeJsonFile(paths.userConfig, bundled || {
         appUrl: JK_DEFAULT_APP_URL,
-        notes: 'Altere appUrl para o endereco do seu servidor, por exemplo: https://seu-servidor.com/frontend_index.html'
+        notes: 'Altere appUrl para o endereco do seu servidor, por exemplo: https://seu-servidor.com/dashboard.html'
     });
 }
 
@@ -421,7 +600,7 @@ function renderServerSetupScreen(win, clientConfig) {
         <p>Informe o endereco do servidor do JK Sistema. Essa configuracao sera salva neste computador.</p>
         <form id="form">
             <label for="serverUrl">Endereco do servidor</label>
-            <input id="serverUrl" type="url" placeholder="https://seu-servidor.com/frontend_index.html" value="${currentUrl.replace(/"/g, '&quot;')}" required>
+            <input id="serverUrl" type="url" placeholder="https://seu-servidor.com/dashboard.html" value="${currentUrl.replace(/"/g, '&quot;')}" required>
             <div id="error" class="error"></div>
             <div class="actions">
                 <button id="save" type="submit">Salvar e abrir</button>
@@ -467,10 +646,69 @@ function getChromeExtensionsRoots() {
     return Array.from(new Set(roots.map(root => path.resolve(root))));
 }
 
+function compareVersionStrings(left, right) {
+    const a = String(left || '').split('.').map(value => Number(value) || 0);
+    const b = String(right || '').split('.').map(value => Number(value) || 0);
+    const size = Math.max(a.length, b.length);
+    for (let i = 0; i < size; i += 1) {
+        const diff = (a[i] || 0) - (b[i] || 0);
+        if (diff) return diff;
+    }
+    return 0;
+}
+
+function findInstalledChromeExtensionVersions(extensionId) {
+    const chromeUserData = process.env.LOCALAPPDATA
+        ? path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data')
+        : '';
+    if (!chromeUserData || !fs.existsSync(chromeUserData)) return [];
+
+    const candidates = [];
+    for (const profile of fs.readdirSync(chromeUserData, { withFileTypes: true })) {
+        if (!profile.isDirectory()) continue;
+        if (profile.name !== 'Default' && !/^Profile\s+\d+$/i.test(profile.name)) continue;
+        const extensionRoot = path.join(chromeUserData, profile.name, 'Extensions', extensionId);
+        if (!fs.existsSync(extensionRoot)) continue;
+        for (const versionEntry of fs.readdirSync(extensionRoot, { withFileTypes: true })) {
+            if (!versionEntry.isDirectory()) continue;
+            const dir = path.join(extensionRoot, versionEntry.name);
+            const manifestPath = path.join(dir, 'manifest.json');
+            if (!fs.existsSync(manifestPath)) continue;
+            let stat = null;
+            try { stat = fs.statSync(manifestPath); } catch (_err) {}
+            candidates.push({
+                dir,
+                profile: profile.name,
+                version: versionEntry.name.replace(/_\d+$/i, ''),
+                mtimeMs: stat ? stat.mtimeMs : 0
+            });
+        }
+    }
+
+    return candidates
+        .sort((left, right) => {
+            const versionDiff = compareVersionStrings(right.version, left.version);
+            if (versionDiff) return versionDiff;
+            return (right.mtimeMs || 0) - (left.mtimeMs || 0);
+        })
+        .map(item => item.dir);
+}
+
+function getChromeExtensionManifestIdentity(extensionDir) {
+    try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
+        return manifest.key || manifest.update_url && manifest.name || manifest.name || extensionDir;
+    } catch (_err) {
+        return extensionDir;
+    }
+}
+
 function findUnpackedChromeExtensions() {
     const candidates = [];
+    const explicitRoots = process.env.JK_CHROME_EXTENSIONS_DIR ? [path.resolve(process.env.JK_CHROME_EXTENSIONS_DIR)] : [];
+    const chromeInstalledExtensions = findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID);
 
-    for (const root of getChromeExtensionsRoots()) {
+    for (const root of [...explicitRoots, ...chromeInstalledExtensions, ...getChromeExtensionsRoots()]) {
         if (!fs.existsSync(root)) continue;
 
         const rootManifest = path.join(root, 'manifest.json');
@@ -488,14 +726,24 @@ function findUnpackedChromeExtensions() {
         }
     }
 
-    return Array.from(new Set(candidates));
+    const seen = new Set();
+    const unique = [];
+    for (const candidate of Array.from(new Set(candidates.map(item => path.resolve(item))))) {
+        const identity = getChromeExtensionManifestIdentity(candidate);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        unique.push(candidate);
+    }
+    return unique;
 }
 
 async function loadChromeExtensionsForMlSession() {
     const ses = getMlSession();
+    registerChromeExtensionSessionEvents(ses);
     const extensionDirs = findUnpackedChromeExtensions();
 
     if (!extensionDirs.length) {
+        logElectronLifecycle('chrome-extensions-none-found');
         console.log('[Extensoes] Nenhuma extensao descompactada encontrada em extensoes_chrome.');
         return [];
     }
@@ -505,12 +753,51 @@ async function loadChromeExtensionsForMlSession() {
         try {
             const ext = await ses.loadExtension(extensionDir, { allowFileAccess: true });
             loaded.push(ext);
+            logElectronLifecycle('chrome-extension-loaded-by-script', {
+                id: ext && ext.id,
+                name: ext && ext.name,
+                path: extensionDir,
+                url: ext && ext.url
+            });
             console.log(`[Extensoes] Carregada: ${ext.name || ext.id} (${extensionDir})`);
         } catch (err) {
+            logElectronLifecycle('chrome-extension-load-failed', {
+                path: extensionDir,
+                error: err && err.message ? err.message : String(err)
+            });
             console.error(`[Extensoes] Falha ao carregar ${extensionDir}:`, err && err.message ? err.message : err);
         }
     }
     return loaded;
+}
+
+function registerChromeExtensionSessionEvents(ses) {
+    if (!ses || chromeExtensionSessionEventsRegistered) return;
+    chromeExtensionSessionEventsRegistered = true;
+    ses.on('extension-loaded', (_event, ext) => {
+        logElectronLifecycle('chrome-extension-loaded', {
+            id: ext && ext.id,
+            name: ext && ext.name,
+            path: ext && ext.path,
+            url: ext && ext.url
+        });
+    });
+    ses.on('extension-ready', (_event, ext) => {
+        logElectronLifecycle('chrome-extension-ready', {
+            id: ext && ext.id,
+            name: ext && ext.name,
+            path: ext && ext.path,
+            url: ext && ext.url
+        });
+    });
+    ses.on('extension-unloaded', (_event, ext) => {
+        logElectronLifecycle('chrome-extension-unloaded', {
+            id: ext && ext.id,
+            name: ext && ext.name,
+            path: ext && ext.path,
+            url: ext && ext.url
+        });
+    });
 }
 
 function ensureChromeExtensionsForMlSession() {
@@ -521,6 +808,17 @@ function ensureChromeExtensionsForMlSession() {
         });
     }
     return chromeExtensionsLoadPromise;
+}
+
+function getLoadedChromeExtensionsForMlSession() {
+    const ses = getMlSession();
+    if (!ses || typeof ses.getAllExtensions !== 'function') return [];
+    return ses.getAllExtensions().map(ext => ({
+        id: ext && ext.id,
+        name: ext && ext.name,
+        path: ext && ext.path,
+        url: ext && ext.url
+    }));
 }
 
 function getMachineInfo() {
@@ -1008,7 +1306,7 @@ async function extractMlInfoByBrowser(itemId, targetUrl) {
 function isAllowedNavigationUrl(targetUrl) {
     const value = String(targetUrl || '').trim();
     if (!value) return true;
-    return /^(https?:|about:blank|data:text\/html)/i.test(value);
+    return /^(https?:|about:blank|data:text\/html|chrome-extension:)/i.test(value);
 }
 
 function getNavigationEventUrl(urlOrDetails, maybeDetails) {
@@ -1108,7 +1406,8 @@ function normalizarBoundsNavegadorMl(bounds) {
     return { x, y, width, height };
 }
 
-function ensureEmbeddedMlBrowser(parent) {
+function ensureEmbeddedMlBrowser(parent, options = {}) {
+    const shouldAttach = options.attach !== false;
     const owner = parent && !parent.isDestroyed() ? parent : mainWindow;
     if (!owner || owner.isDestroyed()) {
         throw new Error('Janela principal indisponivel para abrir o navegador do Mercado Livre.');
@@ -1128,6 +1427,13 @@ function ensureEmbeddedMlBrowser(parent) {
         embeddedMlBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
             logElectronLifecycle('embedded-ml-browser-fail-load', { errorCode, errorDescription, validatedURL });
         });
+    }
+    if (!shouldAttach) {
+        if (embeddedMlBrowserOwner && !embeddedMlBrowserOwner.isDestroyed()) {
+            try { embeddedMlBrowserOwner.removeBrowserView(embeddedMlBrowserView); } catch (_err) {}
+        }
+        embeddedMlBrowserOwner = null;
+        return embeddedMlBrowserView;
     }
     if (embeddedMlBrowserOwner && embeddedMlBrowserOwner !== owner && !embeddedMlBrowserOwner.isDestroyed()) {
         try { embeddedMlBrowserOwner.removeBrowserView(embeddedMlBrowserView); } catch (_err) {}
@@ -1280,12 +1586,22 @@ app.whenReady().then(async () => {
     ipcMain.handle('get-browser-session-partition', () => {
         return getBrowserSessionPartition();
     });
+    ipcMain.handle('ensure-browser-extensions', async () => {
+        await ensureChromeExtensionsForMlSession();
+        return {
+            success: true,
+            extensions: getLoadedChromeExtensionsForMlSession()
+        };
+    });
     ipcMain.handle('flush-browser-session', async () => {
         await flushPersistentSessions();
         return { success: true };
     });
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();
+    });
+    ipcMain.handle('check-for-updates', async () => {
+        return await checkForUpdates(true);
     });
     ipcMain.handle('get-client-config', () => {
         const config = loadClientConfig();
@@ -1396,8 +1712,11 @@ app.whenReady().then(async () => {
         }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-        const view = ensureEmbeddedMlBrowser(parent);
-        view.setBounds(normalizarBoundsNavegadorMl(bounds));
+        const background = !!(bounds && bounds.background);
+        const view = ensureEmbeddedMlBrowser(parent, { attach: !background });
+        if (!background) {
+            view.setBounds(normalizarBoundsNavegadorMl(bounds));
+        }
         const currentUrl = view.webContents.getURL();
         if (currentUrl !== url) {
             await view.webContents.loadURL(url);
@@ -1405,6 +1724,10 @@ app.whenReady().then(async () => {
         return { success: true, url: view.webContents.getURL() || url };
     });
     ipcMain.handle('embedded-ml-browser-position', async (event, bounds) => {
+        if (bounds && bounds.background) {
+            hideEmbeddedMlBrowser();
+            return { success: true };
+        }
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const view = ensureEmbeddedMlBrowser(parent);
         view.setBounds(normalizarBoundsNavegadorMl(bounds));
@@ -1637,6 +1960,7 @@ app.whenReady().then(async () => {
     });
 
     createWindow();
+    scheduleAutoUpdateCheck();
     const stableTimer = setTimeout(() => {
         clearStartupIncomplete();
         logElectronLifecycle('startup-stable');

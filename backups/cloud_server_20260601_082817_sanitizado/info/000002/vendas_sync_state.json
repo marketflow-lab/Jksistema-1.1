@@ -1,0 +1,21 @@
+{
+  "jobs": {
+    "71fe6f0f3e6f361c77f3ff8b580347aae92313ac": {
+      "id": "71fe6f0f3e6f361c77f3ff8b580347aae92313ac",
+      "loja": "JK Peças",
+      "data_inicio": "2026-05-01",
+      "data_fim": "2026-05-25",
+      "forcar_resync": false,
+      "dias_total": 25,
+      "dias_concluidos": [],
+      "dia_atual": "2026-05-01",
+      "status": "erro",
+      "started_at": "2026-05-29T14:15:40.198136",
+      "updated_at": "2026-05-29T14:15:41.057079",
+      "dia_indice": 1,
+      "ultimo_erro": "Token Bling expirado para esta loja. Refaça a conexão em Integrações para continuar.",
+      "interrupted_at": "2026-05-29T14:15:41.055690"
+    }
+  },
+  "active_key": "71fe6f0f3e6f361c77f3ff8b580347aae92313ac"
+}

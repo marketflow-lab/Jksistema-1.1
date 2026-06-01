@@ -1,0 +1,21 @@
+[
+  {
+    "nome": "Multimarcas",
+    "integracoes": {
+      "bling": {
+        "id": "638fbd4bd0126877a182a941fc28030028453df2",
+        "secret": "***REDACTED***",
+        "access_token": "***REDACTED***",
+        "refresh_token": "***REDACTED***",
+        "connected": false,
+        "updated_at": "1768192950.5062914"
+      },
+      "mercadolivre": {
+        "connected": false
+      },
+      "mercadoturbo": {
+        "connected": false
+      }
+    }
+  }
+]

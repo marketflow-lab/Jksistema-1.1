@@ -1,0 +1,43 @@
+{
+  "enabled": true,
+  "approval_required": true,
+  "interval_unit": "days",
+  "interval_value": 6,
+  "interval_minutes": 8640,
+  "next_run_at": 1780576351.4425752,
+  "loja": "Uai Mineirinho",
+  "promocao_a_id": "C-MLB3647368",
+  "promocao_a_type": "SELLER_CAMPAIGN",
+  "margem_minima": 15.0,
+  "promocoes_b_meta": [
+    {
+      "promo_b_id": "P-MLB17587002",
+      "promo_b_type": "DEAL",
+      "promo_texto": "06.06 - started (P-MLB17587002)",
+      "active_count": 0,
+      "eligible_count": 471
+    },
+    {
+      "promo_b_id": "P-MLB17511030",
+      "promo_b_type": "DEAL",
+      "promo_texto": "Namorados - started (P-MLB17511030)",
+      "active_count": 0,
+      "eligible_count": 470
+    },
+    {
+      "promo_b_id": "P-MLB17637058",
+      "promo_b_type": "SMART",
+      "promo_texto": "FIM DO MES AUTO e MOTO - started (P-MLB17637058)",
+      "active_count": 0,
+      "eligible_count": 317
+    }
+  ],
+  "last_job_id": "ee0d4d2a48b6456b80680ced7e5d4b31",
+  "last_job_status": "completed",
+  "last_job_message": "Análise concluída.",
+  "last_job_progress": 100,
+  "last_run_at": 1780057951.442573,
+  "last_completed_at": 1780058282.20118,
+  "last_error": "",
+  "updated_at": 1780313289.803386
+}

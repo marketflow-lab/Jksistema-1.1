@@ -11,7 +11,7 @@ jkjkjk-*.json
 node_modules
 node_modules
 
-# Artefatos de runtime/build locais (não versionar)
+# Artefatos de runtime/build locais (nao versionar)
 logs/
 info/electron_user_data/
 info/electron_user_data*/
@@ -20,3 +20,5 @@ info/*/tmp/
 electron_app/dist-client-final/
 electron_app/dist-client-setup/
 electron_app/dist-client-setup.zip
+backups/cloud_server_20260601_082817/
+backups/local_before_pesquisa_restore_*/

@@ -1,0 +1,120 @@
+ncm,descricao,ii_antigo,ipi_antigo,pis_antigo,cofins_antigo,ii_novo,ipi_novo,pis_novo,cofins_novo,pis_cofins_regra,alterado
+39173900,Outros,16.0,3.25,2.1,10.25,16.0,3.25,2.1,10.25,geral_2_10_10_25,False
+39191090,Outras,14.4,9.75,2.1,10.25,14.4,9.75,2.1,10.25,geral_2_10_10_25,False
+39199090,Outras,16.0,15.0,2.1,10.25,16.0,9.75,2.1,10.25,geral_2_10_10_25,True
+39269090,Outras,18.0,0.0,2.1,10.25,18.0,9.75,2.1,10.25,geral_2_10_10_25,True
+40091100,Sem acessórios,12.6,6.5,2.1,10.25,12.6,6.5,2.1,10.25,geral_2_10_10_25,False
+40091290,Outros,12.6,6.5,2.1,10.25,12.6,6.5,2.1,10.25,geral_2_10_10_25,False
+40093100,Sem acessórios,12.6,6.5,2.1,10.25,12.6,6.5,2.1,10.25,geral_2_10_10_25,False
+40093290,Outros,12.6,6.5,2.1,10.25,12.6,6.5,2.1,10.25,geral_2_10_10_25,False
+40094290,Outros,12.6,6.5,2.1,10.25,12.6,6.5,2.1,10.25,geral_2_10_10_25,False
+40169300,"Juntas, gaxetas e semelhantes",16.0,5.2,2.1,10.25,16.0,5.2,2.1,10.25,geral_2_10_10_25,False
+40169990,Outras,16.0,3.25,3.12,14.37,16.0,11.7,3.12,14.37,autopecas_3_12_14_37,True
+44101919,Outros,9.0,3.25,2.1,10.25,9.0,3.25,2.1,10.25,geral_2_10_10_25,False
+58079000,Outros,26.0,0.0,2.1,10.25,26.0,0.0,2.1,10.25,geral_2_10_10_25,False
+82075011,"Helicoidais, de diâmetro inferior ou igual a 52 mm",16.2,5.2,2.1,10.25,16.2,5.2,2.1,10.25,geral_2_10_10_25,False
+83012000,Fechaduras do tipo utilizado em veículos automóveis,16.0,6.5,3.12,14.37,16.0,6.5,3.12,14.37,autopecas_3_12_14_37,False
+83030000,"Cofres-fortes, portas blindadas e compartimentos para casas-fortes, cofres e caixas de segurança e artigos semelhantes, de metais comuns",14.4,9.75,2.1,10.25,14.4,9.75,2.1,10.25,geral_2_10_10_25,False
+84099115,Coletores de admissão ou de escape,16.0,3.25,3.12,14.37,16.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+84099118,Outros carburadores,16.0,3.25,3.12,14.37,16.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+84099915,Coletores de admissão ou de escape,16.0,3.25,3.12,14.37,16.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+84123110,Cilindros pneumáticos,12.6,0.0,2.1,10.25,12.6,0.0,2.1,10.25,geral_2_10_10_25,False
+84133010,Para gasolina ou álcool,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+84133020,Injetoras de combustível para motor de ignição por compressão,18.0,2.6,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,True
+84133030,Para óleo lubrificante,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+84133090,Outras,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+84137010,Eletrobombas submersíveis,12.6,3.25,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,False
+84138100,Bombas,12.6,0.0,2.1,10.25,12.6,0.0,2.1,10.25,geral_2_10_10_25,False
+84138200,Elevadores de líquidos,20.0,0.0,2.1,10.25,20.0,0.0,2.1,10.25,override_exato,False
+84141000,Bombas de vácuo,12.6,0.0,2.1,10.25,12.6,0.0,2.1,10.25,geral_2_10_10_25,False
+84149034,Válvulas,12.6,3.25,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,False
+84189900,Outras,12.6,3.25,2.1,10.25,12.6,9.75,2.1,10.25,geral_2_10_10_25,True
+84199090,Outras,20.0,3.25,2.1,10.25,20.0,3.25,2.1,10.25,geral_2_10_10_25,False
+84212300,"Para filtrar carburantes ou óleos lubrificantes nos motores de ignição por centelha (faísca) ou por
+compressão",16.0,2.6,3.12,14.37,16.0,5.2,3.12,14.37,autopecas_3_12_14_37,True
+84212990,Outros,12.6,0.0,2.1,10.25,12.6,0.0,2.1,10.25,geral_2_10_10_25,False
+84213100,Filtros de entrada de ar para motores de ignição por centelha (faísca) ou por compressão,16.0,5.2,3.12,14.37,16.0,5.2,3.12,14.37,autopecas_3_12_14_37,False
+84213990,Outros,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84248229,Outros,20.0,0.0,2.1,10.25,20.0,0.0,2.1,10.25,geral_2_10_10_25,False
+84249090,Outras,12.6,3.25,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,False
+84251910,"Talhas, cadernais e moitões, manuais",14.4,0.0,2.1,10.25,14.4,0.0,2.1,10.25,geral_2_10_10_25,False
+84253110,Com capacidade inferior ou igual a 100 t,20.0,0.0,2.1,10.25,20.0,0.0,2.1,10.25,geral_2_10_10_25,False
+84314923,Tanques de combustível e demais reservatórios,12.6,3.25,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,False
+84339010,De cortadores de grama (relva),14.4,3.25,2.1,10.25,14.4,3.25,2.1,10.25,geral_2_10_10_25,False
+84678900,Outras,20.0,5.2,2.1,10.25,20.0,5.2,2.1,10.25,geral_2_10_10_25,False
+84719014,Digitalizadores de imagens (scanners),0.0,0.0,2.1,10.25,0.0,15.0,2.1,10.25,geral_2_10_10_25,True
+84733042,Placas (módulos) de memória com uma superfície inferior ou igual a 50 cm2,10.8,15.0,2.1,10.25,10.8,15.0,2.1,10.25,geral_2_10_10_25,False
+84811000,Válvulas redutoras de pressão,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84812090,Outras,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84813000,Válvulas de retenção,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84814000,Válvulas de segurança ou de alívio,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84818019,Outros,16.2,0.0,2.1,10.25,16.2,0.0,2.1,10.25,geral_2_10_10_25,False
+84818021,Válvulas de expansão termostáticas ou pressostáticas,12.6,0.0,2.1,10.25,12.6,0.0,2.1,10.25,geral_2_10_10_25,False
+84818092,Válvulas solenoides,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84818099,Outros,12.6,3.25,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,False
+84821010,De carga radial,16.0,7.8,3.12,14.37,16.0,7.8,3.12,14.37,autopecas_3_12_14_37,False
+84831020,Árvores de cames para comando de válvulas,16.0,0.0,3.12,14.37,16.0,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84834090,Outros,12.6,0.0,3.12,14.37,12.6,0.0,3.12,14.37,autopecas_3_12_14_37,False
+84841000,Juntas metaloplásticas,16.0,7.8,3.12,14.37,16.0,7.8,3.12,14.37,autopecas_3_12_14_37,False
+84842000,Juntas de vedação mecânicas,12.6,6.5,3.12,14.37,12.6,6.5,3.12,14.37,autopecas_3_12_14_37,False
+85044010,Carregadores de acumuladores,18.0,5.0,2.1,10.25,18.0,5.0,2.1,10.25,geral_2_10_10_25,False
+85071090,Outros,18.0,2.6,3.12,14.37,18.0,9.75,3.12,14.37,autopecas_3_12_14_37,True
+85079090,Outras,16.0,15.0,2.1,10.25,16.0,15.0,2.1,10.25,geral_2_10_10_25,False
+85111000,Velas de ignição,18.0,9.75,3.12,14.37,18.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+85113020,Bobinas de ignição,18.0,9.75,3.12,14.37,18.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+85114000,"Motores de arranque, mesmo funcionando como geradores",18.0,2.6,3.12,14.37,18.0,9.75,3.12,14.37,autopecas_3_12_14_37,True
+85119000,Partes,16.0,9.75,3.12,14.37,16.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+85122011,Faróis,18.0,2.6,3.12,14.37,18.0,9.75,3.12,14.37,autopecas_3_12_14_37,True
+85122022,Luzes indicadoras de manobras,18.0,9.75,3.12,14.37,18.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+85129000,Partes,16.0,9.75,3.12,14.37,16.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+85169000,Partes,14.4,5.0,2.1,10.25,14.4,10.0,2.1,10.25,geral_2_10_10_25,True
+85176254,Distribuidores de conexões para redes (hubs),9.6,9.75,2.1,10.25,9.6,9.75,2.1,10.25,geral_2_10_10_25,False
+85271300,Outros aparelhos combinados com um aparelho de gravação ou de reprodução de som,18.0,20.0,2.1,10.25,18.0,20.0,2.1,10.25,geral_2_10_10_25,False
+85291090,Outros,16.0,6.5,2.1,10.25,16.0,6.5,2.1,10.25,geral_2_10_10_25,False
+85332190,Outras,16.0,6.5,2.1,10.25,16.0,6.5,2.1,10.25,geral_2_10_10_25,False
+85334091,"Potenciômetro de carvão, do tipo utilizado para determinar o ângulo de abertura da borboleta, em sistemas de injeção de combustível controlados eletronicamente",0.0,6.5,2.1,10.25,0.0,6.5,2.1,10.25,geral_2_10_10_25,False
+85351000,Fusíveis e corta-circuitos de fusíveis,14.4,0.0,2.1,10.25,14.4,0.0,2.1,10.25,geral_2_10_10_25,False
+85353019,Outros,16.0,3.25,2.1,10.25,16.0,3.25,2.1,10.25,geral_2_10_10_25,False
+85364100,Para uma tensão não superior a 60 V,16.0,3.25,3.12,14.37,16.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+85365090,Outros,16.0,3.25,3.12,14.37,16.0,9.75,3.12,14.37,autopecas_3_12_14_37,True
+85369090,Outros,16.0,9.75,3.12,14.37,16.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+85392110,Para uma tensão inferior ou igual a 15 V,18.0,13.0,2.1,10.25,18.0,9.75,2.1,10.25,geral_2_10_10_25,True
+85392910,Para uma tensão inferior ou igual a 15 V,18.0,0.0,2.1,10.25,18.0,9.75,2.1,10.25,geral_2_10_10_25,True
+85399090,Outras,12.6,9.75,2.1,10.25,12.6,9.75,2.1,10.25,geral_2_10_10_25,False
+85432000,Geradores de sinais,12.6,0.0,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,True
+85437099,Outros,10.8,0.0,2.1,10.25,10.8,6.5,2.1,10.25,geral_2_10_10_25,True
+85444200,Munidos de peças de conexão,16.0,5.0,3.12,14.37,16.0,5.0,3.12,14.37,autopecas_3_12_14_37,False
+87081000,Para-choques e suas partes,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87082100,Cintos de segurança,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87082919,Outros,12.6,3.25,3.12,14.37,12.6,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87082993,Portas,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87082994,Painéis de instrumentos,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87082999,Outros,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87083090,Outros,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87084080,Outras caixas de marchas,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87087090,Outros,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87088000,Sistemas de suspensão e suas partes (incluindo os amortecedores de suspensão),18.0,10.4,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,True
+87089100,Radiadores e suas partes,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87089411,Volantes,12.6,2.6,3.12,14.37,12.6,2.6,3.12,14.37,autopecas_3_12_14_37,False
+87089490,Partes,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87089990,Outros,18.0,3.25,3.12,14.37,18.0,3.25,3.12,14.37,autopecas_3_12_14_37,False
+87120090,Outros,18.0,6.5,2.1,10.25,18.0,6.5,2.1,10.25,geral_2_10_10_25,False
+87149910,Câmbio de velocidades,0.0,6.5,3.12,14.37,0.0,6.5,3.12,14.37,autopecas_3_12_14_37,False
+90172000,"Outros instrumentos de desenho, de traçado ou de cálculo",16.2,9.75,2.1,10.25,16.2,9.75,2.1,10.25,geral_2_10_10_25,False
+90191000,Aparelhos de mecanoterapia; aparelhos de massagem; aparelhos de psicotécnica,20.0,5.2,2.1,10.25,20.0,5.2,2.1,10.25,geral_2_10_10_25,False
+90200090,Outros,14.4,5.2,2.1,10.25,14.4,5.2,2.1,10.25,geral_2_10_10_25,False
+90261029,Outros,18.0,0.0,2.1,10.25,18.0,0.0,2.1,10.25,geral_2_10_10_25,False
+90262090,Outros,18.0,0.0,3.12,14.37,18.0,0.0,3.12,14.37,autopecas_3_12_14_37,False
+90269010,De instrumentos e aparelhos para medida ou controle do nível,16.0,15.0,2.1,10.25,16.0,15.0,2.1,10.25,geral_2_10_10_25,False
+90299010,De indicadores de velocidade e tacômetros,16.0,9.75,2.1,10.25,16.0,9.75,2.1,10.25,geral_2_10_10_25,False
+90303910,De teste de continuidade em circuitos impressos,12.6,3.25,2.1,10.25,12.6,3.25,2.1,10.25,geral_2_10_10_25,False
+90321090,Outros,18.0,9.75,2.1,10.25,18.0,9.75,2.1,10.25,geral_2_10_10_25,False
+90328921,De sistemas antibloqueantes de freio (travão) (ABS),16.0,9.75,3.12,14.37,16.0,9.75,3.12,14.37,autopecas_3_12_14_37,False
+90328923,De sistemas de transmissão,16.0,9.75,2.1,10.25,16.0,9.75,2.1,10.25,geral_2_10_10_25,False
+90328925,De sistemas de injeção,16.0,9.75,2.1,10.25,16.0,9.75,2.1,10.25,geral_2_10_10_25,False
+90328981,De pressão,12.6,9.75,2.1,10.25,12.6,9.75,2.1,10.25,geral_2_10_10_25,False
+90328982,De temperatura,12.6,9.75,2.1,10.25,12.6,9.75,2.1,10.25,geral_2_10_10_25,False
+90328983,De umidade,12.6,9.75,2.1,10.25,12.6,9.75,2.1,10.25,geral_2_10_10_25,False
+95069900,Outros,18.0,13.0,2.1,10.25,18.0,13.0,2.1,10.25,geral_2_10_10_25,False
+96040000,"Peneiras e crivos, manuais",16.2,0.0,2.1,10.25,16.2,0.0,2.1,10.25,geral_2_10_10_25,False
+96082000,"Canetas e marcadores, com ponta de feltro ou com outras pontas porosas",16.2,13.0,2.1,10.25,16.2,13.0,2.1,10.25,geral_2_10_10_25,False
