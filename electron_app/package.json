@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -59,6 +59,21 @@
       {
         "from": "../extensoes_chrome",
         "to": "extensoes_chrome"
+      },
+      {
+        "from": "../",
+        "to": "local_app",
+        "filter": [
+          "backend_api.py",
+          "promo_worker_api.py",
+          "medias_compras.py",
+          "requirements.txt",
+          "static/**",
+          "img/**",
+          "NCM.xlsx",
+          "NCM1.xlsx",
+          "openapi_bling.json"
+        ]
       },
       {
         "from": "client-config.json",

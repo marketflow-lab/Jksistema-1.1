@@ -69,7 +69,8 @@ Exemplos:
   node scripts/credenciais.js export --out credenciais-jk.jkcred
   node scripts/credenciais.js import --in credenciais-jk.jkcred
 
-Tambem e possivel definir a senha pela variavel JK_CREDENTIALS_PASSWORD.`);
+Tambem e possivel definir a senha pela variavel JK_CREDENTIALS_PASSWORD.
+Use JK_CREDENTIALS_ROOT para escolher a pasta raiz de importacao/exportacao.`);
 }
 
 function parseArgs(argv) {
@@ -521,7 +522,11 @@ function listCredentials(rootDir, args) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0];
-  const rootDir = path.resolve(__dirname, '..');
+  const rootDir = path.resolve(
+    process.env.JK_CREDENTIALS_ROOT ||
+    process.env.JK_CREDENTIALS_ROOT_DIR ||
+    path.resolve(__dirname, '..')
+  );
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     printUsage();

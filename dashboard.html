@@ -391,6 +391,7 @@
         }
 
         .sidebar-password,
+        .sidebar-update,
         .sidebar-import-credentials,
         .modal-secondary {
             background: rgba(79, 172, 254, 0.12);
@@ -400,6 +401,7 @@
         }
 
         .sidebar-password:hover,
+        .sidebar-update:hover,
         .sidebar-import-credentials:hover,
         .modal-secondary:hover {
             background: rgba(79, 172, 254, 0.2);
@@ -621,6 +623,7 @@
     <div class="user-sidebar-spacer"></div>
     <div class="user-sidebar-actions">
         <button id="btn-importar-credenciais" class="sidebar-import-credentials" type="button" onclick="importarCredenciais()">Importar credenciais</button>
+        <button id="btn-verificar-atualizacao" class="sidebar-update" type="button" onclick="verificarAtualizacao()">Verificar atualizacao</button>
         <button class="sidebar-password" type="button" onclick="abrirTrocaSenha()">Trocar senha</button>
         <button class="sidebar-logout" type="button" onclick="sair()">Sair</button>
     </div>
@@ -763,7 +766,7 @@
             return;
         }
 
-        const confirmar = confirm('Vou abrir o importador local de credenciais. Deixe o arquivo credenciais-jk.jkcred na pasta do sistema e informe a senha quando a janela abrir.');
+        const confirmar = confirm('Vou pedir para você selecionar o arquivo .jkcred e depois abrir o importador local. Informe a senha quando a janela abrir.');
         if (!confirmar) return;
 
         try {
@@ -780,6 +783,36 @@
             if (botao) {
                 botao.disabled = false;
                 botao.textContent = 'Importar credenciais';
+            }
+        }
+    }
+
+    async function verificarAtualizacao() {
+        const api = window.electronAPI;
+        const botao = document.getElementById('btn-verificar-atualizacao');
+
+        if (!api || typeof api.checkForUpdates !== 'function') {
+            alert('Esta opção está disponível no aplicativo desktop instalado.');
+            return;
+        }
+
+        try {
+            if (botao) {
+                botao.disabled = true;
+                botao.textContent = 'Verificando...';
+            }
+            const resultado = await api.checkForUpdates();
+            if (resultado && resultado.skipped) {
+                alert(resultado.reason || 'Atualização automática indisponível neste ambiente.');
+            } else if (resultado && resultado.checking) {
+                alert('A verificação de atualização já está em andamento.');
+            }
+        } catch (err) {
+            alert((err && err.message) || 'Não foi possível verificar atualizações.');
+        } finally {
+            if (botao) {
+                botao.disabled = false;
+                botao.textContent = 'Verificar atualizacao';
             }
         }
     }

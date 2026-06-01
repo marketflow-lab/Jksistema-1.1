@@ -79,6 +79,13 @@ import hashlib
 from typing import Any, Optional, Callable
 from medias_compras import calcular_medias_compras, calcular_reposicao_periodo
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PASTA_INFO_ENV = (os.getenv("JK_INFO_DIR") or "").strip()
+PASTA_INFO = _PASTA_INFO_ENV if _PASTA_INFO_ENV else os.path.join(BASE_DIR, "info")
+if not os.path.isabs(PASTA_INFO):
+    PASTA_INFO = os.path.join(BASE_DIR, PASTA_INFO)
+os.makedirs(PASTA_INFO, exist_ok=True)
+
 try:
     import psycopg
     from psycopg.rows import dict_row
@@ -127,7 +134,7 @@ ESTOQUE_LANC_SYNC_LOGS = {}
 ESTOQUE_LANC_SYNC_META = {}
 PROMO_ANALISE_JOBS = {}
 PROMO_ANALISE_JOBS_LOCK = threading.Lock()
-PROMO_ANALISE_JOBS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "info", "promo_jobs")
+PROMO_ANALISE_JOBS_DIR = os.path.join(PASTA_INFO, "promo_jobs")
 os.makedirs(PROMO_ANALISE_JOBS_DIR, exist_ok=True)
 PROMO_AUTOMACAO_LOCK = threading.Lock()
 PROMO_AUTOMACAO_THREAD_STARTED = False
@@ -158,7 +165,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),  # Logs no console
-        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "info", "backend.log"), encoding='utf-8')
+        logging.FileHandler(os.path.join(PASTA_INFO, "backend.log"), encoding='utf-8')
     ]
 )
 logger = logging.getLogger("jk_sistema")
@@ -291,11 +298,6 @@ def _bling_get_with_adaptive_limit(
     return last_resp
 
 # --- CONFIGURAÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã¢â‚¬Â¢ES ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_PASTA_INFO_ENV = (os.getenv("JK_INFO_DIR") or "").strip()
-PASTA_INFO = _PASTA_INFO_ENV if _PASTA_INFO_ENV else os.path.join(BASE_DIR, "info")
-if not os.path.isabs(PASTA_INFO):
-    PASTA_INFO = os.path.join(BASE_DIR, PASTA_INFO)
 PASTA_IMG = os.path.join(BASE_DIR, "img")
 CREDENTIALS_FILE = os.path.join(PASTA_INFO, 'credentials.json')
 SPREADSHEET_ID_CLIENTES = '1oyLYMd059baSs2KZJ8jqld68Y03a3pNRs32xvZlowNk'

@@ -1,4 +1,4 @@
 {
-  "appUrl": "https://jk-sistema-api-1077918177671.southamerica-east1.run.app/frontend_index.html",
-  "notes": "Endereco do servidor Cloud Run do JK Sistema."
+  "appUrl": "http://127.0.0.1:8001/frontend_index.html",
+  "notes": "Endereco local do JK Sistema. O app inicia o backend local automaticamente."
 }

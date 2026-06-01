@@ -19,6 +19,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const nodeNet = require('net');
 const { pathToFileURL } = require('url');
 let autoUpdater = null;
 try {
@@ -33,7 +34,12 @@ app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('JK Sistema Cliente');
 
-const JK_DEFAULT_APP_URL = 'https://jk-sistema-api-1077918177671.southamerica-east1.run.app/dashboard.html';
+const JK_LOCAL_BACKEND_PORT = 8001;
+const JK_PROMO_WORKER_PORT = 8011;
+const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
+const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
+let localBackendProcess = null;
+let localBackendStartupPromise = null;
 
 function resolveAppRootDir() {
     const candidates = [
@@ -84,7 +90,7 @@ const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION ||
 const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 
 function logElectronLifecycle(...args) {
-    const logDir = path.join(getAppRootDir(), 'logs');
+    const logDir = path.join(JK_ELECTRON_USER_DATA_DIR, 'logs');
     const message = `[Electron ${new Date().toISOString()}] ${args.map(value => {
         if (value instanceof Error) return value.stack || value.message;
         if (typeof value === 'string') return value;
@@ -148,7 +154,7 @@ function quarantineProfileEntry(entryName, recoveryDir) {
 function recoverProfileIfStartupCrashed() {
     if (!fs.existsSync(JK_ELECTRON_STARTUP_MARKER)) return;
     const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
-    const recoveryDir = path.join(JK_APP_ROOT_DIR, 'info', `electron_user_data_recovery_${stamp}`);
+    const recoveryDir = path.join(JK_ELECTRON_USER_DATA_DIR, `electron_user_data_recovery_${stamp}`);
     const entries = [
         'Local Storage',
         'Session Storage',
@@ -418,11 +424,264 @@ function getAppRootDir() {
     return JK_APP_ROOT_DIR;
 }
 
-function getImportCredentialsBatPath() {
+function getBundledLocalBackendDir() {
     const candidates = [
-        path.join(getAppRootDir(), 'ImportarCredenciais.bat'),
-        path.join(__dirname, 'ImportarCredenciais.bat'),
-        path.join(process.resourcesPath || '', 'ImportarCredenciais.bat')
+        process.env.JK_LOCAL_BACKEND_SOURCE_DIR,
+        path.join(getAppRootDir(), JK_LOCAL_BACKEND_DIR_NAME),
+        fs.existsSync(path.join(getAppRootDir(), 'backend_api.py')) ? getAppRootDir() : '',
+        path.resolve(__dirname, '..')
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        const resolved = path.resolve(candidate);
+        if (fs.existsSync(path.join(resolved, 'backend_api.py'))) return resolved;
+    }
+    return '';
+}
+
+function getLocalBackendRuntimeDir() {
+    if (process.env.JK_LOCAL_BACKEND_DIR) {
+        return path.resolve(process.env.JK_LOCAL_BACKEND_DIR);
+    }
+    if (app.isPackaged) {
+        return path.join(JK_ELECTRON_USER_DATA_DIR, JK_LOCAL_BACKEND_DIR_NAME);
+    }
+    return getBundledLocalBackendDir() || path.resolve(__dirname, '..');
+}
+
+function getLocalBackendInfoDir() {
+    return path.join(getLocalBackendRuntimeDir(), 'info');
+}
+
+function shouldSkipBackendCopyEntry(name, fullPath) {
+    const lower = String(name || '').toLowerCase();
+    if (
+        lower === '.git' ||
+        lower === '.venv' ||
+        lower === 'node_modules' ||
+        lower === 'electron_app' ||
+        lower === 'info' ||
+        lower === 'logs' ||
+        lower === 'backups' ||
+        lower === '__pycache__' ||
+        lower.endsWith('.jkcred') ||
+        lower.startsWith('.env') ||
+        /^jkjkjk-.*\.json$/i.test(lower) ||
+        /service[-_ ]?account.*\.json$/i.test(lower)
+    ) {
+        return true;
+    }
+    try {
+        return fs.statSync(fullPath).isDirectory() && lower.startsWith('dist');
+    } catch (_err) {
+        return false;
+    }
+}
+
+function copyDirectoryRecursive(sourceDir, targetDir) {
+    fs.mkdirSync(targetDir, { recursive: true });
+    const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+    for (const entry of entries) {
+        const sourcePath = path.join(sourceDir, entry.name);
+        const targetPath = path.join(targetDir, entry.name);
+        if (shouldSkipBackendCopyEntry(entry.name, sourcePath)) {
+            continue;
+        }
+        if (entry.isDirectory()) {
+            copyDirectoryRecursive(sourcePath, targetPath);
+            continue;
+        }
+        if (entry.isFile()) {
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.copyFileSync(sourcePath, targetPath);
+        }
+    }
+}
+
+function syncBundledLocalBackend() {
+    const runtimeDir = getLocalBackendRuntimeDir();
+    const bundledDir = getBundledLocalBackendDir();
+    if (!bundledDir) {
+        throw new Error('Backend local nao foi encontrado no pacote.');
+    }
+    if (path.resolve(runtimeDir) !== path.resolve(bundledDir)) {
+        copyDirectoryRecursive(bundledDir, runtimeDir);
+    }
+    fs.mkdirSync(path.join(runtimeDir, 'info'), { recursive: true });
+    fs.mkdirSync(path.join(runtimeDir, 'logs'), { recursive: true });
+    return runtimeDir;
+}
+
+function isTcpPortOpen(port, host = '127.0.0.1', timeoutMs = 700) {
+    return new Promise((resolve) => {
+        const socket = new nodeNet.Socket();
+        let done = false;
+        const finish = (result) => {
+            if (done) return;
+            done = true;
+            try { socket.destroy(); } catch (_err) {}
+            resolve(result);
+        };
+        socket.setTimeout(timeoutMs);
+        socket.once('connect', () => finish(true));
+        socket.once('timeout', () => finish(false));
+        socket.once('error', () => finish(false));
+        socket.connect(port, host);
+    });
+}
+
+function waitForTcpPortOpen(port, timeoutMs = 120000, intervalMs = 650) {
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+        const check = async () => {
+            if (await isTcpPortOpen(port)) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - startedAt >= timeoutMs) {
+                reject(new Error(`Servidor local nao respondeu na porta ${port}.`));
+                return;
+            }
+            setTimeout(check, intervalMs);
+        };
+        check();
+    });
+}
+
+function sanitizeMarkerVersion(value) {
+    return String(value || 'dev').replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+function cmdValue(value) {
+    return String(value || '').replace(/"/g, '');
+}
+
+function writeLocalBackendLauncher(localAppDir) {
+    const infoDir = path.join(localAppDir, 'info');
+    const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
+    const logPath = path.join(localAppDir, 'logs', 'local_backend.log');
+    const depsMarker = `.venv\\.jk_deps_${sanitizeMarkerVersion(app.getVersion())}.ok`;
+    const localCallback = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`;
+    const lines = [
+        '@echo off',
+        'setlocal',
+        `cd /d "${cmdValue(localAppDir)}"`,
+        'if not exist "logs" mkdir "logs"',
+        'if not exist "info" mkdir "info"',
+        `set "LOG_FILE=${cmdValue(logPath)}"`,
+        `set "JK_INFO_DIR=${cmdValue(infoDir)}"`,
+        `set "JK_REDIRECT_URI=${localCallback}"`,
+        `set "JK_BLING_REDIRECT_URI=${localCallback}"`,
+        `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
+        'set "PYTHONUNBUFFERED=1"',
+        'set "PYTHONUTF8=1"',
+        'echo.>> "%LOG_FILE%"',
+        'echo ==== JK Sistema local backend %date% %time% ====>> "%LOG_FILE%"',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  where py >nul 2>nul',
+        '  if not errorlevel 1 py -3 -m venv ".venv" >> "%LOG_FILE%" 2>&1',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  where python >nul 2>nul',
+        '  if not errorlevel 1 python -m venv ".venv" >> "%LOG_FILE%" 2>&1',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  echo Python 3 nao encontrado. Instale Python 3 e abra o JK Sistema novamente.>> "%LOG_FILE%"',
+        '  exit /b 1',
+        ')',
+        'set "PYTHON_EXE=.venv\\Scripts\\python.exe"',
+        `if not exist "${depsMarker}" (`,
+        '  "%PYTHON_EXE%" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1',
+        '  if errorlevel 1 exit /b %errorlevel%',
+        '  "%PYTHON_EXE%" -m pip install --disable-pip-version-check -r requirements.txt >> "%LOG_FILE%" 2>&1',
+        '  if errorlevel 1 exit /b %errorlevel%',
+        '  "%PYTHON_EXE%" -m pip uninstall -y fitz >> "%LOG_FILE%" 2>&1',
+        `  echo ok> "${depsMarker}"`,
+        ')',
+        `"%PYTHON_EXE%" -m uvicorn backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
+    ];
+    fs.writeFileSync(launcherPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+    return launcherPath;
+}
+
+function ensureLocalBackendStarted() {
+    if (localBackendStartupPromise) {
+        return localBackendStartupPromise;
+    }
+
+    localBackendStartupPromise = (async () => {
+        if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
+            logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT });
+            return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
+        }
+
+        const localAppDir = syncBundledLocalBackend();
+        const launcherPath = writeLocalBackendLauncher(localAppDir);
+        logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
+        const child = spawn('cmd.exe', ['/d', '/c', launcherPath], {
+            cwd: localAppDir,
+            env: {
+                ...process.env,
+                JK_INFO_DIR: path.join(localAppDir, 'info'),
+                JK_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
+                JK_BLING_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
+                PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
+                PYTHONUNBUFFERED: '1',
+                PYTHONUTF8: '1'
+            },
+            stdio: 'ignore',
+            windowsHide: true
+        });
+        localBackendProcess = child;
+        child.on('error', (err) => {
+            logElectronLifecycle('local-backend-process-error', err);
+        });
+        child.on('exit', (code, signal) => {
+            logElectronLifecycle('local-backend-exit', { code, signal });
+            if (localBackendProcess === child) {
+                localBackendProcess = null;
+                localBackendStartupPromise = null;
+            }
+        });
+
+        const exitPromise = new Promise((_resolve, reject) => {
+            child.once('exit', (code, signal) => {
+                reject(new Error(`Servidor local finalizou antes de iniciar. Codigo: ${code ?? ''} ${signal || ''}`.trim()));
+            });
+        });
+        await Promise.race([
+            waitForTcpPortOpen(JK_LOCAL_BACKEND_PORT, 180000),
+            exitPromise
+        ]);
+        logElectronLifecycle('local-backend-ready', { port: JK_LOCAL_BACKEND_PORT });
+        return { success: true, localAppDir, port: JK_LOCAL_BACKEND_PORT };
+    })().catch((err) => {
+        localBackendStartupPromise = null;
+        throw err;
+    });
+
+    return localBackendStartupPromise;
+}
+
+function stopLocalBackend() {
+    if (!localBackendProcess || !localBackendProcess.pid) {
+        return;
+    }
+    try {
+        spawn('taskkill.exe', ['/PID', String(localBackendProcess.pid), '/T', '/F'], {
+            stdio: 'ignore',
+            windowsHide: true
+        }).unref();
+    } catch (err) {
+        logElectronLifecycle('local-backend-stop-error', err);
+    }
+    localBackendProcess = null;
+}
+
+function getCredentialsScriptPath() {
+    const candidates = [
+        path.join(getAppRootDir(), 'scripts', 'credenciais.js'),
+        path.join(process.resourcesPath || '', 'scripts', 'credenciais.js'),
+        path.join(path.resolve(__dirname, '..'), 'scripts', 'credenciais.js')
     ].filter(Boolean);
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) return candidate;
@@ -430,7 +689,68 @@ function getImportCredentialsBatPath() {
     return '';
 }
 
+async function openLocalCredentialsImporter() {
+    const scriptPath = getCredentialsScriptPath();
+    if (!scriptPath) {
+        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
+    }
+
+    const selected = await dialog.showOpenDialog({
+        title: 'Selecionar pacote de credenciais',
+        properties: ['openFile'],
+        filters: [
+            { name: 'Credenciais JK', extensions: ['jkcred'] },
+            { name: 'Todos os arquivos', extensions: ['*'] }
+        ]
+    });
+    if (selected.canceled || !selected.filePaths || !selected.filePaths[0]) {
+        return { success: false, canceled: true };
+    }
+
+    const localAppDir = syncBundledLocalBackend();
+    const importFile = selected.filePaths[0];
+    const runnerPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'importar-credenciais-local.cmd');
+    const lines = [
+        '@echo off',
+        'setlocal',
+        `cd /d "${cmdValue(localAppDir)}"`,
+        'set "ELECTRON_RUN_AS_NODE=1"',
+        `set "JK_CREDENTIALS_ROOT=${cmdValue(localAppDir)}"`,
+        'echo Importando credenciais para o JK Sistema local.',
+        'echo.',
+        `"${cmdValue(process.execPath)}" "${cmdValue(scriptPath)}" import --in "${cmdValue(importFile)}" --force`,
+        'echo.',
+        'echo Se a importacao terminou sem erro, feche esta janela e entre novamente no app.',
+        'pause'
+    ];
+    fs.writeFileSync(runnerPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+
+    if (process.platform !== 'win32') {
+        const result = await shell.openPath(runnerPath);
+        if (result) throw new Error(result);
+        return {
+            success: true,
+            path: runnerPath,
+            message: 'Importador aberto. Informe a senha para restaurar as credenciais locais.'
+        };
+    }
+
+    const child = spawn('cmd.exe', ['/d', '/c', `start "" "${cmdValue(runnerPath)}"`], {
+        cwd: localAppDir,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false
+    });
+    child.unref();
+    return {
+        success: true,
+        path: runnerPath,
+        message: 'Importador aberto. Informe a senha para restaurar as credenciais locais.'
+    };
+}
+
 async function openCredentialsImporter() {
+    return await openLocalCredentialsImporter();
     const batPath = getImportCredentialsBatPath();
     if (!batPath) {
         throw new Error('ImportarCredenciais.bat não foi encontrado na pasta do sistema.');
@@ -502,7 +822,7 @@ function ensureUserConfigFile(paths) {
     const bundled = readJsonFile(paths.bundledConfig) || readJsonFile(paths.devConfig);
     writeJsonFile(paths.userConfig, bundled || {
         appUrl: JK_DEFAULT_APP_URL,
-        notes: 'Altere appUrl para o endereco do seu servidor, por exemplo: https://seu-servidor.com/dashboard.html'
+        notes: 'Endereco local do JK Sistema. O app inicia o backend local automaticamente.'
     });
 }
 
@@ -520,11 +840,11 @@ function loadClientConfig() {
     const merged = Object.assign({}, ...sources);
     const envAppUrl = normalizeAppUrl(process.env.JK_APP_URL);
     let appUrl = envAppUrl || normalizeAppUrl(merged.appUrl) || JK_DEFAULT_APP_URL;
-    if (!envAppUrl && (isPlaceholderAppUrl(appUrl) || isLegacyLocalAppUrl(appUrl) || isLegacyTunnelAppUrl(appUrl))) {
+    if (!envAppUrl && (isPlaceholderAppUrl(appUrl) || isLegacyCloudRunAppUrl(appUrl) || isLegacyTunnelAppUrl(appUrl))) {
         appUrl = JK_DEFAULT_APP_URL;
         writeJsonFile(paths.userConfig, {
             appUrl,
-            notes: 'Endereco do servidor Cloud Run do JK Sistema.'
+            notes: 'Endereco local do JK Sistema. O app inicia o backend local automaticamente.'
         });
     }
     return { ...merged, appUrl, configPath: paths.userConfig };
@@ -538,6 +858,15 @@ function isPlaceholderAppUrl(appUrl) {
 function isLegacyLocalAppUrl(appUrl) {
     const value = String(appUrl || '').trim().toLowerCase();
     return value.startsWith('http://127.0.0.1:') || value.startsWith('http://localhost:');
+}
+
+function isLegacyCloudRunAppUrl(appUrl) {
+    const value = String(appUrl || '').trim().toLowerCase();
+    return (
+        value.includes('jk-sistema-api-1077918177671.southamerica-east1.run.app') ||
+        value.includes('.a.run.app') ||
+        value.includes('.run.app/')
+    );
 }
 
 function isLegacyTunnelAppUrl(appUrl) {
@@ -563,7 +892,7 @@ function saveClientAppUrl(appUrl) {
     const paths = getConfigPaths();
     const payload = {
         appUrl: value,
-        notes: 'Endereco do servidor do JK Sistema Cliente.'
+        notes: 'Endereco local ou personalizado do JK Sistema Cliente.'
     };
     if (!writeJsonFile(paths.userConfig, payload)) {
         throw new Error('Nao foi possivel salvar a configuracao do servidor.');
@@ -571,9 +900,77 @@ function saveClientAppUrl(appUrl) {
     return { ...payload, configPath: paths.userConfig };
 }
 
+function isLocalBackendAppUrl(appUrl) {
+    try {
+        const parsed = new URL(normalizeAppUrl(appUrl) || JK_DEFAULT_APP_URL);
+        const host = parsed.hostname.toLowerCase();
+        return (host === '127.0.0.1' || host === 'localhost') && Number(parsed.port || 80) === JK_LOCAL_BACKEND_PORT;
+    } catch (_err) {
+        return false;
+    }
+}
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderLocalBackendStartupScreen(win, options = {}) {
+    if (!win || win.isDestroyed()) return;
+    const error = options.error ? String(options.error) : '';
+    const detail = error
+        ? `Nao consegui iniciar o servidor local. Veja o log em ${path.join(getLocalBackendRuntimeDir(), 'logs', 'local_backend.log')}`
+        : 'Preparando o servidor local. Na primeira abertura isso pode levar alguns minutos enquanto as dependencias sao instaladas.';
+    const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>JK Sistema</title>
+    <style>
+        :root { color-scheme: dark; font-family: Inter, Segoe UI, Arial, sans-serif; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07111f; color: #eef6ff; }
+        main { width: min(560px, calc(100vw - 48px)); }
+        h1 { margin: 0 0 10px; font-size: 28px; font-weight: 800; }
+        p { margin: 0; color: #b8c9dc; line-height: 1.5; }
+        .bar { height: 5px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,0.12); margin-top: 24px; }
+        .bar::before { content: ""; display: block; width: 42%; height: 100%; background: #5db7ff; border-radius: inherit; animation: load 1.2s ease-in-out infinite; }
+        .error { color: #ffb4b4; }
+        @keyframes load { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>${error ? 'Servidor local indisponivel' : 'Iniciando JK Sistema'}</h1>
+        <p class="${error ? 'error' : ''}">${escapeHtml(detail)}</p>
+        ${error ? '' : '<div class="bar" aria-hidden="true"></div>'}
+    </main>
+</body>
+</html>`;
+    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch((err) => {
+        logElectronLifecycle('local-backend-startup-screen-error', err);
+    });
+}
+
 function loadConfiguredApp(win, clientConfig = null) {
     const config = clientConfig || loadClientConfig();
     logElectronLifecycle('client-config-loaded', { appUrl: config.appUrl, configPath: config.configPath });
+    if (isLocalBackendAppUrl(config.appUrl)) {
+        renderLocalBackendStartupScreen(win);
+        ensureLocalBackendStarted()
+            .then(() => {
+                if (!win || win.isDestroyed()) return;
+                loadElectronTabbedShell(win, appendNoCache(config.appUrl));
+            })
+            .catch((err) => {
+                logElectronLifecycle('local-backend-start-failed', err);
+                renderLocalBackendStartupScreen(win, { error: err && err.message ? err.message : String(err) });
+            });
+        return;
+    }
     loadElectronTabbedShell(win, appendNoCache(config.appUrl));
 }
 
@@ -2028,6 +2425,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
     logElectronLifecycle('before-quit');
+    stopLocalBackend();
     clearStartupIncomplete();
     flushPersistentSessions().catch(() => {});
 });
