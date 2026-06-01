@@ -9668,7 +9668,7 @@
         }
 
         const ML_API_WORKERS = 18;
-        const ML_BROWSER_WORKERS = 6;
+        const ML_BROWSER_WORKERS = 2;
 
         function tituloPareceFiltroOuCategoriaMl(titulo) {
             const normalizado = normalizarTextoMl(titulo);
@@ -10011,6 +10011,21 @@
                     var contextRoot = function (input) {
                         return input.closest('form, [role="dialog"], [class*="avant"], [id*="avant"], [class*="modal"], [class*="login"], [class*="auth"], [class*="popup"], [class*="drawer"]') || input.form || input.parentElement || document.body;
                     };
+                    var elementHasAvantMarker = function (el) {
+                        if (!el || !el.getAttribute) return false;
+                        var extra = '';
+                        try { extra += ' ' + String(el.id || '') + ' ' + String(el.className || ''); } catch (e) {}
+                        return avantPattern.test(attrText(el) + extra);
+                    };
+                    var rootHasStrongAvantContext = function (input) {
+                        var root = contextRoot(input);
+                        if (isAuthUrl) return true;
+                        if (elementHasAvantMarker(input) || elementHasAvantMarker(root)) return true;
+                        if (root && root !== document.body) {
+                            return avantPattern.test(attrText(root) + ' ' + String(root.innerText || '').slice(0, 2000));
+                        }
+                        return false;
+                    };
                     var contextText = function (input) {
                         var root = contextRoot(input);
                         return norm([
@@ -10023,10 +10038,11 @@
                     var isMlLoginField = function (input, ctx) {
                         var root = contextRoot(input);
                         var attrs = norm(attrText(input));
-                        if (isMercadoLivreHost && root === document.body && mlLoginText) return true;
-                        if (isMercadoLivreHost && mlLoginText && !/avant/.test(ctx)) return true;
-                        if (/mercado\\s*livre|mercadolivre|mercadolibre/.test(ctx) && !/avant/.test(ctx)) return true;
-                        if (isMercadoLivreHost && /user|usuario|telefone|phone|login_user|login|nickname/.test(attrs + ' ' + ctx) && !/avant/.test(ctx)) return true;
+                        var strongAvantContext = rootHasStrongAvantContext(input);
+                        if (isMercadoLivreHost && root === document.body && mlLoginText && !strongAvantContext) return true;
+                        if (isMercadoLivreHost && mlLoginText && !strongAvantContext) return true;
+                        if (/mercado\\s*livre|mercadolivre|mercadolibre/.test(ctx) && !strongAvantContext) return true;
+                        if (isMercadoLivreHost && /email|e-mail|mail|user|usuario|telefone|phone|login_user|login|nickname|senha|password/.test(attrs + ' ' + ctx) && !strongAvantContext) return true;
                         return false;
                     };
                     var inputs = Array.prototype.slice.call(document.querySelectorAll('input:not([type="hidden"])'));
@@ -10036,7 +10052,8 @@
                         var ctx = contextText(input);
                         var isSearch = /search|buscar|pesquisar|as_word|\\bq\\b/.test(attrs);
                         var looksEmail = input.type === 'email' || /email|e-mail|mail/.test(attrs + ' ' + ctx);
-                        var hasAvantContext = avantPattern.test(ctx) || isAuthUrl || (recentAvantClick && !isMlLoginField(input, ctx));
+                        var hasAvantContext = rootHasStrongAvantContext(input) || (recentAvantClick && !isMlLoginField(input, ctx));
+                        if (isMercadoLivreHost && !hasAvantContext) return false;
                         if (isSearch || !looksEmail || !hasAvantContext) return false;
                         return !isMlLoginField(input, ctx);
                     });
@@ -12836,6 +12853,19 @@
             verificarCancelamentoFavoritos();
             let anunciosAvant = (resultado && resultado.anuncios) || [];
             if (resultado && resultado.needsLogin) {
+                mlFavoritosExecucaoEmSegundoPlano = false;
+                abrirBalaoResultadosMl({
+                    titulo: 'Login do Mercado Livre necessario',
+                    subtitulo: 'Entre no Mercado Livre no navegador exibido e rode os favoritos novamente.',
+                    mostrarFavoritos: true,
+                    browserCompleto: true,
+                    forcarExibicao: true
+                });
+                mostrarBalaoFavoritosStatus('Mercado Livre pediu login ou verificacao. Faca login no navegador exibido e depois rode os favoritos novamente.', {
+                    erro: true,
+                    larga: true,
+                    tempoMs: 9000
+                });
                 throw new Error('O Mercado Livre pediu login/verificacao no quadro interno.');
             }
             if (resultado && resultado.noResults && !anunciosAvant.length) {
@@ -14623,15 +14653,15 @@
             const usarIaRanking = favoritosUsarIaRankingAtivo();
 
             mlFavoritosEmExecucao = true;
-            mlFavoritosExecucaoEmSegundoPlano = true;
+            mlFavoritosExecucaoEmSegundoPlano = false;
             mlFavoritosCancelado = false;
             mlFavoritosAbortController = typeof AbortController === 'function' ? new AbortController() : null;
-            ocultarNavegadorMlShellDefinitivo();
             abrirBalaoResultadosMl({
                 titulo: 'Fazendo Favorito! Aguarde...',
                 subtitulo: `${selecionados.length} SKU(s), ${quantidade} pesquisa(s) por SKU${usarIaRanking ? ', IA ligada' : ''}`,
                 mostrarFavoritos: true,
-                browserCompleto: true
+                browserCompleto: true,
+                forcarExibicao: true
             });
             atualizarFiltroAzulFavoritos();
             atualizarContadorSkuSidebarSelecionados();
