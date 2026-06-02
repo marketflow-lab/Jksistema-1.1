@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.17",
+  "version": "1.0.21",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -19,10 +19,10 @@
   },
   "build": {
     "directories": {
-      "output": "dist-client-setup"
+      "output": "dist-private"
     },
     "appId": "com.jksistema.cliente",
-    "productName": "JK Sistema Cliente",
+    "productName": "JK Sistema Privado",
     "asar": true,
     "publish": [
       {
@@ -68,6 +68,10 @@
           "promo_worker_api.py",
           "medias_compras.py",
           "requirements.txt",
+          "jkjkjk-*.json",
+          "firebase-service-account.json",
+          "firebase_service_account.json",
+          "*service-account*.json",
           "static/**",
           "img/**",
           "NCM.xlsx",
@@ -82,12 +86,23 @@
       {
         "from": "CONFIGURAR_SERVIDOR.md",
         "to": "CONFIGURAR_SERVIDOR.md"
+      },
+      {
+        "from": "app-update.yml",
+        "to": "app-update.yml"
+      },
+      {
+        "from": "private",
+        "to": "private",
+        "filter": [
+          "**/*.jkcred"
+        ]
       }
     ],
     "win": {
       "target": "nsis",
       "icon": "icon.ico",
-      "artifactName": "JK-Sistema-Cliente-Setup-${version}.${ext}",
+      "artifactName": "JK-Sistema-Privado-Setup-${version}.${ext}",
       "signAndEditExecutable": false
     },
     "nsis": {

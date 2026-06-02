@@ -2,10 +2,19 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     getMac: () => ipcRenderer.invoke('get-mac'),
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    onAutoUpdateStatus: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('auto-update-status', listener);
+        return () => ipcRenderer.removeListener('auto-update-status', listener);
+    },
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
     ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     flushBrowserSession: () => ipcRenderer.invoke('flush-browser-session'),
+    setMlAutomationActive: (active, reason) => ipcRenderer.invoke('set-ml-automation-active', !!active, reason || ''),
     getMlPublicItemInfo: (itemId) => ipcRenderer.invoke('ml-public-item-info', itemId),
     getMlBrowserItemInfo: (itemId, url) => ipcRenderer.invoke('ml-browser-item-info', itemId, url),
     openInternalBrowser: (url) => ipcRenderer.invoke('open-internal-browser', url),

@@ -180,6 +180,51 @@
             white-space: nowrap;
         }
 
+        .user-machine-online-list {
+            display: grid;
+            gap: 5px;
+            margin-top: 2px;
+            max-height: 92px;
+            overflow: hidden;
+        }
+
+        .user-machine-online-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            padding: 5px 6px;
+            border: 1px solid rgba(97, 226, 173, 0.22);
+            border-radius: 8px;
+            background: rgba(97, 226, 173, 0.08);
+            color: #dff8ef;
+            font-size: 0.72rem;
+            line-height: 1.2;
+        }
+
+        .user-machine-online-dot {
+            width: 7px;
+            height: 7px;
+            flex: 0 0 auto;
+            border-radius: 99px;
+            background: #61e2ad;
+            box-shadow: 0 0 10px rgba(97, 226, 173, 0.75);
+        }
+
+        .user-machine-online-name {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .user-machine-online-tag {
+            flex: 0 0 auto;
+            color: #9bd1ff;
+            font-size: 0.66rem;
+            font-weight: 800;
+        }
+
         .user-sidebar-spacer {
             flex: 1;
         }
@@ -577,6 +622,127 @@
             opacity: 0;
         }
 
+        .dashboard-status-balloon {
+            position: fixed;
+            right: 92px;
+            bottom: 22px;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: min(340px, calc(100vw - 116px));
+            padding: 9px 11px;
+            color: #eaf6ff;
+            background: rgba(8, 23, 41, 0.9);
+            border: 1px solid rgba(96, 184, 255, 0.32);
+            border-radius: 12px;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+            transform: translate3d(0, 0, 0);
+            opacity: 1;
+            visibility: visible;
+            pointer-events: none;
+            transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0s;
+        }
+
+        .dashboard-status-balloon.hidden {
+            opacity: 0;
+            visibility: hidden;
+            transform: translate3d(0, 8px, 0);
+            transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0.18s;
+        }
+
+        .dashboard-status-icon {
+            flex: 0 0 24px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: grid;
+            place-items: center;
+            background: rgba(79, 172, 254, 0.16);
+            box-shadow: inset 0 0 0 1px rgba(145, 208, 255, 0.28);
+        }
+
+        .dashboard-status-icon::before {
+            content: "";
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.26);
+            border-top-color: #ffffff;
+            animation: dashboardStatusSpin 0.8s linear infinite;
+        }
+
+        .dashboard-status-balloon.is-success {
+            border-color: rgba(79, 230, 174, 0.55);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+        }
+
+        .dashboard-status-balloon.is-error {
+            border-color: rgba(255, 116, 116, 0.62);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+        }
+
+        .dashboard-status-balloon.is-info .dashboard-status-icon::before,
+        .dashboard-status-balloon.is-error .dashboard-status-icon::before {
+            width: auto;
+            height: auto;
+            border: 0;
+            border-radius: 0;
+            animation: none;
+            color: #ffffff;
+            font-weight: 900;
+            line-height: 1;
+        }
+
+        .dashboard-status-balloon.is-info .dashboard-status-icon::before {
+            content: "i";
+        }
+
+        .dashboard-status-balloon.is-error .dashboard-status-icon::before {
+            content: "!";
+        }
+
+        .dashboard-status-balloon.is-success .dashboard-status-icon::before {
+            width: 10px;
+            height: 6px;
+            border: 0;
+            border-left: 2px solid #ffffff;
+            border-bottom: 2px solid #ffffff;
+            border-radius: 0;
+            animation: none;
+            transform: rotate(-45deg) translateY(-1px);
+        }
+
+        .dashboard-status-title {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 900;
+            letter-spacing: 0;
+            color: #ffffff;
+        }
+
+        .dashboard-status-text {
+            display: block;
+            margin-top: 1px;
+            max-height: 2.6em;
+            overflow: hidden;
+            font-size: 0.74rem;
+            line-height: 1.28;
+            color: #bdd6ed;
+        }
+
+        @media (max-width: 720px) {
+            .dashboard-status-balloon {
+                right: 12px;
+                bottom: 14px;
+                width: min(320px, calc(100vw - 24px));
+            }
+        }
+
+        @keyframes dashboardStatusSpin {
+            to { transform: rotate(360deg); }
+        }
+
         .card[data-key="analise_promo"] { --module: #4facfe; --module-soft: rgba(79, 172, 254, 0.3); }
         .card[data-key="renovacao_fixa"] { --module: #66c2ff; --module-soft: rgba(102, 194, 255, 0.3); }
         .card[data-key="anuncios_ml"] { --module: #3fc0d8; --module-soft: rgba(63, 192, 216, 0.3); }
@@ -592,8 +758,9 @@
         .card[data-key="impostos"] { --module: #ff8c5a; --module-soft: rgba(255, 140, 90, 0.33); }
         .card[data-key="configuracoes"] { --module: #be87ff; --module-soft: rgba(190, 135, 255, 0.33); }
         .card[data-key="importacoes"] { --module: #ffdd75; --module-soft: rgba(255, 221, 117, 0.35); }
+        .card[data-key="admin_usuarios"] { --module: #8fd3ff; --module-soft: rgba(143, 211, 255, 0.32); }
     </style>
-    <script src="/auth.js?v=20260417d"></script>
+    <script src="/auth.js?v=20260602-machines"></script>
 </head>
 <body>
 
@@ -621,6 +788,15 @@
             <span class="user-info-label">Máquina</span>
             <span class="user-info-value" id="user-machine">-</span>
         </div>
+        <div class="user-info-row">
+            <span class="user-info-label">Online</span>
+            <span class="user-info-value" id="user-online-count">Verificando...</span>
+            <div class="user-machine-online-list" id="user-online-machines" aria-live="polite"></div>
+        </div>
+        <div class="user-info-row">
+            <span class="user-info-label">Versão</span>
+            <span class="user-info-value" id="app-version">-</span>
+        </div>
     </div>
     <div class="user-sidebar-spacer"></div>
     <div class="user-sidebar-actions">
@@ -636,6 +812,14 @@
     <h1>🚀 JK Sistema de Gestão</h1>
     
     <div id="cards" class="grid"></div>
+</div>
+
+<div id="dashboard-status-balloon" class="dashboard-status-balloon hidden is-loading" role="status" aria-live="polite">
+    <span class="dashboard-status-icon" aria-hidden="true"></span>
+    <div>
+        <strong id="dashboard-status-title" class="dashboard-status-title">Atualização</strong>
+        <span id="dashboard-status-text" class="dashboard-status-text">Verificando versão...</span>
+    </div>
 </div>
 
 <div class="password-modal" id="password-modal" aria-hidden="true">
@@ -692,10 +876,38 @@
 
     const userData = safeJsonParse(localStorage.getItem('user_data') || 'null', null);
     const permissions = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
+    const APP_VERSION_FALLBACK = '1.0.21';
+    let appVersionAtual = APP_VERSION_FALLBACK;
 
     if (!userData) {
         window.location.href = 'frontend_index.html';
     }
+
+    async function atualizarSessaoDashboard() {
+        const token = obterToken();
+        if (!token || !userData) return;
+        const permissoesAtuais = JSON.stringify(permissions || {});
+        const machineId = encodeURIComponent(userData.machine_id || '');
+        try {
+            const resp = await fetch(`/api/auth/me?machine_id=${machineId}&_=${Date.now()}`, {
+                cache: 'no-store',
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) return;
+            if (data.access_token) localStorage.setItem('access_token', data.access_token);
+            if (data.user_data) localStorage.setItem('user_data', JSON.stringify(data.user_data));
+            if (data.permissions) {
+                const novasPermissoes = JSON.stringify(data.permissions || {});
+                localStorage.setItem('permissions', novasPermissoes);
+                if (novasPermissoes !== permissoesAtuais) {
+                    window.location.reload();
+                }
+            }
+        } catch (_err) {}
+    }
+
+    atualizarSessaoDashboard();
 
     document.body.classList.remove('dashboard-preload');
     document.body.classList.add('dashboard-ready');
@@ -715,7 +927,8 @@
         { key: 'medias_compras', href: 'medias_compras.html', title: '📊 Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
         { key: 'impostos', href: 'impostos.html', title: '💸 Impostos', desc: 'Regras fiscais por NCM/CEST e simulação tributária.' },
         { key: 'configuracoes', href: 'configuracoes.html', title: '⚙️ Configurações', desc: 'Parâmetros globais do sistema para todos os usuários.' },
-        { key: 'importacoes', href: 'importacoes.html', title: '📥 Importações', desc: 'Central de importação e processamento de planilhas.' }
+        { key: 'importacoes', href: 'importacoes.html', title: '📥 Importações', desc: 'Central de importação e processamento de planilhas.' },
+        { key: 'admin_usuarios', href: 'admin_usuarios.html', title: '👥 Central de Usuários', desc: 'Usuários online, mensagens e permissões.' }
     ];
 
     const canSeeAll = permissions.full === true;
@@ -735,6 +948,74 @@
         return base.slice(0, 2).toUpperCase();
     }
 
+    function escaparHtmlSidebar(valor) {
+        return String(valor || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function textoTempoMaquina(segundos) {
+        const valor = Number(segundos || 0);
+        if (!Number.isFinite(valor) || valor < 25) return 'agora';
+        const minutos = Math.max(1, Math.round(valor / 60));
+        if (minutos < 60) return `${minutos} min`;
+        const horas = Math.round(minutos / 60);
+        return `${horas} h`;
+    }
+
+    function renderizarMaquinasOnline(payload) {
+        const countEl = document.getElementById('user-online-count');
+        const listEl = document.getElementById('user-online-machines');
+        if (!countEl || !listEl) return;
+        const maquinas = Array.isArray(payload && payload.machines) ? payload.machines : [];
+        const total = Number(payload && payload.online_count !== undefined ? payload.online_count : maquinas.length) || 0;
+        countEl.textContent = total === 1 ? '1 máquina' : `${total} máquinas`;
+        countEl.title = payload && payload.backend === 'firebase'
+            ? 'Sincronizado pelo Firebase'
+            : 'Presença local nesta máquina';
+
+        if (!maquinas.length) {
+            listEl.innerHTML = '<div class="user-machine-online-item"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">Somente esta sessão</span></div>';
+            return;
+        }
+
+        listEl.innerHTML = maquinas.slice(0, 3).map((maquina) => {
+            const nome = escaparHtmlSidebar(maquina.label || maquina.machine_id || 'Máquina');
+            const tempo = textoTempoMaquina(maquina.seconds_since_seen);
+            const tag = maquina.current ? 'esta' : tempo;
+            return `<div class="user-machine-online-item" title="${escaparHtmlSidebar(maquina.machine_id || nome)}"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">${nome}</span><span class="user-machine-online-tag">${escaparHtmlSidebar(tag)}</span></div>`;
+        }).join('');
+    }
+
+    async function atualizarMaquinasOnlineSidebar() {
+        try {
+            if (window.jkEnviarHeartbeatMaquina) {
+                await window.jkEnviarHeartbeatMaquina('manual');
+            }
+            let data = null;
+            if (window.jkBuscarMaquinasOnline) {
+                data = await window.jkBuscarMaquinasOnline();
+            } else {
+                const machineId = String((userData && userData.machine_id) || '').trim();
+                const resp = await fetch('/api/user/machines/online?machine_id=' + encodeURIComponent(machineId), {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                data = await resp.json().catch(() => ({}));
+            }
+            renderizarMaquinasOnline(data || {});
+        } catch (_err) {
+            const countEl = document.getElementById('user-online-count');
+            if (countEl) {
+                countEl.textContent = '-';
+                countEl.title = 'Nao foi possivel carregar as maquinas online agora.';
+            }
+        }
+    }
+
     function preencherSidebarUsuario() {
         if (!userData) return;
         const nome = String(userData.name || userData.username || 'Usuário').trim();
@@ -747,6 +1028,7 @@
         const clientEl = document.getElementById('user-client');
         const accessEl = document.getElementById('user-access');
         const machineEl = document.getElementById('user-machine');
+        const versionEl = document.getElementById('app-version');
         if (avatar) avatar.textContent = iniciaisUsuario(nome, email);
         if (nameEl) nameEl.textContent = nome;
         if (emailEl) emailEl.textContent = email;
@@ -756,9 +1038,191 @@
             machineEl.textContent = maquina ? maquina.slice(0, 18) : '-';
             machineEl.title = maquina || '';
         }
+        if (versionEl) {
+            versionEl.textContent = `v${APP_VERSION_FALLBACK}`;
+            versionEl.title = `Versão ${APP_VERSION_FALLBACK}`;
+        }
     }
 
     preencherSidebarUsuario();
+    atualizarMaquinasOnlineSidebar();
+    setInterval(atualizarMaquinasOnlineSidebar, 60000);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') atualizarMaquinasOnlineSidebar();
+    });
+
+    async function preencherVersaoApp() {
+        const versionEl = document.getElementById('app-version');
+        if (!versionEl) return;
+        let versao = APP_VERSION_FALLBACK;
+        try {
+            if (window.electronAPI && typeof window.electronAPI.getAppVersion === 'function') {
+                const retorno = await window.electronAPI.getAppVersion();
+                if (retorno) versao = String(retorno);
+            }
+        } catch (_err) {}
+        appVersionAtual = String(versao || APP_VERSION_FALLBACK).replace(/^v/i, '').trim() || APP_VERSION_FALLBACK;
+        versionEl.textContent = `v${versao}`;
+        versionEl.title = `Versão ${versao}`;
+    }
+
+    preencherVersaoApp();
+
+    let dashboardStatusTimer = null;
+    let updateStatusWatchdogTimer = null;
+    const UPDATE_CHECK_UI_TIMEOUT_MS = 55000;
+
+    function limparWatchdogAtualizacao() {
+        clearTimeout(updateStatusWatchdogTimer);
+        updateStatusWatchdogTimer = null;
+    }
+
+    function iniciarWatchdogAtualizacao(ms = UPDATE_CHECK_UI_TIMEOUT_MS) {
+        limparWatchdogAtualizacao();
+        updateStatusWatchdogTimer = setTimeout(() => {
+            mostrarStatusDashboard(
+                'Falha na atualização',
+                'A consulta não respondeu. Tente novamente ou reinicie o app.',
+                { tipo: 'error', tempoMs: 9000 }
+            );
+        }, ms);
+    }
+
+    function executarComTimeoutAtualizacao(promise, ms = UPDATE_CHECK_UI_TIMEOUT_MS) {
+        return new Promise((resolve) => {
+            let concluido = false;
+            const timer = setTimeout(() => {
+                if (concluido) return;
+                concluido = true;
+                resolve({
+                    success: false,
+                    timeout: true,
+                    error: 'Tempo esgotado ao consultar atualizações.'
+                });
+            }, ms);
+
+            Promise.resolve(promise)
+                .then((value) => {
+                    if (concluido) return;
+                    concluido = true;
+                    clearTimeout(timer);
+                    resolve(value);
+                })
+                .catch((err) => {
+                    if (concluido) return;
+                    concluido = true;
+                    clearTimeout(timer);
+                    resolve({
+                        success: false,
+                        error: (err && err.message) || 'Não foi possível verificar.'
+                    });
+                });
+        });
+    }
+
+    async function consultarAtualizacaoBackend(ms = 14000) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        try {
+            const versaoAtual = String(appVersionAtual || APP_VERSION_FALLBACK).replace(/^v/i, '').trim() || APP_VERSION_FALLBACK;
+            const resp = await fetch(`/api/app-update/check?current_version=${encodeURIComponent(versaoAtual)}&_=${Date.now()}`, {
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.message || data.detail || 'Nao foi possivel consultar a versao publicada.');
+            }
+            return data;
+        } catch (err) {
+            if (err && err.name === 'AbortError') {
+                throw new Error('Tempo esgotado consultando a versão publicada.');
+            }
+            throw err;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    function ocultarStatusDashboard() {
+        const balloon = document.getElementById('dashboard-status-balloon');
+        if (balloon) balloon.classList.add('hidden');
+    }
+
+    function mostrarStatusDashboard(titulo, texto, opcoes = {}) {
+        const balloon = document.getElementById('dashboard-status-balloon');
+        if (!balloon) return;
+        const titleEl = document.getElementById('dashboard-status-title');
+        const textEl = document.getElementById('dashboard-status-text');
+        const tipo = opcoes.tipo || (opcoes.erro ? 'error' : opcoes.sucesso ? 'success' : opcoes.loading ? 'loading' : 'info');
+
+        if (titleEl) titleEl.textContent = titulo || 'Atualização';
+        if (textEl) textEl.textContent = texto || '';
+
+        balloon.classList.remove('hidden', 'is-loading', 'is-success', 'is-error', 'is-info');
+        balloon.classList.add(`is-${tipo}`);
+
+        clearTimeout(dashboardStatusTimer);
+        const tempoMs = Number(opcoes.tempoMs || 0) || (tipo === 'loading' ? 0 : 5200);
+        if (tempoMs > 0) {
+            dashboardStatusTimer = setTimeout(ocultarStatusDashboard, tempoMs);
+        }
+    }
+
+    function versaoLegivelAtualizacao(valor) {
+        const versao = String(valor || '').replace(/^v/i, '').trim();
+        return versao ? `v${versao}` : 'a nova versão';
+    }
+
+    function obterVersaoDoStatus(payload) {
+        if (!payload) return '';
+        return payload.latestVersion || payload.currentVersion || payload.version || (payload.updateInfo && payload.updateInfo.version) || '';
+    }
+
+    function tratarStatusAtualizacao(payload = {}) {
+        const status = payload.status || '';
+        const versao = versaoLegivelAtualizacao(obterVersaoDoStatus(payload));
+        if (status === 'checking') {
+            iniciarWatchdogAtualizacao();
+            mostrarStatusDashboard('Atualização', 'Verificando versão...', { tipo: 'loading' });
+        } else if (status === 'available' || status === 'manual-update-available') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Atualização', `${versao} encontrada. Baixando...`, { tipo: 'loading' });
+        } else if (status === 'downloading') {
+            limparWatchdogAtualizacao();
+            const pct = Number(payload.percent || 0);
+            mostrarStatusDashboard('Baixando', pct > 0 ? `${pct}% concluído.` : 'Download em andamento...', { tipo: 'loading' });
+        } else if (status === 'downloaded') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Instalando', 'Salvando dados...', { tipo: 'loading' });
+        } else if (status === 'saving-work') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Preparando', 'Salvando abas abertas...', { tipo: 'loading' });
+        } else if (status === 'work-saved') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Salvo', 'Continuando instalação...', { tipo: 'success' });
+        } else if (status === 'installing') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Instalando', 'Reiniciando em instantes...', { tipo: 'loading' });
+        } else if (status === 'not-available' || status === 'up-to-date') {
+            limparWatchdogAtualizacao();
+            const atual = versaoLegivelAtualizacao(payload.currentVersion || obterVersaoDoStatus(payload) || APP_VERSION_FALLBACK);
+            mostrarStatusDashboard('Atualizado', `Versão ${atual}.`, { tipo: 'success', tempoMs: 4200 });
+        } else if (status === 'deferred') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Aguardando', 'Finalizando tarefa atual.', { tipo: 'info', tempoMs: 5200 });
+        } else if (status === 'skipped') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Sem atualização', payload.reason || 'Atualizador indisponível.', { tipo: 'info', tempoMs: 7000 });
+        } else if (status === 'error') {
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Falha na atualização', payload.error || 'Não foi possível consultar agora.', { tipo: 'error', tempoMs: 9000 });
+        }
+    }
+
+    if (window.electronAPI && typeof window.electronAPI.onAutoUpdateStatus === 'function') {
+        window.electronAPI.onAutoUpdateStatus(tratarStatusAtualizacao);
+    }
 
     async function chamarDriveSync(endpoint) {
         const resp = await fetch(endpoint, {
@@ -772,6 +1236,61 @@
         return data;
     }
 
+    function aguardarDrive(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function lerRespostaDashboard(resp, erroPadrao) {
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+            throw new Error(data.detail || data.message || erroPadrao || 'Nao foi possivel concluir a operacao.');
+        }
+        return data;
+    }
+
+    async function aguardarVinculoGoogleDrive(state) {
+        for (let tentativa = 0; tentativa < 180; tentativa += 1) {
+            const resp = await fetch('/api/auth/google/result/' + encodeURIComponent(state), { cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                throw new Error(data.detail || data.message || 'Nao foi possivel concluir a autorizacao Google.');
+            }
+            if (!data.pending) {
+                if (!data.success) {
+                    throw new Error(data.message || 'Conta Google nao autorizada.');
+                }
+                if (data.user_data) localStorage.setItem('user_data', JSON.stringify(data.user_data));
+                if (data.permissions) localStorage.setItem('permissions', JSON.stringify(data.permissions || {}));
+                if (data.access_token) {
+                    localStorage.setItem('access_token', data.access_token);
+                }
+                return data;
+            }
+            await aguardarDrive(1000);
+        }
+        throw new Error('Tempo esgotado aguardando a autorizacao do Google Drive.');
+    }
+
+    async function vincularGoogleDrive() {
+        const machineId = (userData && userData.machine_id) || '';
+        const resp = await fetch('/api/auth/google/start?mode=json&machine_id=' + encodeURIComponent(machineId), { cache: 'no-store' });
+        const data = await lerRespostaDashboard(resp, 'Nao foi possivel iniciar a autorizacao Google.');
+        if (!data.auth_url || !data.state) {
+            throw new Error(data.message || 'Google nao retornou o link de autorizacao.');
+        }
+
+        mostrarStatusDashboard('Autorizar Google Drive', 'Conclua a autorizacao na janela do Google. Depois volto a sincronizar automaticamente.', { tipo: 'loading' });
+        if (window.electronAPI && typeof window.electronAPI.openExternalChrome === 'function') {
+            await window.electronAPI.openExternalChrome(data.auth_url);
+        } else {
+            const popup = window.open(data.auth_url, '_blank', 'noopener,noreferrer');
+            if (!popup) window.location.href = data.auth_url;
+        }
+
+        await aguardarVinculoGoogleDrive(data.state);
+        mostrarStatusDashboard('Drive vinculado', 'Autorizacao concluida. Sincronizando os dados agora...', { tipo: 'success' });
+    }
+
     async function sincronizarDriveBackup(manual = false) {
         const botao = document.getElementById('btn-sincronizar-drive');
         try {
@@ -779,7 +1298,15 @@
                 botao.disabled = true;
                 botao.textContent = 'Sincronizando...';
             }
+            if (manual) {
+                mostrarStatusDashboard('Sincronizando Drive', 'Verificando autorizacao e backups da conta Google...', { tipo: 'loading' });
+            }
             let data = await chamarDriveSync('/api/drive-sync/auto');
+            if (data.action === 'not_linked') {
+                if (!manual) return;
+                await vincularGoogleDrive();
+                data = await chamarDriveSync('/api/drive-sync/auto');
+            }
             if (data.action === 'conflict' && manual) {
                 const enviarLocal = confirm('Existe um backup diferente no Google Drive e tambem ha dados locais nesta maquina. Deseja enviar os dados desta maquina para o Drive agora?');
                 if (enviarLocal) {
@@ -787,13 +1314,13 @@
                 }
             }
             if (manual) {
-                alert(data.message || 'Sincronizacao do Drive concluida.');
+                mostrarStatusDashboard('Google Drive', data.message || 'Sincronizacao do Drive concluida.', { tipo: 'success', tempoMs: 6500 });
             } else if (data.action && data.action !== 'synced' && data.action !== 'not_linked') {
                 console.info('[Drive Sync]', data.message || data.action);
             }
         } catch (err) {
             if (manual) {
-                alert((err && err.message) || 'Nao foi possivel sincronizar com o Google Drive.');
+                mostrarStatusDashboard('Erro no Google Drive', (err && err.message) || 'Nao foi possivel sincronizar com o Google Drive.', { tipo: 'error', tempoMs: 8000 });
             } else {
                 console.warn('[Drive Sync]', err);
             }
@@ -841,24 +1368,53 @@
         const api = window.electronAPI;
         const botao = document.getElementById('btn-verificar-atualizacao');
 
-        if (!api || typeof api.checkForUpdates !== 'function') {
-            alert('Esta opção está disponível no aplicativo desktop instalado.');
-            return;
-        }
-
         try {
             if (botao) {
                 botao.disabled = true;
                 botao.textContent = 'Verificando...';
             }
-            const resultado = await api.checkForUpdates();
+            mostrarStatusDashboard('Atualização', 'Verificando versão...', { tipo: 'loading' });
+            const resultado = await consultarAtualizacaoBackend();
+
             if (resultado && resultado.skipped) {
-                console.warn(resultado.reason || 'Atualizacao automatica indisponivel neste ambiente.');
+                mostrarStatusDashboard('Sem atualização', resultado.reason || 'Atualizador indisponível.', { tipo: 'info', tempoMs: 7000 });
             } else if (resultado && resultado.checking) {
-                console.info('A verificacao de atualizacao ja esta em andamento.');
+                mostrarStatusDashboard('Atualização', 'Verificação já está em andamento.', { tipo: 'info', tempoMs: 6500 });
+            } else if (resultado && resultado.upToDate) {
+                const atual = resultado.publishedOlderThanInstalled
+                    ? `${versaoLegivelAtualizacao(resultado.currentVersion || APP_VERSION_FALLBACK)} instalada. GitHub em ${versaoLegivelAtualizacao(resultado.latestVersion)}.`
+                    : `Versão ${versaoLegivelAtualizacao(resultado.currentVersion || APP_VERSION_FALLBACK)}.`;
+                mostrarStatusDashboard('Atualizado', atual, { tipo: 'success', tempoMs: 4500 });
+            } else if (resultado && resultado.available) {
+                mostrarStatusDashboard('Atualização', `Baixando ${versaoLegivelAtualizacao(resultado.latestVersion)}...`, { tipo: 'loading' });
+                if (api && typeof api.checkForUpdates === 'function') {
+                    iniciarWatchdogAtualizacao();
+                    executarComTimeoutAtualizacao(api.checkForUpdates(), UPDATE_CHECK_UI_TIMEOUT_MS)
+                        .then((retorno) => {
+                            limparWatchdogAtualizacao();
+                            if (retorno && retorno.error) {
+                                mostrarStatusDashboard('Falha na atualização', retorno.error, { tipo: 'error', tempoMs: 9000 });
+                            } else if (retorno && retorno.upToDate) {
+                                mostrarStatusDashboard('Atualizado', `Versão ${versaoLegivelAtualizacao(retorno.currentVersion || resultado.currentVersion || APP_VERSION_FALLBACK)}.`, { tipo: 'success', tempoMs: 5000 });
+                            }
+                        })
+                        .catch((err) => {
+                            limparWatchdogAtualizacao();
+                            mostrarStatusDashboard('Falha na atualização', (err && err.message) || 'Não foi possível baixar.', { tipo: 'error', tempoMs: 9000 });
+                        });
+                } else {
+                    mostrarStatusDashboard('Atualização disponível', `${versaoLegivelAtualizacao(resultado.latestVersion)} publicada. Use o app instalado para baixar.`, { tipo: 'info', tempoMs: 8000 });
+                }
+            } else if (resultado && resultado.timeout) {
+                mostrarStatusDashboard('Falha na atualização', resultado.error, { tipo: 'error', tempoMs: 9000 });
+            } else if (resultado && resultado.error) {
+                mostrarStatusDashboard('Falha na atualização', resultado.error, { tipo: 'error', tempoMs: 9000 });
+            } else {
+                mostrarStatusDashboard('Atualização', 'Consulta finalizada.', { tipo: 'info', tempoMs: 5000 });
             }
         } catch (err) {
-            alert((err && err.message) || 'Não foi possível verificar atualizações.');
+            limparWatchdogAtualizacao();
+            mostrarStatusDashboard('Falha na atualização', (err && err.message) || 'Não foi possível verificar.', { tipo: 'error', tempoMs: 9000 });
         } finally {
             if (botao) {
                 botao.disabled = false;

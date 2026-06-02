@@ -460,6 +460,89 @@ function obterAuthHeaders(extra) {
     return headers;
 }
 
+(function initMachinePresenceHeartbeat() {
+    if (window.__jkMachinePresenceInit) return;
+    window.__jkMachinePresenceInit = true;
+
+    const HEARTBEAT_INTERVAL_MS = 45000;
+    let ultimoHeartbeat = 0;
+    let timer = null;
+    let emExecucao = false;
+
+    function obterUserDataPresenca() {
+        try {
+            return JSON.parse(localStorage.getItem('user_data') || 'null') || null;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    function obterMachineIdPresenca() {
+        const userData = obterUserDataPresenca();
+        return String((userData && userData.machine_id) || '').trim();
+    }
+
+    async function enviarHeartbeat(motivo) {
+        if (emExecucao || !obterToken() || tokenSessaoExpirado()) return null;
+        if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimoHeartbeat < 12000) return null;
+        ultimoHeartbeat = agora;
+        emExecucao = true;
+        try {
+            const payload = {
+                machine_id: obterMachineIdPresenca(),
+                page: `${window.location.pathname || ''}${window.location.search || ''}`
+            };
+            const resp = await fetch('/api/user/machines/heartbeat', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(payload),
+                keepalive: motivo === 'hidden'
+            });
+            return await resp.json().catch(() => ({}));
+        } catch (_err) {
+            return null;
+        } finally {
+            emExecucao = false;
+        }
+    }
+
+    async function buscarMaquinasOnline() {
+        if (!obterToken() || tokenSessaoExpirado()) return null;
+        const machineId = obterMachineIdPresenca();
+        const url = `/api/user/machines/online?machine_id=${encodeURIComponent(machineId)}`;
+        const resp = await fetch(url, {
+            method: 'GET',
+            headers: obterAuthHeaders(),
+            cache: 'no-store'
+        });
+        return await resp.json().catch(() => ({}));
+    }
+
+    window.jkEnviarHeartbeatMaquina = enviarHeartbeat;
+    window.jkBuscarMaquinasOnline = buscarMaquinasOnline;
+
+    function iniciar() {
+        if (!obterToken() || tokenSessaoExpirado()) return;
+        enviarHeartbeat('inicio');
+        if (!timer) {
+            timer = setInterval(() => enviarHeartbeat('intervalo'), HEARTBEAT_INTERVAL_MS);
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+    } else {
+        setTimeout(iniciar, 500);
+    }
+    window.addEventListener('focus', () => enviarHeartbeat('focus'));
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') enviarHeartbeat('visible');
+        if (document.visibilityState === 'hidden') enviarHeartbeat('hidden');
+    });
+})();
+
 (function initDriveBackupAutomatico() {
     if (window.__jkDriveBackupAutoInit) return;
     window.__jkDriveBackupAutoInit = true;
@@ -2037,6 +2120,170 @@ function verificarSessao() {
     }
 })();
 
+(function initAdminUserMessages() {
+    if (window.__jkAdminUserMessagesInit) return;
+    window.__jkAdminUserMessagesInit = true;
+
+    const POLL_MS = 45000;
+    let buscando = false;
+    let mensagemAtualId = '';
+
+    function tokenAtual() {
+        return localStorage.getItem('access_token') || '';
+    }
+
+    function headersAuth(extra) {
+        const headers = Object.assign({}, extra || {});
+        const token = tokenAtual();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        return headers;
+    }
+
+    function escapar(texto) {
+        return String(texto || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function garantirEstilo() {
+        if (document.getElementById('jk-admin-message-style')) return;
+        const style = document.createElement('style');
+        style.id = 'jk-admin-message-style';
+        style.textContent = `
+            #jk-admin-message-toast {
+                position: fixed;
+                right: 22px;
+                bottom: 92px;
+                z-index: 999999;
+                width: min(360px, calc(100vw - 32px));
+                border: 1px solid rgba(143, 211, 255, 0.35);
+                border-radius: 16px;
+                background: rgba(7, 17, 31, 0.96);
+                color: #edf6ff;
+                box-shadow: 0 20px 44px rgba(0, 0, 0, 0.35);
+                padding: 14px;
+                font-family: Segoe UI, Arial, sans-serif;
+                transform: translateY(14px);
+                opacity: 0;
+                pointer-events: none;
+                transition: opacity .18s ease, transform .18s ease;
+            }
+            #jk-admin-message-toast.open {
+                opacity: 1;
+                transform: translateY(0);
+                pointer-events: auto;
+            }
+            #jk-admin-message-toast strong {
+                display: block;
+                color: #9bd1ff;
+                font-size: .94rem;
+                margin-bottom: 6px;
+            }
+            #jk-admin-message-toast p {
+                margin: 0 0 12px;
+                color: #d8eaff;
+                font-size: .86rem;
+                line-height: 1.42;
+                white-space: pre-wrap;
+            }
+            #jk-admin-message-toast .jk-admin-message-meta {
+                color: #9fb6cf;
+                font-size: .72rem;
+                margin-bottom: 10px;
+            }
+            #jk-admin-message-toast button {
+                border: 1px solid rgba(143, 211, 255, 0.42);
+                border-radius: 10px;
+                background: rgba(79, 172, 254, 0.18);
+                color: #edf6ff;
+                padding: 8px 12px;
+                font-weight: 800;
+                cursor: pointer;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function garantirToast() {
+        garantirEstilo();
+        let toast = document.getElementById('jk-admin-message-toast');
+        if (toast) return toast;
+        toast = document.createElement('div');
+        toast.id = 'jk-admin-message-toast';
+        toast.setAttribute('role', 'status');
+        toast.setAttribute('aria-live', 'polite');
+        document.body.appendChild(toast);
+        return toast;
+    }
+
+    async function marcarLida(id) {
+        if (!id || !tokenAtual()) return;
+        try {
+            await fetch('/api/user/messages/' + encodeURIComponent(id) + '/read', {
+                method: 'POST',
+                headers: headersAuth(),
+                cache: 'no-store'
+            });
+        } catch (_err) {}
+    }
+
+    function esconderToast() {
+        const toast = document.getElementById('jk-admin-message-toast');
+        if (toast) toast.classList.remove('open');
+        mensagemAtualId = '';
+    }
+
+    function mostrarMensagem(msg) {
+        if (!msg || !msg.id || mensagemAtualId === msg.id) return;
+        mensagemAtualId = msg.id;
+        const toast = garantirToast();
+        toast.innerHTML = `
+            <strong>${escapar(msg.title || 'Mensagem do administrador')}</strong>
+            <div class="jk-admin-message-meta">${escapar(msg.sender || 'admin')} | ${escapar(msg.created_at || '')}</div>
+            <p>${escapar(msg.message || '')}</p>
+            <button type="button">Entendi</button>
+        `;
+        toast.querySelector('button')?.addEventListener('click', async () => {
+            await marcarLida(msg.id);
+            esconderToast();
+            setTimeout(buscarMensagensAdmin, 500);
+        });
+        requestAnimationFrame(() => toast.classList.add('open'));
+    }
+
+    async function buscarMensagensAdmin() {
+        if (buscando || !tokenAtual()) return;
+        const path = String(window.location.pathname || '').toLowerCase();
+        if (path.includes('frontend_index') || path.includes('login')) return;
+        buscando = true;
+        try {
+            const resp = await fetch('/api/user/messages', {
+                headers: headersAuth(),
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data.success !== false && Array.isArray(data.messages) && data.messages.length) {
+                mostrarMensagem(data.messages[0]);
+            }
+        } catch (_err) {
+        } finally {
+            buscando = false;
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(buscarMensagensAdmin, 3500), { once: true });
+    } else {
+        setTimeout(buscarMensagensAdmin, 3500);
+    }
+    setInterval(buscarMensagensAdmin, POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) buscarMensagensAdmin();
+    });
+})();
 
 
 

@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Administração de Usuários - JK Sistema</title>
-    <script src="/auth.js?v=20260417c"></script>
+    <title>Central de Usuários - JK Sistema</title>
+    <script src="/auth.js?v=20260602-admin-users"></script>
     <style>
         :root {
             --bg: #09111f;
@@ -39,20 +39,21 @@
         h1 { margin: 0; color: #9bd1ff; }
         .subtitle { color: var(--muted); margin-top: 6px; }
         .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .layout { display: grid; grid-template-columns: 420px 1fr; gap: 18px; flex: 1; min-height: 0; }
+        .layout { display: grid; grid-template-columns: 430px 1fr; gap: 18px; flex: 1; min-height: 0; }
         .panel {
             background: rgba(16, 26, 42, 0.95);
             border: 1px solid var(--border);
             border-radius: 16px;
             padding: 16px;
             box-shadow: 0 14px 28px rgba(0,0,0,0.28);
-            overflow: hidden;
+            overflow: auto;
         }
         label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--muted); }
-        input {
+        input, textarea {
             width: 100%; padding: 10px 12px; margin-bottom: 12px; border-radius: 10px;
             border: 1px solid var(--border); background: #0c1625; color: var(--text);
         }
+        textarea { min-height: 92px; resize: vertical; font-family: inherit; line-height: 1.4; }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .checkbox-grid {
             display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;
@@ -86,6 +87,37 @@
         .table-actions { display: flex; flex-wrap: wrap; gap: 6px; }
         .table-actions button { padding: 7px 9px; font-size: 12px; }
         .small { color: var(--muted); font-size: 12px; }
+        .section-header {
+            display: flex; justify-content: space-between; align-items: center; gap: 10px;
+            margin-bottom: 10px;
+        }
+        .section-header h3 { margin: 0; }
+        .online-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;
+            margin-bottom: 14px;
+        }
+        .online-card {
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            background: rgba(12, 22, 37, 0.92);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+        .online-card.online { border-color: rgba(51, 195, 125, 0.45); }
+        .online-card strong { display: block; margin-bottom: 4px; }
+        .online-line { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .online-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 10px rgba(255, 107, 107, 0.5); flex: 0 0 auto; }
+        .online-card.online .online-dot { background: var(--success); box-shadow: 0 0 10px rgba(51, 195, 125, 0.65); }
+        .message-panel {
+            border: 1px solid rgba(79, 172, 254, 0.35);
+            background: rgba(79, 172, 254, 0.08);
+            border-radius: 14px;
+            padding: 12px;
+            margin: 0 0 16px;
+        }
+        .message-panel.hidden { display: none; }
+        .message-panel-title { font-weight: 800; color: #d8ecff; margin-bottom: 8px; }
+        .table-scroll { overflow: auto; max-height: calc(100vh - 360px); border-radius: 12px; }
+        .muted-line { color: var(--muted); font-size: 12px; margin-top: 3px; }
         @media (max-width: 980px) {
             .layout { grid-template-columns: 1fr; }
         }
@@ -95,8 +127,8 @@
 <div class="wrap">
     <div class="topbar">
         <div>
-            <h1>👤 Administração de Usuários</h1>
-            <div class="subtitle">Crie usuários, troque senhas e altere permissões do sistema.</div>
+            <h1>👥 Central de Usuários</h1>
+            <div class="subtitle">Veja usuários online, envie mensagens e gerencie permissões do sistema.</div>
         </div>
         <div class="actions">
             <button class="btn-muted" onclick="navegarComTransicao('/configuracoes.html')">Voltar às configurações</button>
@@ -162,9 +194,34 @@
         </div>
 
         <div class="panel">
-            <h3>Usuários cadastrados</h3>
-            <div class="small" style="margin-bottom:10px;">Somente administradores com acesso full podem ver esta tela.</div>
-            <div style="overflow:hidden;">
+            <div class="section-header">
+                <div>
+                    <h3>Usuários online</h3>
+                    <div id="onlineSummary" class="small">Carregando presença...</div>
+                </div>
+                <button class="btn-muted" onclick="carregarOnlineUsuarios()">Atualizar online</button>
+            </div>
+            <div id="onlineUsersGrid" class="online-grid"></div>
+
+            <div id="messagePanel" class="message-panel hidden">
+                <div class="message-panel-title" id="messagePanelTitle">Enviar mensagem</div>
+                <label>Título</label>
+                <input id="messageTitle" placeholder="Mensagem do administrador">
+                <label>Mensagem</label>
+                <textarea id="messageText" placeholder="Digite a mensagem que aparecerá para o usuário."></textarea>
+                <div class="form-actions">
+                    <button class="btn-primary" onclick="enviarMensagemAdmin()">Enviar mensagem</button>
+                    <button class="btn-muted" onclick="fecharMensagemAdmin()">Cancelar</button>
+                </div>
+            </div>
+
+            <div class="section-header">
+                <div>
+                    <h3>Usuários cadastrados</h3>
+                    <div class="small">Administradores podem editar permissões, status e máquinas.</div>
+                </div>
+            </div>
+            <div class="table-scroll">
                 <table>
                     <thead>
                         <tr>
@@ -189,7 +246,7 @@
     }
 
     const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
-    if (permissions.full !== true) {
+    if (permissions.full !== true && permissions.admin_usuarios !== true) {
         alert('Acesso permitido apenas para administrador.');
         navegarComTransicao('/dashboard.html');
     }
@@ -197,11 +254,13 @@
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
         'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras',
-        'cadastro', 'impostos', 'configuracoes', 'importacoes', 'full'
+        'cadastro', 'impostos', 'configuracoes', 'importacoes', 'admin_usuarios', 'full'
     ];
 
     let usuariosCache = [];
+    let onlineCache = {};
     let editandoUsuario = null;
+    let mensagemDestino = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
 
     function labelPermissao(key) {
@@ -220,9 +279,28 @@
             cadastro: 'Cadastro',
             impostos: 'Impostos',
             configuracoes: 'Configurações',
-            importacoes: 'Importações'
+            importacoes: 'Importações',
+            admin_usuarios: 'Central de Usuários'
         };
         return map[key] || key;
+    }
+
+    function escaparHtml(valor) {
+        return String(valor || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function textoTempo(segundos) {
+        const valor = Number(segundos || 0);
+        if (!Number.isFinite(valor) || valor < 25) return 'agora';
+        const minutos = Math.max(1, Math.round(valor / 60));
+        if (minutos < 60) return `${minutos} min`;
+        const horas = Math.round(minutos / 60);
+        return `${horas} h`;
     }
 
     function renderPermissionGrid() {
@@ -301,6 +379,17 @@
         return ativos.length ? ativos.join(', ') : 'Sem permissões';
     }
 
+    function statusOnlineUsuario(user) {
+        const info = onlineCache[String(user.username || '').toLowerCase()] || {};
+        return {
+            online: !!info.online,
+            online_count: Number(info.online_count || 0),
+            last_seen_at: info.last_seen_at || '',
+            seconds_since_seen: info.seconds_since_seen,
+            machines: Array.isArray(info.machines) ? info.machines : []
+        };
+    }
+
     function preencherFormulario(user) {
         editandoUsuario = user.username;
         document.getElementById('formTitle').textContent = 'Editando: ' + user.username;
@@ -327,12 +416,19 @@
         }
 
         users.forEach(user => {
+            const onlineInfo = statusOnlineUsuario(user);
+            const resumoOnline = onlineInfo.online
+                ? `${onlineInfo.online_count} online`
+                : (onlineInfo.last_seen_at ? `Visto ${textoTempo(onlineInfo.seconds_since_seen)}` : 'Offline');
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><strong>${user.username}</strong></td>
                 <td>${user.name || ''}</td>
                 <td>${user.client_id || ''}</td>
-                <td><span class="pill ${user.active ? 'on' : 'off'}">${user.active ? 'Ativo' : 'Inativo'}</span></td>
+                <td>
+                    <span class="pill ${user.active ? 'on' : 'off'}">${user.active ? 'Ativo' : 'Inativo'}</span>
+                    <div class="muted-line">${escaparHtml(resumoOnline)}</div>
+                </td>
                 <td>${resumoPermissoes(user.permissions || {})}<div class="small">Dispositivos: ${user.machine_count || 0} / ${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div></td>
                 <td>
                     <div class="table-actions"></div>
@@ -342,8 +438,13 @@
 
             const btnEditar = document.createElement('button');
             btnEditar.className = 'btn-primary';
-            btnEditar.textContent = 'Editar';
+            btnEditar.textContent = 'Permissões';
             btnEditar.onclick = () => preencherFormulario(user);
+
+            const btnMensagem = document.createElement('button');
+            btnMensagem.className = 'btn-success';
+            btnMensagem.textContent = 'Mensagem';
+            btnMensagem.onclick = () => abrirMensagemAdmin(user);
 
             const btnSenha = document.createElement('button');
             btnSenha.className = 'btn-warning';
@@ -366,6 +467,7 @@
             btnExcluir.onclick = () => excluirUsuario(user.username);
 
             acoes.innerHTML = '';
+            acoes.appendChild(btnMensagem);
             acoes.appendChild(btnEditar);
             acoes.appendChild(btnSenha);
             acoes.appendChild(btnStatus);
@@ -373,6 +475,103 @@
             acoes.appendChild(btnExcluir);
             tbody.appendChild(tr);
         });
+    }
+
+    function renderOnlineUsuarios(payload) {
+        const grid = document.getElementById('onlineUsersGrid');
+        const resumo = document.getElementById('onlineSummary');
+        const users = Array.isArray(payload && payload.users) ? payload.users : [];
+        const online = users.filter(u => u.online);
+        if (resumo) {
+            const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
+            resumo.textContent = `${online.length} usuário(s) online | ${Number(payload && payload.online_machines || 0)} máquina(s) | ${backend}`;
+        }
+        if (!grid) return;
+        if (!users.length) {
+            grid.innerHTML = '<div class="small">Nenhuma presença registrada ainda.</div>';
+            return;
+        }
+        const principais = users.filter(u => u.online).concat(users.filter(u => !u.online)).slice(0, 8);
+        grid.innerHTML = principais.map((user) => {
+            const maquinas = Array.isArray(user.machines) ? user.machines : [];
+            const maquina = maquinas[0] || {};
+            const tempo = user.online ? 'online agora' : (user.last_seen_at ? `visto ${textoTempo(user.seconds_since_seen)}` : 'sem presença');
+            const detalhe = user.online
+                ? `${user.online_count || maquinas.length || 1} máquina(s) conectada(s)`
+                : tempo;
+            return `
+                <div class="online-card ${user.online ? 'online' : ''}">
+                    <strong>${escaparHtml(user.name || user.username)}</strong>
+                    <div class="small">${escaparHtml(user.username)} | ${escaparHtml(user.client_id || '')}</div>
+                    <div class="online-line"><span class="online-dot"></span><span>${escaparHtml(detalhe)}</span></div>
+                    ${maquina.label ? `<div class="online-line">${escaparHtml(maquina.label)}${maquina.page ? ' | ' + escaparHtml(maquina.page) : ''}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function carregarOnlineUsuarios() {
+        try {
+            const resp = await fetch('/api/admin/users/online', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao carregar presença.');
+            }
+            onlineCache = {};
+            (data.users || []).forEach((user) => {
+                onlineCache[String(user.username || '').toLowerCase()] = user;
+            });
+            renderOnlineUsuarios(data);
+            if (usuariosCache.length) renderTabela(usuariosCache);
+        } catch (error) {
+            const resumo = document.getElementById('onlineSummary');
+            if (resumo) resumo.textContent = error.message || 'Não foi possível carregar presença.';
+        }
+    }
+
+    function abrirMensagemAdmin(user) {
+        mensagemDestino = user;
+        const panel = document.getElementById('messagePanel');
+        document.getElementById('messagePanelTitle').textContent = `Enviar mensagem para ${user.name || user.username}`;
+        document.getElementById('messageTitle').value = 'Mensagem do administrador';
+        document.getElementById('messageText').value = '';
+        panel.classList.remove('hidden');
+        document.getElementById('messageText').focus();
+    }
+
+    function fecharMensagemAdmin() {
+        mensagemDestino = null;
+        document.getElementById('messagePanel').classList.add('hidden');
+    }
+
+    async function enviarMensagemAdmin() {
+        if (!mensagemDestino) {
+            setStatus('Selecione um usuário para enviar mensagem.', true);
+            return;
+        }
+        const texto = document.getElementById('messageText').value.trim();
+        if (!texto) {
+            setStatus('Digite a mensagem antes de enviar.', true);
+            return;
+        }
+        setStatus('Enviando mensagem...');
+        const resp = await fetch('/api/admin/users/message', {
+            method: 'POST',
+            headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+                username: mensagemDestino.username,
+                client_id: mensagemDestino.client_id,
+                title: document.getElementById('messageTitle').value.trim(),
+                message: texto
+            })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+            setStatus(data.detail || data.message || 'Erro ao enviar mensagem.', true);
+            return;
+        }
+        fecharMensagemAdmin();
+        setStatus(data.message || 'Mensagem enviada.');
     }
 
     async function carregarUsuarios() {
@@ -385,6 +584,7 @@
         }
         usuariosCache = data.users || [];
         renderTabela(usuariosCache);
+        await carregarOnlineUsuarios();
         setStatus('Lista atualizada.');
     }
 
@@ -497,8 +697,8 @@
     renderPermissionGrid();
     limparFormulario();
     carregarUsuarios();
+    setInterval(carregarOnlineUsuarios, 30000);
 </script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-

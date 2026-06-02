@@ -86,8 +86,13 @@ let chromeExtensionSessionEventsRegistered = false;
 let updateEventsRegistered = false;
 let updateCheckInProgress = false;
 let updateInstallInProgress = false;
+let deferredDownloadedUpdateInfo = null;
+let updateFeedConfigured = false;
+let updateFeedSource = '';
+const mlAutomationProtectionByWebContents = new Map();
 const mlItemInfoCache = new Map();
 const ML_ITEM_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const AUTO_UPDATE_CHECK_TIMEOUT_MS = 45000;
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
 const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 
@@ -235,9 +240,33 @@ function formatVersionLabel(value) {
     return String(value || '').trim() || 'desconhecida';
 }
 
+function withUpdateCheckTimeout(promise, timeoutMs, message) {
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
+}
+
 function getUpdateErrorMessage(err) {
     if (!err) return 'Erro desconhecido ao verificar atualizacao.';
-    return String(err.message || err).slice(0, 500);
+    const raw = String(err.message || err);
+    if (/app-update\.ya?ml|ENOENT/i.test(raw)) {
+        return 'Canal de atualizacao nao encontrado no pacote instalado. Gere o instalador novamente ou confira o app-update.yml.';
+    }
+    if (/404|not found/i.test(raw)) {
+        return 'Atualizacao nao encontrada no GitHub. Confira se a release e o latest.yml foram publicados.';
+    }
+    if (/401|403|unauthorized|forbidden/i.test(raw)) {
+        return 'GitHub recusou a consulta da atualizacao. Confira o acesso ao repositorio ou token da release privada.';
+    }
+    if (/net::|ENOTFOUND|ECONN|ETIMEDOUT|network/i.test(raw)) {
+        return 'Falha de rede ao consultar atualizacao. Confira a internet e tente novamente.';
+    }
+    return raw.slice(0, 500);
 }
 
 function getAppUpdateConfigPath() {
@@ -251,14 +280,127 @@ function getAppUpdateConfigPath() {
     return '';
 }
 
+function getBundledUpdateFeedConfig() {
+    const fallback = {
+        provider: 'github',
+        owner: 'marketflow-lab',
+        repo: 'Jksistema-1.1',
+        releaseType: 'release'
+    };
+    const candidates = [
+        path.join(__dirname, 'package.json'),
+        path.join(getAppRootDir(), 'package.json')
+    ];
+    for (const candidate of candidates) {
+        try {
+            if (!candidate || !fs.existsSync(candidate)) continue;
+            const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+            const publish = pkg && pkg.build && Array.isArray(pkg.build.publish) ? pkg.build.publish[0] : null;
+            if (publish && publish.provider && publish.owner && publish.repo) {
+                return {
+                    provider: publish.provider,
+                    owner: publish.owner,
+                    repo: publish.repo,
+                    releaseType: publish.releaseType || 'release'
+                };
+            }
+        } catch (_err) {}
+    }
+    return fallback;
+}
+
+function configureAutoUpdaterFeed() {
+    if (!autoUpdater) {
+        return { success: false, reason: 'electron-updater nao esta disponivel neste pacote.' };
+    }
+    if (updateFeedConfigured) {
+        return { success: true, source: updateFeedSource || 'cached' };
+    }
+    const configPath = getAppUpdateConfigPath();
+    if (configPath) {
+        updateFeedConfigured = true;
+        updateFeedSource = 'app-update.yml';
+        return { success: true, source: updateFeedSource, configPath };
+    }
+    const feed = getBundledUpdateFeedConfig();
+    if (!feed || !feed.provider || !feed.owner || !feed.repo) {
+        return {
+            success: false,
+            reason: 'Canal de atualizacao nao configurado no pacote.'
+        };
+    }
+    try {
+        autoUpdater.setFeedURL(feed);
+        updateFeedConfigured = true;
+        updateFeedSource = 'package-publish';
+        logElectronLifecycle('auto-update-feed-configured', { source: updateFeedSource, feed });
+        return { success: true, source: updateFeedSource, feed };
+    } catch (err) {
+        return {
+            success: false,
+            reason: getUpdateErrorMessage(err)
+        };
+    }
+}
+
 function getUpdateUnavailableReason() {
     if (!app.isPackaged) {
         return 'Atualizacao automatica funciona apenas no app instalado.';
     }
     if (!getAppUpdateConfigPath()) {
-        return 'Este instalador privado nao possui canal de atualizacao automatica. Use a versao privada mais recente gerada localmente.';
+        const feed = getBundledUpdateFeedConfig();
+        if (!feed || !feed.provider || !feed.owner || !feed.repo) {
+            return 'Este instalador privado nao possui canal de atualizacao automatica. Use a versao privada mais recente gerada localmente.';
+        }
     }
     return '';
+}
+
+function isMlAutomationProtected() {
+    return mlAutomationProtectionByWebContents.size > 0;
+}
+
+function releaseMlAutomationProtectionForContents(contents) {
+    if (!contents || !contents.id) return;
+    if (mlAutomationProtectionByWebContents.delete(contents.id)) {
+        logElectronLifecycle('ml-automation-protection-released', { webContentsId: contents.id });
+        maybeInstallDeferredUpdate();
+    }
+}
+
+function setMlAutomationProtection(contents, active, reason = '') {
+    if (!contents || !contents.id) {
+        return { success: false, active: isMlAutomationProtected(), count: mlAutomationProtectionByWebContents.size };
+    }
+    if (active) {
+        const firstLock = !mlAutomationProtectionByWebContents.has(contents.id);
+        mlAutomationProtectionByWebContents.set(contents.id, {
+            reason: String(reason || 'favoritos'),
+            startedAt: Date.now()
+        });
+        if (firstLock && typeof contents.once === 'function') {
+            contents.once('destroyed', () => releaseMlAutomationProtectionForContents(contents));
+        }
+        logElectronLifecycle('ml-automation-protection-enabled', {
+            webContentsId: contents.id,
+            reason,
+            count: mlAutomationProtectionByWebContents.size
+        });
+    } else {
+        releaseMlAutomationProtectionForContents(contents);
+    }
+    return { success: true, active: isMlAutomationProtected(), count: mlAutomationProtectionByWebContents.size };
+}
+
+function maybeInstallDeferredUpdate() {
+    if (!deferredDownloadedUpdateInfo || isMlAutomationProtected() || updateInstallInProgress || !autoUpdater) return;
+    const info = deferredDownloadedUpdateInfo;
+    deferredDownloadedUpdateInfo = null;
+    setTimeout(() => {
+        installDownloadedUpdateSafely(info).catch((err) => {
+            logElectronLifecycle('auto-update-deferred-install-error', err);
+        });
+    }, 1200);
 }
 
 function sendUpdateStatus(status, payload = {}) {
@@ -319,6 +461,14 @@ async function prepareOpenWorkForUpdate(reason = 'auto-update') {
 
 async function installDownloadedUpdateSafely(info = null) {
     if (!autoUpdater || updateInstallInProgress) return;
+    if (isMlAutomationProtected()) {
+        deferredDownloadedUpdateInfo = info || deferredDownloadedUpdateInfo;
+        sendUpdateStatus('deferred', {
+            reason: 'favoritos-em-execucao',
+            updateInfo: normalizeUpdateInfo(info)
+        });
+        return;
+    }
     updateInstallInProgress = true;
     try {
         await prepareOpenWorkForUpdate('update-install');
@@ -390,6 +540,16 @@ async function checkForUpdates(manual = false) {
         sendUpdateStatus('skipped', { reason: result.reason });
         return result;
     }
+    const feedStatus = configureAutoUpdaterFeed();
+    if (!feedStatus.success) {
+        const result = {
+            success: false,
+            skipped: true,
+            reason: feedStatus.reason || 'Canal de atualizacao nao configurado.'
+        };
+        sendUpdateStatus('skipped', { reason: result.reason });
+        return result;
+    }
     if (updateCheckInProgress) {
         sendUpdateStatus('checking', { reason: 'Verificacao de atualizacao ja em andamento.' });
         return { success: true, checking: true };
@@ -398,7 +558,11 @@ async function checkForUpdates(manual = false) {
     registerAutoUpdateEvents();
     updateCheckInProgress = true;
     try {
-        const result = await autoUpdater.checkForUpdates();
+        const result = await withUpdateCheckTimeout(
+            autoUpdater.checkForUpdates(),
+            AUTO_UPDATE_CHECK_TIMEOUT_MS,
+            'Tempo esgotado ao consultar atualizacao. Confira a internet ou se a release foi publicada no GitHub.'
+        );
         const updateInfo = normalizeUpdateInfo(result && result.updateInfo);
         const currentVersion = app.getVersion();
         const latestVersion = updateInfo && updateInfo.version ? updateInfo.version : currentVersion;
@@ -451,6 +615,11 @@ function scheduleAutoUpdateCheck() {
     const unavailableReason = getUpdateUnavailableReason();
     if (unavailableReason) {
         logElectronLifecycle('auto-update-skipped', { reason: unavailableReason });
+        return;
+    }
+    const feedStatus = configureAutoUpdaterFeed();
+    if (!feedStatus.success) {
+        logElectronLifecycle('auto-update-skipped', { reason: feedStatus.reason || 'Canal de atualizacao nao configurado.' });
         return;
     }
     registerAutoUpdateEvents();
@@ -529,6 +698,58 @@ function getLocalBackendInfoDir() {
     return path.join(getLocalBackendRuntimeDir(), 'info');
 }
 
+function getFirebaseServiceAccountCandidates(localAppDir) {
+    const infoDir = path.join(localAppDir, 'info');
+    const candidates = [
+        path.join(infoDir, 'firebase-service-account.json'),
+        path.join(infoDir, 'firebase_service_account.json'),
+        path.join(localAppDir, 'firebase-service-account.json'),
+        path.join(localAppDir, 'firebase_service_account.json')
+    ];
+    try {
+        const entries = fs.readdirSync(localAppDir, { withFileTypes: true });
+        for (const entry of entries) {
+            if (!entry.isFile()) continue;
+            const lower = entry.name.toLowerCase();
+            if (
+                /^jkjkjk-.*\.json$/i.test(lower) ||
+                /service[-_ ]?account.*\.json$/i.test(lower) ||
+                /^firebase[-_].*\.json$/i.test(lower)
+            ) {
+                candidates.push(path.join(localAppDir, entry.name));
+            }
+        }
+    } catch (_err) {}
+    return [...new Set(candidates)];
+}
+
+function readFirebaseServiceAccount(filePath) {
+    const data = readJsonFile(filePath);
+    if (
+        data &&
+        data.type === 'service_account' &&
+        data.client_email &&
+        data.private_key
+    ) {
+        return data;
+    }
+    return null;
+}
+
+function getLocalBackendFirebaseEnv(localAppDir) {
+    for (const candidate of getFirebaseServiceAccountCandidates(localAppDir)) {
+        if (!fs.existsSync(candidate)) continue;
+        const account = readFirebaseServiceAccount(candidate);
+        if (!account) continue;
+        return {
+            JK_ACCESS_BACKEND: 'firebase',
+            FIREBASE_SERVICE_ACCOUNT_FILE: candidate,
+            ...(account.project_id ? { FIREBASE_PROJECT_ID: String(account.project_id) } : {})
+        };
+    }
+    return { JK_ACCESS_BACKEND: 'auto' };
+}
+
 function shouldSkipBackendCopyEntry(name, fullPath) {
     const lower = String(name || '').toLowerCase();
     if (
@@ -541,9 +762,7 @@ function shouldSkipBackendCopyEntry(name, fullPath) {
         lower === 'backups' ||
         lower === '__pycache__' ||
         lower.endsWith('.jkcred') ||
-        lower.startsWith('.env') ||
-        /^jkjkjk-.*\.json$/i.test(lower) ||
-        /service[-_ ]?account.*\.json$/i.test(lower)
+        lower.startsWith('.env')
     ) {
         return true;
     }
@@ -634,6 +853,7 @@ function cmdValue(value) {
 
 function writeLocalBackendLauncher(localAppDir) {
     const infoDir = path.join(localAppDir, 'info');
+    const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
     const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
     const logPath = path.join(localAppDir, 'logs', 'local_backend.log');
     const depsMarker = `.venv\\.jk_deps_${sanitizeMarkerVersion(app.getVersion())}.ok`;
@@ -649,6 +869,13 @@ function writeLocalBackendLauncher(localAppDir) {
         `set "JK_REDIRECT_URI=${localCallback}"`,
         `set "JK_BLING_REDIRECT_URI=${localCallback}"`,
         `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
+        `set "JK_ACCESS_BACKEND=${cmdValue(firebaseEnv.JK_ACCESS_BACKEND || 'auto')}"`,
+        ...(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE ? [
+            `set "FIREBASE_SERVICE_ACCOUNT_FILE=${cmdValue(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE)}"`
+        ] : []),
+        ...(firebaseEnv.FIREBASE_PROJECT_ID ? [
+            `set "FIREBASE_PROJECT_ID=${cmdValue(firebaseEnv.FIREBASE_PROJECT_ID)}"`
+        ] : []),
         'set "PYTHONUNBUFFERED=1"',
         'set "PYTHONUTF8=1"',
         'echo.>> "%LOG_FILE%"',
@@ -693,11 +920,13 @@ function ensureLocalBackendStarted() {
 
         const localAppDir = syncBundledLocalBackend();
         const launcherPath = writeLocalBackendLauncher(localAppDir);
+        const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
         logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
         const child = spawn('cmd.exe', ['/d', '/c', launcherPath], {
             cwd: localAppDir,
             env: {
                 ...process.env,
+                ...firebaseEnv,
                 JK_INFO_DIR: path.join(localAppDir, 'info'),
                 JK_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
                 JK_BLING_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
@@ -1701,6 +1930,17 @@ function isMercadoLivreAdUrl(targetUrl) {
     }
 }
 
+function isMercadoLivreLogoutUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        if (!isMercadoLivreHost(url.hostname)) return false;
+        const text = `${url.pathname}${url.search}${url.hash}`.toLowerCase();
+        return /logout|logou?t|sign[-_]?out|sair|cerrar[-_]?sesion|encerrar[-_]?sessao|end[-_]?session/.test(text);
+    } catch (_err) {
+        return false;
+    }
+}
+
 function isAvantProAuthUrl(targetUrl) {
     try {
         const url = new URL(normalizeTargetUrl(targetUrl));
@@ -2404,8 +2644,16 @@ app.whenReady().then(async () => {
     ensureChromeExtensionsForMlSession();
 
     app.on('web-contents-created', (_event, contents) => {
+        if (contents && typeof contents.once === 'function') {
+            contents.once('destroyed', () => releaseMlAutomationProtectionForContents(contents));
+        }
         contents.on('will-navigate', (event, urlOrDetails) => {
             const url = getNavigationEventUrl(urlOrDetails);
+            if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-ml-logout-navigation-during-favoritos', { url });
+                return;
+            }
             if (isBlockedAutomationPopupUrl(url)) {
                 event.preventDefault();
                 logElectronLifecycle('blocked-automation-navigation', { url });
@@ -2423,6 +2671,11 @@ app.whenReady().then(async () => {
 
         contents.on('will-frame-navigate', (event, urlOrDetails, maybeDetails) => {
             const url = getNavigationEventUrl(urlOrDetails, maybeDetails);
+            if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-ml-logout-frame-navigation-during-favoritos', { url });
+                return;
+            }
             if (isBlockedAutomationPopupUrl(url)) {
                 event.preventDefault();
                 logElectronLifecycle('blocked-automation-frame-navigation', { url });
@@ -2435,6 +2688,10 @@ app.whenReady().then(async () => {
 
         if (typeof contents.setWindowOpenHandler === 'function') {
             contents.setWindowOpenHandler(({ url }) => {
+                if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+                    logElectronLifecycle('blocked-ml-logout-popup-during-favoritos', { url });
+                    return { action: 'deny' };
+                }
                 if (isBlockedAutomationPopupUrl(url)) {
                     logElectronLifecycle('blocked-automation-popup', { url });
                     return { action: 'deny' };
@@ -2451,6 +2708,9 @@ app.whenReady().then(async () => {
     ipcMain.handle('get-mac', () => {
         return getMacAddress();
     });
+    ipcMain.handle('get-app-version', () => {
+        return app.getVersion();
+    });
     ipcMain.handle('get-browser-session-partition', () => {
         return getBrowserSessionPartition();
     });
@@ -2464,6 +2724,17 @@ app.whenReady().then(async () => {
     ipcMain.handle('flush-browser-session', async () => {
         await flushPersistentSessions();
         return { success: true };
+    });
+    ipcMain.handle('set-ml-automation-active', async (event, active, reason) => {
+        if (active) {
+            await flushPersistentSessions();
+        }
+        const result = setMlAutomationProtection(event.sender, !!active, reason);
+        if (!active) {
+            await flushPersistentSessions();
+            maybeInstallDeferredUpdate();
+        }
+        return result;
     });
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();
@@ -2578,6 +2849,17 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('embedded-ml-browser-show', async (event, targetUrl, bounds) => {
         const url = normalizeTargetUrl(targetUrl);
+        if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+            logElectronLifecycle('blocked-embedded-ml-logout-load-during-favoritos', { url });
+            return {
+                success: false,
+                blocked: true,
+                reason: 'favoritos-em-execucao',
+                url: embeddedMlBrowserView && !embeddedMlBrowserView.webContents.isDestroyed()
+                    ? embeddedMlBrowserView.webContents.getURL()
+                    : ''
+            };
+        }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const background = !!(bounds && bounds.background);
@@ -2613,6 +2895,10 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('open-internal-browser', async (event, targetUrl) => {
         const url = normalizeTargetUrl(targetUrl);
+        if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+            logElectronLifecycle('blocked-internal-ml-logout-load-during-favoritos', { url });
+            return { success: false, blocked: true, reason: 'favoritos-em-execucao', url: '' };
+        }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || null;
         const internalBrowser = ensureInternalBrowser(parent);

@@ -79,6 +79,14 @@ import secrets
 import hashlib
 from typing import Any, Optional, Callable
 try:
+    import firebase_admin
+    from firebase_admin import credentials as firebase_credentials
+    from firebase_admin import firestore as firebase_firestore
+except Exception:
+    firebase_admin = None
+    firebase_credentials = None
+    firebase_firestore = None
+try:
     from cryptography.fernet import Fernet, InvalidToken
 except Exception:
     Fernet = None
@@ -124,6 +132,11 @@ SYNC_THREAD_CONTEXT = threading.local()
 GOOGLE_LOGIN_STATES = {}
 GOOGLE_LOGIN_RESULTS = {}
 GOOGLE_LOGIN_STATE_LOCK = threading.RLock()
+FIREBASE_AUTH_LOCK = threading.RLock()
+FIREBASE_AUTH_DB = None
+FIREBASE_AUTH_LAST_ERROR = ""
+MACHINE_PRESENCE_LOCK = threading.RLock()
+ADMIN_MESSAGES_LOCK = threading.RLock()
 # Jobs de sincronizaÃƒÂ§ÃƒÂ£o de NCM no Cadastro por tarefa
 SYNC_NCM_JOBS = {}
 # Controle de sincronizaÃƒÂ§ÃƒÂ£o de vendas ativa por cliente (para background threading)
@@ -315,6 +328,9 @@ ARQUIVO_DB_VENDAS = os.path.join(PASTA_INFO, "vendas_historico.db")
 ARQUIVO_CACHE_USUARIOS = os.path.join(PASTA_INFO, "usuarios_cache.json")
 ARQUIVO_USUARIOS_LOCAL = os.path.join(PASTA_INFO, "usuarios_local.json")
 ARQUIVO_AUTH_DB = os.path.join(PASTA_INFO, "auth_users.db")
+ARQUIVO_FIREBASE_SERVICE_ACCOUNT = os.path.join(PASTA_INFO, "firebase-service-account.json")
+ARQUIVO_MACHINE_PRESENCE = os.path.join(PASTA_INFO, "machine_presence.json")
+ARQUIVO_ADMIN_MESSAGES = os.path.join(PASTA_INFO, "admin_messages.json")
 ARQUIVO_CONFIG_GLOBAIS = os.path.join(PASTA_INFO, "configuracoes_globais.json")
 ARQUIVO_VERTEX_AGENT_API_KEY = os.path.join(PASTA_INFO, "vertex_agent_api_key.txt")
 IA_AGENT_API_KEY_ENV_KEYS = (
@@ -494,7 +510,7 @@ CONFIG_GLOBAIS_DEFAULT = {
 PERMISSION_KEYS = [
     'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
     'etiquetas', 'full', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
-    'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador'
+    'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'admin_usuarios'
 ]
 
 
@@ -601,6 +617,107 @@ async def health():
     return {"ok": True}
 
 
+JK_UPDATE_OWNER = os.getenv("JK_UPDATE_OWNER", "marketflow-lab").strip() or "marketflow-lab"
+JK_UPDATE_REPO = os.getenv("JK_UPDATE_REPO", "Jksistema-1.1").strip() or "Jksistema-1.1"
+JK_UPDATE_LATEST_YML_URL = (
+    os.getenv("JK_UPDATE_LATEST_YML_URL", "").strip()
+    or f"https://github.com/{JK_UPDATE_OWNER}/{JK_UPDATE_REPO}/releases/latest/download/latest.yml"
+)
+
+
+def _normalizar_versao_app(valor: Any) -> str:
+    texto = str(valor or "").strip()
+    texto = re.sub(r"^[vV]\s*", "", texto)
+    match = re.search(r"\d+(?:\.\d+){0,3}", texto)
+    return match.group(0) if match else ""
+
+
+def _chave_comparacao_versao(valor: Any) -> tuple:
+    versao = _normalizar_versao_app(valor)
+    partes = []
+    for pedaco in versao.split("."):
+        try:
+            partes.append(int(pedaco))
+        except Exception:
+            partes.append(0)
+    while len(partes) < 4:
+        partes.append(0)
+    return tuple(partes[:4])
+
+
+def _parse_latest_yml_simples(texto: str) -> dict:
+    dados: dict[str, Any] = {}
+    for linha in str(texto or "").splitlines():
+        match = re.match(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*$", linha)
+        if not match:
+            continue
+        chave, valor = match.group(1), match.group(2).strip()
+        if valor.startswith(("'", '"')) and valor.endswith(("'", '"')) and len(valor) >= 2:
+            valor = valor[1:-1]
+        if chave in {"version", "path", "sha512", "releaseDate", "url", "size"}:
+            dados[chave] = valor
+    if not dados.get("version"):
+        match = re.search(r"(?im)^\s*version\s*:\s*['\"]?([^'\"\r\n]+)", texto or "")
+        if match:
+            dados["version"] = match.group(1).strip()
+    return dados
+
+
+def _buscar_latest_yml_update() -> dict:
+    headers = {
+        "User-Agent": "JK-Sistema-Updater/1.0",
+        "Accept": "text/yaml,text/plain,*/*",
+        "Cache-Control": "no-cache",
+    }
+    resp = requests.get(JK_UPDATE_LATEST_YML_URL, headers=headers, timeout=10, allow_redirects=True)
+    resp.raise_for_status()
+    dados = _parse_latest_yml_simples(resp.text)
+    if not dados.get("version"):
+        raise RuntimeError("latest.yml publicado nao informou a versao.")
+    dados["source_url"] = JK_UPDATE_LATEST_YML_URL
+    return dados
+
+
+@app.get("/api/app-update/check")
+def api_app_update_check(current_version: Optional[str] = None):
+    """Verificacao rapida pelo backend local para a UI nunca ficar presa no Electron."""
+    atual = _normalizar_versao_app(current_version) or "0.0.0"
+    try:
+        latest = _buscar_latest_yml_update()
+        ultima = _normalizar_versao_app(latest.get("version")) or "0.0.0"
+        disponivel = _chave_comparacao_versao(ultima) > _chave_comparacao_versao(atual)
+        return {
+            "success": True,
+            "currentVersion": atual,
+            "latestVersion": ultima,
+            "available": disponivel,
+            "upToDate": not disponivel,
+            "publishedOlderThanInstalled": _chave_comparacao_versao(ultima) < _chave_comparacao_versao(atual),
+            "file": latest.get("path") or latest.get("url") or "",
+            "releaseDate": latest.get("releaseDate") or "",
+            "source": latest.get("source_url") or JK_UPDATE_LATEST_YML_URL,
+            "checkedAt": datetime.utcnow().isoformat() + "Z",
+        }
+    except requests.exceptions.Timeout:
+        return {
+            "success": False,
+            "currentVersion": atual,
+            "message": "Tempo esgotado consultando o GitHub.",
+        }
+    except requests.exceptions.RequestException as exc:
+        return {
+            "success": False,
+            "currentVersion": atual,
+            "message": f"Falha ao consultar o GitHub: {exc}",
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "currentVersion": atual,
+            "message": str(exc) or "Nao foi possivel verificar a atualizacao.",
+        }
+
+
 # --- MODELOS DE DADOS (Pydantic) ---
 class LoginRequest(BaseModel):
     username: str
@@ -648,6 +765,16 @@ class AdminUserPermissionsRequest(BaseModel):
 
 class AdminUserStatusRequest(BaseModel):
     active: bool
+
+class AdminUserMessageRequest(BaseModel):
+    username: str
+    client_id: Optional[str] = None
+    title: Optional[str] = ""
+    message: str
+
+class MachinePresenceHeartbeatRequest(BaseModel):
+    machine_id: Optional[str] = None
+    page: Optional[str] = ""
 
 class IAChatAttachment(BaseModel):
     name: str
@@ -1270,6 +1397,8 @@ class FavoritosPrimeiraPaginaRequest(BaseModel):
     termo: str
     max_anuncios: int | None = 60
     usar_automatico: bool | None = False
+    termo_original: str | None = None
+    termos_busca: list[str] | None = None
 
 
 class FavoritosEnriquecerDatasRequest(BaseModel):
@@ -7349,7 +7478,7 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[str]
     if rota.startswith("/api/favoritos/"):
         return "favoritos"
     if rota.startswith("/api/admin/"):
-        return "full"
+        return "admin_usuarios"
     return None
 
 def _extrair_texto_openai_response(payload: dict) -> str:
@@ -16069,30 +16198,36 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
 
 
 def _carregar_permissoes_usuario(username: str, client_id: Optional[str] = None) -> dict:
-    """ObtÃƒÂ©m permissÃƒÂµes priorizando o banco SQL, com fallback para cache/local/planilha."""
+    """Obtem permissoes priorizando Firebase, com fallback para cache/local/planilha."""
     username_norm = str(username or "").strip().lower()
     usuarios = None
     headers = []
 
-    usuarios_sql, headers_sql = _carregar_usuarios_sql()
-    if isinstance(usuarios_sql, dict) and username_norm in usuarios_sql:
-        usuarios = usuarios_sql
-        headers = headers_sql or []
+    try:
+        usuarios_aut, _ws_aut, headers_aut = carregar_usuarios_sheets()
+    except HTTPException:
+        raise
+    except Exception:
+        usuarios_aut, headers_aut = None, []
+
+    if isinstance(usuarios_aut, dict) and username_norm in usuarios_aut:
+        usuarios = usuarios_aut
+        headers = headers_aut or []
     else:
-        usuarios_cache, headers_cache = _carregar_cache_usuarios()
-        if isinstance(usuarios_cache, dict) and username_norm in usuarios_cache:
-            usuarios = usuarios_cache
-            headers = headers_cache or []
+        usuarios_sql, headers_sql = _carregar_usuarios_sql()
+        if isinstance(usuarios_sql, dict) and username_norm in usuarios_sql:
+            usuarios = usuarios_sql
+            headers = headers_sql or []
         else:
-            usuarios_local, headers_local = _carregar_usuarios_local()
-            if isinstance(usuarios_local, dict) and username_norm in usuarios_local:
-                usuarios = usuarios_local
-                headers = headers_local or []
+            usuarios_cache, headers_cache = _carregar_cache_usuarios()
+            if isinstance(usuarios_cache, dict) and username_norm in usuarios_cache:
+                usuarios = usuarios_cache
+                headers = headers_cache or []
             else:
-                usuarios_sheet, _ws, headers_sheet = carregar_usuarios_sheets()
-                if isinstance(usuarios_sheet, dict):
-                    usuarios = usuarios_sheet
-                    headers = headers_sheet or []
+                usuarios_local, headers_local = _carregar_usuarios_local()
+                if isinstance(usuarios_local, dict) and username_norm in usuarios_local:
+                    usuarios = usuarios_local
+                    headers = headers_local or []
 
     if not isinstance(usuarios, dict) or username_norm not in usuarios:
         raise HTTPException(status_code=401, detail="UsuÃ¡rio da sessÃ£o nÃ£o encontrado. FaÃ§a login novamente.")
@@ -19002,6 +19137,395 @@ def _hash_password_se_preciso(password: str) -> str:
         return senha
 
 
+def _env_texto(*nomes: str) -> str:
+    for nome in nomes:
+        valor = str(os.getenv(nome, "") or "").strip()
+        if valor:
+            return valor
+    return ""
+
+
+def _firebase_access_mode() -> str:
+    return str(os.getenv("JK_ACCESS_BACKEND", "auto") or "auto").strip().lower()
+
+
+def _firebase_access_obrigatorio() -> bool:
+    return _firebase_access_mode() == "firebase"
+
+
+def _firebase_access_desativado() -> bool:
+    return _firebase_access_mode() in {"local", "sqlite", "sheets", "planilha"} or str(
+        os.getenv("JK_FIREBASE_ACCESS_DISABLED", "") or ""
+    ).strip().lower() in {"1", "true", "sim", "yes", "on"}
+
+
+def _firebase_users_collection_name() -> str:
+    return _env_texto("FIREBASE_USERS_COLLECTION", "JK_FIREBASE_USERS_COLLECTION") or "jk_sistema_usuarios"
+
+
+def _firebase_audit_collection_name() -> str:
+    return _env_texto("FIREBASE_LOGIN_AUDIT_COLLECTION", "JK_FIREBASE_LOGIN_AUDIT_COLLECTION") or "jk_sistema_login_audit"
+
+
+def _firebase_presence_collection_name() -> str:
+    return _env_texto("FIREBASE_MACHINE_PRESENCE_COLLECTION", "JK_FIREBASE_MACHINE_PRESENCE_COLLECTION") or "jk_sistema_machine_presence"
+
+
+def _firebase_admin_messages_collection_name() -> str:
+    return _env_texto("FIREBASE_ADMIN_MESSAGES_COLLECTION", "JK_FIREBASE_ADMIN_MESSAGES_COLLECTION") or "jk_sistema_admin_messages"
+
+
+def _firebase_project_id() -> str:
+    project_id = _env_texto("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT")
+    if project_id:
+        return project_id
+    conta = _firebase_ler_service_account(_firebase_service_account_file())
+    return str((conta or {}).get("project_id") or "").strip()
+
+
+def _firebase_json_service_account_valido(caminho: str) -> bool:
+    conta = _firebase_ler_service_account(caminho)
+    return bool(
+        conta
+        and conta.get("type") == "service_account"
+        and conta.get("client_email")
+        and conta.get("private_key")
+    )
+
+
+def _firebase_ler_service_account(caminho: str) -> Optional[dict]:
+    if not caminho or not os.path.exists(caminho):
+        return None
+    try:
+        with open(caminho, "r", encoding="utf-8") as arquivo:
+            data = json.load(arquivo)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _firebase_service_account_candidates() -> list[str]:
+    nomes_preferidos = [
+        os.path.join(PASTA_INFO, "firebase-service-account.json"),
+        os.path.join(PASTA_INFO, "firebase_service_account.json"),
+        os.path.join(BASE_DIR, "firebase-service-account.json"),
+        os.path.join(BASE_DIR, "firebase_service_account.json"),
+    ]
+    candidatos = []
+    for caminho in nomes_preferidos:
+        if caminho and caminho not in candidatos:
+            candidatos.append(caminho)
+
+    try:
+        for nome in os.listdir(BASE_DIR):
+            lower = nome.lower()
+            if (
+                re.fullmatch(r"jkjkjk-.*\.json", lower)
+                or re.search(r"service[-_ ]?account.*\.json$", lower)
+                or lower.startswith("firebase-") and lower.endswith(".json")
+            ):
+                caminho = os.path.join(BASE_DIR, nome)
+                if caminho not in candidatos:
+                    candidatos.append(caminho)
+    except Exception:
+        pass
+    return candidatos
+
+
+def _firebase_service_account_file() -> str:
+    caminho = _env_texto("FIREBASE_SERVICE_ACCOUNT_FILE", "FIREBASE_CREDENTIALS_FILE")
+    if not caminho:
+        google_app_credentials = _env_texto("GOOGLE_APPLICATION_CREDENTIALS")
+        if google_app_credentials and os.path.exists(google_app_credentials):
+            caminho = google_app_credentials
+    if caminho and not os.path.isabs(caminho):
+        caminho = os.path.join(BASE_DIR, caminho)
+    if caminho:
+        return caminho
+    for candidato in _firebase_service_account_candidates():
+        if _firebase_json_service_account_valido(candidato):
+            return candidato
+    return caminho
+
+
+def _firebase_tem_configuracao() -> bool:
+    if firebase_admin is None or firebase_credentials is None or firebase_firestore is None:
+        return False
+    if _firebase_access_desativado():
+        return False
+    if _env_texto("FIREBASE_SERVICE_ACCOUNT_JSON", "FIREBASE_ADMIN_CREDENTIALS_JSON"):
+        return True
+    if _env_texto("FIREBASE_SERVICE_ACCOUNT_BASE64", "FIREBASE_ADMIN_CREDENTIALS_BASE64"):
+        return True
+    if _firebase_service_account_file():
+        return True
+    if str(os.getenv("FIREBASE_USE_APPLICATION_DEFAULT", "") or "").strip().lower() in {"1", "true", "sim", "yes", "on"}:
+        return True
+    return False
+
+
+def _firebase_deve_usar() -> bool:
+    if _firebase_access_desativado():
+        return False
+    if _firebase_access_obrigatorio():
+        return True
+    return _firebase_tem_configuracao()
+
+
+def _firebase_credencial():
+    json_raw = _env_texto("FIREBASE_SERVICE_ACCOUNT_JSON", "FIREBASE_ADMIN_CREDENTIALS_JSON")
+    if json_raw:
+        try:
+            return firebase_credentials.Certificate(json.loads(json_raw))
+        except Exception as exc:
+            raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT_JSON invalido: {exc}")
+
+    json_b64 = _env_texto("FIREBASE_SERVICE_ACCOUNT_BASE64", "FIREBASE_ADMIN_CREDENTIALS_BASE64")
+    if json_b64:
+        try:
+            payload = base64.b64decode(json_b64).decode("utf-8")
+            return firebase_credentials.Certificate(json.loads(payload))
+        except Exception as exc:
+            raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT_BASE64 invalido: {exc}")
+
+    caminho = _firebase_service_account_file()
+    if caminho:
+        if not os.path.exists(caminho):
+            raise RuntimeError(f"Arquivo Firebase nao encontrado: {caminho}")
+        return firebase_credentials.Certificate(caminho)
+
+    if str(os.getenv("FIREBASE_USE_APPLICATION_DEFAULT", "") or "").strip().lower() in {"1", "true", "sim", "yes", "on"}:
+        return firebase_credentials.ApplicationDefault()
+
+    raise RuntimeError("Firebase nao configurado. Informe FIREBASE_SERVICE_ACCOUNT_FILE ou FIREBASE_SERVICE_ACCOUNT_JSON.")
+
+
+def _firebase_db():
+    global FIREBASE_AUTH_DB, FIREBASE_AUTH_LAST_ERROR
+    if not _firebase_deve_usar():
+        return None
+    if firebase_admin is None or firebase_credentials is None or firebase_firestore is None:
+        FIREBASE_AUTH_LAST_ERROR = "Pacote firebase-admin nao instalado."
+        if _firebase_access_obrigatorio():
+            raise HTTPException(status_code=503, detail=FIREBASE_AUTH_LAST_ERROR)
+        return None
+
+    with FIREBASE_AUTH_LOCK:
+        if FIREBASE_AUTH_DB is not None:
+            return FIREBASE_AUTH_DB
+        try:
+            project_id = _firebase_project_id()
+            options = {"projectId": project_id} if project_id else None
+            app_name = "jk_sistema_access"
+            try:
+                app_fb = firebase_admin.get_app(app_name)
+            except ValueError:
+                cred = _firebase_credencial()
+                if options:
+                    app_fb = firebase_admin.initialize_app(cred, options=options, name=app_name)
+                else:
+                    app_fb = firebase_admin.initialize_app(cred, name=app_name)
+            FIREBASE_AUTH_DB = firebase_firestore.client(app_fb)
+            FIREBASE_AUTH_LAST_ERROR = ""
+            return FIREBASE_AUTH_DB
+        except Exception as exc:
+            FIREBASE_AUTH_LAST_ERROR = str(exc)
+            logger.warning("[FIREBASE-AUTH] Nao foi possivel inicializar Firebase: %s", exc)
+            if _firebase_access_obrigatorio():
+                raise HTTPException(status_code=503, detail=f"Firebase indisponivel: {exc}")
+            return None
+
+
+def _firebase_doc_id(username: str) -> str:
+    username_norm = str(username or "").strip().lower()
+    username_norm = username_norm.replace("/", "_")
+    return username_norm
+
+
+def _firebase_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _firebase_bool(valor, padrao: bool = True) -> bool:
+    if valor is None:
+        return padrao
+    if isinstance(valor, str):
+        return valor.strip().lower() not in {"0", "false", "falso", "nao", "não", "inativo", "bloqueado", "off"}
+    return bool(valor)
+
+
+def _firebase_user_from_data(username: str, data: dict, index: int = None) -> dict:
+    payload = data or {}
+    username_norm = str(payload.get("username") or username or "").strip().lower()
+    machine_id = str(payload.get("machine_id") or "").strip() or None
+    machine_ids = _normalizar_lista_maquinas(
+        payload.get("machine_ids") or payload.get("maquinas") or payload.get("machines"),
+        machine_id,
+    )
+    password_hash = str(
+        payload.get("password_hash")
+        or payload.get("password")
+        or payload.get("senha")
+        or ""
+    ).strip()
+    user_number = payload.get("user_number")
+    try:
+        user_number = int(user_number) if user_number is not None and str(user_number).strip() else None
+    except Exception:
+        user_number = index
+    return {
+        "username": username_norm,
+        "password": password_hash,
+        "name": str(payload.get("name") or payload.get("nome") or username_norm).strip() or username_norm,
+        "email": _normalizar_email(payload.get("email") or payload.get("google_email")),
+        "client_id": str(payload.get("client_id") or payload.get("cliente") or payload.get("tenant_id") or "default").strip() or "default",
+        "permissions": _normalizar_permissoes(payload.get("permissions") or payload.get("permissoes") or {}),
+        "original_row": [],
+        "row_index": index,
+        "source": "firebase",
+        "active": _firebase_bool(payload.get("active", payload.get("ativo", True)), True),
+        "valid_until": _normalizar_data_sistema(payload.get("valid_until") or payload.get("validade") or payload.get("vencimento")),
+        "machine_id": machine_ids[0] if machine_ids else machine_id,
+        "machine_ids": machine_ids,
+        "max_machines": _normalizar_max_machines(payload.get("max_machines", payload.get("limite_maquinas", 1))),
+        "user_number": user_number,
+        "firebase_doc_id": _firebase_doc_id(username_norm),
+    }
+
+
+def _firebase_user_to_data(username: str, usuario: dict, *, include_password: bool = True, source: str = "admin") -> dict:
+    username_norm = str(username or usuario.get("username") or "").strip().lower()
+    machine_ids = _normalizar_lista_maquinas(usuario.get("machine_ids"), usuario.get("machine_id"))
+    data = {
+        "username": username_norm,
+        "name": str(usuario.get("name") or username_norm).strip() or username_norm,
+        "email": _normalizar_email(usuario.get("email") or usuario.get("google_email")),
+        "client_id": str(usuario.get("client_id") or "default").strip() or "default",
+        "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
+        "active": bool(usuario.get("active", True)),
+        "valid_until": _normalizar_data_sistema(usuario.get("valid_until")),
+        "machine_id": machine_ids[0] if machine_ids else None,
+        "machine_ids": machine_ids,
+        "max_machines": _normalizar_max_machines(usuario.get("max_machines", 1)),
+        "source": source,
+        "updated_at": _firebase_now_iso(),
+    }
+    if usuario.get("user_number") is not None:
+        try:
+            data["user_number"] = int(usuario.get("user_number"))
+        except Exception:
+            pass
+    if include_password:
+        senha = str(usuario.get("password") or usuario.get("password_hash") or "").strip()
+        if senha:
+            data["password_hash"] = _hash_password_se_preciso(senha)
+    return data
+
+
+def _firebase_collection():
+    db = _firebase_db()
+    if db is None:
+        return None
+    return db.collection(_firebase_users_collection_name())
+
+
+def _firebase_listar_usuarios(seed_if_empty: bool = True) -> Optional[dict]:
+    coll = _firebase_collection()
+    if coll is None:
+        return None
+    try:
+        docs = list(coll.stream())
+        if not docs and seed_if_empty and str(os.getenv("FIREBASE_SEED_LOCAL_USERS", "true") or "").strip().lower() in {"1", "true", "sim", "yes", "on"}:
+            usuarios_seed, _headers_seed = _carregar_usuarios_sql(seed_if_empty=True)
+            if isinstance(usuarios_seed, dict) and usuarios_seed:
+                for username, usuario in usuarios_seed.items():
+                    _firebase_salvar_usuario(username, usuario, source="bootstrap-local")
+                docs = list(coll.stream())
+
+        usuarios = {}
+        for idx, doc in enumerate(docs, start=1):
+            data = doc.to_dict() or {}
+            username = str(data.get("username") or doc.id or "").strip().lower()
+            if not username:
+                continue
+            usuarios[username] = _firebase_user_from_data(username, data, idx)
+        if usuarios:
+            _salvar_usuarios_sql(usuarios, source="firebase-cache")
+        return usuarios
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[FIREBASE-AUTH] Falha ao listar usuarios: %s", exc)
+        if _firebase_access_obrigatorio():
+            raise HTTPException(status_code=503, detail=f"Firebase indisponivel: {exc}")
+        return None
+
+
+def _firebase_obter_usuario(username: str) -> Optional[dict]:
+    coll = _firebase_collection()
+    username_norm = str(username or "").strip().lower()
+    if coll is None or not username_norm:
+        return None
+    try:
+        snap = coll.document(_firebase_doc_id(username_norm)).get()
+        if not snap.exists:
+            return None
+        return _firebase_user_from_data(username_norm, snap.to_dict() or {})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[FIREBASE-AUTH] Falha ao obter usuario '%s': %s", username_norm, exc)
+        if _firebase_access_obrigatorio():
+            raise HTTPException(status_code=503, detail=f"Firebase indisponivel: {exc}")
+        return None
+
+
+def _firebase_salvar_usuario(username: str, usuario: dict, *, source: str = "admin", merge: bool = True) -> Optional[dict]:
+    coll = _firebase_collection()
+    username_norm = str(username or usuario.get("username") or "").strip().lower()
+    if coll is None or not username_norm:
+        return None
+    data = _firebase_user_to_data(username_norm, usuario, source=source)
+    if merge:
+        snap = coll.document(_firebase_doc_id(username_norm)).get()
+        if not snap.exists:
+            data["created_at"] = _firebase_now_iso()
+    else:
+        data["created_at"] = usuario.get("created_at") or _firebase_now_iso()
+    coll.document(_firebase_doc_id(username_norm)).set(data, merge=merge)
+    salvo = _firebase_obter_usuario(username_norm)
+    if salvo:
+        _salvar_usuarios_sql({username_norm: salvo}, source="firebase-cache")
+    return salvo
+
+
+def _firebase_excluir_usuario(username: str) -> bool:
+    coll = _firebase_collection()
+    username_norm = str(username or "").strip().lower()
+    if coll is None or not username_norm:
+        return False
+    coll.document(_firebase_doc_id(username_norm)).delete()
+    return True
+
+
+def _firebase_registrar_login(username: str, client_id: str, machine_id: str, request: Optional[Request], meta: Optional[dict] = None):
+    db = _firebase_db()
+    if db is None:
+        return
+    try:
+        meta = meta or {}
+        db.collection(_firebase_audit_collection_name()).add({
+            "username": str(username or "").strip().lower(),
+            "client_id": str(client_id or "default").strip() or "default",
+            "machine_id": str(machine_id or "").strip(),
+            "ip_address": meta.get("ip_address") or _extrair_ip_request(request),
+            "user_agent": meta.get("user_agent") or str((request.headers.get("user-agent") if request else "") or "")[:500],
+            "created_at": _firebase_now_iso(),
+        })
+    except Exception as exc:
+        logger.warning("[FIREBASE-AUTH] Nao foi possivel registrar auditoria no Firebase: %s", exc)
+
+
 def _auth_db_conexao():
     os.makedirs(PASTA_INFO, exist_ok=True)
     conn = sqlite3.connect(ARQUIVO_AUTH_DB)
@@ -19260,6 +19784,28 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
 
 
 def _listar_usuarios_admin_sql() -> list[dict]:
+    usuarios_fb = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
+    if isinstance(usuarios_fb, dict):
+        resultado = []
+        for username in sorted(usuarios_fb.keys()):
+            item = usuarios_fb.get(username) or {}
+            resultado.append({
+                "username": username,
+                "name": str(item.get("name") or username),
+                "email": _normalizar_email(item.get("email")),
+                "client_id": str(item.get("client_id") or "default"),
+                "permissions": _normalizar_permissoes(item.get("permissions") or {}),
+                "active": bool(item.get("active", True)),
+                "valid_until": item.get("valid_until"),
+                "machine_id": item.get("machine_id"),
+                "machine_ids": _normalizar_lista_maquinas(item.get("machine_ids"), item.get("machine_id")),
+                "max_machines": _normalizar_max_machines(item.get("max_machines", 1)),
+                "source": "firebase",
+                "user_number": item.get("user_number"),
+                "machine_count": len(_normalizar_lista_maquinas(item.get("machine_ids"), item.get("machine_id"))),
+            })
+        return resultado
+
     usuarios_sql, _headers_sql = _carregar_usuarios_sql(seed_if_empty=True)
     if not isinstance(usuarios_sql, dict):
         return []
@@ -19287,6 +19833,27 @@ def _listar_usuarios_admin_sql() -> list[dict]:
 
 def _obter_usuario_sql(username: str) -> dict:
     username_norm = str(username or "").strip().lower()
+    if _firebase_deve_usar():
+        usuario_fb = _firebase_obter_usuario(username_norm)
+        if isinstance(usuario_fb, dict):
+            return {
+                "username": username_norm,
+                "password": usuario_fb.get("password") or "",
+                "name": str(usuario_fb.get("name") or username_norm),
+                "email": _normalizar_email(usuario_fb.get("email")),
+                "client_id": str(usuario_fb.get("client_id") or "default"),
+                "permissions": _normalizar_permissoes(usuario_fb.get("permissions") or {}),
+                "active": bool(usuario_fb.get("active", True)),
+                "valid_until": _normalizar_data_sistema(usuario_fb.get("valid_until")),
+                "machine_id": usuario_fb.get("machine_id"),
+                "machine_ids": _normalizar_lista_maquinas(usuario_fb.get("machine_ids"), usuario_fb.get("machine_id")),
+                "max_machines": _normalizar_max_machines(usuario_fb.get("max_machines", 1)),
+                "source": "firebase",
+                "user_number": usuario_fb.get("user_number"),
+            }
+        if _firebase_access_obrigatorio():
+            raise HTTPException(status_code=404, detail="Usuario nao encontrado no Firebase.")
+
     usuarios_sql, _headers_sql = _carregar_usuarios_sql(seed_if_empty=True)
     if not isinstance(usuarios_sql, dict) or username_norm not in usuarios_sql:
         raise HTTPException(status_code=404, detail="UsuÃƒÂ¡rio nÃ£o encontrado.")
@@ -19308,7 +19875,73 @@ def _obter_usuario_sql(username: str) -> dict:
     }
 
 
+def _salvar_usuario_admin_firebase(payload: AdminUserUpsertRequest) -> dict:
+    username_norm = str(payload.username or "").strip().lower()
+    original_username = str(payload.original_username or username_norm).strip().lower()
+    if not username_norm:
+        raise HTTPException(status_code=400, detail="Informe o usuario.")
+
+    existente = _firebase_obter_usuario(original_username) if original_username else None
+    if existente and original_username != username_norm and _firebase_obter_usuario(username_norm):
+        raise HTTPException(status_code=400, detail="Ja existe outro usuario com esse login.")
+
+    email_norm = _normalizar_email(payload.email if payload.email is not None else ((existente or {}).get("email") if existente else ""))
+    if email_norm:
+        usuarios_fb = _firebase_listar_usuarios(seed_if_empty=True) or {}
+        for usuario_chave, usuario_item in usuarios_fb.items():
+            if str(usuario_chave or "").strip().lower() == original_username:
+                continue
+            if _normalizar_email((usuario_item or {}).get("email")) == email_norm:
+                raise HTTPException(status_code=400, detail="Ja existe outro usuario vinculado a esse e-mail Google.")
+
+    senha_final = str(payload.password or "").strip() or ((existente or {}).get("password") if existente else "")
+    if not senha_final:
+        raise HTTPException(status_code=400, detail="Informe a senha para criar o usuario.")
+
+    machine_principal = str(payload.machine_id or ((existente or {}).get("machine_id") if existente else "")).strip() or None
+    machine_ids_existentes = ((existente or {}).get("machine_ids") if existente else []) or []
+    if payload.machine_id is not None and str(payload.machine_id).strip() == "":
+        machine_ids_existentes = []
+    elif machine_principal:
+        machine_ids_existentes = _normalizar_lista_maquinas(machine_ids_existentes, machine_principal)
+
+    registro = {
+        "username": username_norm,
+        "password": senha_final,
+        "name": str(payload.name or ((existente or {}).get("name") if existente else username_norm)).strip() or username_norm,
+        "email": email_norm,
+        "client_id": str(payload.client_id or ((existente or {}).get("client_id") if existente else "default")).strip() or "default",
+        "permissions": _normalizar_permissoes(payload.permissions or ((existente or {}).get("permissions") if existente else {})),
+        "active": bool(payload.active),
+        "valid_until": _normalizar_data_sistema(payload.valid_until),
+        "machine_id": machine_principal,
+        "machine_ids": machine_ids_existentes,
+        "max_machines": _normalizar_max_machines(payload.max_machines if payload.max_machines is not None else ((existente or {}).get("max_machines") if existente else 1)),
+        "user_number": (existente or {}).get("user_number"),
+    }
+
+    if existente and original_username != username_norm:
+        _firebase_excluir_usuario(original_username)
+        try:
+            conn = _auth_db_conexao()
+            try:
+                conn.execute("DELETE FROM usuarios_auth WHERE username = ?", (original_username,))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    usuario = _firebase_salvar_usuario(username_norm, registro, source="firebase-admin")
+    if not isinstance(usuario, dict):
+        raise HTTPException(status_code=503, detail="Firebase nao configurado para salvar usuarios.")
+    return _obter_usuario_sql(username_norm)
+
+
 def _salvar_usuario_admin_sql(payload: AdminUserUpsertRequest) -> dict:
+    if _firebase_deve_usar():
+        return _salvar_usuario_admin_firebase(payload)
+
     username_norm = str(payload.username or "").strip().lower()
     original_username = str(payload.original_username or username_norm).strip().lower()
     if not username_norm:
@@ -19380,6 +20013,9 @@ def _atualizar_senha_usuario_sql(username: str, password: str) -> dict:
     if not nova_senha:
         raise HTTPException(status_code=400, detail="Informe a nova senha.")
     usuario["password"] = nova_senha
+    if _firebase_deve_usar() and usuario.get("source") == "firebase":
+        salvo = _firebase_salvar_usuario(usuario["username"], usuario, source="firebase-admin")
+        return _obter_usuario_sql(salvo["username"] if salvo else usuario["username"])
     _salvar_usuarios_sql({usuario["username"]: usuario}, source="sql-admin")
     return _obter_usuario_sql(usuario["username"])
 
@@ -19387,6 +20023,9 @@ def _atualizar_senha_usuario_sql(username: str, password: str) -> dict:
 def _atualizar_permissoes_usuario_sql(username: str, permissions: dict) -> dict:
     usuario = _obter_usuario_sql(username)
     usuario["permissions"] = _normalizar_permissoes(permissions or {})
+    if _firebase_deve_usar() and usuario.get("source") == "firebase":
+        salvo = _firebase_salvar_usuario(usuario["username"], usuario, source="firebase-admin")
+        return _obter_usuario_sql(salvo["username"] if salvo else usuario["username"])
     _salvar_usuarios_sql({usuario["username"]: usuario}, source="sql-admin")
     return _obter_usuario_sql(usuario["username"])
 
@@ -19394,6 +20033,9 @@ def _atualizar_permissoes_usuario_sql(username: str, permissions: dict) -> dict:
 def _atualizar_status_usuario_sql(username: str, active: bool) -> dict:
     usuario = _obter_usuario_sql(username)
     usuario["active"] = bool(active)
+    if _firebase_deve_usar() and usuario.get("source") == "firebase":
+        salvo = _firebase_salvar_usuario(usuario["username"], usuario, source="firebase-admin")
+        return _obter_usuario_sql(salvo["username"] if salvo else usuario["username"])
     _salvar_usuarios_sql({usuario["username"]: usuario}, source="sql-admin")
     return _obter_usuario_sql(usuario["username"])
 
@@ -19402,6 +20044,9 @@ def _resetar_maquinas_usuario_sql(username: str) -> dict:
     usuario = _obter_usuario_sql(username)
     usuario["machine_id"] = None
     usuario["machine_ids"] = []
+    if _firebase_deve_usar() and usuario.get("source") == "firebase":
+        salvo = _firebase_salvar_usuario(usuario["username"], usuario, source="firebase-admin")
+        return _obter_usuario_sql(salvo["username"] if salvo else usuario["username"])
     _salvar_usuarios_sql({usuario["username"]: usuario}, source="sql-admin")
     return _obter_usuario_sql(usuario["username"])
 
@@ -19409,12 +20054,27 @@ def _resetar_maquinas_usuario_sql(username: str) -> dict:
 def _atualizar_max_machines_usuario_sql(username: str, max_machines: int) -> dict:
     usuario = _obter_usuario_sql(username)
     usuario["max_machines"] = _normalizar_max_machines(max_machines)
+    if _firebase_deve_usar() and usuario.get("source") == "firebase":
+        salvo = _firebase_salvar_usuario(usuario["username"], usuario, source="firebase-admin")
+        return _obter_usuario_sql(salvo["username"] if salvo else usuario["username"])
     _salvar_usuarios_sql({usuario["username"]: usuario}, source="sql-admin")
     return _obter_usuario_sql(usuario["username"])
 
 
 def _remover_usuario_sql(username: str) -> None:
     usuario = _obter_usuario_sql(username)
+    if _firebase_deve_usar() and usuario.get("source") == "firebase":
+        _firebase_excluir_usuario(usuario["username"])
+        try:
+            conn = _auth_db_conexao()
+            try:
+                conn.execute("DELETE FROM usuarios_auth WHERE username = ?", (usuario["username"],))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        return
     conn = _auth_db_conexao()
     try:
         conn.execute("DELETE FROM usuarios_auth WHERE username = ?", (usuario["username"],))
@@ -19442,10 +20102,231 @@ def _resumo_usuario_admin(usuario: dict) -> dict:
     }
 
 
+def _admin_messages_local_read() -> list[dict]:
+    with ADMIN_MESSAGES_LOCK:
+        try:
+            if not os.path.exists(ARQUIVO_ADMIN_MESSAGES):
+                return []
+            with open(ARQUIVO_ADMIN_MESSAGES, "r", encoding="utf-8") as arquivo:
+                data = json.load(arquivo)
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.warning("[ADMIN MSG] Falha ao ler mensagens locais: %s", exc)
+            return []
+
+
+def _admin_messages_local_write(messages: list[dict]) -> None:
+    with ADMIN_MESSAGES_LOCK:
+        try:
+            os.makedirs(os.path.dirname(ARQUIVO_ADMIN_MESSAGES), exist_ok=True)
+            itens = [m for m in (messages or []) if isinstance(m, dict)]
+            itens.sort(key=lambda item: int(float(item.get("created_ts") or 0)), reverse=True)
+            itens = itens[:1000]
+            tmp = ARQUIVO_ADMIN_MESSAGES + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as arquivo:
+                json.dump(itens, arquivo, ensure_ascii=False, indent=2)
+            os.replace(tmp, ARQUIVO_ADMIN_MESSAGES)
+        except Exception as exc:
+            logger.warning("[ADMIN MSG] Falha ao salvar mensagens locais: %s", exc)
+
+
+def _admin_message_public(message: dict) -> dict:
+    item = message if isinstance(message, dict) else {}
+    return {
+        "id": str(item.get("id") or ""),
+        "username": str(item.get("username") or "").strip().lower(),
+        "client_id": str(item.get("client_id") or "default").strip() or "default",
+        "title": str(item.get("title") or "Mensagem do administrador").strip()[:120],
+        "message": str(item.get("message") or "").strip(),
+        "sender": str(item.get("sender") or "admin").strip(),
+        "created_at": str(item.get("created_at") or ""),
+        "created_ts": int(float(item.get("created_ts") or 0)),
+        "read_at": str(item.get("read_at") or ""),
+        "read_ts": int(float(item.get("read_ts") or 0)),
+        "storage": str(item.get("storage") or ""),
+    }
+
+
+def _admin_message_for_user(message: dict, username: str, client_id: str, unread_only: bool = True) -> bool:
+    item = _admin_message_public(message)
+    if not item.get("id") or item.get("username") != str(username or "").strip().lower():
+        return False
+    msg_client = str(item.get("client_id") or "default").strip() or "default"
+    session_client = str(client_id or "default").strip() or "default"
+    if msg_client != session_client:
+        return False
+    if unread_only and item.get("read_at"):
+        return False
+    return True
+
+
+def _admin_messages_firebase_list(username: str, client_id: str, unread_only: bool = True) -> list[dict]:
+    if not _firebase_deve_usar():
+        return []
+    try:
+        db = _firebase_db()
+        if db is None:
+            return []
+        coll = db.collection(_firebase_admin_messages_collection_name())
+        docs = coll.where("username", "==", str(username or "").strip().lower()).stream()
+        mensagens = []
+        for snap in docs:
+            data = snap.to_dict() or {}
+            if not data.get("id"):
+                data["id"] = snap.id
+            if _admin_message_for_user(data, username, client_id, unread_only=unread_only):
+                mensagens.append(_admin_message_public(data))
+        return mensagens
+    except Exception as exc:
+        logger.warning("[ADMIN MSG] Falha ao listar mensagens no Firebase: %s", exc)
+        return []
+
+
+def _admin_messages_for_user(username: str, client_id: str, unread_only: bool = True) -> list[dict]:
+    mensagens = []
+    mensagens.extend(_admin_messages_firebase_list(username, client_id, unread_only=unread_only))
+    mensagens.extend(
+        _admin_message_public(item)
+        for item in _admin_messages_local_read()
+        if _admin_message_for_user(item, username, client_id, unread_only=unread_only)
+    )
+    por_id = {}
+    for item in mensagens:
+        mid = str(item.get("id") or "").strip()
+        if mid:
+            por_id[mid] = item
+    resultado = list(por_id.values())
+    resultado.sort(key=lambda item: int(float(item.get("created_ts") or 0)), reverse=True)
+    return resultado
+
+
+def _admin_messages_save(message: dict) -> dict:
+    item = _admin_message_public(message)
+    if not item.get("id"):
+        item["id"] = uuid.uuid4().hex
+    item["storage"] = "local"
+
+    local = _admin_messages_local_read()
+    local = [m for m in local if str((m or {}).get("id") or "") != item["id"]]
+    local.append(item)
+    _admin_messages_local_write(local)
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                db.collection(_firebase_admin_messages_collection_name()).document(item["id"]).set(item, merge=True)
+                item["storage"] = "firebase+local"
+        except Exception as exc:
+            logger.warning("[ADMIN MSG] Falha ao salvar mensagem no Firebase: %s", exc)
+    return item
+
+
+def _admin_messages_mark_read(message_id: str, username: str, client_id: str) -> Optional[dict]:
+    mid = str(message_id or "").strip()
+    if not mid:
+        return None
+    agora_ts = int(time.time())
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    atualizado = None
+
+    local = _admin_messages_local_read()
+    for item in local:
+        if str((item or {}).get("id") or "") == mid and _admin_message_for_user(item, username, client_id, unread_only=False):
+            item["read_at"] = agora
+            item["read_ts"] = agora_ts
+            atualizado = _admin_message_public(item)
+            break
+    if atualizado:
+        _admin_messages_local_write(local)
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                ref = db.collection(_firebase_admin_messages_collection_name()).document(mid)
+                snap = ref.get()
+                data = snap.to_dict() if snap.exists else None
+                if data and _admin_message_for_user(data, username, client_id, unread_only=False):
+                    ref.set({"read_at": agora, "read_ts": agora_ts}, merge=True)
+                    data.update({"read_at": agora, "read_ts": agora_ts})
+                    atualizado = _admin_message_public(data)
+        except Exception as exc:
+            logger.warning("[ADMIN MSG] Falha ao marcar mensagem no Firebase: %s", exc)
+
+    return atualizado
+
+
+@app.get("/api/admin/access-backend")
+def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
+    firebase_file = _firebase_service_account_file()
+    firebase_configurado = _firebase_tem_configuracao()
+    firebase_ativo = _firebase_deve_usar()
+    return {
+        "success": True,
+        "mode": _firebase_access_mode(),
+        "active_backend": "firebase" if firebase_ativo else "local",
+        "firebase_configured": bool(firebase_configurado),
+        "firebase_required": bool(_firebase_access_obrigatorio()),
+        "firebase_project_id": _firebase_project_id() if firebase_configurado else "",
+        "firebase_users_collection": _firebase_users_collection_name(),
+        "firebase_audit_collection": _firebase_audit_collection_name(),
+        "firebase_presence_collection": _firebase_presence_collection_name(),
+        "firebase_admin_messages_collection": _firebase_admin_messages_collection_name(),
+        "firebase_credential_loaded": bool(firebase_file and os.path.exists(firebase_file)),
+        "last_error": FIREBASE_AUTH_LAST_ERROR,
+    }
+
+
 @app.get("/api/admin/users")
 def admin_listar_usuarios(client_id: str = Depends(get_tenant_id)):
     users = _listar_usuarios_admin_sql()
     return {"success": True, "users": users}
+
+
+@app.post("/api/admin/users/message")
+def admin_enviar_mensagem_usuario(
+    payload: AdminUserMessageRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    username_norm = str(payload.username or "").strip().lower()
+    texto = str(payload.message or "").strip()
+    if not username_norm:
+        raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
+    if not texto:
+        raise HTTPException(status_code=400, detail="Informe a mensagem.")
+    if len(texto) > 2000:
+        raise HTTPException(status_code=400, detail="A mensagem deve ter no maximo 2000 caracteres.")
+
+    usuario = _obter_usuario_sql(username_norm)
+    client_destino = str(payload.client_id or usuario.get("client_id") or "default").strip() or "default"
+    sender = "admin"
+    try:
+        sessao = _payload_sessao_por_authorization(authorization)
+        sender = sessao.get("username") or sender
+    except Exception:
+        pass
+
+    agora_ts = int(time.time())
+    mensagem = _admin_messages_save({
+        "id": uuid.uuid4().hex,
+        "username": username_norm,
+        "client_id": client_destino,
+        "title": str(payload.title or "Mensagem do administrador").strip()[:120],
+        "message": texto,
+        "sender": sender,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "created_ts": agora_ts,
+        "read_at": "",
+        "read_ts": 0,
+    })
+    return {
+        "success": True,
+        "message": "Mensagem enviada.",
+        "notification": mensagem,
+        "backend": mensagem.get("storage") or ("firebase" if _firebase_deve_usar() else "local"),
+    }
 
 
 @app.post("/api/admin/users")
@@ -19492,6 +20373,40 @@ def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Option
 
     _atualizar_senha_usuario_sql(usuario["username"], nova_senha)
     return {"success": True, "message": "Senha alterada com sucesso."}
+
+
+@app.get("/api/auth/me", response_model=LoginResponse)
+def minha_sessao_auth(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    machine_id: str = "",
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    usuario = _obter_usuario_sql(sessao["username"])
+    client_usuario = str(usuario.get("client_id") or sessao["client_id"] or "default").strip() or "default"
+    if client_usuario != sessao["client_id"]:
+        raise HTTPException(status_code=403, detail="Sessão inválida para esse usuário.")
+
+    if not _login_usuario_ativo(usuario):
+        return LoginResponse(success=False, message="Usuario inativo. Contate o administrador.")
+
+    validade_ok, msg_validade = _login_validade_ok(usuario)
+    if not validade_ok:
+        return LoginResponse(success=False, message=msg_validade or "Acesso expirado ou invalido.")
+
+    try:
+        permissoes = _carregar_permissoes_usuario(sessao["username"], client_usuario)
+    except Exception:
+        permissoes = _normalizar_permissoes(usuario.get("permissions") or {})
+
+    machine_final = str(machine_id or usuario.get("machine_id") or "").strip()
+    if machine_final:
+        try:
+            _machine_presence_save(_machine_presence_record(sessao["username"], client_usuario, machine_final, request, "session-refresh"))
+        except Exception as exc:
+            logger.warning("[LOGIN] Nao foi possivel atualizar presenca da sessao para %s: %s", sessao["username"], exc)
+
+    return _montar_resposta_login_sucesso(sessao["username"], usuario, permissoes, client_usuario, machine_final)
 
 
 @app.put("/api/admin/users/{username}/reset-devices")
@@ -19675,7 +20590,333 @@ def _registrar_login_maquina(username: str, client_id: str, machine_id: str, req
         conn.commit()
     finally:
         conn.close()
+    if _firebase_deve_usar():
+        _firebase_registrar_login(username, client_id, machine_final, request, meta)
     return machine_final, meta
+
+
+def _machine_presence_timeout_seconds() -> int:
+    try:
+        valor = int(float(os.getenv("JK_MACHINE_ONLINE_TIMEOUT_SECONDS", "150") or 150))
+        return max(45, min(valor, 3600))
+    except Exception:
+        return 150
+
+
+def _machine_presence_doc_id(username: str, client_id: str, machine_id: str) -> str:
+    raw = f"{str(username or '').strip().lower()}|{str(client_id or '').strip()}|{str(machine_id or '').strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _machine_presence_label(machine_id: str) -> str:
+    valor = str(machine_id or "").strip()
+    if not valor:
+        return "Maquina sem nome"
+    partes = []
+    for segmento in valor.split("|"):
+        segmento = segmento.strip()
+        if not segmento:
+            continue
+        if segmento.lower().startswith("pc:"):
+            partes.append(segmento[3:].strip())
+        elif segmento.lower().startswith("mac:"):
+            partes.append(segmento.strip())
+        elif segmento.lower().startswith("ip:") and not partes:
+            partes.append(segmento.strip())
+    if partes:
+        return " | ".join(partes[:2])
+    return valor[:80]
+
+
+def _machine_presence_sanitize_page(page: str) -> str:
+    value = str(page or "").strip()
+    value = value.replace("\\", "/")
+    if len(value) > 180:
+        value = value[:180]
+    return value
+
+
+def _machine_presence_record(username: str, client_id: str, machine_id: str, request: Optional[Request], page: str = "") -> dict:
+    machine_final, meta = _montar_machine_id_login(request, machine_id)
+    now_ts = int(time.time())
+    timeout_s = _machine_presence_timeout_seconds()
+    return {
+        "id": _machine_presence_doc_id(username, client_id, machine_final),
+        "username": str(username or "").strip().lower(),
+        "client_id": str(client_id or "default").strip() or "default",
+        "machine_id": machine_final,
+        "label": _machine_presence_label(machine_final),
+        "page": _machine_presence_sanitize_page(page),
+        "ip_address": meta.get("ip_address"),
+        "host_name": meta.get("host_name"),
+        "user_agent": meta.get("user_agent"),
+        "last_seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_seen_ts": now_ts,
+        "expires_at_ts": now_ts + timeout_s,
+        "online_timeout_seconds": timeout_s,
+    }
+
+
+def _machine_presence_local_read() -> dict:
+    with MACHINE_PRESENCE_LOCK:
+        try:
+            if not os.path.exists(ARQUIVO_MACHINE_PRESENCE):
+                return {}
+            with open(ARQUIVO_MACHINE_PRESENCE, "r", encoding="utf-8") as arquivo:
+                data = json.load(arquivo)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.warning("[MACHINES] Falha ao ler presenca local: %s", exc)
+            return {}
+
+
+def _machine_presence_local_write(data: dict) -> None:
+    with MACHINE_PRESENCE_LOCK:
+        try:
+            os.makedirs(os.path.dirname(ARQUIVO_MACHINE_PRESENCE), exist_ok=True)
+            with open(ARQUIVO_MACHINE_PRESENCE, "w", encoding="utf-8") as arquivo:
+                json.dump(data if isinstance(data, dict) else {}, arquivo, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("[MACHINES] Falha ao salvar presenca local: %s", exc)
+
+
+def _machine_presence_prune_local(data: dict, now_ts: Optional[int] = None) -> dict:
+    now_ts = int(now_ts or time.time())
+    limite_antigo = now_ts - max(_machine_presence_timeout_seconds() * 8, 1800)
+    result = {}
+    for chave, item in (data or {}).items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            last_seen = int(float(item.get("last_seen_ts") or 0))
+        except Exception:
+            last_seen = 0
+        if last_seen >= limite_antigo:
+            result[str(chave)] = item
+    return result
+
+
+def _machine_presence_save(record: dict) -> dict:
+    if not isinstance(record, dict) or not record.get("id"):
+        return record
+
+    local_data = _machine_presence_prune_local(_machine_presence_local_read())
+    local_data[str(record["id"])] = record
+    _machine_presence_local_write(local_data)
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                db.collection(_firebase_presence_collection_name()).document(str(record["id"])).set(record, merge=True)
+        except Exception as exc:
+            logger.warning("[MACHINES] Falha ao salvar presenca no Firebase: %s", exc)
+    return record
+
+
+def _machine_presence_list_firebase(username: str, client_id: str) -> list[dict]:
+    if not _firebase_deve_usar():
+        return []
+    try:
+        db = _firebase_db()
+        if db is None:
+            return []
+        coll = db.collection(_firebase_presence_collection_name())
+        docs = coll.where("username", "==", str(username or "").strip().lower()).stream()
+        registros = []
+        for snap in docs:
+            data = snap.to_dict() or {}
+            if str(data.get("client_id") or "").strip() != str(client_id or "default").strip():
+                continue
+            registros.append(data)
+        return registros
+    except Exception as exc:
+        logger.warning("[MACHINES] Falha ao listar presenca no Firebase: %s", exc)
+        return []
+
+
+def _machine_presence_list(username: str, client_id: str) -> list[dict]:
+    username_norm = str(username or "").strip().lower()
+    client_norm = str(client_id or "default").strip() or "default"
+    now_ts = int(time.time())
+    timeout_s = _machine_presence_timeout_seconds()
+    registros = []
+    registros.extend(_machine_presence_list_firebase(username_norm, client_norm))
+    registros.extend(list(_machine_presence_local_read().values()))
+
+    maquinas = []
+    por_chave = {}
+    for item in registros:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("username") or "").strip().lower() != username_norm:
+            continue
+        if str(item.get("client_id") or "").strip() != client_norm:
+            continue
+        machine_id = str(item.get("machine_id") or "").strip()
+        if not machine_id:
+            continue
+        chave = _machine_presence_doc_id(username_norm, client_norm, machine_id)
+        atual = por_chave.get(chave) or {}
+        try:
+            last_seen = int(float(item.get("last_seen_ts") or 0))
+        except Exception:
+            last_seen = 0
+        try:
+            last_seen_atual = int(float(atual.get("last_seen_ts") or 0))
+        except Exception:
+            last_seen_atual = 0
+        if atual and last_seen < last_seen_atual:
+            continue
+        por_chave[chave] = item
+
+    for item in por_chave.values():
+        machine_id = str(item.get("machine_id") or "").strip()
+        try:
+            last_seen = int(float(item.get("last_seen_ts") or 0))
+        except Exception:
+            last_seen = 0
+        online = last_seen >= (now_ts - timeout_s)
+        maquinas.append({
+            "machine_id": machine_id,
+            "label": str(item.get("label") or _machine_presence_label(machine_id)),
+            "page": _machine_presence_sanitize_page(item.get("page") or ""),
+            "last_seen_at": item.get("last_seen_at") or "",
+            "last_seen_ts": last_seen,
+            "seconds_since_seen": max(0, now_ts - last_seen) if last_seen else None,
+            "online": online,
+            "current": False,
+        })
+
+    maquinas.sort(key=lambda item: (not bool(item.get("online")), -(int(item.get("last_seen_ts") or 0))))
+    return maquinas
+
+
+def _machine_presence_mark_current(maquinas: list[dict], current_machine_id: str) -> list[dict]:
+    current = str(current_machine_id or "").strip()
+    if not current:
+        return maquinas
+    for item in maquinas:
+        if str(item.get("machine_id") or "").strip() == current:
+            item["current"] = True
+    return maquinas
+
+
+@app.get("/api/admin/users/online")
+def admin_listar_usuarios_online(client_id: str = Depends(get_tenant_id)):
+    usuarios = _listar_usuarios_admin_sql()
+    resultados = []
+    total_online = 0
+    total_maquinas_online = 0
+
+    for usuario in usuarios:
+        username = str(usuario.get("username") or "").strip().lower()
+        user_client_id = str(usuario.get("client_id") or "default").strip() or "default"
+        maquinas = _machine_presence_list(username, user_client_id)
+        maquinas_online = [item for item in maquinas if item.get("online")]
+        if maquinas_online:
+            total_online += 1
+            total_maquinas_online += len(maquinas_online)
+
+        ultima = None
+        for item in maquinas:
+            if ultima is None or int(item.get("last_seen_ts") or 0) > int(ultima.get("last_seen_ts") or 0):
+                ultima = item
+
+        resultados.append({
+            "username": username,
+            "name": usuario.get("name") or username,
+            "email": _normalizar_email(usuario.get("email")),
+            "client_id": user_client_id,
+            "active": bool(usuario.get("active", True)),
+            "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
+            "online": bool(maquinas_online),
+            "online_count": len(maquinas_online),
+            "machines": maquinas_online[:10],
+            "all_recent_machines": maquinas[:20],
+            "last_seen_at": (ultima or {}).get("last_seen_at") or "",
+            "seconds_since_seen": (ultima or {}).get("seconds_since_seen"),
+        })
+
+    resultados.sort(key=lambda item: (not bool(item.get("online")), str(item.get("username") or "")))
+    return {
+        "success": True,
+        "users": resultados,
+        "online_users": total_online,
+        "online_machines": total_maquinas_online,
+        "online_timeout_seconds": _machine_presence_timeout_seconds(),
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+    }
+
+
+@app.post("/api/user/machines/heartbeat")
+def user_machine_heartbeat(
+    payload: MachinePresenceHeartbeatRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    record = _machine_presence_record(
+        sessao["username"],
+        sessao["client_id"],
+        payload.machine_id or "",
+        request,
+        payload.page or "",
+    )
+    _machine_presence_save(record)
+    return {
+        "success": True,
+        "machine": {
+            "machine_id": record.get("machine_id"),
+            "label": record.get("label"),
+            "last_seen_at": record.get("last_seen_at"),
+            "online_timeout_seconds": record.get("online_timeout_seconds"),
+        },
+    }
+
+
+@app.get("/api/user/machines/online")
+def user_machines_online(
+    machine_id: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    maquinas = _machine_presence_list(sessao["username"], sessao["client_id"])
+    maquinas = _machine_presence_mark_current(maquinas, machine_id or "")
+    online = [item for item in maquinas if item.get("online")]
+    return {
+        "success": True,
+        "username": sessao["username"],
+        "client_id": sessao["client_id"],
+        "online_count": len(online),
+        "machines": online,
+        "all_recent_machines": maquinas[:20],
+        "online_timeout_seconds": _machine_presence_timeout_seconds(),
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+    }
+
+
+@app.get("/api/user/messages")
+def user_admin_messages(authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    mensagens = _admin_messages_for_user(sessao["username"], sessao["client_id"], unread_only=True)
+    return {
+        "success": True,
+        "messages": mensagens[:10],
+        "unread_count": len(mensagens),
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+    }
+
+
+@app.post("/api/user/messages/{message_id}/read")
+def user_admin_message_read(message_id: str, authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    mensagem = _admin_messages_mark_read(message_id, sessao["username"], sessao["client_id"])
+    return {
+        "success": True,
+        "message": "Mensagem marcada como lida.",
+        "notification": mensagem,
+    }
 
 
 def _carregar_usuarios_local():
@@ -19906,6 +21147,10 @@ def verificar_trava_seguranca(ws, row_index, headers, username, client_id=None):
         return False, f"Erro seguranÃƒÆ’Ã‚Â§a: {e}"
 
 def carregar_usuarios_sheets():
+    usuarios_firebase = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
+    if isinstance(usuarios_firebase, dict):
+        return usuarios_firebase, None, []
+
     usuarios_sql, headers_sql = _carregar_usuarios_sql()
     if usuarios_sql is not None:
         return usuarios_sql, None, headers_sql
@@ -20054,8 +21299,58 @@ def _login_usuario_ativo(usuario: dict) -> bool:
     return bool(valor)
 
 
+def _firebase_validar_e_registrar_maquina(username: str, usuario: dict, permissoes: dict, machine_final: str) -> tuple[bool, str, str]:
+    if _usuario_pode_logar_em_qualquer_dispositivo(username, permissoes):
+        return True, "", machine_final
+
+    username_norm = str(username or "").strip().lower()
+    coll = _firebase_collection()
+    if coll is None:
+        if _firebase_access_obrigatorio():
+            return False, "Firebase indisponivel para validar maquinas.", machine_final
+        return True, "", machine_final
+
+    ref = coll.document(_firebase_doc_id(username_norm))
+
+    try:
+        snap = ref.get()
+        if not snap.exists:
+            return False, "Usuario nao encontrado no Firebase.", machine_final
+        usuario_atual = _firebase_user_from_data(username_norm, snap.to_dict() or {})
+        maquinas = _normalizar_lista_maquinas(usuario_atual.get("machine_ids"), usuario_atual.get("machine_id"))
+        if machine_final in maquinas:
+            return True, "", machine_final
+        max_machines = _normalizar_max_machines(usuario_atual.get("max_machines", 1))
+        if max_machines != 0 and len(maquinas) >= max_machines:
+            return False, "Limite de dispositivos atingido para este usuario. Peca ao administrador para resetar os dispositivos.", machine_final
+        maquinas.append(machine_final)
+        ref.update({
+            "machine_id": maquinas[0] if maquinas else machine_final,
+            "machine_ids": maquinas,
+            "updated_at": _firebase_now_iso(),
+        })
+        ok, msg = True, ""
+        if ok:
+            usuario_atualizado = dict(usuario)
+            maquinas_locais = _normalizar_lista_maquinas(usuario.get("machine_ids"), usuario.get("machine_id"))
+            if machine_final not in maquinas_locais:
+                maquinas_locais.append(machine_final)
+            usuario_atualizado["machine_id"] = maquinas_locais[0] if maquinas_locais else machine_final
+            usuario_atualizado["machine_ids"] = maquinas_locais
+            _salvar_usuarios_sql({username_norm: usuario_atualizado}, source="firebase-cache")
+        return bool(ok), str(msg or ""), machine_final
+    except Exception as exc:
+        logger.warning("[FIREBASE-AUTH] Falha ao validar maquina no Firebase para %s: %s", username_norm, exc)
+        if _firebase_access_obrigatorio():
+            return False, f"Firebase indisponivel para validar maquinas: {exc}", machine_final
+        return True, "", machine_final
+
+
 def _login_validar_e_registrar_maquina(username: str, usuario: dict, permissoes: dict, machine_id: str, request: Request) -> tuple[bool, str, str]:
     machine_final, _meta = _montar_machine_id_login(request, machine_id)
+    if _firebase_deve_usar() and (usuario or {}).get("source") == "firebase":
+        return _firebase_validar_e_registrar_maquina(username, usuario, permissoes, machine_final)
+
     if _usuario_pode_logar_em_qualquer_dispositivo(username, permissoes):
         return True, "", machine_final
 
@@ -20219,6 +21514,10 @@ def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, reque
         _registrar_login_maquina(username, client_id, machine_final, request)
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar auditoria de login Google para %s: %s", username, exc)
+    try:
+        _machine_presence_save(_machine_presence_record(username, client_id, machine_final, request, "login-google"))
+    except Exception as exc:
+        logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial Google para %s: %s", username, exc)
 
     return _montar_resposta_login_sucesso(username, usuario, permissoes, client_id, machine_final)
 
@@ -20499,10 +21798,11 @@ def google_auth_callback(request: Request, code: Optional[str] = None, state: Op
     )
     if login_resp.success:
         try:
+            google_email = _normalizar_email((token_info or {}).get("email"))
             _google_oauth_salvar_tokens_usuario(
                 str((login_resp.user_data or {}).get("username") or ""),
                 str((login_resp.user_data or {}).get("client_id") or ""),
-                email,
+                google_email,
                 token_payload,
             )
         except Exception as exc:
@@ -21345,6 +22645,10 @@ async def login_endpoint(payload: LoginRequest, request: Request):
         _registrar_login_maquina(username, client_id, machine_final, request)
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar auditoria de login para %s: %s", username, exc)
+    try:
+        _machine_presence_save(_machine_presence_record(username, client_id, machine_final, request, "login"))
+    except Exception as exc:
+        logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial para %s: %s", username, exc)
 
     return _montar_resposta_login_sucesso(username, usuario, permissoes, client_id, machine_final)
 
@@ -36299,6 +37603,34 @@ def _normalize_text(text: str) -> str:
     norm = "".join([c for c in norm if not unicodedata.combining(c)])
     return norm.lower().strip()
 
+def _normalizar_termo_busca_ml(termo: str) -> str:
+    texto = _normalize_text(termo)
+    texto = re.sub(r"""[.,;:()\[\]{}"'^~!?|\\/_+=*\-]+""", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+def _termos_busca_ml(termo: str, extras: list[str] | None = None) -> list[str]:
+    candidatos = [
+        _normalizar_termo_busca_ml(termo),
+        str(termo or "").strip(),
+    ]
+    for extra in extras or []:
+        candidatos.extend([
+            _normalizar_termo_busca_ml(str(extra or "")),
+            str(extra or "").strip(),
+        ])
+    vistos: set[str] = set()
+    saida: list[str] = []
+    for candidato in candidatos:
+        if not candidato:
+            continue
+        chave = candidato.lower()
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        saida.append(candidato)
+    return saida
+
 def _extrair_item_id(url: str) -> str | None:
     texto = unquote(str(url or ""))
     match = re.search(r"MLB-?(\d+)", texto, re.IGNORECASE)
@@ -36833,6 +38165,8 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
     termo = (req.termo or "").strip()
     if not termo:
         raise HTTPException(status_code=400, detail="Termo de pesquisa vazio.")
+    termos_consulta = _termos_busca_ml(termo, req.termos_busca)
+    termo_usado = termos_consulta[0] if termos_consulta else termo
 
     def _parse_vendas(v):
         return _parse_vendas_ml(v)
@@ -36840,11 +38174,16 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
     try:
         # Usa primeiro a API oficial (ordem da pÃƒÂ¡gina de busca).
         limite = min(max(int(req.max_anuncios or 60), 1), 100)
-        base_resultados = _ml_api_search_paginated(termo, limit=limite)
+        base_resultados = []
+        for termo_consulta in termos_consulta:
+            base_resultados = _ml_api_search_paginated(termo_consulta, limit=limite)
+            termo_usado = termo_consulta
+            if base_resultados:
+                break
 
         # Fallback para HTML se API falhar ou o Mercado Livre bloquear a API.
         if not base_resultados and bool(req.usar_automatico):
-            url_busca = f"https://lista.mercadolivre.com.br/?q={quote_plus(termo)}"
+            url_busca = f"https://lista.mercadolivre.com.br/?q={quote_plus(termo_usado)}"
             html_resultados = _buscar_anuncios_mercadolivre_html(url_busca, max_retries=2, delay=1) or []
             for r in html_resultados:
                 base_resultados.append({
@@ -36856,16 +38195,20 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
                 })
 
         if not base_resultados:
-            url_busca = f"https://lista.mercadolivre.com.br/?q={quote_plus(termo)}"
-            automaticos = _buscar_anuncios_mercadolivre_automatico(url_busca, max_anuncios=limite) or []
-            for r in automaticos:
-                base_resultados.append({
-                    "id": _extrair_item_id(r.get("url") or r.get("link") or ""),
-                    "title": r.get("titulo") or "",
-                    "permalink": r.get("url") or r.get("link") or "",
-                    "sold_quantity": _parse_vendas(r.get("vendas")),
-                    "date_created": r.get("data_criacao")
-                })
+            for termo_consulta in termos_consulta:
+                url_busca = f"https://lista.mercadolivre.com.br/?q={quote_plus(termo_consulta)}"
+                automaticos = _buscar_anuncios_mercadolivre_automatico(url_busca, max_anuncios=limite) or []
+                termo_usado = termo_consulta
+                for r in automaticos:
+                    base_resultados.append({
+                        "id": _extrair_item_id(r.get("url") or r.get("link") or ""),
+                        "title": r.get("titulo") or "",
+                        "permalink": r.get("url") or r.get("link") or "",
+                        "sold_quantity": _parse_vendas(r.get("vendas")),
+                        "date_created": r.get("data_criacao")
+                    })
+                if base_resultados:
+                    break
 
         anuncios = []
         for idx, item in enumerate(base_resultados, start=1):
@@ -36899,6 +38242,7 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
         return {
             "success": True,
             "termo": termo,
+            "termo_usado": termo_usado,
             "total": len(anuncios),
             "anuncios": anuncios,
             "warning": None if anuncios else "O Mercado Livre nao retornou anuncios para esta consulta ou bloqueou a consulta automatica."
@@ -36908,6 +38252,7 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
         return {
             "success": True,
             "termo": termo,
+            "termo_usado": termo_usado,
             "total": 0,
             "anuncios": [],
             "warning": "NÃƒÂ£o foi possÃƒÂ­vel consultar anuncios agora."
@@ -37370,6 +38715,8 @@ def _simplificar_termo_busca(termo: str) -> str:
     texto = _normalize_text(termo)
     if not texto:
         return ""
+    texto = re.sub(r"""[.,;:()\[\]{}"'^~!?|\\/_+=*\-]+""", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
 
     stopwords = {
         "de", "da", "do", "das", "dos", "para", "com", "sem", "e", "ou", "em",
