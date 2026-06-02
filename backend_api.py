@@ -614,7 +614,13 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "appVersion": os.getenv("JK_APP_VERSION", ""),
+        "firebaseConfigured": bool(_firebase_tem_configuracao()),
+        "firebaseActive": bool(_firebase_deve_usar()),
+        "firebaseLastError": FIREBASE_AUTH_LAST_ERROR,
+    }
 
 
 JK_UPDATE_OWNER = os.getenv("JK_UPDATE_OWNER", "marketflow-lab").strip() or "marketflow-lab"

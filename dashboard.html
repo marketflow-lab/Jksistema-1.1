@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -996,7 +996,7 @@
 
 <div class="container">
     <div class="hero">
-        <h1>🚀 JK Sistema de Gestão</h1>
+        <h1>?? JK Sistema de Gestão</h1>
         <p class="subtitle">Painel central com acesso rápido aos módulos do sistema</p>
     </div>
     
@@ -1069,7 +1069,7 @@
 
     let userData = safeJsonParse(localStorage.getItem('user_data') || 'null', null);
     let permissions = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
-    const APP_VERSION_FALLBACK = '1.0.23';
+    const APP_VERSION_FALLBACK = '1.0.24';
     let appVersionAtual = APP_VERSION_FALLBACK;
 
     if (!userData) {
@@ -1111,23 +1111,23 @@
     document.body.classList.add('dashboard-ready');
 
     const modules = [
-        { key: 'analise_promo', href: 'frontend_promo.html', title: '📈 Promoção ML', desc: 'Análise de campanhas e cálculo de taxas.' },
-        { key: 'renovacao_fixa', href: 'renovacao.html', title: '🔄 Renovação Fixa', desc: 'Comparar e renovar campanhas.' },
-        { key: 'anuncios_ml', href: 'anunciosml.html', title: '📦 Anúncios ML', desc: 'Gestão de anúncios no Mercado Livre.' },
-        { key: 'etiquetas', href: 'frontend_etiquetas.html', title: '🏷️ Etiquetas', desc: 'Gerador de etiquetas (ML, Shopee, TikTok).' },
-        { key: 'integracao', href: 'integracoes.html', title: '🔗 Integrações', desc: 'Gerenciar conexões com Bling, ML, etc.' },
-        { key: 'cadastro', href: 'cadastro.html', title: '🧾 Cadastro', desc: 'Cadastro manual de produtos.' },
-        { key: 'estoque', href: 'estoque.html', title: '📦 Estoque', desc: 'Consulta rápida do estoque consolidado.' },
-        { key: 'mercado_full', href: 'full.html', title: '🚚 Full', desc: 'Controle e acompanhamento do estoque Full.' },
-        { key: 'vendas', href: 'vendas.html', title: '💰 Vendas', desc: 'Histórico de pedidos e itens.' },
-        { key: 'favoritos', href: 'favoritos.html', title: '⭐ Favoritos ML', desc: 'Pesquisa e ranking de anúncios no Mercado Livre.' },
-        { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '💬 Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
-        { key: 'medias_compras', href: 'medias_compras.html', title: '📊 Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
-        { key: 'impostos', href: 'impostos.html', title: '💸 Impostos', desc: 'Regras fiscais por NCM/CEST e simulação tributária.' },
-        { key: 'simulador', href: 'simulador.html', title: '🧮 Simulador', desc: 'Calcule o preço final por NCM, dólar, quantidade e cubagem.' },
-        { key: 'configuracoes', href: 'configuracoes.html', title: '⚙️ Configurações', desc: 'Parâmetros globais do sistema para todos os usuários.' },
-        { key: 'importacoes', href: 'importacoes.html', title: '📥 Importações', desc: 'Central de importação e processamento de planilhas.' },
-        { key: 'admin_usuarios', href: 'admin_usuarios.html', title: '👥 Central de Usuários', desc: 'Usuários online, mensagens e permissões.' }
+        { key: 'analise_promo', href: 'frontend_promo.html', title: '?? Promoção ML', desc: 'Análise de campanhas e cálculo de taxas.' },
+        { key: 'renovacao_fixa', href: 'renovacao.html', title: '?? Renovação Fixa', desc: 'Comparar e renovar campanhas.' },
+        { key: 'anuncios_ml', href: 'anunciosml.html', title: '?? Anúncios ML', desc: 'Gestão de anúncios no Mercado Livre.' },
+        { key: 'etiquetas', href: 'frontend_etiquetas.html', title: '??? Etiquetas', desc: 'Gerador de etiquetas (ML, Shopee, TikTok).' },
+        { key: 'integracao', href: 'integracoes.html', title: '?? Integrações', desc: 'Gerenciar conexões com Bling, ML, etc.' },
+        { key: 'cadastro', href: 'cadastro.html', title: '?? Cadastro', desc: 'Cadastro manual de produtos.' },
+        { key: 'estoque', href: 'estoque.html', title: '?? Estoque', desc: 'Consulta rápida do estoque consolidado.' },
+        { key: 'mercado_full', href: 'full.html', title: '?? Full', desc: 'Controle e acompanhamento do estoque Full.' },
+        { key: 'vendas', href: 'vendas.html', title: '?? Vendas', desc: 'Histórico de pedidos e itens.' },
+        { key: 'favoritos', href: 'favoritos.html', title: '? Favoritos ML', desc: 'Pesquisa e ranking de anúncios no Mercado Livre.' },
+        { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '?? Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
+        { key: 'medias_compras', href: 'medias_compras.html', title: '?? Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
+        { key: 'impostos', href: 'impostos.html', title: '?? Impostos', desc: 'Regras fiscais por NCM/CEST e simulação tributária.' },
+        { key: 'simulador', href: 'simulador.html', title: '?? Simulador', desc: 'Calcule o preço final por NCM, dólar, quantidade e cubagem.' },
+        { key: 'configuracoes', href: 'configuracoes.html', title: '?? Configurações', desc: 'Parâmetros globais do sistema para todos os usuários.' },
+        { key: 'importacoes', href: 'importacoes.html', title: '?? Importações', desc: 'Central de importação e processamento de planilhas.' },
+        { key: 'admin_usuarios', href: 'admin_usuarios.html', title: '?? Central de Usuários', desc: 'Usuários online, mensagens e permissões.' }
     ];
 
     let enabled = calcularModulosHabilitados();

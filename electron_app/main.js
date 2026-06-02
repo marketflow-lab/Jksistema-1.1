@@ -20,6 +20,7 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const nodeNet = require('net');
+const http = require('http');
 const { pathToFileURL } = require('url');
 let autoUpdater = null;
 try {
@@ -843,6 +844,78 @@ function waitForTcpPortOpen(port, timeoutMs = 120000, intervalMs = 650) {
     });
 }
 
+function waitForTcpPortClosed(port, timeoutMs = 15000, intervalMs = 400) {
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+        const check = async () => {
+            if (!(await isTcpPortOpen(port, '127.0.0.1', 350))) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - startedAt >= timeoutMs) {
+                resolve(false);
+                return;
+            }
+            setTimeout(check, intervalMs);
+        };
+        check();
+    });
+}
+
+function fetchLocalBackendJson(pathname, timeoutMs = 2500) {
+    return new Promise((resolve) => {
+        const req = http.get({
+            host: '127.0.0.1',
+            port: JK_LOCAL_BACKEND_PORT,
+            path: pathname,
+            timeout: timeoutMs,
+            headers: {
+                'Cache-Control': 'no-cache',
+                'User-Agent': `JK-Sistema-Desktop/${app.getVersion()}`
+            }
+        }, (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', chunk => { body += chunk; });
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(body || '{}'));
+                } catch (_err) {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('timeout', () => {
+            try { req.destroy(); } catch (_err) {}
+            resolve(null);
+        });
+        req.on('error', () => resolve(null));
+    });
+}
+
+function localBackendHealthCompatible(health) {
+    if (!health || health.ok !== true) return false;
+    const backendVersion = String(health.appVersion || '').replace(/^v/i, '').trim();
+    const desktopVersion = String(app.getVersion() || '').replace(/^v/i, '').trim();
+    return !!backendVersion && backendVersion === desktopVersion;
+}
+
+function stopProcessListeningOnPort(port) {
+    return new Promise((resolve) => {
+        const script = [
+            `$ErrorActionPreference = 'SilentlyContinue'`,
+            `$pids = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen | Select-Object -ExpandProperty OwningProcess -Unique`,
+            `foreach ($pidValue in $pids) { if ($pidValue) { Stop-Process -Id $pidValue -Force } }`
+        ].join('; ');
+        const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+            stdio: 'ignore',
+            windowsHide: true
+        });
+        child.on('error', () => resolve(false));
+        child.on('exit', (code) => resolve(code === 0));
+    });
+}
+
 function sanitizeMarkerVersion(value) {
     return String(value || 'dev').replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
@@ -869,6 +942,7 @@ function writeLocalBackendLauncher(localAppDir) {
         `set "JK_REDIRECT_URI=${localCallback}"`,
         `set "JK_BLING_REDIRECT_URI=${localCallback}"`,
         `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
+        `set "JK_APP_VERSION=${cmdValue(app.getVersion())}"`,
         `set "JK_ACCESS_BACKEND=${cmdValue(firebaseEnv.JK_ACCESS_BACKEND || 'auto')}"`,
         ...(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE ? [
             `set "FIREBASE_SERVICE_ACCOUNT_FILE=${cmdValue(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE)}"`
@@ -913,14 +987,25 @@ function ensureLocalBackendStarted() {
     }
 
     localBackendStartupPromise = (async () => {
-        if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
-            logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT });
-            return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
-        }
-
         const localAppDir = syncBundledLocalBackend();
         const launcherPath = writeLocalBackendLauncher(localAppDir);
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+
+        if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
+            const health = await fetchLocalBackendJson('/health');
+            if (localBackendHealthCompatible(health)) {
+                logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT, health });
+                return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
+            }
+            logElectronLifecycle('local-backend-stale-restart', {
+                port: JK_LOCAL_BACKEND_PORT,
+                currentVersion: app.getVersion(),
+                health
+            });
+            await stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT);
+            await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
+        }
+
         logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
         const child = spawn('cmd.exe', ['/d', '/c', launcherPath], {
             cwd: localAppDir,
@@ -931,6 +1016,7 @@ function ensureLocalBackendStarted() {
                 JK_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
                 JK_BLING_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
                 PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
+                JK_APP_VERSION: app.getVersion(),
                 PYTHONUNBUFFERED: '1',
                 PYTHONUTF8: '1'
             },
