@@ -9,17 +9,83 @@
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/rangePlugin.js"></script>
-    <script src="/auth.js?v=20260417g"></script>
+    <script src="/auth.js?v=20260513ia2"></script>
     <script src="/ncm-sync.js"></script>
     <script src="/global-status.js"></script>
     <style>
-        body { margin:0; padding:20px; background:#0e1117; color:#e5e5e5; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
-        .container { max-width:1360px; margin:0 auto; }
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+
+        :root {
+            --bg-a: #04070f;
+            --bg-b: #0a1322;
+            --bg-c: #0d1d34;
+            --panel: rgba(13, 24, 43, 0.86);
+            --border: rgba(104, 168, 255, 0.34);
+            --text: #eaf3ff;
+            --muted: #9cb7d7;
+            --accent: #63bbff;
+            --accent-strong: #1ca2ff;
+            --green: #6fe6b0;
+            --green-bg: rgba(19, 60, 36, 0.9);
+            --orange: #ffc68f;
+            --orange-bg: rgba(56, 34, 19, 0.9);
+            --danger: #ff8b8b;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Outfit', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 8% -4%, rgba(99, 187, 255, 0.28), transparent 34%),
+                radial-gradient(circle at 95% 12%, rgba(55, 178, 255, 0.18), transparent 28%),
+                linear-gradient(120deg, var(--bg-a), var(--bg-b) 48%, var(--bg-c));
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(99, 187, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99, 187, 255, 0.03) 1px, transparent 1px);
+            background-size: 26px 26px;
+            mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 84%);
+            z-index: 0;
+        }
+
+        .container { max-width:1360px; margin:0 auto; position: relative; z-index: 1; }
         .header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
         .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-        .back-btn { padding:7px 12px; background:#4facfe; color:#fff; text-decoration:none; border-radius:6px; font-weight:bold; }
-        .back-btn:hover { background:#0073e6; }
-        .back-btn:disabled { opacity:0.6; cursor:not-allowed; }
+        body.sidebar-observacoes-aberto .nav-actions { 
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+        }
+
+        .back-btn {
+            padding: 8px 14px;
+            background: linear-gradient(180deg, rgba(26, 37, 62, 0.95), rgba(18, 30, 52, 0.98));
+            color: var(--text);
+            text-decoration: none;
+            border-radius: 9px;
+            font-weight: 700;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: transform 0.18s ease, border-color 0.18s ease;
+        }
+        .back-btn:hover { transform: translateY(-2px); border-color: var(--accent); }
+        .back-btn:disabled { opacity:0.5; cursor:not-allowed; transform: none; }
+
         .back-main-btn {
             display: inline-flex;
             align-items: center;
@@ -31,14 +97,12 @@
             font-size: 1.12rem;
             font-weight: 800;
             color: #ffffff;
-            background: linear-gradient(105deg, #63bbff, #7bcfff);
+            background: linear-gradient(105deg, var(--accent), #7bcfff);
             border: 1px solid rgba(255, 255, 255, 0.35);
             box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
             transition: transform 0.18s ease, filter 0.18s ease;
-            position: fixed;
-            top: 16px;
-            right: 18px;
-            z-index: 1200;
+            position: relative;
+            z-index: 2;
         }
         .back-main-btn:hover {
             transform: translateY(-2px);
@@ -49,8 +113,11 @@
             position: static;
             top: auto;
             right: auto;
+            z-index: auto;
         }
-        h1 { margin:0; }
+
+        h1 { margin:0; font-size: clamp(1.6rem, 3vw, 2.2rem); color: #8ecfff; text-shadow: 0 8px 30px rgba(28, 162, 255, 0.32); }
+
         .filters {
             display: flex;
             flex-direction: column;
@@ -58,29 +125,30 @@
             margin-bottom: 12px;
         }
         .periodo-linha {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
             align-items: center;
-            background: #121722;
-            border: 1px solid #1f2a3a;
-            border-radius: 8px;
-            padding: 8px;
+            background: linear-gradient(180deg, rgba(17, 27, 46, 0.94), rgba(12, 21, 37, 0.96));
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 14px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.28);
         }
         .periodo-range {
             display: flex;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             gap: 8px;
             align-items: center;
-            flex: 1 1 520px;
+            flex: 1 1 auto;
         }
         .periodo-separador {
-            color: #8fa7c4;
+            color: var(--muted);
             font-size: 0.92rem;
             font-weight: 600;
         }
         .periodo-texto {
-            color: #9bd1ff;
+            color: var(--accent);
             font-size: 0.86rem;
             font-weight: 500;
             padding: 0;
@@ -90,10 +158,11 @@
             grid-template-columns: minmax(280px, 1.6fr) minmax(220px, 1fr) auto auto;
             gap: 8px;
             align-items: center;
-            background: #121722;
-            border: 1px solid #1f2a3a;
-            border-radius: 8px;
-            padding: 8px;
+            background: linear-gradient(180deg, rgba(17, 27, 46, 0.94), rgba(12, 21, 37, 0.96));
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 12px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.28);
         }
         .sync-actions {
             display: flex;
@@ -105,40 +174,99 @@
             display:flex;
             align-items:center;
             gap:8px;
-            color:#9bd1ff;
+            color: var(--accent);
             cursor:pointer;
             user-select:none;
             font-weight:600;
         }
-        input, select { padding:7px 8px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; }
+        input, select {
+            padding: 7px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: rgba(15, 25, 44, 0.9);
+            color: var(--text);
+            font-family: inherit;
+        }
+        input:focus, select:focus { outline: none; border-color: var(--accent); }
         .loja-group { display:flex; flex-wrap:nowrap; gap:8px; align-items:center; overflow-x:auto; }
-        .loja-btn { padding:7px 10px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; }
-        .loja-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; font-weight:bold; }
+        .loja-btn {
+            padding: 7px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: rgba(15, 25, 44, 0.9);
+            color: var(--text);
+            cursor: pointer;
+            font-weight: 600;
+            transition: border-color 0.18s, background 0.18s;
+        }
+        .loja-btn:hover { border-color: var(--accent); }
+        .loja-btn.active {
+            background: linear-gradient(180deg, rgba(117, 245, 180, 0.96), rgba(77, 215, 150, 0.96));
+            color: #06251d;
+            border-color: rgba(145, 237, 183, 0.65);
+            font-weight: 800;
+        }
         .summary {
             display:grid;
             grid-template-columns:repeat(8, minmax(0, 1fr));
             gap:8px;
             margin-bottom:12px;
         }
-        .card { background:#151d2c; border:1px solid #324762; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding:8px 10px; border-radius:8px; min-height:78px; min-width:0; display:flex; flex-direction:column; justify-content:space-between; }
-        .card h3 { margin:0 0 5px 0; font-size:0.87rem; color:#c6e3ff; font-weight:700; }
-        .card .val { font-size:1.02rem; font-weight:bold; color:#f3f8ff; }
+        .card {
+            position: relative;
+            background: linear-gradient(160deg, rgba(17, 27, 46, 0.96), rgba(10, 18, 34, 0.98));
+            border: 1.5px solid rgba(104, 168, 255, 0.38);
+            border-radius: 16px;
+            padding: 12px 14px 10px;
+            min-height: 86px;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            box-shadow: 0 16px 32px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.04);
+            overflow: hidden;
+            transition: transform 0.18s ease, box-shadow 0.18s ease;
+            border-left-width: 4px;
+            border-left-style: solid;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 22px 40px rgba(0, 0, 0, 0.45);
+        }
+        .card::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.14), transparent);
+        }
+        .card::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: radial-gradient(ellipse at top left, rgba(255,255,255,0.055), transparent 60%);
+        }
+        .card > * { position: relative; z-index: 1; }
+        .card h3 { margin:0 0 6px 0; font-size:0.75rem; font-weight:800; text-transform: uppercase; letter-spacing: 1.2px; opacity: 0.82; }
+        .card .val { font-size:1.08rem; font-weight:800; line-height:1; }
         .sku-search-wrap {
             display: grid;
             grid-template-columns: auto minmax(260px, 1fr);
             gap: 10px;
             align-items: center;
-            border: 1px solid #1f2a3a;
-            border-radius: 8px;
-            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 14px;
             margin-top: -8px;
             margin-bottom: 10px;
-            background: #121722;
+            background: linear-gradient(180deg, rgba(17, 27, 46, 0.94), rgba(12, 21, 37, 0.96));
+            box-shadow: 0 10px 22px rgba(0,0,0,0.24);
         }
         .sku-search-wrap label {
             display: block;
-            color: #9bd1ff;
-            font-weight: 600;
+            color: var(--accent);
+            font-weight: 700;
             margin-bottom: 0;
         }
         .sku-search-wrap input {
@@ -146,24 +274,26 @@
             box-sizing: border-box;
         }
         .table-wrapper { max-height:none; overflow:visible; }
-        table { width:100%; border-collapse:collapse; background:#1c1f2b; border:1px solid #222; }
-        th, td { padding:10px; border-bottom:1px solid #222; text-align:left; font-size:0.95rem; }
+        table { width:100%; border-collapse:collapse; background: rgba(15, 22, 38, 0.92); border: 1px solid rgba(104, 168, 255, 0.18); border-radius: 10px; overflow: hidden; }
+        th, td { padding:10px; border-bottom: 1px solid rgba(104, 168, 255, 0.12); text-align:left; font-size:0.95rem; }
         th {
-            background:#161925;
-            color:#9bd1ff;
-            position:sticky;
-            top:82px;
-            z-index:5;
+            background: rgba(10, 18, 34, 0.96);
+            color: var(--accent);
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            font-weight: 700;
+            letter-spacing: 0.3px;
         }
-        tr:hover { background:#1f2331; }
-        .status-bar { margin:10px 0; padding:10px 12px; border-radius:8px; background:#161925; border:1px solid #222; min-height:20px; }
+        tr:hover { background: rgba(99, 187, 255, 0.06); }
+        .status-bar { margin:10px 0; padding:10px 12px; border-radius:10px; background: rgba(17, 27, 46, 0.9); border: 1px solid var(--border); min-height:20px; }
         .status-bar:empty { display:none; }
-        .status-bar.loading { color:#9bd1ff; border-color:#4facfe; background:#0a1428; }
-        .status-bar.error { color:#ff6b6b; border-color:#c62828; background:#28010d; }
-        .status-bar.success { color:#66bb6a; border-color:#1b5e20; background:#0f2e0d; }
-        .spinner { display:inline-block; width:14px; height:14px; border:2px solid #4facfe; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
+        .status-bar.loading { color: var(--accent); border-color: var(--accent-strong); background: rgba(10, 20, 40, 0.9); }
+        .status-bar.error { color: var(--danger); border-color: rgba(255,100,100,0.5); background: rgba(40, 1, 13, 0.9); }
+        .status-bar.success { color: var(--green); border-color: rgba(111, 230, 176, 0.4); background: rgba(13, 46, 13, 0.9); }
+        .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--accent); border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .empty { color:#aaa; }
+        .empty { color: var(--muted); }
         .sku-loading-overlay {
             position: fixed;
             inset: 0;
@@ -181,9 +311,9 @@
             min-width: 250px;
             padding: 10px 14px;
             border-radius: 999px;
-            border: 1px solid rgba(120, 177, 255, 0.42);
+            border: 1px solid var(--border);
             background: linear-gradient(135deg, rgba(22, 35, 55, 0.92), rgba(17, 27, 42, 0.92));
-            color: #e8f3ff;
+            color: var(--text);
             font-weight: 700;
             display: flex;
             align-items: center;
@@ -208,7 +338,7 @@
             width: 5px;
             height: 5px;
             border-radius: 50%;
-            background: #7ec1ff;
+            background: var(--accent);
             opacity: 0.35;
             animation: skuDot 1s ease-in-out infinite;
         }
@@ -225,7 +355,50 @@
         }
         
         /* Estilos para gráficos */
-        .graficos-container { margin: 14px 0; }
+        .graficos-container {
+            --sidebar-vendas-width: 320px;
+            margin: 14px 0;
+            position: relative;
+            padding-right: calc(var(--sidebar-vendas-width) + 40px);
+        }
+        .graficos-container.observacoes-fechado { padding-right: 0; }
+        .sidebar-bookmarks-vendas {
+            position: fixed;
+            right: var(--sidebar-vendas-width);
+            top: 50vh;
+            z-index: 10003;
+            display: grid;
+            gap: 6px;
+            transform: translate(-6px, -50%);
+            transition: right 0.2s ease;
+        }
+        .sidebar-bookmark-btn-vendas {
+            width: 42px;
+            min-height: 42px;
+            border-radius: 12px 0 0 12px;
+            border: 1px solid rgba(123, 207, 255, 0.85);
+            border-right: 0;
+            background: linear-gradient(165deg, rgba(26, 51, 85, 0.96), rgba(13, 30, 55, 0.98));
+            color: #bfeaff;
+            font-size: 12px;
+            font-weight: 900;
+            cursor: pointer;
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.34);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+        }
+        .sidebar-bookmark-btn-vendas:hover {
+            transform: translateX(-2px);
+            color: #ffffff;
+        }
+        .sidebar-bookmark-btn-vendas.active {
+            background: linear-gradient(165deg, #4facfe, #2e8be6);
+            color: #061523;
+            border-color: #7bcfff;
+        }
+        .graficos-container.observacoes-fechado .sidebar-bookmarks-vendas { right: 0; }
         .grafico-controles {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -238,15 +411,75 @@
             align-items: stretch;
             flex-direction: column;
             gap: 6px;
-            background: #121722;
-            border: 1px solid #1f2a3a;
-            border-radius: 8px;
-            padding: 7px 8px;
+            background: linear-gradient(160deg, rgba(17, 27, 46, 0.96), rgba(10, 18, 34, 0.98));
+            border: 1.5px solid rgba(104, 168, 255, 0.38);
+            border-top-width: 3px;
+            border-top-style: solid;
+            border-radius: 14px;
+            padding: 10px 12px;
             min-height: 44px;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.04);
+            transition: transform 0.18s ease, box-shadow 0.18s ease;
+            overflow: hidden;
+        }
+        .grafico-grupo:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 18px 32px rgba(0,0,0,0.42);
+        }
+        /* Cor única por grupo de controle */
+        .grafico-grupo.gc-visualizacao {
+            border-top-color: #b67bff;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(182,123,255,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+        .grafico-grupo.gc-tipo {
+            border-top-color: #63bbff;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(99,187,255,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+        .grafico-grupo.gc-metrica {
+            border-top-color: #4de8d4;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(77,232,212,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+        .grafico-grupo.gc-intervalo {
+            border-top-color: #6fe6b0;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(111,230,176,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+        .grafico-grupo.gc-comparacao {
+            border-top-color: #f5c84f;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(245,200,79,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+        .grafico-grupo.gc-visualizacao .grafico-label { color: #c894ff; }
+        .grafico-grupo.gc-tipo        .grafico-label { color: #7ecfff; }
+        .grafico-grupo.gc-metrica     .grafico-label { color: #62e8d8; }
+        .grafico-grupo.gc-intervalo   .grafico-label { color: #88f0c4; }
+        .grafico-grupo.gc-comparacao  .grafico-label { color: #f9d982; }
+        /* Botão ativo com cor do grupo */
+        .grafico-grupo.gc-visualizacao .grafico-btn.active { background: linear-gradient(160deg,rgba(182,123,255,0.9),rgba(140,80,230,0.9)); color:#1a0a30; border-color:rgba(182,123,255,0.7); }
+        .grafico-grupo.gc-tipo        .grafico-btn.active { background: linear-gradient(160deg,rgba(99,187,255,0.9),rgba(60,150,240,0.9)); color:#071828; border-color:rgba(99,187,255,0.7); }
+        .grafico-grupo.gc-metrica     .grafico-btn.active { background: linear-gradient(160deg,rgba(77,232,212,0.9),rgba(40,195,180,0.9)); color:#041e1c; border-color:rgba(77,232,212,0.7); }
+        .grafico-grupo.gc-intervalo   .grafico-btn.active { background: linear-gradient(160deg,rgba(111,230,176,0.9),rgba(70,200,140,0.9)); color:#042010; border-color:rgba(111,230,176,0.7); }
+        .grafico-grupo.gc-visualizacao .grafico-btn:hover:not(.active) { border-color:#b67bff; background:rgba(50,20,80,0.7); }
+        .grafico-grupo.gc-tipo        .grafico-btn:hover:not(.active) { border-color:#63bbff; background:rgba(14,34,60,0.8); }
+        .grafico-grupo.gc-metrica     .grafico-btn:hover:not(.active) { border-color:#4de8d4; background:rgba(10,46,46,0.8); }
+        .grafico-grupo.gc-intervalo   .grafico-btn:hover:not(.active) { border-color:#6fe6b0; background:rgba(10,46,28,0.8); }
+        .grafico-compare-wrap {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            color: #f7f0d8;
+            font-size: 0.85rem;
+            font-weight: 700;
+            user-select: none;
+        }
+        .grafico-compare-wrap input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #f5c84f;
+            cursor: pointer;
         }
         .grafico-label {
-            color: #9bd1ff;
-            font-weight: bold;
+            color: var(--accent);
+            font-weight: 700;
             white-space: nowrap;
             text-align: center;
             width: 100%;
@@ -258,11 +491,792 @@
             gap: 8px;
             justify-content: center;
         }
-        .grafico-btn { padding: 6px 11px; border-radius: 6px; border: 1px solid #333; background: #1c1f2b; color: #e5e5e5; cursor: pointer; font-size: 13px; }
-        .grafico-btn.active { background: #4facfe; color: #0e1117; border-color: #4facfe; font-weight: bold; }
-        .grafico-btn:hover:not(.active) { background: #2a2e3b; }
-        .grafico-wrapper { background: #1c1f2b; border: 1px solid #222; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+        .grafico-btn {
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: rgba(15, 25, 44, 0.9);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: border-color 0.18s, background 0.18s;
+        }
+        .grafico-btn.active {
+            background: linear-gradient(180deg, rgba(117, 245, 180, 0.96), rgba(77, 215, 150, 0.96));
+            color: #06251d;
+            border-color: rgba(145, 237, 183, 0.65);
+            font-weight: 800;
+        }
+        .grafico-wrapper {
+            background: linear-gradient(180deg, rgba(17, 27, 46, 0.94), rgba(12, 21, 37, 0.96));
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px;
+            margin-bottom: 14px;
+            box-shadow: 0 14px 30px rgba(0,0,0,0.28);
+        }
         .grafico-wrapper canvas { max-height: 400px; }
+        .grafico-sidebar-vendas {
+            position: fixed;
+            right: 0;
+            top: 0;
+            transform: none;
+            width: var(--sidebar-vendas-width);
+            min-width: 280px;
+            max-width: min(720px, calc(100vw - 64px));
+            height: 100vh;
+            max-height: 100vh;
+            overflow: auto;
+            z-index: 10001;
+            background: linear-gradient(165deg, #2d1a07, #1f1205);
+            border: 1px solid #6e4a1c;
+            border-radius: 10px 0 0 10px;
+            padding: 12px;
+            box-shadow: 0 18px 30px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.05);
+            backdrop-filter: blur(8px);
+            transition: transform 0.2s ease, opacity 0.2s ease;
+            scrollbar-width: none;
+            scrollbar-color: rgba(255, 215, 154, 0.35) rgba(255, 255, 255, 0.05);
+        }
+        .grafico-sidebar-resizer-vendas {
+            position: absolute;
+            left: -7px;
+            top: 0;
+            bottom: 0;
+            width: 14px;
+            cursor: ew-resize;
+            touch-action: none;
+            z-index: 2;
+        }
+        .grafico-sidebar-resizer-vendas::after {
+            content: "";
+            position: absolute;
+            left: 6px;
+            top: 12px;
+            bottom: 12px;
+            width: 2px;
+            border-radius: 999px;
+            background: rgba(123, 207, 255, 0.18);
+            transition: background 0.15s ease, box-shadow 0.15s ease;
+        }
+        .grafico-sidebar-resizer-vendas:hover::after,
+        .grafico-sidebar-resizer-vendas:focus-visible::after,
+        body.sidebar-vendas-resizing .grafico-sidebar-resizer-vendas::after {
+            background: rgba(123, 207, 255, 0.72);
+            box-shadow: 0 0 12px rgba(123, 207, 255, 0.45);
+        }
+        body.sidebar-vendas-resizing {
+            cursor: ew-resize;
+            user-select: none;
+        }
+        .grafico-sidebar-vendas::-webkit-scrollbar {
+            display: none;
+            width: 0;
+        }
+        .grafico-sidebar-vendas::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+        }
+        .grafico-sidebar-vendas::-webkit-scrollbar-thumb {
+            background: rgba(255, 215, 154, 0.28);
+            border-radius: 8px;
+        }
+        .grafico-sidebar-vendas::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 215, 154, 0.45);
+        }
+        .grafico-sidebar-vendas h3 {
+            margin: 0 0 10px;
+            color: #ffd79a;
+            font-size: 0.95rem;
+        }
+        .sidebar-panel-vendas {
+            display: none;
+        }
+        .sidebar-panel-vendas.active {
+            display: block;
+        }
+        #sidebarPainelAssistenteVendas.active {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 24px);
+            min-height: 0;
+            overflow: hidden;
+            position: relative;
+            isolation: isolate;
+        }
+        .sidebar-ai-vendas {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: linear-gradient(165deg, rgba(8, 38, 56, 0.88), rgba(7, 46, 39, 0.88));
+            border: 1px solid rgba(106, 225, 203, 0.28);
+            border-radius: 14px;
+            padding: 10px;
+            overflow: hidden;
+            isolation: isolate;
+        }
+        #iaFloatBarVendas {
+            position: relative;
+            z-index: 10050;
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+            align-self: flex-end;
+            margin: 0 0 4px auto;
+            padding: 4px;
+            border: 1px solid rgba(120, 227, 212, 0.26);
+            border-radius: 12px;
+            background: rgba(4, 28, 39, 0.78);
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(8px);
+            pointer-events: auto;
+            isolation: isolate;
+            transform: translateZ(0);
+        }
+        #iaFloatBarVendas > * {
+            position: relative;
+            z-index: 10051;
+            pointer-events: auto;
+        }
+        #btnHistoricoConvVendas,
+        #btnNovaConvVendas {
+            min-width: 44px;
+            min-height: 38px;
+            padding: 0 12px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            pointer-events: auto !important;
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #iaModelSelectVendas {
+            width: 132px !important;
+            min-width: 132px !important;
+            max-width: 132px !important;
+            min-height: 30px !important;
+            padding: 4px 8px !important;
+            font-size: 0.62rem !important;
+            border-radius: 8px !important;
+        }
+        #sidebarPainelAssistenteVendas h3 {
+            color: #8ee9de;
+            margin: 0 0 4px;
+            position: relative;
+            z-index: 1;
+            padding: 2px 0 6px;
+        }
+        .sidebar-ai-status {
+            flex: 0 0 auto;
+            color: #bdeee7;
+            font-size: 0.76rem;
+            line-height: 1.35;
+            background: transparent;
+            border: 0;
+            padding: 0;
+        }
+        .sidebar-ai-chat {
+            position: relative;
+            z-index: 0;
+            flex: 1 1 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow-y: auto;
+            padding: 4px 2px 12px;
+            scrollbar-width: none;
+            background: rgba(2, 24, 40, 0.42);
+            border: 1px solid rgba(106, 225, 203, 0.2);
+            border-radius: 12px;
+        }
+        .sidebar-ai-chat::-webkit-scrollbar {
+            display: none;
+        }
+        .sidebar-ai-msg {
+            position: relative;
+            z-index: 0;
+            max-width: 86%;
+            border-radius: 16px;
+            padding: 10px 12px;
+            font-size: 0.84rem;
+            line-height: 1.45;
+            border: 1px solid transparent;
+            white-space: pre-wrap;
+        }
+        .sidebar-ai-msg.user {
+            align-self: flex-end;
+            color: #ffffff;
+            background: linear-gradient(165deg, #1888ff, #0f65d8);
+            border-bottom-right-radius: 5px;
+        }
+        .sidebar-ai-msg.assistant {
+            align-self: flex-start;
+            color: #e8fffb;
+            background: linear-gradient(165deg, rgba(30, 83, 123, 0.7), rgba(20, 104, 90, 0.55));
+            border-color: rgba(120, 227, 212, 0.34);
+            border-bottom-left-radius: 5px;
+        }
+        .sidebar-ai-msg.assistant code {
+            background: rgba(5, 28, 47, 0.5);
+            border: 1px solid rgba(120, 227, 212, 0.3);
+            border-radius: 6px;
+            padding: 1px 5px;
+            font-size: 0.78rem;
+        }
+        .sidebar-ai-msg.assistant strong {
+            color: #ffffff;
+        }
+        .sidebar-ai-msg.assistant a {
+            color: #8ee9de;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .sidebar-ai-msg.assistant a:hover {
+            color: #c8fff8;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-img-link {
+            display: inline-block;
+            max-width: 100%;
+            margin: 8px 0;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-img {
+            display: block;
+            max-width: min(220px, 100%);
+            max-height: 220px;
+            object-fit: contain;
+            border-radius: 10px;
+            border: 1px solid rgba(120, 227, 212, 0.32);
+            background: rgba(4, 26, 35, 0.88);
+            padding: 4px;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-file-card {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            max-width: 100%;
+            margin: 8px 0;
+            padding: 9px 10px;
+            border: 1px solid rgba(120, 227, 212, 0.3);
+            border-radius: 10px;
+            background: rgba(4, 26, 35, 0.72);
+            color: #e8fffb;
+            text-decoration: none;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-file-card:hover {
+            border-color: rgba(120, 227, 212, 0.62);
+            background: rgba(7, 43, 57, 0.86);
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-file-icon {
+            flex: 0 0 34px;
+            width: 34px;
+            height: 34px;
+            border-radius: 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(83, 212, 183, 0.16);
+            border: 1px solid rgba(120, 227, 212, 0.24);
+            font-size: 0.72rem;
+            font-weight: 900;
+            color: #8ee9de;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-file-info {
+            min-width: 0;
+            display: grid;
+            gap: 2px;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-file-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 800;
+            color: #ffffff;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-file-action {
+            font-size: 0.74rem;
+            color: #9ee8df;
+        }
+        .sidebar-ai-msg.assistant h1,
+        .sidebar-ai-msg.assistant h2,
+        .sidebar-ai-msg.assistant h3,
+        .sidebar-ai-msg.assistant h4 {
+            margin: 10px 0 6px;
+            line-height: 1.25;
+            color: #ffffff;
+        }
+        .sidebar-ai-msg.assistant h1 { font-size: 1.08rem; }
+        .sidebar-ai-msg.assistant h2 { font-size: 1.02rem; }
+        .sidebar-ai-msg.assistant h3 { font-size: 0.96rem; }
+        .sidebar-ai-msg.assistant h4 { font-size: 0.91rem; }
+        .sidebar-ai-msg.assistant p {
+            margin: 6px 0;
+        }
+        .sidebar-ai-msg.assistant ul,
+        .sidebar-ai-msg.assistant ol {
+            margin: 6px 0 8px 18px;
+            padding: 0;
+        }
+        .sidebar-ai-msg.assistant li {
+            margin: 3px 0;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-task-list {
+            list-style: none;
+            margin-left: 0;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-task-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 7px;
+        }
+        .sidebar-ai-msg.assistant .sidebar-ai-task-item input {
+            margin-top: 3px;
+            accent-color: #53d4b7;
+        }
+        .sidebar-ai-msg.assistant blockquote {
+            margin: 8px 0;
+            padding: 6px 10px;
+            border-left: 3px solid rgba(120, 227, 212, 0.6);
+            background: rgba(6, 36, 51, 0.45);
+            border-radius: 6px;
+        }
+        .sidebar-ai-msg.assistant pre {
+            margin: 8px 0;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(5, 24, 35, 0.92);
+            border: 1px solid rgba(120, 227, 212, 0.25);
+            overflow-x: auto;
+            white-space: pre;
+            font-size: 0.76rem;
+        }
+        .sidebar-ai-msg.assistant hr {
+            border: 0;
+            border-top: 1px solid rgba(120, 227, 212, 0.25);
+            margin: 10px 0;
+        }
+        .sidebar-ai-msg.assistant table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 8px 0;
+            font-size: 0.78rem;
+            background: rgba(6, 36, 51, 0.45);
+            border: 1px solid rgba(120, 227, 212, 0.25);
+            border-radius: 8px;
+            overflow: hidden;
+            display: block;
+            overflow-x: auto;
+        }
+        .sidebar-ai-msg.assistant thead tr {
+            background: rgba(15, 70, 85, 0.45);
+        }
+        .sidebar-ai-msg.assistant th,
+        .sidebar-ai-msg.assistant td {
+            border: 1px solid rgba(120, 227, 212, 0.2);
+            padding: 6px 8px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .sidebar-ai-msg.loading {
+            color: #b8c7d9;
+            font-style: italic;
+        }
+        .sidebar-ai-input-row {
+            position: relative;
+            z-index: 10040;
+            flex: 0 0 auto;
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            border: 1px solid rgba(120, 227, 212, 0.28);
+            border-radius: 16px;
+            background: rgba(4, 30, 39, 0.86);
+            padding: 8px;
+            backdrop-filter: blur(8px);
+            transform: translateZ(0);
+        }
+        .sidebar-ai-input {
+            flex: 1 1 auto;
+            resize: none;
+            min-height: 42px;
+            max-height: 140px;
+            border-radius: 12px;
+            border: 0;
+            background: transparent;
+            color: var(--text);
+            font: inherit;
+            font-size: 0.82rem;
+            padding: 9px 8px;
+            outline: none;
+        }
+        .sidebar-ai-send {
+            flex: 0 0 44px;
+            width: 44px;
+            height: 44px;
+            border: 0;
+            border-radius: 999px;
+            background: linear-gradient(165deg, #53d4b7, #33a7d7);
+            color: #03272f;
+            font-size: 1.1rem;
+            font-weight: 900;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .sidebar-ai-attach {
+            flex: 0 0 44px;
+            width: 44px;
+            height: 44px;
+            border: 1px solid rgba(120, 227, 212, 0.38);
+            border-radius: 999px;
+            background: rgba(35, 142, 165, 0.22);
+            color: #dbfffb;
+            font-size: 1.05rem;
+            font-weight: 800;
+            padding: 0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .sidebar-ai-attach:hover {
+            border-color: rgba(120, 227, 212, 0.7);
+            background: rgba(36, 161, 160, 0.3);
+            transform: scale(1.08);
+        }
+        .sidebar-ai-anexos {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .sidebar-ai-anexo-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            max-width: 100%;
+            border: 1px solid rgba(120, 227, 212, 0.32);
+            background: rgba(25, 120, 133, 0.2);
+            border-radius: 999px;
+            color: #dbfffb;
+            font-size: 0.72rem;
+            padding: 4px 8px;
+        }
+        .sidebar-ai-anexo-item span {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 170px;
+        }
+        .sidebar-ai-anexo-remover {
+            border: 0;
+            background: transparent;
+            color: #ffd2d2;
+            cursor: pointer;
+            font-size: 0.9rem;
+            line-height: 1;
+            padding: 0;
+        }
+        .grafico-sidebar-vendas ul {
+            margin: 0;
+            padding-left: 16px;
+            color: #ffeccc;
+            font-size: 0.88rem;
+            line-height: 1.5;
+            display: grid;
+            gap: 7px;
+        }
+        .sidebar-ranking-vendas {
+            margin-top: 12px;
+            border-top: 1px solid rgba(255, 215, 154, 0.22);
+            padding-top: 10px;
+        }
+        .sidebar-ranking-header {
+            color: #ffe3ba;
+            font-weight: 700;
+            font-size: 0.84rem;
+            margin-bottom: 8px;
+        }
+        .sidebar-ranking-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .sidebar-ranking-btn {
+            border: 1px solid rgba(255, 215, 154, 0.28);
+            border-radius: 8px;
+            background: rgba(30, 17, 7, 0.92);
+            color: #ffe8c8;
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 7px 8px;
+            cursor: pointer;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .sidebar-ranking-btn:hover {
+            border-color: rgba(255, 215, 154, 0.56);
+            background: rgba(44, 25, 10, 0.95);
+        }
+        #btnRankingVendidosVendas.active {
+            border-color: #4ade80;
+            background: linear-gradient(165deg, #22c55e, #16a34a);
+            color: #f0fdf4;
+            box-shadow: 0 8px 16px rgba(34, 197, 94, 0.3);
+        }
+        #btnRankingVendidosVendas.active:hover {
+            background: linear-gradient(165deg, #4ade80, #22c55e);
+            border-color: #86efac;
+        }
+        .sidebar-ranking-btn.active {
+            border-color: #ffd79a;
+            background: linear-gradient(165deg, #e7ac53, #cb8a2a);
+            color: #2a1704;
+        }
+        
+        /* Balão de ranking (abre no hover, ao lado do sidebar) */
+        .ranking-modal {
+            position: fixed;
+            top: 110px;
+            left: 12px;
+            z-index: 10003;
+            background: linear-gradient(165deg, #1a3a2a, #0f2817);
+            border: 2px solid #4ade80;
+            border-radius: 14px;
+            padding: 16px;
+            width: min(420px, calc(100vw - 24px));
+            max-height: min(74vh, 640px);
+            overflow-y: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.65), 0 0 60px rgba(34, 197, 94, 0.35);
+            backdrop-filter: blur(12px);
+            display: none;
+        }
+        .ranking-modal::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+        }
+        .ranking-modal.ativo {
+            display: block;
+            animation: slideInLateral 0.18s ease;
+        }
+        .ranking-modal.ranking-modal-devolucoes {
+            background: linear-gradient(165deg, #3d1515, #260c0c);
+            border-color: #f87171;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.65), 0 0 60px rgba(248, 113, 113, 0.35);
+        }
+        @keyframes slideInLateral {
+            from {
+                opacity: 0;
+                transform: translateX(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        .ranking-modal-header {
+            color: #4ade80;
+            font-weight: 800;
+            font-size: 0.95rem;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .ranking-modal.ranking-modal-devolucoes .ranking-modal-header {
+            color: #fca5a5;
+        }
+        .ranking-modal-close {
+            background: none;
+            border: none;
+            color: #4ade80;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0;
+            transition: color 0.15s ease;
+            display: none;
+        }
+        .ranking-modal-close:hover {
+            color: #86efac;
+        }
+        .ranking-modal ol {
+            margin: 0;
+            padding-left: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            color: #ecfdf5;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+        .ranking-modal li {
+            background: rgba(34, 197, 94, 0.08);
+            border-left: 3px solid #4ade80;
+            padding: 8px 10px;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+        .ranking-modal.ranking-modal-devolucoes li {
+            background: rgba(248, 113, 113, 0.09);
+            border-left-color: #f87171;
+        }
+        .ranking-modal li:hover {
+            background: rgba(34, 197, 94, 0.15);
+            transform: translateX(4px);
+        }
+        .ranking-modal.ranking-modal-devolucoes li:hover {
+            background: rgba(248, 113, 113, 0.18);
+        }
+        .grafico-ranking-vendas {
+            margin: 0;
+            padding-left: 17px;
+            display: grid;
+            gap: 6px;
+            color: #ffeccc;
+            font-size: 0.82rem;
+            line-height: 1.4;
+        }
+        .grafico-ranking-vendas li {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 215, 154, 0.14);
+            border-radius: 8px;
+            padding: 6px 8px;
+            list-style-position: outside;
+        }
+        .sidebar-ociosos-vendas {
+            margin-top: 14px;
+            border-top: 1px solid rgba(255, 215, 154, 0.22);
+            padding-top: 10px;
+        }
+        .sidebar-ociosos-abas {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .sidebar-ociosos-aba {
+            border: 1px solid rgba(255, 215, 154, 0.28);
+            border-radius: 8px;
+            background: rgba(30, 17, 7, 0.92);
+            color: #ffe8c8;
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 6px 6px;
+            cursor: pointer;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .sidebar-ociosos-aba:hover {
+            border-color: rgba(255, 215, 154, 0.56);
+            background: rgba(44, 25, 10, 0.95);
+        }
+        .sidebar-ociosos-aba.active {
+            border-color: #ffd79a;
+            background: linear-gradient(165deg, #d9956f, #b8723f);
+            color: #2a1704;
+        }
+        .grafico-ociosos-vendas {
+            margin: 0;
+            padding-left: 17px;
+            display: grid;
+            gap: 5px;
+            color: #ffeccc;
+            font-size: 0.78rem;
+            line-height: 1.3;
+            max-height: 320px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 215, 154, 0.3) rgba(255, 255, 255, 0.04);
+        }
+        .grafico-ociosos-vendas::-webkit-scrollbar {
+            width: 5px;
+        }
+        .grafico-ociosos-vendas::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+        }
+        .grafico-ociosos-vendas::-webkit-scrollbar-thumb {
+            background: rgba(255, 215, 154, 0.24);
+            border-radius: 8px;
+        }
+        .grafico-ociosos-vendas::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 215, 154, 0.4);
+        }
+        .grafico-ociosos-vendas li {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 215, 154, 0.14);
+            border-radius: 8px;
+            padding: 5px 7px;
+            list-style-position: outside;
+        }
+        .grafico-ociosos-vendas li strong {
+            color: #ffd79a;
+        }
+        .sidebar-obs-card {
+            border-radius: 10px;
+            padding: 10px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .sidebar-obs-vendas {
+            background: linear-gradient(165deg, rgba(34, 197, 94, 0.15), rgba(22, 163, 74, 0.12));
+            border-color: rgba(34, 197, 94, 0.3);
+        }
+        .sidebar-obs-devolucao {
+            background: linear-gradient(165deg, rgba(220, 38, 38, 0.15), rgba(185, 28, 28, 0.12));
+            border-color: rgba(220, 38, 38, 0.3);
+        }
+        .sidebar-obs-neutro {
+            background: linear-gradient(165deg, rgba(249, 115, 22, 0.15), rgba(217, 119, 6, 0.12));
+            border-color: rgba(249, 115, 22, 0.3);
+        }
+        .sidebar-obs-label {
+            font-weight: 700;
+            font-size: 0.78rem;
+            color: #ffd79a;
+        }
+        .sidebar-obs-vendas .sidebar-obs-label {
+            color: #86efac;
+        }
+        .sidebar-obs-devolucao .sidebar-obs-label {
+            color: #fca5a5;
+        }
+        .sidebar-obs-neutro .sidebar-obs-label {
+            color: #fdba74;
+        }
+        .sidebar-obs-valor {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: #fff;
+        }
+        .sidebar-obs-vendas .sidebar-obs-valor {
+            color: #86efac;
+        }
+        .sidebar-obs-devolucao .sidebar-obs-valor {
+            color: #fca5a5;
+        }
+        .sidebar-obs-neutro .sidebar-obs-valor {
+            color: #fdba74;
+        }
+        .sidebar-obs-detalhe {
+            font-size: 0.72rem;
+            color: #e5e7eb;
+            opacity: 0.8;
+        }
+        .graficos-container.observacoes-fechado .grafico-sidebar-vendas {
+            opacity: 0;
+            transform: translateX(calc(100% + 16px));
+            pointer-events: none;
+        }
 
         .flatpickr-calendar {
             background: #f5f7fb;
@@ -342,9 +1356,38 @@
             border-top-color: #2f4a67;
             top: 15px;
         }
+
         @media (max-width: 980px) {
             .menus-linha { grid-template-columns: 1fr; }
             .sync-actions { width: 100%; flex-wrap: wrap; }
+            .graficos-container { padding-right: 0; }
+            .sidebar-bookmarks-vendas {
+                right: 8px;
+                top: 82px;
+                transform: none;
+                display: flex;
+            }
+            .sidebar-bookmark-btn-vendas {
+                width: 42px;
+                min-height: 34px;
+                border-radius: 8px;
+                border-right: 1px solid rgba(123, 207, 255, 0.85);
+            }
+            .graficos-container.observacoes-fechado .sidebar-bookmarks-vendas { right: 8px; }
+            .grafico-sidebar-vendas {
+                right: 10px;
+                left: 10px;
+                width: auto;
+                min-width: 0;
+                max-width: none;
+                top: 124px;
+                transform: none;
+                max-height: calc(100vh - 150px);
+            }
+            #sidebarPainelAssistenteVendas.active {
+                height: calc(100vh - 174px);
+            }
+            .grafico-sidebar-resizer-vendas { display: none; }
             .sku-search-wrap {
                 grid-template-columns: 1fr;
                 gap: 6px;
@@ -400,8 +1443,8 @@
                 <input type="text" id="dataIni" placeholder="DD/MM/AAAA" aria-label="Data inicial" readonly>
                 <input type="text" id="dataFim" placeholder="DD/MM/AAAA" aria-label="Data final" readonly>
             </div>
+            <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
         </div>
-        <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
         <div class="menus-linha">
             <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
             <select id="unidadeNegocioSelect" aria-label="Selecionar loja">
@@ -421,9 +1464,13 @@
     <div class="summary" id="resumo"></div>
 
     <!-- Seção de Gráficos -->
-    <div class="graficos-container">
+    <div class="graficos-container observacoes-fechado">
+        <div class="sidebar-bookmarks-vendas" role="tablist" aria-label="Abas do sidebar de vendas">
+            <button id="btnSidebarObservacoesVendas" class="sidebar-bookmark-btn-vendas active" type="button" role="tab" aria-selected="true" aria-controls="sidebarPainelObservacoesVendas" title="Observacoes">OBS</button>
+            <button id="btnSidebarAssistenteVendas" class="sidebar-bookmark-btn-vendas" type="button" role="tab" aria-selected="false" aria-controls="sidebarPainelAssistenteVendas" title="Assistente IA">IA</button>
+        </div>
         <div class="grafico-controles">
-            <div class="grafico-grupo">
+            <div class="grafico-grupo gc-visualizacao">
                 <span class="grafico-label">📊 Visualização:</span>
                 <div class="grafico-opcoes">
                     <button class="grafico-btn active" data-periodo="3m">3 Meses</button>
@@ -433,21 +1480,21 @@
                     <button class="grafico-btn" data-periodo="max">Máximo</button>
                 </div>
             </div>
-            <div class="grafico-grupo">
+            <div class="grafico-grupo gc-tipo">
                 <span class="grafico-label">📈 Tipo:</span>
                 <div class="grafico-opcoes">
                     <button class="grafico-btn active" data-tipo="linha">Linha</button>
                     <button class="grafico-btn" data-tipo="barra">Barra</button>
                 </div>
             </div>
-            <div class="grafico-grupo">
+            <div class="grafico-grupo gc-metrica">
                 <span class="grafico-label">📐 Métrica:</span>
                 <div class="grafico-opcoes">
                     <button class="grafico-btn active" data-metrica="valor">Valor vendido</button>
                     <button class="grafico-btn" data-metrica="quantidade">Quantidade vendida</button>
                 </div>
             </div>
-            <div class="grafico-grupo">
+            <div class="grafico-grupo gc-intervalo">
                 <span class="grafico-label">📅 Intervalo:</span>
                 <div class="grafico-opcoes">
                     <button class="grafico-btn active" data-intervalo="dia">Dia</button>
@@ -455,10 +1502,105 @@
                     <button class="grafico-btn" data-intervalo="mes">Mês</button>
                 </div>
             </div>
+            <div class="grafico-grupo gc-comparacao">
+                <span class="grafico-label">🗓️ Comparação:</span>
+                <label class="grafico-compare-wrap" for="compareAnoPassado">
+                    <input type="checkbox" id="compareAnoPassado">
+                    <span>Mesmo período ano passado</span>
+                </label>
+            </div>
         </div>
         <div class="grafico-wrapper">
             <canvas id="graficoVendas"></canvas>
         </div>
+        <aside id="graficoSidebarVendas" class="grafico-sidebar-vendas" aria-label="Observações do gráfico de vendas">
+            <div id="graficoSidebarResizerVendas" class="grafico-sidebar-resizer-vendas" role="separator" aria-orientation="vertical" aria-label="Redimensionar sidebar" tabindex="0"></div>
+            <section id="sidebarPainelObservacoesVendas" class="sidebar-panel-vendas active" role="tabpanel" aria-labelledby="btnSidebarObservacoesVendas">
+            <h3>Observações do gráfico</h3>
+            <div id="graficoObservacoesVendas" style="display: grid; gap: 8px;">
+                <div class="sidebar-obs-card sidebar-obs-vendas">
+                    <div class="sidebar-obs-label">Carregando...</div>
+                </div>
+            </div>
+            <div class="sidebar-ranking-vendas">
+                <div class="sidebar-ranking-header">Top 5 SKUs (ordem decrescente)</div>
+                <div class="sidebar-ranking-actions">
+                    <button id="btnRankingVendidosVendas" class="sidebar-ranking-btn active" type="button">Mais vendidos ↓</button>
+                    <button id="btnRankingDevolucoesVendas" class="sidebar-ranking-btn" type="button">Maior devolução ↓</button>
+                </div>
+                <ol id="graficoRankingVendas" class="grafico-ranking-vendas">
+                    <li>Carregando ranking...</li>
+                </ol>
+            </div>
+            <div class="sidebar-ociosos-vendas">
+                <div class="sidebar-ranking-header">SKUs sem vender com estoque</div>
+                <div class="sidebar-ociosos-abas">
+                    <button id="btnOciosos7d" class="sidebar-ociosos-aba" type="button">7 dias</button>
+                    <button id="btnOciosos15d" class="sidebar-ociosos-aba" type="button">15 dias</button>
+                    <button id="btnOciosos30d" class="sidebar-ociosos-aba active" type="button">30 dias</button>
+                    <button id="btnOciosos60d" class="sidebar-ociosos-aba" type="button">60 dias</button>
+                    <button id="btnOciosos90d" class="sidebar-ociosos-aba" type="button">90 dias</button>
+                </div>
+                <ul id="graficoOciososVendas" class="grafico-ociosos-vendas">
+                    <li>Carregando SKUs ociosos...</li>
+                </ul>
+            </div>
+            </section>
+            <section id="sidebarPainelAssistenteVendas" class="sidebar-panel-vendas" role="tabpanel" aria-labelledby="btnSidebarAssistenteVendas">
+                                <h3>Assistente IA</h3>
+                <div class="sidebar-ai-vendas" style="position:relative;">
+                    <!-- Barra flutuante: modelo + ações -->
+                    <div id="iaFloatBarVendas">
+                        <select id="iaModelSelectVendas" title="Modelo de IA" style="background:rgba(8,38,55,.92);border:1px solid rgba(120,227,212,.4);color:#8ee9de;font-size:.62rem;border-radius:8px;padding:4px 8px;cursor:pointer;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35);min-height:30px;width:132px;min-width:132px;max-width:132px;">
+                                                        <optgroup label="OpenAI">
+                                                            <option value="gpt-5.4-nano">Nano</option>
+                                                            <option value="gpt-5.4-mini">Mini</option>
+                                                            <option value="gpt-5.4">GPT-5.4</option>
+                                                            <option value="gpt-5.5">GPT-5.5</option>
+                                                        </optgroup>
+                                                        <optgroup label="DeepSeek">
+                                                            <option value="deepseek-v4-flash">DS V4 Flash</option>
+                                                            <option value="deepseek-v4-pro">DS V4 Pro</option>
+                                                        </optgroup>
+                                                        <optgroup label="Gemini API">
+                                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                                            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                                        </optgroup>
+                                                        <optgroup label="Vertex AI (Google Cloud)">
+                                                            <option value="vertex:gemini-2.5-flash">Vertex 2.5 Flash</option>
+                                                            <option value="vertex:gemini-2.5-pro">Vertex 2.5 Pro</option>
+                                                            <option value="vertex:gemini-2.5-flash-lite">Vertex 2.5 Flash-Lite</option>
+                                                            <option value="vertex:gemini-2.0-flash">Vertex 2.0 Flash</option>
+                                                        </optgroup>
+                        </select>
+                        <button id="btnHistoricoConvVendas" type="button" title="Ver conversas salvas" style="background:rgba(8,38,55,.92);border:1px solid rgba(120,227,212,.4);color:#8ee9de;cursor:pointer;font-size:.9rem;border-radius:10px;padding:6px 12px;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35);min-height:36px;display:flex;align-items:center;justify-content:center;">🗂</button>
+                        <button id="btnNovaConvVendas" type="button" title="Nova conversa" style="background:rgba(8,38,55,.92);border:1px solid rgba(120,227,212,.4);color:#8ee9de;cursor:pointer;font-size:.85rem;border-radius:10px;padding:6px 12px;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35);min-height:36px;display:flex;align-items:center;justify-content:center;font-weight:600;">✏️ Nova</button>
+                    </div>
+                    <div class="sidebar-ai-status">Assistente conectado ao contexto da tela de Vendas.</div>
+                    <div id="sidebarAiChatVendas" class="sidebar-ai-chat" aria-live="polite">
+                        <div class="sidebar-ai-msg assistant">Olá. Posso resumir o período, apontar SKUs de atenção ou sugerir a próxima análise.</div>
+                    </div>
+                    <div class="sidebar-ai-input-row">
+                        <button id="btnSidebarAiAnexoVendas" class="sidebar-ai-attach" type="button" aria-label="Anexar imagem ou arquivo">📎</button>
+                        <textarea id="sidebarAiInputVendas" class="sidebar-ai-input" placeholder="Pergunte sobre as vendas carregadas..."></textarea>
+                        <button id="btnSidebarAiEnviarVendas" class="sidebar-ai-send" type="button" aria-label="Enviar pergunta">↑</button>
+                    </div>
+                    <input id="sidebarAiFileInputVendas" type="file" accept="image/*,.pdf,.txt,.csv,.json,.xml,.md,.log" multiple style="display:none;" />
+                    <div id="sidebarAiAnexosVendas" class="sidebar-ai-anexos" aria-live="polite"></div>
+                </div>
+            </section>
+        </aside>
+    </div>
+
+    <!-- Modal de Ranking -->
+    <div id="rankingModal" class="ranking-modal">
+        <div class="ranking-modal-header">
+            <span>📊 Ranking Completo</span>
+            <button class="ranking-modal-close" type="button">✕</button>
+        </div>
+        <ol id="rankingModalList" style="display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; color: #ecfdf5; font-size: 0.85rem;">
+            <li>Carregando...</li>
+        </ol>
     </div>
 
     <div class="sku-search-wrap">
@@ -500,12 +1642,54 @@
     const periodoTexto = document.getElementById('periodoTexto');
     const btnSync = document.getElementById('btnSync');
     const btnCancel = document.getElementById('btnCancel');
+    const compareAnoPassado = document.getElementById('compareAnoPassado');
     const skuLoadingOverlay = document.getElementById('skuLoadingOverlay');
+    const navActionsVendas = document.querySelector('.nav-actions');
+    const graficosContainerVendas = document.querySelector('.graficos-container');
+    const btnSidebarObservacoesVendas = document.getElementById('btnSidebarObservacoesVendas');
+    const btnSidebarAssistenteVendas = document.getElementById('btnSidebarAssistenteVendas');
+    const sidebarPainelObservacoesVendas = document.getElementById('sidebarPainelObservacoesVendas');
+    const sidebarPainelAssistenteVendas = document.getElementById('sidebarPainelAssistenteVendas');
+    const sidebarAiChatVendas = document.getElementById('sidebarAiChatVendas');
+    const sidebarAiInputVendas = document.getElementById('sidebarAiInputVendas');
+    const btnSidebarAiEnviarVendas = document.getElementById('btnSidebarAiEnviarVendas');
+    const btnSidebarAiAnexoVendas = document.getElementById('btnSidebarAiAnexoVendas');
+    const sidebarAiFileInputVendas = document.getElementById('sidebarAiFileInputVendas');
+    const sidebarAiAnexosVendas = document.getElementById('sidebarAiAnexosVendas');
+    const graficoObservacoesVendas = document.getElementById('graficoObservacoesVendas');
+    const graficoRankingVendas = document.getElementById('graficoRankingVendas');
+    const btnRankingVendidosVendas = document.getElementById('btnRankingVendidosVendas');
+    const btnRankingDevolucoesVendas = document.getElementById('btnRankingDevolucoesVendas');
+    const graficoOciososVendas = document.getElementById('graficoOciososVendas');
+    const btnOciosos7d = document.getElementById('btnOciosos7d');
+    const btnOciosos15d = document.getElementById('btnOciosos15d');
+    const btnOciosos30d = document.getElementById('btnOciosos30d');
+    const btnOciosos60d = document.getElementById('btnOciosos60d');
+    const btnOciosos90d = document.getElementById('btnOciosos90d');
     const spinnerHtml = '<span class="spinner"></span>';
     const REQUEST_TIMEOUT_MS = 15000;
     const VENDAS_VIEW_CACHE_KEY = 'vendas_view_cache_v2';
     const VENDAS_VIEW_CACHE_TTL_MS = 10 * 60 * 1000;
     const VENDAS_VIEW_CACHE_MAX_ROWS = 5000;
+    const IA_MAX_ANEXOS = 4;
+    const IA_MAX_ANEXO_BYTES = 5 * 1024 * 1024;
+
+    function usuarioLocalEhAdminChatVendas() {
+        try {
+            const permissoes = JSON.parse(localStorage.getItem('permissions') || '{}');
+            return !!(permissoes && (permissoes.full === true || permissoes.admin_usuarios === true));
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    function aplicarPermissaoModeloChatVendas(selectEl, podeEscolher) {
+        if (!selectEl) return;
+        const permitido = !!podeEscolher;
+        selectEl.dataset.podeEscolherModelo = permitido ? 'true' : 'false';
+        selectEl.disabled = !permitido;
+        selectEl.style.display = permitido ? '' : 'none';
+    }
 
     let dados = [];
     let dadosFiltrados = [];
@@ -526,12 +1710,206 @@
     let autoSyncTimer = null;
     let dateRangePicker = null;
     let dateFimPicker = null;
+    let anexosAssistenteVendas = [];
+        // ── Persistência de conversas IA (Vendas) — Servidor + localStorage fallback ──
+        const IA_MODULO_KEY = 'vendas';
+        const IA_MAX_MSGS_STORE = 80;
+        const IA_MAX_CONVS_STORE = 20;
+        let iaConvAtualId = null;
+        let iaMensagensAtuais = [];
+
+        function _iaClientId() {
+            try { return (JSON.parse(localStorage.getItem('user_data') || '{}')).client_id || 'default'; } catch(_) { return 'default'; }
+        }
+        function _iaIndexKey() { return 'ia_convs_' + _iaClientId() + '_' + IA_MODULO_KEY; }
+        function _iaStoreKey(id) { return 'ia_hist_' + _iaClientId() + '_' + IA_MODULO_KEY + '_' + id; }
+        function _iaNovoId() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+        function _iaListarConversasLocal() { try { return JSON.parse(localStorage.getItem(_iaIndexKey()) || '[]'); } catch(_) { return []; } }
+        function _iaSalvarIndexLocal(lista) { try { localStorage.setItem(_iaIndexKey(), JSON.stringify(lista.slice(0, IA_MAX_CONVS_STORE))); } catch(_) {} }
+        function _iaCarregarMsgsLocal(id) { try { return JSON.parse(localStorage.getItem(_iaStoreKey(id)) || '[]'); } catch(_) { return []; } }
+        function _iaSalvarMsgsLocal(id, msgs) { try { localStorage.setItem(_iaStoreKey(id), JSON.stringify(msgs.slice(-IA_MAX_MSGS_STORE))); } catch(_) {} }
+        function _iaRemoverConversaLocal(id) { try { localStorage.removeItem(_iaStoreKey(id)); } catch(_) {} }
+        
+        async function _iaListarConversasServidor() {
+            try {
+                const r = await fetch(`/api/ia/conversas/listar?modulo=${encodeURIComponent(IA_MODULO_KEY)}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + (localStorage.getItem('access_token') || ''),
+                        'X-Client-ID': _iaClientId()
+                    }
+                });
+                if (r.ok) {
+                    const d = await r.json();
+                    if (d && d.success === true && Array.isArray(d.conversas)) {
+                        return d.conversas.map(c => ({ id: c.id, data: String(c.data_atualizacao || '').slice(0, 16), preview: c.titulo }));
+                    }
+                }
+            } catch(_) {}
+            return _iaListarConversasLocal();
+        }
+        
+        async function _iaCarregarConversaServidor(convId) {
+            try {
+                const r = await fetch(`/api/ia/conversas/${encodeURIComponent(convId)}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + (localStorage.getItem('access_token') || ''),
+                        'X-Client-ID': _iaClientId()
+                    }
+                });
+                if (r.ok) {
+                    const d = await r.json();
+                    if (d && d.success === true && d.conversa && Array.isArray(d.conversa.mensagens)) {
+                        return d.conversa.mensagens.map(m => ({ role: m.role, text: m.text }));
+                    }
+                }
+            } catch(_) {}
+            return _iaCarregarMsgsLocal(convId);
+        }
+        
+        async function _iaSalvarConversaServidor(convId, titulo, msgs) {
+            _iaSalvarMsgsLocal(convId, msgs);
+            try {
+                const r = await fetch('/api/ia/conversas/salvar', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + (localStorage.getItem('access_token') || ''),
+                        'X-Client-ID': _iaClientId()
+                    },
+                    body: JSON.stringify({
+                        conversa_id: convId,
+                        modulo: IA_MODULO_KEY,
+                        titulo: titulo,
+                        mensagens: msgs.map(m => ({ role: m.role, text: m.text }))
+                    })
+                });
+                if (r.ok) {
+                    const d = await r.json().catch(() => null);
+                    return !!(d && d.success === true);
+                }
+            } catch(_) {}
+            return false;
+        }
+        
+        async function _iaDeletarConversaServidor(convId) {
+            try {
+                const r = await fetch(`/api/ia/conversas/${encodeURIComponent(convId)}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + (localStorage.getItem('access_token') || ''),
+                        'X-Client-ID': _iaClientId()
+                    }
+                });
+                if (r.ok) {
+                    const d = await r.json().catch(() => null);
+                    if (d && d.success === true) return true;
+                }
+            } catch(_) {}
+            _iaRemoverConversaLocal(convId);
+            return false;
+        }
+        
+        function _iaSalvarMsgsAtuais() {
+            if (!iaConvAtualId || iaMensagensAtuais.length === 0) return;
+            _iaSalvarMsgsLocal(iaConvAtualId, iaMensagensAtuais);
+            const titulo = (iaMensagensAtuais.find(m => m.role === 'user')?.text || 'Conversa').slice(0, 60);
+            _iaSalvarConversaServidor(iaConvAtualId, titulo, iaMensagensAtuais).catch(() => {});
+        }
+
+        async function iaRestaurarOuCriarConversa() {
+            const lista = await _iaListarConversasServidor();
+            if (!sidebarAiChatVendas) return;
+            if (lista.length > 0) {
+                iaConvAtualId = lista[0].id;
+                iaMensagensAtuais = await _iaCarregarConversaServidor(iaConvAtualId);
+            } else {
+                iaConvAtualId = _iaNovoId();
+                iaMensagensAtuais = [];
+            }
+            if (iaMensagensAtuais.length > 0) {
+                sidebarAiChatVendas.innerHTML = '';
+                iaMensagensAtuais.forEach(m => {
+                    const d = document.createElement('div');
+                    d.className = 'sidebar-ai-msg ' + m.role;
+                    if (m.role === 'assistant') {
+                        d.innerHTML = formatarMarkdownBasicoAssistenteVendas(m.text || '');
+                    } else {
+                        d.textContent = m.text || '';
+                    }
+                    sidebarAiChatVendas.appendChild(d);
+                });
+                sidebarAiChatVendas.scrollTop = sidebarAiChatVendas.scrollHeight;
+            }
+        }
+
+        function iaNovaConversa() {
+            _iaSalvarMsgsAtuais();
+            iaConvAtualId = _iaNovoId();
+            iaMensagensAtuais = [];
+            if (sidebarAiChatVendas) {
+                sidebarAiChatVendas.innerHTML = '';
+                const msg = document.createElement('div');
+                msg.className = 'sidebar-ai-msg assistant';
+                msg.textContent = 'Olá! Nova conversa iniciada. O que você quer analisar?';
+                sidebarAiChatVendas.appendChild(msg);
+            }
+            _iaSalvarMsgsAtuais();
+        }
+
+        async function iaMostrarHistorico() {
+            const lista = await _iaListarConversasServidor();
+            if (!sidebarAiChatVendas) return;
+            sidebarAiChatVendas.innerHTML = '';
+            if (lista.length === 0) {
+                const d = document.createElement('div');
+                d.className = 'sidebar-ai-msg assistant';
+                d.textContent = 'Nenhuma conversa salva ainda.';
+                sidebarAiChatVendas.appendChild(d);
+                return;
+            }
+            const titulo = document.createElement('div');
+            titulo.className = 'sidebar-ai-msg assistant';
+            titulo.innerHTML = '<strong>Conversas salvas:</strong>';
+            sidebarAiChatVendas.appendChild(titulo);
+            lista.forEach(conv => {
+                const d = document.createElement('div');
+                d.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid rgba(120,227,212,.22);border-radius:10px;margin-bottom:4px;cursor:pointer;background:rgba(15,60,80,.3);';
+                d.innerHTML = `<div style="flex:1;overflow:hidden;"><div style="color:#8ee9de;font-size:.7rem;">${conv.data}</div><div style="color:#cde;font-size:.76rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(conv.preview||'').replace(/</g,'&lt;')}</div></div><button style="border:0;background:transparent;color:#f87171;cursor:pointer;font-size:.85rem;padding:2px 6px;" data-del="${conv.id}">🗑</button>`;
+                d.querySelector('div').addEventListener('click', async () => {
+                    _iaSalvarMsgsAtuais();
+                    iaConvAtualId = conv.id;
+                    iaMensagensAtuais = await _iaCarregarConversaServidor(conv.id);
+                    sidebarAiChatVendas.innerHTML = '';
+                    iaMensagensAtuais.forEach(m => {
+                        const el = document.createElement('div');
+                        el.className = 'sidebar-ai-msg ' + m.role;
+                        if (m.role === 'assistant') el.innerHTML = formatarMarkdownBasicoAssistenteVendas(m.text || '');
+                        else el.textContent = m.text || '';
+                        sidebarAiChatVendas.appendChild(el);
+                    });
+                    sidebarAiChatVendas.scrollTop = sidebarAiChatVendas.scrollHeight;
+                });
+                d.querySelector('[data-del]').addEventListener('click', e => {
+                    e.stopPropagation();
+                    _iaDeletarConversaServidor(conv.id).catch(() => {});
+                    if (conv.id === iaConvAtualId) iaNovaConversa();
+                    else iaMostrarHistorico();
+                });
+                sidebarAiChatVendas.appendChild(d);
+            });
+        }
     let periodoApplyTimer = null;
     let periodoSelecionadoPeloUsuario = false;
     let carregarVendasPromise = null;
     let tabelaRenderToken = 0;
     let filtrarToken = 0;
     let cacheSaveTimer = null;
+
 
     function mostrarCarregamentoSku() {
         if (!skuLoadingOverlay) return;
@@ -545,9 +1923,13 @@
         skuLoadingOverlay.setAttribute('aria-hidden', 'true');
     }
 
+
+
+
     window.addEventListener('pageshow', () => {
         ocultarCarregamentoSku();
     });
+
 
     tBody.addEventListener('click', (event) => {
         const tr = event.target && event.target.closest ? event.target.closest('tr[data-sku]') : null;
@@ -562,6 +1944,9 @@
         if (iniIso) qs.append('data_inicio', iniIso);
         if (fimIso) qs.append('data_fim', fimIso);
         if (lojaSelecionada && lojaSelecionada !== '__todas') qs.append('loja', lojaSelecionada);
+        if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+            qs.append('unidade_negocio', unidadeNegocioSelect.value);
+        }
         requestAnimationFrame(() => {
             window.location.href = `/vendas_sku.html?${qs.toString()}`;
         });
@@ -1136,10 +2521,19 @@
         return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     }
 
+    function vendaEhEbazarSomatorio(venda) {
+        const devolucao = Number(venda?.devolucao || 0) === 1;
+        if (devolucao) return false;
+        const comprador = String(venda?.comprador || '').toUpperCase();
+        const canal = String(venda?.canal || '').toUpperCase();
+        return comprador.includes('EBAZAR') || canal.includes('EBAZAR');
+    }
+
     function renderResumo(lista, devolucoesLista = [], exibirDevolucoes = true) {
-        const totalPedidos = lista.length;
-        const totalItens = lista.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
-        const totalValor = lista.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
+        const listaSomatorio = (lista || []).filter(item => !vendaEhEbazarSomatorio(item));
+        const totalPedidos = listaSomatorio.length;
+        const totalItens = listaSomatorio.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const totalValor = listaSomatorio.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
         
         // Calcular totais de devoluções
         const totalDevolucoes = devolucoesLista.length;
@@ -1166,20 +2560,23 @@
                 { label: 'Valor Líquido', value: formatCurrency(valorLiquido), isLiquido: true }
             );
         }
+        // Paleta moderna por tipo de card
+        const cardPalette = {
+            'Pedidos':          { border: '#63bbff', bg: 'linear-gradient(160deg,rgba(14,36,66,0.97),rgba(8,22,44,0.99))', h3: '#7ecfff', val: '#ceeeff', glow: 'rgba(99,187,255,0.18)' },
+            'Itens Vendidos':   { border: '#4de8d4', bg: 'linear-gradient(160deg,rgba(10,48,48,0.97),rgba(6,30,34,0.99))', h3: '#62e8d8', val: '#b8fff8', glow: 'rgba(77,232,212,0.18)' },
+            'Valor Bruto':      { border: '#b67bff', bg: 'linear-gradient(160deg,rgba(32,14,62,0.97),rgba(20,8,42,0.99))', h3: '#c894ff', val: '#ecdeff', glow: 'rgba(182,123,255,0.2)' },
+            'Devoluções':       { border: '#ffb347', bg: 'linear-gradient(160deg,rgba(52,32,6,0.97),rgba(34,20,4,0.99))', h3: '#ffc368', val: '#ffe8b8', glow: 'rgba(255,179,71,0.18)' },
+            'Itens Devolvidos': { border: '#ff6b6b', bg: 'linear-gradient(160deg,rgba(54,10,14,0.97),rgba(36,6,8,0.99))', h3: '#ff8a8a', val: '#ffd0d0', glow: 'rgba(255,107,107,0.18)' },
+            'Valor Devolvido':  { border: '#ff4e6a', bg: 'linear-gradient(160deg,rgba(60,8,18,0.97),rgba(40,4,12,0.99))', h3: '#ff7090', val: '#ffbdc9', glow: 'rgba(255,78,106,0.18)' },
+            'Itens Líquidos':   { border: '#6fe6b0', bg: 'linear-gradient(160deg,rgba(10,48,28,0.97),rgba(6,30,18,0.99))', h3: '#88f0c4', val: '#c8fff0', glow: 'rgba(111,230,176,0.18)' },
+            'Valor Líquido':    { border: '#30e8a0', bg: 'linear-gradient(160deg,rgba(6,52,30,0.97),rgba(4,34,20,0.99))', h3: '#4ef2b8', val: '#b0ffdf', glow: 'rgba(48,232,160,0.22)' },
+        };
         cards.forEach(c => {
             const div = document.createElement('div');
             div.className = 'card';
-            if (c.isNegative) {
-                div.style.background = '#8f1f26';
-                div.style.borderLeft = '4px solid #ff6d74';
-                div.style.color = '#fff';
-            } else if (c.isLiquido) {
-                div.style.background = '#1a5a29';
-                div.style.borderLeft = '4px solid #69d68e';
-                div.style.fontWeight = 'bold';
-                div.style.color = '#fff';
-            }
-            div.innerHTML = `<h3 style="${c.isNegative || c.isLiquido ? 'color:#fff;' : ''}">${c.label}</h3><div class="val" style="${c.isNegative || c.isLiquido ? 'color:#fff;' : ''}">${c.value}</div>`;
+            const p = cardPalette[c.label] || { border: '#63bbff', bg: '', h3: 'var(--muted)', val: 'var(--text)', glow: 'rgba(99,187,255,0.14)' };
+            div.style.cssText = `background:${p.bg};border-left-color:${p.border};border-color:rgba(104,168,255,0.38);border-left-color:${p.border};box-shadow:0 16px 32px rgba(0,0,0,0.38),0 0 18px ${p.glow},inset 0 1px 0 rgba(255,255,255,0.04);`;
+            div.innerHTML = `<h3 style="color:${p.h3}">${c.label}</h3><div class="val" style="color:${p.val};text-shadow:0 0 14px ${p.glow}">${c.value}</div>`;
             if (c.isDevolucao) {
                 const btn = document.createElement('button');
                 btn.className = 'back-btn';
@@ -1219,7 +2616,7 @@
         const trHead = document.createElement('tr');
         cols.forEach(col => {
             const th = document.createElement('th');
-            th.textContent = col;
+            th.textContent = String(col || '').toUpperCase();
             trHead.appendChild(th);
         });
         tHead.appendChild(trHead);
@@ -1242,6 +2639,17 @@
                     let val = item[col];
                     if (col === 'valor') val = formatCurrency(val);
                     td.textContent = val;
+
+                    if (col === 'devolucoes' && Number(item.devolucoes || 0) > 0) {
+                        td.style.color = '#ff6b6b';
+                        td.style.fontWeight = '700';
+                    }
+
+                    if (col === 'valor' && Number(item.valor || 0) > 0) {
+                        td.style.color = '#6fe6b0';
+                        td.style.fontWeight = '700';
+                    }
+
                     tr.appendChild(td);
                 });
                 frag.appendChild(tr);
@@ -1693,12 +3101,20 @@
         const CHUNK = 1200;
         let index = 0;
 
+        const isLinhaCabecalho = (sku, produto) => {
+            const s = String(sku || '').trim().toLowerCase();
+            const p = String(produto || '').trim().toLowerCase();
+            return s === 'sku' && p === 'produto';
+        };
+
         while (index < lista.length) {
             if (token !== filtrarToken) return null;
             const fim = Math.min(index + CHUNK, lista.length);
             for (; index < fim; index++) {
                 const r = lista[index];
+                if (vendaEhEbazarSomatorio(r)) continue;
                 const sku = r.sku || 'N/D';
+                if (isLinhaCabecalho(sku, r.produto)) continue;
                 if (!agrupadoMapa[sku]) {
                     agrupadoMapa[sku] = {
                         sku,
@@ -1747,9 +3163,20 @@
         }
 
         const agrupadoLista = Object.values(agrupadoMapa).sort((a, b) => {
-            const diffItens = (b.itens || 0) - (a.itens || 0);
-            if (diffItens !== 0) return diffItens;
-            return (b.valor || 0) - (a.valor || 0);
+            if (metricaGrafico === 'quantidade') {
+                const diffQtd = (Number(b.itens) || 0) - (Number(a.itens) || 0);
+                if (diffQtd !== 0) return diffQtd;
+                const diffValor = (Number(b.valor) || 0) - (Number(a.valor) || 0);
+                if (diffValor !== 0) return diffValor;
+            } else {
+                const diffValor = (Number(b.valor) || 0) - (Number(a.valor) || 0);
+                if (diffValor !== 0) return diffValor;
+                const diffQtd = (Number(b.itens) || 0) - (Number(a.itens) || 0);
+                if (diffQtd !== 0) return diffQtd;
+            }
+
+            // Desempate estável por SKU para evitar "pulos" visuais entre renderizações.
+            return String(a.sku || '').localeCompare(String(b.sku || ''), 'pt-BR');
         });
 
         return agrupadoLista;
@@ -1998,6 +3425,136 @@
     let intervaloGrafico = 'dia';
     let skuAtualGrafico = null;
     let carregarGraficoToken = 0;
+    let rankingSidebarModo = 'vendidos';
+    let compararAnoPassado = false;
+    let rankingVendidosTop5 = [];
+    let rankingDevolTop5 = [];
+    let rankingVendidosTop20 = [];
+    let rankingDevolTop20 = [];
+    let rankingVendidosComDevolTodos = [];
+    let rankingDevolTodos = [];
+    let ociososSidebarModo = '30dias';
+    let ociososDados = { ultimos_30_dias: [], ultimos_60_dias: [], ultimos_90_dias: [] };
+
+    function renderizarRankingModalVendas(listaTop20, modo) {
+        if (!Array.isArray(listaTop20) || listaTop20.length === 0) {
+            return '<li>Sem dados para o período/filtros selecionados.</li>';
+        }
+
+        if (modo === 'devolucoes') {
+            return listaTop20.map((item, idx) => {
+                const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+                const taxa = Number(item?.taxa || 0).toFixed(1).replace('.', ',');
+                return `<li><strong>${idx + 1}. ${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) devolvidos | taxa ${taxa}%</li>`;
+            }).join('');
+        } else {
+            return listaTop20.map((item, idx) => {
+                const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+                const valor = Number(item?.valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                return `<li><strong>${idx + 1}. ${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) | ${valor}</li>`;
+            }).join('');
+        }
+    }
+
+    function atualizarBotoesRankingSidebar() {
+        if (btnRankingVendidosVendas) {
+            btnRankingVendidosVendas.classList.toggle('active', rankingSidebarModo === 'vendidos');
+        }
+        if (btnRankingDevolucoesVendas) {
+            btnRankingDevolucoesVendas.classList.toggle('active', rankingSidebarModo === 'devolucoes');
+        }
+    }
+
+    function renderRankingSidebarVendas() {
+        if (!graficoRankingVendas) return;
+        const listaAtiva = rankingSidebarModo === 'devolucoes' ? rankingDevolTop5 : rankingVendidosTop5;
+        if (!Array.isArray(listaAtiva) || listaAtiva.length === 0) {
+            graficoRankingVendas.innerHTML = '<li>Sem dados para o período/filtros selecionados.</li>';
+            atualizarBotoesRankingSidebar();
+            return;
+        }
+
+        if (rankingSidebarModo === 'devolucoes') {
+            graficoRankingVendas.innerHTML = listaAtiva.map(item => {
+                const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+                const taxa = Number(item?.taxa || 0).toFixed(1).replace('.', ',');
+                return `<li><strong>${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) devolvidos | taxa ${taxa}%</li>`;
+            }).join('');
+        } else {
+            graficoRankingVendas.innerHTML = listaAtiva.map(item => {
+                const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+                const valor = Number(item?.valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                return `<li><strong>${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) | ${valor}</li>`;
+            }).join('');
+        }
+        atualizarBotoesRankingSidebar();
+    }
+
+    function atualizarBotoesOciosos() {
+        if (btnOciosos7d) btnOciosos7d.classList.toggle('active', ociososSidebarModo === '7dias');
+        if (btnOciosos15d) btnOciosos15d.classList.toggle('active', ociososSidebarModo === '15dias');
+        if (btnOciosos30d) btnOciosos30d.classList.toggle('active', ociososSidebarModo === '30dias');
+        if (btnOciosos60d) btnOciosos60d.classList.toggle('active', ociososSidebarModo === '60dias');
+        if (btnOciosos90d) btnOciosos90d.classList.toggle('active', ociososSidebarModo === '90dias');
+    }
+
+    function renderOciososSidebarVendas() {
+        if (!graficoOciososVendas) return;
+        
+        const periodoMap = {
+            '7dias': { chave: 'ultimos_7_dias', label: '7 dias' },
+            '15dias': { chave: 'ultimos_15_dias', label: '15 dias' },
+            '30dias': { chave: 'ultimos_30_dias', label: '30 dias' },
+            '60dias': { chave: 'ultimos_60_dias', label: '60 dias' },
+            '90dias': { chave: 'ultimos_90_dias', label: '90 dias' }
+        };
+        
+        const config = periodoMap[ociososSidebarModo] || periodoMap['30dias'];
+        const listaAtiva = ociososDados[config.chave] || [];
+        
+        if (!Array.isArray(listaAtiva) || listaAtiva.length === 0) {
+            graficoOciososVendas.innerHTML = `<li>Sem SKUs sem vender por ${config.label} com estoque.</li>`;
+            atualizarBotoesOciosos();
+            return;
+        }
+        
+        graficoOciososVendas.innerHTML = listaAtiva.map(item => {
+            const estoque = Math.round(Number(item?.estoque || 0)).toLocaleString('pt-BR');
+            const diasStr = item?.dias_sem_vender ? `${item.dias_sem_vender} dias` : 'Nunca';
+            return `<li><strong>${item?.sku || 'N/D'}</strong>: estoque ${estoque} | última venda ${diasStr}</li>`;
+        }).join('');
+        atualizarBotoesOciosos();
+    }
+
+    async function carregarOciososSidebarVendas() {
+        if (!graficoOciososVendas) return;
+        
+        try {
+            const params = new URLSearchParams();
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.append('loja', lojaSelecionada);
+            }
+            if (unidadeNegocioSelect && unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                params.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+            
+            const url = '/api/vendas/skus-sem-venda' + (params.toString() ? `?${params.toString()}` : '');
+            const response = await fetchComTimeout(url, { headers: obterAuthHeaders() });
+            
+            if (!response.ok) {
+                graficoOciososVendas.innerHTML = '<li>Erro ao carregar SKUs ociosos.</li>';
+                return;
+            }
+            
+            ociososDados = await response.json();
+            renderOciososSidebarVendas();
+        } catch (error) {
+            console.error('Erro ao carregar SKUs ociosos:', error);
+            if (graficoOciososVendas) {
+                graficoOciososVendas.innerHTML = '<li>Não foi possível carregar SKUs ociosos.</li>';
+            }
+        }
+    }
 
     function chavePreferenciaGrafico() {
         const cid = clientId || obterClientId() || 'anon';
@@ -2010,7 +3567,8 @@
                 periodo: periodoGrafico,
                 tipo: tipoGrafico,
                 metrica: metricaGrafico,
-                intervalo: intervaloGrafico
+                intervalo: intervaloGrafico,
+                compararAnoPassado
             }));
         } catch (_e) {
             // Ignora erro de localStorage.
@@ -2026,6 +3584,7 @@
             if (pref?.tipo) tipoGrafico = pref.tipo;
             if (pref?.metrica) metricaGrafico = pref.metrica;
             if (pref?.intervalo) intervaloGrafico = pref.intervalo;
+            compararAnoPassado = Boolean(pref?.compararAnoPassado);
         } catch (_e) {
             // Ignora preferência inválida.
         }
@@ -2044,6 +3603,9 @@
         document.querySelectorAll('.grafico-btn[data-intervalo]').forEach(b => {
             b.classList.toggle('active', b.dataset.intervalo === intervaloGrafico);
         });
+        if (compareAnoPassado) {
+            compareAnoPassado.checked = compararAnoPassado;
+        }
 
         const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
         if (intervaloGrafico === 'semana') {
@@ -2067,6 +3629,133 @@
             return `${dia}/${mes}/${ano}`;
         }
         return label;
+    }
+
+    function atualizarObservacoesGraficoVendas(data) {
+        if (!graficoObservacoesVendas) return;
+        const labels = Array.isArray(data?.labels) ? data.labels : [];
+        const qtdV = Array.isArray(data?.quantidades_vendas) ? data.quantidades_vendas : [];
+        const qtdD = Array.isArray(data?.quantidades_devolucoes) ? data.quantidades_devolucoes : [];
+        const valV = Array.isArray(data?.valores_vendas) ? data.valores_vendas : [];
+        const valD = Array.isArray(data?.valores_devolucoes) ? data.valores_devolucoes : [];
+
+        const totalQtdV = qtdV.reduce((a, b) => a + Number(b || 0), 0);
+        const totalQtdD = qtdD.reduce((a, b) => a + Number(b || 0), 0);
+        const totalValV = valV.reduce((a, b) => a + Number(b || 0), 0);
+        const totalValD = valD.reduce((a, b) => a + Number(b || 0), 0);
+
+        const taxa = totalQtdV > 0 ? (totalQtdD / totalQtdV) * 100 : 0;
+        const seriePico = metricaGrafico === 'quantidade' ? qtdV : valV;
+        let idxPico = -1;
+        let valorPico = -1;
+        seriePico.forEach((v, i) => {
+            const n = Number(v || 0);
+            if (n > valorPico) { valorPico = n; idxPico = i; }
+        });
+        const periodoPico = idxPico >= 0 ? formatarLabelDataGrafico(labels[idxPico] || '-') : '-';
+
+        const unidadeSel = unidadeNegocioSelect?.value || '__todos';
+        const dataIniIso = getDataIniISO();
+        const dataFimIso = getDataFimISO();
+
+        const dentroPeriodo = (raw) => {
+            const d = String(raw || '').slice(0, 10);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+            if (dataIniIso && d < dataIniIso) return false;
+            if (dataFimIso && d > dataFimIso) return false;
+            return true;
+        };
+
+        const vendasContexto = (Array.isArray(dados) ? dados : []).filter(row => {
+            if (!dentroPeriodo(row?.data)) return false;
+            if (lojaSelecionada && lojaSelecionada !== '__todas' && !mesmaLoja(row?.loja_conta, lojaSelecionada)) return false;
+            if (unidadeSel && unidadeSel !== '__todos' && !mesmaUnidade(row?.unidade_negocio, unidadeSel)) return false;
+            if (vendaEhEbazarSomatorio(row)) return false;
+            return true;
+        });
+
+        const devolContexto = (Array.isArray(devolucaoItens) ? devolucaoItens : []).filter(dev => {
+            if (!dentroPeriodo(dev?.data_emissao)) return false;
+            if (lojaSelecionada && lojaSelecionada !== '__todas' && !mesmaLoja(dev?.loja_conta, lojaSelecionada)) return false;
+            if (unidadeSel && unidadeSel !== '__todos') {
+                const uv = normalizarChaveFiltro(dev?.unidade_negocio_virtual || dev?.unidade_negocio || '', true);
+                if (uv !== normalizarChaveFiltro(unidadeSel, true)) return false;
+            }
+            return true;
+        });
+
+        const mapaVendidos = {};
+        vendasContexto.forEach(v => {
+            const sku = String(v?.sku || 'N/D');
+            if (!mapaVendidos[sku]) {
+                mapaVendidos[sku] = { sku, produto: String(v?.produto || '-'), itens: 0, valor: 0, pedidos: 0 };
+            }
+            mapaVendidos[sku].itens += Number(v?.quantidade || 0);
+            mapaVendidos[sku].valor += Number(v?.valor || 0);
+            mapaVendidos[sku].pedidos += 1;
+        });
+        const vendidosOrdenados = Object.values(mapaVendidos).sort((a, b) => (b.itens - a.itens) || (b.valor - a.valor));
+        const topVendido = vendidosOrdenados[0] || null;
+
+        const mapaDevol = {};
+        devolContexto.forEach(dv => {
+            const sku = String(dv?.sku || 'N/D');
+            if (!mapaDevol[sku]) {
+                mapaDevol[sku] = { sku, produto: String(dv?.descricao || '-'), itens: 0, valor: 0, ocorrencias: 0 };
+            }
+            mapaDevol[sku].itens += Number(dv?.quantidade || 0);
+            mapaDevol[sku].valor += Number(dv?.valor_total || 0);
+            mapaDevol[sku].ocorrencias += 1;
+        });
+        const devolOrdenados = Object.values(mapaDevol)
+            .map(item => {
+                const vendidosSku = Number(mapaVendidos[item.sku]?.itens || 0);
+                const taxaSku = vendidosSku > 0 ? (Number(item.itens || 0) / vendidosSku) * 100 : 0;
+                return { ...item, taxa: taxaSku };
+            })
+            .sort((a, b) => (b.taxa - a.taxa) || (b.itens - a.itens) || (b.valor - a.valor));
+        const skusComDevolucao = new Set(Object.keys(mapaDevol));
+        const vendidosComDevolOrdenados = Object.values(mapaVendidos)
+            .filter(item => skusComDevolucao.has(item.sku))
+            .sort((a, b) => (Number(b.itens || 0) - Number(a.itens || 0)) || (Number(b.valor || 0) - Number(a.valor || 0)));
+        const topDevol = devolOrdenados[0] || null;
+
+        rankingVendidosTop5 = vendidosOrdenados.slice(0, 5);
+        rankingDevolTop5 = devolOrdenados.slice(0, 5);
+        rankingVendidosTop20 = vendidosOrdenados.slice(0, 20);
+        rankingDevolTop20 = devolOrdenados.slice(0, 20);
+        rankingVendidosComDevolTodos = vendidosComDevolOrdenados;
+        rankingDevolTodos = devolOrdenados;
+        renderRankingSidebarVendas();
+
+        const qtdDevolTotalContexto = devolContexto.reduce((acc, cur) => acc + Number(cur?.quantidade || 0), 0);
+        const qtdVendasContexto = vendasContexto.reduce((acc, cur) => acc + Number(cur?.quantidade || 0), 0);
+        const taxaContexto = qtdVendasContexto > 0 ? (qtdDevolTotalContexto / qtdVendasContexto) * 100 : 0;
+
+        const obsCards = `
+            <div class="sidebar-obs-card sidebar-obs-vendas">
+                <div class="sidebar-obs-label">💰 Total Vendido</div>
+                <div class="sidebar-obs-valor">${Math.round(totalQtdV).toLocaleString('pt-BR')} item(ns)</div>
+                <div class="sidebar-obs-detalhe">${totalValV.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-devolucao">
+                <div class="sidebar-obs-label">📦 Total Devolvido</div>
+                <div class="sidebar-obs-valor">${Math.round(totalQtdD).toLocaleString('pt-BR')} item(ns)</div>
+                <div class="sidebar-obs-detalhe">${totalValD.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-devolucao">
+                <div class="sidebar-obs-label">📊 Taxa Devolução</div>
+                <div class="sidebar-obs-valor">${taxaContexto.toFixed(1).replace('.', ',')}%</div>
+                <div class="sidebar-obs-detalhe">por quantidade</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-neutro">
+                <div class="sidebar-obs-label">📈 Maior Pico</div>
+                <div class="sidebar-obs-valor">${periodoPico}</div>
+                <div class="sidebar-obs-detalhe">${metricaGrafico === 'quantidade' ? 'por quantidade' : 'por valor'}</div>
+            </div>
+        `;
+
+        graficoObservacoesVendas.innerHTML = obsCards;
     }
 
     function aplicarFiltroTempoDoGrafico(labelOriginal) {
@@ -2115,6 +3804,52 @@
         atualizarPeriodoComRecarregamento(true);
     }
 
+    function deslocarAnoIso(dataIso, deltaAnos) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dataIso || '')) return '';
+        const [anoStr, mesStr, diaStr] = dataIso.split('-');
+        const ano = Number(anoStr) + Number(deltaAnos || 0);
+        const mes = Number(mesStr);
+        const dia = Number(diaStr);
+        const ultimoDia = new Date(ano, mes, 0).getDate();
+        const diaAjustado = Math.min(dia, ultimoDia);
+        return `${String(ano).padStart(4, '0')}-${String(mes).padStart(2, '0')}-${String(diaAjustado).padStart(2, '0')}`;
+    }
+
+    function labelAnoAnterior(labelAtual) {
+        const raw = String(labelAtual || '').trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+            return deslocarAnoIso(raw, -1);
+        }
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+            const [dd, mm, yyyy] = raw.split('/');
+            const iso = `${yyyy}-${mm}-${dd}`;
+            const isoPrev = deslocarAnoIso(iso, -1);
+            if (!isoPrev) return raw;
+            const [ay, am, ad] = isoPrev.split('-');
+            return `${ad}/${am}/${ay}`;
+        }
+        const m = raw.match(/^([A-Za-zÀ-ÿ]{3})\/(\d{4})$/);
+        if (m) {
+            return `${m[1]}/${String(Number(m[2]) - 1)}`;
+        }
+        return raw;
+    }
+
+    function alinharSerieComparativa(labelsBase, labelsComparativo, serieComparativo) {
+        const base = Array.isArray(labelsBase) ? labelsBase : [];
+        const compLabels = Array.isArray(labelsComparativo) ? labelsComparativo : [];
+        const compSerie = Array.isArray(serieComparativo) ? serieComparativo : [];
+        const indicePorLabel = new Map();
+        compLabels.forEach((lb, idx) => indicePorLabel.set(String(lb), idx));
+
+        return base.map((lb, idxBase) => {
+            const chavePrev = labelAnoAnterior(lb);
+            const idxComp = indicePorLabel.has(chavePrev) ? indicePorLabel.get(chavePrev) : idxBase;
+            const valor = compSerie[idxComp];
+            return Number.isFinite(Number(valor)) ? Number(valor) : 0;
+        });
+    }
+
     async function carregarGrafico() {
         const tokenAtual = ++carregarGraficoToken;
         try {
@@ -2146,11 +3881,53 @@
             });
             const data = await response.json();
 
+            let dataComparativo = null;
+            if (compararAnoPassado && getDataIniISO() && getDataFimISO()) {
+                const iniComp = deslocarAnoIso(getDataIniISO(), -1);
+                const fimComp = deslocarAnoIso(getDataFimISO(), -1);
+                if (iniComp && fimComp) {
+                    const paramsComp = new URLSearchParams({
+                        periodo: periodoGrafico,
+                        intervalo: intervaloGrafico,
+                        data_inicio: iniComp,
+                        data_fim: fimComp
+                    });
+                    if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                        paramsComp.append('loja', lojaSelecionada);
+                    }
+                    if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                        paramsComp.append('unidade_negocio', unidadeNegocioSelect.value);
+                    }
+                    if (skuAtualGrafico) {
+                        paramsComp.append('sku', skuAtualGrafico);
+                    }
+
+                    const respComp = await fetchComTimeout(`/api/vendas/grafico?${paramsComp.toString()}`, {
+                        headers: obterAuthHeaders(),
+                        cache: 'no-store'
+                    });
+                    if (respComp.ok) {
+                        dataComparativo = await respComp.json();
+                    }
+                }
+            }
+
             if (tokenAtual !== carregarGraficoToken) return;
 
-            renderizarGrafico(data);
+            renderizarGrafico(data, dataComparativo);
+            atualizarObservacoesGraficoVendas(data);
+            carregarOciososSidebarVendas();
         } catch (error) {
             console.error('Erro ao carregar gráfico:', error);
+            if (graficoObservacoesVendas) {
+                graficoObservacoesVendas.innerHTML = '<li>Não foi possível carregar observações do gráfico.</li>';
+            }
+            if (graficoRankingVendas) {
+                graficoRankingVendas.innerHTML = '<li>Não foi possível carregar o ranking de SKUs.</li>';
+            }
+            if (graficoOciososVendas) {
+                graficoOciososVendas.innerHTML = '<li>Não foi possível carregar SKUs ociosos.</li>';
+            }
         }
     }
 
@@ -2174,7 +3951,7 @@
         return { labels: labelsCompactos, series: seriesCompactas };
     }
 
-    function renderizarGrafico(data) {
+    function renderizarGrafico(data, dataComparativo = null) {
         const ctx = document.getElementById('graficoVendas').getContext('2d');
         const mostrarDevolucoesGrafico = true;
         
@@ -2196,6 +3973,12 @@
         const qtdVendasOrig = data.quantidades_vendas || [];
         const qtdDevOrig = data.quantidades_devolucoes || [];
 
+        const labelsCompOrig = dataComparativo?.labels || [];
+        const valoresVendasCompOrig = dataComparativo?.valores_vendas || [];
+        const valoresDevCompOrig = dataComparativo?.valores_devolucoes || [];
+        const qtdVendasCompOrig = dataComparativo?.quantidades_vendas || [];
+        const qtdDevCompOrig = dataComparativo?.quantidades_devolucoes || [];
+
         const compactado = compactarDadosGrafico(labelsOriginais, [
             valoresVendasOrig,
             valoresDevOrig,
@@ -2208,10 +3991,18 @@
         const valoresDevolucoes = compactado.series[1] || [];
         const quantidadesVendas = compactado.series[2] || [];
         const quantidadesDevolucoes = compactado.series[3] || [];
+        const usandoQuantidade = metricaGrafico === 'quantidade';
+        const vendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdVendasCompOrig : valoresVendasCompOrig);
+        const devolCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdDevCompOrig : valoresDevCompOrig);
+        const qtdVendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, qtdVendasCompOrig);
+        const qtdDevolCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, qtdDevCompOrig);
+        const vendasCompRender = compactarDadosGrafico(labelsOriginais, [vendasCompAlinhadas], 160).series[0] || [];
+        const devolCompRender = compactarDadosGrafico(labelsOriginais, [devolCompAlinhadas], 160).series[0] || [];
+        const qtdVendasCompRender = compactarDadosGrafico(labelsOriginais, [qtdVendasCompAlinhadas], 160).series[0] || [];
+        const qtdDevolCompRender = compactarDadosGrafico(labelsOriginais, [qtdDevolCompAlinhadas], 160).series[0] || [];
         const graficoPesado = labelsRender.length > 120;
 
         // Preparar dados com quantidades como metadados
-        const usandoQuantidade = metricaGrafico === 'quantidade';
         const datasetsVendas = {
             label: usandoQuantidade ? 'Vendas (Qtd)' : 'Vendas (R$)',
             data: usandoQuantidade ? quantidadesVendas : valoresVendas,
@@ -2234,9 +4025,43 @@
             quantidades: quantidadesDevolucoes // Armazenar quantidades como metadado
         };
 
+        const datasetsVendasAnoPassado = {
+            label: usandoQuantidade ? 'Vendas ano passado (Qtd)' : 'Vendas ano passado (R$)',
+            data: vendasCompRender,
+            backgroundColor: 'rgba(110, 196, 255, 0.05)',
+            borderColor: 'rgba(110, 196, 255, 0.95)',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            borderDash: [8, 5],
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            quantidades: qtdVendasCompRender
+        };
+
+        const datasetsDevolAnoPassado = {
+            label: usandoQuantidade ? 'Devoluções ano passado (Qtd)' : 'Devoluções ano passado (R$)',
+            data: devolCompRender,
+            backgroundColor: 'rgba(255, 130, 130, 0.05)',
+            borderColor: 'rgba(255, 130, 130, 0.95)',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            borderDash: [8, 5],
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            quantidades: qtdDevolCompRender
+        };
+
         const datasets = [datasetsVendas];
         if (mostrarDevolucoesGrafico) {
             datasets.push(datasetsDevol);
+        }
+        if (compararAnoPassado && dataComparativo) {
+            datasets.push(datasetsVendasAnoPassado);
+            if (mostrarDevolucoesGrafico) {
+                datasets.push(datasetsDevolAnoPassado);
+            }
         }
 
         const unidadesNoTopoPlugin = {
@@ -2469,6 +4294,7 @@
             this.classList.add('active');
             metricaGrafico = this.dataset.metrica;
             salvarPreferenciaGrafico();
+            filtrar();
             carregarGrafico();
         });
     });
@@ -2500,8 +4326,1021 @@
         });
     });
 
+    if (compareAnoPassado) {
+        compareAnoPassado.addEventListener('change', function() {
+            compararAnoPassado = Boolean(this.checked);
+            salvarPreferenciaGrafico();
+            carregarGrafico();
+        });
+    }
+
+    function abrirSidebarVendas() {
+        if (!graficosContainerVendas) return;
+        graficosContainerVendas.classList.remove('observacoes-fechado');
+        document.body.classList.add('sidebar-observacoes-aberto');
+        document.querySelectorAll('.back-main-btn').forEach(btn => {
+            btn.style.display = 'none';
+            btn.style.visibility = 'hidden';
+            btn.style.pointerEvents = 'none';
+        });
+    }
+
+    function fecharSidebarVendas() {
+        if (!graficosContainerVendas) return;
+        graficosContainerVendas.classList.add('observacoes-fechado');
+        document.body.classList.remove('sidebar-observacoes-aberto');
+        document.querySelectorAll('.back-main-btn').forEach(btn => {
+            btn.style.display = '';
+            btn.style.visibility = '';
+            btn.style.pointerEvents = '';
+        });
+    }
+
+    function alternarAbaSidebarVendas(aba, forcarFechamentoSeAtiva = false) {
+        const assistenteAtivo = aba === 'assistente';
+        const painelAtivo = assistenteAtivo
+            ? sidebarPainelAssistenteVendas?.classList.contains('active')
+            : sidebarPainelObservacoesVendas?.classList.contains('active');
+        const sidebarAberto = !graficosContainerVendas?.classList.contains('observacoes-fechado');
+
+        if (forcarFechamentoSeAtiva && painelAtivo && sidebarAberto) {
+            fecharSidebarVendas();
+            return;
+        }
+
+        btnSidebarObservacoesVendas?.classList.toggle('active', !assistenteAtivo);
+        btnSidebarAssistenteVendas?.classList.toggle('active', assistenteAtivo);
+        btnSidebarObservacoesVendas?.setAttribute('aria-selected', String(!assistenteAtivo));
+        btnSidebarAssistenteVendas?.setAttribute('aria-selected', String(assistenteAtivo));
+        sidebarPainelObservacoesVendas?.classList.toggle('active', !assistenteAtivo);
+        sidebarPainelAssistenteVendas?.classList.toggle('active', assistenteAtivo);
+        abrirSidebarVendas();
+    }
+
+    function escaparHtmlAssistenteVendas(texto) {
+        return String(texto || '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+    }
+
+    function formatarMarkdownBasicoAssistenteVendas(texto) {
+        const bruto = String(texto || '').replace(/\r\n?/g, '\n');
+        if (!bruto.trim()) return '';
+
+        function safeHref(url) {
+            const href = String(url || '').trim();
+            if (/^(https?:\/\/|mailto:|tel:|\/|#)/i.test(href)) {
+                return escaparHtmlAssistenteVendas(href).replace(/"/g, '&quot;');
+            }
+            return '';
+        }
+
+        function renderLink(label, url) {
+            const href = safeHref(url);
+            if (!href) return label;
+            return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        }
+
+        function normalizarUrlImagemAssistente(url) {
+            let src = String(url || '').trim();
+            if (!src) return '';
+            src = src.replace(/^["'`]+|["'`]+$/g, '');
+            if (/^cadastro_fotos\//i.test(src)) src = src.split('/').pop();
+            if (/^[^\/\\]+\.(?:png|jpe?g|gif|webp|bmp)$/i.test(src)) {
+                src = `/api/cadastro/foto-arquivo/${encodeURIComponent(src)}`;
+            }
+            if (/^(https?:\/\/|\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/)/i.test(src)) {
+                return escaparHtmlAssistenteVendas(src).replace(/"/g, '&quot;');
+            }
+            return '';
+        }
+
+        function renderImagemAssistente(alt, url) {
+            const src = normalizarUrlImagemAssistente(url);
+            if (!src) return '';
+            const altSeguro = escaparHtmlAssistenteVendas(alt || 'Imagem do SKU');
+            return `<a class="sidebar-ai-img-link" href="${src}" target="_blank" rel="noopener noreferrer"><img class="sidebar-ai-img" src="${src}" alt="${altSeguro}" loading="lazy"></a>`;
+        }
+
+        function obterExtensaoArquivoAssistente(url) {
+            const limpo = String(url || '').split('?')[0].split('#')[0];
+            const match = limpo.match(/\.([a-z0-9]{2,8})$/i);
+            return match ? match[1].toUpperCase() : 'FILE';
+        }
+
+        function normalizarUrlArquivoAssistente(url) {
+            const href = safeHref(url);
+            if (!href) return '';
+            if (normalizarUrlImagemAssistente(url)) return '';
+            const alvo = String(url || '').split('?')[0].split('#')[0];
+            const ehArquivo = /\.(?:pdf|xlsx?|csv|docx?|pptx?|txt|json|xml|md|log|zip|rar|7z)$/i.test(alvo)
+                || /\/download(?:\/|$)/i.test(alvo);
+            if (!ehArquivo) return '';
+            return href;
+        }
+
+        function renderArquivoAssistente(label, url) {
+            const href = normalizarUrlArquivoAssistente(url);
+            if (!href) return '';
+            const nomeBruto = String(label || '').trim() || decodeURIComponent(String(url || '').split('/').pop() || 'Arquivo');
+            const nome = escaparHtmlAssistenteVendas(nomeBruto);
+            const ext = escaparHtmlAssistenteVendas(obterExtensaoArquivoAssistente(url));
+            const acao = ext === 'PDF' ? 'Abrir PDF' : 'Abrir arquivo';
+            return `<a class="sidebar-ai-file-card" href="${href}" target="_blank" rel="noopener noreferrer"><span class="sidebar-ai-file-icon">${ext}</span><span class="sidebar-ai-file-info"><span class="sidebar-ai-file-name">${nome}</span><span class="sidebar-ai-file-action">${acao}</span></span></a>`;
+        }
+
+        function inlineMd(input) {
+            let s = escaparHtmlAssistenteVendas(input || '');
+            const codigos = [];
+            s = s.replace(/`([^`]+)`/g, (_, code) => {
+                const imagem = renderImagemAssistente('Imagem do SKU', code);
+                const arquivo = renderArquivoAssistente(code, code);
+                const id = codigos.push(imagem || arquivo || `<code>${code}</code>`) - 1;
+                return `\u0000CODE${id}\u0000`;
+            });
+            s = s.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (_, alt, url) => renderImagemAssistente(alt, url) || '');
+            s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label, url) => renderImagemAssistente(label, url) || renderArquivoAssistente(label, url) || renderLink(label, url));
+            s = s.replace(/(^|[\s>])((?:cadastro_fotos\/)?[^\/\\\s<]+\.(?:png|jpe?g|gif|webp|bmp))/gi, (_, prefix, url) => {
+                const imagem = renderImagemAssistente('Imagem do SKU', url);
+                return imagem ? `${prefix}${imagem}` : `${prefix}${url}`;
+            });
+            s = s.replace(/(^|[\s>])((?:\/api\/cadastro\/foto-arquivo\/|\/api\/cadastro\/foto\/|\/api\/ia\/imagens\/|\/img\/|https?:\/\/)[^\s<]+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<]+)?)/gi, (_, prefix, url) => {
+                const imagem = renderImagemAssistente('Imagem do SKU', url);
+                return imagem ? `${prefix}${imagem}` : `${prefix}${url}`;
+            });
+            s = s.replace(/(^|[\s>])((?:\/api\/|\/static\/|\/img\/|https?:\/\/)[^\s<]+\.(?:pdf|xlsx?|csv|docx?|pptx?|txt|json|xml|md|log|zip|rar|7z)(?:\?[^\s<]+)?)/gi, (_, prefix, url) => {
+                const arquivo = renderArquivoAssistente(url.split('/').pop(), url);
+                return arquivo ? `${prefix}${arquivo}` : `${prefix}${url}`;
+            });
+            s = s.replace(/(^|[\s(])((?:https?:\/\/)[^\s<)]+)/g, (_, prefix, url) => `${prefix}${renderLink(url, url)}`);
+            s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            s = s.replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+            s = s.replace(/\u0000CODE(\d+)\u0000/g, (_, idx) => codigos[Number(idx)] || '');
+            return s;
+        }
+
+        function renderLinhaMidiaAssistente(linha) {
+            const texto = String(linha || '').trim();
+            let match = texto.match(/^!\[([^\]\n]*)\]\(([^)\s]+)\)$/);
+            if (match) return renderImagemAssistente(match[1], match[2]);
+            match = texto.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)$/);
+            if (match) return renderImagemAssistente(match[1], match[2]) || renderArquivoAssistente(match[1], match[2]);
+            return renderImagemAssistente('Imagem gerada', texto) || renderArquivoAssistente(texto.split('/').pop(), texto);
+        }
+
+        function splitPipeRow(line) {
+            const raw = String(line || '').trim();
+            const semBorda = raw.replace(/^\|/, '').replace(/\|$/, '');
+            return semBorda.split('|').map(c => inlineMd(c.trim()));
+        }
+
+        function isTableSep(line) {
+            const raw = String(line || '').trim();
+            if (!raw.includes('|')) return false;
+            const semBorda = raw.replace(/^\|/, '').replace(/\|$/, '');
+            const cols = semBorda.split('|').map(c => c.trim());
+            if (!cols.length) return false;
+            return cols.every(c => /^:?-{3,}:?$/.test(c));
+        }
+
+        const lines = bruto.split('\n');
+        const out = [];
+        let i = 0;
+
+        while (i < lines.length) {
+            const line = lines[i] || '';
+            const trim = line.trim();
+
+            if (!trim) {
+                i += 1;
+                continue;
+            }
+
+            const midiaHtml = renderLinhaMidiaAssistente(trim);
+            if (midiaHtml) {
+                out.push(midiaHtml);
+                i += 1;
+                continue;
+            }
+
+            if (/^```/.test(trim)) {
+                const code = [];
+                i += 1;
+                while (i < lines.length && !/^```/.test((lines[i] || '').trim())) {
+                    code.push(lines[i] || '');
+                    i += 1;
+                }
+                if (i < lines.length) i += 1;
+                out.push(`<pre><code>${escaparHtmlAssistenteVendas(code.join('\n'))}</code></pre>`);
+                continue;
+            }
+
+            if (trim.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+                const header = splitPipeRow(lines[i]);
+                i += 2;
+                const bodyRows = [];
+                while (i < lines.length) {
+                    const rowLine = (lines[i] || '').trim();
+                    if (!rowLine || !rowLine.includes('|') || isTableSep(rowLine)) break;
+                    bodyRows.push(splitPipeRow(lines[i]));
+                    i += 1;
+                }
+                const headHtml = `<thead><tr>${header.map(c => `<th>${c}</th>`).join('')}</tr></thead>`;
+                const bodyHtml = bodyRows.length
+                    ? `<tbody>${bodyRows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>`
+                    : '';
+                out.push(`<table>${headHtml}${bodyHtml}</table>`);
+                continue;
+            }
+
+            if (/^#{1,4}\s+/.test(trim)) {
+                const nivel = Math.min(4, (trim.match(/^#+/) || ['#'])[0].length);
+                const textoTitulo = trim.replace(/^#{1,6}\s+/, '');
+                out.push(`<h${nivel}>${inlineMd(textoTitulo)}</h${nivel}>`);
+                i += 1;
+                continue;
+            }
+
+            if (/^>\s?/.test(trim)) {
+                out.push(`<blockquote>${inlineMd(trim.replace(/^>\s?/, ''))}</blockquote>`);
+                i += 1;
+                continue;
+            }
+
+            if (/^(-{3,}|\*{3,}|_{3,})$/.test(trim)) {
+                out.push('<hr>');
+                i += 1;
+                continue;
+            }
+
+            if (/^[-*+]\s+\[[ xX]\]\s+/.test(trim)) {
+                const itens = [];
+                while (i < lines.length && /^\s*[-*+]\s+\[[ xX]\]\s+/.test((lines[i] || '').trim())) {
+                    const itemRaw = (lines[i] || '').trim();
+                    const checked = /^\s*[-*+]\s+\[[xX]\]\s+/.test(itemRaw);
+                    const itemTxt = itemRaw.replace(/^[-*+]\s+\[[ xX]\]\s+/, '');
+                    itens.push(`<li class="sidebar-ai-task-item"><input type="checkbox" disabled${checked ? ' checked' : ''}> <span>${inlineMd(itemTxt)}</span></li>`);
+                    i += 1;
+                }
+                out.push(`<ul class="sidebar-ai-task-list">${itens.join('')}</ul>`);
+                continue;
+            }
+
+            if (/^[-*+]\s+/.test(trim)) {
+                const itens = [];
+                while (i < lines.length && /^\s*[-*+]\s+/.test((lines[i] || '').trim())) {
+                    const itemTxt = (lines[i] || '').trim().replace(/^[-*+]\s+/, '');
+                    itens.push(`<li>${inlineMd(itemTxt)}</li>`);
+                    i += 1;
+                }
+                out.push(`<ul>${itens.join('')}</ul>`);
+                continue;
+            }
+
+            if (/^\d+[.)]\s+/.test(trim)) {
+                const itens = [];
+                while (i < lines.length && /^\s*\d+[.)]\s+/.test((lines[i] || '').trim())) {
+                    const itemTxt = (lines[i] || '').trim().replace(/^\d+[.)]\s+/, '');
+                    itens.push(`<li>${inlineMd(itemTxt)}</li>`);
+                    i += 1;
+                }
+                out.push(`<ol>${itens.join('')}</ol>`);
+                continue;
+            }
+
+            const paragrafo = [];
+            while (i < lines.length) {
+                const atual = (lines[i] || '').trim();
+                if (!atual) break;
+                if (/^```/.test(atual)) break;
+                if (/^#{1,4}\s+/.test(atual)) break;
+                if (/^>\s?/.test(atual)) break;
+                if (/^[-*+]\s+/.test(atual)) break;
+                if (/^\d+[.)]\s+/.test(atual)) break;
+                if (/^(-{3,}|\*{3,}|_{3,})$/.test(atual)) break;
+                if (renderLinhaMidiaAssistente(atual)) break;
+                if (atual.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) break;
+                paragrafo.push(atual);
+                i += 1;
+            }
+            out.push(`<p>${paragrafo.map(linha => inlineMd(linha)).join('<br>')}</p>`);
+        }
+
+        return out.join('');
+    }
+
+    function definirTextoMensagemAssistenteVendas(el, texto, tipo) {
+        if (!el) return;
+        if (tipo === 'assistant') {
+            el.innerHTML = formatarMarkdownBasicoAssistenteVendas(texto || '');
+        } else {
+            el.textContent = texto || '';
+        }
+    }
+
+    function formatarTamanhoBytesAssistenteVendas(bytes) {
+        const n = Number(bytes || 0);
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+        return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function limparAnexosAssistenteVendas() {
+        anexosAssistenteVendas = [];
+        if (sidebarAiAnexosVendas) sidebarAiAnexosVendas.innerHTML = '';
+        if (sidebarAiFileInputVendas) sidebarAiFileInputVendas.value = '';
+    }
+
+    function renderizarAnexosAssistenteVendas() {
+        if (!sidebarAiAnexosVendas) return;
+        sidebarAiAnexosVendas.innerHTML = '';
+        anexosAssistenteVendas.forEach((anexo, idx) => {
+            const item = document.createElement('div');
+            item.className = 'sidebar-ai-anexo-item';
+
+            const nome = document.createElement('span');
+            nome.title = anexo.name || 'anexo';
+            nome.textContent = `${anexo.name || 'anexo'} (${formatarTamanhoBytesAssistenteVendas(anexo.size)})`;
+
+            const btnRemover = document.createElement('button');
+            btnRemover.className = 'sidebar-ai-anexo-remover';
+            btnRemover.type = 'button';
+            btnRemover.setAttribute('aria-label', `Remover anexo ${anexo.name || ''}`);
+            btnRemover.textContent = '×';
+            btnRemover.addEventListener('click', () => {
+                anexosAssistenteVendas.splice(idx, 1);
+                renderizarAnexosAssistenteVendas();
+            });
+
+            item.appendChild(nome);
+            item.appendChild(btnRemover);
+            sidebarAiAnexosVendas.appendChild(item);
+        });
+    }
+
+    function lerArquivoComoBase64AssistenteVendas(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const raw = String(reader.result || '');
+                const b64 = raw.includes(',') ? raw.split(',')[1] : '';
+                resolve(b64 || '');
+            };
+            reader.onerror = () => reject(new Error(`Falha ao ler arquivo: ${file?.name || ''}`));
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function adicionarArquivosAssistenteVendas(fileList) {
+        const arquivos = Array.from(fileList || []);
+        if (!arquivos.length) return;
+
+        for (const file of arquivos) {
+            if (anexosAssistenteVendas.length >= IA_MAX_ANEXOS) {
+                alert(`Limite de ${IA_MAX_ANEXOS} anexos por mensagem.`);
+                break;
+            }
+            if ((file?.size || 0) > IA_MAX_ANEXO_BYTES) {
+                alert(`Arquivo muito grande: ${file.name}. Máximo por arquivo: ${formatarTamanhoBytesAssistenteVendas(IA_MAX_ANEXO_BYTES)}.`);
+                continue;
+            }
+            try {
+                const dataBase64 = await lerArquivoComoBase64AssistenteVendas(file);
+                if (!dataBase64) continue;
+                anexosAssistenteVendas.push({
+                    name: file.name || 'anexo',
+                    mime_type: file.type || 'application/octet-stream',
+                    data_base64: dataBase64,
+                    size: file.size || 0
+                });
+            } catch (e) {
+                console.warn('[IA] Falha ao anexar arquivo:', e);
+            }
+        }
+
+        renderizarAnexosAssistenteVendas();
+        if (sidebarAiFileInputVendas) sidebarAiFileInputVendas.value = '';
+    }
+
+    function adicionarMensagemAssistenteVendas(tipo, texto) {
+        if (!sidebarAiChatVendas) return;
+        const msg = document.createElement('div');
+        msg.className = `sidebar-ai-msg ${tipo}`;
+        definirTextoMensagemAssistenteVendas(msg, texto, tipo);
+        if (tipo === 'assistant' && /consultando/i.test(texto)) {
+            msg.classList.add('loading');
+        }
+        sidebarAiChatVendas.appendChild(msg);
+        sidebarAiChatVendas.scrollTop = sidebarAiChatVendas.scrollHeight;
+        if (tipo !== 'assistant' || !/pensando/i.test(texto)) {
+            iaMensagensAtuais.push({ role: tipo, text: texto });
+            _iaSalvarMsgsAtuais();
+        }
+        return msg;
+    }
+
+    function obterChaveMesAssistenteVendas(valor) {
+        const texto = String(valor || '').trim();
+        let match = texto.match(/^(\d{4})-(\d{2})/);
+        if (match) return `${match[1]}-${match[2]}`;
+        match = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+        if (match) return `${match[3]}-${match[2]}`;
+        return '';
+    }
+
+    function arredondarNumeroAssistenteVendas(valor) {
+        return Number(Number(valor || 0).toFixed(2));
+    }
+
+    function topItensAssistenteVendas(mapa, campoQtd, campoValor, limite = 5) {
+        return Object.values(mapa || {})
+            .sort((a, b) => {
+                const diffQtd = Number(b[campoQtd] || 0) - Number(a[campoQtd] || 0);
+                if (diffQtd !== 0) return diffQtd;
+                const diffValor = Number(b[campoValor] || 0) - Number(a[campoValor] || 0);
+                if (diffValor !== 0) return diffValor;
+                return String(a.sku || '').localeCompare(String(b.sku || ''), 'pt-BR');
+            })
+            .slice(0, limite)
+            .map(item => ({
+                ...item,
+                [campoQtd]: arredondarNumeroAssistenteVendas(item[campoQtd]),
+                [campoValor]: arredondarNumeroAssistenteVendas(item[campoValor])
+            }));
+    }
+
+    function obterDevolucoesAtivasAssistenteVendas() {
+        const unidadeSel = unidadeNegocioSelect?.value || '__todos';
+        const devolucoesPorLoja = (lojaSelecionada && lojaSelecionada !== '__todas')
+            ? (devolucaoItens || []).filter(dev => mesmaLoja(dev.loja_conta, lojaSelecionada))
+            : (devolucaoItens || []);
+
+        if (!unidadeSel || unidadeSel === '__todos') return devolucoesPorLoja;
+
+        const unidadeAlvo = normalizarChaveFiltro(unidadeSel, true);
+        return devolucoesPorLoja.filter(dev => {
+            const unidadeDev = normalizarChaveFiltro(
+                dev?.unidade_negocio_virtual || dev?.unidade_negocio || '',
+                true
+            );
+            return unidadeDev === unidadeAlvo;
+        });
+    }
+
+    function montarAnaliseMensalAssistenteVendas() {
+        const meses = {};
+        const garantirMes = (mes) => {
+            if (!meses[mes]) {
+                meses[mes] = {
+                    mes_ano: mes,
+                    pedidos_total: 0,
+                    quantidade_vendida: 0,
+                    valor_vendido: 0,
+                    quantidade_devolvida: 0,
+                    valor_devolvido: 0,
+                    skus_vendidos: {},
+                    skus_devolvidos: {}
+                };
+            }
+            return meses[mes];
+        };
+
+        (Array.isArray(dadosFiltrados) ? dadosFiltrados : []).forEach(r => {
+            if (typeof vendaEhEbazarSomatorio === 'function' && vendaEhEbazarSomatorio(r)) return;
+            const sku = String(r?.sku || '').trim();
+            const produto = String(r?.produto || '').trim();
+            if (sku.toLowerCase() === 'sku' && produto.toLowerCase() === 'produto') return;
+            const mes = obterChaveMesAssistenteVendas(r?.data);
+            if (!mes) return;
+            const qtd = Number(r?.quantidade || 0);
+            const valor = Number(r?.valor || 0);
+            const atual = garantirMes(mes);
+            atual.pedidos_total += 1;
+            atual.quantidade_vendida += qtd;
+            atual.valor_vendido += valor;
+
+            const chaveSku = sku || 'N/D';
+            if (!atual.skus_vendidos[chaveSku]) {
+                atual.skus_vendidos[chaveSku] = {
+                    sku: chaveSku,
+                    produto: produto || '-',
+                    quantidade_vendida: 0,
+                    valor_vendido: 0
+                };
+            }
+            atual.skus_vendidos[chaveSku].quantidade_vendida += qtd;
+            atual.skus_vendidos[chaveSku].valor_vendido += valor;
+        });
+
+        obterDevolucoesAtivasAssistenteVendas().forEach(dev => {
+            const mes = obterChaveMesAssistenteVendas(dev?.data_emissao || dev?.data);
+            if (!mes) return;
+            const qtd = Number(dev?.quantidade || 0);
+            const valor = Number(dev?.valor_total || 0);
+            const sku = String(dev?.sku || '').trim() || 'N/D';
+            const produto = String(dev?.descricao || dev?.produto || '').trim() || '-';
+            const atual = garantirMes(mes);
+            atual.quantidade_devolvida += qtd;
+            atual.valor_devolvido += valor;
+
+            if (!atual.skus_devolvidos[sku]) {
+                atual.skus_devolvidos[sku] = {
+                    sku,
+                    produto,
+                    quantidade_devolvida: 0,
+                    valor_devolvido: 0
+                };
+            }
+            atual.skus_devolvidos[sku].quantidade_devolvida += qtd;
+            atual.skus_devolvidos[sku].valor_devolvido += valor;
+        });
+
+        const listaMeses = Object.values(meses)
+            .sort((a, b) => String(a.mes_ano).localeCompare(String(b.mes_ano)))
+            .slice(-24)
+            .map(mes => ({
+                mes_ano: mes.mes_ano,
+                pedidos_total: mes.pedidos_total,
+                quantidade_vendida: arredondarNumeroAssistenteVendas(mes.quantidade_vendida),
+                valor_vendido: arredondarNumeroAssistenteVendas(mes.valor_vendido),
+                quantidade_devolvida: arredondarNumeroAssistenteVendas(mes.quantidade_devolvida),
+                valor_devolvido: arredondarNumeroAssistenteVendas(mes.valor_devolvido),
+                top_skus_vendidos: topItensAssistenteVendas(mes.skus_vendidos, 'quantidade_vendida', 'valor_vendido', 5),
+                top_skus_devolvidos: topItensAssistenteVendas(mes.skus_devolvidos, 'quantidade_devolvida', 'valor_devolvido', 5)
+            }));
+
+        if (!listaMeses.length) return null;
+
+        return {
+            mes_campeao_valor: [...listaMeses].sort((a, b) => Number(b.valor_vendido || 0) - Number(a.valor_vendido || 0))[0],
+            mes_campeao_quantidade: [...listaMeses].sort((a, b) => Number(b.quantidade_vendida || 0) - Number(a.quantidade_vendida || 0))[0],
+            top_meses_valor: [...listaMeses].sort((a, b) => Number(b.valor_vendido || 0) - Number(a.valor_vendido || 0)).slice(0, 5),
+            top_meses_quantidade: [...listaMeses].sort((a, b) => Number(b.quantidade_vendida || 0) - Number(a.quantidade_vendida || 0)).slice(0, 5),
+            meses: listaMeses
+        };
+    }
+
+    function obterResumoTelaVendas() {
+        const periodo = periodoTexto?.textContent?.trim() || 'Periodo nao selecionado';
+        const loja = lojaSelecionada === '__todas' ? 'Todas as lojas' : (lojaSelecionada || unidadeNegocioSelect?.value || 'Loja nao selecionada');
+        const totalLinhas = Array.isArray(dadosFiltrados) ? dadosFiltrados.length : 0;
+        const cards = Array.from(resumo?.querySelectorAll('.card') || []).map(card => {
+            const titulo = card.querySelector('h3')?.textContent?.trim();
+            const valor = card.querySelector('.val')?.textContent?.trim();
+            return titulo && valor ? `${titulo}: ${valor}` : '';
+        }).filter(Boolean).slice(0, 5);
+
+        // Agrega SKUs diretamente dos dados filtrados para a IA enxergar ranking completo
+        const skuMap = {};
+        (Array.isArray(dadosFiltrados) ? dadosFiltrados : []).forEach(r => {
+            const sku = r.sku || 'N/D';
+            if (!skuMap[sku]) skuMap[sku] = { sku, produto: r.produto || '', itens: 0, valor: 0 };
+            skuMap[sku].itens += Number(r.quantidade || 0);
+            skuMap[sku].valor += Number(r.valor || 0);
+        });
+        const skusOrdenados = Object.values(skuMap)
+            .sort((a, b) => (b.itens - a.itens) || (b.valor - a.valor));
+        const skusRanking = skusOrdenados.slice(0, 30)
+            .map(s => ({ sku: s.sku, produto: s.produto, qtd_vendida: s.itens, valor_total: parseFloat(s.valor.toFixed(2)) }));
+
+        const ociosos = Array.from(graficoOciososVendas?.querySelectorAll('li') || []).map(li => li.textContent.trim()).filter(Boolean).slice(0, 5);
+
+        return {
+            title: 'Vendas',
+            url: location.pathname,
+            periodo,
+            loja,
+            data_inicio: getDataIniISO() || '',
+            data_fim: getDataFimISO() || '',
+            totalLinhas,
+            cards,
+            skus_ranking: skusRanking,
+            analise_mensal: montarAnaliseMensalAssistenteVendas(),
+            table: ociosos
+        };
+    }
+
+    function obterHistoricoAssistenteVendas() {
+        return Array.from(sidebarAiChatVendas?.querySelectorAll('.sidebar-ai-msg') || []).slice(-8).map((msg) => ({
+            role: msg.classList.contains('user') ? 'user' : 'assistant',
+            content: msg.textContent || ''
+        })).filter((msg) => msg.content.trim());
+    }
+
+    async function chamarAssistenteBackendVendas(pergunta, anexos = []) {
+        const selectModelo = document.getElementById('iaModelSelectVendas');
+        const _modelSel = selectModelo && selectModelo.dataset.podeEscolherModelo === 'true' ? selectModelo.value : '';
+        const payload = JSON.stringify({
+            message: pergunta,
+            page: 'Vendas',
+            model: _modelSel,
+            context: obterResumoTelaVendas(),
+            history: obterHistoricoAssistenteVendas(),
+            attachments: anexos
+        });
+        const urls = ['/api/ia/chat'];
+        if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
+            urls.push('http://127.0.0.1:8012/api/ia/chat');
+        }
+
+        let ultimoErro = null;
+        for (const url of urls) {
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        ...obterAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: payload
+                });
+                let data = null;
+                try {
+                    data = await resp.json();
+                } catch (_e) {
+                    data = null;
+                }
+                if (resp.ok) {
+                    return data?.resposta || 'A IA não retornou resposta.';
+                }
+                ultimoErro = new Error(resp.status === 405
+                    ? 'O servidor local ainda está com uma versão antiga. Reinicie o programa para ativar a IA.'
+                    : (data?.detail || resp.statusText || 'Falha ao consultar o assistente IA.'));
+                if (resp.status !== 405) break;
+            } catch (error) {
+                if (!ultimoErro) ultimoErro = error;
+            }
+        }
+        throw ultimoErro || new Error('Falha ao consultar o assistente IA.');
+    }
+
+    async function enviarPerguntaAssistenteVendas(perguntaManual) {
+        const pergunta = (perguntaManual || sidebarAiInputVendas?.value || '').trim();
+        const anexos = anexosAssistenteVendas.map(({ name, mime_type, data_base64 }) => ({ name, mime_type, data_base64 }));
+        if (!pergunta && !anexos.length) return;
+
+        const perguntaFinal = pergunta || 'Analise os anexos enviados.';
+        const resumoAnexos = anexos.length
+            ? `\n\nAnexos: ${anexos.map(a => a.name).join(', ')}`
+            : '';
+        adicionarMensagemAssistenteVendas('user', `${perguntaFinal}${resumoAnexos}`);
+        if (sidebarAiInputVendas) sidebarAiInputVendas.value = '';
+        limparAnexosAssistenteVendas();
+        const aguardando = adicionarMensagemAssistenteVendas('assistant', 'Pensando...');
+        try {
+            const resposta = await chamarAssistenteBackendVendas(perguntaFinal, anexos);
+            definirTextoMensagemAssistenteVendas(aguardando, resposta, 'assistant');
+            aguardando.classList.remove('loading');
+            // "Pensando..." não entra no array; sempre adiciona a resposta real.
+            iaMensagensAtuais.push({ role: 'assistant', text: resposta });
+            _iaSalvarMsgsAtuais();
+        } catch (error) {
+            definirTextoMensagemAssistenteVendas(aguardando, error?.message === 'Method Not Allowed'
+                ? 'O servidor local ainda está com uma versão antiga. Reinicie o programa para ativar a IA.'
+                : (error?.message || 'Não foi possível consultar a IA.'), 'assistant');
+            aguardando.classList.remove('loading');
+        }
+    }
+
+    function substituirGrupoModelosIA(selectEl, label, modelos) {
+        if (!selectEl || !Array.isArray(modelos) || !modelos.length) return;
+        let grupo = Array.from(selectEl.querySelectorAll('optgroup')).find((el) => el.label === label);
+        if (!grupo) {
+            grupo = document.createElement('optgroup');
+            grupo.label = label;
+            selectEl.appendChild(grupo);
+        }
+        grupo.innerHTML = '';
+        modelos.forEach((item) => {
+            const option = document.createElement('option');
+            option.value = item.name;
+            option.textContent = item.display_name || item.name;
+            if (item.description) option.title = item.description;
+            grupo.appendChild(option);
+        });
+    }
+
+    async function carregarModelosAssistenteVendas() {
+        const selectEl = document.getElementById('iaModelSelectVendas');
+        if (!selectEl) return;
+        const valorSalvo = usuarioLocalEhAdminChatVendas() ? (localStorage.getItem('ia_model_vendas') || selectEl.value) : '';
+        const urls = ['/api/ia/modelos'];
+        if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
+            urls.push('http://127.0.0.1:8012/api/ia/modelos');
+        }
+        for (const url of urls) {
+            try {
+                const resp = await fetch(url, {
+                    method: 'GET',
+                    headers: obterAuthHeaders()
+                });
+                if (!resp.ok) {
+                    if (resp.status !== 405) break;
+                    continue;
+                }
+                const data = await resp.json().catch(() => null);
+                if (!data || !data.success) return;
+                const podeEscolher = data.pode_escolher_modelo_chat === true;
+                aplicarPermissaoModeloChatVendas(selectEl, podeEscolher);
+                substituirGrupoModelosIA(selectEl, 'OpenAI', data.openai || []);
+                substituirGrupoModelosIA(selectEl, 'DeepSeek', data.deepseek || []);
+                substituirGrupoModelosIA(selectEl, 'Gemini API', data.gemini || []);
+                substituirGrupoModelosIA(selectEl, 'Vertex AI (Google Cloud)', data.vertex || []);
+                const valores = Array.from(selectEl.options).map(opt => opt.value);
+                const modeloSistema = data?.defaults?.sistema || '';
+                const valorPreferido = podeEscolher && valores.includes(valorSalvo)
+                    ? valorSalvo
+                    : (valores.includes(modeloSistema) ? modeloSistema : selectEl.value);
+                if (valorPreferido) selectEl.value = valorPreferido;
+                return;
+            } catch (_error) {}
+        }
+    }
+
+    btnSidebarObservacoesVendas?.addEventListener('click', () => alternarAbaSidebarVendas('observacoes', true));
+    document.getElementById('btnNovaConvVendas')?.addEventListener('click', iaNovaConversa);
+    document.getElementById('btnHistoricoConvVendas')?.addEventListener('click', iaMostrarHistorico);
+    // Seletor de modelo — persiste preferência no localStorage
+    const _iaModelSel = document.getElementById('iaModelSelectVendas');
+    if (_iaModelSel) {
+        aplicarPermissaoModeloChatVendas(_iaModelSel, usuarioLocalEhAdminChatVendas());
+        if (usuarioLocalEhAdminChatVendas()) {
+            const _savedModel = localStorage.getItem('ia_model_vendas');
+            if (_savedModel) _iaModelSel.value = _savedModel;
+        }
+        _iaModelSel.addEventListener('change', () => {
+            if (_iaModelSel.dataset.podeEscolherModelo === 'true') {
+                localStorage.setItem('ia_model_vendas', _iaModelSel.value);
+            }
+        });
+        carregarModelosAssistenteVendas().catch(() => {});
+    }
+    btnSidebarAssistenteVendas?.addEventListener('click', () => alternarAbaSidebarVendas('assistente', true));
+    btnSidebarAiEnviarVendas?.addEventListener('click', () => enviarPerguntaAssistenteVendas());
+    btnSidebarAiAnexoVendas?.addEventListener('click', () => sidebarAiFileInputVendas?.click());
+    sidebarAiFileInputVendas?.addEventListener('change', async (event) => {
+        await adicionarArquivosAssistenteVendas(event?.target?.files || []);
+    });
+    sidebarAiInputVendas?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            enviarPerguntaAssistenteVendas();
+        }
+    });
+    sidebarAiInputVendas?.addEventListener('paste', (event) => {
+        const items = Array.from(event.clipboardData?.items || []);
+        const imgItems = items.filter(it => it.kind === 'file' && it.type.startsWith('image/'));
+        if (imgItems.length === 0) return;
+        event.preventDefault();
+        const files = imgItems.map(it => it.getAsFile()).filter(Boolean);
+        if (files.length) adicionarArquivosAssistenteVendas(files);
+    });
+    if (graficosContainerVendas && navActionsVendas) {
+        // Inicializa estado dos botões no carregamento
+        graficosContainerVendas.classList.add('observacoes-fechado');
+        document.body.classList.remove('sidebar-observacoes-aberto');
+        
+        // Oculta TODOS os botões .back-main-btn diretamente
+        document.querySelectorAll('.back-main-btn').forEach(btn => {
+            btn.style.display = '';
+            btn.style.visibility = '';
+            btn.style.pointerEvents = '';
+        });
+    }
+
+    // Configurar balão de ranking (abre somente no hover dos botões)
+    const rankingModal = document.getElementById('rankingModal');
+    const rankingModalList = document.getElementById('rankingModalList');
+    const rankingModalTitulo = document.querySelector('#rankingModal .ranking-modal-header span');
+    const graficoSidebarVendas = document.getElementById('graficoSidebarVendas');
+    const graficoSidebarResizerVendas = document.getElementById('graficoSidebarResizerVendas');
+    const SIDEBAR_VENDAS_WIDTH_KEY = 'vendas_sidebar_width_px';
+    const SIDEBAR_VENDAS_MIN_WIDTH = 280;
+    const SIDEBAR_VENDAS_MAX_WIDTH = 720;
+    let sidebarVendasResizeState = null;
+    let rankingHoverHideTimer = null;
+
+    function obterLimitesLarguraSidebarVendas() {
+        const larguraJanela = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+        const limiteTela = Math.max(SIDEBAR_VENDAS_MIN_WIDTH, larguraJanela - 64);
+        return {
+            min: SIDEBAR_VENDAS_MIN_WIDTH,
+            max: Math.max(SIDEBAR_VENDAS_MIN_WIDTH, Math.min(SIDEBAR_VENDAS_MAX_WIDTH, limiteTela))
+        };
+    }
+
+    function normalizarLarguraSidebarVendas(largura) {
+        const limites = obterLimitesLarguraSidebarVendas();
+        const valor = Number(largura);
+        if (!Number.isFinite(valor)) return 320;
+        return Math.max(limites.min, Math.min(limites.max, Math.round(valor)));
+    }
+
+    function aplicarLarguraSidebarVendas(largura, salvar = false) {
+        if (!graficosContainerVendas) return;
+        const larguraFinal = normalizarLarguraSidebarVendas(largura);
+        graficosContainerVendas.style.setProperty('--sidebar-vendas-width', `${larguraFinal}px`);
+        graficoSidebarResizerVendas?.setAttribute('aria-valuenow', String(larguraFinal));
+        if (salvar) {
+            try { localStorage.setItem(SIDEBAR_VENDAS_WIDTH_KEY, String(larguraFinal)); } catch (_) {}
+        }
+    }
+
+    function iniciarResizeSidebarVendas(event) {
+        if (!graficoSidebarVendas || window.matchMedia('(max-width: 980px)').matches) return;
+        const ponto = event.touches?.[0] || event;
+        sidebarVendasResizeState = {
+            startX: ponto.clientX,
+            startWidth: graficoSidebarVendas.getBoundingClientRect().width
+        };
+        document.body.classList.add('sidebar-vendas-resizing');
+        document.addEventListener('mousemove', moverResizeSidebarVendas);
+        document.addEventListener('mouseup', finalizarResizeSidebarVendas);
+        document.addEventListener('touchmove', moverResizeSidebarVendas, { passive: false });
+        document.addEventListener('touchend', finalizarResizeSidebarVendas);
+        document.addEventListener('touchcancel', finalizarResizeSidebarVendas);
+        event.preventDefault();
+    }
+
+    function moverResizeSidebarVendas(event) {
+        if (!sidebarVendasResizeState) return;
+        const ponto = event.touches?.[0] || event;
+        const delta = sidebarVendasResizeState.startX - ponto.clientX;
+        aplicarLarguraSidebarVendas(sidebarVendasResizeState.startWidth + delta);
+        event.preventDefault();
+    }
+
+    function finalizarResizeSidebarVendas() {
+        if (!sidebarVendasResizeState) return;
+        sidebarVendasResizeState = null;
+        document.body.classList.remove('sidebar-vendas-resizing');
+        document.removeEventListener('mousemove', moverResizeSidebarVendas);
+        document.removeEventListener('mouseup', finalizarResizeSidebarVendas);
+        document.removeEventListener('touchmove', moverResizeSidebarVendas);
+        document.removeEventListener('touchend', finalizarResizeSidebarVendas);
+        document.removeEventListener('touchcancel', finalizarResizeSidebarVendas);
+        aplicarLarguraSidebarVendas(graficoSidebarVendas?.getBoundingClientRect().width || 320, true);
+    }
+
+    function configurarResizeSidebarVendas() {
+        if (!graficoSidebarResizerVendas) return;
+        const larguraSalva = localStorage.getItem(SIDEBAR_VENDAS_WIDTH_KEY);
+        aplicarLarguraSidebarVendas(larguraSalva ? Number(larguraSalva) : 320);
+        graficoSidebarResizerVendas.setAttribute('aria-valuemin', String(SIDEBAR_VENDAS_MIN_WIDTH));
+        graficoSidebarResizerVendas.setAttribute('aria-valuemax', String(SIDEBAR_VENDAS_MAX_WIDTH));
+        graficoSidebarResizerVendas.addEventListener('mousedown', iniciarResizeSidebarVendas);
+        graficoSidebarResizerVendas.addEventListener('touchstart', iniciarResizeSidebarVendas, { passive: false });
+        graficoSidebarResizerVendas.addEventListener('keydown', (event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            const atual = graficoSidebarVendas?.getBoundingClientRect().width || 320;
+            let proxima = atual;
+            if (event.key === 'ArrowLeft') proxima = atual + 24;
+            if (event.key === 'ArrowRight') proxima = atual - 24;
+            if (event.key === 'Home') proxima = SIDEBAR_VENDAS_MIN_WIDTH;
+            if (event.key === 'End') proxima = SIDEBAR_VENDAS_MAX_WIDTH;
+            aplicarLarguraSidebarVendas(proxima, true);
+            event.preventDefault();
+        });
+        window.addEventListener('resize', () => aplicarLarguraSidebarVendas(graficoSidebarVendas?.getBoundingClientRect().width || 320, true));
+    }
+
+    configurarResizeSidebarVendas();
+
+    const esconderRankingModal = () => {
+        if (rankingHoverHideTimer) clearTimeout(rankingHoverHideTimer);
+        rankingHoverHideTimer = setTimeout(() => {
+            if (!rankingModal?.matches(':hover')
+                && !btnRankingVendidosVendas?.matches(':hover')
+                && !btnRankingDevolucoesVendas?.matches(':hover')) {
+                rankingModal?.classList.remove('ativo');
+            }
+        }, 120);
+    };
+
+    const posicionarRankingModalAoLado = (botaoAlvo, modo) => {
+        if (!rankingModal) return;
+
+        const sidebarRect = graficoSidebarVendas?.getBoundingClientRect();
+        const botaoRect = botaoAlvo?.getBoundingClientRect();
+        const btnVendidosRect = btnRankingVendidosVendas?.getBoundingClientRect();
+        const btnDevolRect = btnRankingDevolucoesVendas?.getBoundingClientRect();
+        const larguraModal = rankingModal.offsetWidth || 380;
+        const alturaModal = rankingModal.offsetHeight || 420;
+        const gap = 12;
+
+        let left;
+        let top;
+
+        if (modo === 'devolucoes' && btnDevolRect) {
+            // No modo devolucoes, ancora ao lado do botao "Maior devolucao"
+            left = btnDevolRect.left - larguraModal - gap;
+            // E sobe o balao para ficar por cima da faixa do botao "Mais vendidos"
+            top = (btnVendidosRect ? btnVendidosRect.top : btnDevolRect.top) - 18;
+        } else {
+            left = (sidebarRect ? sidebarRect.left : window.innerWidth) - larguraModal - gap;
+            top = botaoRect ? (botaoRect.top - 8) : 120;
+        }
+
+        left = Math.max(12, Math.min(left, window.innerWidth - larguraModal - 12));
+        top = Math.max(12, Math.min(top, window.innerHeight - alturaModal - 12));
+
+        rankingModal.style.left = `${left}px`;
+        rankingModal.style.top = `${top}px`;
+    };
+
+    const mostrarRankingModal = (modo, botaoAlvo) => {
+        if (!rankingModal || !rankingModalList) return;
+        if (rankingHoverHideTimer) clearTimeout(rankingHoverHideTimer);
+
+        rankingSidebarModo = modo;
+        renderRankingSidebarVendas();
+        rankingModalList.innerHTML = modo === 'devolucoes'
+            ? renderizarRankingModalVendas(rankingDevolTodos, 'devolucoes')
+            : renderizarRankingModalVendas(rankingVendidosComDevolTodos, 'vendidos');
+        if (rankingModalTitulo) {
+            rankingModalTitulo.textContent = modo === 'devolucoes'
+                ? '📊 Todos SKUs com devolução - ordem Maior devolução'
+                : '📊 Todos SKUs com devolução - ordem Mais vendidos';
+        }
+
+        rankingModal.classList.toggle('ranking-modal-devolucoes', modo === 'devolucoes');
+
+        rankingModal.classList.add('ativo');
+        posicionarRankingModalAoLado(botaoAlvo, modo);
+    };
+
+    if (btnRankingVendidosVendas) {
+        btnRankingVendidosVendas.addEventListener('mouseenter', () => mostrarRankingModal('vendidos', btnRankingVendidosVendas));
+        btnRankingVendidosVendas.addEventListener('mouseleave', esconderRankingModal);
+        btnRankingVendidosVendas.addEventListener('click', () => {
+            rankingSidebarModo = 'vendidos';
+            renderRankingSidebarVendas();
+        });
+    }
+
+    if (btnRankingDevolucoesVendas) {
+        btnRankingDevolucoesVendas.addEventListener('mouseenter', () => mostrarRankingModal('devolucoes', btnRankingDevolucoesVendas));
+        btnRankingDevolucoesVendas.addEventListener('mouseleave', esconderRankingModal);
+        btnRankingDevolucoesVendas.addEventListener('click', () => {
+            rankingSidebarModo = 'devolucoes';
+            renderRankingSidebarVendas();
+        });
+    }
+
+    if (rankingModal) {
+        rankingModal.addEventListener('mouseenter', () => {
+            if (rankingHoverHideTimer) clearTimeout(rankingHoverHideTimer);
+        });
+        rankingModal.addEventListener('mouseleave', esconderRankingModal);
+        window.addEventListener('resize', () => {
+            if (rankingModal.classList.contains('ativo')) {
+                const botaoAtivo = rankingSidebarModo === 'devolucoes' ? btnRankingDevolucoesVendas : btnRankingVendidosVendas;
+                posicionarRankingModalAoLado(botaoAtivo, rankingSidebarModo);
+            }
+        });
+    }
+
+    if (btnOciosos7d) {
+        btnOciosos7d.addEventListener('click', () => {
+            ociososSidebarModo = '7dias';
+            renderOciososSidebarVendas();
+        });
+    }
+
+    if (btnOciosos15d) {
+        btnOciosos15d.addEventListener('click', () => {
+            ociososSidebarModo = '15dias';
+            renderOciososSidebarVendas();
+        });
+    }
+
+    if (btnOciosos30d) {
+        btnOciosos30d.addEventListener('click', () => {
+            ociososSidebarModo = '30dias';
+            renderOciososSidebarVendas();
+        });
+    }
+
+    if (btnOciosos60d) {
+        btnOciosos60d.addEventListener('click', () => {
+            ociososSidebarModo = '60dias';
+            renderOciososSidebarVendas();
+        });
+    }
+
+    if (btnOciosos90d) {
+        btnOciosos90d.addEventListener('click', () => {
+            ociososSidebarModo = '90dias';
+            renderOciososSidebarVendas();
+        });
+    }
+
     // Carregar lojas e vendas salvas automaticamente
     carregarPreferenciaGrafico();
+        iaRestaurarOuCriarConversa().catch(() => {});
     aplicarPreferenciaGraficoUI();
     carregarLojas()
         .then(async () => {

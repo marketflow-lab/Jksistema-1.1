@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - JK Sistema</title>
+    <script>
+        (function () {
+            const ua = navigator.userAgent || '';
+            const mobileUa = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(ua);
+            const compactScreen = window.matchMedia('(max-width: 920px)').matches;
+            const touch = (navigator.maxTouchPoints || 0) > 0;
+            window.__JK_DASHBOARD_MOBILE__ = mobileUa || (touch && compactScreen);
+        })();
+    </script>
     <style>
         @property --neon-angle {
             syntax: '<angle>';
@@ -23,6 +32,7 @@
             --accent-hover: #3b8de0;
             --danger: #ff6b6b;
             --danger-hover: #e15757;
+            --module-glow: rgba(79, 172, 254, 0.18);
         }
 
         body.dashboard-preload {
@@ -245,6 +255,11 @@
             width: 100%;
         }
 
+        body::selection {
+            background: rgba(79, 172, 254, 0.3);
+            color: #fff;
+        }
+
         body::before,
         body::after {
             content: "";
@@ -282,13 +297,25 @@
             filter: blur(8px);
         }
 
+        .hero {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+
         h1 {
             color: #9bd1ff;
-            text-align: center;
-            margin-bottom: 28px;
+            margin: 0;
             font-size: clamp(1.7rem, 2.8vw, 2.4rem);
             letter-spacing: 0.4px;
             text-shadow: 0 6px 20px rgba(79, 172, 254, 0.2);
+        }
+
+        .subtitle {
+            margin: 8px auto 0;
+            color: var(--muted);
+            font-size: 0.98rem;
+            max-width: 720px;
+            line-height: 1.4;
         }
 
         .grid {
@@ -300,11 +327,13 @@
         .card {
             --module: var(--accent);
             --module-soft: rgba(79, 172, 254, 0.28);
+            --module-glow: rgba(79, 172, 254, 0.18);
+            --module-alt: #cfe8ff;
             --neon-angle: 0deg;
             --neon-a: rgba(0, 191, 255, 0);
             --neon-b: rgba(102, 214, 255, 0);
             background:
-                radial-gradient(circle at 100% -10%, color-mix(in srgb, var(--module) 30%, transparent), transparent 42%),
+                radial-gradient(circle at 100% -10%, var(--module-glow), transparent 44%),
                 linear-gradient(180deg, rgba(18, 27, 42, 0.95), rgba(14, 23, 37, 0.96)) padding-box,
                 conic-gradient(
                     from var(--neon-angle),
@@ -329,10 +358,10 @@
             color: inherit;
             position: relative;
             overflow: hidden;
-            isolation: isolate;
             backdrop-filter: blur(4px);
             will-change: transform;
             opacity: 1;
+            isolation: isolate;
         }
 
         .card::before {
@@ -344,10 +373,23 @@
             height: 3px;
             background: linear-gradient(90deg, transparent, var(--module), transparent);
             opacity: 0.9;
+            z-index: 0;
+            pointer-events: none;
         }
 
         .card::after {
-            display: none;
+            content: "";
+            position: absolute;
+            inset: 1px;
+            border-radius: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .card > * {
+            position: relative;
+            z-index: 1;
         }
 
         .card:hover {
@@ -355,7 +397,7 @@
             --neon-a: rgba(0, 191, 255, 1);
             --neon-b: rgba(102, 214, 255, 0.92);
             background:
-                radial-gradient(circle at 100% -10%, color-mix(in srgb, var(--module) 34%, transparent), transparent 40%),
+                radial-gradient(circle at 100% -10%, var(--module-glow), transparent 40%),
                 linear-gradient(180deg, var(--card-hover), rgba(22, 34, 51, 0.98)) padding-box,
                 conic-gradient(
                     from var(--neon-angle),
@@ -369,27 +411,51 @@
                     var(--neon-b) 284deg,
                     transparent 302deg 360deg
                 ) border-box;
-            box-shadow: 0 18px 34px rgba(0, 0, 0, 0.36), 0 0 0 1px var(--module-soft), 0 0 22px rgba(0, 191, 255, 0.22);
+            box-shadow: 0 18px 34px rgba(0, 0, 0, 0.36), 0 0 0 1px var(--module-soft), 0 0 22px var(--module-glow), 0 0 28px rgba(0, 191, 255, 0.24);
             z-index: 2;
-                animation: neonBorderSpin 1.2s linear infinite;
+                animation: ringRotate 1.2s linear infinite;
+        }
+
+        .card-head {
+            display: grid;
+            grid-template-columns: 44px 1fr;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            display: grid;
+            place-items: center;
+            font-size: 1.35rem;
+            background: linear-gradient(160deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03));
+            border: 1px solid var(--module-soft);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+
+        .card-title {
+            text-align: left;
         }
 
         .card h2 {
             margin: 0;
             color: var(--module);
-            font-size: 1.95rem;
-            line-height: 1.2;
+            font-size: 1.65rem;
+            line-height: 1.15;
             letter-spacing: 0.2px;
             text-wrap: balance;
-            text-shadow: 0 2px 12px color-mix(in srgb, var(--module) 35%, transparent);
+            text-shadow: 0 2px 12px var(--module-glow);
         }
 
         .card p {
             color: var(--muted);
-            margin: 12px 0 0;
+            margin: 14px 0 0;
             font-size: 0.98rem;
             line-height: 1.45;
             text-wrap: balance;
+            text-align: left;
         }
 
         .dashboard-empty-state {
@@ -541,10 +607,9 @@
             }
         }
 
-        @keyframes neonBorderSpin {
-            to {
-                --neon-angle: 360deg;
-            }
+        @keyframes ringRotate {
+            from { --neon-angle: 0deg; }
+            to { --neon-angle: 360deg; }
         }
 
         @media (max-width: 720px) {
@@ -604,8 +669,125 @@
             }
 
             .card h2 {
-                font-size: 1.7rem;
+                font-size: 1.45rem;
             }
+
+            .card-head {
+                grid-template-columns: 40px 1fr;
+                gap: 10px;
+            }
+
+            .card-icon {
+                width: 40px;
+                height: 40px;
+                border-radius: 10px;
+            }
+        }
+
+        body.modo-mobile {
+            padding: 14px 10px 22px;
+        }
+
+        body.modo-mobile .user-sidebar {
+            position: relative;
+            left: auto;
+            top: auto;
+            bottom: auto;
+            width: auto;
+            transform: none;
+            pointer-events: auto;
+            margin: 0 0 14px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            padding: 14px;
+        }
+
+        body.modo-mobile .user-sidebar-trigger {
+            display: none;
+        }
+
+        body.modo-mobile .user-sidebar-profile {
+            grid-template-columns: 42px minmax(0, 1fr);
+            align-items: center;
+        }
+
+        body.modo-mobile .user-avatar {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            font-size: 1rem;
+        }
+
+        body.modo-mobile .user-sidebar-brand,
+        body.modo-mobile .user-sidebar-details,
+        body.modo-mobile .user-sidebar-spacer,
+        body.modo-mobile .user-sidebar-peek {
+            display: none;
+        }
+
+        body.modo-mobile .user-sidebar .sidebar-logout {
+            width: auto;
+            min-width: 78px;
+            min-height: 40px;
+            font-size: 0.86rem;
+        }
+
+        body.modo-mobile .hero {
+            margin-bottom: 16px;
+            text-align: left;
+            padding: 0 4px;
+        }
+
+        body.modo-mobile h1 {
+            font-size: 1.45rem;
+            line-height: 1.2;
+        }
+
+        body.modo-mobile .subtitle {
+            font-size: 0.9rem;
+            margin-top: 6px;
+            text-align: left;
+        }
+
+        body.modo-mobile .grid {
+            grid-template-columns: 1fr;
+            gap: 12px;
+        }
+
+        body.modo-mobile .card {
+            padding: 18px 14px;
+            border-radius: 14px;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        body.modo-mobile .card:hover {
+            transform: none;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+            animation: none;
+        }
+
+        body.modo-mobile .card h2 {
+            font-size: 1.34rem;
+        }
+
+        body.modo-mobile .card p {
+            font-size: 0.9rem;
+            margin-top: 10px;
+        }
+
+        body.modo-mobile .logout {
+            margin-top: 18px;
+            position: sticky;
+            bottom: 10px;
+            z-index: 5;
+        }
+
+        body.modo-mobile .logout button {
+            width: 100%;
+            max-width: 100%;
+            min-height: 46px;
+            font-size: 0.98rem;
         }
 
         body:not(.modo-mobile) .user-sidebar {
@@ -743,22 +925,23 @@
             to { transform: rotate(360deg); }
         }
 
-        .card[data-key="analise_promo"] { --module: #4facfe; --module-soft: rgba(79, 172, 254, 0.3); }
-        .card[data-key="renovacao_fixa"] { --module: #66c2ff; --module-soft: rgba(102, 194, 255, 0.3); }
-        .card[data-key="anuncios_ml"] { --module: #3fc0d8; --module-soft: rgba(63, 192, 216, 0.3); }
-        .card[data-key="etiquetas"] { --module: #32c58f; --module-soft: rgba(50, 197, 143, 0.3); }
-        .card[data-key="integracao"] { --module: #35b6a6; --module-soft: rgba(53, 182, 166, 0.3); }
-        .card[data-key="cadastro"] { --module: #6fb1ff; --module-soft: rgba(111, 177, 255, 0.3); }
-        .card[data-key="estoque"] { --module: #5cb7ff; --module-soft: rgba(92, 183, 255, 0.3); }
-        .card[data-key="mercado_full"] { --module: #2fd3ff; --module-soft: rgba(47, 211, 255, 0.32); }
-        .card[data-key="vendas"] { --module: #f5a84b; --module-soft: rgba(245, 168, 75, 0.32); }
-        .card[data-key="favoritos"] { --module: #f2c94c; --module-soft: rgba(242, 201, 76, 0.32); }
-        .card[data-key="perguntas_pos_venda"] { --module: #38d4ff; --module-soft: rgba(56, 212, 255, 0.32); }
-        .card[data-key="medias_compras"] { --module: #7bd36b; --module-soft: rgba(123, 211, 107, 0.32); }
-        .card[data-key="impostos"] { --module: #ff8c5a; --module-soft: rgba(255, 140, 90, 0.33); }
-        .card[data-key="configuracoes"] { --module: #be87ff; --module-soft: rgba(190, 135, 255, 0.33); }
-        .card[data-key="importacoes"] { --module: #ffdd75; --module-soft: rgba(255, 221, 117, 0.35); }
-        .card[data-key="admin_usuarios"] { --module: #8fd3ff; --module-soft: rgba(143, 211, 255, 0.32); }
+        .card[data-key="analise_promo"] { --module: #4facfe; --module-alt: #9ed8ff; --module-soft: rgba(79, 172, 254, 0.3); --module-glow: rgba(79, 172, 254, 0.2); }
+        .card[data-key="renovacao_fixa"] { --module: #66c2ff; --module-alt: #b2e4ff; --module-soft: rgba(102, 194, 255, 0.3); --module-glow: rgba(102, 194, 255, 0.2); }
+        .card[data-key="anuncios_ml"] { --module: #3fc0d8; --module-alt: #99ecf8; --module-soft: rgba(63, 192, 216, 0.3); --module-glow: rgba(63, 192, 216, 0.2); }
+        .card[data-key="etiquetas"] { --module: #32c58f; --module-alt: #98f5d0; --module-soft: rgba(50, 197, 143, 0.3); --module-glow: rgba(50, 197, 143, 0.2); }
+        .card[data-key="integracao"] { --module: #35b6a6; --module-alt: #9ef0e6; --module-soft: rgba(53, 182, 166, 0.3); --module-glow: rgba(53, 182, 166, 0.2); }
+        .card[data-key="cadastro"] { --module: #6fb1ff; --module-alt: #c5e1ff; --module-soft: rgba(111, 177, 255, 0.3); --module-glow: rgba(111, 177, 255, 0.2); }
+        .card[data-key="estoque"] { --module: #5cb7ff; --module-alt: #b7e2ff; --module-soft: rgba(92, 183, 255, 0.3); --module-glow: rgba(92, 183, 255, 0.2); }
+        .card[data-key="mercado_full"] { --module: #2fd3ff; --module-alt: #c9f6ff; --module-soft: rgba(47, 211, 255, 0.32); --module-glow: rgba(47, 211, 255, 0.22); }
+        .card[data-key="vendas"] { --module: #f5a84b; --module-alt: #ffe2ad; --module-soft: rgba(245, 168, 75, 0.32); --module-glow: rgba(245, 168, 75, 0.22); }
+        .card[data-key="favoritos"] { --module: #f2c94c; --module-alt: #fff0b7; --module-soft: rgba(242, 201, 76, 0.32); --module-glow: rgba(242, 201, 76, 0.22); }
+        .card[data-key="perguntas_pos_venda"] { --module: #38d4ff; --module-alt: #bff4ff; --module-soft: rgba(56, 212, 255, 0.32); --module-glow: rgba(56, 212, 255, 0.22); }
+        .card[data-key="medias_compras"] { --module: #7bd36b; --module-alt: #c8f4bf; --module-soft: rgba(123, 211, 107, 0.32); --module-glow: rgba(123, 211, 107, 0.22); }
+        .card[data-key="impostos"] { --module: #ff8c5a; --module-alt: #ffd0ba; --module-soft: rgba(255, 140, 90, 0.33); --module-glow: rgba(255, 140, 90, 0.23); }
+        .card[data-key="simulador"] { --module: #35d0a7; --module-alt: #c8fff0; --module-soft: rgba(53, 208, 167, 0.32); --module-glow: rgba(53, 208, 167, 0.22); }
+        .card[data-key="configuracoes"] { --module: #be87ff; --module-alt: #e4cfff; --module-soft: rgba(190, 135, 255, 0.33); --module-glow: rgba(190, 135, 255, 0.23); }
+        .card[data-key="importacoes"] { --module: #ffdd75; --module-alt: #fff3c8; --module-soft: rgba(255, 221, 117, 0.35); --module-glow: rgba(255, 221, 117, 0.24); }
+        .card[data-key="admin_usuarios"] { --module: #8fd3ff; --module-alt: #d6efff; --module-soft: rgba(143, 211, 255, 0.32); --module-glow: rgba(143, 211, 255, 0.22); }
     </style>
     <script src="/auth.js?v=20260602-machines"></script>
 </head>
@@ -809,7 +992,10 @@
 </aside>
 
 <div class="container">
-    <h1>🚀 JK Sistema de Gestão</h1>
+    <div class="hero">
+        <h1>🚀 JK Sistema de Gestão</h1>
+        <p class="subtitle">Painel central com acesso rápido aos módulos do sistema</p>
+    </div>
     
     <div id="cards" class="grid"></div>
 </div>
@@ -846,6 +1032,10 @@
 </div>
 
 <script>
+    if (window.__JK_DASHBOARD_MOBILE__) {
+        document.body.classList.add('modo-mobile');
+    }
+
     function finalizarEntradaDashboard() {
         if (!document.body) return;
         document.body.classList.add('dashboard-ready', 'jk-page-ready');
@@ -876,7 +1066,7 @@
 
     const userData = safeJsonParse(localStorage.getItem('user_data') || 'null', null);
     const permissions = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
-    const APP_VERSION_FALLBACK = '1.0.21';
+    const APP_VERSION_FALLBACK = '1.0.22';
     let appVersionAtual = APP_VERSION_FALLBACK;
 
     if (!userData) {
@@ -926,6 +1116,7 @@
         { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '💬 Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
         { key: 'medias_compras', href: 'medias_compras.html', title: '📊 Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
         { key: 'impostos', href: 'impostos.html', title: '💸 Impostos', desc: 'Regras fiscais por NCM/CEST e simulação tributária.' },
+        { key: 'simulador', href: 'simulador.html', title: '🧮 Simulador', desc: 'Calcule o preço final por NCM, dólar, quantidade e cubagem.' },
         { key: 'configuracoes', href: 'configuracoes.html', title: '⚙️ Configurações', desc: 'Parâmetros globais do sistema para todos os usuários.' },
         { key: 'importacoes', href: 'importacoes.html', title: '📥 Importações', desc: 'Central de importação e processamento de planilhas.' },
         { key: 'admin_usuarios', href: 'admin_usuarios.html', title: '👥 Central de Usuários', desc: 'Usuários online, mensagens e permissões.' }
@@ -1570,7 +1761,15 @@
             } else {
                 a.href = mod.href;
             }
-            a.innerHTML = '<h2>' + mod.title + '</h2><p>' + mod.desc + '</p>';
+            const m = String(mod.title || '').match(/^(\S+)\s+(.+)$/);
+            const icon = m ? m[1] : '•';
+            const titleText = m ? m[2] : String(mod.title || 'Módulo');
+            a.innerHTML =
+                '<div class="card-head">' +
+                    '<span class="card-icon" aria-hidden="true">' + icon + '</span>' +
+                    '<div class="card-title"><h2>' + titleText + '</h2></div>' +
+                '</div>' +
+                '<p>' + mod.desc + '</p>';
             cards.appendChild(a);
         });
     }

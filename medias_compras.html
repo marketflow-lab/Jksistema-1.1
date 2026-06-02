@@ -1461,12 +1461,65 @@
         return String(valor || '').trim().toUpperCase();
     }
 
+    function normalizarListaSkusOcultos(lista) {
+        const saida = [];
+        const vistos = new Set();
+        (Array.isArray(lista) ? lista : []).forEach((item) => {
+            const sku = normalizarSku(item);
+            if (!sku || vistos.has(sku)) return;
+            vistos.add(sku);
+            saida.push(sku);
+        });
+        return saida;
+    }
+
+    async function salvarSkusOcultosServidor() {
+        try {
+            await fetch('/api/medias-compras/preferencias-skus-ocultos', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({
+                    skus_ocultos: Array.from(skusOcultosSet)
+                })
+            });
+        } catch (_e) {
+            // Mantém persistência local mesmo em falha momentânea de rede.
+        }
+    }
+
+    async function carregarSkusOcultosServidor() {
+        try {
+            const resp = await fetch('/api/medias-compras/preferencias-skus-ocultos', {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            });
+            if (!resp.ok) return;
+
+            const data = await resp.json();
+            const skusServidor = normalizarListaSkusOcultos(data && data.skus_ocultos);
+            skusOcultosSet = new Set(skusServidor);
+
+            try {
+                localStorage.setItem(LS_HIDDEN_SKUS_KEY, JSON.stringify(Array.from(skusOcultosSet)));
+            } catch (_e) {
+                // Persistência local complementar.
+            }
+        } catch (_e) {
+            // Se falhar no servidor, segue com fallback local.
+        }
+    }
+
     function salvarSkusOcultos() {
+        skusOcultosSet = new Set(normalizarListaSkusOcultos(Array.from(skusOcultosSet)));
         try {
             localStorage.setItem(LS_HIDDEN_SKUS_KEY, JSON.stringify(Array.from(skusOcultosSet)));
         } catch (_e) {
             // Persistência local complementar.
         }
+        salvarSkusOcultosServidor();
     }
 
     function ocultarSkuPorCodigo(skuCodificado) {
@@ -2837,12 +2890,18 @@
             const data = await resp.json();
             colunasMesesAtuais = data.colunas_meses || [];
             itensVisaoAtual = data.itens || [];
-            renderAbaAtual();
+            try {
+                renderAbaAtual();
+            } catch (renderErr) {
+                console.error('[Medias] Erro ao renderizar:', renderErr);
+                setStatus('Erro ao renderizar tabela: ' + (renderErr.message || renderErr));
+                return;
+            }
             const lojaData = (data.loja && data.loja !== '__todas') ? (' da loja ' + data.loja) : ' de todas as lojas';
             setStatus('Dados' + lojaData + ' atualizados com sucesso. Sugestões de compra recalculadas com lead time de 6 meses.');
         } catch (e) {
-            setStatus('Falha ao carregar dados.');
-            alert(e.message || 'Falha ao calcular.');
+            console.error('[Medias] Erro ao carregar:', e);
+            setStatus('Falha ao carregar dados: ' + (e.message || e));
         }
     }
 
@@ -2974,13 +3033,15 @@
     }
 
     renderBotoesLojas([]);
-    carregarLojas().finally(() => carregarVisao(12));
+    carregarSkusOcultosServidor().finally(() => {
+        carregarLojas().finally(() => carregarVisao(12));
+    });
+
 </script>
 <script src="/table_columns.js"></script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
 
 
 

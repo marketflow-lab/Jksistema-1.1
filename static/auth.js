@@ -235,14 +235,41 @@ function navegarComTransicao(url) {
         } catch (_err) {}
     }
 
+    function avisarPaginaPronta() {
+        try {
+            if (!window.top || window.top === window || typeof window.top.postMessage !== 'function') return;
+            window.top.postMessage({
+                channel: 'jk-page-ready',
+                payload: {
+                    title: obterTituloAbaAtual(),
+                    url: window.location.href
+                }
+            }, '*');
+        } catch (_err) {}
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', enviarTituloAba, { once: true });
+        document.addEventListener('DOMContentLoaded', () => {
+            enviarTituloAba();
+            avisarPaginaPronta();
+        }, { once: true });
     } else {
         enviarTituloAba();
+        avisarPaginaPronta();
     }
-    window.addEventListener('load', enviarTituloAba);
-    setTimeout(enviarTituloAba, 250);
-    setTimeout(enviarTituloAba, 1000);
+    window.addEventListener('load', () => {
+        enviarTituloAba();
+        avisarPaginaPronta();
+    });
+    window.addEventListener('pageshow', avisarPaginaPronta);
+    setTimeout(() => {
+        enviarTituloAba();
+        avisarPaginaPronta();
+    }, 250);
+    setTimeout(() => {
+        enviarTituloAba();
+        avisarPaginaPronta();
+    }, 1000);
 
     try {
         const titleEl = document.querySelector('title');
@@ -1771,7 +1798,7 @@ function verificarSessao() {
                     data = null;
                 }
                 if (resp.ok) {
-                    return data?.resposta || 'A IA não retornou resposta.';
+                    return extrairTextoAssistente(data) || 'A IA não retornou resposta.';
                 }
                 ultimoErro = new Error(resp.status === 405
                     ? 'O servidor local ainda está com uma versão antiga. Reinicie o programa para ativar a IA.'
@@ -2039,10 +2066,56 @@ function verificarSessao() {
         return html;
     }
 
+    function pareceDadoInternoAssistente(texto) {
+        const bruto = String(texto || '').trim();
+        if (!bruto) return false;
+        const marcadores = [
+            '"pack_id"', '"order_id"', '"buyer"', '"messages"', '"seller_max_message_length"',
+            '"from_role"', '"created_at"', '"resolved_at"', '"status_message"', '"items"', '"pergunta"'
+        ];
+        const qtdMarcadores = marcadores.filter((item) => bruto.includes(item)).length;
+        const qtdAspasJson = (bruto.match(/"[a-zA-Z0-9_]+":/g) || []).length;
+        return qtdMarcadores >= 3 || qtdAspasJson >= 8 || (/^\s*[\[{]/.test(bruto) && bruto.length > 500);
+    }
+
+    function extrairTextoAssistente(valor) {
+        if (valor == null) return '';
+        if (typeof valor === 'object') {
+            const candidatos = [
+                valor.resposta, valor.response, valor.answer, valor.text, valor.message,
+                valor.content, valor.output, valor.result, valor.status_message
+            ];
+            for (const candidato of candidatos) {
+                const texto = extrairTextoAssistente(candidato);
+                if (texto) return texto;
+            }
+            return pareceDadoInternoAssistente(JSON.stringify(valor))
+                ? 'Recebi dados internos do módulo em vez de uma resposta pronta. Tente perguntar novamente com uma pergunta mais específica.'
+                : JSON.stringify(valor, null, 2);
+        }
+        let texto = String(valor || '').trim();
+        if (!texto) return '';
+
+        if (/^\s*[\[{]/.test(texto)) {
+            try {
+                const parsed = JSON.parse(texto);
+                const extraido = extrairTextoAssistente(parsed);
+                if (extraido) return extraido;
+            } catch (_e) {
+                // segue com a protecao contra dado interno abaixo
+            }
+        }
+
+        if (pareceDadoInternoAssistente(texto)) {
+            return 'Recebi dados internos do módulo em vez de uma resposta pronta. Tente perguntar novamente com uma pergunta mais específica.';
+        }
+        return texto;
+    }
+
     function definirTextoMensagemAssistente(el, texto, tipo) {
         if (!el) return;
         if (tipo === 'assistant') {
-            el.innerHTML = formatarMarkdownBasicoAssistente(texto || '');
+            el.innerHTML = formatarMarkdownBasicoAssistente(extrairTextoAssistente(texto) || '');
             return;
         }
         el.textContent = texto || '';

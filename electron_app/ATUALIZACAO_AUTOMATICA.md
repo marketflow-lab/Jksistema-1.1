@@ -4,7 +4,7 @@ O cliente desktop usa `electron-updater` com GitHub Releases.
 
 ## Como publicar uma nova versao
 
-1. Aumente a versao em `electron_app/package.json`, por exemplo de `1.0.6` para `1.0.7`.
+1. Aumente a versao em `electron_app/package.json`, por exemplo de `1.0.5` para `1.0.6`.
 2. Gere e publique a release:
 
 ```powershell
@@ -20,7 +20,6 @@ O `electron-builder` vai criar o instalador, o arquivo `latest.yml` e publicar t
 ## Como o app atualiza
 
 - Ao abrir o app instalado, ele verifica se existe uma versao nova.
-- O usuario tambem pode usar o botao `Verificar atualizacao` no sidebar.
 - Se existir, baixa automaticamente em segundo plano.
 - Ao terminar, pergunta se o usuario quer reiniciar para instalar.
 
