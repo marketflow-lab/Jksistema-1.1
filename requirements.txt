@@ -4,6 +4,7 @@ pandas
 requests
 gspread
 google-auth
+firebase-admin
 plotly
 bcrypt
 urllib3
