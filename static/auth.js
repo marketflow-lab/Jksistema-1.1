@@ -611,6 +611,94 @@ function obterAuthHeaders(extra) {
     });
 })();
 
+(function initSharedSyncAutoPull() {
+    if (window.__jkSharedSyncAutoPullInit) return;
+    window.__jkSharedSyncAutoPullInit = true;
+
+    const INTERVALO_MS = 10 * 60 * 1000;
+    let executandoPull = false;
+    let executandoPush = false;
+    let ultimaPull = 0;
+    let ultimaPush = 0;
+
+    function telaSeguraParaRestaurar() {
+        const path = String(window.location.pathname || '').toLowerCase();
+        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$/.test(path);
+    }
+
+    function machineIdAtualSync() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.machine_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    async function executarAutoPull(motivo) {
+        if (executandoPull || !obterToken() || tokenSessaoExpirado()) return null;
+        if (!telaSeguraParaRestaurar()) return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimaPull < 45000) return null;
+        ultimaPull = agora;
+        executandoPull = true;
+        try {
+            const resp = await fetch('/api/shared-sync/auto-pull', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtualSync() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
+                console.info('[Shared Sync] Dados compartilhados restaurados:', data.results);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Shared Sync]', err);
+            return null;
+        } finally {
+            executandoPull = false;
+        }
+    }
+
+    async function executarAutoPush(motivo) {
+        if (executandoPush || !obterToken() || tokenSessaoExpirado()) return null;
+        if (!telaSeguraParaRestaurar()) return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimaPush < 45000) return null;
+        ultimaPush = agora;
+        executandoPush = true;
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/auto-push', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtualSync() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
+                console.info('[Shared Sync] Dados compartilhados enviados:', data.results);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Shared Sync Push]', err);
+            return null;
+        } finally {
+            executandoPush = false;
+        }
+    }
+
+    window.jkSharedSyncAutoPullNow = () => executarAutoPull('manual');
+    window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
+    setTimeout(() => executarAutoPull('inicio'), 20000);
+    setTimeout(() => executarAutoPush('inicio'), 35000);
+    setInterval(() => executarAutoPull('intervalo'), INTERVALO_MS);
+    setInterval(() => executarAutoPush('intervalo'), INTERVALO_MS);
+    window.addEventListener('focus', () => {
+        executarAutoPull('focus');
+        executarAutoPush('focus');
+    });
+})();
+
 /** Remove dados de sessão e redireciona para login. */
 function encerrarSessao() {
     localStorage.removeItem('access_token');
@@ -2357,6 +2445,3 @@ function verificarSessao() {
         if (!document.hidden) buscarMensagensAdmin();
     });
 })();
-
-
-

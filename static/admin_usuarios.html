@@ -40,6 +40,7 @@
         .subtitle { color: var(--muted); margin-top: 6px; }
         .actions { display: flex; gap: 8px; flex-wrap: wrap; }
         .layout { display: grid; grid-template-columns: 430px 1fr; gap: 18px; flex: 1; min-height: 0; }
+        .layout.user-only { grid-template-columns: 1fr; }
         .panel {
             background: rgba(16, 26, 42, 0.95);
             border: 1px solid var(--border);
@@ -49,10 +50,11 @@
             overflow: auto;
         }
         label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--muted); }
-        input, textarea {
+        input, textarea, select {
             width: 100%; padding: 10px 12px; margin-bottom: 12px; border-radius: 10px;
             border: 1px solid var(--border); background: #0c1625; color: var(--text);
         }
+        select { color-scheme: dark; }
         textarea { min-height: 92px; resize: vertical; font-family: inherit; line-height: 1.4; }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .checkbox-grid {
@@ -116,6 +118,112 @@
         }
         .message-panel.hidden { display: none; }
         .message-panel-title { font-weight: 800; color: #d8ecff; margin-bottom: 8px; }
+        .sync-panel {
+            border: 1px solid rgba(51, 195, 125, 0.28);
+            background: rgba(51, 195, 125, 0.06);
+            border-radius: 14px;
+            padding: 12px;
+            margin: 0 0 16px;
+        }
+        .sync-scope-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .sync-scope-card {
+            border: 1px solid rgba(79, 172, 254, 0.26);
+            background: rgba(12, 22, 37, 0.92);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .sync-scope-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .sync-scope-title { font-weight: 800; color: #d8ecff; }
+        .sync-sensitive { color: #ffd083; font-size: 12px; margin-top: 3px; }
+        .sync-user-list {
+            display: none;
+            max-height: 116px;
+            overflow: auto;
+            border: 1px solid rgba(79, 172, 254, 0.18);
+            border-radius: 10px;
+            padding: 6px;
+            margin-top: 8px;
+        }
+        .sync-user-list.is-visible { display: block; }
+        .sync-user-list label {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin: 0 0 6px;
+            color: var(--text);
+            font-size: 12px;
+        }
+        .sync-user-list input,
+        .sync-scope-head input,
+        .sync-auto-row input {
+            width: auto;
+            margin: 0;
+        }
+        .sync-auto-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 8px;
+        }
+        .sync-remote { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+        .user-share-panel {
+            border: 1px solid rgba(79, 172, 254, 0.32);
+            background: rgba(79, 172, 254, 0.07);
+            border-radius: 14px;
+            padding: 12px;
+            margin: 0 0 16px;
+        }
+        .user-share-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .user-share-scopes {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 8px;
+            margin: 8px 0 12px;
+        }
+        .user-share-item {
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            background: rgba(12, 22, 37, 0.86);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .user-share-item strong { display: block; color: #d8ecff; margin-bottom: 4px; }
+        .user-share-item .row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .user-share-item input[type="checkbox"],
+        .user-share-scopes input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+        }
+        .user-share-empty {
+            border: 1px dashed rgba(181, 200, 228, 0.28);
+            color: var(--muted);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .admin-only.is-hidden { display: none !important; }
         .table-scroll { overflow: auto; max-height: calc(100vh - 360px); border-radius: 12px; }
         .muted-line { color: var(--muted); font-size: 12px; margin-top: 3px; }
         @media (max-width: 980px) {
@@ -137,7 +245,7 @@
     </div>
 
     <div class="layout">
-        <div class="panel">
+        <div class="panel admin-only">
             <h3 id="formTitle">Novo usuário</h3>
             <label>Usuário</label>
             <input id="username" placeholder="Ex.: admin">
@@ -194,16 +302,71 @@
         </div>
 
         <div class="panel">
-            <div class="section-header">
+            <div class="section-header admin-only">
                 <div>
                     <h3>Usuários online</h3>
                     <div id="onlineSummary" class="small">Carregando presença...</div>
                 </div>
                 <button class="btn-muted" onclick="carregarOnlineUsuarios()">Atualizar online</button>
             </div>
-            <div id="onlineUsersGrid" class="online-grid"></div>
+            <div id="onlineUsersGrid" class="online-grid admin-only"></div>
 
-            <div id="messagePanel" class="message-panel hidden">
+            <div class="user-share-panel">
+                <div class="section-header">
+                    <div>
+                        <h3>Compartilhar entre usuários</h3>
+                        <div id="userShareSummary" class="small">Carregando convites e vínculos...</div>
+                    </div>
+                    <button class="btn-muted" onclick="carregarCompartilhamentoEntreUsuarios()">Atualizar</button>
+                </div>
+
+                <div class="user-share-grid">
+                    <div>
+                        <label>Enviar para</label>
+                        <select id="userShareTarget"></select>
+                    </div>
+                    <label class="check-item" style="margin:24px 0 0;">
+                        <input id="userShareKeepSynced" type="checkbox">
+                        <span>Quero manter estes dados sincronizados</span>
+                    </label>
+                </div>
+                <label>Dados a compartilhar</label>
+                <div id="userShareScopes" class="user-share-scopes"></div>
+                <label>Mensagem opcional</label>
+                <textarea id="userShareMessage" placeholder="Explique para o outro usuário o que está enviando."></textarea>
+                <div class="form-actions">
+                    <button class="btn-primary" onclick="enviarConviteCompartilhamentoUsuario()">Enviar convite</button>
+                    <button class="btn-muted" onclick="limparConviteCompartilhamentoUsuario()">Limpar</button>
+                </div>
+                <div class="user-share-grid">
+                    <div>
+                        <h4>Convites</h4>
+                        <div id="userShareInvites"></div>
+                    </div>
+                    <div>
+                        <h4>Compartilhamentos ativos</h4>
+                        <div id="userShareLinks"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sync-panel admin-only">
+                <div class="section-header">
+                    <div>
+                        <h3>Compartilhamento de dados</h3>
+                        <div id="sharedSyncSummary" class="small">Carregando regras de sincronização...</div>
+                    </div>
+                    <button class="btn-muted" onclick="carregarCompartilhamentoDados()">Atualizar</button>
+                </div>
+                <div id="sharedSyncScopes" class="sync-scope-grid"></div>
+                <div class="form-actions">
+                    <button class="btn-primary" onclick="salvarCompartilhamentoDados()">Salvar regras</button>
+                    <button class="btn-success" onclick="enviarDadosCompartilhados()">Enviar dados desta máquina</button>
+                    <button class="btn-warning" onclick="restaurarDadosCompartilhados()">Restaurar dados compartilhados</button>
+                </div>
+            </div>
+
+            <div id="messagePanel" class="message-panel hidden admin-only">
                 <div class="message-panel-title" id="messagePanelTitle">Enviar mensagem</div>
                 <label>Título</label>
                 <input id="messageTitle" placeholder="Mensagem do administrador">
@@ -215,13 +378,13 @@
                 </div>
             </div>
 
-            <div class="section-header">
+            <div class="section-header admin-only">
                 <div>
                     <h3>Usuários cadastrados</h3>
                     <div class="small">Administradores podem editar permissões, status e máquinas.</div>
                 </div>
             </div>
-            <div class="table-scroll">
+            <div class="table-scroll admin-only">
                 <table>
                     <thead>
                         <tr>
@@ -246,10 +409,7 @@
     }
 
     const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
-    if (permissions.full !== true && permissions.admin_usuarios !== true) {
-        alert('Acesso permitido apenas para administrador.');
-        navegarComTransicao('/dashboard.html');
-    }
+    const usuarioAdmin = permissions.full === true || permissions.admin_usuarios === true;
 
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
@@ -261,6 +421,9 @@
     let onlineCache = {};
     let editandoUsuario = null;
     let mensagemDestino = null;
+    let compartilhamentoCache = null;
+    let usuariosCompartilhamentoCache = [];
+    let compartilhamentoUsuariosCache = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
 
     function labelPermissao(key) {
@@ -342,8 +505,28 @@
 
     function setStatus(msg, erro) {
         const box = document.getElementById('statusBox');
+        if (!box) return;
         box.textContent = msg || '';
         box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
+    }
+
+    function aplicarModoAcesso() {
+        document.querySelectorAll('.admin-only').forEach(el => {
+            el.classList.toggle('is-hidden', !usuarioAdmin);
+        });
+        document.querySelector('.layout')?.classList.toggle('user-only', !usuarioAdmin);
+        const subtitle = document.querySelector('.subtitle');
+        if (subtitle && !usuarioAdmin) {
+            subtitle.textContent = 'Compartilhe dados com outros usuários por convite e aceite.';
+        }
+    }
+
+    function usuarioAtualSessao() {
+        try {
+            return JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+        } catch (_err) {
+            return {};
+        }
     }
 
     function normalizarDataSistema(valor) {
@@ -484,7 +667,9 @@
         const online = users.filter(u => u.online);
         if (resumo) {
             const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
-            resumo.textContent = `${online.length} usuário(s) online | ${Number(payload && payload.online_machines || 0)} máquina(s) | ${backend}`;
+            const timeout = Number(payload && payload.online_timeout_seconds || 0);
+            const janela = timeout ? ` | janela ${timeout}s` : '';
+            resumo.textContent = `${online.length} usuário(s) online | ${Number(payload && payload.online_machines || 0)} máquina(s) física(s) | ${backend}${janela}`;
         }
         if (!grid) return;
         if (!users.length) {
@@ -508,6 +693,552 @@
                 </div>
             `;
         }).join('');
+    }
+
+    function usuarioClienteAtual() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.client_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    function machineIdAtual() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.machine_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    function formatarBytes(valor) {
+        const bytes = Number(valor || 0);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+        if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+    }
+
+    function usuariosParaCompartilhamento() {
+        const clienteAtual = usuarioClienteAtual();
+        const filtrados = usuariosCache.filter(user => {
+            if (!clienteAtual) return true;
+            return String(user.client_id || '').trim() === clienteAtual;
+        });
+        return filtrados.length ? filtrados : usuariosCache;
+    }
+
+    function atualizarVisibilidadeUsuariosSync(scope) {
+        const mode = document.querySelector(`[data-sync-mode="${scope}"]`);
+        const list = document.querySelector(`[data-sync-users="${scope}"]`);
+        if (!mode || !list) return;
+        list.classList.toggle('is-visible', mode.value === 'selected');
+    }
+
+    function renderCompartilhamentoDados(payload) {
+        compartilhamentoCache = payload || {};
+        const summary = document.getElementById('sharedSyncSummary');
+        const grid = document.getElementById('sharedSyncScopes');
+        const scopes = compartilhamentoCache.scopes || {};
+        const scopeKeys = Object.keys(scopes);
+        const enabledCount = scopeKeys.filter(key => scopes[key] && scopes[key].config && scopes[key].config.enabled).length;
+        if (summary) {
+            const backend = compartilhamentoCache.backend === 'firebase' ? 'Firebase' : 'local';
+            summary.textContent = `${enabledCount} compartilhamento(s) ativo(s) | ${backend}`;
+        }
+        if (!grid) return;
+        if (!scopeKeys.length) {
+            grid.innerHTML = '<div class="small">Nenhum escopo de compartilhamento disponível.</div>';
+            return;
+        }
+
+        const usuarios = usuariosParaCompartilhamento();
+        grid.innerHTML = scopeKeys.map(scope => {
+            const item = scopes[scope] || {};
+            const cfg = item.config || {};
+            const remote = item.remote || {};
+            const allowed = Array.isArray(cfg.allowed_users) ? cfg.allowed_users : [];
+            const mode = allowed.length ? 'selected' : 'all';
+            const remoteText = remote.exists
+                ? `Remoto: ${remote.file_count || 0} arquivo(s), ${formatarBytes(remote.bundle_bytes)} | ${remote.updated_at || 'sem data'}`
+                : 'Remoto: nenhum pacote enviado ainda.';
+            const shareUsersControl = item.user_scoped ? `
+                    <label class="sync-auto-row">
+                        <input type="checkbox" data-sync-share-users="${escaparHtml(scope)}" ${cfg.share_between_users ? 'checked' : ''}>
+                        <span>Compartilhar entre usuários deste cliente</span>
+                    </label>
+                    <div class="small">Ao restaurar, aplica esses dados no usuário logado.</div>
+            ` : '';
+            const userChecks = usuarios.map(user => {
+                const username = String(user.username || '').trim().toLowerCase();
+                if (!username) return '';
+                const checked = allowed.includes(username) ? 'checked' : '';
+                return `
+                    <label>
+                        <input type="checkbox" data-sync-user="${escaparHtml(scope)}" value="${escaparHtml(username)}" ${checked}>
+                        <span>${escaparHtml(user.name || username)}</span>
+                    </label>
+                `;
+            }).join('');
+            return `
+                <div class="sync-scope-card">
+                    <div class="sync-scope-head">
+                        <div>
+                            <div class="sync-scope-title">${escaparHtml(item.label || scope)}</div>
+                            <div class="small">${escaparHtml(item.description || '')}</div>
+                            ${item.sensitive ? '<div class="sync-sensitive">Inclui credenciais/tokens.</div>' : ''}
+                        </div>
+                        <input type="checkbox" data-sync-enabled="${escaparHtml(scope)}" ${cfg.enabled ? 'checked' : ''} title="Ativar compartilhamento">
+                    </div>
+                    <label style="margin-top:10px;">Quem pode sincronizar</label>
+                    <select data-sync-mode="${escaparHtml(scope)}" onchange="atualizarVisibilidadeUsuariosSync('${escaparHtml(scope)}')">
+                        <option value="all" ${mode === 'all' ? 'selected' : ''}>Todos do cliente</option>
+                        <option value="selected" ${mode === 'selected' ? 'selected' : ''}>Usuários selecionados</option>
+                    </select>
+                    <div class="sync-user-list ${mode === 'selected' ? 'is-visible' : ''}" data-sync-users="${escaparHtml(scope)}">
+                        ${userChecks || '<div class="small">Nenhum usuário carregado.</div>'}
+                    </div>
+                    <label class="sync-auto-row">
+                        <input type="checkbox" data-sync-auto-pull="${escaparHtml(scope)}" ${cfg.auto_pull !== false ? 'checked' : ''}>
+                        <span>Restaurar automaticamente quando houver dados mais novos</span>
+                    </label>
+                    ${shareUsersControl}
+                    <div class="sync-remote">${escaparHtml(remoteText)}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function coletarCompartilhamentoDados() {
+        const scopes = {};
+        Object.keys((compartilhamentoCache && compartilhamentoCache.scopes) || {}).forEach(scope => {
+            const enabledEl = document.querySelector(`[data-sync-enabled="${scope}"]`);
+            const modeEl = document.querySelector(`[data-sync-mode="${scope}"]`);
+            const autoPullEl = document.querySelector(`[data-sync-auto-pull="${scope}"]`);
+            const shareUsersEl = document.querySelector(`[data-sync-share-users="${scope}"]`);
+            const selectedUsers = Array.from(document.querySelectorAll(`[data-sync-user="${scope}"]:checked`))
+                .map(el => String(el.value || '').trim().toLowerCase())
+                .filter(Boolean);
+            scopes[scope] = {
+                enabled: !!(enabledEl && enabledEl.checked),
+                allowed_users: modeEl && modeEl.value === 'selected' ? selectedUsers : [],
+                auto_pull: !(autoPullEl && autoPullEl.checked === false),
+                auto_push: false,
+                share_between_users: !!(shareUsersEl && shareUsersEl.checked),
+                conflict: 'latest_wins'
+            };
+        });
+        return { scopes };
+    }
+
+    function scopesCompartilhamentoSelecionados() {
+        return Object.entries(coletarCompartilhamentoDados().scopes || {})
+            .filter(([, cfg]) => cfg && cfg.enabled)
+            .map(([scope]) => scope);
+    }
+
+    async function carregarCompartilhamentoDados() {
+        const summary = document.getElementById('sharedSyncSummary');
+        if (summary) summary.textContent = 'Carregando regras de sincronização...';
+        try {
+            const resp = await fetch('/api/admin/shared-sync/config', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao carregar compartilhamento.');
+            }
+            renderCompartilhamentoDados(data);
+            return true;
+        } catch (error) {
+            if (summary) summary.textContent = error.message || 'Não foi possível carregar compartilhamento.';
+            return false;
+        }
+    }
+
+    async function salvarCompartilhamentoDados(silencioso) {
+        if (!compartilhamentoCache) {
+            await carregarCompartilhamentoDados();
+        }
+        if (!silencioso) setStatus('Salvando regras de compartilhamento...');
+        try {
+            const resp = await fetch('/api/admin/shared-sync/config', {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(coletarCompartilhamentoDados())
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao salvar regras.');
+            }
+            renderCompartilhamentoDados(data);
+            if (!silencioso) setStatus('Regras de compartilhamento salvas.');
+            return true;
+        } catch (error) {
+            setStatus(error.message || 'Erro ao salvar regras de compartilhamento.', true);
+            return false;
+        }
+    }
+
+    function resumoResultadosSync(results) {
+        const itens = Array.isArray(results) ? results : [];
+        if (!itens.length) return 'Nenhum dado sincronizado.';
+        return itens.map(item => {
+            const scopesGlobais = (compartilhamentoCache && compartilhamentoCache.scopes) || {};
+            const scopesUsuarios = (compartilhamentoUsuariosCache && compartilhamentoUsuariosCache.scopes) || {};
+            const nome = (scopesGlobais[item.scope] && scopesGlobais[item.scope].label)
+                || (scopesUsuarios[item.scope] && scopesUsuarios[item.scope].label)
+                || item.scope;
+            return `${nome}: ${item.file_count || 0} arquivo(s)`;
+        }).join(' | ');
+    }
+
+    async function executarCompartilhamentoDados(direcao) {
+        const salvou = await salvarCompartilhamentoDados(true);
+        if (!salvou) return;
+        const scopes = scopesCompartilhamentoSelecionados();
+        if (!scopes.length) {
+            setStatus('Ative pelo menos um tipo de dado para sincronizar.', true);
+            return;
+        }
+        if (direcao === 'pull' && !confirm('Restaurar dados compartilhados nesta máquina? O sistema fará backup local antes de substituir.')) {
+            return;
+        }
+        const endpoint = direcao === 'push' ? '/api/shared-sync/push' : '/api/shared-sync/pull';
+        setStatus(direcao === 'push' ? 'Enviando dados para o Firebase...' : 'Restaurando dados compartilhados...');
+        try {
+            const resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ scopes, machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao sincronizar dados.');
+            }
+            await carregarCompartilhamentoDados();
+            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados restaurados. ') + resumoResultadosSync(data.results));
+        } catch (error) {
+            setStatus(error.message || 'Erro ao sincronizar dados.', true);
+        }
+    }
+
+    function enviarDadosCompartilhados() {
+        executarCompartilhamentoDados('push');
+    }
+
+    function restaurarDadosCompartilhados() {
+        executarCompartilhamentoDados('pull');
+    }
+
+    function escopoLabelUsuario(scope) {
+        const item = compartilhamentoUsuariosCache && compartilhamentoUsuariosCache.scopes
+            ? compartilhamentoUsuariosCache.scopes[scope]
+            : null;
+        return (item && item.label) || scope;
+    }
+
+    function renderUsuariosCompartilhamento(data) {
+        usuariosCompartilhamentoCache = Array.isArray(data && data.users) ? data.users : [];
+        const select = document.getElementById('userShareTarget');
+        if (!select) return;
+        if (!usuariosCompartilhamentoCache.length) {
+            select.innerHTML = '<option value="">Nenhum usuário disponível</option>';
+            return;
+        }
+        select.innerHTML = usuariosCompartilhamentoCache.map(user => {
+            const label = `${user.client_id || ''} - ${user.name || user.username} (${user.username})`;
+            const value = `${user.username || ''}|${user.client_id || ''}`;
+            return `<option value="${escaparHtml(value)}">${escaparHtml(label)}</option>`;
+        }).join('');
+    }
+
+    function renderEscoposCompartilhamentoUsuario(payload) {
+        const grid = document.getElementById('userShareScopes');
+        if (!grid) return;
+        const scopes = (payload && payload.scopes) || {};
+        const keys = Object.keys(scopes);
+        if (!keys.length) {
+            grid.innerHTML = '<div class="user-share-empty">Nenhum tipo de dado disponível.</div>';
+            return;
+        }
+        const preferidos = new Set(['cadastro', 'lojas_integracoes', 'vendas', 'favoritos_historico', 'sku_campos_pesquisa']);
+        grid.innerHTML = keys.map(scope => {
+            const item = scopes[scope] || {};
+            return `
+                <label class="check-item">
+                    <input type="checkbox" data-user-share-scope="${escaparHtml(scope)}" ${preferidos.has(scope) ? 'checked' : ''}>
+                    <span>${escaparHtml(item.label || scope)}</span>
+                </label>
+            `;
+        }).join('');
+    }
+
+    function renderConvitesCompartilhamentoUsuario(payload) {
+        const el = document.getElementById('userShareInvites');
+        if (!el) return;
+        const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+        if (!invites.length) {
+            el.innerHTML = '<div class="user-share-empty">Nenhum convite.</div>';
+            return;
+        }
+        el.innerHTML = invites.slice(0, 12).map(invite => {
+            const receivedPending = invite.direction === 'received' && invite.status === 'pending';
+            const sentPending = invite.direction === 'sent' && invite.status === 'pending';
+            const pessoa = invite.direction === 'received'
+                ? `${invite.source_client_id} - ${invite.source_name || invite.source_username}`
+                : `${invite.target_client_id} - ${invite.target_name || invite.target_username}`;
+            const status = invite.status === 'pending'
+                ? (sentPending ? 'aguardando aceite' : 'pendente')
+                : invite.status === 'accepted' ? 'aceito' : 'recusado';
+            const syncText = invite.source_keep_synced ? 'Origem quer manter sincronizado.' : 'Envio único pela origem.';
+            const actions = receivedPending ? `
+                <label class="sync-auto-row">
+                    <input type="checkbox" id="acceptSync_${escaparHtml(invite.id)}">
+                    <span>Também quero manter sincronizado</span>
+                </label>
+                <div class="row">
+                    <button class="btn-success" onclick="aceitarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Aceitar</button>
+                    <button class="btn-danger" onclick="recusarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Recusar</button>
+                </div>
+            ` : '';
+            return `
+                <div class="user-share-item">
+                    <strong>${escaparHtml(pessoa)}</strong>
+                    <div class="small">${escaparHtml((invite.scope_labels || []).join(', '))}</div>
+                    <div class="muted-line">${escaparHtml(status)} | ${escaparHtml(syncText)}</div>
+                    ${invite.message ? `<div class="muted-line">${escaparHtml(invite.message)}</div>` : ''}
+                    ${actions}
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderVinculosCompartilhamentoUsuario(payload) {
+        const el = document.getElementById('userShareLinks');
+        if (!el) return;
+        const links = Array.isArray(payload && payload.links) ? payload.links : [];
+        if (!links.length) {
+            el.innerHTML = '<div class="user-share-empty">Nenhum compartilhamento ativo.</div>';
+            return;
+        }
+        el.innerHTML = links.slice(0, 12).map(link => {
+            const souOrigem = link.direction === 'source';
+            const pessoa = souOrigem
+                ? `${link.target_client_id} - ${link.target_name || link.target_username}`
+                : `${link.source_client_id} - ${link.source_name || link.source_username}`;
+            const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
+            const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
+            const syncStatus = link.auto_sync_enabled
+                ? 'sincronização contínua ativa'
+                : `sincronização contínua incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
+            const action = souOrigem
+                ? `<button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>`
+                : `<button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Importar agora</button>`;
+            return `
+                <div class="user-share-item">
+                    <strong>${escaparHtml(pessoa)}</strong>
+                    <div class="small">${escaparHtml((link.scope_labels || []).join(', '))}</div>
+                    <div class="muted-line">${link.active ? 'ativo' : 'pausado'} | ${escaparHtml(syncStatus)}</div>
+                    <label class="sync-auto-row">
+                        <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
+                        <span>Manter sincronizado do meu lado</span>
+                    </label>
+                    <div class="row">
+                        ${action}
+                        <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderCompartilhamentoEntreUsuarios(payload) {
+        compartilhamentoUsuariosCache = payload || {};
+        const summary = document.getElementById('userShareSummary');
+        if (summary) {
+            const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+            const links = Array.isArray(payload && payload.links) ? payload.links : [];
+            const pendentes = invites.filter(item => item.direction === 'received' && item.status === 'pending').length;
+            summary.textContent = `${pendentes} convite(s) pendente(s) | ${links.length} vínculo(s)`;
+        }
+        renderEscoposCompartilhamentoUsuario(payload);
+        renderConvitesCompartilhamentoUsuario(payload);
+        renderVinculosCompartilhamentoUsuario(payload);
+    }
+
+    function scopesSelecionadosCompartilhamentoUsuario() {
+        return Array.from(document.querySelectorAll('[data-user-share-scope]:checked'))
+            .map(el => String(el.dataset.userShareScope || '').trim())
+            .filter(Boolean);
+    }
+
+    function limparConviteCompartilhamentoUsuario() {
+        const msg = document.getElementById('userShareMessage');
+        if (msg) msg.value = '';
+        const sync = document.getElementById('userShareKeepSynced');
+        if (sync) sync.checked = false;
+    }
+
+    async function carregarUsuariosParaCompartilhar() {
+        try {
+            const resp = await fetch('/api/shared-sync/users', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar usuários.');
+            renderUsuariosCompartilhamento(data);
+            return true;
+        } catch (error) {
+            const summary = document.getElementById('userShareSummary');
+            if (summary) summary.textContent = error.message || 'Erro ao carregar usuários.';
+            return false;
+        }
+    }
+
+    async function carregarCompartilhamentoEntreUsuarios() {
+        const summary = document.getElementById('userShareSummary');
+        if (summary) summary.textContent = 'Carregando convites e vínculos...';
+        await carregarUsuariosParaCompartilhar();
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar compartilhamentos.');
+            renderCompartilhamentoEntreUsuarios(data);
+            return true;
+        } catch (error) {
+            if (summary) summary.textContent = error.message || 'Erro ao carregar compartilhamentos.';
+            return false;
+        }
+    }
+
+    async function enviarConviteCompartilhamentoUsuario() {
+        const targetRaw = String(document.getElementById('userShareTarget')?.value || '').trim();
+        if (!targetRaw) {
+            setStatus('Selecione o usuário de destino.', true);
+            return;
+        }
+        const [target_username, target_client_id] = targetRaw.split('|');
+        const scopes = scopesSelecionadosCompartilhamentoUsuario();
+        if (!scopes.length) {
+            setStatus('Selecione pelo menos um dado para compartilhar.', true);
+            return;
+        }
+        setStatus('Enviando convite e preparando pacote...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invite', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    target_username,
+                    target_client_id,
+                    scopes,
+                    keep_synced: !!document.getElementById('userShareKeepSynced')?.checked,
+                    message: document.getElementById('userShareMessage')?.value || '',
+                    machine_id: machineIdAtual()
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar convite.');
+            limparConviteCompartilhamentoUsuario();
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Convite enviado.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao enviar convite.', true);
+        }
+    }
+
+    async function aceitarConviteCompartilhamentoUsuario(inviteId) {
+        const keepSynced = !!document.getElementById('acceptSync_' + inviteId)?.checked;
+        if (!confirm('Aceitar e importar os dados deste usuário? O sistema cria backup local antes de aplicar.')) return;
+        setStatus('Aceitando convite e importando dados...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/accept', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ keep_synced: keepSynced, machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao aceitar convite.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Convite aceito.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao aceitar convite.', true);
+        }
+    }
+
+    async function recusarConviteCompartilhamentoUsuario(inviteId) {
+        if (!confirm('Recusar este convite de compartilhamento?')) return;
+        setStatus('Recusando convite...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/reject', {
+                method: 'POST',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recusar convite.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Convite recusado.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao recusar convite.', true);
+        }
+    }
+
+    async function alterarSyncVinculoCompartilhamentoUsuario(linkId, keepSynced) {
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId), {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ keep_synced: !!keepSynced })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao atualizar vínculo.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Preferências atualizadas.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao atualizar vínculo.', true);
+        }
+    }
+
+    async function pausarVinculoCompartilhamentoUsuario(linkId) {
+        if (!confirm('Pausar este compartilhamento?')) return;
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId), {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ active: false })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao pausar vínculo.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Compartilhamento pausado.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao pausar vínculo.', true);
+        }
+    }
+
+    async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
+        const endpoint = direcao === 'push' ? 'push' : 'pull';
+        if (direcao === 'pull' && !confirm('Importar estes dados agora? O sistema cria backup local antes de aplicar.')) return;
+        setStatus(direcao === 'push' ? 'Enviando dados do vínculo...' : 'Importando dados do vínculo...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
+        } catch (error) {
+            setStatus(error.message || 'Erro ao sincronizar vínculo.', true);
+        }
+    }
+
+    function enviarVinculoCompartilhamentoUsuario(linkId) {
+        executarVinculoCompartilhamentoUsuario(linkId, 'push');
+    }
+
+    function receberVinculoCompartilhamentoUsuario(linkId) {
+        executarVinculoCompartilhamentoUsuario(linkId, 'pull');
     }
 
     async function carregarOnlineUsuarios() {
@@ -575,6 +1306,10 @@
     }
 
     async function carregarUsuarios() {
+        if (!usuarioAdmin) {
+            await carregarCompartilhamentoEntreUsuarios();
+            return;
+        }
         setStatus('Carregando usuários...');
         const resp = await fetch('/api/admin/users', { headers: obterAuthHeaders() });
         const data = await resp.json();
@@ -585,6 +1320,8 @@
         usuariosCache = data.users || [];
         renderTabela(usuariosCache);
         await carregarOnlineUsuarios();
+        await carregarCompartilhamentoDados();
+        await carregarCompartilhamentoEntreUsuarios();
         setStatus('Lista atualizada.');
     }
 
@@ -694,10 +1431,17 @@
         setStatus(data.message || 'Usuário removido.');
     }
 
-    renderPermissionGrid();
-    limparFormulario();
+    aplicarModoAcesso();
+    if (usuarioAdmin) {
+        renderPermissionGrid();
+        limparFormulario();
+    }
     carregarUsuarios();
-    setInterval(carregarOnlineUsuarios, 30000);
+    if (usuarioAdmin) {
+        setInterval(carregarOnlineUsuarios, 30000);
+        setInterval(carregarCompartilhamentoDados, 90000);
+    }
+    setInterval(carregarCompartilhamentoEntreUsuarios, 90000);
 </script>
 <script src="/ia-sidebar.js"></script>
 </body>

@@ -56,6 +56,7 @@ import time
 import random
 import sqlite3
 import functools
+import fnmatch
 from urllib.parse import quote, quote_plus, urlencode, urlparse, parse_qs, unquote
 import asyncio
 import shutil
@@ -137,6 +138,7 @@ FIREBASE_AUTH_DB = None
 FIREBASE_AUTH_LAST_ERROR = ""
 MACHINE_PRESENCE_LOCK = threading.RLock()
 ADMIN_MESSAGES_LOCK = threading.RLock()
+SHARED_SYNC_USER_LINKS_LOCK = threading.RLock()
 # Jobs de sincronizaÃƒÂ§ÃƒÂ£o de NCM no Cadastro por tarefa
 SYNC_NCM_JOBS = {}
 # Controle de sincronizaÃƒÂ§ÃƒÂ£o de vendas ativa por cliente (para background threading)
@@ -331,6 +333,8 @@ ARQUIVO_AUTH_DB = os.path.join(PASTA_INFO, "auth_users.db")
 ARQUIVO_FIREBASE_SERVICE_ACCOUNT = os.path.join(PASTA_INFO, "firebase-service-account.json")
 ARQUIVO_MACHINE_PRESENCE = os.path.join(PASTA_INFO, "machine_presence.json")
 ARQUIVO_ADMIN_MESSAGES = os.path.join(PASTA_INFO, "admin_messages.json")
+ARQUIVO_SHARED_SYNC_USER_INVITES = os.path.join(PASTA_INFO, "shared_sync_user_invites.json")
+ARQUIVO_SHARED_SYNC_USER_LINKS = os.path.join(PASTA_INFO, "shared_sync_user_links.json")
 ARQUIVO_CONFIG_GLOBAIS = os.path.join(PASTA_INFO, "configuracoes_globais.json")
 ARQUIVO_VERTEX_AGENT_API_KEY = os.path.join(PASTA_INFO, "vertex_agent_api_key.txt")
 IA_AGENT_API_KEY_ENV_KEYS = (
@@ -781,6 +785,41 @@ class AdminUserMessageRequest(BaseModel):
 class MachinePresenceHeartbeatRequest(BaseModel):
     machine_id: Optional[str] = None
     page: Optional[str] = ""
+
+class SharedSyncScopeConfigRequest(BaseModel):
+    enabled: bool = False
+    allowed_users: Optional[list[str]] = None
+    auto_pull: bool = True
+    auto_push: bool = False
+    share_between_users: bool = False
+    conflict: Optional[str] = "latest_wins"
+
+class SharedSyncConfigRequest(BaseModel):
+    scopes: dict = {}
+
+class SharedSyncRunRequest(BaseModel):
+    scopes: Optional[list[str]] = None
+    machine_id: Optional[str] = None
+
+class SharedSyncUserInviteCreateRequest(BaseModel):
+    target_username: str = ""
+    target_client_id: Optional[str] = None
+    scopes: Optional[list[str]] = None
+    keep_synced: bool = False
+    message: Optional[str] = ""
+    machine_id: Optional[str] = None
+
+class SharedSyncUserInviteActionRequest(BaseModel):
+    keep_synced: bool = False
+    machine_id: Optional[str] = None
+
+class SharedSyncUserLinkUpdateRequest(BaseModel):
+    keep_synced: Optional[bool] = None
+    active: Optional[bool] = None
+
+class SharedSyncUserLinkRunRequest(BaseModel):
+    scopes: Optional[list[str]] = None
+    machine_id: Optional[str] = None
 
 class IAChatAttachment(BaseModel):
     name: str
@@ -20263,6 +20302,1619 @@ def _admin_messages_mark_read(message_id: str, username: str, client_id: str) ->
     return atualizado
 
 
+SHARED_SYNC_SCOPES = {
+    "cadastro": {
+        "label": "Cadastro",
+        "description": "Produtos cadastrados, custos por loja e fotos do cadastro.",
+        "patterns": ["cadastro_produtos.csv", "cadastro_custos_lojas.csv", "cadastro_fotos/**"],
+        "sensitive": False,
+    },
+    "lojas_integracoes": {
+        "label": "Lojas e integracoes",
+        "description": "Lojas, tokens e configuracoes de Bling, Mercado Livre e automacoes.",
+        "patterns": [
+            "lojas_config.json",
+            "perguntas_pos_venda_lojas_config.json",
+            "ia_treinamento_perguntas_pos_venda.json",
+            "perguntas_pos_venda_ia_state.json",
+            "perguntas_pos_venda_ia_aprovacoes.json",
+            "integracoes.json",
+            "bling_conf.json",
+        ],
+        "sensitive": True,
+    },
+    "vendas": {
+        "label": "Vendas",
+        "description": "Historico de vendas local e estado das sincronizacoes.",
+        "patterns": ["vendas_historico*.db", "vendas_sync_state.json"],
+        "sensitive": False,
+    },
+    "favoritos_historico": {
+        "label": "Historico de favoritos",
+        "description": "Historico de rankings e execucoes de favoritos por usuario.",
+        "patterns": ["favoritos_historico_*.json"],
+        "user_scoped": True,
+        "sensitive": False,
+    },
+    "sku_campos_pesquisa": {
+        "label": "Campos de pesquisa do SKU",
+        "description": "Campos pesquisa_1, pesquisa_2 e pesquisa_3 salvos para os SKUs.",
+        "patterns": ["favoritos_pesquisas_*.json"],
+        "user_scoped": True,
+        "sensitive": False,
+    },
+}
+
+SHARED_SYNC_ALLOWED_EXTENSIONS = {".json", ".csv", ".db", ".sqlite", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".webp"}
+SHARED_SYNC_CHUNK_CHARS = 620_000
+SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
+SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES = 75 * 1024 * 1024
+
+
+def _firebase_shared_sync_config_collection_name() -> str:
+    return _env_texto("FIREBASE_SHARED_SYNC_CONFIG_COLLECTION", "JK_FIREBASE_SHARED_SYNC_CONFIG_COLLECTION") or "jk_sistema_shared_sync_config"
+
+
+def _firebase_shared_sync_collection_name() -> str:
+    return _env_texto("FIREBASE_SHARED_SYNC_COLLECTION", "JK_FIREBASE_SHARED_SYNC_COLLECTION") or "jk_sistema_shared_sync"
+
+
+def _firebase_shared_sync_chunks_collection_name() -> str:
+    return _env_texto("FIREBASE_SHARED_SYNC_CHUNKS_COLLECTION", "JK_FIREBASE_SHARED_SYNC_CHUNKS_COLLECTION") or "jk_sistema_shared_sync_chunks"
+
+
+def _firebase_shared_sync_user_invites_collection_name() -> str:
+    return _env_texto("FIREBASE_SHARED_SYNC_USER_INVITES_COLLECTION", "JK_FIREBASE_SHARED_SYNC_USER_INVITES_COLLECTION") or "jk_sistema_shared_sync_user_invites"
+
+
+def _firebase_shared_sync_user_links_collection_name() -> str:
+    return _env_texto("FIREBASE_SHARED_SYNC_USER_LINKS_COLLECTION", "JK_FIREBASE_SHARED_SYNC_USER_LINKS_COLLECTION") or "jk_sistema_shared_sync_user_links"
+
+
+def _shared_sync_safe_doc_id(*partes: str) -> str:
+    raw = "|".join(str(parte or "").strip().lower() for parte in partes)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _shared_sync_doc_id(client_id: str, scope: str) -> str:
+    return _shared_sync_safe_doc_id("shared-sync", client_id, scope)
+
+
+def _shared_sync_pair_doc_id(source_client_id: str, source_username: str, target_client_id: str, target_username: str, scope: str) -> str:
+    return _shared_sync_safe_doc_id("shared-sync-user-pair", source_client_id, source_username, target_client_id, target_username, scope)
+
+
+def _shared_sync_config_doc_id(client_id: str) -> str:
+    return _shared_sync_safe_doc_id("shared-sync-config", client_id)
+
+
+def _shared_sync_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _shared_sync_env_int(nome: str, padrao: int, minimo: int, maximo: int) -> int:
+    try:
+        valor = int(float(os.getenv(nome, str(padrao)) or padrao))
+        return max(minimo, min(valor, maximo))
+    except Exception:
+        return padrao
+
+
+def _shared_sync_max_file_bytes() -> int:
+    return _shared_sync_env_int("JK_SHARED_SYNC_MAX_FILE_BYTES", SHARED_SYNC_DEFAULT_MAX_FILE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
+
+
+def _shared_sync_max_bundle_bytes() -> int:
+    return _shared_sync_env_int("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
+
+
+def _shared_sync_scope_public(scope: str) -> dict:
+    item = SHARED_SYNC_SCOPES.get(scope) or {}
+    return {
+        "key": scope,
+        "label": item.get("label") or scope,
+        "description": item.get("description") or "",
+        "sensitive": bool(item.get("sensitive")),
+        "user_scoped": bool(item.get("user_scoped")),
+        "patterns": list(item.get("patterns") or []),
+    }
+
+
+def _shared_sync_normalizar_scope_config(scope: str, valor: Any = None) -> dict:
+    payload = valor if isinstance(valor, dict) else {}
+    allowed = payload.get("allowed_users")
+    if not isinstance(allowed, list):
+        allowed = []
+    allowed_norm = []
+    vistos = set()
+    for item in allowed:
+        username = str(item or "").strip().lower()
+        if username and username not in vistos:
+            vistos.add(username)
+            allowed_norm.append(username)
+    conflict = str(payload.get("conflict") or "latest_wins").strip().lower()
+    if conflict not in {"latest_wins", "manual"}:
+        conflict = "latest_wins"
+    return {
+        "enabled": bool(payload.get("enabled", False)),
+        "allowed_users": allowed_norm,
+        "auto_pull": bool(payload.get("auto_pull", True)),
+        "auto_push": bool(payload.get("auto_push", False)),
+        "share_between_users": bool(payload.get("share_between_users", False)),
+        "conflict": conflict,
+    }
+
+
+def _shared_sync_config_default(client_id: str) -> dict:
+    return {
+        "client_id": str(client_id or "default").strip() or "default",
+        "updated_at": "",
+        "updated_by": "",
+        "scopes": {
+            scope: _shared_sync_normalizar_scope_config(scope, {})
+            for scope in SHARED_SYNC_SCOPES
+        },
+    }
+
+
+def _shared_sync_config_local_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "shared_sync_config.json")
+
+
+def _shared_sync_config_local_read(client_id: str) -> Optional[dict]:
+    path = _shared_sync_config_local_path(client_id)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao ler config local: %s", exc)
+        return None
+
+
+def _shared_sync_config_local_write(client_id: str, config: dict) -> None:
+    path = _shared_sync_config_local_path(client_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def _shared_sync_safe_filename(valor: str) -> str:
+    texto = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(valor or "default").strip())
+    return (texto or "default")[:90]
+
+
+def _shared_sync_state_path(client_id: str, username: str) -> str:
+    return os.path.join(get_tenant_path(client_id), f"shared_sync_state_{_shared_sync_safe_filename(username)}.json")
+
+
+def _shared_sync_state_read(client_id: str, username: str) -> dict:
+    path = _shared_sync_state_path(client_id, username)
+    try:
+        if not os.path.exists(path):
+            return {"scopes": {}}
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {"scopes": {}}
+    except Exception:
+        return {"scopes": {}}
+
+
+def _shared_sync_state_write(client_id: str, username: str, data: dict) -> None:
+    path = _shared_sync_state_path(client_id, username)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = data if isinstance(data, dict) else {"scopes": {}}
+    payload["updated_at"] = _shared_sync_now_iso()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _shared_sync_state_update(client_id: str, username: str, scope: str, meta: dict, direction: str) -> None:
+    state = _shared_sync_state_read(client_id, username)
+    scopes = state.setdefault("scopes", {})
+    scopes[scope] = {
+        "snapshot_hash": str((meta or {}).get("snapshot_hash") or ""),
+        "remote_updated_at": str((meta or {}).get("updated_at") or ""),
+        "remote_updated_by": str((meta or {}).get("updated_by") or ""),
+        "direction": direction,
+        "synced_at": _shared_sync_now_iso(),
+    }
+    _shared_sync_state_write(client_id, username, state)
+
+
+def _shared_sync_config_normalizar(client_id: str, data: Optional[dict]) -> dict:
+    config = _shared_sync_config_default(client_id)
+    payload = data if isinstance(data, dict) else {}
+    config["updated_at"] = str(payload.get("updated_at") or "")
+    config["updated_by"] = str(payload.get("updated_by") or "")
+    scopes_in = payload.get("scopes") if isinstance(payload.get("scopes"), dict) else {}
+    for scope in SHARED_SYNC_SCOPES:
+        config["scopes"][scope] = _shared_sync_normalizar_scope_config(scope, scopes_in.get(scope))
+    return config
+
+
+def _shared_sync_config_read(client_id: str) -> dict:
+    client_norm = str(client_id or "default").strip() or "default"
+    db = _firebase_db() if _firebase_deve_usar() else None
+    if db is not None:
+        try:
+            snap = db.collection(_firebase_shared_sync_config_collection_name()).document(_shared_sync_config_doc_id(client_norm)).get()
+            if snap.exists:
+                config = _shared_sync_config_normalizar(client_norm, snap.to_dict() or {})
+                _shared_sync_config_local_write(client_norm, config)
+                return config
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha ao ler config no Firebase: %s", exc)
+    return _shared_sync_config_normalizar(client_norm, _shared_sync_config_local_read(client_norm))
+
+
+def _shared_sync_config_save(client_id: str, payload: dict, updated_by: str = "") -> dict:
+    client_norm = str(client_id or "default").strip() or "default"
+    atual = _shared_sync_config_read(client_norm)
+    scopes_payload = payload.get("scopes") if isinstance(payload, dict) and isinstance(payload.get("scopes"), dict) else {}
+    for scope in SHARED_SYNC_SCOPES:
+        if scope in scopes_payload:
+            atual["scopes"][scope] = _shared_sync_normalizar_scope_config(scope, scopes_payload.get(scope))
+    atual["updated_at"] = _shared_sync_now_iso()
+    atual["updated_by"] = str(updated_by or "").strip().lower()
+    _shared_sync_config_local_write(client_norm, atual)
+    db = _firebase_db() if _firebase_deve_usar() else None
+    if db is not None:
+        try:
+            db.collection(_firebase_shared_sync_config_collection_name()).document(_shared_sync_config_doc_id(client_norm)).set(atual, merge=True)
+            atual["backend"] = "firebase"
+            return atual
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha ao salvar config no Firebase: %s", exc)
+    atual["backend"] = "local"
+    return atual
+
+
+def _shared_sync_session(authorization: Optional[str], client_id: str) -> dict:
+    sessao = _payload_sessao_por_authorization(authorization)
+    username = str(sessao.get("username") or "").strip().lower()
+    client_sessao = str(sessao.get("client_id") or "default").strip() or "default"
+    client_norm = str(client_id or client_sessao or "default").strip() or "default"
+    if client_sessao != client_norm:
+        raise HTTPException(status_code=403, detail="Sessao invalida para esse cliente.")
+    usuario = _obter_usuario_sql(username)
+    permissoes = _carregar_permissoes_usuario(username, client_norm)
+    return {
+        "username": username,
+        "client_id": client_norm,
+        "usuario": usuario,
+        "permissions": permissoes,
+        "is_admin": bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True),
+    }
+
+
+def _shared_sync_require_admin(authorization: Optional[str], client_id: str) -> dict:
+    sessao = _shared_sync_session(authorization, client_id)
+    if not sessao.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Apenas administradores podem alterar compartilhamento.")
+    return sessao
+
+
+def _shared_sync_user_allowed(config: dict, scope: str, sessao: dict) -> bool:
+    scope_cfg = ((config or {}).get("scopes") or {}).get(scope) or {}
+    if not scope_cfg.get("enabled"):
+        return False
+    if sessao.get("is_admin"):
+        return True
+    allowed = scope_cfg.get("allowed_users") or []
+    if not allowed:
+        return True
+    return str(sessao.get("username") or "").strip().lower() in allowed
+
+
+def _shared_sync_resolver_scopes(config: dict, requested: Optional[list[str]], sessao: dict) -> list[str]:
+    if requested:
+        scopes = [str(scope or "").strip() for scope in requested]
+    else:
+        scopes = list(SHARED_SYNC_SCOPES.keys())
+    saida = []
+    for scope in scopes:
+        if scope not in SHARED_SYNC_SCOPES:
+            raise HTTPException(status_code=400, detail=f"Escopo de compartilhamento invalido: {scope}")
+        if _shared_sync_user_allowed(config, scope, sessao):
+            saida.append(scope)
+    if not saida:
+        raise HTTPException(status_code=403, detail="Nenhum escopo de dados compartilhados habilitado para este usuario.")
+    return saida
+
+
+def _shared_sync_relativo_seguro(rel_path: str) -> str:
+    rel = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
+    norm = os.path.normpath(rel).replace("\\", "/")
+    if not norm or norm == "." or norm == ".." or norm.startswith("../") or os.path.isabs(norm):
+        raise HTTPException(status_code=400, detail="Pacote contem caminho invalido.")
+    return norm
+
+
+def _shared_sync_scope_match(scope: str, rel_path: str) -> bool:
+    info = SHARED_SYNC_SCOPES.get(scope) or {}
+    rel = _shared_sync_relativo_seguro(rel_path).lower()
+    for pattern in info.get("patterns") or []:
+        pat = str(pattern or "").replace("\\", "/").strip().lower()
+        if not pat:
+            continue
+        if pat.endswith("/**"):
+            prefix = pat[:-3].rstrip("/") + "/"
+            if rel.startswith(prefix):
+                return True
+        elif fnmatch.fnmatch(rel, pat):
+            return True
+    return False
+
+
+def _shared_sync_sha256_file(path: str) -> str:
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _shared_sync_ler_arquivo_pacote(path: str) -> bytes:
+    ext = os.path.splitext(str(path or ""))[1].lower()
+    if ext in {".db", ".sqlite"} and os.path.exists(path):
+        tmp_path = f"{path}.sharedsync_{uuid.uuid4().hex}.tmp"
+        src = None
+        dst = None
+        try:
+            src = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=15)
+            dst = sqlite3.connect(tmp_path)
+            src.backup(dst)
+            dst.close()
+            src.close()
+            dst = None
+            src = None
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha no backup online do SQLite %s; usando leitura direta: %s", path, exc)
+        finally:
+            try:
+                if dst:
+                    dst.close()
+            except Exception:
+                pass
+            try:
+                if src:
+                    src.close()
+            except Exception:
+                pass
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = "", user_only: bool = False) -> tuple[list[dict], list[str]]:
+    tenant_path = get_tenant_path(client_id)
+    tenant_abs = os.path.abspath(tenant_path)
+    max_file = _shared_sync_max_file_bytes()
+    warnings = []
+    entries: list[dict] = []
+    if not os.path.exists(tenant_abs):
+        return entries, warnings
+    user_scoped_rel = ""
+    if user_only and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")):
+        slug = _favoritos_usuario_slug(username)
+        if scope == "favoritos_historico":
+            user_scoped_rel = f"favoritos_historico_{slug}.json"
+        elif scope == "sku_campos_pesquisa":
+            user_scoped_rel = f"favoritos_pesquisas_{slug}.json"
+
+    for root, dirs, files in os.walk(tenant_abs):
+        dirs[:] = [
+            d for d in dirs
+            if d not in {"__pycache__", "_drive_restore_backup", "_shared_sync_backups"} and not d.startswith(".")
+        ]
+        for filename in files:
+            lower = filename.lower()
+            if lower.startswith(("drive_sync_state_", "shared_sync_config")):
+                continue
+            if lower.endswith((".tmp", ".log", ".bak")) or ".backup_" in lower:
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in SHARED_SYNC_ALLOWED_EXTENSIONS:
+                continue
+            abs_path = os.path.abspath(os.path.join(root, filename))
+            if not abs_path.startswith(tenant_abs + os.sep):
+                continue
+            rel = os.path.relpath(abs_path, tenant_abs).replace("\\", "/")
+            if user_scoped_rel and rel != user_scoped_rel:
+                continue
+            if not _shared_sync_scope_match(scope, rel):
+                continue
+            try:
+                size = os.path.getsize(abs_path)
+            except OSError:
+                continue
+            if size > max_file:
+                warnings.append(f"{rel} ignorado: arquivo maior que o limite de sincronizacao.")
+                continue
+            try:
+                entries.append({
+                    "relative_path": _shared_sync_relativo_seguro(rel),
+                    "abs_path": abs_path,
+                    "size": size,
+                    "mtime": os.path.getmtime(abs_path),
+                    "sha256": _shared_sync_sha256_file(abs_path),
+                })
+            except Exception as exc:
+                warnings.append(f"{rel} ignorado: {exc}")
+    entries.sort(key=lambda item: item["relative_path"])
+    return entries, warnings
+
+
+def _shared_sync_snapshot_hash(entries: list[dict]) -> str:
+    sha = hashlib.sha256()
+    for item in entries:
+        sha.update(str(item.get("relative_path") or "").encode("utf-8"))
+        sha.update(b"\0")
+        sha.update(str(item.get("size") or 0).encode("ascii"))
+        sha.update(b"\0")
+        sha.update(str(item.get("sha256") or "").encode("ascii"))
+        sha.update(b"\n")
+    return sha.hexdigest()
+
+
+def _shared_sync_montar_pacote(client_id: str, scope: str, username: str, machine_id: str = "", user_only: bool = False) -> tuple[bytes, dict, list[str]]:
+    entries, warnings = _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+    manifest = {
+        "schema": 1,
+        "app": "JK Sistema",
+        "scope": scope,
+        "client_id": str(client_id or "default").strip() or "default",
+        "created_at": _shared_sync_now_iso(),
+        "created_by": str(username or "").strip().lower(),
+        "machine_id": str(machine_id or "").strip(),
+        "snapshot_hash": _shared_sync_snapshot_hash(entries),
+        "file_count": len(entries),
+        "files": [
+            {
+                "relative_path": item["relative_path"],
+                "size": item["size"],
+                "mtime": item["mtime"],
+                "sha256": item["sha256"],
+            }
+            for item in entries
+        ],
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for item in entries:
+            zf.writestr("files/" + item["relative_path"], _shared_sync_ler_arquivo_pacote(item["abs_path"]))
+    bundle = buffer.getvalue()
+    if len(bundle) > _shared_sync_max_bundle_bytes():
+        raise HTTPException(
+            status_code=413,
+            detail="Pacote maior que o limite de sincronizacao. Reduza arquivos antigos ou aumente JK_SHARED_SYNC_MAX_BUNDLE_BYTES.",
+        )
+    return bundle, manifest, warnings
+
+
+def _shared_sync_firestore_required():
+    db = _firebase_db()
+    if db is None:
+        detalhe = FIREBASE_AUTH_LAST_ERROR or "Firebase nao configurado para sincronizacao compartilhada."
+        raise HTTPException(status_code=503, detail=detalhe)
+    return db
+
+
+def _shared_sync_delete_chunks(db, bundle_id: str) -> None:
+    try:
+        coll = db.collection(_firebase_shared_sync_chunks_collection_name())
+        for snap in coll.where("bundle_id", "==", bundle_id).stream():
+            snap.reference.delete()
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao limpar chunks antigos: %s", exc)
+
+
+def _shared_sync_push_scope(
+    client_id: str,
+    scope: str,
+    sessao: dict,
+    machine_id: str = "",
+    bundle_id: Optional[str] = None,
+    extra_meta: Optional[dict] = None,
+    user_only: bool = False,
+) -> dict:
+    db = _shared_sync_firestore_required()
+    bundle, manifest, warnings = _shared_sync_montar_pacote(client_id, scope, sessao.get("username"), machine_id, user_only=user_only)
+    bundle_b64 = base64.b64encode(bundle).decode("ascii")
+    bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
+    chunks = [bundle_b64[i:i + SHARED_SYNC_CHUNK_CHARS] for i in range(0, len(bundle_b64), SHARED_SYNC_CHUNK_CHARS)] or [""]
+    _shared_sync_delete_chunks(db, bundle_id)
+    chunks_coll = db.collection(_firebase_shared_sync_chunks_collection_name())
+    for idx, chunk in enumerate(chunks):
+        chunks_coll.document(f"{bundle_id}_{idx:05d}").set({
+            "bundle_id": bundle_id,
+            "client_id": str(client_id or "default").strip() or "default",
+            "scope": scope,
+            "index": idx,
+            "data": chunk,
+            "updated_at": manifest["created_at"],
+        })
+    meta = {
+        "id": bundle_id,
+        "client_id": str(client_id or "default").strip() or "default",
+        "scope": scope,
+        "updated_at": manifest["created_at"],
+        "updated_ts": int(time.time()),
+        "updated_by": sessao.get("username") or "",
+        "machine_id": str(machine_id or "").strip(),
+        "file_count": manifest.get("file_count") or 0,
+        "bundle_bytes": len(bundle),
+        "bundle_b64_chars": len(bundle_b64),
+        "chunk_count": len(chunks),
+        "snapshot_hash": manifest.get("snapshot_hash") or "",
+        "files": (manifest.get("files") or [])[:250],
+        "warnings": warnings,
+    }
+    if isinstance(extra_meta, dict):
+        meta.update(extra_meta)
+    db.collection(_firebase_shared_sync_collection_name()).document(bundle_id).set(meta, merge=False)
+    _shared_sync_state_update(client_id, sessao.get("username") or "", scope, meta, "push")
+    return {
+        "scope": scope,
+        "success": True,
+        "direction": "push",
+        "id": bundle_id,
+        "file_count": meta["file_count"],
+        "chunk_count": meta["chunk_count"],
+        "bundle_bytes": meta["bundle_bytes"],
+        "snapshot_hash": meta["snapshot_hash"],
+        "warnings": warnings,
+        "updated_at": meta["updated_at"],
+    }
+
+
+def _shared_sync_remote_meta(client_id: str, scope: str) -> Optional[dict]:
+    return _shared_sync_remote_meta_by_id(_shared_sync_doc_id(client_id, scope))
+
+
+def _shared_sync_remote_meta_by_id(bundle_id: str) -> Optional[dict]:
+    db = _firebase_db() if _firebase_deve_usar() else None
+    if db is None:
+        return None
+    try:
+        snap = db.collection(_firebase_shared_sync_collection_name()).document(str(bundle_id or "").strip()).get()
+        if not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        data["id"] = data.get("id") or snap.id
+        return data
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao ler metadados remotos: %s", exc)
+        return None
+
+
+def _shared_sync_obter_bundle_remoto(client_id: str, scope: str) -> tuple[bytes, dict]:
+    return _shared_sync_obter_bundle_por_id(_shared_sync_doc_id(client_id, scope))
+
+
+def _shared_sync_obter_bundle_por_id(bundle_id: str) -> tuple[bytes, dict]:
+    db = _shared_sync_firestore_required()
+    meta = _shared_sync_remote_meta_by_id(bundle_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Nenhum backup remoto encontrado para esse compartilhamento.")
+    bundle_id = str(meta.get("id") or bundle_id)
+    chunk_count = int(meta.get("chunk_count") or 0)
+    if chunk_count <= 0:
+        raise HTTPException(status_code=404, detail="Backup remoto sem chunks.")
+    chunks = []
+    coll = db.collection(_firebase_shared_sync_chunks_collection_name())
+    for idx in range(chunk_count):
+        snap = coll.document(f"{bundle_id}_{idx:05d}").get()
+        if not snap.exists:
+            raise HTTPException(status_code=502, detail=f"Backup remoto incompleto: parte {idx + 1}/{chunk_count}.")
+        data = snap.to_dict() or {}
+        chunks.append(str(data.get("data") or ""))
+    try:
+        bundle = base64.b64decode("".join(chunks).encode("ascii"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Backup remoto corrompido: {exc}")
+    return bundle, meta
+
+
+def _shared_sync_backup_target(tenant_abs: str, backup_dir: str, rel: str, target_abs: str) -> None:
+    if not os.path.exists(target_abs):
+        return
+    backup_abs = os.path.abspath(os.path.join(backup_dir, rel))
+    if not backup_abs.startswith(os.path.abspath(backup_dir) + os.sep):
+        raise HTTPException(status_code=400, detail="Backup local contem caminho invalido.")
+    os.makedirs(os.path.dirname(backup_abs), exist_ok=True)
+    shutil.copy2(target_abs, backup_abs)
+
+
+def _shared_sync_target_rel_usuario(scope: str, username: str) -> str:
+    slug = _favoritos_usuario_slug(username)
+    if scope == "favoritos_historico":
+        return f"favoritos_historico_{slug}.json"
+    if scope == "sku_campos_pesquisa":
+        return f"favoritos_pesquisas_{slug}.json"
+    raise HTTPException(status_code=400, detail="Escopo nao permite compartilhamento entre usuarios.")
+
+
+def _shared_sync_json_from_bytes(data: bytes, rel: str) -> Any:
+    try:
+        return json.loads((data or b"").decode("utf-8-sig"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Arquivo JSON invalido no pacote ({rel}): {exc}")
+
+
+def _shared_sync_historico_key(item: dict) -> str:
+    if not isinstance(item, dict):
+        return hashlib.sha256(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    base = str(item.get("id") or "").strip()
+    if base:
+        return base
+    bruto = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
+
+
+def _shared_sync_merge_historico_usuario(client_id: str, username: str, fontes: list[tuple[str, bytes]]) -> dict:
+    atual = _favoritos_carregar_historico(client_id, username)
+    por_id: dict[str, dict] = {}
+    for entrada in _favoritos_normalizar_historico((atual or {}).get("historico") or []):
+        por_id[_shared_sync_historico_key(entrada)] = entrada
+    for rel, data in fontes:
+        payload = _shared_sync_json_from_bytes(data, rel)
+        historico_raw = payload.get("historico") if isinstance(payload, dict) else payload
+        for entrada in _favoritos_normalizar_historico(historico_raw or []):
+            chave = _shared_sync_historico_key(entrada)
+            atual_item = por_id.get(chave)
+            data_nova = str(entrada.get("data_iso") or entrada.get("updated_at") or "")
+            data_atual = str((atual_item or {}).get("data_iso") or (atual_item or {}).get("updated_at") or "")
+            if not atual_item or data_nova >= data_atual:
+                por_id[chave] = entrada
+    historico = sorted(por_id.values(), key=lambda item: str((item or {}).get("data_iso") or ""), reverse=True)
+    return _favoritos_salvar_historico(client_id, username, historico)
+
+
+def _shared_sync_pesquisas_from_payload(payload: Any) -> dict:
+    pesquisas = payload.get("pesquisas") if isinstance(payload, dict) else {}
+    if not isinstance(pesquisas, dict):
+        return {}
+    saida: dict[str, dict] = {}
+    for chave, item in pesquisas.items():
+        if not isinstance(item, dict):
+            continue
+        chave_txt = str(chave or "").strip()
+        sku_raw = item.get("sku") or (chave_txt[5:] if chave_txt.lower().startswith("sku::") else chave_txt)
+        sku_norm = _normalizar_sku_match_favoritos(str(sku_raw or "").strip())
+        chave_norm = _favoritos_chave_pesquisa_usuario("", sku_norm)
+        if not chave_norm:
+            continue
+        novo = {
+            "loja": str(item.get("loja") or "").strip(),
+            "sku": sku_norm,
+            "produto": _favoritos_limpar_nome_produto(item.get("produto") or item.get("nome") or ""),
+            "pesquisa_1": str(item.get("pesquisa_1") or "").strip(),
+            "pesquisa_2": str(item.get("pesquisa_2") or "").strip(),
+            "pesquisa_3": str(item.get("pesquisa_3") or "").strip(),
+            "updated_at": item.get("updated_at"),
+        }
+        saida[chave_norm] = _favoritos_escolher_pesquisa_usuario(saida.get(chave_norm), novo)
+    return saida
+
+
+def _shared_sync_merge_pesquisas_usuario(client_id: str, username: str, fontes: list[tuple[str, bytes]]) -> dict:
+    atual = _favoritos_carregar_pesquisas_usuario(client_id, username)
+    pesquisas = dict((atual or {}).get("pesquisas") or {})
+    for rel, data in fontes:
+        payload = _shared_sync_json_from_bytes(data, rel)
+        for chave, item in _shared_sync_pesquisas_from_payload(payload).items():
+            pesquisas[chave] = _favoritos_escolher_pesquisa_usuario(pesquisas.get(chave), item)
+    agora = datetime.now().isoformat(timespec="seconds")
+    caminho = _favoritos_arquivo_pesquisas_usuario(client_id, username)
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump({"pesquisas": pesquisas, "updated_at": agora}, f, ensure_ascii=False, indent=2)
+    return {"pesquisas": pesquisas, "updated_at": agora}
+
+
+def _shared_sync_aplicar_user_scoped_share(
+    client_id: str,
+    scope: str,
+    username: str,
+    fontes: list[tuple[str, bytes]],
+    tenant_abs: str,
+    backup_dir: str,
+) -> dict:
+    if not fontes:
+        return {"file_count": 0, "files": []}
+    target_rel = _shared_sync_target_rel_usuario(scope, username)
+    target_abs = os.path.abspath(os.path.join(tenant_abs, target_rel))
+    if not target_abs.startswith(tenant_abs + os.sep):
+        raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+    _shared_sync_backup_target(tenant_abs, backup_dir, target_rel, target_abs)
+    if scope == "favoritos_historico":
+        _shared_sync_merge_historico_usuario(client_id, username, fontes)
+    elif scope == "sku_campos_pesquisa":
+        _shared_sync_merge_pesquisas_usuario(client_id, username, fontes)
+    else:
+        raise HTTPException(status_code=400, detail="Escopo nao permite compartilhamento entre usuarios.")
+    return {
+        "file_count": 1,
+        "files": [target_rel],
+        "shared_source_count": len(fontes),
+    }
+
+
+def _shared_sync_aplicar_pacote(
+    client_id: str,
+    scope: str,
+    bundle: bytes,
+    username: str = "",
+    scope_config: Optional[dict] = None,
+) -> dict:
+    tenant_path = get_tenant_path(client_id)
+    tenant_abs = os.path.abspath(tenant_path)
+    backup_dir = os.path.join(tenant_abs, "_shared_sync_backups", f"{scope}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    escritos = []
+    user_scoped_fontes: list[tuple[str, bytes]] = []
+    share_between_users = bool((scope_config or {}).get("share_between_users")) and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))
+    with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+        manifest_raw = zf.read("manifest.json")
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        if str(manifest.get("scope") or "") != scope:
+            raise HTTPException(status_code=400, detail="Backup remoto pertence a outro escopo.")
+        for item in manifest.get("files") or []:
+            rel = _shared_sync_relativo_seguro((item or {}).get("relative_path"))
+            if not _shared_sync_scope_match(scope, rel):
+                raise HTTPException(status_code=400, detail=f"Arquivo fora do escopo: {rel}")
+            member = "files/" + rel
+            try:
+                data = zf.read(member)
+            except KeyError:
+                raise HTTPException(status_code=502, detail=f"Backup remoto sem arquivo esperado: {rel}")
+            if share_between_users:
+                user_scoped_fontes.append((rel, data))
+                continue
+            target_abs = os.path.abspath(os.path.join(tenant_abs, rel))
+            if not target_abs.startswith(tenant_abs + os.sep):
+                raise HTTPException(status_code=400, detail="Backup contem destino invalido.")
+            _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
+            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+            with open(target_abs, "wb") as f:
+                f.write(data)
+            escritos.append(rel)
+    if share_between_users:
+        resultado_share = _shared_sync_aplicar_user_scoped_share(client_id, scope, username, user_scoped_fontes, tenant_abs, backup_dir)
+        escritos.extend(resultado_share.get("files") or [])
+    return {
+        "file_count": len(escritos),
+        "files": escritos[:250],
+        "backup_dir": backup_dir if escritos else "",
+    }
+
+
+def _shared_sync_pull_scope(client_id: str, scope: str, sessao: dict, machine_id: str = "", scope_config: Optional[dict] = None) -> dict:
+    bundle, meta = _shared_sync_obter_bundle_remoto(client_id, scope)
+    result = _shared_sync_aplicar_pacote(client_id, scope, bundle, sessao.get("username") or "", scope_config)
+    _shared_sync_state_update(client_id, sessao.get("username") or "", scope, meta, "pull")
+    return {
+        "scope": scope,
+        "success": True,
+        "direction": "pull",
+        "file_count": result.get("file_count") or 0,
+        "backup_dir": result.get("backup_dir") or "",
+        "snapshot_hash": meta.get("snapshot_hash") or "",
+        "remote_updated_at": meta.get("updated_at") or "",
+        "remote_updated_by": meta.get("updated_by") or "",
+        "remote_machine_id": meta.get("machine_id") or "",
+    }
+
+
+def _shared_sync_status_payload(client_id: str, config: Optional[dict] = None) -> dict:
+    cfg = config or _shared_sync_config_read(client_id)
+    scopes = {}
+    for scope in SHARED_SYNC_SCOPES:
+        meta = _shared_sync_remote_meta(client_id, scope) or {}
+        scopes[scope] = {
+            **_shared_sync_scope_public(scope),
+            "config": ((cfg.get("scopes") or {}).get(scope) or _shared_sync_normalizar_scope_config(scope, {})),
+            "remote": {
+                "exists": bool(meta),
+                "updated_at": meta.get("updated_at") or "",
+                "updated_by": meta.get("updated_by") or "",
+                "machine_id": meta.get("machine_id") or "",
+                "file_count": meta.get("file_count") or 0,
+                "bundle_bytes": meta.get("bundle_bytes") or 0,
+                "chunk_count": meta.get("chunk_count") or 0,
+                "warnings": meta.get("warnings") or [],
+            },
+        }
+    return {
+        "success": True,
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+        "client_id": str(client_id or "default").strip() or "default",
+        "config": cfg,
+        "scopes": scopes,
+    }
+
+
+def _shared_sync_normalizar_username(valor: str) -> str:
+    return str(valor or "").strip().lower()
+
+
+def _shared_sync_normalizar_client_id(valor: str) -> str:
+    return str(valor or "default").strip() or "default"
+
+
+def _shared_sync_resolver_scopes_usuario(requested: Optional[list[str]]) -> list[str]:
+    scopes = [str(scope or "").strip() for scope in (requested or []) if str(scope or "").strip()]
+    if not scopes:
+        raise HTTPException(status_code=400, detail="Selecione pelo menos um tipo de dado para compartilhar.")
+    saida = []
+    for scope in scopes:
+        if scope not in SHARED_SYNC_SCOPES:
+            raise HTTPException(status_code=400, detail=f"Tipo de dado invalido: {scope}")
+        if scope not in saida:
+            saida.append(scope)
+    return saida
+
+
+def _shared_sync_usuario_publico(usuario: dict) -> dict:
+    return {
+        "username": _shared_sync_normalizar_username(usuario.get("username")),
+        "name": str(usuario.get("name") or usuario.get("username") or "").strip(),
+        "email": _normalizar_email(usuario.get("email")),
+        "client_id": _shared_sync_normalizar_client_id(usuario.get("client_id")),
+        "active": bool(usuario.get("active", True)),
+    }
+
+
+def _shared_sync_resolver_usuario_destino(target_username: str, target_client_id: Optional[str] = None) -> dict:
+    alvo = _shared_sync_normalizar_username(target_username)
+    alvo_client = str(target_client_id or "").strip()
+    if not alvo and not alvo_client:
+        raise HTTPException(status_code=400, detail="Informe o usuario ou codigo do cliente de destino.")
+
+    usuarios = [_shared_sync_usuario_publico(item) for item in _listar_usuarios_admin_sql()]
+    candidatos = []
+    for usuario in usuarios:
+        username = _shared_sync_normalizar_username(usuario.get("username"))
+        client_id = _shared_sync_normalizar_client_id(usuario.get("client_id"))
+        if alvo_client and client_id != alvo_client:
+            continue
+        if alvo and username != alvo and client_id != alvo:
+            continue
+        candidatos.append(usuario)
+
+    if not candidatos and alvo:
+        for usuario in usuarios:
+            client_id = _shared_sync_normalizar_client_id(usuario.get("client_id"))
+            if client_id == alvo:
+                candidatos.append(usuario)
+
+    if not candidatos:
+        raise HTTPException(status_code=404, detail="Usuario de destino nao encontrado.")
+
+    candidatos.sort(key=lambda item: (
+        0 if _shared_sync_normalizar_username(item.get("username")) == alvo else 1,
+        0 if _shared_sync_normalizar_client_id(item.get("client_id")) == (alvo_client or alvo) else 1,
+        _shared_sync_normalizar_username(item.get("username")),
+    ))
+    destino = candidatos[0]
+    if not destino.get("active"):
+        raise HTTPException(status_code=400, detail="Usuario de destino esta inativo.")
+    return destino
+
+
+def _shared_sync_json_list_read(path: str) -> list[dict]:
+    with SHARED_SYNC_USER_LINKS_LOCK:
+        try:
+            if not os.path.exists(path):
+                return []
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return [item for item in (data if isinstance(data, list) else []) if isinstance(item, dict)]
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha ao ler %s: %s", path, exc)
+            return []
+
+
+def _shared_sync_json_list_write(path: str, data: list[dict]) -> None:
+    with SHARED_SYNC_USER_LINKS_LOCK:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([item for item in (data or []) if isinstance(item, dict)], f, ensure_ascii=False, indent=2)
+
+
+def _shared_sync_invites_local_read() -> list[dict]:
+    return _shared_sync_json_list_read(ARQUIVO_SHARED_SYNC_USER_INVITES)
+
+
+def _shared_sync_invites_local_write(data: list[dict]) -> None:
+    _shared_sync_json_list_write(ARQUIVO_SHARED_SYNC_USER_INVITES, data)
+
+
+def _shared_sync_links_local_read() -> list[dict]:
+    return _shared_sync_json_list_read(ARQUIVO_SHARED_SYNC_USER_LINKS)
+
+
+def _shared_sync_links_local_write(data: list[dict]) -> None:
+    _shared_sync_json_list_write(ARQUIVO_SHARED_SYNC_USER_LINKS, data)
+
+
+def _shared_sync_save_doc(collection_name: str, local_path: str, item: dict) -> dict:
+    item = dict(item or {})
+    local = _shared_sync_json_list_read(local_path)
+    found = False
+    for idx, atual in enumerate(local):
+        if str(atual.get("id") or "") == str(item.get("id") or ""):
+            local[idx] = item
+            found = True
+            break
+    if not found:
+        local.append(item)
+    _shared_sync_json_list_write(local_path, local)
+
+    db = _firebase_db() if _firebase_deve_usar() else None
+    if db is not None and item.get("id"):
+        try:
+            db.collection(collection_name).document(str(item["id"])).set(item, merge=True)
+            item["storage"] = "firebase"
+            return item
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha ao salvar documento no Firebase: %s", exc)
+    item["storage"] = "local"
+    return item
+
+
+def _shared_sync_all_docs(collection_name: str, local_path: str) -> list[dict]:
+    docs = []
+    db = _firebase_db() if _firebase_deve_usar() else None
+    if db is not None:
+        try:
+            for snap in db.collection(collection_name).stream():
+                data = snap.to_dict() or {}
+                data["id"] = data.get("id") or snap.id
+                docs.append(data)
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha ao listar documentos no Firebase: %s", exc)
+    docs.extend(_shared_sync_json_list_read(local_path))
+    por_id = {}
+    for item in docs:
+        if not isinstance(item, dict):
+            continue
+        doc_id = str(item.get("id") or "").strip()
+        if not doc_id:
+            continue
+        atual = por_id.get(doc_id)
+        if not atual or int(item.get("updated_ts") or item.get("created_ts") or 0) >= int(atual.get("updated_ts") or atual.get("created_ts") or 0):
+            por_id[doc_id] = item
+    return list(por_id.values())
+
+
+def _shared_sync_invites_all() -> list[dict]:
+    return _shared_sync_all_docs(_firebase_shared_sync_user_invites_collection_name(), ARQUIVO_SHARED_SYNC_USER_INVITES)
+
+
+def _shared_sync_links_all() -> list[dict]:
+    return _shared_sync_all_docs(_firebase_shared_sync_user_links_collection_name(), ARQUIVO_SHARED_SYNC_USER_LINKS)
+
+
+def _shared_sync_save_invite(item: dict) -> dict:
+    return _shared_sync_save_doc(_firebase_shared_sync_user_invites_collection_name(), ARQUIVO_SHARED_SYNC_USER_INVITES, item)
+
+
+def _shared_sync_save_link(item: dict) -> dict:
+    return _shared_sync_save_doc(_firebase_shared_sync_user_links_collection_name(), ARQUIVO_SHARED_SYNC_USER_LINKS, item)
+
+
+def _shared_sync_get_invite(invite_id: str) -> dict:
+    invite_id = str(invite_id or "").strip()
+    for item in _shared_sync_invites_all():
+        if str(item.get("id") or "") == invite_id:
+            return item
+    raise HTTPException(status_code=404, detail="Convite de compartilhamento nao encontrado.")
+
+
+def _shared_sync_get_link(link_id: str) -> dict:
+    link_id = str(link_id or "").strip()
+    for item in _shared_sync_links_all():
+        if str(item.get("id") or "") == link_id:
+            return item
+    raise HTTPException(status_code=404, detail="Vinculo de compartilhamento nao encontrado.")
+
+
+def _shared_sync_session_is_source(sessao: dict, item: dict) -> bool:
+    return (
+        _shared_sync_normalizar_username(sessao.get("username")) == _shared_sync_normalizar_username(item.get("source_username"))
+        and _shared_sync_normalizar_client_id(sessao.get("client_id")) == _shared_sync_normalizar_client_id(item.get("source_client_id"))
+    )
+
+
+def _shared_sync_session_is_target(sessao: dict, item: dict) -> bool:
+    return (
+        _shared_sync_normalizar_username(sessao.get("username")) == _shared_sync_normalizar_username(item.get("target_username"))
+        and _shared_sync_normalizar_client_id(sessao.get("client_id")) == _shared_sync_normalizar_client_id(item.get("target_client_id"))
+    )
+
+
+def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dict:
+    scopes = [scope for scope in (item.get("scopes") or []) if scope in SHARED_SYNC_SCOPES]
+    return {
+        "id": item.get("id"),
+        "status": item.get("status") or "pending",
+        "source_username": item.get("source_username") or "",
+        "source_client_id": item.get("source_client_id") or "",
+        "source_name": item.get("source_name") or "",
+        "target_username": item.get("target_username") or "",
+        "target_client_id": item.get("target_client_id") or "",
+        "target_name": item.get("target_name") or "",
+        "scopes": scopes,
+        "scope_labels": [SHARED_SYNC_SCOPES[scope].get("label") or scope for scope in scopes],
+        "message": item.get("message") or "",
+        "source_keep_synced": bool(item.get("source_keep_synced")),
+        "target_keep_synced": bool(item.get("target_keep_synced")),
+        "created_at": item.get("created_at") or "",
+        "responded_at": item.get("responded_at") or "",
+        "direction": (
+            "sent" if sessao and _shared_sync_session_is_source(sessao, item)
+            else "received" if sessao and _shared_sync_session_is_target(sessao, item)
+            else ""
+        ),
+    }
+
+
+def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
+    scopes = [scope for scope in (item.get("scopes") or []) if scope in SHARED_SYNC_SCOPES]
+    source = sessao and _shared_sync_session_is_source(sessao, item)
+    target = sessao and _shared_sync_session_is_target(sessao, item)
+    return {
+        "id": item.get("id"),
+        "invite_id": item.get("invite_id") or "",
+        "active": bool(item.get("active", True)),
+        "source_username": item.get("source_username") or "",
+        "source_client_id": item.get("source_client_id") or "",
+        "source_name": item.get("source_name") or "",
+        "target_username": item.get("target_username") or "",
+        "target_client_id": item.get("target_client_id") or "",
+        "target_name": item.get("target_name") or "",
+        "scopes": scopes,
+        "scope_labels": [SHARED_SYNC_SCOPES[scope].get("label") or scope for scope in scopes],
+        "source_keep_synced": bool(item.get("source_keep_synced")),
+        "target_keep_synced": bool(item.get("target_keep_synced")),
+        "auto_sync_enabled": bool(item.get("active", True) and item.get("source_keep_synced") and item.get("target_keep_synced")),
+        "created_at": item.get("created_at") or "",
+        "updated_at": item.get("updated_at") or "",
+        "direction": "source" if source else "target" if target else "",
+        "can_push": bool(source and item.get("active", True)),
+        "can_pull": bool(target and item.get("active", True)),
+    }
+
+
+def _shared_sync_user_shares_for_session(sessao: dict) -> dict:
+    invites = []
+    for item in _shared_sync_invites_all():
+        if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
+            invites.append(_shared_sync_invite_public(item, sessao))
+    links = []
+    for item in _shared_sync_links_all():
+        if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
+            links.append(_shared_sync_link_public(item, sessao))
+    invites.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    links.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return {
+        "success": True,
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+        "scopes": {scope: _shared_sync_scope_public(scope) for scope in SHARED_SYNC_SCOPES},
+        "invites": invites,
+        "links": links,
+    }
+
+
+def _shared_sync_link_bundle_id(link: dict, scope: str) -> str:
+    bundles = link.get("bundles") if isinstance(link.get("bundles"), dict) else {}
+    return str(bundles.get(scope) or _shared_sync_pair_doc_id(
+        link.get("source_client_id"),
+        link.get("source_username"),
+        link.get("target_client_id"),
+        link.get("target_username"),
+        scope,
+    ))
+
+
+def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, machine_id: str = "", link_id: str = "", invite_id: str = "") -> dict:
+    bundle_id = _shared_sync_pair_doc_id(
+        source_sessao.get("client_id"),
+        source_sessao.get("username"),
+        target.get("client_id"),
+        target.get("username"),
+        scope,
+    )
+    return _shared_sync_push_scope(
+        source_sessao.get("client_id"),
+        scope,
+        source_sessao,
+        machine_id,
+        bundle_id=bundle_id,
+        extra_meta={
+            "visibility": "user-share",
+            "source_client_id": _shared_sync_normalizar_client_id(source_sessao.get("client_id")),
+            "source_username": _shared_sync_normalizar_username(source_sessao.get("username")),
+            "target_client_id": _shared_sync_normalizar_client_id(target.get("client_id")),
+            "target_username": _shared_sync_normalizar_username(target.get("username")),
+            "invite_id": str(invite_id or ""),
+            "link_id": str(link_id or ""),
+        },
+        user_only=True,
+    )
+
+
+def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
+    bundle_id = _shared_sync_link_bundle_id(link, scope)
+    bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id)
+    scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}
+    result = _shared_sync_aplicar_pacote(target_sessao.get("client_id"), scope, bundle, target_sessao.get("username") or "", scope_config)
+    state_scope = f"user-share:{link.get('id')}:{scope}"
+    _shared_sync_state_update(target_sessao.get("client_id"), target_sessao.get("username") or "", state_scope, meta, "pull")
+    return {
+        "scope": scope,
+        "success": True,
+        "direction": "pull",
+        "link_id": link.get("id"),
+        "file_count": result.get("file_count") or 0,
+        "backup_dir": result.get("backup_dir") or "",
+        "snapshot_hash": meta.get("snapshot_hash") or "",
+        "remote_updated_at": meta.get("updated_at") or "",
+        "remote_updated_by": meta.get("updated_by") or "",
+    }
+
+
+def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "") -> dict:
+    if not _shared_sync_session_is_source(source_sessao, link):
+        raise HTTPException(status_code=403, detail="Apenas o usuario de origem pode enviar estes dados.")
+    target = {
+        "username": link.get("target_username"),
+        "client_id": link.get("target_client_id"),
+    }
+    bundle_id = _shared_sync_link_bundle_id(link, scope)
+    result = _shared_sync_push_scope(
+        source_sessao.get("client_id"),
+        scope,
+        source_sessao,
+        machine_id,
+        bundle_id=bundle_id,
+        extra_meta={
+            "visibility": "user-share",
+            "source_client_id": link.get("source_client_id"),
+            "source_username": link.get("source_username"),
+            "target_client_id": link.get("target_client_id"),
+            "target_username": link.get("target_username"),
+            "invite_id": link.get("invite_id") or "",
+            "link_id": link.get("id") or "",
+        },
+        user_only=True,
+    )
+    bundles = link.get("bundles") if isinstance(link.get("bundles"), dict) else {}
+    bundles[scope] = result.get("id") or bundle_id
+    link["bundles"] = bundles
+    link["updated_at"] = _shared_sync_now_iso()
+    link["updated_ts"] = int(time.time())
+    _shared_sync_save_link(link)
+    return result
+
+
+@app.get("/api/shared-sync/users")
+def shared_sync_listar_usuarios_destino(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    atual_username = _shared_sync_normalizar_username(sessao.get("username"))
+    atual_client = _shared_sync_normalizar_client_id(sessao.get("client_id"))
+    usuarios = []
+    for item in _listar_usuarios_admin_sql():
+        usuario = _shared_sync_usuario_publico(item)
+        if not usuario.get("active"):
+            continue
+        if (
+            _shared_sync_normalizar_username(usuario.get("username")) == atual_username
+            and _shared_sync_normalizar_client_id(usuario.get("client_id")) == atual_client
+        ):
+            continue
+        usuarios.append(usuario)
+    usuarios.sort(key=lambda item: (_shared_sync_normalizar_client_id(item.get("client_id")), _shared_sync_normalizar_username(item.get("username"))))
+    return {
+        "success": True,
+        "users": usuarios,
+        "current_user": {
+            "username": atual_username,
+            "client_id": atual_client,
+        },
+    }
+
+
+@app.get("/api/shared-sync/user-shares")
+def shared_sync_user_shares_status(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    return _shared_sync_user_shares_for_session(sessao)
+
+
+@app.post("/api/shared-sync/user-shares/invite")
+def shared_sync_user_shares_invite(
+    payload: SharedSyncUserInviteCreateRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    scopes = _shared_sync_resolver_scopes_usuario(payload.scopes)
+    destino = _shared_sync_resolver_usuario_destino(payload.target_username, payload.target_client_id)
+    if (
+        _shared_sync_normalizar_username(destino.get("username")) == _shared_sync_normalizar_username(sessao.get("username"))
+        and _shared_sync_normalizar_client_id(destino.get("client_id")) == _shared_sync_normalizar_client_id(sessao.get("client_id"))
+    ):
+        raise HTTPException(status_code=400, detail="Escolha outro usuario para receber os dados.")
+
+    source_user = _shared_sync_usuario_publico(sessao.get("usuario") or {})
+    source_user["username"] = _shared_sync_normalizar_username(sessao.get("username"))
+    source_user["client_id"] = _shared_sync_normalizar_client_id(sessao.get("client_id"))
+    invite_id = uuid.uuid4().hex
+    bundles = {}
+    results = []
+    for scope in scopes:
+        result = _shared_sync_push_pair_scope(sessao, destino, scope, payload.machine_id or "", invite_id=invite_id)
+        bundles[scope] = result.get("id")
+        results.append(result)
+
+    agora = _shared_sync_now_iso()
+    invite = {
+        "id": invite_id,
+        "status": "pending",
+        "source_username": source_user.get("username"),
+        "source_client_id": source_user.get("client_id"),
+        "source_name": source_user.get("name") or source_user.get("username"),
+        "target_username": destino.get("username"),
+        "target_client_id": destino.get("client_id"),
+        "target_name": destino.get("name") or destino.get("username"),
+        "scopes": scopes,
+        "bundles": bundles,
+        "message": str(payload.message or "").strip()[:1000],
+        "source_keep_synced": bool(payload.keep_synced),
+        "target_keep_synced": False,
+        "created_at": agora,
+        "created_ts": int(time.time()),
+        "updated_at": agora,
+        "updated_ts": int(time.time()),
+        "source_machine_id": str(payload.machine_id or "").strip(),
+    }
+    _shared_sync_save_invite(invite)
+    return {
+        "success": True,
+        "message": "Convite enviado. O outro usuario precisa aceitar para importar os dados.",
+        "invite": _shared_sync_invite_public(invite, sessao),
+        "results": results,
+    }
+
+
+@app.post("/api/shared-sync/user-shares/invites/{invite_id}/accept")
+def shared_sync_user_shares_accept(
+    invite_id: str,
+    payload: SharedSyncUserInviteActionRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    invite = _shared_sync_get_invite(invite_id)
+    if not _shared_sync_session_is_target(sessao, invite):
+        raise HTTPException(status_code=403, detail="Apenas o usuario de destino pode aceitar este convite.")
+    if str(invite.get("status") or "pending") != "pending":
+        raise HTTPException(status_code=400, detail="Este convite ja foi respondido.")
+
+    scopes = _shared_sync_resolver_scopes_usuario(invite.get("scopes") or [])
+    link_id = _shared_sync_safe_doc_id("shared-sync-link", invite.get("id"))
+    link = {
+        "id": link_id,
+        "invite_id": invite.get("id"),
+        "active": True,
+        "source_username": invite.get("source_username"),
+        "source_client_id": invite.get("source_client_id"),
+        "source_name": invite.get("source_name") or invite.get("source_username"),
+        "target_username": invite.get("target_username"),
+        "target_client_id": invite.get("target_client_id"),
+        "target_name": invite.get("target_name") or invite.get("target_username"),
+        "scopes": scopes,
+        "bundles": invite.get("bundles") if isinstance(invite.get("bundles"), dict) else {},
+        "source_keep_synced": bool(invite.get("source_keep_synced")),
+        "target_keep_synced": bool(payload.keep_synced),
+        "created_at": _shared_sync_now_iso(),
+        "created_ts": int(time.time()),
+        "updated_at": _shared_sync_now_iso(),
+        "updated_ts": int(time.time()),
+    }
+
+    results = []
+    for scope in scopes:
+        results.append(_shared_sync_pull_pair_scope(sessao, link, scope))
+
+    agora = _shared_sync_now_iso()
+    invite["status"] = "accepted"
+    invite["target_keep_synced"] = bool(payload.keep_synced)
+    invite["responded_at"] = agora
+    invite["responded_ts"] = int(time.time())
+    invite["updated_at"] = agora
+    invite["updated_ts"] = int(time.time())
+    _shared_sync_save_invite(invite)
+    _shared_sync_save_link(link)
+    return {
+        "success": True,
+        "message": "Convite aceito e dados importados.",
+        "invite": _shared_sync_invite_public(invite, sessao),
+        "link": _shared_sync_link_public(link, sessao),
+        "results": results,
+    }
+
+
+@app.post("/api/shared-sync/user-shares/invites/{invite_id}/reject")
+def shared_sync_user_shares_reject(
+    invite_id: str,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    invite = _shared_sync_get_invite(invite_id)
+    if not _shared_sync_session_is_target(sessao, invite):
+        raise HTTPException(status_code=403, detail="Apenas o usuario de destino pode recusar este convite.")
+    if str(invite.get("status") or "pending") != "pending":
+        raise HTTPException(status_code=400, detail="Este convite ja foi respondido.")
+    agora = _shared_sync_now_iso()
+    invite["status"] = "rejected"
+    invite["responded_at"] = agora
+    invite["responded_ts"] = int(time.time())
+    invite["updated_at"] = agora
+    invite["updated_ts"] = int(time.time())
+    _shared_sync_save_invite(invite)
+    return {"success": True, "message": "Convite recusado.", "invite": _shared_sync_invite_public(invite, sessao)}
+
+
+@app.put("/api/shared-sync/user-shares/links/{link_id}")
+def shared_sync_user_shares_link_update(
+    link_id: str,
+    payload: SharedSyncUserLinkUpdateRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    link = _shared_sync_get_link(link_id)
+    is_source = _shared_sync_session_is_source(sessao, link)
+    is_target = _shared_sync_session_is_target(sessao, link)
+    if not (is_source or is_target):
+        raise HTTPException(status_code=403, detail="Voce nao participa deste compartilhamento.")
+    if payload.keep_synced is not None:
+        if is_source:
+            link["source_keep_synced"] = bool(payload.keep_synced)
+        if is_target:
+            link["target_keep_synced"] = bool(payload.keep_synced)
+    if payload.active is not None and payload.active is False:
+        link["active"] = False
+        link["stopped_by"] = sessao.get("username")
+        link["stopped_at"] = _shared_sync_now_iso()
+    elif payload.active is not None and payload.active is True:
+        link["active"] = True
+    link["updated_at"] = _shared_sync_now_iso()
+    link["updated_ts"] = int(time.time())
+    _shared_sync_save_link(link)
+    return {"success": True, "message": "Preferencias atualizadas.", "link": _shared_sync_link_public(link, sessao)}
+
+
+@app.post("/api/shared-sync/user-shares/links/{link_id}/push")
+def shared_sync_user_shares_link_push(
+    link_id: str,
+    payload: SharedSyncUserLinkRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    link = _shared_sync_get_link(link_id)
+    if not bool(link.get("active", True)):
+        raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
+    if not _shared_sync_session_is_source(sessao, link):
+        raise HTTPException(status_code=403, detail="Apenas o usuario de origem pode enviar estes dados.")
+    scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
+    results = [_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "") for scope in scopes]
+    return {"success": True, "direction": "push", "results": results, "link": _shared_sync_link_public(link, sessao)}
+
+
+@app.post("/api/shared-sync/user-shares/links/{link_id}/pull")
+def shared_sync_user_shares_link_pull(
+    link_id: str,
+    payload: SharedSyncUserLinkRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    link = _shared_sync_get_link(link_id)
+    if not bool(link.get("active", True)):
+        raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
+    if not _shared_sync_session_is_target(sessao, link):
+        raise HTTPException(status_code=403, detail="Apenas o usuario de destino pode importar estes dados.")
+    scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
+    results = [_shared_sync_pull_pair_scope(sessao, link, scope) for scope in scopes]
+    return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}
+
+
+@app.post("/api/shared-sync/user-shares/auto-push")
+def shared_sync_user_shares_auto_push(
+    payload: SharedSyncUserLinkRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    requested = set(str(scope or "").strip() for scope in (payload.scopes or []) if str(scope or "").strip())
+    results = []
+    skipped = []
+    for link in _shared_sync_links_all():
+        if not _shared_sync_session_is_source(sessao, link):
+            continue
+        if not bool(link.get("active", True)):
+            skipped.append({"link_id": link.get("id"), "reason": "inactive"})
+            continue
+        if not (link.get("source_keep_synced") and link.get("target_keep_synced")):
+            skipped.append({"link_id": link.get("id"), "reason": "sync_disabled_by_participant"})
+            continue
+        for scope in link.get("scopes") or []:
+            if scope not in SHARED_SYNC_SCOPES:
+                continue
+            if requested and scope not in requested:
+                continue
+            entries, _warnings = _shared_sync_coletar_arquivos(sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True)
+            local_hash = _shared_sync_snapshot_hash(entries)
+            bundle_id = _shared_sync_link_bundle_id(link, scope)
+            remote = _shared_sync_remote_meta_by_id(bundle_id) or {}
+            if local_hash and local_hash == str(remote.get("snapshot_hash") or ""):
+                skipped.append({"link_id": link.get("id"), "scope": scope, "reason": "already_current"})
+                continue
+            results.append(_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or ""))
+    return {"success": True, "direction": "auto-push", "results": results, "skipped": skipped}
+
+
+@app.get("/api/admin/shared-sync/config")
+def admin_shared_sync_config(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _shared_sync_require_admin(authorization, client_id)
+    return _shared_sync_status_payload(client_id)
+
+
+@app.put("/api/admin/shared-sync/config")
+def admin_shared_sync_salvar_config(
+    payload: SharedSyncConfigRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_require_admin(authorization, client_id)
+    config = _shared_sync_config_save(client_id, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict(), sessao.get("username"))
+    return _shared_sync_status_payload(client_id, config)
+
+
+@app.get("/api/shared-sync/status")
+def shared_sync_status(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    payload = _shared_sync_status_payload(client_id)
+    for scope, item in list((payload.get("scopes") or {}).items()):
+        item["allowed"] = _shared_sync_user_allowed(payload.get("config") or {}, scope, sessao)
+    return payload
+
+
+@app.post("/api/shared-sync/auto-pull")
+def shared_sync_auto_pull(
+    payload: SharedSyncRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    config = _shared_sync_config_read(client_id)
+    state = _shared_sync_state_read(client_id, sessao.get("username") or "")
+    state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+    requested = set(str(scope or "").strip() for scope in (payload.scopes or []) if str(scope or "").strip())
+    resultados = []
+    ignorados = []
+    for scope, scope_cfg in (config.get("scopes") or {}).items():
+        if scope not in SHARED_SYNC_SCOPES:
+            continue
+        if requested and scope not in requested:
+            continue
+        if not scope_cfg.get("auto_pull", True):
+            ignorados.append({"scope": scope, "reason": "auto_pull_disabled"})
+            continue
+        if not _shared_sync_user_allowed(config, scope, sessao):
+            ignorados.append({"scope": scope, "reason": "not_allowed"})
+            continue
+        meta = _shared_sync_remote_meta(client_id, scope)
+        if not meta:
+            ignorados.append({"scope": scope, "reason": "no_remote"})
+            continue
+        remote_hash = str(meta.get("snapshot_hash") or "")
+        local_hash = str(((state_scopes.get(scope) or {}).get("snapshot_hash")) or "")
+        if remote_hash and local_hash == remote_hash:
+            ignorados.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
+            continue
+        resultados.append(_shared_sync_pull_scope(client_id, scope, sessao, payload.machine_id or "", scope_cfg))
+
+    for link in _shared_sync_links_all():
+        if not _shared_sync_session_is_target(sessao, link):
+            continue
+        if not bool(link.get("active", True)):
+            ignorados.append({"link_id": link.get("id"), "reason": "user_share_inactive"})
+            continue
+        if not (link.get("source_keep_synced") and link.get("target_keep_synced")):
+            ignorados.append({"link_id": link.get("id"), "reason": "user_share_sync_disabled_by_participant"})
+            continue
+        for scope in link.get("scopes") or []:
+            if scope not in SHARED_SYNC_SCOPES:
+                continue
+            if requested and scope not in requested:
+                continue
+            bundle_id = _shared_sync_link_bundle_id(link, scope)
+            meta = _shared_sync_remote_meta_by_id(bundle_id)
+            if not meta:
+                ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "user_share_no_remote"})
+                continue
+            remote_hash = str(meta.get("snapshot_hash") or "")
+            state_scope = f"user-share:{link.get('id')}:{scope}"
+            local_hash = str(((state_scopes.get(state_scope) or {}).get("snapshot_hash")) or "")
+            if remote_hash and local_hash == remote_hash:
+                ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
+                continue
+            resultados.append(_shared_sync_pull_pair_scope(sessao, link, scope))
+    return {
+        "success": True,
+        "direction": "auto-pull",
+        "results": resultados,
+        "skipped": ignorados,
+    }
+
+
+@app.post("/api/shared-sync/push")
+def shared_sync_push(
+    payload: SharedSyncRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    config = _shared_sync_config_read(client_id)
+    scopes = _shared_sync_resolver_scopes(config, payload.scopes, sessao)
+    resultados = [_shared_sync_push_scope(client_id, scope, sessao, payload.machine_id or "") for scope in scopes]
+    return {"success": True, "direction": "push", "results": resultados}
+
+
+@app.post("/api/shared-sync/pull")
+def shared_sync_pull(
+    payload: SharedSyncRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    config = _shared_sync_config_read(client_id)
+    scopes = _shared_sync_resolver_scopes(config, payload.scopes, sessao)
+    resultados = [
+        _shared_sync_pull_scope(client_id, scope, sessao, payload.machine_id or "", ((config.get("scopes") or {}).get(scope) or {}))
+        for scope in scopes
+    ]
+    return {"success": True, "direction": "pull", "results": resultados}
+
+
 @app.get("/api/admin/access-backend")
 def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
     firebase_file = _firebase_service_account_file()
@@ -20603,10 +22255,10 @@ def _registrar_login_maquina(username: str, client_id: str, machine_id: str, req
 
 def _machine_presence_timeout_seconds() -> int:
     try:
-        valor = int(float(os.getenv("JK_MACHINE_ONLINE_TIMEOUT_SECONDS", "150") or 150))
+        valor = int(float(os.getenv("JK_MACHINE_ONLINE_TIMEOUT_SECONDS", "60") or 60))
         return max(45, min(valor, 3600))
     except Exception:
-        return 150
+        return 60
 
 
 def _machine_presence_doc_id(username: str, client_id: str, machine_id: str) -> str:
@@ -20632,6 +22284,20 @@ def _machine_presence_label(machine_id: str) -> str:
     if partes:
         return " | ".join(partes[:2])
     return valor[:80]
+
+
+def _machine_presence_machine_key(machine_id: str) -> str:
+    valor = str(machine_id or "").strip()
+    if not valor:
+        return ""
+    partes = [segmento.strip() for segmento in valor.split("|") if segmento.strip()]
+    mac = next((segmento for segmento in partes if segmento.lower().startswith("mac:")), "")
+    if mac:
+        return re.sub(r"[^a-z0-9]+", "", mac.lower())
+    pc = next((segmento for segmento in partes if segmento.lower().startswith("pc:")), "")
+    if pc:
+        return re.sub(r"[^a-z0-9]+", "", pc.lower())
+    return re.sub(r"[^a-z0-9]+", "", valor.lower())
 
 
 def _machine_presence_sanitize_page(page: str) -> str:
@@ -20813,7 +22479,7 @@ def admin_listar_usuarios_online(client_id: str = Depends(get_tenant_id)):
     usuarios = _listar_usuarios_admin_sql()
     resultados = []
     total_online = 0
-    total_maquinas_online = 0
+    maquinas_online_unicas = set()
 
     for usuario in usuarios:
         username = str(usuario.get("username") or "").strip().lower()
@@ -20822,7 +22488,10 @@ def admin_listar_usuarios_online(client_id: str = Depends(get_tenant_id)):
         maquinas_online = [item for item in maquinas if item.get("online")]
         if maquinas_online:
             total_online += 1
-            total_maquinas_online += len(maquinas_online)
+            for maquina in maquinas_online:
+                machine_key = _machine_presence_machine_key(maquina.get("machine_id") or "")
+                if machine_key:
+                    maquinas_online_unicas.add(machine_key)
 
         ultima = None
         for item in maquinas:
@@ -20849,7 +22518,7 @@ def admin_listar_usuarios_online(client_id: str = Depends(get_tenant_id)):
         "success": True,
         "users": resultados,
         "online_users": total_online,
-        "online_machines": total_maquinas_online,
+        "online_machines": len(maquinas_online_unicas),
         "online_timeout_seconds": _machine_presence_timeout_seconds(),
         "backend": "firebase" if _firebase_deve_usar() else "local",
     }

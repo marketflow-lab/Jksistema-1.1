@@ -2656,6 +2656,7 @@ function createWindow() {
             nodeIntegrationInSubFrames: true,
             contextIsolation: true,
             webviewTag: true,
+            backgroundThrottling: false,
             defaultEncoding: 'UTF-8'
         }
     });

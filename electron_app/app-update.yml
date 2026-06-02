@@ -1,0 +1,5 @@
+owner: marketflow-lab
+repo: Jksistema-1.1
+provider: github
+releaseType: release
+updaterCacheDirName: jk-sistema-desktop-updater
