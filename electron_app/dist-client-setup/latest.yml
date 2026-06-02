@@ -1,8 +1,8 @@
-version: 1.0.6
+version: 1.0.26
 files:
-  - url: JK-Sistema-Cliente-Setup-1.0.6.exe
-    sha512: bUho1Pu052DQJlzmEcWAftbq8Lh1a6CNeUOfV59+3T7Hl9BwgVxPcXFVGXP25+ZDaHEWbcReZWnC/kDwI1Gc0A==
-    size: 85500127
-path: JK-Sistema-Cliente-Setup-1.0.6.exe
-sha512: bUho1Pu052DQJlzmEcWAftbq8Lh1a6CNeUOfV59+3T7Hl9BwgVxPcXFVGXP25+ZDaHEWbcReZWnC/kDwI1Gc0A==
-releaseDate: '2026-06-01T13:40:00.000Z'
+  - url: JK-Sistema-Cliente-Setup-1.0.26.exe
+    sha512: 0FjHd8TTyDOR0zsfQFQj9dnjl26PlqyDE83fo7rpO06YGjRjLi1XKfyx/xBFPGT8DqZs1NZSGdE+pNKLHUpwwQ==
+    size: 85538189
+path: JK-Sistema-Cliente-Setup-1.0.26.exe
+sha512: 0FjHd8TTyDOR0zsfQFQj9dnjl26PlqyDE83fo7rpO06YGjRjLi1XKfyx/xBFPGT8DqZs1NZSGdE+pNKLHUpwwQ==
+releaseDate: '2026-06-02T18:51:47.768Z'

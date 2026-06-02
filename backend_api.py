@@ -801,6 +801,12 @@ class SharedSyncRunRequest(BaseModel):
     scopes: Optional[list[str]] = None
     machine_id: Optional[str] = None
 
+class SharedSyncMachineConfigRequest(BaseModel):
+    enabled: bool = False
+    scopes: Optional[list[str]] = None
+    auto_pull: bool = True
+    auto_push: bool = True
+
 class SharedSyncUserInviteCreateRequest(BaseModel):
     target_username: str = ""
     target_client_id: Optional[str] = None
@@ -20384,6 +20390,10 @@ def _shared_sync_pair_doc_id(source_client_id: str, source_username: str, target
     return _shared_sync_safe_doc_id("shared-sync-user-pair", source_client_id, source_username, target_client_id, target_username, scope)
 
 
+def _shared_sync_machine_doc_id(client_id: str, username: str, scope: str) -> str:
+    return _shared_sync_safe_doc_id("shared-sync-machine", client_id, username, scope)
+
+
 def _shared_sync_config_doc_id(client_id: str) -> str:
     return _shared_sync_safe_doc_id("shared-sync-config", client_id)
 
@@ -20609,6 +20619,75 @@ def _shared_sync_user_allowed(config: dict, scope: str, sessao: dict) -> bool:
     return str(sessao.get("username") or "").strip().lower() in allowed
 
 
+def _shared_sync_machine_scope_allowed(scope: str, sessao: dict) -> bool:
+    if scope not in SHARED_SYNC_SCOPES:
+        return False
+    permissoes = sessao.get("permissions") if isinstance(sessao.get("permissions"), dict) else {}
+    if sessao.get("is_admin") or permissoes.get("full") is True:
+        return True
+    mapa = {
+        "cadastro": "cadastro",
+        "lojas_integracoes": "integracao",
+        "vendas": "vendas",
+        "favoritos_historico": "favoritos",
+        "sku_campos_pesquisa": "favoritos",
+    }
+    chave = mapa.get(scope)
+    return bool(chave and permissoes.get(chave) is True)
+
+
+def _shared_sync_machine_allowed_scopes(sessao: dict) -> list[str]:
+    return [scope for scope in SHARED_SYNC_SCOPES if _shared_sync_machine_scope_allowed(scope, sessao)]
+
+
+def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]) -> dict:
+    data = payload if isinstance(payload, dict) else {}
+    allowed = set(_shared_sync_machine_allowed_scopes(sessao))
+    scopes_raw = data.get("scopes") if isinstance(data.get("scopes"), list) else []
+    scopes = []
+    for scope in scopes_raw:
+        scope_norm = str(scope or "").strip()
+        if scope_norm in allowed and scope_norm not in scopes:
+            scopes.append(scope_norm)
+    return {
+        "enabled": bool(data.get("enabled", False)),
+        "scopes": scopes,
+        "auto_pull": bool(data.get("auto_pull", True)),
+        "auto_push": bool(data.get("auto_push", True)),
+        "updated_at": str(data.get("updated_at") or ""),
+    }
+
+
+def _shared_sync_machine_config_read(sessao: dict) -> dict:
+    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    return _shared_sync_machine_config_normalizar(sessao, state.get("machine_sync") if isinstance(state, dict) else None)
+
+
+def _shared_sync_machine_config_save(sessao: dict, payload: dict) -> dict:
+    config = _shared_sync_machine_config_normalizar(sessao, payload)
+    config["updated_at"] = _shared_sync_now_iso()
+    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    state["machine_sync"] = config
+    _shared_sync_state_write(sessao.get("client_id"), sessao.get("username") or "", state)
+    return config
+
+
+def _shared_sync_machine_resolver_scopes(sessao: dict, requested: Optional[list[str]] = None, require_enabled: bool = True) -> list[str]:
+    config = _shared_sync_machine_config_read(sessao)
+    if require_enabled and not config.get("enabled"):
+        raise HTTPException(status_code=400, detail="Sincronizacao entre minhas maquinas esta desativada.")
+    permitidos = set(_shared_sync_machine_allowed_scopes(sessao))
+    configurados = [scope for scope in (config.get("scopes") or []) if scope in permitidos]
+    if requested:
+        base = [str(scope or "").strip() for scope in requested if str(scope or "").strip()]
+        scopes = [scope for scope in base if scope in permitidos and scope in configurados]
+    else:
+        scopes = configurados
+    if not scopes:
+        raise HTTPException(status_code=400, detail="Selecione pelo menos um dado permitido para sincronizar.")
+    return scopes
+
+
 def _shared_sync_resolver_scopes(config: dict, requested: Optional[list[str]], sessao: dict) -> list[str]:
     if requested:
         scopes = [str(scope or "").strip() for scope in requested]
@@ -20827,6 +20906,7 @@ def _shared_sync_push_scope(
     bundle_id: Optional[str] = None,
     extra_meta: Optional[dict] = None,
     user_only: bool = False,
+    state_scope: Optional[str] = None,
 ) -> dict:
     db = _shared_sync_firestore_required()
     bundle, manifest, warnings = _shared_sync_montar_pacote(client_id, scope, sessao.get("username"), machine_id, user_only=user_only)
@@ -20863,7 +20943,7 @@ def _shared_sync_push_scope(
     if isinstance(extra_meta, dict):
         meta.update(extra_meta)
     db.collection(_firebase_shared_sync_collection_name()).document(bundle_id).set(meta, merge=False)
-    _shared_sync_state_update(client_id, sessao.get("username") or "", scope, meta, "push")
+    _shared_sync_state_update(client_id, sessao.get("username") or "", state_scope or scope, meta, "push")
     return {
         "scope": scope,
         "success": True,
@@ -21114,6 +21194,127 @@ def _shared_sync_pull_scope(client_id: str, scope: str, sessao: dict, machine_id
         "remote_updated_by": meta.get("updated_by") or "",
         "remote_machine_id": meta.get("machine_id") or "",
     }
+
+
+def _shared_sync_machine_state_scope(scope: str) -> str:
+    return f"machine-sync:{scope}"
+
+
+def _shared_sync_machine_remote_meta(sessao: dict, scope: str) -> Optional[dict]:
+    return _shared_sync_remote_meta_by_id(_shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope))
+
+
+def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = "") -> dict:
+    bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
+    return _shared_sync_push_scope(
+        sessao.get("client_id"),
+        scope,
+        sessao,
+        machine_id,
+        bundle_id=bundle_id,
+        extra_meta={
+            "visibility": "machine-sync",
+            "owner_client_id": _shared_sync_normalizar_client_id(sessao.get("client_id")),
+            "owner_username": _shared_sync_normalizar_username(sessao.get("username")),
+        },
+        user_only=True,
+        state_scope=_shared_sync_machine_state_scope(scope),
+    )
+
+
+def _shared_sync_machine_pull_scope(sessao: dict, scope: str) -> dict:
+    bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
+    bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id)
+    scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}
+    result = _shared_sync_aplicar_pacote(sessao.get("client_id"), scope, bundle, sessao.get("username") or "", scope_config)
+    _shared_sync_state_update(sessao.get("client_id"), sessao.get("username") or "", _shared_sync_machine_state_scope(scope), meta, "pull")
+    return {
+        "scope": scope,
+        "success": True,
+        "direction": "pull",
+        "file_count": result.get("file_count") or 0,
+        "backup_dir": result.get("backup_dir") or "",
+        "snapshot_hash": meta.get("snapshot_hash") or "",
+        "remote_updated_at": meta.get("updated_at") or "",
+        "remote_updated_by": meta.get("updated_by") or "",
+        "remote_machine_id": meta.get("machine_id") or "",
+    }
+
+
+def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> dict:
+    config = _shared_sync_machine_config_read(sessao)
+    permitidos = set(_shared_sync_machine_allowed_scopes(sessao))
+    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+    scopes = {}
+    for scope in SHARED_SYNC_SCOPES:
+        meta = _shared_sync_machine_remote_meta(sessao, scope) or {}
+        state_key = _shared_sync_machine_state_scope(scope)
+        scopes[scope] = {
+            **_shared_sync_scope_public(scope),
+            "allowed": scope in permitidos,
+            "selected": scope in (config.get("scopes") or []),
+            "state": state_scopes.get(state_key) or {},
+            "remote": {
+                "exists": bool(meta),
+                "updated_at": meta.get("updated_at") or "",
+                "updated_by": meta.get("updated_by") or "",
+                "machine_id": meta.get("machine_id") or "",
+                "file_count": meta.get("file_count") or 0,
+                "bundle_bytes": meta.get("bundle_bytes") or 0,
+                "chunk_count": meta.get("chunk_count") or 0,
+                "warnings": meta.get("warnings") or [],
+            },
+        }
+    maquinas = _machine_presence_list(sessao.get("username"), sessao.get("client_id"))
+    maquinas = _machine_presence_mark_current(maquinas, machine_id or "")
+    return {
+        "success": True,
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+        "current_user": {
+            "username": sessao.get("username"),
+            "client_id": sessao.get("client_id"),
+        },
+        "config": config,
+        "scopes": scopes,
+        "machines": maquinas[:20],
+        "online_count": len([m for m in maquinas if m.get("online")]),
+    }
+
+
+def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested: Optional[list[str]] = None) -> dict:
+    config = _shared_sync_machine_config_read(sessao)
+    if not config.get("enabled"):
+        return {"success": True, "direction": "machine-auto", "results": [], "skipped": [{"reason": "disabled"}]}
+    scopes = _shared_sync_machine_resolver_scopes(sessao, requested, require_enabled=True)
+    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+    results = []
+    skipped = []
+    for scope in scopes:
+        state_key = _shared_sync_machine_state_scope(scope)
+        remote = _shared_sync_machine_remote_meta(sessao, scope) or {}
+        remote_hash = str(remote.get("snapshot_hash") or "")
+        state_hash = str(((state_scopes.get(state_key) or {}).get("snapshot_hash")) or "")
+        remote_machine = str(remote.get("machine_id") or "").strip()
+        current_machine = str(machine_id or "").strip()
+
+        if config.get("auto_pull", True) and remote and remote_hash and state_hash != remote_hash and remote_machine != current_machine:
+            results.append(_shared_sync_machine_pull_scope(sessao, scope))
+            remote = _shared_sync_machine_remote_meta(sessao, scope) or remote
+            remote_hash = str(remote.get("snapshot_hash") or remote_hash)
+
+        if not config.get("auto_push", True):
+            skipped.append({"scope": scope, "reason": "auto_push_disabled"})
+            continue
+
+        entries, _warnings = _shared_sync_coletar_arquivos(sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True)
+        local_hash = _shared_sync_snapshot_hash(entries)
+        if remote_hash and local_hash == remote_hash:
+            skipped.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
+            continue
+        results.append(_shared_sync_machine_push_scope(sessao, scope, machine_id))
+    return {"success": True, "direction": "machine-auto", "results": results, "skipped": skipped}
 
 
 def _shared_sync_status_payload(client_id: str, config: Optional[dict] = None) -> dict:
@@ -21783,6 +21984,61 @@ def shared_sync_user_shares_auto_push(
                 continue
             results.append(_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or ""))
     return {"success": True, "direction": "auto-push", "results": results, "skipped": skipped}
+
+
+@app.get("/api/shared-sync/machine-sync")
+def shared_sync_machine_status(
+    machine_id: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    return _shared_sync_machine_status_payload(sessao, machine_id or "")
+
+
+@app.put("/api/shared-sync/machine-sync")
+def shared_sync_machine_salvar_config(
+    payload: SharedSyncMachineConfigRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    config = _shared_sync_machine_config_save(sessao, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
+    return _shared_sync_machine_status_payload(sessao, "")
+
+
+@app.post("/api/shared-sync/machine-sync/push")
+def shared_sync_machine_push(
+    payload: SharedSyncRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    results = [_shared_sync_machine_push_scope(sessao, scope, payload.machine_id or "") for scope in scopes]
+    return {"success": True, "direction": "machine-push", "results": results}
+
+
+@app.post("/api/shared-sync/machine-sync/pull")
+def shared_sync_machine_pull(
+    payload: SharedSyncRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    results = [_shared_sync_machine_pull_scope(sessao, scope) for scope in scopes]
+    return {"success": True, "direction": "machine-pull", "results": results}
+
+
+@app.post("/api/shared-sync/machine-sync/auto")
+def shared_sync_machine_auto(
+    payload: SharedSyncRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    return _shared_sync_machine_auto_run(sessao, payload.machine_id or "", payload.scopes)
 
 
 @app.get("/api/admin/shared-sync/config")
@@ -27137,7 +27393,7 @@ def _ml_iterar_campos_payload_limitado(obj, *, max_depth: int = 8, max_nodes: in
         yield caminho, valor
 
 
-def _ml_extrair_preco_promocao_raw(entry: dict):
+def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: bool = False):
     """Extrai somente preco final/desconto da promocao no payload do Mercado Livre."""
     if not isinstance(entry, dict):
         return None, None
@@ -27215,13 +27471,13 @@ def _ml_extrair_preco_promocao_raw(entry: dict):
 
     preco = next((v for v in (_parse_float_flex(x) for x in candidatos_preco) if v is not None and v > 0), None)
 
-    chaves_desconto_direto = {
+    chaves_desconto_total = {
         "discount_percentage",
         "discount_percent",
+    }
+    chaves_desconto_componentes = {
         "seller_discount_percentage",
         "meli_discount_percentage",
-    }
-    chaves_desconto_partes = {
         "seller_percentage",
         "meli_percentage",
     }
@@ -27253,27 +27509,57 @@ def _ml_extrair_preco_promocao_raw(entry: dict):
         "imposto",
     )
 
-    candidatos_desconto = [
+    candidatos_total_direto = [
         entry.get("discount_percentage"),
         entry.get("discount_percent"),
+    ]
+    candidatos_componentes_diretos = [
         entry.get("seller_discount_percentage"),
         entry.get("meli_discount_percentage"),
     ]
     meli_pct = _parse_float_flex(entry.get("meli_percentage") or entry.get("meli_discount_percentage"))
     seller_pct = _parse_float_flex(entry.get("seller_percentage") or entry.get("seller_discount_percentage"))
+    soma_componentes = None
     if meli_pct is not None or seller_pct is not None:
-        candidatos_desconto.insert(0, float(meli_pct or 0.0) + float(seller_pct or 0.0))
+        soma_componentes = float(meli_pct or 0.0) + float(seller_pct or 0.0)
+
+    candidatos_total_payload = []
+    candidatos_componentes_payload = []
+    candidatos_contexto_payload = []
+    candidatos_payload_ordem_original = []
 
     for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
         caminho_norm = str(caminho or "").lower()
         chave_norm = caminho_norm.rsplit(".", 1)[-1]
         if _path_tem(caminho_norm, termos_excluir_desconto):
             continue
-        if chave_norm in chaves_desconto_direto or chave_norm in chaves_desconto_partes:
-            candidatos_desconto.append(valor)
+        if chave_norm in chaves_desconto_total:
+            candidatos_total_payload.append(valor)
+            candidatos_payload_ordem_original.append(valor)
+            continue
+        if chave_norm in chaves_desconto_componentes:
+            candidatos_componentes_payload.append(valor)
+            candidatos_payload_ordem_original.append(valor)
             continue
         if chave_norm in {"percent", "percentage", "pct"} and _path_tem(caminho_norm, termos_desconto):
-            candidatos_desconto.append(valor)
+            candidatos_contexto_payload.append(valor)
+            candidatos_payload_ordem_original.append(valor)
+
+    candidatos_desconto = []
+    if priorizar_percentual_total_api:
+        candidatos_desconto.extend(candidatos_total_direto)
+        candidatos_desconto.extend(candidatos_total_payload)
+        if soma_componentes is not None:
+            candidatos_desconto.append(soma_componentes)
+        candidatos_desconto.extend(candidatos_componentes_diretos)
+        candidatos_desconto.extend(candidatos_componentes_payload)
+        candidatos_desconto.extend(candidatos_contexto_payload)
+    else:
+        candidatos_desconto.extend(candidatos_total_direto)
+        candidatos_desconto.extend(candidatos_componentes_diretos)
+        if soma_componentes is not None:
+            candidatos_desconto.insert(0, soma_componentes)
+        candidatos_desconto.extend(candidatos_payload_ordem_original)
 
     desconto = next((v for v in (_parse_float_flex(x) for x in candidatos_desconto) if v is not None), None)
     if desconto is None:
@@ -28474,17 +28760,17 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         if promo_b_type and not raw_b_item:
             raw_b_item, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_b, promo_b_type, item_id)
         promocoes_item_a = None
-        preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item)
+        preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
             try:
                 promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, req.loja, cfg_local, item_id)
                 raw_a_fallback = _ml_encontrar_promocao_raw_item(promocoes_item_a, promo_a)
                 if raw_a_fallback:
                     raw_a_item = raw_a_fallback
-                    preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item)
+                    preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
-        preco_b_raw, desc_b_raw = _ml_extrair_preco_promocao_raw(raw_b_item)
+        preco_b_raw, desc_b_raw = _ml_extrair_preco_promocao_raw(raw_b_item, priorizar_percentual_total_api=True)
         desconto_tarifa_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_b_item)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or preco_atual or preco_base_anuncio
@@ -28493,9 +28779,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         desconto_b = desc_b_raw
         if preco_a_raw is None and desconto_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
             preco_a = round(float(preco_base_anuncio) * max(0.0, 1.0 - (float(desconto_a) / 100.0)), 2)
-        if preco_base_anuncio and preco_a and preco_base_anuncio > 0:
+        if desconto_a is None and preco_base_anuncio and preco_a and preco_base_anuncio > 0:
             desconto_a = max(0.0, ((preco_base_anuncio - preco_a) / preco_base_anuncio) * 100.0)
-        if preco_base_anuncio and preco_b and preco_base_anuncio > 0:
+        if desconto_b is None and preco_base_anuncio and preco_b and preco_base_anuncio > 0:
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
         shipping_data, cfg_local = _ml_obter_frete_detalhado(
@@ -28842,17 +29128,17 @@ async def analisar_promo_via_api_sem_arquivos(
         )
 
         promocoes_item_a = None
-        preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item)
+        preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
             try:
                 promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
                 raw_a_fallback = _ml_encontrar_promocao_raw_item(promocoes_item_a, promo_a)
                 if raw_a_fallback:
                     raw_a_item = raw_a_fallback
-                    preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item)
+                    preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
-        preco_b_raw, desc_b_raw = _ml_extrair_preco_promocao_raw(raw_b_item)
+        preco_b_raw, desc_b_raw = _ml_extrair_preco_promocao_raw(raw_b_item, priorizar_percentual_total_api=True)
         status_promo_a = _ml_classificar_status_promocao_entry(raw_a_item)
         if str(price_info.get("promotion_id") or "").strip().lower() == promo_a.lower():
             status_promo_a = "Ativo"
@@ -29407,14 +29693,14 @@ async def analisar_promo_via_api_com_arquivos(
                 raw_a_item = {}
 
         promocoes_item_a = None
-        preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item)
+        preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
             try:
                 promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
                 raw_a_fallback = _ml_encontrar_promocao_raw_item(promocoes_item_a, promo_a)
                 if raw_a_fallback:
                     raw_a_item = raw_a_fallback
-                    preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item)
+                    preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
         preco_b = _parse_float_flex(entrada_b.get("PreÃ§o Final ML")) or preco_atual or preco_base_anuncio

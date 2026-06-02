@@ -39,7 +39,52 @@
         h1 { margin: 0; color: #9bd1ff; }
         .subtitle { color: var(--muted); margin-top: 6px; }
         .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .module-tabs {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(79, 172, 254, 0.18);
+        }
+        .tab-button {
+            background: #0c1625;
+            color: var(--muted);
+            border: 1px solid #22344b;
+            border-radius: 10px;
+            padding: 9px 12px;
+        }
+        .tab-button.active {
+            background: var(--accent);
+            color: #04213f;
+            border-color: var(--accent);
+        }
+        .module-section { display: none; }
+        .module-section.active { display: block; }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .metric-card {
+            border: 1px solid rgba(79, 172, 254, 0.22);
+            background: rgba(12, 22, 37, 0.88);
+            border-radius: 12px;
+            padding: 12px;
+            min-height: 78px;
+        }
+        .metric-value {
+            display: block;
+            font-size: 26px;
+            font-weight: 800;
+            color: #ffffff;
+            line-height: 1.1;
+        }
+        .metric-label { color: var(--muted); font-size: 12px; margin-top: 5px; }
         .layout { display: grid; grid-template-columns: 430px 1fr; gap: 18px; flex: 1; min-height: 0; }
+        .layout.user-only { grid-template-columns: 1fr; }
         .panel {
             background: rgba(16, 26, 42, 0.95);
             border: 1px solid var(--border);
@@ -49,10 +94,39 @@
             overflow: auto;
         }
         label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--muted); }
-        input, textarea {
+        .panel-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .panel-title-row h3 { margin: 0; }
+        .form-block {
+            border: 1px solid rgba(79, 172, 254, 0.16);
+            background: rgba(12, 22, 37, 0.34);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .form-block-title {
+            color: #d8ecff;
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 10px;
+        }
+        .permission-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 8px 0 10px;
+        }
+        .permission-toolbar button { padding: 7px 9px; font-size: 12px; }
+        input, textarea, select {
             width: 100%; padding: 10px 12px; margin-bottom: 12px; border-radius: 10px;
             border: 1px solid var(--border); background: #0c1625; color: var(--text);
         }
+        select { color-scheme: dark; }
         textarea { min-height: 92px; resize: vertical; font-family: inherit; line-height: 1.4; }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .checkbox-grid {
@@ -84,6 +158,7 @@
         }
         .pill.on { background: rgba(51,195,125,0.18); color: #7df0b2; }
         .pill.off { background: rgba(255,107,107,0.16); color: #ffb1b1; }
+        .pill.edit { background: rgba(255,184,77,0.18); color: #ffd083; }
         .table-actions { display: flex; flex-wrap: wrap; gap: 6px; }
         .table-actions button { padding: 7px 9px; font-size: 12px; }
         .small { color: var(--muted); font-size: 12px; }
@@ -92,6 +167,23 @@
             margin-bottom: 10px;
         }
         .section-header h3 { margin: 0; }
+        .table-tools {
+            display: grid;
+            grid-template-columns: minmax(220px, 1.4fr) minmax(130px, 0.7fr) minmax(160px, 0.9fr);
+            gap: 10px;
+            align-items: end;
+            margin: 0 0 10px;
+        }
+        .table-tools input,
+        .table-tools select { margin-bottom: 0; }
+        .table-caption {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .table-caption .small { flex: 1; }
         .online-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;
             margin-bottom: 14px;
@@ -116,10 +208,154 @@
         }
         .message-panel.hidden { display: none; }
         .message-panel-title { font-weight: 800; color: #d8ecff; margin-bottom: 8px; }
+        .sync-panel {
+            border: 1px solid rgba(51, 195, 125, 0.28);
+            background: rgba(51, 195, 125, 0.06);
+            border-radius: 14px;
+            padding: 12px;
+            margin: 0 0 16px;
+        }
+        .sync-scope-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .sync-scope-card {
+            border: 1px solid rgba(79, 172, 254, 0.26);
+            background: rgba(12, 22, 37, 0.92);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .sync-scope-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .sync-scope-title { font-weight: 800; color: #d8ecff; }
+        .sync-sensitive { color: #ffd083; font-size: 12px; margin-top: 3px; }
+        .sync-user-list {
+            display: none;
+            max-height: 116px;
+            overflow: auto;
+            border: 1px solid rgba(79, 172, 254, 0.18);
+            border-radius: 10px;
+            padding: 6px;
+            margin-top: 8px;
+        }
+        .sync-user-list.is-visible { display: block; }
+        .sync-user-list label {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin: 0 0 6px;
+            color: var(--text);
+            font-size: 12px;
+        }
+        .sync-user-list input,
+        .sync-scope-head input,
+        .sync-auto-row input {
+            width: auto;
+            margin: 0;
+        }
+        .sync-auto-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 8px;
+        }
+        .sync-remote { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+        .user-share-panel {
+            border: 1px solid rgba(79, 172, 254, 0.32);
+            background: rgba(79, 172, 254, 0.07);
+            border-radius: 14px;
+            padding: 12px;
+            margin: 0 0 16px;
+        }
+        .machine-sync-panel {
+            border: 1px solid rgba(51, 195, 125, 0.30);
+            background: rgba(51, 195, 125, 0.07);
+            border-radius: 14px;
+            padding: 12px;
+            margin: 0 0 16px;
+        }
+        .machine-sync-grid {
+            display: grid;
+            grid-template-columns: minmax(260px, 1fr) minmax(220px, 0.8fr);
+            gap: 12px;
+            margin-top: 10px;
+        }
+        .machine-list {
+            display: grid;
+            gap: 8px;
+        }
+        .machine-item {
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            background: rgba(12, 22, 37, 0.86);
+            border-radius: 12px;
+            padding: 9px 10px;
+        }
+        .machine-item.current { border-color: rgba(51, 195, 125, 0.55); }
+        .machine-sync-empty {
+            border: 1px dashed rgba(181, 200, 228, 0.28);
+            color: var(--muted);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .user-share-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .user-share-scopes {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 8px;
+            margin: 8px 0 12px;
+        }
+        .user-share-item {
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            background: rgba(12, 22, 37, 0.86);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .user-share-item strong { display: block; color: #d8ecff; margin-bottom: 4px; }
+        .user-share-item .row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .user-share-item input[type="checkbox"],
+        .user-share-scopes input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+        }
+        .user-share-empty {
+            border: 1px dashed rgba(181, 200, 228, 0.28);
+            color: var(--muted);
+            border-radius: 12px;
+            padding: 10px;
+        }
+        .admin-only.is-hidden { display: none !important; }
         .table-scroll { overflow: auto; max-height: calc(100vh - 360px); border-radius: 12px; }
+        .table-scroll thead th {
+            position: sticky;
+            top: 0;
+            background: #101a2a;
+            z-index: 1;
+        }
         .muted-line { color: var(--muted); font-size: 12px; margin-top: 3px; }
         @media (max-width: 980px) {
             .layout { grid-template-columns: 1fr; }
+            .table-tools { grid-template-columns: 1fr; }
+            .machine-sync-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -132,59 +368,80 @@
         </div>
         <div class="actions">
             <button class="btn-muted" onclick="navegarComTransicao('/configuracoes.html')">Voltar às configurações</button>
-            <button class="btn-primary" onclick="carregarUsuarios()">Atualizar lista</button>
+            <button class="btn-primary" onclick="atualizarAbaAtual()">Atualizar</button>
         </div>
     </div>
 
     <div class="layout">
-        <div class="panel">
-            <h3 id="formTitle">Novo usuário</h3>
-            <label>Usuário</label>
-            <input id="username" placeholder="Ex.: admin">
+        <div class="panel admin-only">
+            <div class="panel-title-row">
+                <h3 id="formTitle">Novo usuário</h3>
+                <span id="formModePill" class="pill on">Cadastro</span>
+            </div>
 
-            <label>Nome</label>
-            <input id="name" placeholder="Nome exibido">
+            <div class="form-block">
+                <div class="form-block-title">Identificação</div>
+                <label>Usuário</label>
+                <input id="username" placeholder="Ex.: admin" autocomplete="off">
 
-            <div class="grid-2">
-                <div>
-                    <label>Senha</label>
-                    <input id="password" type="password" placeholder="Obrigatória ao criar">
+                <label>Nome</label>
+                <input id="name" placeholder="Nome exibido">
+
+                <label>E-mail Google</label>
+                <input id="email" type="email" placeholder="usuario@empresa.com">
+            </div>
+
+            <div class="form-block">
+                <div class="form-block-title">Acesso</div>
+                <div class="grid-2">
+                    <div>
+                        <label>Senha</label>
+                        <input id="password" type="password" placeholder="Obrigatória ao criar" autocomplete="new-password">
+                    </div>
+                    <div>
+                        <label>Cliente</label>
+                        <input id="clientId" value="default" placeholder="default">
+                    </div>
                 </div>
-                <div>
-                    <label>Cliente</label>
-                    <input id="clientId" value="default" placeholder="default">
+
+                <div class="grid-2">
+                    <div>
+                        <label>Validade</label>
+                        <input id="validUntil" placeholder="15/04/2026">
+                    </div>
+                    <div>
+                        <label>Máquina principal</label>
+                        <input id="machineId" placeholder="Opcional">
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div>
+                        <label>Limite de máquinas</label>
+                        <input id="maxMachines" type="number" min="0" value="1" placeholder="1">
+                    </div>
+                    <div>
+                        <label>Observação</label>
+                        <input value="0 = ilimitado" disabled>
+                    </div>
+                </div>
+
+                <div class="check-item" style="margin-bottom:0;">
+                    <input id="active" type="checkbox" checked>
+                    <span>Usuário ativo</span>
                 </div>
             </div>
 
-            <div class="grid-2">
-                <div>
-                    <label>Validade</label>
-                    <input id="validUntil" placeholder="15/04/2026">
+            <div class="form-block">
+                <div class="form-block-title">Permissões</div>
+                <div class="permission-toolbar">
+                    <button class="btn-muted" onclick="aplicarPresetPermissoes('operacao')">Operação</button>
+                    <button class="btn-muted" onclick="aplicarPresetPermissoes('gestao')">Gestão</button>
+                    <button class="btn-warning" onclick="aplicarPresetPermissoes('admin')">Admin</button>
+                    <button class="btn-muted" onclick="aplicarPresetPermissoes('limpar')">Limpar</button>
                 </div>
-                <div>
-                    <label>Máquina principal</label>
-                    <input id="machineId" placeholder="Opcional">
-                </div>
+                <div id="permissionsGrid" class="checkbox-grid"></div>
             </div>
-
-            <div class="grid-2">
-                <div>
-                    <label>Limite de máquinas</label>
-                    <input id="maxMachines" type="number" min="0" value="1" placeholder="1">
-                </div>
-                <div>
-                    <label>Observação</label>
-                    <input value="0 = ilimitado" disabled>
-                </div>
-            </div>
-
-            <div class="check-item" style="margin-bottom:10px;">
-                <input id="active" type="checkbox" checked>
-                <span>Usuário ativo</span>
-            </div>
-
-            <label>Permissões</label>
-            <div id="permissionsGrid" class="checkbox-grid"></div>
 
             <div class="form-actions">
                 <button class="btn-primary" onclick="salvarUsuario()">Salvar usuário</button>
@@ -194,48 +451,174 @@
         </div>
 
         <div class="panel">
-            <div class="section-header">
-                <div>
-                    <h3>Usuários online</h3>
-                    <div id="onlineSummary" class="small">Carregando presença...</div>
-                </div>
-                <button class="btn-muted" onclick="carregarOnlineUsuarios()">Atualizar online</button>
-            </div>
-            <div id="onlineUsersGrid" class="online-grid"></div>
-
-            <div id="messagePanel" class="message-panel hidden">
-                <div class="message-panel-title" id="messagePanelTitle">Enviar mensagem</div>
-                <label>Título</label>
-                <input id="messageTitle" placeholder="Mensagem do administrador">
-                <label>Mensagem</label>
-                <textarea id="messageText" placeholder="Digite a mensagem que aparecerá para o usuário."></textarea>
-                <div class="form-actions">
-                    <button class="btn-primary" onclick="enviarMensagemAdmin()">Enviar mensagem</button>
-                    <button class="btn-muted" onclick="fecharMensagemAdmin()">Cancelar</button>
-                </div>
+            <div class="module-tabs" id="moduleTabs">
+                <button class="tab-button active admin-only" data-section-target="visao-geral" onclick="abrirSecaoModulo('visao-geral')">Visão geral</button>
+                <button class="tab-button" data-section-target="compartilhar" onclick="abrirSecaoModulo('compartilhar')">Compartilhar</button>
+                <button class="tab-button admin-only" data-section-target="usuarios" onclick="abrirSecaoModulo('usuarios')">Usuários</button>
             </div>
 
-            <div class="section-header">
-                <div>
-                    <h3>Usuários cadastrados</h3>
-                    <div class="small">Administradores podem editar permissões, status e máquinas.</div>
+            <section class="module-section active admin-only" data-section="visao-geral">
+                <div class="metric-grid" id="usersMetrics">
+                    <div class="metric-card">
+                        <span class="metric-value" id="metricTotalUsers">0</span>
+                        <div class="metric-label">Usuários cadastrados</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="metricActiveUsers">0</span>
+                        <div class="metric-label">Ativos</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="metricOnlineUsers">0</span>
+                        <div class="metric-label">Online agora</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="metricClients">0</span>
+                        <div class="metric-label">Clientes</div>
+                    </div>
                 </div>
-            </div>
-            <div class="table-scroll">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Usuário</th>
-                            <th>Nome</th>
-                            <th>Cliente</th>
-                            <th>Status</th>
-                            <th>Permissões</th>
-                            <th>Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="usersTable"></tbody>
-                </table>
-            </div>
+
+                <div class="section-header">
+                    <div>
+                        <h3>Usuários online</h3>
+                        <div id="onlineSummary" class="small">Carregando presença...</div>
+                    </div>
+                    <button class="btn-muted" onclick="carregarOnlineUsuarios()">Atualizar online</button>
+                </div>
+                <div id="onlineUsersGrid" class="online-grid"></div>
+            </section>
+
+            <section class="module-section" data-section="compartilhar">
+                <div class="machine-sync-panel">
+                    <div class="section-header">
+                        <div>
+                            <h3>Sincronizar minhas máquinas</h3>
+                            <div id="machineSyncSummary" class="small">Carregando sincronização das minhas máquinas...</div>
+                        </div>
+                        <button class="btn-muted" onclick="carregarSincronizacaoMinhasMaquinas()">Atualizar</button>
+                    </div>
+                    <label class="check-item">
+                        <input id="machineSyncEnabled" type="checkbox">
+                        <span>Ativar sincronização automática entre as máquinas em que estou logado</span>
+                    </label>
+                    <div class="machine-sync-grid">
+                        <div>
+                            <label>Dados para sincronizar</label>
+                            <div id="machineSyncScopes" class="user-share-scopes"></div>
+                            <div class="form-actions">
+                                <button class="btn-primary" onclick="salvarSincronizacaoMinhasMaquinas()">Salvar opção</button>
+                                <button class="btn-success" onclick="executarSincronizacaoMinhasMaquinas('push')">Enviar agora</button>
+                                <button class="btn-warning" onclick="executarSincronizacaoMinhasMaquinas('pull')">Importar agora</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Minhas máquinas recentes</label>
+                            <div id="machineSyncMachines" class="machine-list"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="user-share-panel">
+                    <div class="section-header">
+                        <div>
+                            <h3>Compartilhar entre usuários</h3>
+                            <div id="userShareSummary" class="small">Carregando convites e vínculos...</div>
+                        </div>
+                        <button class="btn-muted" onclick="carregarCompartilhamentoEntreUsuarios()">Atualizar</button>
+                    </div>
+
+                    <div class="user-share-grid">
+                        <div>
+                            <label>Enviar para</label>
+                            <select id="userShareTarget"></select>
+                        </div>
+                        <label class="check-item" style="margin:24px 0 0;">
+                            <input id="userShareKeepSynced" type="checkbox">
+                            <span>Quero manter estes dados sincronizados</span>
+                        </label>
+                    </div>
+                    <label>Dados a compartilhar</label>
+                    <div id="userShareScopes" class="user-share-scopes"></div>
+                    <label>Mensagem opcional</label>
+                    <textarea id="userShareMessage" placeholder="Explique para o outro usuário o que está enviando."></textarea>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="enviarConviteCompartilhamentoUsuario()">Enviar convite</button>
+                        <button class="btn-muted" onclick="limparConviteCompartilhamentoUsuario()">Limpar</button>
+                    </div>
+                    <div class="user-share-grid">
+                        <div>
+                            <h4>Convites</h4>
+                            <div id="userShareInvites"></div>
+                        </div>
+                        <div>
+                            <h4>Compartilhamentos ativos</h4>
+                            <div id="userShareLinks"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="module-section admin-only" data-section="usuarios">
+                <div id="messagePanel" class="message-panel hidden">
+                    <div class="message-panel-title" id="messagePanelTitle">Enviar mensagem</div>
+                    <label>Título</label>
+                    <input id="messageTitle" placeholder="Mensagem do administrador">
+                    <label>Mensagem</label>
+                    <textarea id="messageText" placeholder="Digite a mensagem que aparecerá para o usuário."></textarea>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="enviarMensagemAdmin()">Enviar mensagem</button>
+                        <button class="btn-muted" onclick="fecharMensagemAdmin()">Cancelar</button>
+                    </div>
+                </div>
+
+                <div class="section-header">
+                    <div>
+                        <h3>Usuários cadastrados</h3>
+                        <div class="small">Administradores podem editar permissões, status e máquinas.</div>
+                    </div>
+                    <button class="btn-primary" onclick="limparFormulario()">Novo usuário</button>
+                </div>
+
+                <div class="table-tools">
+                    <div>
+                        <label>Buscar</label>
+                        <input id="userSearch" placeholder="Nome, usuário, e-mail ou cliente" oninput="aplicarFiltrosUsuarios()">
+                    </div>
+                    <div>
+                        <label>Status</label>
+                        <select id="userStatusFilter" onchange="aplicarFiltrosUsuarios()">
+                            <option value="all">Todos</option>
+                            <option value="active">Ativos</option>
+                            <option value="inactive">Inativos</option>
+                            <option value="online">Online</option>
+                            <option value="offline">Offline</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>Permissão</label>
+                        <select id="userPermissionFilter" onchange="aplicarFiltrosUsuarios()"></select>
+                    </div>
+                </div>
+                <div class="table-caption">
+                    <div id="usersTableSummary" class="small">Carregando usuários...</div>
+                    <button class="btn-muted" onclick="limparFiltrosUsuarios()">Limpar filtros</button>
+                </div>
+
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Usuário</th>
+                                <th>Nome</th>
+                                <th>Cliente</th>
+                                <th>Status</th>
+                                <th>Permissões</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersTable"></tbody>
+                    </table>
+                </div>
+            </section>
         </div>
     </div>
 </div>
@@ -246,10 +629,7 @@
     }
 
     const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
-    if (permissions.full !== true && permissions.admin_usuarios !== true) {
-        alert('Acesso permitido apenas para administrador.');
-        navegarComTransicao('/dashboard.html');
-    }
+    const usuarioAdmin = permissions.full === true || permissions.admin_usuarios === true;
 
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
@@ -261,7 +641,12 @@
     let onlineCache = {};
     let editandoUsuario = null;
     let mensagemDestino = null;
+    let compartilhamentoCache = null;
+    let usuariosCompartilhamentoCache = [];
+    let compartilhamentoUsuariosCache = null;
+    let sincronizacaoMaquinasCache = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
+    let secaoAtual = usuarioAdmin ? 'visao-geral' : 'compartilhar';
 
     function labelPermissao(key) {
         const map = {
@@ -283,6 +668,43 @@
             admin_usuarios: 'Central de Usuários'
         };
         return map[key] || key;
+    }
+
+    function preencherFiltroPermissoes() {
+        const select = document.getElementById('userPermissionFilter');
+        if (!select) return;
+        select.innerHTML = '<option value="all">Todas</option>' + permissionKeys.map(key => (
+            `<option value="${escaparHtml(key)}">${escaparHtml(labelPermissao(key))}</option>`
+        )).join('');
+    }
+
+    function abrirSecaoModulo(secao) {
+        const alvo = secao || (usuarioAdmin ? 'visao-geral' : 'compartilhar');
+        if (!usuarioAdmin && alvo !== 'compartilhar') return;
+        secaoAtual = alvo;
+        document.querySelectorAll('[data-section]').forEach(section => {
+            section.classList.toggle('active', section.dataset.section === alvo);
+        });
+        document.querySelectorAll('[data-section-target]').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.sectionTarget === alvo);
+        });
+        if (alvo === 'usuarios') aplicarFiltrosUsuarios();
+    }
+
+    function atualizarAbaAtual() {
+        if (!usuarioAdmin) {
+            carregarCompartilhamentoEntreUsuarios();
+            carregarSincronizacaoMinhasMaquinas();
+            return;
+        }
+        if (secaoAtual === 'compartilhar') {
+            carregarCompartilhamentoEntreUsuarios();
+            carregarSincronizacaoMinhasMaquinas();
+        } else if (secaoAtual === 'usuarios') {
+            carregarUsuarios();
+        } else {
+            carregarUsuarios();
+        }
     }
 
     function escaparHtml(valor) {
@@ -340,10 +762,44 @@
         });
     }
 
+    function aplicarPresetPermissoes(tipo) {
+        const presets = {
+            operacao: ['vendas', 'estoque', 'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras'],
+            gestao: ['vendas', 'estoque', 'integracao', 'cadastro', 'impostos', 'importacoes', 'configuracoes'],
+            admin: permissionKeys,
+            limpar: []
+        };
+        const selecionadas = new Set(presets[tipo] || []);
+        document.querySelectorAll('[data-permission]').forEach(cb => {
+            cb.checked = selecionadas.has(cb.dataset.permission);
+        });
+    }
+
     function setStatus(msg, erro) {
         const box = document.getElementById('statusBox');
+        if (!box) return;
         box.textContent = msg || '';
         box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
+    }
+
+    function aplicarModoAcesso() {
+        document.querySelectorAll('.admin-only').forEach(el => {
+            el.classList.toggle('is-hidden', !usuarioAdmin);
+        });
+        document.querySelector('.layout')?.classList.toggle('user-only', !usuarioAdmin);
+        const subtitle = document.querySelector('.subtitle');
+        if (subtitle && !usuarioAdmin) {
+            subtitle.textContent = 'Compartilhe dados com outros usuários por convite e aceite.';
+        }
+        abrirSecaoModulo(usuarioAdmin ? secaoAtual : 'compartilhar');
+    }
+
+    function usuarioAtualSessao() {
+        try {
+            return JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+        } catch (_err) {
+            return {};
+        }
     }
 
     function normalizarDataSistema(valor) {
@@ -361,9 +817,15 @@
         editandoUsuario = null;
         hiddenPermissionsState = { full: false, configuracoes: false };
         document.getElementById('formTitle').textContent = 'Novo usuário';
+        const pill = document.getElementById('formModePill');
+        if (pill) {
+            pill.textContent = 'Cadastro';
+            pill.className = 'pill on';
+        }
         document.getElementById('username').value = '';
         document.getElementById('username').disabled = false;
         document.getElementById('name').value = '';
+        document.getElementById('email').value = '';
         document.getElementById('password').value = '';
         document.getElementById('clientId').value = 'default';
         document.getElementById('validUntil').value = '';
@@ -393,9 +855,15 @@
     function preencherFormulario(user) {
         editandoUsuario = user.username;
         document.getElementById('formTitle').textContent = 'Editando: ' + user.username;
+        const pill = document.getElementById('formModePill');
+        if (pill) {
+            pill.textContent = 'Edição';
+            pill.className = 'pill edit';
+        }
         document.getElementById('username').value = user.username || '';
         document.getElementById('username').disabled = false;
         document.getElementById('name').value = user.name || '';
+        document.getElementById('email').value = user.email || '';
         document.getElementById('password').value = '';
         document.getElementById('clientId').value = user.client_id || 'default';
         document.getElementById('validUntil').value = normalizarDataSistema(user.valid_until || '');
@@ -407,12 +875,80 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
+    function resumoPermissoesCurto(perms) {
+        const ativos = Object.entries(perms || {}).filter(([, v]) => v).map(([k]) => labelPermissao(k));
+        if (!ativos.length) return { texto: 'Sem permissões', completo: 'Sem permissões' };
+        return {
+            texto: ativos.length > 4 ? `${ativos.slice(0, 4).join(', ')} +${ativos.length - 4}` : ativos.join(', '),
+            completo: ativos.join(', ')
+        };
+    }
+
+    function atualizarMetricasUsuarios() {
+        const setTexto = (id, valor) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = String(valor);
+        };
+        const clientes = new Set(usuariosCache.map(user => String(user.client_id || '').trim()).filter(Boolean));
+        const online = Object.values(onlineCache || {}).filter(user => user && user.online).length;
+        setTexto('metricTotalUsers', usuariosCache.length);
+        setTexto('metricActiveUsers', usuariosCache.filter(user => user.active).length);
+        setTexto('metricOnlineUsers', online);
+        setTexto('metricClients', clientes.size);
+    }
+
+    function usuariosFiltrados() {
+        const busca = String(document.getElementById('userSearch')?.value || '').trim().toLowerCase();
+        const status = String(document.getElementById('userStatusFilter')?.value || 'all');
+        const permissao = String(document.getElementById('userPermissionFilter')?.value || 'all');
+        return usuariosCache.filter(user => {
+            const onlineInfo = statusOnlineUsuario(user);
+            const alvoBusca = [
+                user.username,
+                user.name,
+                user.email,
+                user.client_id,
+                resumoPermissoes(user.permissions || {})
+            ].join(' ').toLowerCase();
+            if (busca && !alvoBusca.includes(busca)) return false;
+            if (status === 'active' && !user.active) return false;
+            if (status === 'inactive' && user.active) return false;
+            if (status === 'online' && !onlineInfo.online) return false;
+            if (status === 'offline' && onlineInfo.online) return false;
+            if (permissao !== 'all' && !(user.permissions || {})[permissao]) return false;
+            return true;
+        });
+    }
+
+    function aplicarFiltrosUsuarios() {
+        renderTabela(usuariosFiltrados());
+    }
+
+    function limparFiltrosUsuarios() {
+        const busca = document.getElementById('userSearch');
+        const status = document.getElementById('userStatusFilter');
+        const permissao = document.getElementById('userPermissionFilter');
+        if (busca) busca.value = '';
+        if (status) status.value = 'all';
+        if (permissao) permissao.value = 'all';
+        aplicarFiltrosUsuarios();
+    }
+
     function renderTabela(users) {
         const tbody = document.getElementById('usersTable');
+        const summary = document.getElementById('usersTableSummary');
+        atualizarMetricasUsuarios();
+        if (!tbody) return;
         tbody.innerHTML = '';
         if (!users.length) {
-            tbody.innerHTML = '<tr><td colspan="6">Nenhum usuário cadastrado.</td></tr>';
+            const msg = usuariosCache.length ? 'Nenhum usuário encontrado com os filtros atuais.' : 'Nenhum usuário cadastrado.';
+            tbody.innerHTML = `<tr><td colspan="6">${msg}</td></tr>`;
+            if (summary) summary.textContent = msg;
             return;
+        }
+        if (summary) {
+            const sufixo = users.length === usuariosCache.length ? '' : ` de ${usuariosCache.length}`;
+            summary.textContent = `${users.length}${sufixo} usuário(s) exibido(s)`;
         }
 
         users.forEach(user => {
@@ -420,16 +956,21 @@
             const resumoOnline = onlineInfo.online
                 ? `${onlineInfo.online_count} online`
                 : (onlineInfo.last_seen_at ? `Visto ${textoTempo(onlineInfo.seconds_since_seen)}` : 'Offline');
+            const resumoPerm = resumoPermissoesCurto(user.permissions || {});
+            const email = String(user.email || '').trim();
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><strong>${user.username}</strong></td>
-                <td>${user.name || ''}</td>
-                <td>${user.client_id || ''}</td>
+                <td>
+                    <strong>${escaparHtml(user.username)}</strong>
+                    ${email ? `<div class="small">${escaparHtml(email)}</div>` : ''}
+                </td>
+                <td>${escaparHtml(user.name || '')}</td>
+                <td>${escaparHtml(user.client_id || '')}</td>
                 <td>
                     <span class="pill ${user.active ? 'on' : 'off'}">${user.active ? 'Ativo' : 'Inativo'}</span>
                     <div class="muted-line">${escaparHtml(resumoOnline)}</div>
                 </td>
-                <td>${resumoPermissoes(user.permissions || {})}<div class="small">Dispositivos: ${user.machine_count || 0} / ${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div></td>
+                <td title="${escaparHtml(resumoPerm.completo)}">${escaparHtml(resumoPerm.texto)}<div class="small">Dispositivos: ${user.machine_count || 0} / ${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div></td>
                 <td>
                     <div class="table-actions"></div>
                 </td>
@@ -438,32 +979,38 @@
 
             const btnEditar = document.createElement('button');
             btnEditar.className = 'btn-primary';
-            btnEditar.textContent = 'Permissões';
+            btnEditar.textContent = 'Editar';
+            btnEditar.title = 'Editar cadastro e permissões';
             btnEditar.onclick = () => preencherFormulario(user);
 
             const btnMensagem = document.createElement('button');
             btnMensagem.className = 'btn-success';
             btnMensagem.textContent = 'Mensagem';
+            btnMensagem.title = 'Enviar mensagem para o usuário';
             btnMensagem.onclick = () => abrirMensagemAdmin(user);
 
             const btnSenha = document.createElement('button');
             btnSenha.className = 'btn-warning';
             btnSenha.textContent = 'Senha';
+            btnSenha.title = 'Alterar senha';
             btnSenha.onclick = () => alterarSenha(user.username);
 
             const btnStatus = document.createElement('button');
             btnStatus.className = user.active ? 'btn-muted' : 'btn-success';
             btnStatus.textContent = user.active ? 'Desativar' : 'Ativar';
+            btnStatus.title = user.active ? 'Desativar usuário' : 'Ativar usuário';
             btnStatus.onclick = () => alterarStatus(user.username, !user.active);
 
             const btnResetar = document.createElement('button');
             btnResetar.className = 'btn-warning';
-            btnResetar.textContent = 'Reset disp.';
+            btnResetar.textContent = 'Dispositivos';
+            btnResetar.title = 'Resetar dispositivos vinculados';
             btnResetar.onclick = () => resetarDispositivos(user.username);
 
             const btnExcluir = document.createElement('button');
             btnExcluir.className = 'btn-danger';
             btnExcluir.textContent = 'Excluir';
+            btnExcluir.title = 'Excluir usuário';
             btnExcluir.onclick = () => excluirUsuario(user.username);
 
             acoes.innerHTML = '';
@@ -484,8 +1031,11 @@
         const online = users.filter(u => u.online);
         if (resumo) {
             const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
-            resumo.textContent = `${online.length} usuário(s) online | ${Number(payload && payload.online_machines || 0)} máquina(s) | ${backend}`;
+            const timeout = Number(payload && payload.online_timeout_seconds || 0);
+            const janela = timeout ? ` | janela ${timeout}s` : '';
+            resumo.textContent = `${online.length} usuário(s) online | ${Number(payload && payload.online_machines || 0)} máquina(s) física(s) | ${backend}${janela}`;
         }
+        atualizarMetricasUsuarios();
         if (!grid) return;
         if (!users.length) {
             grid.innerHTML = '<div class="small">Nenhuma presença registrada ainda.</div>';
@@ -510,6 +1060,691 @@
         }).join('');
     }
 
+    function usuarioClienteAtual() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.client_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    function machineIdAtual() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.machine_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    function formatarBytes(valor) {
+        const bytes = Number(valor || 0);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+        if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+    }
+
+    function usuariosParaCompartilhamento() {
+        const clienteAtual = usuarioClienteAtual();
+        const filtrados = usuariosCache.filter(user => {
+            if (!clienteAtual) return true;
+            return String(user.client_id || '').trim() === clienteAtual;
+        });
+        return filtrados.length ? filtrados : usuariosCache;
+    }
+
+    function atualizarVisibilidadeUsuariosSync(scope) {
+        const mode = document.querySelector(`[data-sync-mode="${scope}"]`);
+        const list = document.querySelector(`[data-sync-users="${scope}"]`);
+        if (!mode || !list) return;
+        list.classList.toggle('is-visible', mode.value === 'selected');
+    }
+
+    function renderCompartilhamentoDados(payload) {
+        compartilhamentoCache = payload || {};
+        const summary = document.getElementById('sharedSyncSummary');
+        const grid = document.getElementById('sharedSyncScopes');
+        const scopes = compartilhamentoCache.scopes || {};
+        const scopeKeys = Object.keys(scopes);
+        const enabledCount = scopeKeys.filter(key => scopes[key] && scopes[key].config && scopes[key].config.enabled).length;
+        if (summary) {
+            const backend = compartilhamentoCache.backend === 'firebase' ? 'Firebase' : 'local';
+            summary.textContent = `${enabledCount} compartilhamento(s) ativo(s) | ${backend}`;
+        }
+        if (!grid) return;
+        if (!scopeKeys.length) {
+            grid.innerHTML = '<div class="small">Nenhum escopo de compartilhamento disponível.</div>';
+            return;
+        }
+
+        const usuarios = usuariosParaCompartilhamento();
+        grid.innerHTML = scopeKeys.map(scope => {
+            const item = scopes[scope] || {};
+            const cfg = item.config || {};
+            const remote = item.remote || {};
+            const allowed = Array.isArray(cfg.allowed_users) ? cfg.allowed_users : [];
+            const mode = allowed.length ? 'selected' : 'all';
+            const remoteText = remote.exists
+                ? `Remoto: ${remote.file_count || 0} arquivo(s), ${formatarBytes(remote.bundle_bytes)} | ${remote.updated_at || 'sem data'}`
+                : 'Remoto: nenhum pacote enviado ainda.';
+            const shareUsersControl = item.user_scoped ? `
+                    <label class="sync-auto-row">
+                        <input type="checkbox" data-sync-share-users="${escaparHtml(scope)}" ${cfg.share_between_users ? 'checked' : ''}>
+                        <span>Compartilhar entre usuários deste cliente</span>
+                    </label>
+                    <div class="small">Ao restaurar, aplica esses dados no usuário logado.</div>
+            ` : '';
+            const userChecks = usuarios.map(user => {
+                const username = String(user.username || '').trim().toLowerCase();
+                if (!username) return '';
+                const checked = allowed.includes(username) ? 'checked' : '';
+                return `
+                    <label>
+                        <input type="checkbox" data-sync-user="${escaparHtml(scope)}" value="${escaparHtml(username)}" ${checked}>
+                        <span>${escaparHtml(user.name || username)}</span>
+                    </label>
+                `;
+            }).join('');
+            return `
+                <div class="sync-scope-card">
+                    <div class="sync-scope-head">
+                        <div>
+                            <div class="sync-scope-title">${escaparHtml(item.label || scope)}</div>
+                            <div class="small">${escaparHtml(item.description || '')}</div>
+                            ${item.sensitive ? '<div class="sync-sensitive">Inclui credenciais/tokens.</div>' : ''}
+                        </div>
+                        <input type="checkbox" data-sync-enabled="${escaparHtml(scope)}" ${cfg.enabled ? 'checked' : ''} title="Ativar compartilhamento">
+                    </div>
+                    <label style="margin-top:10px;">Quem pode sincronizar</label>
+                    <select data-sync-mode="${escaparHtml(scope)}" onchange="atualizarVisibilidadeUsuariosSync('${escaparHtml(scope)}')">
+                        <option value="all" ${mode === 'all' ? 'selected' : ''}>Todos do cliente</option>
+                        <option value="selected" ${mode === 'selected' ? 'selected' : ''}>Usuários selecionados</option>
+                    </select>
+                    <div class="sync-user-list ${mode === 'selected' ? 'is-visible' : ''}" data-sync-users="${escaparHtml(scope)}">
+                        ${userChecks || '<div class="small">Nenhum usuário carregado.</div>'}
+                    </div>
+                    <label class="sync-auto-row">
+                        <input type="checkbox" data-sync-auto-pull="${escaparHtml(scope)}" ${cfg.auto_pull !== false ? 'checked' : ''}>
+                        <span>Restaurar automaticamente quando houver dados mais novos</span>
+                    </label>
+                    ${shareUsersControl}
+                    <div class="sync-remote">${escaparHtml(remoteText)}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function coletarCompartilhamentoDados() {
+        const scopes = {};
+        Object.keys((compartilhamentoCache && compartilhamentoCache.scopes) || {}).forEach(scope => {
+            const enabledEl = document.querySelector(`[data-sync-enabled="${scope}"]`);
+            const modeEl = document.querySelector(`[data-sync-mode="${scope}"]`);
+            const autoPullEl = document.querySelector(`[data-sync-auto-pull="${scope}"]`);
+            const shareUsersEl = document.querySelector(`[data-sync-share-users="${scope}"]`);
+            const selectedUsers = Array.from(document.querySelectorAll(`[data-sync-user="${scope}"]:checked`))
+                .map(el => String(el.value || '').trim().toLowerCase())
+                .filter(Boolean);
+            scopes[scope] = {
+                enabled: !!(enabledEl && enabledEl.checked),
+                allowed_users: modeEl && modeEl.value === 'selected' ? selectedUsers : [],
+                auto_pull: !(autoPullEl && autoPullEl.checked === false),
+                auto_push: false,
+                share_between_users: !!(shareUsersEl && shareUsersEl.checked),
+                conflict: 'latest_wins'
+            };
+        });
+        return { scopes };
+    }
+
+    function scopesCompartilhamentoSelecionados() {
+        return Object.entries(coletarCompartilhamentoDados().scopes || {})
+            .filter(([, cfg]) => cfg && cfg.enabled)
+            .map(([scope]) => scope);
+    }
+
+    async function carregarCompartilhamentoDados() {
+        const summary = document.getElementById('sharedSyncSummary');
+        if (summary) summary.textContent = 'Carregando regras de sincronização...';
+        try {
+            const resp = await fetch('/api/admin/shared-sync/config', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao carregar compartilhamento.');
+            }
+            renderCompartilhamentoDados(data);
+            return true;
+        } catch (error) {
+            if (summary) summary.textContent = error.message || 'Não foi possível carregar compartilhamento.';
+            return false;
+        }
+    }
+
+    async function salvarCompartilhamentoDados(silencioso) {
+        if (!compartilhamentoCache) {
+            await carregarCompartilhamentoDados();
+        }
+        if (!silencioso) setStatus('Salvando regras de compartilhamento...');
+        try {
+            const resp = await fetch('/api/admin/shared-sync/config', {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(coletarCompartilhamentoDados())
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao salvar regras.');
+            }
+            renderCompartilhamentoDados(data);
+            if (!silencioso) setStatus('Regras de compartilhamento salvas.');
+            return true;
+        } catch (error) {
+            setStatus(error.message || 'Erro ao salvar regras de compartilhamento.', true);
+            return false;
+        }
+    }
+
+    function resumoResultadosSync(results) {
+        const itens = Array.isArray(results) ? results : [];
+        if (!itens.length) return 'Nenhum dado sincronizado.';
+        return itens.map(item => {
+            const scopesGlobais = (compartilhamentoCache && compartilhamentoCache.scopes) || {};
+            const scopesUsuarios = (compartilhamentoUsuariosCache && compartilhamentoUsuariosCache.scopes) || {};
+            const nome = (scopesGlobais[item.scope] && scopesGlobais[item.scope].label)
+                || (scopesUsuarios[item.scope] && scopesUsuarios[item.scope].label)
+                || item.scope;
+            return `${nome}: ${item.file_count || 0} arquivo(s)`;
+        }).join(' | ');
+    }
+
+    async function executarCompartilhamentoDados(direcao) {
+        const salvou = await salvarCompartilhamentoDados(true);
+        if (!salvou) return;
+        const scopes = scopesCompartilhamentoSelecionados();
+        if (!scopes.length) {
+            setStatus('Ative pelo menos um tipo de dado para sincronizar.', true);
+            return;
+        }
+        if (direcao === 'pull' && !confirm('Restaurar dados compartilhados nesta máquina? O sistema fará backup local antes de substituir.')) {
+            return;
+        }
+        const endpoint = direcao === 'push' ? '/api/shared-sync/push' : '/api/shared-sync/pull';
+        setStatus(direcao === 'push' ? 'Enviando dados para o Firebase...' : 'Restaurando dados compartilhados...');
+        try {
+            const resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ scopes, machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(data.detail || data.message || 'Erro ao sincronizar dados.');
+            }
+            await carregarCompartilhamentoDados();
+            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados restaurados. ') + resumoResultadosSync(data.results));
+        } catch (error) {
+            setStatus(error.message || 'Erro ao sincronizar dados.', true);
+        }
+    }
+
+    function enviarDadosCompartilhados() {
+        executarCompartilhamentoDados('push');
+    }
+
+    function restaurarDadosCompartilhados() {
+        executarCompartilhamentoDados('pull');
+    }
+
+    function escopoLabelUsuario(scope) {
+        const item = compartilhamentoUsuariosCache && compartilhamentoUsuariosCache.scopes
+            ? compartilhamentoUsuariosCache.scopes[scope]
+            : null;
+        return (item && item.label) || scope;
+    }
+
+    function renderUsuariosCompartilhamento(data) {
+        usuariosCompartilhamentoCache = Array.isArray(data && data.users) ? data.users : [];
+        const select = document.getElementById('userShareTarget');
+        if (!select) return;
+        if (!usuariosCompartilhamentoCache.length) {
+            select.innerHTML = '<option value="">Nenhum usuário disponível</option>';
+            return;
+        }
+        select.innerHTML = usuariosCompartilhamentoCache.map(user => {
+            const label = `${user.client_id || ''} - ${user.name || user.username} (${user.username})`;
+            const value = `${user.username || ''}|${user.client_id || ''}`;
+            return `<option value="${escaparHtml(value)}">${escaparHtml(label)}</option>`;
+        }).join('');
+    }
+
+    function renderEscoposCompartilhamentoUsuario(payload) {
+        const grid = document.getElementById('userShareScopes');
+        if (!grid) return;
+        const scopes = (payload && payload.scopes) || {};
+        const keys = Object.keys(scopes);
+        if (!keys.length) {
+            grid.innerHTML = '<div class="user-share-empty">Nenhum tipo de dado disponível.</div>';
+            return;
+        }
+        const preferidos = new Set(['cadastro', 'lojas_integracoes', 'vendas', 'favoritos_historico', 'sku_campos_pesquisa']);
+        grid.innerHTML = keys.map(scope => {
+            const item = scopes[scope] || {};
+            return `
+                <label class="check-item">
+                    <input type="checkbox" data-user-share-scope="${escaparHtml(scope)}" ${preferidos.has(scope) ? 'checked' : ''}>
+                    <span>${escaparHtml(item.label || scope)}</span>
+                </label>
+            `;
+        }).join('');
+    }
+
+    function renderConvitesCompartilhamentoUsuario(payload) {
+        const el = document.getElementById('userShareInvites');
+        if (!el) return;
+        const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+        if (!invites.length) {
+            el.innerHTML = '<div class="user-share-empty">Nenhum convite.</div>';
+            return;
+        }
+        el.innerHTML = invites.slice(0, 12).map(invite => {
+            const receivedPending = invite.direction === 'received' && invite.status === 'pending';
+            const sentPending = invite.direction === 'sent' && invite.status === 'pending';
+            const pessoa = invite.direction === 'received'
+                ? `${invite.source_client_id} - ${invite.source_name || invite.source_username}`
+                : `${invite.target_client_id} - ${invite.target_name || invite.target_username}`;
+            const status = invite.status === 'pending'
+                ? (sentPending ? 'aguardando aceite' : 'pendente')
+                : invite.status === 'accepted' ? 'aceito' : 'recusado';
+            const syncText = invite.source_keep_synced ? 'Origem quer manter sincronizado.' : 'Envio único pela origem.';
+            const actions = receivedPending ? `
+                <label class="sync-auto-row">
+                    <input type="checkbox" id="acceptSync_${escaparHtml(invite.id)}">
+                    <span>Também quero manter sincronizado</span>
+                </label>
+                <div class="row">
+                    <button class="btn-success" onclick="aceitarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Aceitar</button>
+                    <button class="btn-danger" onclick="recusarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Recusar</button>
+                </div>
+            ` : '';
+            return `
+                <div class="user-share-item">
+                    <strong>${escaparHtml(pessoa)}</strong>
+                    <div class="small">${escaparHtml((invite.scope_labels || []).join(', '))}</div>
+                    <div class="muted-line">${escaparHtml(status)} | ${escaparHtml(syncText)}</div>
+                    ${invite.message ? `<div class="muted-line">${escaparHtml(invite.message)}</div>` : ''}
+                    ${actions}
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderVinculosCompartilhamentoUsuario(payload) {
+        const el = document.getElementById('userShareLinks');
+        if (!el) return;
+        const links = Array.isArray(payload && payload.links) ? payload.links : [];
+        if (!links.length) {
+            el.innerHTML = '<div class="user-share-empty">Nenhum compartilhamento ativo.</div>';
+            return;
+        }
+        el.innerHTML = links.slice(0, 12).map(link => {
+            const souOrigem = link.direction === 'source';
+            const pessoa = souOrigem
+                ? `${link.target_client_id} - ${link.target_name || link.target_username}`
+                : `${link.source_client_id} - ${link.source_name || link.source_username}`;
+            const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
+            const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
+            const syncStatus = link.auto_sync_enabled
+                ? 'sincronização contínua ativa'
+                : `sincronização contínua incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
+            const action = souOrigem
+                ? `<button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>`
+                : `<button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Importar agora</button>`;
+            return `
+                <div class="user-share-item">
+                    <strong>${escaparHtml(pessoa)}</strong>
+                    <div class="small">${escaparHtml((link.scope_labels || []).join(', '))}</div>
+                    <div class="muted-line">${link.active ? 'ativo' : 'pausado'} | ${escaparHtml(syncStatus)}</div>
+                    <label class="sync-auto-row">
+                        <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
+                        <span>Manter sincronizado do meu lado</span>
+                    </label>
+                    <div class="row">
+                        ${action}
+                        <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderCompartilhamentoEntreUsuarios(payload) {
+        compartilhamentoUsuariosCache = payload || {};
+        const summary = document.getElementById('userShareSummary');
+        if (summary) {
+            const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+            const links = Array.isArray(payload && payload.links) ? payload.links : [];
+            const pendentes = invites.filter(item => item.direction === 'received' && item.status === 'pending').length;
+            summary.textContent = `${pendentes} convite(s) pendente(s) | ${links.length} vínculo(s)`;
+        }
+        renderEscoposCompartilhamentoUsuario(payload);
+        renderConvitesCompartilhamentoUsuario(payload);
+        renderVinculosCompartilhamentoUsuario(payload);
+    }
+
+    function scopesSelecionadosCompartilhamentoUsuario() {
+        return Array.from(document.querySelectorAll('[data-user-share-scope]:checked'))
+            .map(el => String(el.dataset.userShareScope || '').trim())
+            .filter(Boolean);
+    }
+
+    function limparConviteCompartilhamentoUsuario() {
+        const msg = document.getElementById('userShareMessage');
+        if (msg) msg.value = '';
+        const sync = document.getElementById('userShareKeepSynced');
+        if (sync) sync.checked = false;
+    }
+
+    function renderSincronizacaoMinhasMaquinas(payload) {
+        sincronizacaoMaquinasCache = payload || {};
+        const summary = document.getElementById('machineSyncSummary');
+        const grid = document.getElementById('machineSyncScopes');
+        const machinesEl = document.getElementById('machineSyncMachines');
+        const enabledEl = document.getElementById('machineSyncEnabled');
+        const config = (payload && payload.config) || {};
+        const scopes = (payload && payload.scopes) || {};
+        const scopeKeys = Object.keys(scopes).filter(scope => scopes[scope] && scopes[scope].allowed);
+        const selected = new Set(Array.isArray(config.scopes) ? config.scopes : []);
+        if (enabledEl) enabledEl.checked = !!config.enabled;
+        if (summary) {
+            const ativos = scopeKeys.filter(scope => selected.has(scope)).length;
+            const maquinas = Number((payload && payload.online_count) || 0);
+            const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
+            summary.textContent = `${config.enabled ? 'Ativa' : 'Desativada'} | ${ativos} dado(s) selecionado(s) | ${maquinas} máquina(s) online | ${backend}`;
+        }
+        if (grid) {
+            if (!scopeKeys.length) {
+                grid.innerHTML = '<div class="machine-sync-empty">Nenhum dado disponível para suas permissões.</div>';
+            } else {
+                grid.innerHTML = scopeKeys.map(scope => {
+                    const item = scopes[scope] || {};
+                    const remote = item.remote || {};
+                    const remoteText = remote.exists
+                        ? `Último envio: ${remote.updated_at || 'sem data'}${remote.machine_id ? ' | ' + remote.machine_id : ''}`
+                        : 'Ainda não enviado.';
+                    return `
+                        <label class="check-item" title="${escaparHtml(item.description || '')}">
+                            <input type="checkbox" data-machine-sync-scope="${escaparHtml(scope)}" ${selected.has(scope) ? 'checked' : ''}>
+                            <span>${escaparHtml(item.label || scope)}<span class="muted-line">${escaparHtml(remoteText)}</span></span>
+                        </label>
+                    `;
+                }).join('');
+            }
+        }
+        if (machinesEl) {
+            const machines = Array.isArray(payload && payload.machines) ? payload.machines : [];
+            if (!machines.length) {
+                machinesEl.innerHTML = '<div class="machine-sync-empty">Nenhuma máquina recente registrada.</div>';
+            } else {
+                machinesEl.innerHTML = machines.slice(0, 6).map(machine => {
+                    const status = machine.online ? 'online agora' : (machine.seconds_since_seen ? `visto ${textoTempo(machine.seconds_since_seen)}` : 'sem presença');
+                    return `
+                        <div class="machine-item ${machine.current ? 'current' : ''}">
+                            <strong>${escaparHtml(machine.label || machine.machine_id || 'Máquina')}</strong>
+                            <div class="small">${escaparHtml(status)}${machine.current ? ' | esta máquina' : ''}</div>
+                            ${machine.page ? `<div class="muted-line">${escaparHtml(machine.page)}</div>` : ''}
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+    }
+
+    function scopesSelecionadosSincronizacaoMinhasMaquinas() {
+        return Array.from(document.querySelectorAll('[data-machine-sync-scope]:checked'))
+            .map(el => String(el.dataset.machineSyncScope || '').trim())
+            .filter(Boolean);
+    }
+
+    function coletarSincronizacaoMinhasMaquinas() {
+        return {
+            enabled: !!document.getElementById('machineSyncEnabled')?.checked,
+            scopes: scopesSelecionadosSincronizacaoMinhasMaquinas(),
+            auto_pull: true,
+            auto_push: true
+        };
+    }
+
+    async function carregarSincronizacaoMinhasMaquinas() {
+        const summary = document.getElementById('machineSyncSummary');
+        if (summary) summary.textContent = 'Carregando sincronização das minhas máquinas...';
+        try {
+            const machineId = machineIdAtual();
+            const resp = await fetch('/api/shared-sync/machine-sync?machine_id=' + encodeURIComponent(machineId), {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar sincronização.');
+            renderSincronizacaoMinhasMaquinas(data);
+            return true;
+        } catch (error) {
+            if (summary) summary.textContent = error.message || 'Erro ao carregar sincronização.';
+            return false;
+        }
+    }
+
+    async function salvarSincronizacaoMinhasMaquinas(silencioso) {
+        const payload = coletarSincronizacaoMinhasMaquinas();
+        if (payload.enabled && !payload.scopes.length) {
+            setStatus('Selecione pelo menos um dado para sincronizar entre suas máquinas.', true);
+            return false;
+        }
+        if (!silencioso) setStatus('Salvando sincronização das minhas máquinas...');
+        try {
+            const resp = await fetch('/api/shared-sync/machine-sync', {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(payload)
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao salvar sincronização.');
+            renderSincronizacaoMinhasMaquinas(data);
+            if (!silencioso) setStatus(payload.enabled ? 'Sincronização entre minhas máquinas ativada.' : 'Sincronização entre minhas máquinas desativada.');
+            return true;
+        } catch (error) {
+            setStatus(error.message || 'Erro ao salvar sincronização.', true);
+            return false;
+        }
+    }
+
+    async function executarSincronizacaoMinhasMaquinas(direcao) {
+        const salvou = await salvarSincronizacaoMinhasMaquinas(true);
+        if (!salvou) return;
+        const scopes = scopesSelecionadosSincronizacaoMinhasMaquinas();
+        if (!scopes.length) {
+            setStatus('Selecione pelo menos um dado para sincronizar.', true);
+            return;
+        }
+        if (direcao === 'pull' && !confirm('Importar dados das suas outras máquinas? O sistema cria backup local antes de aplicar.')) return;
+        const endpoint = direcao === 'push' ? '/api/shared-sync/machine-sync/push' : '/api/shared-sync/machine-sync/pull';
+        setStatus(direcao === 'push' ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
+        try {
+            const resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ scopes, machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
+            await carregarSincronizacaoMinhasMaquinas();
+            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
+        } catch (error) {
+            setStatus(error.message || 'Erro ao sincronizar minhas máquinas.', true);
+        }
+    }
+
+    async function carregarUsuariosParaCompartilhar() {
+        try {
+            const resp = await fetch('/api/shared-sync/users', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar usuários.');
+            renderUsuariosCompartilhamento(data);
+            return true;
+        } catch (error) {
+            const summary = document.getElementById('userShareSummary');
+            if (summary) summary.textContent = error.message || 'Erro ao carregar usuários.';
+            return false;
+        }
+    }
+
+    async function carregarCompartilhamentoEntreUsuarios() {
+        const summary = document.getElementById('userShareSummary');
+        if (summary) summary.textContent = 'Carregando convites e vínculos...';
+        await carregarUsuariosParaCompartilhar();
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar compartilhamentos.');
+            renderCompartilhamentoEntreUsuarios(data);
+            return true;
+        } catch (error) {
+            if (summary) summary.textContent = error.message || 'Erro ao carregar compartilhamentos.';
+            return false;
+        }
+    }
+
+    async function enviarConviteCompartilhamentoUsuario() {
+        const targetRaw = String(document.getElementById('userShareTarget')?.value || '').trim();
+        if (!targetRaw) {
+            setStatus('Selecione o usuário de destino.', true);
+            return;
+        }
+        const [target_username, target_client_id] = targetRaw.split('|');
+        const scopes = scopesSelecionadosCompartilhamentoUsuario();
+        if (!scopes.length) {
+            setStatus('Selecione pelo menos um dado para compartilhar.', true);
+            return;
+        }
+        setStatus('Enviando convite e preparando pacote...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invite', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    target_username,
+                    target_client_id,
+                    scopes,
+                    keep_synced: !!document.getElementById('userShareKeepSynced')?.checked,
+                    message: document.getElementById('userShareMessage')?.value || '',
+                    machine_id: machineIdAtual()
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar convite.');
+            limparConviteCompartilhamentoUsuario();
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Convite enviado.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao enviar convite.', true);
+        }
+    }
+
+    async function aceitarConviteCompartilhamentoUsuario(inviteId) {
+        const keepSynced = !!document.getElementById('acceptSync_' + inviteId)?.checked;
+        if (!confirm('Aceitar e importar os dados deste usuário? O sistema cria backup local antes de aplicar.')) return;
+        setStatus('Aceitando convite e importando dados...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/accept', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ keep_synced: keepSynced, machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao aceitar convite.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Convite aceito.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao aceitar convite.', true);
+        }
+    }
+
+    async function recusarConviteCompartilhamentoUsuario(inviteId) {
+        if (!confirm('Recusar este convite de compartilhamento?')) return;
+        setStatus('Recusando convite...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/reject', {
+                method: 'POST',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recusar convite.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Convite recusado.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao recusar convite.', true);
+        }
+    }
+
+    async function alterarSyncVinculoCompartilhamentoUsuario(linkId, keepSynced) {
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId), {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ keep_synced: !!keepSynced })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao atualizar vínculo.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Preferências atualizadas.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao atualizar vínculo.', true);
+        }
+    }
+
+    async function pausarVinculoCompartilhamentoUsuario(linkId) {
+        if (!confirm('Pausar este compartilhamento?')) return;
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId), {
+                method: 'PUT',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ active: false })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao pausar vínculo.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus(data.message || 'Compartilhamento pausado.');
+        } catch (error) {
+            setStatus(error.message || 'Erro ao pausar vínculo.', true);
+        }
+    }
+
+    async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
+        const endpoint = direcao === 'push' ? 'push' : 'pull';
+        if (direcao === 'pull' && !confirm('Importar estes dados agora? O sistema cria backup local antes de aplicar.')) return;
+        setStatus(direcao === 'push' ? 'Enviando dados do vínculo...' : 'Importando dados do vínculo...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
+            await carregarCompartilhamentoEntreUsuarios();
+            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
+        } catch (error) {
+            setStatus(error.message || 'Erro ao sincronizar vínculo.', true);
+        }
+    }
+
+    function enviarVinculoCompartilhamentoUsuario(linkId) {
+        executarVinculoCompartilhamentoUsuario(linkId, 'push');
+    }
+
+    function receberVinculoCompartilhamentoUsuario(linkId) {
+        executarVinculoCompartilhamentoUsuario(linkId, 'pull');
+    }
+
     async function carregarOnlineUsuarios() {
         try {
             const resp = await fetch('/api/admin/users/online', { headers: obterAuthHeaders(), cache: 'no-store' });
@@ -522,7 +1757,7 @@
                 onlineCache[String(user.username || '').toLowerCase()] = user;
             });
             renderOnlineUsuarios(data);
-            if (usuariosCache.length) renderTabela(usuariosCache);
+            if (usuariosCache.length) aplicarFiltrosUsuarios();
         } catch (error) {
             const resumo = document.getElementById('onlineSummary');
             if (resumo) resumo.textContent = error.message || 'Não foi possível carregar presença.';
@@ -575,6 +1810,11 @@
     }
 
     async function carregarUsuarios() {
+        if (!usuarioAdmin) {
+            await carregarSincronizacaoMinhasMaquinas();
+            await carregarCompartilhamentoEntreUsuarios();
+            return;
+        }
         setStatus('Carregando usuários...');
         const resp = await fetch('/api/admin/users', { headers: obterAuthHeaders() });
         const data = await resp.json();
@@ -583,8 +1823,10 @@
             return;
         }
         usuariosCache = data.users || [];
-        renderTabela(usuariosCache);
+        aplicarFiltrosUsuarios();
         await carregarOnlineUsuarios();
+        await carregarSincronizacaoMinhasMaquinas();
+        await carregarCompartilhamentoEntreUsuarios();
         setStatus('Lista atualizada.');
     }
 
@@ -594,6 +1836,7 @@
             original_username: editandoUsuario,
             password: document.getElementById('password').value,
             name: document.getElementById('name').value.trim(),
+            email: document.getElementById('email').value.trim(),
             client_id: document.getElementById('clientId').value.trim() || 'default',
             valid_until: normalizarDataSistema(document.getElementById('validUntil').value.trim()),
             machine_id: document.getElementById('machineId').value.trim(),
@@ -609,6 +1852,10 @@
 
         if (!payload.username) {
             setStatus('Informe o usuário.', true);
+            return;
+        }
+        if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)) {
+            setStatus('Informe um e-mail válido.', true);
             return;
         }
         if (!Number.isFinite(payload.max_machines) || payload.max_machines < 0) {
@@ -694,10 +1941,18 @@
         setStatus(data.message || 'Usuário removido.');
     }
 
-    renderPermissionGrid();
-    limparFormulario();
+    if (usuarioAdmin) {
+        renderPermissionGrid();
+        preencherFiltroPermissoes();
+        limparFormulario();
+    }
+    aplicarModoAcesso();
     carregarUsuarios();
-    setInterval(carregarOnlineUsuarios, 30000);
+    if (usuarioAdmin) {
+        setInterval(carregarOnlineUsuarios, 30000);
+    }
+    setInterval(carregarSincronizacaoMinhasMaquinas, 90000);
+    setInterval(carregarCompartilhamentoEntreUsuarios, 90000);
 </script>
 <script src="/ia-sidebar.js"></script>
 </body>

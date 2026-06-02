@@ -611,6 +611,64 @@ function obterAuthHeaders(extra) {
     });
 })();
 
+(function initMachineSharedSyncAuto() {
+    if (window.__jkMachineSharedSyncAutoInit) return;
+    window.__jkMachineSharedSyncAutoInit = true;
+
+    const INTERVALO_MS = 5 * 60 * 1000;
+    let executando = false;
+    let ultimaExecucao = 0;
+
+    function telaSeguraParaSincronizar() {
+        const path = String(window.location.pathname || '').toLowerCase();
+        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$/.test(path);
+    }
+
+    function machineIdAtualSync() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.machine_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    async function executarMachineSync(motivo) {
+        if (executando || !obterToken() || tokenSessaoExpirado()) return null;
+        if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        if (!telaSeguraParaSincronizar()) return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimaExecucao < 60000) return null;
+        ultimaExecucao = agora;
+        executando = true;
+        try {
+            const resp = await fetch('/api/shared-sync/machine-sync/auto', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtualSync() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
+                console.info('[Machine Sync] Minhas maquinas sincronizadas:', data.results);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Machine Sync]', err);
+            return null;
+        } finally {
+            executando = false;
+        }
+    }
+
+    window.jkMachineSyncNow = () => executarMachineSync('manual');
+    setTimeout(() => executarMachineSync('inicio'), 90000);
+    setInterval(() => executarMachineSync('intervalo'), INTERVALO_MS);
+    window.addEventListener('focus', () => executarMachineSync('focus'));
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') executarMachineSync('visible');
+    });
+})();
+
 /** Remove dados de sessão e redireciona para login. */
 function encerrarSessao() {
     localStorage.removeItem('access_token');
