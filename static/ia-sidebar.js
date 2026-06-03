@@ -561,17 +561,21 @@
     border:0;background:transparent;outline:none;}
   .jk-left-module-icon{position:relative;z-index:2;width:46px;height:46px;border-radius:14px;border:1px solid rgba(120,227,212,.32);
     display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#0f6bbd,#13b99a);box-shadow:0 4px 16px rgba(19,196,160,.34);
-    font-size:1.25rem;line-height:1;transform:scale(1) rotate(0deg);transform-origin:center center;will-change:transform;animation:none;
-    transition:box-shadow .18s ease,border-color .18s ease;}
+    font-size:1.25rem;line-height:1;transform:scale(1);transform-origin:center center;will-change:transform;
+    transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
+  .jk-left-module-glyph{display:inline-flex;align-items:center;justify-content:center;line-height:1;transform:rotate(0deg) scale(1);transform-origin:center center;will-change:transform;animation:none;}
   .jk-left-module-label{position:absolute;left:31px;top:50%;z-index:1;min-width:118px;max-width:214px;min-height:34px;display:flex;align-items:center;
     padding:0 13px 0 25px;border-radius:0 12px 12px 0;border:1px solid rgba(120,227,212,.3);border-left:0;
     background:linear-gradient(90deg,rgba(8,43,59,.96),rgba(6,71,84,.92));box-shadow:0 8px 22px rgba(0,0,0,.34);
     color:#e8fffb;font-size:.76rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     transform:translate(-18px,-50%) scaleX(.25);transform-origin:left center;opacity:0;transition:transform .16s cubic-bezier(.2,.9,.2,1),opacity .12s ease;}
-  @keyframes jkLeftModuleIconSpinZoom{from{transform:scale(1.32) rotate(0deg);}to{transform:scale(1.32) rotate(360deg);}}
+  @keyframes jkLeftModuleGlyphSpin{from{transform:rotate(0deg) scale(1.14);}to{transform:rotate(360deg) scale(1.14);}}
   .jk-left-module-link:hover .jk-left-module-icon,
   .jk-left-module-icon:hover,
-  .jk-left-module-link:focus-visible .jk-left-module-icon{animation:jkLeftModuleIconSpinZoom .62s linear infinite;border-color:rgba(255,255,255,.76);box-shadow:0 0 0 4px rgba(120,227,212,.18),0 8px 24px rgba(19,196,160,.48);}
+  .jk-left-module-link:focus-visible .jk-left-module-icon{transform:scale(1.28);border-color:rgba(255,255,255,.76);box-shadow:0 0 0 4px rgba(120,227,212,.18),0 8px 24px rgba(19,196,160,.48);}
+  .jk-left-module-link:hover .jk-left-module-glyph,
+  .jk-left-module-icon:hover .jk-left-module-glyph,
+  .jk-left-module-link:focus-visible .jk-left-module-glyph{animation:jkLeftModuleGlyphSpin .58s linear infinite;}
   .jk-left-module-link:hover .jk-left-module-label,
   .jk-left-module-link:focus-visible .jk-left-module-label{transform:translate(0,-50%) scaleX(1);opacity:1;}
   .jk-left-module-link.modulo-atual{display:none;}
@@ -1049,7 +1053,10 @@
         const icon = document.createElement('span');
         icon.className = 'jk-left-module-icon';
         icon.setAttribute('aria-hidden', 'true');
-        icon.innerHTML = mod.icon;
+        const glyph = document.createElement('span');
+        glyph.className = 'jk-left-module-glyph';
+        glyph.innerHTML = mod.icon;
+        icon.appendChild(glyph);
 
         const label = document.createElement('span');
         label.className = 'jk-left-module-label';
