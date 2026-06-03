@@ -333,6 +333,46 @@
             padding: 10px;
         }
         .user-share-item strong { display: block; color: #d8ecff; margin-bottom: 4px; }
+        .user-share-links-scroll {
+            overflow: auto;
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            background: rgba(12, 22, 37, 0.86);
+            border-radius: 12px;
+        }
+        .user-share-links-table {
+            min-width: 760px;
+        }
+        .user-share-links-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+        .share-status-pill {
+            display: inline-block;
+            border: 1px solid rgba(79, 172, 254, 0.24);
+            border-radius: 999px;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+        .share-status-pill.ok {
+            border-color: rgba(51, 195, 125, 0.42);
+            color: #7df0b2;
+            background: rgba(51, 195, 125, 0.12);
+        }
+        .share-status-pill.pending {
+            border-color: rgba(255, 184, 77, 0.58);
+            color: #ffd083;
+            background: rgba(255, 184, 77, 0.12);
+        }
+        .share-row-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .share-row-actions button {
+            padding: 7px 9px;
+            font-size: 12px;
+        }
         .user-share-sync-status {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1428,14 +1468,33 @@
         };
     }
 
+    function textoQuantidadeTiposDados(valor) {
+        const total = Number(valor || 0);
+        return total === 1 ? '1 tipo de dado' : `${total} tipos de dados`;
+    }
+
+    function resumoLabelsPendentes(resumo, limite = 4) {
+        const labels = Array.isArray(resumo && resumo.pendingLabels) ? resumo.pendingLabels : [];
+        const total = Math.max(Number(resumo && resumo.pending || 0), labels.length);
+        if (!labels.length) return total > 0 ? 'Dados pendentes detectados.' : '';
+        const visiveis = labels.slice(0, limite);
+        const restantes = Math.max(0, total - visiveis.length);
+        return restantes > 0 ? `${visiveis.join(', ')} +${restantes}` : visiveis.join(', ');
+    }
+
+    function textoRecebimentoVinculo(resumo) {
+        const pendentes = Number(resumo && resumo.pending || 0);
+        return pendentes > 0
+            ? `${textoQuantidadeTiposDados(pendentes)} novos para receber`
+            : 'Em dia';
+    }
+
     function renderStatusSincronizacaoVinculo(link) {
         const resumo = statusEscoposVinculo(link);
         const receiveClass = resumo.pending > 0 ? 'pending' : 'ok';
-        const receiveText = resumo.pending > 0
-            ? `${resumo.pending} tipo(s) aguardando`
-            : 'em dia';
+        const receiveText = textoRecebimentoVinculo(resumo);
         const detalhesPendentes = resumo.pendingLabels.length
-            ? `<div class="muted-line">${escaparHtml(resumo.pendingLabels.slice(0, 3).join(', '))}</div>`
+            ? `<div class="muted-line">Pendentes: ${escaparHtml(resumoLabelsPendentes(resumo))}</div>`
             : '';
         return `
             <div class="user-share-sync-status">
@@ -1549,39 +1608,72 @@
             el.innerHTML = '<div class="user-share-empty">Nenhum compartilhamento ativo.</div>';
             return;
         }
-        el.innerHTML = links.slice(0, 12).map(link => {
+        const linhas = links.slice(0, 12).map(link => {
             const souOrigem = link.direction === 'source';
             const pessoa = souOrigem
                 ? `${link.target_client_id} - ${link.target_name || link.target_username}`
                 : `${link.source_client_id} - ${link.source_name || link.source_username}`;
             const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
             const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
+            const resumo = statusEscoposVinculo(link);
+            const pendente = Number(resumo.pending || 0) > 0;
             const syncStatus = link.auto_sync_enabled
-                ? 'sincronização contínua ativa'
+                ? 'Automático ativo'
                 : `sincronização contínua incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
-            const autoHint = link.auto_sync_enabled
-                ? '<div class="muted-line">Automático: recebe novidades do outro lado e envia as suas.</div>'
-                : '';
+            const dados = (link.scope_labels || []).join(', ');
+            const pendentes = resumoLabelsPendentes(resumo, 5);
             return `
-                <div class="user-share-item">
-                    <strong>${escaparHtml(pessoa)}</strong>
-                    <div class="small">${escaparHtml((link.scope_labels || []).join(', '))}</div>
-                    <div class="muted-line">${link.active ? 'ativo' : 'pausado'} | ${escaparHtml(syncStatus)}</div>
-                    ${renderStatusSincronizacaoVinculo(link)}
-                    ${autoHint}
-                    <label class="sync-auto-row">
-                        <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
-                        <span>Manter sincronizado do meu lado</span>
-                    </label>
-                    <div class="row">
+                <tr>
+                    <td>
+                        <strong>${escaparHtml(pessoa)}</strong>
+                        <div class="muted-line">${link.active ? 'ativo' : 'pausado'}</div>
+                    </td>
+                    <td title="${escaparHtml(dados)}">${escaparHtml(dados)}</td>
+                    <td>
+                        <span class="share-status-pill ${link.auto_sync_enabled ? 'ok' : 'pending'}">${escaparHtml(link.auto_sync_enabled ? 'Sincronizando' : 'Parcial')}</span>
+                        <div class="muted-line">${escaparHtml(syncStatus)}</div>
+                        <label class="sync-auto-row">
+                            <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
+                            <span>Manter sincronizado do meu lado</span>
+                        </label>
+                    </td>
+                    <td title="${escaparHtml(pendente ? pendentes : 'Sem dados pendentes')}">
+                        <span class="share-status-pill ${pendente ? 'pending' : 'ok'}">${escaparHtml(textoRecebimentoVinculo(resumo))}</span>
+                        ${pendente ? `<div class="muted-line">Pendentes: ${escaparHtml(pendentes)}</div>` : ''}
+                        <div class="muted-line">Último recebimento: ${escaparHtml(textoDataSync(resumo.lastReceived))}</div>
+                    </td>
+                    <td>
+                        <div class="muted-line">Envio: ${escaparHtml(textoDataSync(resumo.lastSent))}</div>
+                        <div class="muted-line">Vínculo: ${escaparHtml(textoDataSync(link.updated_at))}</div>
+                    </td>
+                    <td>
+                        <div class="share-row-actions">
                         <button class="btn-primary" onclick="rodarSincronizacaoAutomaticaEntreUsuarios(false)">Sincronizar agora</button>
                         <button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>
                         <button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Receber agora</button>
                         <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
-                    </div>
-                </div>
+                        </div>
+                    </td>
+                </tr>
             `;
         }).join('');
+        el.innerHTML = `
+            <div class="user-share-links-scroll">
+                <table class="user-share-links-table">
+                    <thead>
+                        <tr>
+                            <th>Usuário</th>
+                            <th>Dados</th>
+                            <th>Sincronização</th>
+                            <th>Recebimento</th>
+                            <th>Datas</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>${linhas}</tbody>
+                </table>
+            </div>
+        `;
     }
 
     function renderCompartilhamentoEntreUsuarios(payload) {
