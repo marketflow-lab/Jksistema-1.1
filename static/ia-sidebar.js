@@ -549,6 +549,33 @@
   }
 
   const CSS = `
+  #jk-left-sidebar-hotspot{position:fixed;top:0;left:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
+  #jk-left-sidebar-hotspot::before{content:"";position:absolute;top:0;left:0;bottom:0;width:8px;background:transparent;}
+  #jk-left-sidebar-menu{position:fixed;top:50%;left:10px;width:272px;max-height:calc(100vh - 28px);overflow-y:auto;overflow-x:visible;
+    display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:7px 0;transform:translate(calc(-100% - 28px),-50%);
+    opacity:0;pointer-events:none;transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;scrollbar-width:none;}
+  #jk-left-sidebar-menu::-webkit-scrollbar{display:none;}
+  #jk-left-sidebar-hotspot:hover #jk-left-sidebar-menu,
+  #jk-left-sidebar-hotspot:focus-within #jk-left-sidebar-menu{transform:translate(0,-50%);opacity:1;pointer-events:auto;}
+  .jk-left-module-link{position:relative;width:272px;min-height:46px;display:flex;align-items:center;text-decoration:none;color:#e8fffb;
+    border:0;background:transparent;outline:none;}
+  .jk-left-module-icon{position:relative;z-index:2;width:46px;height:46px;border-radius:14px;border:1px solid rgba(120,227,212,.32);
+    display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#0f6bbd,#13b99a);box-shadow:0 4px 16px rgba(19,196,160,.34);
+    font-size:1.25rem;line-height:1;transform:scale(1) rotate(0deg);transition:transform .34s cubic-bezier(.2,.9,.2,1.15),box-shadow .18s ease,border-color .18s ease;}
+  .jk-left-module-label{position:absolute;left:31px;top:50%;z-index:1;min-width:118px;max-width:214px;min-height:34px;display:flex;align-items:center;
+    padding:0 13px 0 25px;border-radius:0 12px 12px 0;border:1px solid rgba(120,227,212,.3);border-left:0;
+    background:linear-gradient(90deg,rgba(8,43,59,.96),rgba(6,71,84,.92));box-shadow:0 8px 22px rgba(0,0,0,.34);
+    color:#e8fffb;font-size:.76rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    transform:translate(-18px,-50%) scaleX(.25);transform-origin:left center;opacity:0;transition:transform .16s cubic-bezier(.2,.9,.2,1),opacity .12s ease;}
+  .jk-left-module-link:hover .jk-left-module-icon,
+  .jk-left-module-link:focus-visible .jk-left-module-icon{transform:scale(1.23) rotate(360deg);border-color:rgba(255,255,255,.76);box-shadow:0 0 0 4px rgba(120,227,212,.18),0 8px 24px rgba(19,196,160,.48);}
+  #jk-left-sidebar-menu:has(.jk-left-module-link:hover) .jk-left-module-link:has(+ .jk-left-module-link:hover):not(:hover) .jk-left-module-label,
+  #jk-left-sidebar-menu:has(.jk-left-module-link:focus-visible) .jk-left-module-link:has(+ .jk-left-module-link:focus-visible):not(:focus-visible) .jk-left-module-label,
+  .jk-left-module-link:hover + .jk-left-module-link:not(:hover) .jk-left-module-label,
+  .jk-left-module-link:focus-visible + .jk-left-module-link:not(:focus-visible) .jk-left-module-label{transform:translate(0,-50%) scaleX(1);opacity:.6;font-size:.68rem;}
+  .jk-left-module-link:hover .jk-left-module-label,
+  .jk-left-module-link:focus-visible .jk-left-module-label{transform:translate(0,-50%) scaleX(1);opacity:1;}
+  .jk-left-module-link.modulo-atual{display:none;}
   #jk-right-sidebar-hotspot{position:fixed;top:0;right:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
   #jk-right-sidebar-hotspot::before{content:"";position:absolute;top:0;right:0;bottom:0;width:8px;background:transparent;}
   #jk-right-sidebar-menu{position:fixed;top:50%;right:10px;display:flex;flex-direction:column;gap:10px;
@@ -603,6 +630,7 @@
   .jk-msg-bubble.me{align-self:flex-end;background:linear-gradient(165deg,#1888ff,#0f65d8);border-color:transparent;color:#fff;border-bottom-right-radius:4px;}
   .jk-msg-bubble.other{align-self:flex-start;border-bottom-left-radius:4px;}
   .jk-msg-bubble-meta{display:block;margin-top:4px;font-size:.62rem;color:rgba(232,255,251,.72);white-space:nowrap;}
+  .jk-msg-bubble-meta.local-alert{color:#ffd7a3;}
   .jk-msg-section{display:flex;flex-direction:column;gap:8px;}
   .jk-msg-section-title{color:#8ee9de;font-size:.78rem;font-weight:900;text-transform:uppercase;letter-spacing:.03em;}
   .jk-msg-list{display:flex;flex-direction:column;gap:8px;}
@@ -740,6 +768,9 @@
 
   /* ── HTML do widget ── */
   const HTML = `
+  <div id="jk-left-sidebar-hotspot" aria-label="Menu lateral esquerdo" tabindex="0">
+    <nav id="jk-left-sidebar-menu" aria-label="Modulos do sistema"></nav>
+  </div>
   <div id="jk-right-sidebar-hotspot" aria-label="Menu lateral direito" tabindex="0">
     <div id="jk-right-sidebar-menu" role="toolbar" aria-label="Atalhos laterais">
       <button id="jk-ia-fab" class="jk-right-sidebar-icon" title="Assistente IA" aria-label="Abrir assistente IA">&#129302;</button>
@@ -918,9 +949,118 @@
     let msgCarregando = false;
     let iaTemMensagemNaoVista = false;
     let msgTemMensagemNaoVista = false;
+    let msgNotificacoesConhecidas = null;
     const PANEL_WIDTH_KEY = 'jk_ia_sidebar_width_px';
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
+    const MSG_NOTIFICACOES_KEY = 'jk_msg_notificacoes_exibidas_v1';
+    const MODULOS_LATERAIS = [
+      { key: 'analise_promo', href: 'frontend_promo.html', icon: '&#128200;', label: 'Promocao ML' },
+      { key: 'renovacao_fixa', href: 'renovacao.html', icon: '&#128260;', label: 'Renovacao Fixa' },
+      { key: 'anuncios_ml', href: 'anunciosml.html', icon: '&#128230;', label: 'Anuncios ML' },
+      { key: 'etiquetas', href: 'frontend_etiquetas.html', icon: '&#127991;', label: 'Etiquetas' },
+      { key: 'integracao', href: 'integracoes.html', icon: '&#128279;', label: 'Integracoes' },
+      { key: 'cadastro', href: 'cadastro.html', icon: '&#129534;', label: 'Cadastro' },
+      { key: 'estoque', href: 'estoque.html', icon: '&#128230;', label: 'Estoque' },
+      { key: 'mercado_full', href: 'full.html', icon: '&#128666;', label: 'Full' },
+      { key: 'vendas', href: 'vendas.html', icon: '&#128176;', label: 'Vendas' },
+      { key: 'favoritos', href: 'favoritos.html', icon: '&#11088;', label: 'Favoritos ML' },
+      { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', icon: '&#128172;', label: 'Perguntas e pos venda' },
+      { key: 'medias_compras', href: 'medias_compras.html', icon: '&#128202;', label: 'Medias e Pedidos' },
+      { key: 'impostos', href: 'impostos.html', icon: '&#128184;', label: 'Impostos' },
+      { key: 'simulador', href: 'simulador.html', icon: '&#129518;', label: 'Simulador' },
+      { key: 'configuracoes', href: 'configuracoes.html', icon: '&#9881;', label: 'Configuracoes' },
+      { key: 'importacoes', href: 'importacoes.html', icon: '&#128229;', label: 'Importacoes' },
+      { key: 'admin_usuarios', href: 'admin_usuarios.html', icon: '&#128101;', label: 'Central de Usuarios' },
+    ];
+    const MODULO_ATUAL_ALIASES = {
+      'frontend_promo.html': 'analise_promo',
+      'promo.html': 'analise_promo',
+      'renovacao.html': 'renovacao_fixa',
+      'anunciosml.html': 'anuncios_ml',
+      'anunciosml_campanha.html': 'anuncios_ml',
+      'frontend_etiquetas.html': 'etiquetas',
+      'integracoes.html': 'integracao',
+      'cadastro.html': 'cadastro',
+      'cadastro_incluir.html': 'cadastro',
+      'cadastro_editar.html': 'cadastro',
+      'cadastro_editar_item.html': 'cadastro',
+      'estoque.html': 'estoque',
+      'full.html': 'mercado_full',
+      'vendas.html': 'vendas',
+      'vendas_sku.html': 'vendas',
+      'debug_vendas.html': 'vendas',
+      'devolucoes.html': 'vendas',
+      'devolucoes_sku.html': 'vendas',
+      'favoritos.html': 'favoritos',
+      'pesquisa_ml.html': 'favoritos',
+      'produtos_sem_venda.html': 'favoritos',
+      'perguntas_pos_venda.html': 'perguntas_pos_venda',
+      'medias_compras.html': 'medias_compras',
+      'impostos.html': 'impostos',
+      'simulador.html': 'simulador',
+      'configuracoes.html': 'configuracoes',
+      'importacoes.html': 'importacoes',
+      'importacoes_lista.html': 'importacoes',
+      'importacoes_sku.html': 'importacoes',
+      'admin_usuarios.html': 'admin_usuarios',
+    };
+
+    function _leftSafeJson(raw, fallback) {
+      try { return JSON.parse(raw || ''); } catch (_) { return fallback; }
+    }
+
+    function _leftModuloAtualKey() {
+      const arquivo = String((location.pathname.split('/').pop() || '').split('?')[0] || '').toLowerCase();
+      return MODULO_ATUAL_ALIASES[arquivo] || '';
+    }
+
+    function _leftSidebarPermitidoNaTela() {
+      const arquivo = String((location.pathname.split('/').pop() || '').split('?')[0] || '').toLowerCase();
+      return !['', 'dashboard.html', 'frontend_index.html', 'index.html'].includes(arquivo);
+    }
+
+    function _leftModuloPermitido(mod) {
+      const permissions = _leftSafeJson(localStorage.getItem('permissions') || '{}', {});
+      if (!permissions || !Object.keys(permissions).length) return true;
+      return permissions.full === true || permissions[mod.key] === true;
+    }
+
+    function _leftRenderModulos() {
+      const menu = document.getElementById('jk-left-sidebar-menu');
+      if (!menu) return;
+      const hotspot = document.getElementById('jk-left-sidebar-hotspot');
+      if (!_leftSidebarPermitidoNaTela()) {
+        menu.innerHTML = '';
+        if (hotspot) hotspot.style.display = 'none';
+        return;
+      }
+      if (hotspot) hotspot.style.display = '';
+      const atual = _leftModuloAtualKey();
+      const modulos = MODULOS_LATERAIS.filter(mod => mod.key !== atual && _leftModuloPermitido(mod));
+      menu.innerHTML = '';
+      modulos.forEach(mod => {
+        const link = document.createElement('a');
+        link.className = 'jk-left-module-link';
+        link.href = mod.href;
+        link.title = mod.label;
+        link.setAttribute('aria-label', `Abrir modulo ${mod.label}`);
+        if (mod.key === atual) link.classList.add('modulo-atual');
+
+        const icon = document.createElement('span');
+        icon.className = 'jk-left-module-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = mod.icon;
+
+        const label = document.createElement('span');
+        label.className = 'jk-left-module-label';
+        label.textContent = mod.label;
+
+        link.appendChild(icon);
+        link.appendChild(label);
+        menu.appendChild(link);
+      });
+    }
 
     function clampPanelWidth(width) {
       const viewportMax = Math.max(PANEL_MIN_WIDTH, (window.innerWidth || document.documentElement.clientWidth || 0) - 32);
@@ -1001,6 +1141,7 @@
       window.addEventListener('resize', () => setPanelWidth(document.getElementById('jk-ia-panel')?.getBoundingClientRect().width || 360, true));
     }
 
+    _leftRenderModulos();
     setupPanelResize();
 
     function _msgUserData() {
@@ -1042,6 +1183,90 @@
       _sidebarAtualizarAlertas();
     }
 
+    function _msgNotificacoesSet() {
+      if (msgNotificacoesConhecidas) return msgNotificacoesConhecidas;
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(MSG_NOTIFICACOES_KEY) || '[]') || []; } catch (_) { lista = []; }
+      msgNotificacoesConhecidas = new Set(Array.isArray(lista) ? lista.map(String) : []);
+      return msgNotificacoesConhecidas;
+    }
+
+    function _msgSalvarNotificacoesSet() {
+      try {
+        const lista = Array.from(_msgNotificacoesSet()).slice(-120);
+        localStorage.setItem(MSG_NOTIFICACOES_KEY, JSON.stringify(lista));
+        msgNotificacoesConhecidas = new Set(lista);
+      } catch (_) {}
+    }
+
+    function _msgNotificationDisponivel() {
+      return typeof window !== 'undefined' && 'Notification' in window;
+    }
+
+    function _msgSolicitarPermissaoNotificacao() {
+      if (!_msgNotificationDisponivel() || Notification.permission !== 'default') return;
+      try {
+        const pedido = Notification.requestPermission();
+        if (pedido && typeof pedido.catch === 'function') pedido.catch(() => {});
+      } catch (_) {}
+    }
+
+    function _msgPrepararNotificacoesWindows() {
+      if (!_msgNotificationDisponivel() || Notification.permission !== 'default') return;
+      const pedir = () => {
+        document.removeEventListener('pointerdown', pedir, true);
+        document.removeEventListener('keydown', pedir, true);
+        _msgSolicitarPermissaoNotificacao();
+      };
+      document.addEventListener('pointerdown', pedir, true);
+      document.addEventListener('keydown', pedir, true);
+    }
+
+    function _msgNotificacaoKey(conversa) {
+      const user = String(conversa && conversa.username || '').trim().toLowerCase();
+      const client = String(conversa && conversa.client_id || 'default').trim() || 'default';
+      const id = String(conversa && conversa.last_message_id || '').trim();
+      const ts = String(conversa && conversa.created_ts || '').trim();
+      return `${user}|${client}|${id || ts || String(conversa && conversa.last_message || '').slice(0, 80)}`;
+    }
+
+    function _msgNotificarConversas(conversas) {
+      if (!_msgNotificationDisponivel() || Notification.permission !== 'granted') return;
+      const lista = Array.isArray(conversas) ? conversas : [];
+      const conhecidos = _msgNotificacoesSet();
+      let alterou = false;
+      lista.forEach(conversa => {
+        if (!conversa || Number(conversa.unread_count || 0) <= 0) return;
+        const key = _msgNotificacaoKey(conversa);
+        if (!key || conhecidos.has(key)) return;
+        const nome = String(conversa.name || conversa.username || 'Usuario').trim();
+        const body = String(conversa.last_message || 'Nova mensagem recebida.').trim();
+        try {
+          const notificacao = new Notification(`${nome} te enviou uma mensagem`, {
+            body,
+            tag: `jk-chat-${String(conversa.username || '').toLowerCase()}-${String(conversa.client_id || 'default')}`,
+            renotify: true,
+          });
+          notificacao.onclick = () => {
+            try { window.focus(); } catch (_) {}
+            toggleMsgPanel(true);
+            void _msgAbrirChat({
+              username: conversa.username,
+              client_id: conversa.client_id,
+              name: nome,
+            });
+            try { notificacao.close(); } catch (_) {}
+          };
+          setTimeout(() => {
+            try { notificacao.close(); } catch (_) {}
+          }, 9000);
+          conhecidos.add(key);
+          alterou = true;
+        } catch (_) {}
+      });
+      if (alterou) _msgSalvarNotificacoesSet();
+    }
+
     function _msgLabelUsuario(user) {
       return String((user && (user.name || user.username || user.email)) || 'Usuario').trim();
     }
@@ -1063,6 +1288,16 @@
       _msgAtualizarSelecao();
     }
 
+    function _msgStatusHistorico(msg, fromMe) {
+      const criado = String(msg && msg.created_at || '').trim();
+      if (!fromMe) return criado;
+      let status = 'Enviada';
+      if (msg && msg.read_at) status = 'Lida';
+      else if (msg && msg.delivered_at) status = 'Entregue';
+      else if (!String(msg && msg.storage || '').includes('firebase')) status = 'Enviada localmente';
+      return criado ? `${criado} - ${status}` : status;
+    }
+
     function _msgRenderHistorico(mensagens) {
       const el = document.getElementById('jk-msg-history');
       if (!el) return;
@@ -1081,7 +1316,8 @@
         texto.textContent = String(msg.message || '').trim();
         const meta = document.createElement('span');
         meta.className = 'jk-msg-bubble-meta';
-        meta.textContent = String(msg.created_at || '').trim();
+        if (fromMe && !String(msg && msg.storage || '').includes('firebase')) meta.classList.add('local-alert');
+        meta.textContent = _msgStatusHistorico(msg, fromMe);
         bubble.appendChild(texto);
         if (meta.textContent) bubble.appendChild(meta);
         el.appendChild(bubble);
@@ -1290,12 +1526,15 @@
         ...item,
         type: 'admin',
       }));
-      const chatMessages = (Array.isArray(chatData.conversations) ? chatData.conversations : []).map(item => ({
+      const chatConversations = Array.isArray(chatData.conversations) ? chatData.conversations : [];
+      _msgNotificarConversas(chatConversations);
+      const chatMessages = chatConversations.map(item => ({
         type: 'chat',
         username: item.username,
         client_id: item.client_id,
         name: item.name,
         unread_count: item.unread_count,
+        last_message_id: item.last_message_id,
         last_message: item.last_message,
         message: item.last_message,
         created_at: item.created_at,
@@ -2442,6 +2681,7 @@
       _carregarModelosRemotos(_modelSelSidebar, 'ia_model_sidebar').catch(() => {});
     }
     // Fechar painel ao clicar fora
+    _msgPrepararNotificacoesWindows();
     _msgAtualizarSelecao();
     _msgIniciarAtualizacao();
     void _msgBuscarMensagens().catch(() => {});

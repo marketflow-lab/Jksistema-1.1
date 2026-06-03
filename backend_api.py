@@ -3046,10 +3046,10 @@ def _promo_status_item_promocao(entry: Any) -> str:
     if not isinstance(entry, dict):
         return ""
     status = (
-        entry.get("_jk_status_item_consultado")
-        or entry.get("status")
+        entry.get("status")
         or entry.get("status_item")
         or entry.get("statusItem")
+        or entry.get("_jk_status_item_consultado")
     )
     if isinstance(status, dict):
         status = status.get("id") or status.get("name") or status.get("status")
@@ -19345,6 +19345,10 @@ def _firebase_admin_messages_collection_name() -> str:
     return _env_texto("FIREBASE_ADMIN_MESSAGES_COLLECTION", "JK_FIREBASE_ADMIN_MESSAGES_COLLECTION") or "jk_sistema_admin_messages"
 
 
+def _firebase_user_chat_collection_name() -> str:
+    return _env_texto("FIREBASE_USER_CHAT_COLLECTION", "JK_FIREBASE_USER_CHAT_COLLECTION") or "jk_sistema_user_chat_messages"
+
+
 def _firebase_project_id() -> str:
     project_id = _env_texto("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT")
     if project_id:
@@ -20485,8 +20489,11 @@ def _user_chat_public(message: dict) -> dict:
         "message": str(item.get("message") or "").strip(),
         "created_at": str(item.get("created_at") or ""),
         "created_ts": int(float(item.get("created_ts") or 0)),
+        "delivered_at": str(item.get("delivered_at") or ""),
+        "delivered_ts": int(float(item.get("delivered_ts") or 0)),
         "read_at": str(item.get("read_at") or ""),
         "read_ts": int(float(item.get("read_ts") or 0)),
+        "storage": str(item.get("storage") or ""),
     }
 
 
@@ -20519,44 +20526,207 @@ def _user_chat_save(message: dict) -> dict:
         item["created_ts"] = int(time.time())
     if not item.get("created_at"):
         item["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    item["storage"] = "local"
 
     local = _user_chat_local_read()
     local = [m for m in local if str((m or {}).get("id") or "") != item["id"]]
     local.append(item)
     _user_chat_local_write(local)
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                firebase_item = dict(item)
+                firebase_item["storage"] = "firebase"
+                db.collection(_firebase_user_chat_collection_name()).document(item["id"]).set(firebase_item, merge=True)
+                item["storage"] = "firebase+local"
+                local = _user_chat_local_read()
+                for local_item in local:
+                    if str((local_item or {}).get("id") or "") == item["id"]:
+                        local_item["storage"] = item["storage"]
+                        break
+                _user_chat_local_write(local)
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao salvar mensagem no Firebase: %s", exc)
     return item
 
 
-def _user_chat_mark_read_between(username: str, client_id: str, other_username: str, other_client_id: str) -> None:
+def _user_chat_firebase_for_user(username: str, client_id: str) -> list[dict]:
+    if not _firebase_deve_usar():
+        return []
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    mensagens = []
+    try:
+        db = _firebase_db()
+        if db is None:
+            return []
+        coll = db.collection(_firebase_user_chat_collection_name())
+        for campo in ("sender_username", "recipient_username"):
+            for snap in coll.where(campo, "==", username).stream():
+                data = snap.to_dict() or {}
+                if not data.get("id"):
+                    data["id"] = snap.id
+                public = _user_chat_public(data)
+                if (
+                    public.get("sender_username") == username
+                    and public.get("sender_client_id") == client_id
+                ) or (
+                    public.get("recipient_username") == username
+                    and public.get("recipient_client_id") == client_id
+                ):
+                    public["storage"] = "firebase"
+                    mensagens.append(public)
+    except Exception as exc:
+        logger.warning("[USER CHAT] Falha ao listar mensagens no Firebase: %s", exc)
+    return mensagens
+
+
+def _user_chat_merge_messages(messages: list[dict]) -> list[dict]:
+    por_id = {}
+    for raw in messages or []:
+        item = _user_chat_public(raw)
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        atual = por_id.get(mid)
+        if not atual:
+            por_id[mid] = item
+            continue
+        for campo in ("sender_username", "sender_client_id", "recipient_username", "recipient_client_id", "message", "created_at"):
+            if item.get(campo) and not atual.get(campo):
+                atual[campo] = item.get(campo)
+        atual["created_ts"] = max(int(atual.get("created_ts") or 0), int(item.get("created_ts") or 0))
+        if int(item.get("delivered_ts") or 0) > int(atual.get("delivered_ts") or 0):
+            atual["delivered_at"] = item.get("delivered_at") or atual.get("delivered_at") or ""
+            atual["delivered_ts"] = int(item.get("delivered_ts") or 0)
+        if int(item.get("read_ts") or 0) > int(atual.get("read_ts") or 0):
+            atual["read_at"] = item.get("read_at") or atual.get("read_at") or ""
+            atual["read_ts"] = int(item.get("read_ts") or 0)
+        storages = {s for s in str(atual.get("storage") or "").split("+") if s}
+        storages.update(s for s in str(item.get("storage") or "").split("+") if s)
+        atual["storage"] = "+".join(sorted(storages)) if storages else ""
+    resultado = list(por_id.values())
+    resultado.sort(key=lambda msg: int(msg.get("created_ts") or 0))
+    return resultado
+
+
+def _user_chat_all_for_user(username: str, client_id: str) -> list[dict]:
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    mensagens = []
+    mensagens.extend(_user_chat_firebase_for_user(username, client_id))
+    mensagens.extend(
+        _user_chat_public(item)
+        for item in _user_chat_local_read()
+        if (
+            (
+                _user_chat_public(item).get("sender_username") == username
+                and _user_chat_public(item).get("sender_client_id") == client_id
+            )
+            or (
+                _user_chat_public(item).get("recipient_username") == username
+                and _user_chat_public(item).get("recipient_client_id") == client_id
+            )
+        )
+    )
+    return _user_chat_merge_messages(mensagens)
+
+
+def _user_chat_update_incoming_status(
+    username: str,
+    client_id: str,
+    other_username: str = "",
+    other_client_id: str = "",
+    *,
+    mark_delivered: bool = True,
+    mark_read: bool = False,
+) -> None:
     username = _user_chat_norm_username(username)
     client_id = _user_chat_norm_client(client_id)
     other_username = _user_chat_norm_username(other_username)
-    other_client_id = _user_chat_norm_client(other_client_id)
+    other_client_id = _user_chat_norm_client(other_client_id) if other_client_id else ""
     agora_ts = int(time.time())
     agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def matches(public: dict) -> bool:
+        if (
+            public.get("recipient_username") != username
+            or public.get("recipient_client_id") != client_id
+        ):
+            return False
+        if other_username and public.get("sender_username") != other_username:
+            return False
+        if other_client_id and public.get("sender_client_id") != other_client_id:
+            return False
+        return True
+
+    def build_updates(public: dict) -> dict:
+        updates = {}
+        if mark_delivered and not public.get("delivered_at"):
+            updates["delivered_at"] = agora
+            updates["delivered_ts"] = agora_ts
+        if mark_read and not public.get("read_at"):
+            updates["read_at"] = agora
+            updates["read_ts"] = agora_ts
+            if not public.get("delivered_at"):
+                updates["delivered_at"] = agora
+                updates["delivered_ts"] = agora_ts
+        return updates
+
     alterou = False
     local = _user_chat_local_read()
     for item in local:
         public = _user_chat_public(item)
-        if (
-            public.get("sender_username") == other_username
-            and public.get("sender_client_id") == other_client_id
-            and public.get("recipient_username") == username
-            and public.get("recipient_client_id") == client_id
-            and not public.get("read_at")
-        ):
-            item["read_at"] = agora
-            item["read_ts"] = agora_ts
+        if not matches(public):
+            continue
+        updates = build_updates(public)
+        if updates:
+            item.update(updates)
             alterou = True
     if alterou:
         _user_chat_local_write(local)
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                coll = db.collection(_firebase_user_chat_collection_name())
+                for snap in coll.where("recipient_username", "==", username).stream():
+                    data = snap.to_dict() or {}
+                    if not data.get("id"):
+                        data["id"] = snap.id
+                    public = _user_chat_public(data)
+                    if not matches(public):
+                        continue
+                    updates = build_updates(public)
+                    if updates:
+                        coll.document(str(public.get("id") or snap.id)).set(updates, merge=True)
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao atualizar status no Firebase: %s", exc)
+
+
+def _user_chat_mark_delivered_for_user(username: str, client_id: str) -> None:
+    _user_chat_update_incoming_status(username, client_id, mark_delivered=True, mark_read=False)
+
+
+def _user_chat_mark_read_between(username: str, client_id: str, other_username: str, other_client_id: str) -> None:
+    _user_chat_update_incoming_status(
+        username,
+        client_id,
+        other_username,
+        other_client_id,
+        mark_delivered=True,
+        mark_read=True,
+    )
 
 
 def _user_chat_history(username: str, client_id: str, other_username: str, other_client_id: str, limit: int = 80) -> list[dict]:
     limit = max(1, min(int(limit or 80), 200))
     mensagens = [
-        _user_chat_public(item)
-        for item in _user_chat_local_read()
+        item
+        for item in _user_chat_all_for_user(username, client_id)
         if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
     ]
     mensagens.sort(key=lambda item: int(item.get("created_ts") or 0))
@@ -20567,8 +20737,7 @@ def _user_chat_unread_conversations(username: str, client_id: str) -> list[dict]
     username = _user_chat_norm_username(username)
     client_id = _user_chat_norm_client(client_id)
     grupos = {}
-    for item in _user_chat_local_read():
-        public = _user_chat_public(item)
+    for public in _user_chat_all_for_user(username, client_id):
         if (
             public.get("recipient_username") != username
             or public.get("recipient_client_id") != client_id
@@ -20588,6 +20757,7 @@ def _user_chat_unread_conversations(username: str, client_id: str) -> list[dict]
             "username": sender_username,
             "client_id": sender_client_id,
             "name": _user_chat_user_name(sender_username),
+            "last_message_id": last.get("id") or "",
             "last_message": last.get("message") or "",
             "created_at": last.get("created_at") or "",
             "created_ts": int(last.get("created_ts") or 0),
@@ -22816,6 +22986,7 @@ def _shared_sync_merge_link_items(existing: dict, incoming: dict) -> dict:
         if not merged.get(key) and incoming.get(key):
             merged[key] = incoming.get(key)
     merged["active"] = bool(incoming.get("active", merged.get("active", True)))
+    merged["source_is_admin"] = bool(merged.get("source_is_admin") or incoming.get("source_is_admin"))
     merged["source_keep_synced"] = bool(merged.get("source_keep_synced") or incoming.get("source_keep_synced"))
     merged["target_keep_synced"] = bool(merged.get("target_keep_synced") or incoming.get("target_keep_synced"))
     merged["scopes"] = _shared_sync_unir_scopes(merged.get("scopes"), incoming.get("scopes"))
@@ -22841,20 +23012,48 @@ def _shared_sync_merge_link_items(existing: dict, incoming: dict) -> dict:
     return merged
 
 
-def _shared_sync_scope_permitido_entre_clientes(item: dict, scope: str) -> bool:
+def _shared_sync_session_is_admin(sessao: Optional[dict]) -> bool:
+    if not isinstance(sessao, dict):
+        return False
+    permissoes = sessao.get("permissions") if isinstance(sessao.get("permissions"), dict) else {}
+    return bool(sessao.get("is_admin") or permissoes.get("full") is True or permissoes.get("admin_usuarios") is True)
+
+
+def _shared_sync_source_is_admin(item: dict, sessao: Optional[dict] = None) -> bool:
+    if _shared_sync_session_is_admin(sessao):
+        return True
+    item = item or {}
+    if bool(item.get("source_is_admin")):
+        return True
+    source_username = _shared_sync_normalizar_username(item.get("source_username"))
+    source_client = _shared_sync_normalizar_client_id(item.get("source_client_id"))
+    if source_username == "admin":
+        return True
+    if not source_username:
+        return False
+    try:
+        permissoes = _carregar_permissoes_usuario(source_username, source_client)
+        return bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True)
+    except Exception:
+        return False
+
+
+def _shared_sync_scope_permitido_entre_clientes(item: dict, scope: str, sessao: Optional[dict] = None) -> bool:
     if scope != "lojas_integracoes":
+        return True
+    if _shared_sync_source_is_admin(item, sessao):
         return True
     source_client = _shared_sync_normalizar_client_id((item or {}).get("source_client_id"))
     target_client = _shared_sync_normalizar_client_id((item or {}).get("target_client_id"))
     return bool(source_client and target_client and source_client == target_client)
 
 
-def _shared_sync_filtrar_scopes_entre_clientes(scopes: list[str], item: dict) -> list[str]:
+def _shared_sync_filtrar_scopes_entre_clientes(scopes: list[str], item: dict, sessao: Optional[dict] = None) -> list[str]:
     saida = []
     for scope in scopes or []:
         if scope not in SHARED_SYNC_SCOPES:
             continue
-        if not _shared_sync_scope_permitido_entre_clientes(item, scope):
+        if not _shared_sync_scope_permitido_entre_clientes(item, scope, sessao):
             continue
         if scope not in saida:
             saida.append(scope)
@@ -22862,7 +23061,7 @@ def _shared_sync_filtrar_scopes_entre_clientes(scopes: list[str], item: dict) ->
 
 
 def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dict:
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item)
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item, sessao)
     prepare_errors = item.get("prepare_errors") if isinstance(item.get("prepare_errors"), list) else []
     return {
         "id": item.get("id"),
@@ -22955,7 +23154,7 @@ def _shared_sync_link_sync_status_public(item: dict, sessao: Optional[dict], sco
 
 
 def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item)
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item, sessao)
     source = sessao and _shared_sync_session_is_source(sessao, item)
     target = sessao and _shared_sync_session_is_target(sessao, item)
     return {
@@ -23017,9 +23216,12 @@ def _shared_sync_link_bundle_id(link: dict, scope: str) -> str:
 def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, machine_id: str = "", link_id: str = "", invite_id: str = "") -> dict:
     item_ref = {
         "source_client_id": source_sessao.get("client_id"),
+        "source_username": source_sessao.get("username"),
+        "source_is_admin": _shared_sync_session_is_admin(source_sessao),
         "target_client_id": target.get("client_id"),
+        "target_username": target.get("username"),
     }
-    if not _shared_sync_scope_permitido_entre_clientes(item_ref, scope):
+    if not _shared_sync_scope_permitido_entre_clientes(item_ref, scope, source_sessao):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
     link_ref = {
         "id": str(link_id or _shared_sync_link_id_for_pair({
@@ -23135,7 +23337,7 @@ def _shared_sync_start_invite_prepare_thread(invite_id: str, source_sessao: dict
 
 
 def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
-    if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+    if not _shared_sync_scope_permitido_entre_clientes(link, scope, target_sessao):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser importadas entre clientes diferentes.")
     my_direction = _shared_sync_link_direction_for_session(target_sessao, link)
     receive_direction = _shared_sync_link_reverse_direction(my_direction)
@@ -23170,7 +23372,7 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
 
 def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "") -> dict:
     direction_key = _shared_sync_link_direction_for_session(source_sessao, link)
-    if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+    if not _shared_sync_scope_permitido_entre_clientes(link, scope, source_sessao):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
     from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
     bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, direction_key)
@@ -23273,8 +23475,27 @@ def shared_sync_user_shares_invite(
         raise HTTPException(status_code=400, detail="Escolha outro usuario para receber os dados.")
     if _shared_sync_find_active_link(source_user, destino):
         raise HTTPException(status_code=409, detail="Ja existe um compartilhamento ativo com esse usuario. Use o botao Enviar agora no vinculo existente.")
-    if _shared_sync_find_pending_invite(source_user, destino):
-        raise HTTPException(status_code=409, detail="Ja existe um convite pendente para esse usuario. Aguarde o aceite ou recuse o convite anterior.")
+    pending_invite = _shared_sync_find_pending_invite(source_user, destino)
+    if pending_invite:
+        agora = _shared_sync_now_iso()
+        pending_invite["scopes"] = _shared_sync_unir_scopes(pending_invite.get("scopes"), scopes)
+        if str(payload.message or "").strip():
+            pending_invite["message"] = str(payload.message or "").strip()[:1000]
+        pending_invite["source_is_admin"] = bool(pending_invite.get("source_is_admin") or _shared_sync_session_is_admin(sessao))
+        pending_invite["source_keep_synced"] = bool(pending_invite.get("source_keep_synced") or payload.keep_synced)
+        pending_invite["prepare_status"] = "preparing"
+        pending_invite["prepare_errors"] = []
+        pending_invite["updated_at"] = agora
+        pending_invite["updated_ts"] = int(time.time())
+        pending_invite["source_machine_id"] = str(payload.machine_id or pending_invite.get("source_machine_id") or "").strip()
+        pending_invite = _shared_sync_save_invite(pending_invite)
+        _shared_sync_start_invite_prepare_thread(pending_invite.get("id") or "", sessao, destino, pending_invite.get("scopes") or scopes, payload.machine_id or "")
+        return {
+            "success": True,
+            "message": "Convite pendente atualizado. Preparando os dados novamente em segundo plano.",
+            "invite": _shared_sync_invite_public(pending_invite, sessao),
+            "results": [],
+        }
 
     invite_id = uuid.uuid4().hex
 
@@ -23285,6 +23506,7 @@ def shared_sync_user_shares_invite(
         "source_username": source_user.get("username"),
         "source_client_id": source_user.get("client_id"),
         "source_name": source_user.get("name") or source_user.get("username"),
+        "source_is_admin": _shared_sync_session_is_admin(sessao),
         "target_username": destino.get("username"),
         "target_client_id": destino.get("client_id"),
         "target_name": destino.get("name") or destino.get("username"),
@@ -23336,7 +23558,7 @@ def shared_sync_user_shares_accept(
         raise HTTPException(status_code=400, detail="A origem nao conseguiu preparar os dados deste convite.")
 
     scopes = _shared_sync_resolver_scopes_usuario(invite.get("scopes") or [])
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, invite)
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, invite, sessao)
     bundles = invite.get("bundles") if isinstance(invite.get("bundles"), dict) else {}
     scopes = [scope for scope in scopes if bundles.get(scope)]
     if not scopes:
@@ -23349,6 +23571,7 @@ def shared_sync_user_shares_accept(
         "source_username": invite.get("source_username"),
         "source_client_id": invite.get("source_client_id"),
         "source_name": invite.get("source_name") or invite.get("source_username"),
+        "source_is_admin": bool(invite.get("source_is_admin") or _shared_sync_source_is_admin(invite)),
         "target_username": invite.get("target_username"),
         "target_client_id": invite.get("target_client_id"),
         "target_name": invite.get("target_name") or invite.get("target_username"),
@@ -23458,7 +23681,7 @@ def shared_sync_user_shares_link_push(
         raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
     _shared_sync_link_direction_for_session(sessao, link)
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link)
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link, sessao)
     results = [_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "") for scope in scopes]
     return {"success": True, "direction": "push", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
@@ -23476,7 +23699,7 @@ def shared_sync_user_shares_link_pull(
         raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
     _shared_sync_link_direction_for_session(sessao, link)
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link)
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link, sessao)
     results = [_shared_sync_pull_pair_scope(sessao, link, scope) for scope in scopes]
     return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
@@ -23505,7 +23728,7 @@ def shared_sync_user_shares_auto_push(
         for scope in link.get("scopes") or []:
             if scope not in SHARED_SYNC_SCOPES:
                 continue
-            if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+            if not _shared_sync_scope_permitido_entre_clientes(link, scope, sessao):
                 skipped.append({"link_id": link.get("id"), "scope": scope, "reason": "cross_client_sensitive_scope"})
                 continue
             if requested and scope not in requested:
@@ -23547,7 +23770,7 @@ def shared_sync_user_shares_auto(
                 continue
             if requested and scope not in requested:
                 continue
-            if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+            if not _shared_sync_scope_permitido_entre_clientes(link, scope, sessao):
                 skipped.append({"link_id": link.get("id"), "scope": scope, "reason": "cross_client_sensitive_scope"})
                 continue
 
@@ -23715,7 +23938,7 @@ def shared_sync_auto_pull(
         for scope in link.get("scopes") or []:
             if scope not in SHARED_SYNC_SCOPES:
                 continue
-            if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+            if not _shared_sync_scope_permitido_entre_clientes(link, scope, sessao):
                 ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "user_share_cross_client_sensitive_scope"})
                 continue
             if requested and scope not in requested:
@@ -24430,11 +24653,13 @@ def user_machines_online(
 @app.get("/api/user/chat/unread")
 def user_chat_unread(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
+    _user_chat_mark_delivered_for_user(sessao["username"], sessao["client_id"])
     conversas = _user_chat_unread_conversations(sessao["username"], sessao["client_id"])
     return {
         "success": True,
         "conversations": conversas,
         "unread_count": sum(int(item.get("unread_count") or 0) for item in conversas),
+        "backend": "firebase" if _firebase_deve_usar() else "local",
     }
 
 
@@ -24488,13 +24713,19 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
         "message": texto,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "created_ts": agora_ts,
+        "delivered_at": "",
+        "delivered_ts": 0,
         "read_at": "",
         "read_ts": 0,
     })
+    storage = str(mensagem.get("storage") or "")
+    delivery_available = "firebase" in storage
     return {
         "success": True,
-        "message": "Mensagem enviada.",
+        "message": "Mensagem enviada." if delivery_available else "Mensagem salva localmente. Entrega remota indisponivel neste backend.",
         "chat_message": mensagem,
+        "delivery_available": delivery_available,
+        "backend": "firebase" if _firebase_deve_usar() else "local",
     }
 
 
@@ -29860,6 +30091,100 @@ def _ml_grupo_promocao_raw(entry: dict) -> str:
     return _ml_grupo_promocao_por_meta(_ml_promocao_raw_tipo(entry), _ml_promocao_raw_nome(entry))
 
 
+def _ml_resolver_raw_promocao_equivalente_para_analise(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    raw_atual: dict,
+    campaign_id: str,
+    promotion_type: str,
+    preco_base=None,
+    request_fn=None,
+):
+    """Para SMART candidate, usa a campanha equivalente de mesmo nome com melhor oferta."""
+    if not item_id or not isinstance(raw_atual, dict):
+        return raw_atual, cfg
+    tipo_alvo = str(promotion_type or _ml_promocao_raw_tipo(raw_atual) or "").strip().upper()
+    if tipo_alvo != "SMART":
+        return raw_atual, cfg
+    if _promo_status_item_promocao(raw_atual) not in {"candidate", "eligible"}:
+        return raw_atual, cfg
+
+    request_fn = request_fn or _ml_api_request
+    try:
+        promocoes_item, cfg = _ml_obter_promocoes_item(client_id, loja, cfg, item_id, request_fn=request_fn)
+    except Exception:
+        return raw_atual, cfg
+    if not promocoes_item:
+        return raw_atual, cfg
+
+    raw_ref = _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id) or {}
+    nome_ref = _ml_promocao_raw_nome(raw_atual) or _ml_promocao_raw_nome(raw_ref)
+    nome_ref_norm = normalizar_texto(nome_ref)
+    if not nome_ref_norm:
+        return raw_atual, cfg
+
+    def _metricas(raw: dict) -> tuple[float | None, float | None]:
+        preco, desc = _ml_extrair_preco_promocao_raw(raw, priorizar_percentual_total_api=True)
+        if preco is None:
+            preco = _parse_float_flex((raw or {}).get("price"))
+        pct = _ml_extrair_percentual_sugerido_campanha_raw(raw, preco_base)
+        if pct is None:
+            pct = desc
+        if pct is None:
+            seller_pct = _parse_float_flex((raw or {}).get("seller_percentage"))
+            meli_pct = _parse_float_flex((raw or {}).get("meli_percentage"))
+            if seller_pct is not None or meli_pct is not None:
+                pct = float(seller_pct or 0.0) + float(meli_pct or 0.0)
+        return (_to_float_safe(preco), _to_float_safe(pct))
+
+    melhor = raw_atual
+    melhor_preco, melhor_pct = _metricas(melhor)
+    for raw in promocoes_item:
+        if not isinstance(raw, dict):
+            continue
+        raw_tipo = str(_ml_promocao_raw_tipo(raw) or tipo_alvo or "").strip().upper()
+        if raw_tipo and raw_tipo != tipo_alvo:
+            continue
+        if normalizar_texto(_ml_promocao_raw_nome(raw)) != nome_ref_norm:
+            continue
+        candidato_preco, candidato_pct = _metricas(raw)
+        if candidato_preco is None and candidato_pct is None:
+            continue
+        melhorou_preco = (
+            candidato_preco is not None
+            and (melhor_preco is None or float(candidato_preco) < float(melhor_preco) - 0.01)
+        )
+        melhorou_pct = (
+            candidato_pct is not None
+            and (melhor_pct is None or float(candidato_pct) > float(melhor_pct) + 0.01)
+        )
+        if not (melhorou_preco or melhorou_pct):
+            continue
+
+        detalhe = {}
+        promo_id = _ml_promocao_raw_id(raw)
+        promo_type = _ml_promocao_raw_tipo(raw) or tipo_alvo
+        if promo_id and promo_type:
+            try:
+                detalhe, cfg = _ml_obter_item_promocao_raw(
+                    client_id,
+                    loja,
+                    cfg,
+                    promo_id,
+                    promo_type,
+                    item_id,
+                    request_fn=request_fn,
+                )
+            except Exception:
+                detalhe = {}
+        melhor = detalhe if detalhe else raw
+        melhor_preco, melhor_pct = _metricas(melhor)
+
+    return melhor, cfg
+
+
 def _ml_promocao_raw_esta_ativa_ou_indefinida(entry: dict) -> bool:
     status = _ml_classificar_status_promocao_entry(entry)
     if status in {"Ativo", ""}:
@@ -30816,6 +31141,16 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             detalhe_b, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_b, promo_b_type, item_id)
             if detalhe_b:
                 raw_b_item = detalhe_b
+        raw_b_item, cfg_local = _ml_resolver_raw_promocao_equivalente_para_analise(
+            client_id,
+            req.loja,
+            cfg_local,
+            item_id,
+            raw_b_item,
+            promo_b,
+            promo_b_type,
+            preco_base_anuncio,
+        )
         promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
@@ -31189,6 +31524,16 @@ async def analisar_promo_via_api_sem_arquivos(
             except Exception:
                 if not raw_b_item:
                     raw_b_item = {}
+        raw_b_item, cfg_local = _ml_resolver_raw_promocao_equivalente_para_analise(
+            client_id,
+            loja,
+            cfg_local,
+            item_id,
+            raw_b_item,
+            promo_meta["promo_b"],
+            promo_meta.get("promo_b_type") or "",
+            None,
+        )
 
         raw_a_item = raw_a.get(item_id, {}) if isinstance(raw_a, dict) else {}
         if promo_a_type and not raw_a_item:
@@ -31821,6 +32166,16 @@ async def analisar_promo_via_api_com_arquivos(
                 raw_b_item, cfg_local = _ml_obter_item_promocao_raw(client_id, loja, cfg_local, promo_b_id, promo_b_type, item_id)
             except Exception:
                 raw_b_item = {}
+        raw_b_item, cfg_local = _ml_resolver_raw_promocao_equivalente_para_analise(
+            client_id,
+            loja,
+            cfg_local,
+            item_id,
+            raw_b_item,
+            promo_b_id,
+            promo_b_type,
+            None,
+        )
 
         promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
@@ -39666,12 +40021,19 @@ def _favoritos_ml_aplicar_contingencia_sem_promocao(
     if preco_contingencia is None:
         preco_ranking_txt = round(float(preco_ranking), 2) if preco_ranking is not None else None
         preco_minimo_txt = _favoritos_ml_preco_minimo_margem_simulado(req)
+        preco_piso_txt = None
+        preco_teto_txt = None
+        if preco_ranking is not None and preco_ranking > 0:
+            preco_piso_txt = round(math.ceil(max(0.01, float(preco_ranking) - 1.5) * 100.0) / 100.0, 2)
+            preco_teto_txt = round(math.floor((float(preco_ranking) - 0.01) * 100.0) / 100.0, 2)
         raise HTTPException(
             status_code=409,
             detail=(
-                "A campanha foi recusada pelo Mercado Livre, mas nao existe preco de contingencia seguro: "
-                "o anuncio precisa ficar abaixo do concorrente com diferenca maxima de R$ 1,50 e margem minima de 15%. "
-                f"Preco concorrente: {preco_ranking_txt}. Preco minimo para margem: {preco_minimo_txt}. Motivo original: "
+                "A campanha foi recusada pelo Mercado Livre ou o preco final ficou abaixo da margem minima, "
+                "mas nao existe preco de contingencia seguro: o anuncio precisa ficar abaixo do concorrente "
+                "com diferenca maxima de R$ 1,50 e margem minima de 15%. "
+                f"Preco concorrente: {preco_ranking_txt}. Faixa aceita sem campanha: {preco_piso_txt} a {preco_teto_txt}. "
+                f"Preco minimo para margem: {preco_minimo_txt}. Motivo original: "
                 f"{motivo}"
             ),
         )
@@ -39815,6 +40177,56 @@ def _favoritos_ml_promocoes_remocao_fallback(req: FavoritosEfetivarPromocaoReque
     return retorno
 
 
+def _favoritos_ml_remocao_max_attempts() -> int:
+    try:
+        tentativas = int(float(str(os.getenv("ML_PROMO_REMOVE_MAX_ATTEMPTS", "4") or "4").replace(",", ".")))
+    except Exception:
+        tentativas = 4
+    return max(1, min(tentativas, 6))
+
+
+def _favoritos_ml_textos_resposta_remocao(resp, body_resp: Any, erros_payload: Optional[list[str]] = None) -> list[str]:
+    textos = list(erros_payload or [])
+    if isinstance(body_resp, dict):
+        for chave in ("message", "error", "detail", "warning"):
+            valor = body_resp.get(chave)
+            if valor not in (None, ""):
+                textos.append(str(valor))
+    if not textos:
+        try:
+            textos.append(resp.text or "")
+        except Exception:
+            pass
+    return textos
+
+
+def _favoritos_ml_remocao_erro_transitorio(resp, textos_resposta: list[str]) -> bool:
+    status_code = getattr(resp, "status_code", None)
+    if status_code in (408, 429, 500, 502, 503, 504):
+        return True
+
+    texto = " ".join(str(t or "") for t in (textos_resposta or []))
+    texto_norm = normalizar_texto(texto).replace("_", " ")
+    gatilhos = (
+        "service temporarily overloaded",
+        "temporarily overloaded",
+        "please try again later",
+        "temporarily unavailable",
+        "temporary unavailable",
+        "upstream request timeout",
+        "gateway timeout",
+        "read timed out",
+    )
+    return any(gatilho in texto_norm for gatilho in gatilhos)
+
+
+def _favoritos_ml_remocao_retry_delay(resp, tentativa: int) -> float:
+    padrao = min(16.0, 1.5 * (2 ** max(0, int(tentativa) - 1)))
+    if resp is not None:
+        padrao = _ml_retry_after_seconds(resp, padrao=padrao)
+    return min(18.0, max(1.0, float(padrao)) + random.uniform(0.2, 1.0))
+
+
 def _favoritos_ml_remover_promocoes_atuais(
     client_id: str,
     loja: str,
@@ -39855,6 +40267,7 @@ def _favoritos_ml_remover_promocoes_atuais(
             remover.append(fallback)
 
     resultados = []
+    max_attempts = _favoritos_ml_remocao_max_attempts()
     for promo in remover:
         params = {"app_version": "v2"}
         if promo.get("promotion_type"):
@@ -39864,72 +40277,99 @@ def _favoritos_ml_remover_promocoes_atuais(
         if promo.get("offer_id"):
             params["offer_id"] = promo["offer_id"]
 
-        resp, cfg = _ml_api_request(
-            client_id,
-            loja,
-            cfg,
-            "DELETE",
-            f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
-            params=params,
-            timeout=20,
-        )
-        body_resp = {}
-        try:
-            body_resp = resp.json() or {}
-        except Exception:
-            body_resp = {}
-        erros_payload = []
-        if isinstance(body_resp, dict):
-            for erro in body_resp.get("errors") or []:
-                if isinstance(erro, dict):
-                    erros_payload.append(str(erro.get("error") or erro.get("message") or erro))
-                else:
-                    erros_payload.append(str(erro))
-            for item_sucesso in body_resp.get("successful_ids") or []:
-                if isinstance(item_sucesso, dict) and item_sucesso.get("error"):
-                    erros_payload.append(str(item_sucesso.get("error")))
-        textos_resposta = list(erros_payload)
-        if isinstance(body_resp, dict):
-            for chave in ("message", "error", "detail", "warning"):
-                valor = body_resp.get(chave)
-                if valor not in (None, ""):
-                    textos_resposta.append(str(valor))
-        if not textos_resposta:
+        for tentativa in range(1, max_attempts + 1):
             try:
-                textos_resposta.append(resp.text or "")
+                resp, cfg = _ml_api_request(
+                    client_id,
+                    loja,
+                    cfg,
+                    "DELETE",
+                    f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
+                    params=params,
+                    timeout=20,
+                )
+            except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if tentativa < max_attempts:
+                    espera = _favoritos_ml_remocao_retry_delay(None, tentativa)
+                    logger.warning(
+                        "[Favoritos ML] Falha transitoria ao sair da promocao atual de %s (%s/%s): %s. Nova tentativa em %.1fs.",
+                        item_id,
+                        tentativa,
+                        max_attempts,
+                        exc,
+                        espera,
+                    )
+                    time.sleep(espera)
+                    continue
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Erro ao sair da promocao atual: Mercado Livre nao respondeu ao remover promocao atual: {exc}",
+                )
+
+            body_resp = {}
+            try:
+                body_resp = resp.json() or {}
             except Exception:
-                pass
-        textos_normalizados = [normalizar_texto(e).replace("_", " ") for e in textos_resposta]
-        erro_sem_oferta = any("no offers found" in e for e in textos_normalizados)
-        erro_tipo_promocao_invalido = any("invalid promotion type" in e for e in textos_normalizados)
-        erro_promocao_invalida = any("invalid promotion id" in e for e in textos_normalizados)
-        ok_status = resp.status_code in (200, 202, 204, 404)
-        if erro_sem_oferta or erro_tipo_promocao_invalido or erro_promocao_invalida:
+                body_resp = {}
             erros_payload = []
-            ok_status = True
-            if erro_sem_oferta:
-                aviso = "No offers found for item"
-            elif erro_tipo_promocao_invalido:
-                aviso = "Invalid promotion type ignored while removing stale promotion reference"
-            else:
-                aviso = "Invalid promotion id ignored while removing stale promotion reference"
-            if not body_resp:
-                body_resp = {"warning": aviso}
-            elif isinstance(body_resp, dict):
-                body_resp["warning"] = aviso
-        ok = ok_status and not erros_payload
-        detalhe = ""
-        if not ok:
-            detalhe = " | ".join([e for e in erros_payload if e][:5]) or _ml_parse_error_detail(resp, "Erro ao remover promocao atual")
-        resultados.append({
-            **promo,
-            "success": ok,
-            "status_code": resp.status_code,
-            "detail": detalhe,
-            "response": body_resp,
-        })
-        if not ok:
-            raise HTTPException(status_code=resp.status_code, detail=f"Erro ao sair da promocao atual: {detalhe}")
+            if isinstance(body_resp, dict):
+                for erro in body_resp.get("errors") or []:
+                    if isinstance(erro, dict):
+                        erros_payload.append(str(erro.get("error") or erro.get("message") or erro))
+                    else:
+                        erros_payload.append(str(erro))
+                for item_sucesso in body_resp.get("successful_ids") or []:
+                    if isinstance(item_sucesso, dict) and item_sucesso.get("error"):
+                        erros_payload.append(str(item_sucesso.get("error")))
+            textos_resposta = _favoritos_ml_textos_resposta_remocao(resp, body_resp, erros_payload)
+            textos_normalizados = [normalizar_texto(e).replace("_", " ") for e in textos_resposta]
+            erro_sem_oferta = any("no offers found" in e for e in textos_normalizados)
+            erro_tipo_promocao_invalido = any("invalid promotion type" in e for e in textos_normalizados)
+            erro_promocao_invalida = any("invalid promotion id" in e for e in textos_normalizados)
+            ok_status = resp.status_code in (200, 202, 204, 404)
+            if erro_sem_oferta or erro_tipo_promocao_invalido or erro_promocao_invalida:
+                erros_payload = []
+                ok_status = True
+                if erro_sem_oferta:
+                    aviso = "No offers found for item"
+                elif erro_tipo_promocao_invalido:
+                    aviso = "Invalid promotion type ignored while removing stale promotion reference"
+                else:
+                    aviso = "Invalid promotion id ignored while removing stale promotion reference"
+                if not body_resp:
+                    body_resp = {"warning": aviso}
+                elif isinstance(body_resp, dict):
+                    body_resp["warning"] = aviso
+            ok = ok_status and not erros_payload
+            detalhe = ""
+            if not ok:
+                detalhe = " | ".join([e for e in erros_payload if e][:5]) or _ml_parse_error_detail(resp, "Erro ao remover promocao atual")
+
+            if not ok and tentativa < max_attempts and _favoritos_ml_remocao_erro_transitorio(resp, textos_resposta):
+                espera = _favoritos_ml_remocao_retry_delay(resp, tentativa)
+                logger.warning(
+                    "[Favoritos ML] Mercado Livre falhou ao sair da promocao atual de %s (%s/%s, HTTP %s): %s. Nova tentativa em %.1fs.",
+                    item_id,
+                    tentativa,
+                    max_attempts,
+                    resp.status_code,
+                    detalhe,
+                    espera,
+                )
+                time.sleep(espera)
+                continue
+
+            resultados.append({
+                **promo,
+                "success": ok,
+                "status_code": resp.status_code,
+                "detail": detalhe,
+                "response": body_resp,
+                "attempts": tentativa,
+            })
+            if not ok:
+                raise HTTPException(status_code=resp.status_code, detail=f"Erro ao sair da promocao atual: {detalhe}")
+            break
 
     return resultados, cfg
 

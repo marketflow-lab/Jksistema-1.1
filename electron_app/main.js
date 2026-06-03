@@ -89,6 +89,8 @@ let avantProStorageRecoveryPromise = null;
 let updateEventsRegistered = false;
 let updateCheckInProgress = false;
 let updateInstallInProgress = false;
+let updateInstallRequested = false;
+let downloadedUpdateInfo = null;
 let deferredDownloadedUpdateInfo = null;
 let updateFeedConfigured = false;
 let updateFeedSource = '';
@@ -540,6 +542,36 @@ function maybeInstallDeferredUpdate() {
     }, 1200);
 }
 
+async function installUpdateNow() {
+    if (!autoUpdater) {
+        const message = 'electron-updater nao esta disponivel neste pacote.';
+        sendUpdateStatus('error', { error: message });
+        return { success: false, error: message };
+    }
+    const feedStatus = configureAutoUpdaterFeed();
+    if (!feedStatus.success) {
+        const message = feedStatus.reason || 'Canal de atualizacao nao configurado.';
+        sendUpdateStatus('error', { error: message });
+        return { success: false, error: message };
+    }
+    registerAutoUpdateEvents();
+    updateInstallRequested = true;
+    if (downloadedUpdateInfo) {
+        await installDownloadedUpdateSafely(downloadedUpdateInfo);
+        return { success: true, installing: true };
+    }
+    sendUpdateStatus('download-requested');
+    try {
+        await autoUpdater.downloadUpdate();
+        return { success: true, downloading: true };
+    } catch (err) {
+        updateInstallRequested = false;
+        const message = getUpdateErrorMessage(err);
+        sendUpdateStatus('error', { error: message });
+        return { success: false, error: message };
+    }
+}
+
 function sendUpdateStatus(status, payload = {}) {
     const message = { status, ...payload };
     logElectronLifecycle('auto-update-status', message);
@@ -622,17 +654,21 @@ function registerAutoUpdateEvents() {
     if (!autoUpdater || updateEventsRegistered) return false;
     updateEventsRegistered = true;
 
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = false;
 
     autoUpdater.on('checking-for-update', () => {
         sendUpdateStatus('checking');
     });
     autoUpdater.on('update-available', (info) => {
+        downloadedUpdateInfo = null;
+        updateInstallRequested = false;
         sendUpdateStatus('available', { updateInfo: normalizeUpdateInfo(info) });
     });
     autoUpdater.on('update-not-available', (info) => {
+        downloadedUpdateInfo = null;
+        updateInstallRequested = false;
         sendUpdateStatus('not-available', { updateInfo: normalizeUpdateInfo(info) });
     });
     autoUpdater.on('download-progress', (progress) => {
@@ -643,16 +679,21 @@ function registerAutoUpdateEvents() {
         });
     });
     autoUpdater.on('error', (err) => {
+        updateInstallRequested = false;
         sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
     });
     autoUpdater.on('update-downloaded', (info) => {
+        downloadedUpdateInfo = info || {};
         sendUpdateStatus('downloaded', {
             updateInfo: normalizeUpdateInfo(info),
-            autoInstall: true
+            autoInstall: false,
+            installRequested: updateInstallRequested
         });
-        installDownloadedUpdateSafely(info).catch((err) => {
-            logElectronLifecycle('auto-update-auto-install-error', err);
-        });
+        if (updateInstallRequested) {
+            installDownloadedUpdateSafely(info).catch((err) => {
+                logElectronLifecycle('auto-update-install-now-error', err);
+            });
+        }
     });
     return true;
 }
@@ -777,6 +818,42 @@ function getMlSession() {
 
 function getBrowserSessionPartition() {
     return JK_BROWSER_SESSION_PARTITION;
+}
+
+function isLocalBackendUrlForNotification(rawUrl) {
+    try {
+        const parsed = new URL(String(rawUrl || ''));
+        return (
+            ['127.0.0.1', 'localhost'].includes(parsed.hostname)
+            && String(parsed.port || '80') === String(JK_LOCAL_BACKEND_PORT)
+        );
+    } catch (_err) {
+        return false;
+    }
+}
+
+function configureNotificationPermissions() {
+    const sessions = [session.defaultSession, getMlSession()];
+    for (const ses of sessions) {
+        if (!ses) continue;
+        if (typeof ses.setPermissionRequestHandler === 'function') {
+            ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+                const requestingUrl = details && (details.requestingUrl || details.embeddingOrigin) || (webContents && webContents.getURL && webContents.getURL()) || '';
+                if (permission === 'notifications') {
+                    callback(isLocalBackendUrlForNotification(requestingUrl));
+                    return;
+                }
+                callback(false);
+            });
+        }
+        if (typeof ses.setPermissionCheckHandler === 'function') {
+            ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+                if (permission !== 'notifications') return false;
+                const currentUrl = requestingOrigin || (webContents && webContents.getURL && webContents.getURL()) || '';
+                return isLocalBackendUrlForNotification(currentUrl);
+            });
+        }
+    }
 }
 
 async function flushPersistentSessions() {
@@ -3088,6 +3165,7 @@ app.whenReady().then(async () => {
     if (typeof flushTimer.unref === 'function') flushTimer.unref();
 
     ensureChromeExtensionsForMlSession();
+    configureNotificationPermissions();
 
     app.on('web-contents-created', (_event, contents) => {
         if (contents && typeof contents.once === 'function') {
@@ -3190,6 +3268,9 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('check-for-updates', async () => {
         return await checkForUpdates(true);
+    });
+    ipcMain.handle('install-update-now', async () => {
+        return await installUpdateNow();
     });
     ipcMain.handle('get-client-config', () => {
         const config = loadClientConfig();

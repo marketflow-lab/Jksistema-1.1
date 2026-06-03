@@ -342,6 +342,7 @@
         }
         .update-toast.is-active {
             opacity: 1;
+            pointer-events: auto;
             transform: translateY(0);
         }
         .update-toast-title {
@@ -354,6 +355,28 @@
             color: #b8c9dc;
             font-size: 12px;
             line-height: 1.35;
+        }
+        .update-toast-actions {
+            display: none;
+            margin-top: 11px;
+        }
+        .update-toast-actions.is-active {
+            display: flex;
+        }
+        .update-toast-action {
+            background: #4facfe;
+            border: 0;
+            border-radius: 7px;
+            color: #06111f;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 800;
+            min-height: 32px;
+            padding: 0 12px;
+        }
+        .update-toast-action:disabled {
+            cursor: default;
+            opacity: 0.68;
         }
         .update-toast-progress {
             background: rgba(255, 255, 255, 0.12);
@@ -407,6 +430,9 @@
         <div id="update-toast-progress" class="update-toast-progress" aria-hidden="true">
             <span id="update-toast-progress-fill"></span>
         </div>
+        <div id="update-toast-actions" class="update-toast-actions">
+            <button id="update-toast-action" class="update-toast-action" type="button">Atualizar agora</button>
+        </div>
     </div>
 
     <script>
@@ -444,12 +470,15 @@
         const updateToastMessage = document.getElementById('update-toast-message');
         const updateToastProgress = document.getElementById('update-toast-progress');
         const updateToastProgressFill = document.getElementById('update-toast-progress-fill');
+        const updateToastActions = document.getElementById('update-toast-actions');
+        const updateToastAction = document.getElementById('update-toast-action');
         const tabs = new Map();
         const pendingUpdateSaveRequests = new Map();
         let activeId = '';
         let serial = 0;
         let toolbarAutoHideTimer = null;
         let updateToastTimer = null;
+        let updateToastActionHandler = null;
         let mlBrowserWebview = null;
         let mlBrowserOwnerId = '';
         const mlBrowserBoundsByTab = new Map();
@@ -648,10 +677,17 @@
         function showUpdateToast(title, message, options = {}) {
             if (!updateToast) return;
             clearTimeout(updateToastTimer);
+            updateToastActionHandler = typeof options.onAction === 'function' ? options.onAction : null;
             updateToast.classList.toggle('is-error', options.kind === 'error');
             updateToast.classList.add('is-active');
             if (updateToastTitle) updateToastTitle.textContent = title || 'Atualizacao';
             if (updateToastMessage) updateToastMessage.textContent = message || '';
+            const hasAction = !!(updateToastAction && updateToastActionHandler);
+            if (updateToastActions) updateToastActions.classList.toggle('is-active', hasAction);
+            if (updateToastAction) {
+                updateToastAction.textContent = options.actionLabel || 'Atualizar agora';
+                updateToastAction.disabled = false;
+            }
             const hasProgress = Number.isFinite(Number(options.progress));
             if (updateToastProgress) updateToastProgress.classList.toggle('is-active', hasProgress);
             if (updateToastProgressFill && hasProgress) {
@@ -663,6 +699,30 @@
                     updateToast.classList.remove('is-active');
                 }, options.timeout);
             }
+        }
+
+        if (updateToastAction) {
+            updateToastAction.addEventListener('click', async () => {
+                if (typeof updateToastActionHandler !== 'function') return;
+                updateToastAction.disabled = true;
+                try {
+                    await updateToastActionHandler();
+                } catch (err) {
+                    showUpdateToast('Erro ao atualizar', err && err.message ? err.message : 'Nao foi possivel iniciar a atualizacao.', { kind: 'error', timeout: 8500 });
+                }
+            });
+        }
+
+        async function iniciarAtualizacaoAgora() {
+            if (!window.electronAPI || typeof window.electronAPI.installUpdateNow !== 'function') {
+                throw new Error('Atualizador indisponivel neste pacote.');
+            }
+            showUpdateToast('Iniciando atualizacao', 'Preparando download da nova versao...', { progress: 8 });
+            const result = await window.electronAPI.installUpdateNow();
+            if (!result || result.success === false) {
+                throw new Error(result && (result.error || result.reason) || 'Nao foi possivel iniciar a atualizacao.');
+            }
+            return result;
         }
 
         function updatePayloadVersion(payload) {
@@ -683,7 +743,18 @@
                     return;
                 }
                 if (status === 'available' || status === 'manual-update-available') {
-                    showUpdateToast('Atualizacao encontrada', `Baixando a versao ${version || 'nova'} automaticamente...`, { progress: 18 });
+                    showUpdateToast(
+                        'Atualizacao disponivel',
+                        `Versao ${version || 'nova'} disponivel. Clique para atualizar agora.`,
+                        {
+                            actionLabel: 'Atualizar agora',
+                            onAction: iniciarAtualizacaoAgora
+                        }
+                    );
+                    return;
+                }
+                if (status === 'download-requested') {
+                    showUpdateToast('Baixando atualizacao', 'Download iniciado. Mantenha o app aberto.', { progress: 18 });
                     return;
                 }
                 if (status === 'downloading') {
@@ -692,7 +763,7 @@
                     return;
                 }
                 if (status === 'downloaded') {
-                    showUpdateToast('Atualizacao pronta', 'Salvando o trabalho aberto e instalando automaticamente...', { progress: 100 });
+                    showUpdateToast('Atualizacao pronta', 'Salvando o trabalho aberto e instalando agora...', { progress: 100 });
                     return;
                 }
                 if (status === 'saving-work') {

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getClientConfig: () => ipcRenderer.invoke('get-client-config'),
     saveClientConfig: (appUrl) => ipcRenderer.invoke('save-client-config', appUrl),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    installUpdateNow: () => ipcRenderer.invoke('install-update-now'),
     onAutoUpdateStatus: (callback) => {
         if (typeof callback !== 'function') return () => {};
         const listener = (_event, payload) => callback(payload);
