@@ -1580,7 +1580,7 @@
                 if (!isDecisaoParticipar(decisao)) return null;
                 const itemId = getValorLinhaPromoAuto(row, ['MLB', 'mlb', 'Item ID', 'item_id', 'Anúncio', 'Anuncio']);
                 if (!itemId) return null;
-                const dealPrice = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['Preço Final ML', 'Preco Final ML', 'Preco final ML', 'Preço Final Promoção 2', 'Preco Final Promocao 2']));
+                const dealPrice = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['deal_price', 'preco_promocional_ml', 'Preço Promocional ML', 'Preco Promocional ML', 'Preço Final ML', 'Preco Final ML', 'Preco final ML', 'Preço Final Promoção 2', 'Preco Final Promocao 2']));
                 const discountPct = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, ['ML % Campanha', '% Fixa', 'Desconto ML %', 'discount_percentage', 'percentual']));
                 return {
                     item_id: itemId,
@@ -2695,11 +2695,36 @@
         }
     }
 
+    function formatPromoDateShort(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) {
+            const mesIso = Number(iso[2]) - 1;
+            const mesesIso = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+            return `${Number(iso[3])}/${mesesIso[mesIso] || ''}`;
+        }
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) return '';
+        const meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+        return `${date.getDate()}/${meses[date.getMonth()]}`;
+    }
+
+    function formatPromoDateRange(campanha) {
+        const inicio = formatPromoDateShort(campanha?.start_date || campanha?.date_start || campanha?.begin_date);
+        const fim = formatPromoDateShort(campanha?.finish_date || campanha?.end_date || campanha?.date_end);
+        if (inicio && fim) return ` · ${inicio} a ${fim}`;
+        if (inicio) return ` · desde ${inicio}`;
+        if (fim) return ` · até ${fim}`;
+        return '';
+    }
+
     function formatPromoOption(campanha) {
         const id = campanha.id || '';
         const nome = campanha.name || campanha.title || id;
         const status = campanha.status ? ` - ${campanha.status}` : '';
-        return `${nome}${status} (${id})`;
+        const periodo = formatPromoDateRange(campanha);
+        return `${nome}${status}${periodo} (${id})`;
     }
 
     function promoSelectionGroup(campanha) {

@@ -1986,6 +1986,90 @@
         .ml-favoritos-empty {
             padding: 12px;
         }
+        .ml-favoritos-ranking-head {
+            align-items: center;
+            display: flex;
+            gap: 10px;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .ml-favoritos-ranking-head .section-title {
+            margin: 0;
+        }
+        .ml-favoritos-include-btn {
+            background: #eef6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 7px;
+            color: #1d4ed8;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.2;
+            padding: 7px 10px;
+            white-space: nowrap;
+        }
+        .ml-favoritos-include-btn:hover:not(:disabled) {
+            background: #dbeafe;
+            border-color: #60a5fa;
+        }
+        .ml-favoritos-include-btn:disabled {
+            cursor: default;
+            opacity: 0.5;
+        }
+        .ml-favoritos-include-form {
+            align-items: center;
+            background: #f8fafc;
+            border: 1px solid #dbeafe;
+            border-radius: 8px;
+            display: flex;
+            gap: 8px;
+            margin: 6px 0 10px;
+            padding: 8px;
+        }
+        .ml-favoritos-include-form.hidden {
+            display: none;
+        }
+        .ml-favoritos-include-form input {
+            border: 1px solid #bfdbfe;
+            border-radius: 7px;
+            flex: 1 1 220px;
+            font-size: 12px;
+            min-width: 0;
+            padding: 8px 10px;
+        }
+        .ml-favoritos-include-form input:focus {
+            border-color: #2563eb;
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+            outline: none;
+        }
+        .ml-favoritos-include-form button {
+            border-radius: 7px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.2;
+            padding: 8px 10px;
+            white-space: nowrap;
+        }
+        .ml-favoritos-include-confirm {
+            background: #2563eb;
+            border: 1px solid #1d4ed8;
+            color: #fff;
+        }
+        .ml-favoritos-include-cancel {
+            background: #fff;
+            border: 1px solid #cbd5e1;
+            color: #334155;
+        }
+        @media (max-width: 900px) {
+            .ml-favoritos-include-form {
+                align-items: stretch;
+                flex-direction: column;
+            }
+            .ml-favoritos-include-form button {
+                width: 100%;
+            }
+        }
         .ml-favoritos-historico-toolbar {
             align-items: center;
             display: flex;
@@ -2751,7 +2835,15 @@
                     </div>
 
                     <div class="panel">
-                        <h3 class="section-title">Historico de Favoritos</h3>
+                        <div class="ml-favoritos-ranking-head">
+                            <h3 class="section-title">Historico de Favoritos</h3>
+                            <button id="fav-ranking-incluir-anuncio" type="button" class="ml-favoritos-include-btn" disabled>Incluir anuncio</button>
+                        </div>
+                        <div id="fav-ranking-incluir-form" class="ml-favoritos-include-form hidden" aria-hidden="true">
+                            <input id="fav-ranking-incluir-input" type="text" placeholder="Cole o MLB ou link do anuncio" autocomplete="off">
+                            <button id="fav-ranking-incluir-confirmar" type="button" class="ml-favoritos-include-confirm">Adicionar</button>
+                            <button id="fav-ranking-incluir-cancelar" type="button" class="ml-favoritos-include-cancel">Cancelar</button>
+                        </div>
                         <div id="fav-ranking-data" class="ml-favoritos-historico-meta"></div>
                         <div id="fav-outros-anuncios-empty" class="muted">Selecione um SKU para visualizar o ranking gerado.</div>
                         <div class="favoritos-ml-table-wrap">
@@ -3175,6 +3267,11 @@
         const favOutrosAnunciosBodyEl = document.getElementById('fav-outros-anuncios-body');
         const favOutrosAnunciosEmptyEl = document.getElementById('fav-outros-anuncios-empty');
         const favRankingDataEl = document.getElementById('fav-ranking-data');
+        const favRankingIncluirAnuncioBtnEl = document.getElementById('fav-ranking-incluir-anuncio');
+        const favRankingIncluirFormEl = document.getElementById('fav-ranking-incluir-form');
+        const favRankingIncluirInputEl = document.getElementById('fav-ranking-incluir-input');
+        const favRankingIncluirConfirmarBtnEl = document.getElementById('fav-ranking-incluir-confirmar');
+        const favRankingIncluirCancelarBtnEl = document.getElementById('fav-ranking-incluir-cancelar');
         const favMlAnunciosTableEl = document.getElementById('fav-ml-anuncios-table');
         const favOutrosAnunciosTableEl = document.getElementById('fav-outros-anuncios-table');
         const favMlEfetivarPanelEl = document.getElementById('fav-ml-efetivar-panel');
@@ -5010,6 +5107,26 @@
         }
         if (favMlEfetivarBtnEl) {
             favMlEfetivarBtnEl.addEventListener('click', efetivarFavoritosMercadoLivreAprovados);
+        }
+        if (favRankingIncluirAnuncioBtnEl) {
+            favRankingIncluirAnuncioBtnEl.addEventListener('click', mostrarFormularioIncluirAnuncioRankingFavoritos);
+        }
+        if (favRankingIncluirConfirmarBtnEl) {
+            favRankingIncluirConfirmarBtnEl.addEventListener('click', () => incluirAnuncioRankingFavoritos());
+        }
+        if (favRankingIncluirCancelarBtnEl) {
+            favRankingIncluirCancelarBtnEl.addEventListener('click', fecharFormularioIncluirAnuncioRankingFavoritos);
+        }
+        if (favRankingIncluirInputEl) {
+            favRankingIncluirInputEl.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    incluirAnuncioRankingFavoritos();
+                } else if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    fecharFormularioIncluirAnuncioRankingFavoritos();
+                }
+            });
         }
         if (favMlEfetivarOutrasContasEl) {
             favMlEfetivarOutrasContasEl.addEventListener('change', atualizarPainelEfetivarFavoritos);
@@ -14248,6 +14365,384 @@
             }
         }
 
+        function atualizarBotaoIncluirAnuncioRankingFavoritos(habilitado = false) {
+            if (!favRankingIncluirAnuncioBtnEl) return;
+            const skuSelecionado = String(favMlSkuSelecionado || '').trim();
+            const podeIncluir = !!(habilitado && skuSelecionado && favMlHistoricoExecucaoSelecionadaId && !mlFavoritosEmExecucao);
+            favRankingIncluirAnuncioBtnEl.disabled = !podeIncluir;
+            favRankingIncluirAnuncioBtnEl.title = podeIncluir
+                ? `Incluir anuncio manualmente no ranking do SKU ${skuSelecionado}`
+                : 'Abra um ranking salvo ou atual do SKU para incluir anuncio.';
+            if (!podeIncluir) fecharFormularioIncluirAnuncioRankingFavoritos();
+        }
+
+        function normalizarEntradaIncluirAnuncioRanking(valor) {
+            const texto = String(valor || '').trim();
+            if (!texto) return null;
+            const idDigitado = texto.match(/\bMLB-?(\d{6,})\b/i);
+            const id = extrairItemIdAnuncio(texto)
+                || (idDigitado ? `MLB${idDigitado[1]}`.toUpperCase() : '');
+            const url = normalizarUrlAnuncioSkuModal(texto) || construirUrlAnuncioFavoritosPorItemId(id);
+            if (!id && !url) return null;
+            return {
+                id: id || extrairItemIdAnuncio(url),
+                url
+            };
+        }
+
+        function mostrarFormularioIncluirAnuncioRankingFavoritos() {
+            const skuSelecionado = String(favMlSkuSelecionado || '').trim();
+            const rankingAtual = skuSelecionado ? obterGrupoRankingFavoritosSku(skuSelecionado) : null;
+            if (!skuSelecionado || !favMlHistoricoExecucaoSelecionadaId || !rankingAtual || !rankingAtual.grupo) {
+                alert('Selecione um SKU e abra um ranking antes de incluir anuncio.');
+                return;
+            }
+            if (!favRankingIncluirFormEl) {
+                incluirAnuncioRankingFavoritos();
+                return;
+            }
+            favRankingIncluirFormEl.classList.remove('hidden');
+            favRankingIncluirFormEl.setAttribute('aria-hidden', 'false');
+            if (favRankingIncluirInputEl) {
+                favRankingIncluirInputEl.placeholder = `Cole o MLB ou link do anuncio do SKU ${skuSelecionado}`;
+                setTimeout(() => favRankingIncluirInputEl.focus(), 0);
+            }
+        }
+
+        function fecharFormularioIncluirAnuncioRankingFavoritos() {
+            if (!favRankingIncluirFormEl) return;
+            favRankingIncluirFormEl.classList.add('hidden');
+            favRankingIncluirFormEl.setAttribute('aria-hidden', 'true');
+        }
+
+        function configurarFormularioIncluirAnuncioProcessando(processando) {
+            if (favRankingIncluirInputEl) favRankingIncluirInputEl.disabled = !!processando;
+            if (favRankingIncluirConfirmarBtnEl) favRankingIncluirConfirmarBtnEl.disabled = !!processando;
+            if (favRankingIncluirCancelarBtnEl) favRankingIncluirCancelarBtnEl.disabled = !!processando;
+        }
+
+        function mesclarInfoAnuncioIncluidoRanking(destino, info, fontePadrao = '') {
+            if (!destino || !info) return;
+            const fonte = normalizarFonte(info.source || info.origem_dados || fontePadrao || '');
+            const idInfo = extrairItemIdAnuncio(info.id || info.mlb || info.url || info.permalink || info.link)
+                || String(info.id || info.mlb || '').trim().toUpperCase().replace(/-/g, '');
+            if (idInfo) destino.id = idInfo;
+            const urlInfo = normalizarUrlAnuncioSkuModal(info.url || info.permalink || info.link || '') || construirUrlAnuncioFavoritosPorItemId(idInfo);
+            if (urlInfo) destino.url = urlInfo;
+
+            const titulo = String(info.titulo || info.title || '').replace(/\s+/g, ' ').trim();
+            if (titulo && (!destino.titulo || destino.titulo.length < 12)) {
+                destino.titulo = titulo;
+            }
+
+            preencherImagemAnuncioFavoritos(destino, info);
+            preencherPrecoAnuncioFavoritos(destino, info);
+            preencherTipoAnuncioFavoritos(destino, info);
+            preencherCondicaoAnuncioFavoritos(destino, info);
+
+            const vendedor = normalizarNomeVendedor(info.vendedor || info.seller || '');
+            const fonteVendedor = normalizarFonte(info.vendedorFonte || info.vendedor_fonte || info.fonte_vendedor || fonte || 'pagina_produto');
+            if (deveAtualizarVendedor(destino.vendedor, destino.vendedorFonte, vendedor, fonteVendedor)) {
+                destino.vendedor = vendedor;
+                destino.vendedorFonte = fonteVendedor;
+                destino.vendedor_fonte = fonteVendedor;
+            }
+
+            if (info.data_criacao && (!destino.data_criacao || /avantpro/i.test(fonte))) {
+                destino.data_criacao = info.data_criacao;
+            }
+
+            const fonteVendas = normalizarFonte(
+                info.vendasFonte
+                || info.vendas_fonte
+                || info.fonte_vendas
+                || (fonteVendasAvantPro(fonte) ? fonte : '')
+            );
+            const vendas = parseNumeroVendas(info.vendas);
+            if (deveAtualizarVendas(destino.vendas, destino.vendasFonte, vendas, fonteVendas)) {
+                destino.vendas = vendas;
+                destino.vendasFonte = fonteVendas;
+                destino.vendas_fonte = fonteVendas;
+            }
+        }
+
+        async function extrairSnapshotProdutoWebviewFavoritos() {
+            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return null;
+            return await mlWebviewEl.executeJavaScript(`
+                (function () {
+                    try {
+                        var text = function (selector) {
+                            var node = document.querySelector(selector);
+                            return node && node.textContent ? String(node.textContent).replace(/\\s+/g, ' ').trim() : '';
+                        };
+                        var attr = function (selector, name) {
+                            var node = document.querySelector(selector);
+                            return node && node.getAttribute ? String(node.getAttribute(name) || '').trim() : '';
+                        };
+                        var parseMoney = function (value) {
+                            var raw = String(value || '').replace(/\\s+/g, ' ').trim();
+                            if (!raw) return null;
+                            var aria = raw.match(/(\\d[\\d\\.]*)\\s*reais?(?:\\s*(?:e|,)?\\s*(\\d{1,2})\\s*centavos?)?/i);
+                            if (aria && aria[1]) {
+                                var reais = Number(String(aria[1]).replace(/\\./g, ''));
+                                var cents = aria[2] ? Number(aria[2]) : 0;
+                                if (Number.isFinite(reais)) return reais + (Number.isFinite(cents) ? cents / 100 : 0);
+                            }
+                            var match = raw.replace(/R\\$\\s*/gi, '').replace(/\\s+/g, '').match(/\\d[\\d\\.,]*/);
+                            if (!match) return null;
+                            var normalized = match[0];
+                            if (normalized.indexOf('.') >= 0 && normalized.indexOf(',') >= 0) {
+                                normalized = normalized.lastIndexOf('.') > normalized.lastIndexOf(',')
+                                    ? normalized.replace(/,/g, '')
+                                    : normalized.replace(/\\./g, '').replace(/,/g, '.');
+                            } else if (normalized.indexOf(',') >= 0) {
+                                normalized = normalized.replace(/\\./g, '').replace(/,/g, '.');
+                            }
+                            var parsed = Number(normalized);
+                            return Number.isFinite(parsed) ? parsed : null;
+                        };
+                        var readMoney = function (selector) {
+                            var node = document.querySelector(selector);
+                            if (!node) return null;
+                            return parseMoney(node.getAttribute('aria-label') || node.textContent || '');
+                        };
+                        var image = attr('.ui-pdp-gallery__figure img, .ui-pdp-image, img.ui-pdp-image, img[data-zoom]', 'src')
+                            || attr('.ui-pdp-gallery__figure img, .ui-pdp-image, img.ui-pdp-image, img[data-zoom]', 'data-zoom')
+                            || attr('meta[property="og:image"]', 'content');
+                        if (image && image.indexOf('//') === 0) image = 'https:' + image;
+                        var price = readMoney('.ui-pdp-price__second-line .andes-money-amount, .ui-pdp-price .andes-money-amount, [data-testid="price-part"] .andes-money-amount');
+                        var original = readMoney('s .andes-money-amount, .andes-money-amount--previous, .ui-pdp-price__original-value .andes-money-amount');
+                        var title = text('h1.ui-pdp-title') || attr('meta[property="og:title"]', 'content') || document.title || '';
+                        return {
+                            success: true,
+                            id: (String(location.href).match(/MLB-?(\\d{6,})/i) || [])[1] ? 'MLB' + (String(location.href).match(/MLB-?(\\d{6,})/i) || [])[1] : '',
+                            url: location.href,
+                            titulo: title.replace(/\\s*\\|\\s*Mercado\\s*Livre.*$/i, '').trim(),
+                            imagem: image || '',
+                            thumbnail: image || '',
+                            preco: price,
+                            price: price,
+                            preco_original: original,
+                            original_price: original,
+                            preco_promocional: Number.isFinite(original) && Number.isFinite(price) && original > price ? price : '',
+                            fonte_preco: Number.isFinite(price) ? 'pagina_produto' : ''
+                        };
+                    } catch (err) {
+                        return { success: false, error: err && err.message ? err.message : String(err), url: location.href };
+                    }
+                })();
+            `, true).catch(() => null);
+        }
+
+        async function coletarAnuncioIncluidoRankingFavoritos(entrada, sku) {
+            const alvo = normalizarEntradaIncluirAnuncioRanking(entrada);
+            if (!alvo || !alvo.id) {
+                throw new Error('Informe um MLB valido ou o link completo do anuncio.');
+            }
+            const anuncio = {
+                id: alvo.id,
+                url: alvo.url || construirUrlAnuncioFavoritosPorItemId(alvo.id),
+                sku_favorito: sku,
+                titulo: '',
+                vendedor: '',
+                vendedorFonte: '',
+                vendas: null,
+                vendasFonte: '',
+                data_criacao: '',
+                origem_dados: 'inclusao_manual',
+                pesquisas_origem: ['Incluir anuncio'],
+                campos_origem: ['Incluir anuncio']
+            };
+
+            const apiInfo = await consultarItemApiMercadoLivre(alvo.id).catch(() => null);
+            mesclarInfoAnuncioIncluidoRanking(anuncio, apiInfo, 'api_item');
+
+            if (hasInternalBrowserApi || usarNavegadorMlNoShellElectron()) {
+                const url = anuncio.url || construirUrlAnuncioFavoritosPorItemId(alvo.id);
+                if (mlUrlInput) mlUrlInput.value = url;
+                abrirBalaoResultadosMl({
+                    titulo: 'Incluindo anuncio no ranking',
+                    subtitulo: url,
+                    browserCompleto: true,
+                    forcarExibicao: true
+                });
+                mostrarBalaoFavoritosStatus(`Abrindo ${alvo.id} e aguardando Avant Pro...`);
+                await navegarMlWebview(url);
+                await aguardarAvantProNoWebview({
+                    timeoutMs: 6500,
+                    recarregarSeAusente: true,
+                    timeoutAposReloadMs: 8500,
+                    mensagemRecarregando: 'Avant Pro nao apareceu no anuncio. Recarregando Mercado Livre...'
+                }).catch(() => null);
+                await extrairAnunciosWebviewVisivel({
+                    clicarAvant: true,
+                    forcarCliqueAvant: true,
+                    timeoutMs: 8000,
+                    aguardarAposCliqueAvant: AVANT_PRO_ESPERA_POS_CLIQUE_MS + 600,
+                    aguardarEstabilidadeAvant: true
+                }).catch(() => null);
+                const snapshot = await extrairSnapshotProdutoWebviewFavoritos();
+                mesclarInfoAnuncioIncluidoRanking(anuncio, snapshot, 'pagina_produto');
+                const dadosAvant = await mlWebviewEl.executeJavaScript(ML_DATE_EXTRACT_SCRIPT, true).catch(() => null);
+                mesclarInfoAnuncioIncluidoRanking(anuncio, dadosAvant, dadosAvant && dadosAvant.source || 'avantpro_dom');
+            } else if (window.electronAPI && typeof window.electronAPI.getMlBrowserItemInfo === 'function') {
+                const browserInfo = await window.electronAPI.getMlBrowserItemInfo(alvo.id, anuncio.url).catch(() => null);
+                mesclarInfoAnuncioIncluidoRanking(anuncio, browserInfo, browserInfo && browserInfo.source || 'browser_item');
+            }
+
+            if (!anuncio.titulo) anuncio.titulo = `Anuncio ${alvo.id}`;
+            const normalizado = normalizarAnuncioFavoritosPesquisa(anuncio, sku, {
+                campo: 'manual',
+                termo: 'Incluir anuncio'
+            });
+            normalizado.origem_dados = 'inclusao_manual_avantpro';
+            normalizado.pesquisas_origem = ['Incluir anuncio'];
+            normalizado.campos_origem = ['Incluir anuncio'];
+            return normalizado;
+        }
+
+        function inserirAnuncioEmGrupoRankingFavoritos(grupo, anuncio, sku) {
+            if (!grupo || !anuncio) return null;
+            const existentes = Array.isArray(grupo.anuncios) ? grupo.anuncios : [];
+            const chavesAlvo = new Set(chavesRemocaoAnuncioRankingFavoritos(anuncio));
+            const jaExistia = chavesAlvo.size
+                ? existentes.some(item => anuncioCorrespondeRemocaoRankingFavoritos(item, chavesAlvo))
+                : false;
+            const semDuplicado = chavesAlvo.size
+                ? existentes.filter(item => !anuncioCorrespondeRemocaoRankingFavoritos(item, chavesAlvo))
+                : existentes.slice();
+            const combinados = deduplicarAnunciosFavoritos([...semDuplicado, anuncio])
+                .filter(item => item && !tituloPareceFiltroOuCategoriaMl(item.titulo));
+            grupo.anuncios = limitarAnunciosFavoritosRanking(ordenarAnunciosFavoritosRanking(combinados, sku));
+            grupo.total_anuncios = grupo.anuncios.length;
+            grupo.ordem_manual = false;
+            grupo.inclusao_manual = true;
+            const posicao = grupo.anuncios.findIndex(item => anuncioCorrespondeRemocaoRankingFavoritos(item, chavesAlvo));
+            return {
+                jaExistia,
+                posicao: posicao >= 0 ? posicao + 1 : null,
+                total: grupo.anuncios.length
+            };
+        }
+
+        function inserirAnuncioRankingFavoritos(sku, anuncio, opcoes = {}) {
+            const skuSelecionado = String(sku || favMlSkuSelecionado || '').trim();
+            const chaveSku = skuChaveSku(skuSelecionado);
+            if (!chaveSku || !anuncio) return null;
+            if (anuncioIgnoradoNoSku(skuSelecionado, anuncio)) {
+                removerAnuncioIgnoradoSku(skuSelecionado, anuncio);
+            }
+
+            const entradaIdBruto = String(opcoes.entradaId || '').trim();
+            const entradaId = entradaIdBruto === FAV_ML_RANKING_ATUAL_ID ? '' : entradaIdBruto;
+            let resultado = null;
+            let mudou = false;
+            const grupoAtual = entradaId ? null : mlFavoritosResultadosPorSku.get(chaveSku);
+            if (grupoAtual) {
+                resultado = inserirAnuncioEmGrupoRankingFavoritos(grupoAtual, anuncio, skuSelecionado) || resultado;
+                mlFavoritosResultadosPorSku.set(chaveSku, grupoAtual);
+                mudou = !!resultado || mudou;
+            }
+
+            const historico = lerHistoricoFavoritos();
+            let historicoAlterado = false;
+            const alvoHistorico = encontrarGrupoHistoricoRankingFavoritos(historico, chaveSku, entradaId);
+            if (alvoHistorico) {
+                resultado = inserirAnuncioEmGrupoRankingFavoritos(alvoHistorico.grupo, anuncio, skuSelecionado) || resultado;
+                recalcularTotaisHistoricoFavoritos(alvoHistorico.entrada);
+                historicoAlterado = true;
+                mudou = true;
+                if (!grupoAtual) {
+                    mlFavoritosResultadosPorSku.set(chaveSku, alvoHistorico.grupo);
+                }
+            }
+            if (historicoAlterado) salvarHistoricoFavoritos(historico, { imediato: true });
+            return mudou ? resultado : null;
+        }
+
+        async function incluirAnuncioRankingFavoritos(entradaInformada = '') {
+            const skuSelecionado = String(favMlSkuSelecionado || '').trim();
+            const entradaSelecionada = String(favMlHistoricoExecucaoSelecionadaId || '').trim();
+            const rankingAtual = skuSelecionado ? obterGrupoRankingFavoritosSku(skuSelecionado) : null;
+            if (!skuSelecionado || !entradaSelecionada || !rankingAtual || !rankingAtual.grupo) {
+                alert('Selecione um SKU e abra um ranking antes de incluir anuncio.');
+                return;
+            }
+            const entrada = String(entradaInformada || (favRankingIncluirInputEl ? favRankingIncluirInputEl.value : '') || '').trim();
+            if (!entrada) {
+                if (favMlStatusEl) {
+                    favMlStatusEl.classList.remove('hidden');
+                    favMlStatusEl.textContent = 'Cole o MLB ou link do anuncio para incluir no ranking.';
+                }
+                mostrarBalaoFavoritosStatus('Cole o MLB ou link do anuncio para incluir.', {
+                    erro: true,
+                    tempoMs: 3500
+                });
+                if (favRankingIncluirInputEl) favRankingIncluirInputEl.focus();
+                return;
+            }
+            const alvo = normalizarEntradaIncluirAnuncioRanking(entrada);
+            if (!alvo || !alvo.id) {
+                alert('Informe um MLB valido ou o link completo do anuncio.');
+                if (favRankingIncluirInputEl) favRankingIncluirInputEl.focus();
+                return;
+            }
+
+            const textoOriginal = favRankingIncluirAnuncioBtnEl ? favRankingIncluirAnuncioBtnEl.textContent : '';
+            const textoConfirmarOriginal = favRankingIncluirConfirmarBtnEl ? favRankingIncluirConfirmarBtnEl.textContent : '';
+            if (favRankingIncluirAnuncioBtnEl) {
+                favRankingIncluirAnuncioBtnEl.disabled = true;
+                favRankingIncluirAnuncioBtnEl.textContent = 'Incluindo...';
+            }
+            if (favRankingIncluirConfirmarBtnEl) {
+                favRankingIncluirConfirmarBtnEl.textContent = 'Coletando...';
+            }
+            configurarFormularioIncluirAnuncioProcessando(true);
+            if (favMlStatusEl) {
+                favMlStatusEl.classList.remove('hidden');
+                favMlStatusEl.textContent = `Abrindo ${alvo.id} e coletando dados com Avant Pro...`;
+            }
+
+            try {
+                const anuncio = await coletarAnuncioIncluidoRankingFavoritos(alvo.url || alvo.id, skuSelecionado);
+                const resultado = inserirAnuncioRankingFavoritos(skuSelecionado, anuncio, {
+                    entradaId: entradaSelecionada
+                });
+                if (!resultado) throw new Error('Nao encontrei o grupo de ranking para salvar o anuncio.');
+
+                renderizarFavoritosOutrosAnuncios(skuSelecionado);
+                renderizarHistoricoFavoritos();
+                if (Array.isArray(favMlAnunciosSkuAtual)) {
+                    renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
+                }
+                const posicao = resultado.posicao ? ` na posicao #${resultado.posicao}` : '';
+                const acao = resultado.jaExistia ? 'atualizado e reclassificado' : 'incluido e classificado';
+                if (favMlStatusEl) {
+                    favMlStatusEl.textContent = `Anuncio ${anuncio.id || alvo.id} ${acao}${posicao} do ranking do SKU ${skuSelecionado}.`;
+                }
+                mostrarBalaoFavoritosStatus(`Anuncio ${anuncio.id || alvo.id} ${acao}${posicao}.`, { tempoMs: 4500 });
+                if (favRankingIncluirInputEl) favRankingIncluirInputEl.value = '';
+                fecharFormularioIncluirAnuncioRankingFavoritos();
+                fecharBalaoResultadosMl({ forcar: true });
+            } catch (err) {
+                const mensagem = err && err.message ? err.message : String(err);
+                if (favMlStatusEl) favMlStatusEl.textContent = `Erro ao incluir anuncio ${alvo.id}: ${mensagem}`;
+                mostrarBalaoFavoritosStatus(`Erro ao incluir anuncio: ${mensagem}`, {
+                    erro: true,
+                    tempoMs: 6500
+                });
+            } finally {
+                if (favRankingIncluirAnuncioBtnEl) {
+                    favRankingIncluirAnuncioBtnEl.textContent = textoOriginal || 'Incluir anuncio';
+                }
+                if (favRankingIncluirConfirmarBtnEl) {
+                    favRankingIncluirConfirmarBtnEl.textContent = textoConfirmarOriginal || 'Adicionar';
+                }
+                configurarFormularioIncluirAnuncioProcessando(false);
+                atualizarBotaoIncluirAnuncioRankingFavoritos(!!obterGrupoRankingFavoritosSku(skuSelecionado));
+            }
+        }
+
         function criarCelulaAcoesRankingFavoritos(sku, anuncio, opcoes = {}) {
             const td = document.createElement('td');
             td.className = 'ml-ranking-actions-cell';
@@ -15503,6 +15998,7 @@
             if (favRankingDataEl) favRankingDataEl.textContent = '';
             if (!favOutrosAnunciosEmptyEl) return;
             const skuSelecionado = String(sku || '').trim();
+            atualizarBotaoIncluirAnuncioRankingFavoritos(false);
             if (!skuSelecionado) {
                 if (renderizarFavoritosHistoricoDisponivel('')) return;
                 favOutrosAnunciosEmptyEl.textContent = 'Nenhum historico de favoritos salvo ainda.';
@@ -15530,6 +16026,7 @@
                 atualizarTabelasFavoritosEditaveis();
                 return;
             }
+            atualizarBotaoIncluirAnuncioRankingFavoritos(true);
             if (favRankingDataEl) {
                 const dataRanking = formatarDataHistoricoFavoritos(resultadoRanking.data_iso || grupo.data_iso || grupo.data_ranking_iso);
                 const lojaRanking = resultadoRanking.loja || grupo.loja || '';

@@ -549,15 +549,86 @@
   }
 
   const CSS = `
-  #jk-ia-fab{position:fixed;bottom:24px;right:24px;z-index:9998;width:54px;height:54px;border-radius:999px;
-    background:linear-gradient(145deg,#1888ff,#13c4a0);border:0;color:#fff;font-size:1.4rem;cursor:pointer;
-    box-shadow:0 4px 18px rgba(19,196,160,.55);display:flex;align-items:center;justify-content:center;transition:transform .18s;}
-  #jk-ia-fab:hover{transform:scale(1.08);}
+  #jk-right-sidebar-hotspot{position:fixed;top:0;right:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
+  #jk-right-sidebar-hotspot::before{content:"";position:absolute;top:0;right:0;bottom:0;width:8px;background:transparent;}
+  #jk-right-sidebar-menu{position:fixed;top:50%;right:10px;display:flex;flex-direction:column;gap:10px;
+    transform:translate(calc(100% + 22px),-50%);opacity:0;pointer-events:none;
+    transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;}
+  #jk-right-sidebar-hotspot:hover #jk-right-sidebar-menu,
+  #jk-right-sidebar-hotspot:focus-within #jk-right-sidebar-menu,
+  #jk-right-sidebar-hotspot.tem-alerta #jk-right-sidebar-menu,
+  #jk-right-sidebar-hotspot.menu-aberto #jk-right-sidebar-menu{transform:translate(0,-50%);opacity:1;pointer-events:auto;}
+  .jk-right-sidebar-icon{position:relative;width:50px;height:50px;border-radius:14px;border:1px solid rgba(120,227,212,.32);
+    background:linear-gradient(145deg,#1888ff,#13c4a0);color:#fff;font-size:1.35rem;cursor:pointer;
+    box-shadow:0 4px 18px rgba(19,196,160,.42);display:flex;align-items:center;justify-content:center;
+    transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
+  .jk-right-sidebar-icon:hover{transform:translateX(-2px) scale(1.04);box-shadow:0 8px 24px rgba(19,196,160,.5);}
+  .jk-right-sidebar-icon.ativo{border-color:rgba(255,255,255,.72);box-shadow:0 0 0 3px rgba(120,227,212,.18),0 8px 24px rgba(19,196,160,.48);}
+  .jk-right-sidebar-icon.piscando{animation:jkRightSidebarBlink .9s ease-in-out infinite;border-color:rgba(255,255,255,.82);}
+  @keyframes jkRightSidebarBlink{
+    0%,100%{filter:brightness(1);box-shadow:0 4px 18px rgba(19,196,160,.42);}
+    50%{filter:brightness(1.3);box-shadow:0 0 0 5px rgba(239,68,68,.18),0 0 28px rgba(239,68,68,.72);}
+  }
+  #jk-msg-fab{background:linear-gradient(145deg,#5b8cff,#21b8a3);}
+  #jk-msg-badge{position:absolute;top:5px;right:5px;min-width:17px;height:17px;padding:0 5px;border-radius:999px;
+    background:#ef4444;color:#fff;border:2px solid #062a22;font-size:.62rem;font-weight:900;line-height:13px;text-align:center;display:none;}
+  #jk-msg-badge:not(:empty){display:block;}
   #jk-ia-panel{--jk-ia-panel-width:360px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-ia-panel-width);min-width:300px;max-width:96vw;
     background:linear-gradient(165deg,#081b2e,#062a22);border-left:1px solid rgba(106,225,203,.28);
     display:flex;flex-direction:column;box-shadow:-6px 0 32px rgba(0,0,0,.55);
     transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);}
   #jk-ia-panel.aberto{transform:translateX(0);}
+  #jk-msg-panel{--jk-msg-panel-width:380px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-msg-panel-width);min-width:300px;max-width:96vw;
+    background:linear-gradient(165deg,#091d31,#062a22);border-left:1px solid rgba(106,225,203,.28);
+    display:flex;flex-direction:column;box-shadow:-6px 0 32px rgba(0,0,0,.55);
+    transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);}
+  #jk-msg-panel.aberto{transform:translateX(0);}
+  #jk-msg-header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid rgba(106,225,203,.18);background:rgba(4,30,48,.72);}
+  #jk-msg-header h3{flex:1 1 auto;margin:0;color:#8ee9de;font-size:.96rem;font-weight:800;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-hbtn{border:0;background:transparent;color:#8ee9de;cursor:pointer;font-size:1.05rem;padding:0 12px;border-radius:8px;line-height:1;min-height:36px;min-width:40px;height:36px;display:flex;align-items:center;justify-content:center;}
+  .jk-msg-hbtn:hover{background:rgba(19,196,160,.18);transform:scale(1.05);}
+  #jk-msg-body{flex:1 1 auto;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:12px;background:rgba(2,18,30,.4);scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.34) transparent;}
+  #jk-msg-body::-webkit-scrollbar{width:7px;}
+  #jk-msg-body::-webkit-scrollbar-thumb{background:rgba(120,227,212,.28);border-radius:999px;}
+  .jk-msg-status{min-height:18px;color:#9ee8df;font-size:.74rem;font-weight:800;line-height:1.35;}
+  #jk-msg-main-view{display:flex;flex-direction:column;gap:12px;}
+  #jk-msg-chat-header{display:none;align-items:center;gap:10px;padding:8px 0 2px;}
+  #jk-msg-chat-header.ativo{display:flex;}
+  #jk-msg-back{flex:0 0 34px;width:34px;height:34px;border-radius:8px;border:1px solid rgba(120,227,212,.32);background:rgba(35,142,165,.2);color:#e8fffb;font-weight:900;cursor:pointer;}
+  #jk-msg-back:hover{background:rgba(36,161,160,.32);border-color:rgba(120,227,212,.64);}
+  #jk-msg-chat-title{min-width:0;color:#fff;font-size:.86rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #jk-msg-history{display:none;flex:1 1 auto;flex-direction:column;gap:8px;padding:2px 0 8px;}
+  #jk-msg-history.ativo{display:flex;}
+  .jk-msg-bubble{max-width:86%;border:1px solid rgba(120,227,212,.22);border-radius:13px;padding:8px 10px;color:#e8fffb;background:rgba(23,47,70,.55);font-size:.78rem;line-height:1.42;white-space:pre-wrap;}
+  .jk-msg-bubble.me{align-self:flex-end;background:linear-gradient(165deg,#1888ff,#0f65d8);border-color:transparent;color:#fff;border-bottom-right-radius:4px;}
+  .jk-msg-bubble.other{align-self:flex-start;border-bottom-left-radius:4px;}
+  .jk-msg-bubble-meta{display:block;margin-top:4px;font-size:.62rem;color:rgba(232,255,251,.72);white-space:nowrap;}
+  .jk-msg-section{display:flex;flex-direction:column;gap:8px;}
+  .jk-msg-section-title{color:#8ee9de;font-size:.78rem;font-weight:900;text-transform:uppercase;letter-spacing:.03em;}
+  .jk-msg-list{display:flex;flex-direction:column;gap:8px;}
+  .jk-msg-empty{color:#cfe7e4;font-size:.78rem;opacity:.72;border:1px dashed rgba(120,227,212,.24);border-radius:8px;padding:10px;background:rgba(4,26,35,.36);}
+  .jk-msg-user-item,.jk-msg-card{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(8,43,59,.56);color:#e8fffb;padding:10px;}
+  .jk-msg-user-item{display:flex;align-items:center;gap:10px;text-align:left;cursor:pointer;width:100%;}
+  .jk-msg-user-item:hover,.jk-msg-user-item.ativo{border-color:rgba(120,227,212,.62);background:rgba(20,92,85,.48);}
+  .jk-msg-user-item:disabled{cursor:default;opacity:.68;}
+  .jk-msg-dot{width:10px;height:10px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.13);flex:0 0 10px;}
+  .jk-msg-user-info{min-width:0;display:grid;gap:2px;flex:1 1 auto;}
+  .jk-msg-user-name{font-size:.84rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-user-meta{font-size:.7rem;color:#9ee8df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-card{display:grid;gap:6px;}
+  .jk-msg-card-title{font-size:.82rem;font-weight:900;color:#fff;}
+  .jk-msg-card-meta{font-size:.68rem;color:#9ee8df;}
+  .jk-msg-card-text{font-size:.78rem;line-height:1.42;white-space:pre-wrap;color:#e8fffb;}
+  .jk-msg-card-actions{display:flex;justify-content:flex-end;}
+  .jk-msg-small-btn{border:1px solid rgba(120,227,212,.34);border-radius:8px;background:rgba(35,142,165,.22);color:#e8fffb;font-weight:900;font-size:.72rem;min-height:30px;padding:0 9px;cursor:pointer;}
+  .jk-msg-small-btn:hover{border-color:rgba(120,227,212,.7);background:rgba(36,161,160,.3);}
+  #jk-msg-compose{border-top:1px solid rgba(106,225,203,.18);padding:10px 12px 12px;background:rgba(4,26,35,.92);display:grid;gap:8px;}
+  #jk-msg-selected{color:#9ee8df;font-size:.74rem;font-weight:800;min-height:18px;}
+  #jk-msg-text{width:100%;border:1px solid rgba(120,227,212,.26);border-radius:8px;background:rgba(3,22,32,.82);color:#e8fffb;font:inherit;font-size:.78rem;outline:none;padding:8px;}
+  #jk-msg-text{min-height:76px;resize:vertical;line-height:1.4;}
+  #jk-msg-text:focus{border-color:#53d4b7;box-shadow:0 0 0 2px rgba(83,212,183,.16);}
+  #jk-msg-send{border:0;border-radius:8px;background:linear-gradient(165deg,#53d4b7,#33a7d7);color:#03272f;font-weight:900;font-size:.78rem;min-height:36px;cursor:pointer;}
+  #jk-msg-send:disabled{cursor:not-allowed;opacity:.55;}
   #jk-ia-resizer{position:absolute;left:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;z-index:2;}
   #jk-ia-resizer::after{content:"";position:absolute;left:6px;top:12px;bottom:12px;width:2px;border-radius:999px;background:rgba(120,227,212,.18);transition:background .15s ease,box-shadow .15s ease;}
   #jk-ia-resizer:hover::after,#jk-ia-resizer:focus-visible::after,body.jk-ia-resizing #jk-ia-resizer::after{background:rgba(120,227,212,.74);box-shadow:0 0 12px rgba(120,227,212,.42);}
@@ -669,7 +740,12 @@
 
   /* ── HTML do widget ── */
   const HTML = `
-  <button id="jk-ia-fab" title="Assistente IA" aria-label="Abrir assistente IA">🤖</button>
+  <div id="jk-right-sidebar-hotspot" aria-label="Menu lateral direito" tabindex="0">
+    <div id="jk-right-sidebar-menu" role="toolbar" aria-label="Atalhos laterais">
+      <button id="jk-ia-fab" class="jk-right-sidebar-icon" title="Assistente IA" aria-label="Abrir assistente IA">&#129302;</button>
+      <button id="jk-msg-fab" class="jk-right-sidebar-icon" title="Mensagens" aria-label="Abrir mensagens">&#128172;<span id="jk-msg-badge" aria-label="Mensagens nao lidas"></span></button>
+    </div>
+  </div>
   <aside id="jk-ia-panel" role="complementary" aria-label="Assistente IA">
     <div id="jk-ia-resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar assistente IA" tabindex="0"></div>
     <div id="jk-ia-panel-header">
@@ -717,6 +793,36 @@
     </div>
     <input type="file" id="jk-ia-file-img" accept="image/*" multiple style="display:none">
     <input type="file" id="jk-ia-file-arq" accept=".pdf,.txt,.csv,.json,.xml,.md,.log,.xlsx,.xls" multiple style="display:none">
+  </aside>
+  <aside id="jk-msg-panel" role="complementary" aria-label="Mensagens">
+    <div id="jk-msg-header">
+      <h3>&#128172; Mensagens</h3>
+      <button class="jk-msg-hbtn" id="jk-msg-btn-refresh" title="Atualizar">&#8635;</button>
+      <button class="jk-msg-hbtn" id="jk-msg-btn-fechar" title="Fechar">&times;</button>
+    </div>
+    <div id="jk-msg-body">
+      <div class="jk-msg-status" id="jk-msg-status">Aguardando abertura do painel.</div>
+      <div id="jk-msg-main-view">
+        <section class="jk-msg-section" aria-label="Mensagens recebidas">
+          <div class="jk-msg-section-title">Mensagens recebidas</div>
+          <div class="jk-msg-list" id="jk-msg-inbox-list"></div>
+        </section>
+        <section class="jk-msg-section" aria-label="Usuarios online">
+          <div class="jk-msg-section-title">Usuarios online</div>
+          <div class="jk-msg-list" id="jk-msg-online-list"></div>
+        </section>
+      </div>
+      <div id="jk-msg-chat-header">
+        <button id="jk-msg-back" type="button" title="Voltar para usuarios">&#8592;</button>
+        <div id="jk-msg-chat-title">Chat</div>
+      </div>
+      <div id="jk-msg-history" aria-live="polite"></div>
+    </div>
+    <div id="jk-msg-compose">
+      <div id="jk-msg-selected">Selecione um usuario online para enviar mensagem.</div>
+      <textarea id="jk-msg-text" maxlength="2000" placeholder="Digite sua mensagem..." aria-label="Texto da mensagem"></textarea>
+      <button id="jk-msg-send" type="button">Enviar mensagem</button>
+    </div>
   </aside>
   `;
 
@@ -805,6 +911,13 @@
     let convAtualId = null;
     let mensagensAtuais = [];
     let resizeState = null;
+    let msgPanelAberto = false;
+    let msgChatAberto = false;
+    let msgUsuarioSelecionado = null;
+    let msgRefreshTimer = null;
+    let msgCarregando = false;
+    let iaTemMensagemNaoVista = false;
+    let msgTemMensagemNaoVista = false;
     const PANEL_WIDTH_KEY = 'jk_ia_sidebar_width_px';
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
@@ -889,6 +1002,431 @@
     }
 
     setupPanelResize();
+
+    function _msgUserData() {
+      try { return JSON.parse(localStorage.getItem('user_data') || '{}') || {}; }
+      catch (_) { return {}; }
+    }
+
+    function _msgUsernameAtual() {
+      const data = _msgUserData();
+      return String(data.username || data.user || data.email || '').trim().toLowerCase();
+    }
+
+    function _msgSetStatus(texto, erro = false) {
+      const el = document.getElementById('jk-msg-status');
+      if (!el) return;
+      el.textContent = texto || '';
+      el.style.color = erro ? '#ffd1d1' : '#9ee8df';
+    }
+
+    function _sidebarAtualizarAlertas() {
+      const iaAlerta = iaTemMensagemNaoVista && !panelAberto;
+      const msgAlerta = msgTemMensagemNaoVista && !msgPanelAberto;
+      document.getElementById('jk-ia-fab')?.classList.toggle('piscando', iaAlerta);
+      document.getElementById('jk-msg-fab')?.classList.toggle('piscando', msgAlerta);
+      document.getElementById('jk-right-sidebar-hotspot')?.classList.toggle('tem-alerta', iaAlerta || msgAlerta);
+    }
+
+    function _iaAvisarMensagemRecebida() {
+      if (!panelAberto) iaTemMensagemNaoVista = true;
+      _sidebarAtualizarAlertas();
+    }
+
+    function _msgSetBadge(total) {
+      const badge = document.getElementById('jk-msg-badge');
+      if (!badge) return;
+      const n = Math.max(0, Number(total || 0));
+      badge.textContent = n ? (n > 99 ? '99+' : String(n)) : '';
+      msgTemMensagemNaoVista = n > 0;
+      _sidebarAtualizarAlertas();
+    }
+
+    function _msgLabelUsuario(user) {
+      return String((user && (user.name || user.username || user.email)) || 'Usuario').trim();
+    }
+
+    function _msgRenderVazio(el, texto) {
+      if (!el) return;
+      el.innerHTML = '';
+      const vazio = document.createElement('div');
+      vazio.className = 'jk-msg-empty';
+      vazio.textContent = texto;
+      el.appendChild(vazio);
+    }
+
+    function _msgSetChatView(ativo) {
+      msgChatAberto = !!ativo;
+      document.getElementById('jk-msg-main-view')?.style.setProperty('display', msgChatAberto ? 'none' : 'flex');
+      document.getElementById('jk-msg-chat-header')?.classList.toggle('ativo', msgChatAberto);
+      document.getElementById('jk-msg-history')?.classList.toggle('ativo', msgChatAberto);
+      _msgAtualizarSelecao();
+    }
+
+    function _msgRenderHistorico(mensagens) {
+      const el = document.getElementById('jk-msg-history');
+      if (!el) return;
+      const lista = Array.isArray(mensagens) ? mensagens : [];
+      el.innerHTML = '';
+      if (!lista.length) {
+        _msgRenderVazio(el, 'Nenhuma mensagem nesta conversa ainda.');
+        return;
+      }
+      const atual = _msgUsernameAtual();
+      lista.forEach(msg => {
+        const bubble = document.createElement('div');
+        const fromMe = String(msg.sender_username || '').toLowerCase() === atual;
+        bubble.className = 'jk-msg-bubble ' + (fromMe ? 'me' : 'other');
+        const texto = document.createElement('span');
+        texto.textContent = String(msg.message || '').trim();
+        const meta = document.createElement('span');
+        meta.className = 'jk-msg-bubble-meta';
+        meta.textContent = String(msg.created_at || '').trim();
+        bubble.appendChild(texto);
+        if (meta.textContent) bubble.appendChild(meta);
+        el.appendChild(bubble);
+      });
+      el.scrollTop = el.scrollHeight;
+      const body = document.getElementById('jk-msg-body');
+      if (body) body.scrollTop = body.scrollHeight;
+    }
+
+    async function _msgCarregarHistorico(silencioso = false) {
+      if (!msgUsuarioSelecionado || !msgUsuarioSelecionado.username) return;
+      if (!silencioso) _msgSetStatus(`Carregando chat com ${_msgLabelUsuario(msgUsuarioSelecionado)}...`);
+      try {
+        const params = new URLSearchParams({
+          username: String(msgUsuarioSelecionado.username || ''),
+          client_id: String(msgUsuarioSelecionado.client_id || _clientId() || 'default'),
+          limit: '120',
+        });
+        const resp = await fetch(`/api/user/chat/history?${params.toString()}`, {
+          method: 'GET',
+          headers: _authHeaders(),
+          cache: 'no-store',
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar historico.');
+        _msgRenderHistorico(data.messages || []);
+        const title = document.getElementById('jk-msg-chat-title');
+        if (title) title.textContent = `Chat com ${data.other_name || _msgLabelUsuario(msgUsuarioSelecionado)}`;
+        const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        _msgSetStatus(`Chat atualizado ${hora}.`);
+        void _msgBuscarMensagens().catch(() => {});
+      } catch (err) {
+        _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel carregar o historico.', true);
+      }
+    }
+
+    async function _msgAbrirChat(user) {
+      const username = String((user && user.username) || '').trim().toLowerCase();
+      if (!username) return;
+      const atual = _msgUsernameAtual();
+      const clientId = String((user && user.client_id) || _clientId() || 'default').trim() || 'default';
+      if (username === atual && clientId === (_clientId() || 'default')) {
+        _msgSetStatus('Selecione outro usuario para conversar.', true);
+        return;
+      }
+      msgUsuarioSelecionado = {
+        username,
+        client_id: clientId,
+        name: _msgLabelUsuario(user),
+      };
+      _msgSetChatView(true);
+      await _msgCarregarHistorico();
+    }
+
+    function _msgVoltarLista() {
+      _msgSetChatView(false);
+      _msgSetStatus('Selecione um usuario online para abrir o chat.');
+      void _msgCarregarPainel(true);
+    }
+
+    function _msgAtualizarSelecao() {
+      const selected = document.getElementById('jk-msg-selected');
+      const send = document.getElementById('jk-msg-send');
+      if (selected) {
+        selected.textContent = msgChatAberto && msgUsuarioSelecionado
+          ? `Chat com ${_msgLabelUsuario(msgUsuarioSelecionado)}`
+          : 'Selecione um usuario online para enviar mensagem.';
+      }
+      if (send) send.disabled = !(msgChatAberto && msgUsuarioSelecionado);
+      document.querySelectorAll('.jk-msg-user-item').forEach(btn => {
+        const username = String(btn.dataset.username || '').toLowerCase();
+        const ativo = msgUsuarioSelecionado && username === String(msgUsuarioSelecionado.username || '').toLowerCase();
+        btn.classList.toggle('ativo', !!ativo);
+      });
+    }
+
+    function _msgRenderInbox(mensagens) {
+      const el = document.getElementById('jk-msg-inbox-list');
+      if (!el) return;
+      const lista = Array.isArray(mensagens) ? mensagens : [];
+      if (!lista.length) {
+        _msgRenderVazio(el, 'Nenhuma mensagem nova.');
+        return;
+      }
+      el.innerHTML = '';
+      lista.forEach(msg => {
+        const card = document.createElement('div');
+        card.className = 'jk-msg-card';
+
+        const title = document.createElement('div');
+        title.className = 'jk-msg-card-title';
+        title.textContent = msg.type === 'chat'
+          ? `Chat com ${msg.name || msg.username || 'Usuario'}${Number(msg.unread_count || 0) > 1 ? ` (${msg.unread_count})` : ''}`
+          : String(msg.title || 'Mensagem').trim();
+
+        const meta = document.createElement('div');
+        meta.className = 'jk-msg-card-meta';
+        const sender = String(msg.sender || 'sistema').trim();
+        const created = String(msg.created_at || '').trim();
+        meta.textContent = msg.type === 'chat'
+          ? `${msg.name || msg.username || 'Usuario'}${created ? ' - ' + created : ''}`
+          : `${sender}${created ? ' - ' + created : ''}`;
+
+        const text = document.createElement('div');
+        text.className = 'jk-msg-card-text';
+        text.textContent = String(msg.message || msg.last_message || '').trim();
+
+        const actions = document.createElement('div');
+        actions.className = 'jk-msg-card-actions';
+        const action = document.createElement('button');
+        action.className = 'jk-msg-small-btn';
+        action.type = 'button';
+        if (msg.type === 'chat') {
+          action.textContent = 'Abrir chat';
+          action.addEventListener('click', () => _msgAbrirChat({
+            username: msg.username,
+            client_id: msg.client_id,
+            name: msg.name || msg.username,
+          }));
+        } else {
+          action.textContent = 'Marcar como lida';
+          action.addEventListener('click', () => _msgMarcarComoLida(msg.id));
+        }
+        actions.appendChild(action);
+
+        card.appendChild(title);
+        card.appendChild(meta);
+        card.appendChild(text);
+        card.appendChild(actions);
+        el.appendChild(card);
+      });
+    }
+
+    function _msgRenderUsuarios(usuarios) {
+      const el = document.getElementById('jk-msg-online-list');
+      if (!el) return;
+      const lista = (Array.isArray(usuarios) ? usuarios : []).filter(user => user && (user.online !== false));
+      if (!lista.length) {
+        _msgRenderVazio(el, 'Nenhum usuario online agora.');
+        return;
+      }
+      const atual = _msgUsernameAtual();
+      el.innerHTML = '';
+      lista.forEach(user => {
+        const username = String(user.username || '').trim().toLowerCase();
+        const isSelf = username && username === atual;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'jk-msg-user-item';
+        btn.dataset.username = username;
+        btn.disabled = !!isSelf;
+
+        const dot = document.createElement('span');
+        dot.className = 'jk-msg-dot';
+
+        const info = document.createElement('span');
+        info.className = 'jk-msg-user-info';
+        const name = document.createElement('span');
+        name.className = 'jk-msg-user-name';
+        name.textContent = _msgLabelUsuario(user) + (isSelf ? ' (voce)' : '');
+        const meta = document.createElement('span');
+        meta.className = 'jk-msg-user-meta';
+        const machineCount = Number(user.online_count || (Array.isArray(user.machines) ? user.machines.length : 0) || 0);
+        const page = Array.isArray(user.machines) && user.machines[0] ? String(user.machines[0].page || '').trim() : '';
+        meta.textContent = `${machineCount || 1} conexao online${page ? ' - ' + page : ''}`;
+        info.appendChild(name);
+        info.appendChild(meta);
+
+        btn.appendChild(dot);
+        btn.appendChild(info);
+        if (!isSelf) btn.addEventListener('click', () => _msgAbrirChat(user));
+        el.appendChild(btn);
+      });
+      _msgAtualizarSelecao();
+    }
+
+    async function _msgBuscarMensagens() {
+      const [adminResult, chatResult] = await Promise.allSettled([
+        fetch('/api/user/messages', {
+          method: 'GET',
+          headers: _authHeaders(),
+          cache: 'no-store',
+        }).then(async resp => {
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao buscar mensagens.');
+          return data;
+        }),
+        fetch('/api/user/chat/unread', {
+          method: 'GET',
+          headers: _authHeaders(),
+          cache: 'no-store',
+        }).then(async resp => {
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao buscar chats.');
+          return data;
+        }),
+      ]);
+
+      const adminData = adminResult.status === 'fulfilled' ? adminResult.value : {};
+      const chatData = chatResult.status === 'fulfilled' ? chatResult.value : {};
+      if (adminResult.status === 'rejected' && chatResult.status === 'rejected') {
+        throw adminResult.reason || chatResult.reason || new Error('Erro ao buscar mensagens.');
+      }
+
+      const adminMessages = (Array.isArray(adminData.messages) ? adminData.messages : []).map(item => ({
+        ...item,
+        type: 'admin',
+      }));
+      const chatMessages = (Array.isArray(chatData.conversations) ? chatData.conversations : []).map(item => ({
+        type: 'chat',
+        username: item.username,
+        client_id: item.client_id,
+        name: item.name,
+        unread_count: item.unread_count,
+        last_message: item.last_message,
+        message: item.last_message,
+        created_at: item.created_at,
+        created_ts: item.created_ts,
+      }));
+      const total = Number(adminData.unread_count || adminMessages.length || 0) + Number(chatData.unread_count || 0);
+      _msgSetBadge(total);
+      return [...chatMessages, ...adminMessages];
+    }
+
+    async function _msgBuscarUsuariosOnline() {
+      try {
+        const resp = await fetch('/api/admin/users/online', {
+          method: 'GET',
+          headers: _authHeaders(),
+          cache: 'no-store',
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
+          return data.users.filter(user => user && user.online);
+        }
+      } catch (_) {}
+
+      if (typeof window.jkBuscarMaquinasOnline === 'function') {
+        const data = await window.jkBuscarMaquinasOnline();
+        const machines = Array.isArray(data && data.machines) ? data.machines : [];
+        if (machines.length) {
+          const userData = _msgUserData();
+          return [{
+            username: _msgUsernameAtual() || 'usuario',
+            name: userData.name || userData.username || 'Usuario atual',
+            client_id: _clientId(),
+            online: true,
+            online_count: machines.length,
+            machines,
+          }];
+        }
+      }
+
+      return [];
+    }
+
+    async function _msgCarregarPainel(silencioso = false) {
+      if (msgCarregando) return;
+      msgCarregando = true;
+      if (!silencioso) _msgSetStatus('Atualizando mensagens e usuarios online...');
+      try {
+        const [msgsResult, usersResult] = await Promise.allSettled([
+          _msgBuscarMensagens(),
+          _msgBuscarUsuariosOnline(),
+        ]);
+        const mensagens = msgsResult.status === 'fulfilled' ? msgsResult.value : [];
+        const usuarios = usersResult.status === 'fulfilled' ? usersResult.value : [];
+        _msgRenderInbox(mensagens);
+        _msgRenderUsuarios(usuarios);
+        if (msgsResult.status === 'rejected') {
+          _msgSetStatus(msgsResult.reason?.message || 'Nao foi possivel buscar mensagens.', true);
+        } else {
+          const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+          _msgSetStatus(`Atualizado ${hora}.`);
+        }
+      } finally {
+        msgCarregando = false;
+      }
+    }
+
+    async function _msgMarcarComoLida(messageId) {
+      const id = String(messageId || '').trim();
+      if (!id) return;
+      try {
+        const resp = await fetch(`/api/user/messages/${encodeURIComponent(id)}/read`, {
+          method: 'POST',
+          headers: _authHeaders(),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao marcar mensagem.');
+        await _msgCarregarPainel(true);
+      } catch (err) {
+        _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel marcar como lida.', true);
+      }
+    }
+
+    async function _msgEnviarMensagem() {
+      const destino = msgUsuarioSelecionado;
+      const textEl = document.getElementById('jk-msg-text');
+      const send = document.getElementById('jk-msg-send');
+      const texto = String(textEl?.value || '').trim();
+      if (!msgChatAberto || !destino || !destino.username) {
+        _msgSetStatus('Abra um chat com um usuario antes de enviar.', true);
+        return;
+      }
+      if (!texto) {
+        _msgSetStatus('Digite a mensagem antes de enviar.', true);
+        return;
+      }
+      if (send) send.disabled = true;
+      _msgSetStatus('Enviando mensagem...');
+      try {
+        const resp = await fetch('/api/user/chat/send', {
+          method: 'POST',
+          headers: _authHeaders(),
+          body: JSON.stringify({
+            username: destino.username,
+            client_id: destino.client_id || _clientId() || 'default',
+            message: texto,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar mensagem.');
+        if (textEl) textEl.value = '';
+        _msgSetStatus(data.message || `Mensagem enviada para ${_msgLabelUsuario(destino)}.`);
+        await _msgCarregarHistorico(true);
+        await _msgCarregarPainel(true);
+      } catch (err) {
+        _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel enviar mensagem.', true);
+      } finally {
+        _msgAtualizarSelecao();
+      }
+    }
+
+    function _msgIniciarAtualizacao() {
+      if (!msgRefreshTimer) {
+        msgRefreshTimer = setInterval(() => {
+          if (msgPanelAberto) {
+            void _msgCarregarPainel(true);
+            if (msgChatAberto) void _msgCarregarHistorico(true);
+          }
+          else void _msgBuscarMensagens().catch(() => {});
+        }, 45000);
+      }
+    }
 
     // Carregar ou criar conversa inicial
     async function carregarOuCriarConversa() {
@@ -1539,10 +2077,42 @@
       await renderConvsList();
     }
 
+    function atualizarMenuLateral() {
+      document.getElementById('jk-ia-fab')?.classList.toggle('ativo', panelAberto);
+      document.getElementById('jk-msg-fab')?.classList.toggle('ativo', msgPanelAberto);
+      document.getElementById('jk-right-sidebar-hotspot')?.classList.remove('menu-aberto');
+      _sidebarAtualizarAlertas();
+    }
+
+    function setIAPanelAberto(aberto) {
+      panelAberto = !!aberto;
+      if (panelAberto) iaTemMensagemNaoVista = false;
+      document.getElementById('jk-ia-panel')?.classList.toggle('aberto', panelAberto);
+      atualizarMenuLateral();
+    }
+
+    function setMsgPanelAberto(aberto) {
+      msgPanelAberto = !!aberto;
+      if (msgPanelAberto) msgTemMensagemNaoVista = false;
+      document.getElementById('jk-msg-panel')?.classList.toggle('aberto', msgPanelAberto);
+      atualizarMenuLateral();
+      if (msgPanelAberto) {
+        _msgIniciarAtualizacao();
+        void _msgCarregarPainel();
+        if (msgChatAberto) void _msgCarregarHistorico(true);
+      }
+    }
+
     function togglePanel(forcar) {
-      panelAberto = forcar !== undefined ? forcar : !panelAberto;
-      document.getElementById('jk-ia-panel').classList.toggle('aberto', panelAberto);
-      document.getElementById('jk-ia-fab').textContent = panelAberto ? '✕' : '🤖';
+      const abrir = forcar !== undefined ? !!forcar : !panelAberto;
+      if (abrir) setMsgPanelAberto(false);
+      setIAPanelAberto(abrir);
+    }
+
+    function toggleMsgPanel(forcar) {
+      const abrir = forcar !== undefined ? !!forcar : !msgPanelAberto;
+      if (abrir) setIAPanelAberto(false);
+      setMsgPanelAberto(abrir);
     }
 
     /* ── Anexos ── */
@@ -1770,6 +2340,7 @@
           await salvarMensagensAtuais();
           if (convsVisible) await renderConvsList();
           document.getElementById('jk-ia-msgs').scrollTop = 99999;
+          _iaAvisarMensagemRecebida();
           return;
         }
       } catch (err) {
@@ -1778,6 +2349,7 @@
         aguardando.classList.remove('loading');
         mensagensAtuais.push({ role: 'assistant', text: respostaLocal });
         await salvarMensagensAtuais();
+        _iaAvisarMensagemRecebida();
         return;
       }
 
@@ -1827,11 +2399,17 @@
       await salvarMensagensAtuais();
       if (convsVisible) await renderConvsList();
       document.getElementById('jk-ia-msgs').scrollTop = 99999;
+      _iaAvisarMensagemRecebida();
     }
 
     /* ── Eventos ── */
     document.getElementById('jk-ia-fab').addEventListener('click', () => togglePanel());
+    document.getElementById('jk-msg-fab').addEventListener('click', () => toggleMsgPanel());
     document.getElementById('jk-ia-btn-fechar').addEventListener('click', () => togglePanel(false));
+    document.getElementById('jk-msg-btn-fechar').addEventListener('click', () => toggleMsgPanel(false));
+    document.getElementById('jk-msg-btn-refresh').addEventListener('click', () => _msgCarregarPainel());
+    document.getElementById('jk-msg-send').addEventListener('click', () => _msgEnviarMensagem());
+    document.getElementById('jk-msg-back').addEventListener('click', () => _msgVoltarLista());
     document.getElementById('jk-ia-btn-nova').addEventListener('click', () => { mostrarChat(); void novaConversa(); });
     document.getElementById('jk-ia-btn-historico').addEventListener('click', () => convsVisible ? mostrarChat() : mostrarConvs());
     document.getElementById('jk-ia-send').addEventListener('click', () => enviar());
@@ -1864,9 +2442,17 @@
       _carregarModelosRemotos(_modelSelSidebar, 'ia_model_sidebar').catch(() => {});
     }
     // Fechar painel ao clicar fora
+    _msgAtualizarSelecao();
+    _msgIniciarAtualizacao();
+    void _msgBuscarMensagens().catch(() => {});
+
     document.addEventListener('click', e => {
-      if (panelAberto && !document.getElementById('jk-ia-panel').contains(e.target) && e.target.id !== 'jk-ia-fab')
-        togglePanel(false);
+      const alvo = e.target;
+      const menu = alvo && alvo.closest ? alvo.closest('#jk-right-sidebar-hotspot') : null;
+      const iaPanel = document.getElementById('jk-ia-panel');
+      const msgPanel = document.getElementById('jk-msg-panel');
+      if (panelAberto && iaPanel && !iaPanel.contains(alvo) && !menu) togglePanel(false);
+      if (msgPanelAberto && msgPanel && !msgPanel.contains(alvo) && !menu) toggleMsgPanel(false);
     }, true);
 
     carregarOuCriarConversa().catch(console.error);

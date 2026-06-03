@@ -139,6 +139,7 @@ FIREBASE_AUTH_DB = None
 FIREBASE_AUTH_LAST_ERROR = ""
 MACHINE_PRESENCE_LOCK = threading.RLock()
 ADMIN_MESSAGES_LOCK = threading.RLock()
+USER_CHAT_MESSAGES_LOCK = threading.RLock()
 SHARED_SYNC_USER_LINKS_LOCK = threading.RLock()
 # Jobs de sincronizaÃƒÂ§ÃƒÂ£o de NCM no Cadastro por tarefa
 SYNC_NCM_JOBS = {}
@@ -334,6 +335,7 @@ ARQUIVO_AUTH_DB = os.path.join(PASTA_INFO, "auth_users.db")
 ARQUIVO_FIREBASE_SERVICE_ACCOUNT = os.path.join(PASTA_INFO, "firebase-service-account.json")
 ARQUIVO_MACHINE_PRESENCE = os.path.join(PASTA_INFO, "machine_presence.json")
 ARQUIVO_ADMIN_MESSAGES = os.path.join(PASTA_INFO, "admin_messages.json")
+ARQUIVO_USER_CHAT_MESSAGES = os.path.join(PASTA_INFO, "user_chat_messages.json")
 ARQUIVO_SHARED_SYNC_USER_INVITES = os.path.join(PASTA_INFO, "shared_sync_user_invites.json")
 ARQUIVO_SHARED_SYNC_USER_LINKS = os.path.join(PASTA_INFO, "shared_sync_user_links.json")
 ARQUIVO_CONFIG_GLOBAIS = os.path.join(PASTA_INFO, "configuracoes_globais.json")
@@ -864,6 +866,11 @@ class AdminUserMessageRequest(BaseModel):
     username: str
     client_id: Optional[str] = None
     title: Optional[str] = ""
+    message: str
+
+class UserChatMessageRequest(BaseModel):
+    username: str
+    client_id: Optional[str] = None
     message: str
 
 class MachinePresenceHeartbeatRequest(BaseModel):
@@ -3038,10 +3045,30 @@ def _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id: str):
 def _promo_status_item_promocao(entry: Any) -> str:
     if not isinstance(entry, dict):
         return ""
-    status = entry.get("status") or entry.get("status_item") or entry.get("statusItem")
+    status = (
+        entry.get("_jk_status_item_consultado")
+        or entry.get("status")
+        or entry.get("status_item")
+        or entry.get("statusItem")
+    )
     if isinstance(status, dict):
         status = status.get("id") or status.get("name") or status.get("status")
     return str(status or "").strip().lower()
+
+
+def _promo_prioridade_status_item(entry: Any) -> int:
+    status = _promo_status_item_promocao(entry)
+    return {
+        "pending": 60,
+        "programmed": 60,
+        "programada": 60,
+        "scheduled": 60,
+        "started": 50,
+        "active": 50,
+        "approved": 45,
+        "candidate": 20,
+        "eligible": 10,
+    }.get(status, 0)
 
 
 def _promo_entry_item_id(entry: Any) -> str:
@@ -20400,6 +20427,176 @@ def _admin_messages_mark_read(message_id: str, username: str, client_id: str) ->
     return atualizado
 
 
+def _user_chat_norm_username(username: str) -> str:
+    return str(username or "").strip().lower()
+
+
+def _user_chat_norm_client(client_id: str) -> str:
+    return str(client_id or "default").strip() or "default"
+
+
+def _user_chat_user_name(username: str) -> str:
+    username_norm = _user_chat_norm_username(username)
+    if not username_norm:
+        return "Usuario"
+    try:
+        usuario = _obter_usuario_sql(username_norm)
+        return str(usuario.get("name") or usuario.get("username") or username_norm).strip() or username_norm
+    except Exception:
+        return username_norm
+
+
+def _user_chat_local_read() -> list[dict]:
+    with USER_CHAT_MESSAGES_LOCK:
+        try:
+            if not os.path.exists(ARQUIVO_USER_CHAT_MESSAGES):
+                return []
+            with open(ARQUIVO_USER_CHAT_MESSAGES, "r", encoding="utf-8") as arquivo:
+                data = json.load(arquivo)
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao ler historico local: %s", exc)
+            return []
+
+
+def _user_chat_local_write(messages: list[dict]) -> None:
+    with USER_CHAT_MESSAGES_LOCK:
+        try:
+            os.makedirs(os.path.dirname(ARQUIVO_USER_CHAT_MESSAGES), exist_ok=True)
+            itens = [m for m in (messages or []) if isinstance(m, dict)]
+            itens.sort(key=lambda item: int(float(item.get("created_ts") or 0)), reverse=True)
+            itens = itens[:5000]
+            tmp = ARQUIVO_USER_CHAT_MESSAGES + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as arquivo:
+                json.dump(itens, arquivo, ensure_ascii=False, indent=2)
+            os.replace(tmp, ARQUIVO_USER_CHAT_MESSAGES)
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao salvar historico local: %s", exc)
+
+
+def _user_chat_public(message: dict) -> dict:
+    item = message if isinstance(message, dict) else {}
+    return {
+        "id": str(item.get("id") or ""),
+        "sender_username": _user_chat_norm_username(item.get("sender_username") or ""),
+        "sender_client_id": _user_chat_norm_client(item.get("sender_client_id") or "default"),
+        "recipient_username": _user_chat_norm_username(item.get("recipient_username") or ""),
+        "recipient_client_id": _user_chat_norm_client(item.get("recipient_client_id") or "default"),
+        "message": str(item.get("message") or "").strip(),
+        "created_at": str(item.get("created_at") or ""),
+        "created_ts": int(float(item.get("created_ts") or 0)),
+        "read_at": str(item.get("read_at") or ""),
+        "read_ts": int(float(item.get("read_ts") or 0)),
+    }
+
+
+def _user_chat_is_between(message: dict, username: str, client_id: str, other_username: str, other_client_id: str) -> bool:
+    item = _user_chat_public(message)
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+    ida = (
+        item.get("sender_username") == username
+        and item.get("sender_client_id") == client_id
+        and item.get("recipient_username") == other_username
+        and item.get("recipient_client_id") == other_client_id
+    )
+    volta = (
+        item.get("sender_username") == other_username
+        and item.get("sender_client_id") == other_client_id
+        and item.get("recipient_username") == username
+        and item.get("recipient_client_id") == client_id
+    )
+    return ida or volta
+
+
+def _user_chat_save(message: dict) -> dict:
+    item = _user_chat_public(message)
+    if not item.get("id"):
+        item["id"] = uuid.uuid4().hex
+    if not item.get("created_ts"):
+        item["created_ts"] = int(time.time())
+    if not item.get("created_at"):
+        item["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    local = _user_chat_local_read()
+    local = [m for m in local if str((m or {}).get("id") or "") != item["id"]]
+    local.append(item)
+    _user_chat_local_write(local)
+    return item
+
+
+def _user_chat_mark_read_between(username: str, client_id: str, other_username: str, other_client_id: str) -> None:
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+    agora_ts = int(time.time())
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    alterou = False
+    local = _user_chat_local_read()
+    for item in local:
+        public = _user_chat_public(item)
+        if (
+            public.get("sender_username") == other_username
+            and public.get("sender_client_id") == other_client_id
+            and public.get("recipient_username") == username
+            and public.get("recipient_client_id") == client_id
+            and not public.get("read_at")
+        ):
+            item["read_at"] = agora
+            item["read_ts"] = agora_ts
+            alterou = True
+    if alterou:
+        _user_chat_local_write(local)
+
+
+def _user_chat_history(username: str, client_id: str, other_username: str, other_client_id: str, limit: int = 80) -> list[dict]:
+    limit = max(1, min(int(limit or 80), 200))
+    mensagens = [
+        _user_chat_public(item)
+        for item in _user_chat_local_read()
+        if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
+    ]
+    mensagens.sort(key=lambda item: int(item.get("created_ts") or 0))
+    return mensagens[-limit:]
+
+
+def _user_chat_unread_conversations(username: str, client_id: str) -> list[dict]:
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    grupos = {}
+    for item in _user_chat_local_read():
+        public = _user_chat_public(item)
+        if (
+            public.get("recipient_username") != username
+            or public.get("recipient_client_id") != client_id
+            or public.get("read_at")
+        ):
+            continue
+        chave = (public.get("sender_username"), public.get("sender_client_id"))
+        grupo = grupos.setdefault(chave, {"unread_count": 0, "last": None})
+        grupo["unread_count"] += 1
+        if not grupo["last"] or int(public.get("created_ts") or 0) > int((grupo["last"] or {}).get("created_ts") or 0):
+            grupo["last"] = public
+
+    conversas = []
+    for (sender_username, sender_client_id), grupo in grupos.items():
+        last = grupo.get("last") or {}
+        conversas.append({
+            "username": sender_username,
+            "client_id": sender_client_id,
+            "name": _user_chat_user_name(sender_username),
+            "last_message": last.get("message") or "",
+            "created_at": last.get("created_at") or "",
+            "created_ts": int(last.get("created_ts") or 0),
+            "unread_count": int(grupo.get("unread_count") or 0),
+        })
+    conversas.sort(key=lambda item: int(item.get("created_ts") or 0), reverse=True)
+    return conversas
+
+
 SHARED_SYNC_SCOPES = {
     "cadastro": {
         "label": "Cadastro",
@@ -24227,6 +24424,77 @@ def user_machines_online(
         "all_recent_machines": maquinas[:20],
         "online_timeout_seconds": _machine_presence_timeout_seconds(),
         "backend": "firebase" if _firebase_deve_usar() else "local",
+    }
+
+
+@app.get("/api/user/chat/unread")
+def user_chat_unread(authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    conversas = _user_chat_unread_conversations(sessao["username"], sessao["client_id"])
+    return {
+        "success": True,
+        "conversations": conversas,
+        "unread_count": sum(int(item.get("unread_count") or 0) for item in conversas),
+    }
+
+
+@app.get("/api/user/chat/history")
+def user_chat_history(
+    username: str,
+    client_id: Optional[str] = None,
+    limit: Optional[int] = 80,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    other_username = _user_chat_norm_username(username)
+    if not other_username:
+        raise HTTPException(status_code=400, detail="Informe o usuario da conversa.")
+    other_client_id = _user_chat_norm_client(client_id or sessao["client_id"])
+    _user_chat_mark_read_between(sessao["username"], sessao["client_id"], other_username, other_client_id)
+    mensagens = _user_chat_history(sessao["username"], sessao["client_id"], other_username, other_client_id, limit or 80)
+    return {
+        "success": True,
+        "current_user": sessao["username"],
+        "current_client_id": sessao["client_id"],
+        "other_user": other_username,
+        "other_client_id": other_client_id,
+        "other_name": _user_chat_user_name(other_username),
+        "messages": mensagens,
+    }
+
+
+@app.post("/api/user/chat/send")
+def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    destino = _user_chat_norm_username(payload.username)
+    texto = str(payload.message or "").strip()
+    if not destino:
+        raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
+    if not texto:
+        raise HTTPException(status_code=400, detail="Informe a mensagem.")
+    if len(texto) > 2000:
+        raise HTTPException(status_code=400, detail="A mensagem deve ter no maximo 2000 caracteres.")
+    destino_client_id = _user_chat_norm_client(payload.client_id or sessao["client_id"])
+    if destino == sessao["username"] and destino_client_id == sessao["client_id"]:
+        raise HTTPException(status_code=400, detail="Nao e possivel enviar mensagem para voce mesmo.")
+
+    agora_ts = int(time.time())
+    mensagem = _user_chat_save({
+        "id": uuid.uuid4().hex,
+        "sender_username": sessao["username"],
+        "sender_client_id": sessao["client_id"],
+        "recipient_username": destino,
+        "recipient_client_id": destino_client_id,
+        "message": texto,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "created_ts": agora_ts,
+        "read_at": "",
+        "read_ts": 0,
+    })
+    return {
+        "success": True,
+        "message": "Mensagem enviada.",
+        "chat_message": mensagem,
     }
 
 
@@ -28312,6 +28580,114 @@ def _calcular_desconto_ml_valor(
     return None
 
 
+def _ml_extrair_recebivel_promocao_raw(entry: dict):
+    """Extrai o valor que o vendedor recebe quando o payload da promocao ja traz esse campo."""
+    if not isinstance(entry, dict):
+        return None
+
+    chaves_recebivel = {
+        "receives",
+        "receive",
+        "seller_receives",
+        "seller_receive",
+        "seller_net",
+        "net_amount",
+        "net_value",
+        "net_price",
+        "liquid_amount",
+        "liquid_value",
+        "liquido",
+        "valor_liquido",
+    }
+    for caminho, valor in _ml_iterar_campos_payload_limitado(entry, max_depth=6, max_nodes=1200):
+        chave = str(caminho or "").rsplit(".", 1)[-1].strip().lower().replace("-", "_")
+        chave = re.sub(r"[^a-z0-9_]", "", chave)
+        caminho_norm = normalizar_texto(caminho)
+        parece_recebivel = (
+            chave in chaves_recebivel
+            or chave.replace("_", "") in {c.replace("_", "") for c in chaves_recebivel}
+            or "seller_receives" in str(caminho or "").lower()
+            or "seller_receive" in str(caminho or "").lower()
+            or "recebe" in caminho_norm
+            or "valor_liquido" in caminho_norm
+        )
+        if not parece_recebivel:
+            continue
+        numero = _parse_float_flex(valor)
+        if numero is not None and numero > 0:
+            return float(numero)
+    return None
+
+
+def _ml_calcular_recebivel_promocao(
+    raw_promocao: dict,
+    preco_promocional: Any,
+    tarifa_ml: Any,
+    frete_ml: Any,
+    desconto_tarifa_ml: Any = None,
+) -> float | None:
+    """Calcula o valor exibido pelo ML como recebimento do vendedor na promocao."""
+    recebido_api = _ml_extrair_recebivel_promocao_raw(raw_promocao)
+    if recebido_api is not None:
+        return recebido_api
+
+    preco = _to_float_safe(preco_promocional)
+    if preco is None:
+        return None
+    tarifa = _to_float_safe(tarifa_ml) or 0.0
+    frete = _to_float_safe(frete_ml) or 0.0
+    desconto_tarifa = _to_float_safe(desconto_tarifa_ml) or 0.0
+    recebido = float(preco) - float(tarifa) - float(frete) + float(desconto_tarifa)
+    if recebido > 0:
+        return round(recebido, 2)
+    return None
+
+
+def _ml_ajustar_desconto_tarifa_recebivel_promocao(
+    raw_promocao: dict,
+    desconto_tarifa_ml: Any = None,
+    preco_promocional: Any = None,
+    pct_desconto_campanha: Any = None,
+) -> float | None:
+    """Ajusta a reducao de tarifa usada no recebivel mostrado pelo ML."""
+    desconto_atual = _to_float_safe(desconto_tarifa_ml)
+
+    desconto_explicito = _ml_extrair_valor_desconto_taxa_promocao_raw(raw_promocao)
+    if desconto_explicito is not None and desconto_explicito > 0:
+        return round(float(desconto_explicito), 2)
+
+    if not isinstance(raw_promocao, dict):
+        return desconto_atual
+
+    meli_pct = _parse_float_flex(raw_promocao.get("meli_percentage"))
+    pct_total = _to_float_safe(pct_desconto_campanha)
+    preco_promo = _to_float_safe(preco_promocional)
+    preco_original = (
+        _parse_float_flex(raw_promocao.get("original_price"))
+        or _parse_float_flex(raw_promocao.get("base_price"))
+        or _parse_float_flex(raw_promocao.get("standard_price"))
+    )
+    if (
+        meli_pct is not None
+        and meli_pct > 0
+        and pct_total is not None
+        and pct_total > 0
+        and preco_original is not None
+        and preco_promo is not None
+        and float(preco_original) > float(preco_promo)
+    ):
+        desconto_total_valor = float(preco_original) - float(preco_promo)
+        candidato = round(desconto_total_valor * (float(meli_pct) / float(pct_total)), 2)
+        if candidato > 0:
+            if desconto_atual is None:
+                return candidato
+            tolerancia = max(0.5, abs(candidato) * 0.25)
+            if abs(float(desconto_atual) - candidato) <= tolerancia:
+                return candidato
+
+    return desconto_atual
+
+
 def _flag_frete_gratis(valor: Any) -> bool:
     txt = str(valor or "").strip().lower()
     if not txt:
@@ -28460,6 +28836,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
     for item in dados_analise or []:
         preco_final = _to_float_safe(item.get('M 21 Fixa'))
         preco_final_ml = _to_float_safe(item.get('M ML'))
+        preco_final_ml_display = _to_float_safe(item.get('preco_final_ml_display') or item.get('recebe_ml'))
         custo = _to_float_safe(item.get('Custo'))
         taxa_pct = _to_rate_safe(item.get('%'))
         imposto_pct_rate = _to_rate_safe(item.get('Imposto %', item.get('Imposto', '')))
@@ -28469,9 +28846,17 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
         preco_final_base = _to_float_safe(item.get('PreÃ§o Final'))
         if preco_final_base is not None:
             preco_final = preco_final_base
-        preco_final_ml_base = _to_float_safe(item.get('PreÃ§o Final ML'))
+        preco_final_ml_base = _to_float_safe(
+            item.get('deal_price')
+            or item.get('preco_promocional_ml')
+            or item.get('PreÃ§o Promocional ML')
+        )
+        if preco_final_ml_base is None:
+            preco_final_ml_base = _to_float_safe(item.get('PreÃ§o Final ML'))
         if preco_final_ml_base is not None:
             preco_final_ml = preco_final_ml_base
+        if preco_final_ml_display is None:
+            preco_final_ml_display = _to_float_safe(item.get('PreÃ§o Final ML'))
 
         frete_base = item.get('Frete', '')
         frete_ml = item.get('Frete ML', frete_base)
@@ -28579,7 +28964,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
             'Imposto %': _format_pct_br(imposto_pct_rate * 100.0) if imposto_pct_rate is not None else item.get('Imposto %', item.get('Imposto', '')),
             'Imposto': formatar_moeda_br(imposto_valor) if imposto_valor is not None else item.get('Imposto', ''),
             'Imposto Fixa': item.get('Imposto Fixa', formatar_moeda_br(imposto_valor) if imposto_valor is not None else item.get('Imposto', '')),
-            'PreÃ§o Final ML': formatar_moeda_br(preco_final_ml) if preco_final_ml is not None else item.get('PreÃ§o Final ML', item.get('M ML', '')),
+            'PreÃ§o Final ML': formatar_moeda_br(preco_final_ml_display) if preco_final_ml_display is not None else (formatar_moeda_br(preco_final_ml) if preco_final_ml is not None else item.get('PreÃ§o Final ML', item.get('M ML', ''))),
             'Imposto ML': formatar_moeda_br(imposto_ml_valor) if imposto_ml_valor is not None else item.get('Imposto ML', ''),
             'Desconto ML': formatar_moeda_br(desconto_ml_val) if desconto_ml_val is not None else item.get('Desconto ML', item.get('Desconto', '')),
             'Valor LÃ­quido': formatar_moeda_br(valor_liquido) if valor_liquido is not None else item.get('Valor LÃ­quido', ''),
@@ -28985,7 +29370,7 @@ def _ml_parse_percentual_promocao_texto(valor):
 
 
 def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
-    """Extrai o percentual sugerido/ofertado pela campanha ML, sem usar desconto total do preco como primeira opcao."""
+    """Extrai o percentual total sugerido/ofertado pela campanha ML."""
     if not isinstance(entry, dict):
         return None
 
@@ -29037,7 +29422,41 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
             return None
         pct = ((float(base_num) - float(preco_num)) / float(base_num)) * 100.0
         if 0 < pct <= 100:
+            inteiro = round(pct)
+            if abs(pct - inteiro) <= 0.25:
+                return float(inteiro)
             return pct
+        return None
+
+    def _preco_base_campanha():
+        for valor in (
+            entry.get("original_price"),
+            entry.get("regular_price"),
+            entry.get("base_price"),
+            entry.get("standard_price"),
+            preco_base,
+        ):
+            numero = _parse_float_flex(valor)
+            if numero is not None and numero > 0:
+                return numero
+        return None
+
+    def _soma_percentuais_componentes():
+        seller_pct = _percentual_valido(
+            entry.get("seller_percentage")
+            if entry.get("seller_percentage") is not None
+            else entry.get("seller_discount_percentage")
+        )
+        meli_pct = _percentual_valido(
+            entry.get("meli_percentage")
+            if entry.get("meli_percentage") is not None
+            else entry.get("meli_discount_percentage")
+        )
+        if seller_pct is None and meli_pct is None:
+            return None
+        soma = float(seller_pct or 0.0) + float(meli_pct or 0.0)
+        if 0 < soma <= 100:
+            return soma
         return None
 
     chaves_seller_pct = {
@@ -29046,6 +29465,13 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
         "seller_discount_percent",
         "sellerpercentage",
         "sellerdiscountpercentage",
+    }
+    chaves_meli_pct = {
+        "meli_percentage",
+        "meli_discount_percentage",
+        "meli_discount_percent",
+        "melipercentage",
+        "melidiscountpercentage",
     }
     chaves_sugeridas_pct = {
         "suggested_discount_percentage",
@@ -29078,6 +29504,11 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
         "discount_value",
     }
     chaves_preco_sugerido = {
+        "price",
+        "deal_price",
+        "promotion_price",
+        "final_price",
+        "discounted_price",
         "suggested_discounted_price",
         "suggested_price",
         "suggested_deal_price",
@@ -29087,15 +29518,19 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
     }
 
     seller_direto = []
+    meli_direto = []
     sugerido_direto = []
     direto_pct = []
     valor_desconto = []
     preco_sugerido = []
+    preco_base_item = _preco_base_campanha()
 
     for chave, valor in entry.items():
         chave_norm = _normalizar_chave(chave)
         if chave_norm in chaves_seller_pct:
             seller_direto.append(valor)
+        elif chave_norm in chaves_meli_pct:
+            meli_direto.append(valor)
         elif chave_norm in chaves_sugeridas_pct:
             sugerido_direto.append(valor)
         elif chave_norm in chaves_diretas_pct:
@@ -29106,6 +29541,7 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
             preco_sugerido.append(valor)
 
     seller_payload = []
+    meli_payload = []
     sugerido_payload = []
     direto_payload = []
     valor_payload = []
@@ -29120,6 +29556,9 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
         tem_percentual = "percent" in caminho_norm or "percentage" in caminho_norm or chave_norm.endswith("_pct")
         if chave_norm in chaves_seller_pct or ("seller" in caminho_norm and tem_percentual):
             seller_payload.append(valor)
+            continue
+        if chave_norm in chaves_meli_pct or ("meli" in caminho_norm and tem_percentual):
+            meli_payload.append(valor)
             continue
         if chave_norm in chaves_sugeridas_pct or (tem_percentual and any(t in caminho_norm for t in ("suggest", "recommend", "campaign", "deal", "offer"))):
             sugerido_payload.append(valor)
@@ -29136,20 +29575,36 @@ def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
         if chave_norm in chaves_preco_sugerido:
             preco_payload.append(valor)
 
-    for grupo in (seller_direto, seller_payload, sugerido_direto, sugerido_payload, direto_pct, direto_payload):
+    for grupo in (sugerido_direto, sugerido_payload, direto_pct, direto_payload):
         pct = _primeiro_percentual(grupo)
         if pct is not None:
             return pct
 
-    for grupo in (valor_desconto, valor_payload):
+    for grupo in (preco_sugerido, preco_payload):
         for valor in grupo:
-            pct = _percentual_por_valor(valor, preco_base)
+            pct = _percentual_por_preco(valor, preco_base_item)
             if pct is not None:
                 return pct
 
-    for grupo in (preco_sugerido, preco_payload):
+    componentes = _soma_percentuais_componentes()
+    if componentes is not None:
+        return componentes
+
+    meli_pct = _primeiro_percentual(meli_direto) or _primeiro_percentual(meli_payload)
+    seller_pct = _primeiro_percentual(seller_direto) or _primeiro_percentual(seller_payload)
+    if meli_pct is not None and seller_pct is not None:
+        soma = float(meli_pct) + float(seller_pct)
+        if 0 < soma <= 100:
+            return soma
+
+    if seller_pct is not None:
+        return seller_pct
+    if meli_pct is not None:
+        return meli_pct
+
+    for grupo in (valor_desconto, valor_payload):
         for valor in grupo:
-            pct = _percentual_por_preco(valor, preco_base)
+            pct = _percentual_por_valor(valor, preco_base_item)
             if pct is not None:
                 return pct
 
@@ -29252,16 +29707,16 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
         f"https://api.mercadolibre.com/seller-promotions/promotions/{campaign_id}/items",
     ]
     consultas_status = [
-        ("status_item", "candidate"),
-        ("status", "candidate"),
-        ("status_item", "eligible"),
-        ("status", "eligible"),
         ("status_item", "pending"),
         ("status", "pending"),
         ("status_item", "started"),
         ("status", "started"),
         ("status_item", "active"),
         ("status", "active"),
+        ("status_item", "candidate"),
+        ("status", "candidate"),
+        ("status_item", "eligible"),
+        ("status", "eligible"),
         ("", ""),
     ]
     for status_param, status_item in consultas_status:
@@ -29947,7 +30402,15 @@ def _ml_listar_itens_promocao_com_raw(
     ])
 
     for promo_url_tpl in promo_url_tpls:
-        endpoint_status_active = "status_item=active" in promo_url_tpl
+        params_url_tpl = parse_qs(urlparse(promo_url_tpl).query)
+        status_consultado = ""
+        status_param_consultado = ""
+        if params_url_tpl.get("status_item"):
+            status_consultado = str((params_url_tpl.get("status_item") or [""])[0] or "").strip()
+            status_param_consultado = "status_item"
+        elif params_url_tpl.get("status"):
+            status_consultado = str((params_url_tpl.get("status") or [""])[0] or "").strip()
+            status_param_consultado = "status"
         offset = 0
         limit = 50
         encontrou_endpoint = False
@@ -30019,9 +30482,10 @@ def _ml_listar_itens_promocao_com_raw(
                         or ""
                     ).strip()
                     if item_id:
-                        if endpoint_status_active:
+                        if status_consultado:
                             entry = dict(entry)
-                            entry["_jk_status_item_consultado"] = "active"
+                            entry["_jk_status_item_consultado"] = status_consultado
+                            entry["_jk_status_param_consultado"] = status_param_consultado
                         raw_por_item[item_id] = entry
                 else:
                     item_id = str(entry or "").strip()
@@ -30139,12 +30603,12 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
     progress_callback: Optional[Callable[[str], None]] = None,
 ):
     consultas = [
-        {"status_promocao": "", "status_item_preferencial": ""},
-        {"status_promocao": "", "status_item_preferencial": "active"},
+        {"status_promocao": "pending", "status_item_preferencial": ""},
         {"status_promocao": "started", "status_item_preferencial": ""},
+        {"status_promocao": "", "status_item_preferencial": "active"},
+        {"status_promocao": "", "status_item_preferencial": ""},
         {"status_promocao": "candidate", "status_item_preferencial": ""},
         {"status_promocao": "eligible", "status_item_preferencial": ""},
-        {"status_promocao": "pending", "status_item_preferencial": ""},
     ]
     ids = []
     raw_total = {}
@@ -30169,7 +30633,9 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
         for item_id, raw in (raw_por_item or {}).items():
             item_key = str(item_id or "").strip()
             if item_key:
-                raw_total.setdefault(item_key, raw)
+                raw_atual = raw_total.get(item_key)
+                if not raw_atual or _promo_prioridade_status_item(raw) > _promo_prioridade_status_item(raw_atual):
+                    raw_total[item_key] = raw
         if len(ids) >= max_items:
             break
 
@@ -30208,7 +30674,9 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
         for item_id, raw in (raw_extra or {}).items():
             item_key = str(item_id or "").strip()
             if item_key:
-                raw_total.setdefault(item_key, raw)
+                raw_atual = raw_total.get(item_key)
+                if not raw_atual or _promo_prioridade_status_item(raw) > _promo_prioridade_status_item(raw_atual):
+                    raw_total[item_key] = raw
 
     if not ids:
         return _ml_listar_itens_promocao_com_raw(
@@ -30344,8 +30812,10 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         raw_b_item = raw_b.get(item_id, {})
         if promo_a_type and not raw_a_item:
             raw_a_item, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_a, promo_a_type, item_id)
-        if promo_b_type and not raw_b_item:
-            raw_b_item, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_b, promo_b_type, item_id)
+        if promo_b_type and (not raw_b_item or _promo_status_item_promocao(raw_b_item) in {"candidate", "eligible"}):
+            detalhe_b, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_b, promo_b_type, item_id)
+            if detalhe_b:
+                raw_b_item = detalhe_b
         promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
@@ -30449,6 +30919,19 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_tmp,
         )
+        desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
+            raw_b_item,
+            desconto_tarifa_ml,
+            preco_b,
+            desconto_b,
+        )
+        recebe_ml = _ml_calcular_recebivel_promocao(
+            raw_b_item,
+            preco_b,
+            tarifa_b_tmp,
+            frete_b_val,
+            desconto_tarifa_ml,
+        )
 
         valor_liquido_a = None
         valor_liquido_b = None
@@ -30502,9 +30985,12 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "% Fixa": _format_pct_br(desconto_a),
             "ML % Campanha": _format_pct_br(desconto_b),
             "PreÃ§o Final": formatar_moeda_br(preco_a),
+            "deal_price": round(float(preco_b), 2) if preco_b is not None else None,
+            "preco_promocional_ml": round(float(preco_b), 2) if preco_b is not None else None,
+            "preco_final_ml_display": recebe_ml,
             "Imposto %": _format_pct_br(imposto_rate * 100.0) if imposto_rate is not None else "",
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
-            "PreÃ§o Final ML": formatar_moeda_br(preco_b),
+            "PreÃ§o Final ML": formatar_moeda_br(recebe_ml) if recebe_ml is not None else formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
             "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
@@ -30563,6 +31049,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         meta_por_linha[chave] = {
             "offer_id": str(item.get("offer_id") or "").strip(),
             "promotion_type": str(item.get("promotion_type") or "").strip(),
+            "deal_price": _parse_float_flex(item.get("deal_price") or item.get("preco_promocional_ml")),
         }
     for row in dados_payload:
         row['Frete Gratis'] = row.get('Frete GrÃ¡tis', '')
@@ -30572,6 +31059,8 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             row["offer_id"] = meta["offer_id"]
         if meta.get("promotion_type"):
             row["promotion_type"] = meta["promotion_type"]
+        if meta.get("deal_price") is not None:
+            row["deal_price"] = meta["deal_price"]
     return {
         "success": True,
         "mode": "api_comparacao_promocoes",
@@ -30685,9 +31174,9 @@ async def analisar_promo_via_api_sem_arquivos(
 
         raw_b_item = raw_b.get(item_id, {}) if isinstance(raw_b, dict) else {}
         cfg_local = dict(cfg)
-        if promo_meta.get("promo_b_type") and not raw_b_item:
+        if promo_meta.get("promo_b_type") and (not raw_b_item or _promo_status_item_promocao(raw_b_item) in {"candidate", "eligible"}):
             try:
-                raw_b_item, cfg_local = _ml_obter_item_promocao_raw(
+                detalhe_b, cfg_local = _ml_obter_item_promocao_raw(
                     client_id,
                     loja,
                     cfg_local,
@@ -30695,8 +31184,11 @@ async def analisar_promo_via_api_sem_arquivos(
                     promo_meta.get("promo_b_type") or "",
                     item_id,
                 )
+                if detalhe_b:
+                    raw_b_item = detalhe_b
             except Exception:
-                raw_b_item = {}
+                if not raw_b_item:
+                    raw_b_item = {}
 
         raw_a_item = raw_a.get(item_id, {}) if isinstance(raw_a, dict) else {}
         if promo_a_type and not raw_a_item:
@@ -30854,6 +31346,19 @@ async def analisar_promo_via_api_sem_arquivos(
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_val,
         )
+        desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
+            raw_b_item,
+            desconto_tarifa_ml,
+            preco_b,
+            desconto_b,
+        )
+        recebe_ml = _ml_calcular_recebivel_promocao(
+            raw_b_item,
+            preco_b,
+            tarifa_b_val,
+            frete_b_val,
+            desconto_tarifa_ml,
+        )
         imposto_a = (preco_a * imposto_rate) if (imposto_rate is not None and preco_a is not None) else None
         imposto_b = (preco_b * imposto_rate) if imposto_rate is not None else None
         valor_liquido_a = None
@@ -30909,9 +31414,12 @@ async def analisar_promo_via_api_sem_arquivos(
             "% Fixa": _format_pct_br(desconto_a) if preco_a is not None else "",
             "ML % Campanha": _format_pct_br(desconto_b),
             "PreÃ§o Final": formatar_moeda_br(preco_a) if preco_a is not None else "",
+            "deal_price": round(float(preco_b), 2) if preco_b is not None else None,
+            "preco_promocional_ml": round(float(preco_b), 2) if preco_b is not None else None,
+            "preco_final_ml_display": recebe_ml,
             "Imposto %": _format_pct_br(imposto_rate * 100.0) if imposto_rate is not None else "",
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
-            "PreÃ§o Final ML": formatar_moeda_br(preco_b),
+            "PreÃ§o Final ML": formatar_moeda_br(recebe_ml) if recebe_ml is not None else formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
             "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
@@ -31080,6 +31588,7 @@ async def analisar_promo_via_api_sem_arquivos(
             str(item.get("MLB") or "").strip(): {
                 "offer_id": str(item.get("offer_id") or "").strip(),
                 "promotion_type": str(item.get("promotion_type") or "").strip(),
+                "deal_price": _parse_float_flex(item.get("deal_price") or item.get("preco_promocional_ml")),
             }
             for item in linhas
             if str(item.get("MLB") or "").strip()
@@ -31092,6 +31601,8 @@ async def analisar_promo_via_api_sem_arquivos(
                 row["offer_id"] = meta["offer_id"]
             if meta.get("promotion_type"):
                 row["promotion_type"] = meta["promotion_type"]
+            if meta.get("deal_price") is not None:
+                row["deal_price"] = meta["deal_price"]
 
         arquivo_nome = f"analise_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])}.xlsx"
         analises.append({
@@ -31432,6 +31943,19 @@ async def analisar_promo_via_api_com_arquivos(
             tarifa_base=tarifa_a_val,
             tarifa_ml=tarifa_b_val,
         )
+        desconto_tarifa_ml = _ml_ajustar_desconto_tarifa_recebivel_promocao(
+            raw_b_item,
+            desconto_tarifa_ml,
+            preco_b,
+            desconto_b,
+        )
+        recebe_ml = _ml_calcular_recebivel_promocao(
+            raw_b_item,
+            preco_b,
+            tarifa_b_val,
+            frete_b_val,
+            desconto_tarifa_ml,
+        )
         imposto_a = (preco_a * imposto_rate) if (imposto_rate is not None and preco_a is not None) else None
         imposto_b = (preco_b * imposto_rate) if imposto_rate is not None else None
         valor_liquido_a = None
@@ -31501,9 +32025,12 @@ async def analisar_promo_via_api_com_arquivos(
             "% Fixa": _format_pct_br(desconto_a) if preco_a is not None else "",
             "ML % Campanha": _format_pct_br(desconto_b),
             "PreÃ§o Final": formatar_moeda_br(preco_a) if preco_a is not None else "",
+            "deal_price": round(float(preco_b), 2) if preco_b is not None else None,
+            "preco_promocional_ml": round(float(preco_b), 2) if preco_b is not None else None,
+            "preco_final_ml_display": recebe_ml,
             "Imposto %": _format_pct_br(imposto_rate * 100.0) if imposto_rate is not None else "",
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
-            "PreÃ§o Final ML": formatar_moeda_br(preco_b),
+            "PreÃ§o Final ML": formatar_moeda_br(recebe_ml) if recebe_ml is not None else formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
             "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
@@ -31562,9 +32089,19 @@ async def analisar_promo_via_api_com_arquivos(
         )
         df_payload = _build_df_planilha_analise_promo(linhas).fillna("")
         dados_payload = df_payload.to_dict(orient="records")
+        meta_por_linha = {
+            str(item.get("MLB") or "").strip(): {
+                "deal_price": _parse_float_flex(item.get("deal_price") or item.get("preco_promocional_ml")),
+            }
+            for item in linhas
+            if str(item.get("MLB") or "").strip()
+        }
         for row in dados_payload:
             row["Frete Gratis"] = row.get("Frete GrÃ¡tis", row.get("Frete Gratis", ""))
             row["Frete Gratis ML"] = row.get("Frete GrÃ¡tis ML", row.get("Frete Gratis ML", ""))
+            meta = meta_por_linha.get(str(row.get("MLB") or "").strip()) or {}
+            if meta.get("deal_price") is not None:
+                row["deal_price"] = meta["deal_price"]
 
         analises.append({
             "promo_b_id": promo_meta["promo_b"],
@@ -31855,7 +32392,7 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
                 continue
             items.append({
                 "item_id": item_id,
-                "deal_price": _parse_float_flex(_promo_automacao_linha_valor(row, ["PreÃ§o Final ML", "Preco Final ML", "PreÃ§o Final PromoÃ§Ã£o 2", "Preco Final Promocao 2"])),
+                "deal_price": _parse_float_flex(_promo_automacao_linha_valor(row, ["deal_price", "preco_promocional_ml", "PreÃ§o Promocional ML", "Preco Promocional ML", "PreÃ§o Final ML", "Preco Final ML", "PreÃ§o Final PromoÃ§Ã£o 2", "Preco Final Promocao 2"])),
                 "discount_percentage": _parse_float_flex(_promo_automacao_linha_valor(row, ["ML % Campanha", "% Fixa", "Desconto ML %", "discount_percentage", "percentual"])),
                 "sku": str(_promo_automacao_linha_valor(row, ["SKU", "sku"]) or "").strip(),
                 "titulo": str(_promo_automacao_linha_valor(row, ["TÃ­tulo", "Titulo", "title"]) or "").strip(),
