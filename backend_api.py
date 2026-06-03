@@ -23063,6 +23063,19 @@ def _shared_sync_filtrar_scopes_entre_clientes(scopes: list[str], item: dict, se
 def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dict:
     scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item, sessao)
     prepare_errors = item.get("prepare_errors") if isinstance(item.get("prepare_errors"), list) else []
+    try:
+        prepare_progress = int(float(item.get("prepare_progress") or 0))
+    except Exception:
+        prepare_progress = 0
+    prepare_progress = max(0, min(100, prepare_progress))
+    try:
+        prepare_done = int(float(item.get("prepare_done") or 0))
+    except Exception:
+        prepare_done = 0
+    try:
+        prepare_total = int(float(item.get("prepare_total") or 0))
+    except Exception:
+        prepare_total = 0
     return {
         "id": item.get("id"),
         "status": item.get("status") or "pending",
@@ -23078,6 +23091,14 @@ def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dic
         "source_keep_synced": bool(item.get("source_keep_synced")),
         "target_keep_synced": bool(item.get("target_keep_synced")),
         "prepare_status": item.get("prepare_status") or "ready",
+        "prepare_progress": prepare_progress,
+        "prepare_done": max(0, prepare_done),
+        "prepare_total": max(0, prepare_total),
+        "prepare_current_scope": item.get("prepare_current_scope") or "",
+        "prepare_current_label": item.get("prepare_current_label") or "",
+        "prepare_message": item.get("prepare_message") or "",
+        "prepare_started_at": item.get("prepare_started_at") or "",
+        "prepare_finished_at": item.get("prepare_finished_at") or "",
         "prepare_errors": prepare_errors[:10],
         "created_at": item.get("created_at") or "",
         "responded_at": item.get("responded_at") or "",
@@ -23275,17 +23296,109 @@ def _shared_sync_exception_message(exc: Exception) -> str:
     return str(exc or "").strip() or "Erro ao preparar dados."
 
 
+def _shared_sync_scope_label(scope: str) -> str:
+    return (SHARED_SYNC_SCOPES.get(scope) or {}).get("label") or str(scope or "")
+
+
+def _shared_sync_save_invite_prepare_progress(
+    invite_id: str,
+    *,
+    status: str = "preparing",
+    done: int = 0,
+    total: int = 0,
+    current_scope: str = "",
+    message: str = "",
+) -> None:
+    try:
+        invite = _shared_sync_get_invite(invite_id)
+    except Exception:
+        return
+    total_int = max(0, int(total or 0))
+    done_int = max(0, min(total_int or done, int(done or 0)))
+    final_status = str(status or "preparing").strip().lower()
+    if final_status in {"ready", "partial", "failed"}:
+        progress = 100
+    elif total_int:
+        progress = int(round((done_int / total_int) * 100))
+    else:
+        progress = 0
+    progress = max(0, min(100, progress))
+    agora = _shared_sync_now_iso()
+    invite["prepare_status"] = final_status
+    invite["prepare_done"] = done_int
+    invite["prepare_total"] = total_int
+    invite["prepare_progress"] = progress
+    invite["prepare_current_scope"] = str(current_scope or "")
+    invite["prepare_current_label"] = _shared_sync_scope_label(current_scope) if current_scope else ""
+    invite["prepare_message"] = str(message or "").strip()
+    invite["updated_at"] = agora
+    invite["updated_ts"] = int(time.time())
+    if final_status == "preparing" and not invite.get("prepare_started_at"):
+        invite["prepare_started_at"] = agora
+    if final_status in {"ready", "partial", "failed"}:
+        invite["prepare_finished_at"] = agora
+    _shared_sync_save_invite(invite)
+
+
+def _shared_sync_mark_invite_prepare_failed(invite_id: str, exc: Exception) -> None:
+    try:
+        invite = _shared_sync_get_invite(invite_id)
+    except Exception:
+        return
+    message = _shared_sync_exception_message(exc)
+    agora = _shared_sync_now_iso()
+    invite["status"] = "failed"
+    invite["prepare_status"] = "failed"
+    invite["prepare_progress"] = 100
+    invite["prepare_message"] = message
+    invite["prepare_finished_at"] = agora
+    invite["prepare_errors"] = [{
+        "scope": str(invite.get("prepare_current_scope") or ""),
+        "label": str(invite.get("prepare_current_label") or "Preparação"),
+        "message": message,
+    }]
+    invite["updated_at"] = agora
+    invite["updated_ts"] = int(time.time())
+    _shared_sync_save_invite(invite)
+
+
 def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, destino: dict, scopes: list[str], machine_id: str = "") -> None:
+    try:
+        _shared_sync_prepare_invite_packages_impl(invite_id, source_sessao, destino, scopes, machine_id)
+    except Exception as exc:
+        logger.exception("[SHARED-SYNC] Erro inesperado ao preparar convite %s: %s", invite_id, exc)
+        _shared_sync_mark_invite_prepare_failed(invite_id, exc)
+
+
+def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dict, destino: dict, scopes: list[str], machine_id: str = "") -> None:
     bundles: dict[str, str] = {}
     results: list[dict] = []
     errors: list[dict] = []
+    scopes = [scope for scope in (scopes or []) if scope in SHARED_SYNC_SCOPES]
+    total = len(scopes)
+    _shared_sync_save_invite_prepare_progress(
+        invite_id,
+        status="preparing",
+        done=0,
+        total=total,
+        message="Iniciando preparação dos dados.",
+    )
     link_id = _shared_sync_link_id_for_pair({
         "source_client_id": source_sessao.get("client_id"),
         "source_username": source_sessao.get("username"),
         "target_client_id": destino.get("client_id"),
         "target_username": destino.get("username"),
     })
-    for scope in scopes:
+    for index, scope in enumerate(scopes, start=1):
+        label = _shared_sync_scope_label(scope)
+        _shared_sync_save_invite_prepare_progress(
+            invite_id,
+            status="preparing",
+            done=index - 1,
+            total=total,
+            current_scope=scope,
+            message=f"Preparando {label}.",
+        )
         try:
             result = _shared_sync_push_pair_scope(source_sessao, destino, scope, machine_id, link_id=link_id, invite_id=invite_id)
             bundles[scope] = result.get("id") or _shared_sync_pair_doc_id(
@@ -23296,13 +23409,29 @@ def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, de
                 scope,
             )
             results.append(result)
+            _shared_sync_save_invite_prepare_progress(
+                invite_id,
+                status="preparing",
+                done=index,
+                total=total,
+                current_scope=scope,
+                message=f"{label} preparado.",
+            )
         except Exception as exc:
             logger.warning("[SHARED-SYNC] Falha ao preparar escopo %s do convite %s: %s", scope, invite_id, exc)
             errors.append({
                 "scope": scope,
-                "label": (SHARED_SYNC_SCOPES.get(scope) or {}).get("label") or scope,
+                "label": label,
                 "message": _shared_sync_exception_message(exc),
             })
+            _shared_sync_save_invite_prepare_progress(
+                invite_id,
+                status="preparing",
+                done=index,
+                total=total,
+                current_scope=scope,
+                message=f"{label} falhou; seguindo para o próximo dado.",
+            )
 
     try:
         invite = _shared_sync_get_invite(invite_id)
@@ -23314,15 +23443,23 @@ def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, de
     invite["directional_bundles"] = {"source_to_target": dict(bundles)}
     invite["prepared_results"] = results
     invite["prepare_errors"] = errors
+    invite["prepare_done"] = total
+    invite["prepare_total"] = total
+    invite["prepare_progress"] = 100
+    invite["prepare_current_scope"] = ""
+    invite["prepare_current_label"] = ""
+    invite["prepare_finished_at"] = agora
     invite["updated_at"] = agora
     invite["updated_ts"] = int(time.time())
     if bundles:
         invite["scopes"] = [scope for scope in scopes if scope in bundles]
         invite["prepare_status"] = "partial" if errors else "ready"
+        invite["prepare_message"] = "Preparação parcial. Alguns dados falharam." if errors else "Dados preparados. Aguardando aceite."
     else:
         invite["status"] = "failed"
         invite["prepare_status"] = "failed"
         invite["scopes"] = scopes
+        invite["prepare_message"] = "Nenhum dado foi preparado. Confira as falhas."
     _shared_sync_save_invite(invite)
 
 
@@ -23484,6 +23621,14 @@ def shared_sync_user_shares_invite(
         pending_invite["source_is_admin"] = bool(pending_invite.get("source_is_admin") or _shared_sync_session_is_admin(sessao))
         pending_invite["source_keep_synced"] = bool(pending_invite.get("source_keep_synced") or payload.keep_synced)
         pending_invite["prepare_status"] = "preparing"
+        pending_invite["prepare_progress"] = 0
+        pending_invite["prepare_done"] = 0
+        pending_invite["prepare_total"] = len(pending_invite.get("scopes") or scopes)
+        pending_invite["prepare_current_scope"] = ""
+        pending_invite["prepare_current_label"] = ""
+        pending_invite["prepare_message"] = "Aguardando início da preparação."
+        pending_invite["prepare_started_at"] = agora
+        pending_invite["prepare_finished_at"] = ""
         pending_invite["prepare_errors"] = []
         pending_invite["updated_at"] = agora
         pending_invite["updated_ts"] = int(time.time())
@@ -23516,6 +23661,14 @@ def shared_sync_user_shares_invite(
         "source_keep_synced": bool(payload.keep_synced),
         "target_keep_synced": False,
         "prepare_status": "preparing",
+        "prepare_progress": 0,
+        "prepare_done": 0,
+        "prepare_total": len(scopes),
+        "prepare_current_scope": "",
+        "prepare_current_label": "",
+        "prepare_message": "Aguardando início da preparação.",
+        "prepare_started_at": agora,
+        "prepare_finished_at": "",
         "prepare_errors": [],
         "created_at": agora,
         "created_ts": int(time.time()),

@@ -340,7 +340,7 @@
             border-radius: 12px;
         }
         .user-share-links-table {
-            min-width: 760px;
+            min-width: 640px;
         }
         .user-share-links-table tbody tr:last-child td {
             border-bottom: 0;
@@ -412,6 +412,168 @@
             color: var(--muted);
             border-radius: 12px;
             padding: 10px;
+        }
+        .user-share-status-balloon {
+            position: fixed;
+            right: 18px;
+            bottom: 18px;
+            z-index: 80;
+            width: min(390px, calc(100vw - 36px));
+            border: 1px solid rgba(79, 172, 254, 0.38);
+            background: rgba(7, 17, 31, 0.96);
+            border-radius: 14px;
+            box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42), 0 0 24px rgba(79, 172, 254, 0.14);
+            color: var(--text);
+            display: none;
+            padding: 12px;
+        }
+        .user-share-status-balloon.is-active { display: block; }
+        .user-share-status-balloon.is-minimized {
+            width: min(330px, calc(100vw - 36px));
+            padding: 10px 11px;
+        }
+        .user-share-status-balloon.is-closed {
+            width: auto;
+            min-width: 0;
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+            padding: 0;
+        }
+        .share-balloon-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        .user-share-status-balloon.is-minimized .share-balloon-head {
+            margin-bottom: 0;
+        }
+        .share-balloon-heading {
+            min-width: 0;
+        }
+        .share-balloon-title {
+            color: #ffffff;
+            font-weight: 850;
+            font-size: 14px;
+        }
+        .share-balloon-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .share-balloon-refresh,
+        .share-balloon-small-btn,
+        .share-balloon-icon-btn {
+            border: 1px solid rgba(79, 172, 254, 0.34);
+            background: rgba(79, 172, 254, 0.12);
+            border-radius: 8px;
+            color: #d8ecff;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 800;
+        }
+        .share-balloon-refresh,
+        .share-balloon-small-btn {
+            padding: 6px 9px;
+        }
+        .share-balloon-icon-btn {
+            align-items: center;
+            display: inline-flex;
+            height: 28px;
+            justify-content: center;
+            padding: 0;
+            width: 28px;
+        }
+        .share-balloon-minimized-line {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .share-balloon-closed {
+            border: 1px solid rgba(79, 172, 254, 0.38);
+            background: rgba(7, 17, 31, 0.96);
+            border-radius: 999px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34), 0 0 18px rgba(79, 172, 254, 0.12);
+            color: #d8ecff;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 850;
+            padding: 9px 13px;
+        }
+        .share-balloon-body {
+            display: grid;
+            gap: 7px;
+        }
+        .share-balloon-row {
+            border: 1px solid rgba(79, 172, 254, 0.18);
+            background: rgba(79, 172, 254, 0.06);
+            border-radius: 10px;
+            padding: 8px 9px;
+        }
+        .share-balloon-row.warn {
+            border-color: rgba(255, 184, 77, 0.50);
+            background: rgba(255, 184, 77, 0.10);
+        }
+        .share-balloon-row.ok {
+            border-color: rgba(51, 195, 125, 0.42);
+            background: rgba(51, 195, 125, 0.10);
+        }
+        .share-balloon-main {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 800;
+        }
+        .share-balloon-detail {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.35;
+            margin-top: 3px;
+        }
+        .share-balloon-progress {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 999px;
+            height: 6px;
+            margin-top: 7px;
+            overflow: hidden;
+        }
+        .share-balloon-progress span {
+            background: linear-gradient(90deg, #4facfe, #33c37d);
+            border-radius: inherit;
+            display: block;
+            height: 100%;
+            transition: width 180ms ease;
+            width: 0%;
+        }
+        .user-share-progress {
+            background: rgba(255, 255, 255, 0.10);
+            border-radius: 999px;
+            height: 5px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .user-share-progress span {
+            background: linear-gradient(90deg, #4facfe, #33c37d);
+            border-radius: inherit;
+            display: block;
+            height: 100%;
+            transition: width 180ms ease;
+        }
+        @media (max-width: 720px) {
+            .user-share-status-balloon {
+                left: 12px;
+                right: 12px;
+                bottom: 12px;
+                width: auto;
+            }
         }
         .admin-only.is-hidden { display: none !important; }
         .table-scroll { overflow: auto; max-height: calc(100vh - 360px); border-radius: 12px; }
@@ -627,6 +789,7 @@
                     </div>
                 </div>
             </section>
+            <div id="userShareStatusBalloon" class="user-share-status-balloon" aria-live="polite"></div>
 
             <section class="module-section admin-only" data-section="usuarios">
                 <div id="messagePanel" class="message-panel hidden">
@@ -863,6 +1026,11 @@
             box.classList.toggle('is-success', !!msg && !erro);
         }
         setStatus(msg, erro);
+    }
+
+    function setUserShareProcesso(nome, percentual, detalhe = '', erro = false) {
+        const pct = Math.max(0, Math.min(100, Math.round(Number(percentual || 0))));
+        setUserShareStatus(`${nome} - ${pct}%${detalhe ? ' | ' + detalhe : ''}`, erro);
     }
 
     function labelBackendUsuarios(backend) {
@@ -1489,6 +1657,223 @@
             : 'Em dia';
     }
 
+    function percentualSeguro(valor, fallback = 0) {
+        const numero = Number(valor);
+        if (!Number.isFinite(numero)) return fallback;
+        return Math.max(0, Math.min(100, Math.round(numero)));
+    }
+
+    function progressoConvite(invite) {
+        return percentualSeguro(invite && invite.prepare_progress, 0);
+    }
+
+    function detalhePreparoConvite(invite) {
+        const mensagem = String(invite && invite.prepare_message || '').trim();
+        const atual = String(invite && invite.prepare_current_label || '').trim();
+        const done = Number(invite && invite.prepare_done || 0);
+        const total = Number(invite && invite.prepare_total || 0);
+        const partes = [];
+        if (mensagem) partes.push(mensagem);
+        else if (atual) partes.push(`Preparando ${atual}.`);
+        if (total > 0) partes.push(`${done}/${total} processo(s) concluído(s).`);
+        return partes.join(' ');
+    }
+
+    function barraProgressoHtml(percentual, classe = 'share-balloon-progress') {
+        const valor = percentualSeguro(percentual, 0);
+        return `<div class="${classe}" aria-label="Progresso ${valor}%"><span style="width:${valor}%"></span></div>`;
+    }
+
+    function primeiroNomeCompartilhamento(item, direcao = '') {
+        const recebido = direcao === 'received' || item.direction === 'received' || item.direction === 'target';
+        const nome = recebido
+            ? (item.source_name || item.source_username)
+            : (item.target_name || item.target_username);
+        const cliente = recebido ? item.source_client_id : item.target_client_id;
+        return `${cliente || ''}${cliente ? ' - ' : ''}${nome || 'usuário'}`.trim();
+    }
+
+    const USER_SHARE_BALLOON_STATE_KEY = 'jk-user-share-balloon-state-v1';
+
+    function lerEstadoBalaoStatusCompartilhamento() {
+        try {
+            const estado = localStorage.getItem(USER_SHARE_BALLOON_STATE_KEY);
+            return ['open', 'minimized', 'closed'].includes(estado) ? estado : 'open';
+        } catch (err) {
+            return 'open';
+        }
+    }
+
+    function salvarEstadoBalaoStatusCompartilhamento(estado) {
+        try {
+            localStorage.setItem(USER_SHARE_BALLOON_STATE_KEY, estado);
+        } catch (err) {
+            // Sem acesso ao localStorage, a escolha vale somente para a tela atual.
+        }
+    }
+
+    function resumoCurtoBalaoStatusCompartilhamento(rows) {
+        const primeira = Array.isArray(rows) && rows.length ? rows[0] : null;
+        if (!primeira) return 'Sem pendências no momento';
+        return primeira.detail || primeira.title || 'Status atualizado';
+    }
+
+    function acoesBalaoStatusCompartilhamento(modo = 'open') {
+        if (modo === 'minimized') {
+            return `
+                <div class="share-balloon-actions">
+                    <button class="share-balloon-small-btn" onclick="abrirBalaoStatusCompartilhamento()" title="Abrir status">Abrir</button>
+                    <button class="share-balloon-icon-btn" onclick="fecharBalaoStatusCompartilhamento()" title="Fechar" aria-label="Fechar">x</button>
+                </div>
+            `;
+        }
+        return `
+            <div class="share-balloon-actions">
+                <button class="share-balloon-refresh" onclick="carregarCompartilhamentoEntreUsuarios()">Atualizar</button>
+                <button class="share-balloon-icon-btn" onclick="minimizarBalaoStatusCompartilhamento()" title="Minimizar" aria-label="Minimizar">-</button>
+                <button class="share-balloon-icon-btn" onclick="fecharBalaoStatusCompartilhamento()" title="Fechar" aria-label="Fechar">x</button>
+            </div>
+        `;
+    }
+
+    function renderizarBalaoStatusCompartilhamento(rows) {
+        const el = document.getElementById('userShareStatusBalloon');
+        if (!el) return;
+        if (!Array.isArray(rows) || !rows.length) {
+            el.className = 'user-share-status-balloon';
+            el.innerHTML = '';
+            return;
+        }
+        const estado = lerEstadoBalaoStatusCompartilhamento();
+        el.className = 'user-share-status-balloon is-active';
+        if (estado === 'closed') {
+            el.classList.add('is-closed');
+            el.innerHTML = `
+                <button class="share-balloon-closed" onclick="abrirBalaoStatusCompartilhamento()" title="Abrir status de sincronização">
+                    Status
+                </button>
+            `;
+            return;
+        }
+        if (estado === 'minimized') {
+            el.classList.add('is-minimized');
+            el.innerHTML = `
+                <div class="share-balloon-head">
+                    <div class="share-balloon-heading">
+                        <div class="share-balloon-title">Sincronização</div>
+                        <div class="share-balloon-minimized-line">${escaparHtml(resumoCurtoBalaoStatusCompartilhamento(rows))}</div>
+                    </div>
+                    ${acoesBalaoStatusCompartilhamento('minimized')}
+                </div>
+            `;
+            return;
+        }
+        el.innerHTML = `
+            <div class="share-balloon-head">
+                <div class="share-balloon-heading">
+                    <div class="share-balloon-title">Status da sincronização</div>
+                </div>
+                ${acoesBalaoStatusCompartilhamento('open')}
+            </div>
+            <div class="share-balloon-body">
+                ${rows.slice(0, 4).map(row => `
+                    <div class="share-balloon-row ${row.kind}">
+                        <div class="share-balloon-main"><span>${escaparHtml(row.title)}</span></div>
+                        <div class="share-balloon-detail">${escaparHtml(row.detail)}</div>
+                        ${Number.isFinite(Number(row.progress)) ? barraProgressoHtml(row.progress) : ''}
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function abrirBalaoStatusCompartilhamento() {
+        salvarEstadoBalaoStatusCompartilhamento('open');
+        atualizarBalaoStatusCompartilhamento(compartilhamentoUsuariosCache || {});
+    }
+
+    function minimizarBalaoStatusCompartilhamento() {
+        salvarEstadoBalaoStatusCompartilhamento('minimized');
+        atualizarBalaoStatusCompartilhamento(compartilhamentoUsuariosCache || {});
+    }
+
+    function fecharBalaoStatusCompartilhamento() {
+        salvarEstadoBalaoStatusCompartilhamento('closed');
+        atualizarBalaoStatusCompartilhamento(compartilhamentoUsuariosCache || {});
+    }
+
+    function atualizarBalaoStatusCompartilhamento(payload, erro = '') {
+        const el = document.getElementById('userShareStatusBalloon');
+        if (!el) return;
+        if (erro) {
+            renderizarBalaoStatusCompartilhamento([{
+                kind: 'warn',
+                title: 'Falha ao conferir',
+                detail: erro
+            }]);
+            return;
+        }
+        const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+        const links = Array.isArray(payload && payload.links) ? payload.links : [];
+        const preparando = invites.filter(invite => invite.status === 'pending' && String(invite.prepare_status || '').toLowerCase() === 'preparing');
+        const aguardandoAceite = invites.filter(invite => invite.direction === 'sent' && invite.status === 'pending' && String(invite.prepare_status || '').toLowerCase() !== 'preparing');
+        const paraAceitar = invites.filter(invite => invite.direction === 'received' && invite.status === 'pending' && String(invite.prepare_status || '').toLowerCase() !== 'preparing' && String(invite.prepare_status || '').toLowerCase() !== 'failed');
+        const falhas = invites.filter(invite => ['failed', 'partial'].includes(String(invite.prepare_status || '').toLowerCase()));
+        const pendencias = links
+            .map(link => ({ link, resumo: statusEscoposVinculo(link) }))
+            .filter(item => Number(item.resumo.pending || 0) > 0);
+        const automaticos = links.filter(link => link && link.active && link.auto_sync_enabled);
+        const rows = [];
+        if (preparando.length) {
+            const progresso = progressoConvite(preparando[0]);
+            rows.push({
+                kind: 'warn',
+                title: `${preparando.length} convite(s) preparando dados - ${progresso}%`,
+                detail: `${primeiroNomeCompartilhamento(preparando[0])}: ${detalhePreparoConvite(preparando[0]) || 'o aceite só aparece quando o pacote terminar de ser gerado.'}`,
+                progress: progresso
+            });
+        }
+        if (aguardandoAceite.length) {
+            rows.push({
+                kind: 'warn',
+                title: `${aguardandoAceite.length} convite(s) aguardando aceite`,
+                detail: `${primeiroNomeCompartilhamento(aguardandoAceite[0])}: já enviado, falta o outro usuário aceitar.`
+            });
+        }
+        if (paraAceitar.length) {
+            rows.push({
+                kind: 'warn',
+                title: `${paraAceitar.length} convite(s) para aceitar`,
+                detail: `${primeiroNomeCompartilhamento(paraAceitar[0], 'received')}: pronto para receber os dados.`
+            });
+        }
+        if (pendencias.length) {
+            const total = pendencias.reduce((soma, item) => soma + Number(item.resumo.pending || 0), 0);
+            rows.push({
+                kind: 'warn',
+                title: `${textoQuantidadeTiposDados(total)} pendente(s) para receber`,
+                detail: `${primeiroNomeCompartilhamento(pendencias[0].link, pendencias[0].link.direction)}: ${resumoLabelsPendentes(pendencias[0].resumo, 5)}.`
+            });
+        }
+        if (falhas.length) {
+            rows.push({
+                kind: 'warn',
+                title: `${falhas.length} convite(s) com preparo parcial/falha`,
+                detail: `${primeiroNomeCompartilhamento(falhas[0])}: confira as falhas do convite.`
+            });
+        }
+        if (!rows.length && (invites.length || links.length)) {
+            rows.push({
+                kind: 'ok',
+                title: automaticos.length ? 'Sincronização em dia' : 'Sem pendências no momento',
+                detail: automaticos.length
+                    ? `${automaticos.length} vínculo(s) automático(s) ativo(s).`
+                    : 'Não há dados novos para receber agora.'
+            });
+        }
+        renderizarBalaoStatusCompartilhamento(rows);
+    }
+
     function renderStatusSincronizacaoVinculo(link) {
         const resumo = statusEscoposVinculo(link);
         const receiveClass = resumo.pending > 0 ? 'pending' : 'ok';
@@ -1563,6 +1948,8 @@
             const preparando = prepareStatus === 'preparing';
             const preparoFalhou = prepareStatus === 'failed';
             const preparoParcial = prepareStatus === 'partial';
+            const progresso = progressoConvite(invite);
+            const detalhePreparo = detalhePreparoConvite(invite);
             const pessoa = invite.direction === 'received'
                 ? `${invite.source_client_id} - ${invite.source_name || invite.source_username}`
                 : `${invite.target_client_id} - ${invite.target_name || invite.target_username}`;
@@ -1577,6 +1964,10 @@
             const errosHtml = erros.length
                 ? `<div class="muted-line">Falhas: ${escaparHtml(erros.map(err => `${err.label || err.scope}: ${err.message || 'erro'}`).join(' | '))}</div>`
                 : '';
+            const progressoHtml = preparando ? `
+                <div class="muted-line">${escaparHtml(detalhePreparo || 'Preparando pacote de dados.')} ${progresso}%</div>
+                ${barraProgressoHtml(progresso, 'user-share-progress')}
+            ` : '';
             const actions = receivedPending && !preparando && !preparoFalhou ? `
                 <label class="sync-auto-row">
                     <input type="checkbox" id="acceptSync_${escaparHtml(invite.id)}">
@@ -1593,6 +1984,7 @@
                     <div class="small">${escaparHtml((invite.scope_labels || []).join(', '))}</div>
                     <div class="muted-line">${escaparHtml(status)} | ${escaparHtml(syncText)}</div>
                     ${invite.message ? `<div class="muted-line">${escaparHtml(invite.message)}</div>` : ''}
+                    ${progressoHtml}
                     ${errosHtml}
                     ${actions}
                 </div>
@@ -1615,13 +2007,10 @@
                 : `${link.source_client_id} - ${link.source_name || link.source_username}`;
             const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
             const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
-            const resumo = statusEscoposVinculo(link);
-            const pendente = Number(resumo.pending || 0) > 0;
             const syncStatus = link.auto_sync_enabled
                 ? 'Automático ativo'
                 : `sincronização contínua incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
             const dados = (link.scope_labels || []).join(', ');
-            const pendentes = resumoLabelsPendentes(resumo, 5);
             return `
                 <tr>
                     <td>
@@ -1636,15 +2025,6 @@
                             <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
                             <span>Manter sincronizado do meu lado</span>
                         </label>
-                    </td>
-                    <td title="${escaparHtml(pendente ? pendentes : 'Sem dados pendentes')}">
-                        <span class="share-status-pill ${pendente ? 'pending' : 'ok'}">${escaparHtml(textoRecebimentoVinculo(resumo))}</span>
-                        ${pendente ? `<div class="muted-line">Pendentes: ${escaparHtml(pendentes)}</div>` : ''}
-                        <div class="muted-line">Último recebimento: ${escaparHtml(textoDataSync(resumo.lastReceived))}</div>
-                    </td>
-                    <td>
-                        <div class="muted-line">Envio: ${escaparHtml(textoDataSync(resumo.lastSent))}</div>
-                        <div class="muted-line">Vínculo: ${escaparHtml(textoDataSync(link.updated_at))}</div>
                     </td>
                     <td>
                         <div class="share-row-actions">
@@ -1665,8 +2045,6 @@
                             <th>Usuário</th>
                             <th>Dados</th>
                             <th>Sincronização</th>
-                            <th>Recebimento</th>
-                            <th>Datas</th>
                             <th>Ações</th>
                         </tr>
                     </thead>
@@ -1688,6 +2066,7 @@
         renderEscoposCompartilhamentoUsuario(payload);
         renderConvitesCompartilhamentoUsuario(payload);
         renderVinculosCompartilhamentoUsuario(payload);
+        atualizarBalaoStatusCompartilhamento(payload);
     }
 
     function scopesSelecionadosCompartilhamentoUsuario() {
@@ -1860,6 +2239,7 @@
     async function carregarCompartilhamentoEntreUsuarios() {
         const summary = document.getElementById('userShareSummary');
         if (summary) summary.textContent = 'Carregando convites e vínculos...';
+        atualizarBalaoStatusCompartilhamento(compartilhamentoUsuariosCache || {});
         await carregarUsuariosParaCompartilhar();
         try {
             const resp = await fetch('/api/shared-sync/user-shares', { headers: obterAuthHeaders(), cache: 'no-store' });
@@ -1869,6 +2249,7 @@
             return true;
         } catch (error) {
             if (summary) summary.textContent = error.message || 'Erro ao carregar compartilhamentos.';
+            atualizarBalaoStatusCompartilhamento(null, error.message || 'Erro ao carregar compartilhamentos.');
             return false;
         }
     }
@@ -1885,8 +2266,9 @@
             setUserShareStatus('Selecione pelo menos um dado para compartilhar.', true);
             return;
         }
-        setUserShareStatus('Enviando convite e preparando pacote...');
+        setUserShareProcesso('Convite', 0, 'Validando destino e dados selecionados.');
         try {
+            setUserShareProcesso('Convite', 15, 'Enviando para o Firebase.');
             const resp = await fetch('/api/shared-sync/user-shares/invite', {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -1901,22 +2283,24 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar convite.');
+            setUserShareProcesso('Convite', 45, 'Pacote em preparação no servidor.');
             limparConviteCompartilhamentoUsuario();
             await carregarCompartilhamentoEntreUsuarios();
-            setUserShareStatus(data.message || 'Convite enviado.');
+            setUserShareProcesso('Convite', 70, data.message || 'Convite enviado. Acompanhando preparo.');
             setTimeout(carregarCompartilhamentoEntreUsuarios, 2500);
             setTimeout(carregarCompartilhamentoEntreUsuarios, 9000);
             setTimeout(carregarCompartilhamentoEntreUsuarios, 20000);
         } catch (error) {
-            setUserShareStatus(error.message || 'Erro ao enviar convite.', true);
+            setUserShareProcesso('Convite', 100, error.message || 'Erro ao enviar convite.', true);
         }
     }
 
     async function aceitarConviteCompartilhamentoUsuario(inviteId) {
         const keepSynced = !!document.getElementById('acceptSync_' + inviteId)?.checked;
         if (!confirm('Aceitar e adicionar os dados deste usuário? O sistema cria backup local antes de aplicar.')) return;
-        setUserShareStatus('Aceitando convite e adicionando dados...');
+        setUserShareProcesso('Aceite do convite', 0, 'Confirmando vínculo.');
         try {
+            setUserShareProcesso('Aceite do convite', 25, 'Recebendo pacote preparado.');
             const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/accept', {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -1924,12 +2308,13 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao aceitar convite.');
+            setUserShareProcesso('Aceite do convite', 70, 'Atualizando cache local.');
             await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
-            setUserShareStatus(data.message || 'Convite aceito.');
+            setUserShareProcesso('Aceite do convite', 100, data.message || 'Convite aceito.');
             setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
-            setUserShareStatus(error.message || 'Erro ao aceitar convite.', true);
+            setUserShareProcesso('Aceite do convite', 100, error.message || 'Erro ao aceitar convite.', true);
         }
     }
 
@@ -1987,8 +2372,10 @@
     async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
         const endpoint = direcao === 'push' ? 'push' : 'pull';
         if (direcao === 'pull' && !confirm('Receber e adicionar dados novos deste usuário? O sistema cria backup local antes de aplicar.')) return;
-        setUserShareStatus(direcao === 'push' ? 'Enviando novidades do vínculo...' : 'Recebendo novidades do vínculo...');
+        const nomeProcesso = direcao === 'push' ? 'Envio do vínculo' : 'Recebimento do vínculo';
+        setUserShareProcesso(nomeProcesso, 0, direcao === 'push' ? 'Preparando novidades locais.' : 'Buscando novidades remotas.');
         try {
+            setUserShareProcesso(nomeProcesso, 30, direcao === 'push' ? 'Enviando pacote.' : 'Importando pacote.');
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -1996,11 +2383,12 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
+            setUserShareProcesso(nomeProcesso, 75, 'Atualizando tela e caches.');
             if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
-            setUserShareStatus((direcao === 'push' ? 'Novidades enviadas. ' : 'Novidades recebidas. ') + resumoResultadosSync(data.results));
+            setUserShareProcesso(nomeProcesso, 100, (direcao === 'push' ? 'Novidades enviadas. ' : 'Novidades recebidas. ') + resumoResultadosSync(data.results));
         } catch (error) {
-            setUserShareStatus(error.message || 'Erro ao sincronizar vínculo.', true);
+            setUserShareProcesso(nomeProcesso, 100, error.message || 'Erro ao sincronizar vínculo.', true);
         }
     }
 
@@ -2023,8 +2411,9 @@
             return false;
         }
         sincronizacaoUsuariosAutomaticaRodando = true;
-        if (!silencioso) setUserShareStatus('Sincronizando vínculos entre usuários...');
+        if (!silencioso) setUserShareProcesso('Sincronização automática', 0, 'Conferindo vínculos ativos.');
         try {
+            if (!silencioso) setUserShareProcesso('Sincronização automática', 30, 'Recebendo e enviando novidades.');
             const resp = await fetch('/api/shared-sync/user-shares/auto', {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -2035,15 +2424,16 @@
             const results = Array.isArray(data.results) ? data.results : [];
             const recebeu = results.some(item => item && item.direction === 'pull');
             if (recebeu) await atualizarCacheHistoricoFavoritosSincronizado(results);
+            if (!silencioso) setUserShareProcesso('Sincronização automática', 80, 'Atualizando status na tela.');
             await carregarCompartilhamentoEntreUsuarios();
             if (!silencioso && results.length) {
-                setUserShareStatus('Sincronização concluída. ' + resumoResultadosSync(results));
+                setUserShareProcesso('Sincronização automática', 100, 'Concluída. ' + resumoResultadosSync(results));
             } else if (!silencioso) {
-                setUserShareStatus('Sincronização conferida. Nenhuma novidade.');
+                setUserShareProcesso('Sincronização automática', 100, 'Conferida. Nenhuma novidade.');
             }
             return true;
         } catch (error) {
-            if (!silencioso) setUserShareStatus(error.message || 'Erro na sincronização automática.', true);
+            if (!silencioso) setUserShareProcesso('Sincronização automática', 100, error.message || 'Erro na sincronização automática.', true);
             return false;
         } finally {
             sincronizacaoUsuariosAutomaticaRodando = false;
