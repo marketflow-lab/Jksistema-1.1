@@ -65,6 +65,7 @@ import multiprocessing
 import math
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -20625,6 +20626,62 @@ def _shared_sync_state_update(client_id: str, username: str, scope: str, meta: d
     _shared_sync_state_write(client_id, username, state)
 
 
+def _shared_sync_user_share_state_scope(link_id: str, direction_key: str, scope: str) -> str:
+    return f"user-share:{str(link_id or '').strip()}:{str(direction_key or '').strip()}:{scope}"
+
+
+def _shared_sync_user_share_known_keys(client_id: str, username: str, link_id: str, scope: str) -> set[str]:
+    state = _shared_sync_state_read(client_id, username)
+    shares = state.get("user_share_known") if isinstance(state.get("user_share_known"), dict) else {}
+    link_state = shares.get(str(link_id or "")) if isinstance(shares.get(str(link_id or "")), dict) else {}
+    scope_state = link_state.get(scope) if isinstance(link_state.get(scope), dict) else {}
+    return {
+        str(key or "").strip()
+        for key in (scope_state.get("keys") or [])
+        if str(key or "").strip()
+    }
+
+
+def _shared_sync_user_share_known_count(state: dict, link_id: str, scope: str) -> int:
+    shares = state.get("user_share_known") if isinstance(state.get("user_share_known"), dict) else {}
+    link_state = shares.get(str(link_id or "")) if isinstance(shares.get(str(link_id or "")), dict) else {}
+    scope_state = link_state.get(scope) if isinstance(link_state.get(scope), dict) else {}
+    try:
+        return int(scope_state.get("count") or len(scope_state.get("keys") or []))
+    except Exception:
+        return 0
+
+
+def _shared_sync_user_share_add_known_keys(
+    client_id: str,
+    username: str,
+    link_id: str,
+    scope: str,
+    keys: list[str] | set[str] | tuple[str, ...],
+) -> None:
+    novos = {
+        str(key or "").strip()
+        for key in (keys or [])
+        if str(key or "").strip()
+    }
+    if not novos:
+        return
+    state = _shared_sync_state_read(client_id, username)
+    shares = state.setdefault("user_share_known", {})
+    link_state = shares.setdefault(str(link_id or ""), {})
+    scope_state = link_state.setdefault(scope, {})
+    atuais = {
+        str(key or "").strip()
+        for key in (scope_state.get("keys") or [])
+        if str(key or "").strip()
+    }
+    atuais.update(novos)
+    scope_state["keys"] = sorted(atuais)
+    scope_state["count"] = len(atuais)
+    scope_state["updated_at"] = _shared_sync_now_iso()
+    _shared_sync_state_write(client_id, username, state)
+
+
 def _shared_sync_config_normalizar(client_id: str, data: Optional[dict]) -> dict:
     config = _shared_sync_config_default(client_id)
     payload = data if isinstance(data, dict) else {}
@@ -20924,6 +20981,301 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
     return entries, warnings
 
 
+def _shared_sync_bytes_sha256(data: bytes) -> str:
+    return hashlib.sha256(data or b"").hexdigest()
+
+
+def _shared_sync_entry_from_bytes(rel: str, data: bytes, mtime: float, item_keys: Optional[list[str]] = None) -> dict:
+    payload = data or b""
+    return {
+        "relative_path": _shared_sync_relativo_seguro(rel),
+        "data": payload,
+        "size": len(payload),
+        "mtime": mtime,
+        "sha256": _shared_sync_bytes_sha256(payload),
+        "item_keys": list(item_keys or []),
+    }
+
+
+def _shared_sync_texto_chave(valor: Any) -> str:
+    texto = unicodedata.normalize("NFKD", str(valor or ""))
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", texto.strip().lower())
+
+
+def _shared_sync_col_norm(coluna: Any) -> str:
+    texto = unicodedata.normalize("NFKD", str(coluna or ""))
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", texto.lower())
+
+
+def _shared_sync_csv_read_bytes(data: bytes) -> pd.DataFrame:
+    tentativas = [
+        {"sep": None, "encoding": "utf-8-sig", "engine": "python"},
+        {"sep": None, "encoding": "utf-8", "engine": "python"},
+        {"sep": None, "encoding": "latin1", "engine": "python"},
+        {"sep": ";", "encoding": "utf-8-sig", "engine": "python"},
+        {"sep": ";", "encoding": "utf-8", "engine": "python"},
+        {"sep": ";", "encoding": "latin1", "engine": "python"},
+        {"sep": ",", "encoding": "utf-8-sig", "engine": "python"},
+        {"sep": ",", "encoding": "utf-8", "engine": "python"},
+        {"sep": ",", "encoding": "latin1", "engine": "python"},
+    ]
+    melhor_df = None
+    melhor_score = -1
+    ultimo_erro = None
+    for cfg in tentativas:
+        try:
+            df = pd.read_csv(io.BytesIO(data or b""), dtype=str, on_bad_lines="skip", **cfg).fillna("")
+            score = len(df.columns) + (1000 if any(_shared_sync_col_norm(c) == "sku" for c in df.columns) else 0)
+            if score > melhor_score:
+                melhor_df = df
+                melhor_score = score
+            if not df.empty and any(_shared_sync_col_norm(c) == "sku" for c in df.columns):
+                break
+        except Exception as exc:
+            ultimo_erro = exc
+    if melhor_df is None:
+        raise HTTPException(status_code=502, detail=f"CSV invalido no pacote de compartilhamento: {ultimo_erro}")
+    return melhor_df.fillna("")
+
+
+def _shared_sync_csv_key_columns(columns: list[Any]) -> tuple[Optional[str], Optional[str]]:
+    sku_col = None
+    loja_col = None
+    for col in columns:
+        norm = _shared_sync_col_norm(col)
+        if sku_col is None and norm in {"sku", "codigosku", "codigo"}:
+            sku_col = str(col)
+        if loja_col is None and norm in {"loja", "lojaconta", "lojavirtual", "lojanome", "marketplace", "conta"}:
+            loja_col = str(col)
+    return sku_col, loja_col
+
+
+def _shared_sync_csv_row_key(scope: str, rel: str, row: Any, columns: list[Any]) -> str:
+    sku_col, loja_col = _shared_sync_csv_key_columns(columns)
+    if sku_col and _shared_sync_texto_chave(row.get(sku_col)):
+        partes = [scope, rel, "sku", _shared_sync_texto_chave(row.get(sku_col))]
+        if loja_col and _shared_sync_texto_chave(row.get(loja_col)):
+            partes.extend(["loja", _shared_sync_texto_chave(row.get(loja_col))])
+        return ":".join(partes)
+    bruto = json.dumps({str(col): str(row.get(col) or "") for col in columns}, ensure_ascii=False, sort_keys=True)
+    return f"{scope}:{rel}:row:{hashlib.sha256(bruto.encode('utf-8')).hexdigest()}"
+
+
+def _shared_sync_csv_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    df = _shared_sync_csv_read_bytes(data)
+    if df.empty:
+        return None, []
+    selected_idx = []
+    selected_keys = []
+    vistos_lote = set()
+    columns = list(df.columns)
+    for idx, row in df.iterrows():
+        chave = _shared_sync_csv_row_key(scope, rel, row, columns)
+        if chave in known_keys or chave in vistos_lote:
+            continue
+        vistos_lote.add(chave)
+        selected_idx.append(idx)
+        selected_keys.append(chave)
+    if not selected_idx:
+        return None, []
+    saida = df.loc[selected_idx].copy()
+    return saida.to_csv(index=False).encode("utf-8-sig"), selected_keys
+
+
+def _shared_sync_json_dump_bytes(payload: Any) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _shared_sync_favoritos_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    payload = _shared_sync_json_from_bytes(data, rel)
+    historico_raw = payload.get("historico") if isinstance(payload, dict) else payload
+    historico = []
+    keys = []
+    vistos_lote = set()
+    for entrada in _favoritos_normalizar_historico(historico_raw or []):
+        chave = f"{scope}:{_shared_sync_historico_key(entrada)}"
+        if chave in known_keys or chave in vistos_lote:
+            continue
+        vistos_lote.add(chave)
+        historico.append(entrada)
+        keys.append(chave)
+    if not historico:
+        return None, []
+    out = dict(payload) if isinstance(payload, dict) else {}
+    out["historico"] = historico
+    out["updated_at"] = _shared_sync_now_iso()
+    return _shared_sync_json_dump_bytes(out), keys
+
+
+def _shared_sync_pesquisas_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    pesquisas = _shared_sync_pesquisas_from_payload(_shared_sync_json_from_bytes(data, rel))
+    filtradas = {}
+    keys = []
+    for chave_pesquisa, item in pesquisas.items():
+        chave = f"{scope}:{chave_pesquisa}"
+        if chave in known_keys:
+            continue
+        filtradas[chave_pesquisa] = item
+        keys.append(chave)
+    if not filtradas:
+        return None, []
+    return _shared_sync_json_dump_bytes({"pesquisas": filtradas, "updated_at": _shared_sync_now_iso()}), keys
+
+
+def _shared_sync_lojas_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    payload = _shared_sync_json_from_bytes(data, rel)
+    lojas = _shared_sync_lojas_from_payload(payload)
+    if not lojas:
+        return None, []
+    filtradas = []
+    keys = []
+    for loja in lojas:
+        loja_key = _shared_sync_loja_key(loja.get("nome"))
+        loja_chave = f"{scope}:loja:{loja_key}" if loja_key else ""
+        nova_loja = None
+        if loja_chave and loja_chave not in known_keys:
+            nova_loja = _shared_sync_json_clone(loja)
+            keys.append(loja_chave)
+        else:
+            integracoes = loja.get("integracoes") if isinstance(loja.get("integracoes"), dict) else {}
+            novas_integracoes = {}
+            for servico, dados in integracoes.items():
+                servico_key = _shared_sync_servico_key(servico)
+                chave = f"{scope}:integracao:{loja_key}:{servico_key}"
+                if chave in known_keys:
+                    continue
+                novas_integracoes[servico_key] = _shared_sync_json_clone(dados)
+                keys.append(chave)
+            if novas_integracoes:
+                nova_loja = _shared_sync_json_clone({k: v for k, v in loja.items() if k != "integracoes"})
+                nova_loja["integracoes"] = novas_integracoes
+        if nova_loja:
+            filtradas.append(nova_loja)
+    if not filtradas:
+        return None, []
+    return _shared_sync_json_dump_bytes(filtradas), keys
+
+
+def _shared_sync_vendas_delta_db_bytes(rel: str, abs_path: str, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    if not os.path.exists(abs_path):
+        return None, []
+    src = sqlite3.connect(abs_path)
+    tmp_path = ""
+    try:
+        cur = src.cursor()
+        tabela = cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+        if not tabela:
+            return None, []
+        cols_info = cur.execute("PRAGMA table_info(vendas)").fetchall()
+        cols = [row[1] for row in cols_info]
+        if not cols:
+            return None, []
+        create_row = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+        create_sql = create_row[0] if create_row and create_row[0] else ""
+        rows = cur.execute(f"SELECT {', '.join('\"' + c.replace('\"', '\"\"') + '\"' for c in cols)} FROM vendas").fetchall()
+        selected = []
+        keys = []
+        vistos_lote = set()
+        id_idx = cols.index("id_unico") if "id_unico" in cols else -1
+        for row in rows:
+            if id_idx >= 0 and str(row[id_idx] or "").strip():
+                chave = f"vendas:{rel}:id:{str(row[id_idx] or '').strip()}"
+            else:
+                bruto = json.dumps([str(valor or "") for valor in row], ensure_ascii=False)
+                chave = f"vendas:{rel}:row:{hashlib.sha256(bruto.encode('utf-8')).hexdigest()}"
+            if chave in known_keys or chave in vistos_lote:
+                continue
+            vistos_lote.add(chave)
+            selected.append(row)
+            keys.append(chave)
+        if not selected:
+            return None, []
+        fd, tmp_path = tempfile.mkstemp(prefix="shared_sync_vendas_delta_", suffix=".db")
+        os.close(fd)
+        dst = sqlite3.connect(tmp_path)
+        try:
+            dst_cur = dst.cursor()
+            if create_sql:
+                dst_cur.execute(create_sql)
+            else:
+                col_defs = []
+                for col in cols_info:
+                    nome = str(col[1])
+                    tipo = str(col[2] or "TEXT")
+                    pk = " PRIMARY KEY" if int(col[5] or 0) else ""
+                    col_defs.append(f'"{nome.replace("\"", "\"\"")}" {tipo}{pk}')
+                dst_cur.execute(f"CREATE TABLE vendas ({', '.join(col_defs)})")
+            placeholders = ", ".join(["?"] * len(cols))
+            quoted_cols = ", ".join(f'"{c.replace("\"", "\"\"")}"' for c in cols)
+            dst_cur.executemany(f"INSERT OR IGNORE INTO vendas ({quoted_cols}) VALUES ({placeholders})", selected)
+            dst.commit()
+        finally:
+            dst.close()
+        with open(tmp_path, "rb") as f:
+            return f.read(), keys
+    finally:
+        src.close()
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def _shared_sync_delta_for_entry(scope: str, entry: dict, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    rel = entry.get("relative_path") or ""
+    abs_path = entry.get("abs_path") or ""
+    data = _shared_sync_ler_arquivo_pacote(abs_path)
+    lower = rel.lower()
+    if scope == "cadastro" and lower.endswith(".csv"):
+        return _shared_sync_csv_delta_bytes(scope, rel, data, known_keys)
+    if scope == "vendas":
+        if lower.endswith((".db", ".sqlite")):
+            return _shared_sync_vendas_delta_db_bytes(rel, abs_path, known_keys)
+        return None, []
+    if scope == "favoritos_historico":
+        return _shared_sync_favoritos_delta_bytes(scope, rel, data, known_keys)
+    if scope == "sku_campos_pesquisa":
+        return _shared_sync_pesquisas_delta_bytes(scope, rel, data, known_keys)
+    if scope == "lojas_integracoes" and lower == "lojas_config.json":
+        return _shared_sync_lojas_delta_bytes(scope, rel, data, known_keys)
+
+    chave = f"{scope}:file:{rel.lower()}"
+    if chave in known_keys:
+        return None, []
+    return data, [chave]
+
+
+def _shared_sync_coletar_arquivos_delta(
+    client_id: str,
+    scope: str,
+    username: str = "",
+    user_only: bool = False,
+    known_keys: Optional[set[str]] = None,
+) -> tuple[list[dict], list[str], list[str]]:
+    entries, warnings = _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+    conhecidos = set(known_keys or set())
+    saida = []
+    item_keys = []
+    for entry in entries:
+        rel = entry.get("relative_path") or ""
+        try:
+            data_filtrada, keys = _shared_sync_delta_for_entry(scope, entry, conhecidos)
+        except Exception as exc:
+            warnings.append(f"{rel} ignorado no delta: {exc}")
+            continue
+        if not data_filtrada and not keys:
+            continue
+        keys = [str(key or "").strip() for key in (keys or []) if str(key or "").strip()]
+        item_keys.extend(keys)
+        conhecidos.update(keys)
+        saida.append(_shared_sync_entry_from_bytes(rel, data_filtrada or b"", entry.get("mtime") or time.time(), keys))
+    saida.sort(key=lambda item: item["relative_path"])
+    return saida, warnings, item_keys
+
+
 def _shared_sync_snapshot_hash(entries: list[dict]) -> str:
     sha = hashlib.sha256()
     for item in entries:
@@ -20936,8 +21288,25 @@ def _shared_sync_snapshot_hash(entries: list[dict]) -> str:
     return sha.hexdigest()
 
 
-def _shared_sync_montar_pacote(client_id: str, scope: str, username: str, machine_id: str = "", user_only: bool = False) -> tuple[bytes, dict, list[str]]:
-    entries, warnings = _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+def _shared_sync_montar_pacote(
+    client_id: str,
+    scope: str,
+    username: str,
+    machine_id: str = "",
+    user_only: bool = False,
+    known_keys: Optional[set[str]] = None,
+) -> tuple[bytes, dict, list[str]]:
+    item_keys: list[str] = []
+    if known_keys is None:
+        entries, warnings = _shared_sync_coletar_arquivos(client_id, scope, username=username, user_only=user_only)
+    else:
+        entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
+            client_id,
+            scope,
+            username=username,
+            user_only=user_only,
+            known_keys=known_keys,
+        )
     manifest = {
         "schema": 1,
         "app": "JK Sistema",
@@ -20948,12 +21317,16 @@ def _shared_sync_montar_pacote(client_id: str, scope: str, username: str, machin
         "machine_id": str(machine_id or "").strip(),
         "snapshot_hash": _shared_sync_snapshot_hash(entries),
         "file_count": len(entries),
+        "delta": known_keys is not None,
+        "item_count": len(item_keys),
+        "item_keys": item_keys,
         "files": [
             {
                 "relative_path": item["relative_path"],
                 "size": item["size"],
                 "mtime": item["mtime"],
                 "sha256": item["sha256"],
+                "item_count": len(item.get("item_keys") or []),
             }
             for item in entries
         ],
@@ -20962,7 +21335,8 @@ def _shared_sync_montar_pacote(client_id: str, scope: str, username: str, machin
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         for item in entries:
-            zf.writestr("files/" + item["relative_path"], _shared_sync_ler_arquivo_pacote(item["abs_path"]))
+            data = item.get("data") if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"])
+            zf.writestr("files/" + item["relative_path"], data or b"")
     bundle = buffer.getvalue()
     if len(bundle) > _shared_sync_max_bundle_bytes():
         raise HTTPException(
@@ -20998,11 +21372,37 @@ def _shared_sync_push_scope(
     extra_meta: Optional[dict] = None,
     user_only: bool = False,
     state_scope: Optional[str] = None,
+    known_keys: Optional[set[str]] = None,
+    allow_empty_delta: bool = False,
 ) -> dict:
     db = _shared_sync_firestore_required()
-    bundle, manifest, warnings = _shared_sync_montar_pacote(client_id, scope, sessao.get("username"), machine_id, user_only=user_only)
+    bundle, manifest, warnings = _shared_sync_montar_pacote(
+        client_id,
+        scope,
+        sessao.get("username"),
+        machine_id,
+        user_only=user_only,
+        known_keys=known_keys,
+    )
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
-    if scope == "lojas_integracoes":
+    if known_keys is not None and not manifest.get("item_count") and not allow_empty_delta:
+        return {
+            "scope": scope,
+            "success": True,
+            "direction": "push",
+            "id": bundle_id,
+            "skipped": True,
+            "reason": "already_shared",
+            "file_count": 0,
+            "item_count": 0,
+            "item_keys": [],
+            "chunk_count": 0,
+            "bundle_bytes": 0,
+            "snapshot_hash": manifest.get("snapshot_hash") or "",
+            "warnings": warnings,
+            "updated_at": _shared_sync_now_iso(),
+        }
+    if scope == "lojas_integracoes" and known_keys is None:
         _shared_sync_validar_push_lojas_integracoes(bundle_id, bundle)
     bundle_b64 = base64.b64encode(bundle).decode("ascii")
     chunks = [bundle_b64[i:i + SHARED_SYNC_CHUNK_CHARS] for i in range(0, len(bundle_b64), SHARED_SYNC_CHUNK_CHARS)] or [""]
@@ -21026,6 +21426,8 @@ def _shared_sync_push_scope(
         "updated_by": sessao.get("username") or "",
         "machine_id": str(machine_id or "").strip(),
         "file_count": manifest.get("file_count") or 0,
+        "delta": bool(manifest.get("delta")),
+        "item_count": manifest.get("item_count") or 0,
         "bundle_bytes": len(bundle),
         "bundle_b64_chars": len(bundle_b64),
         "chunk_count": len(chunks),
@@ -21043,6 +21445,9 @@ def _shared_sync_push_scope(
         "direction": "push",
         "id": bundle_id,
         "file_count": meta["file_count"],
+        "item_count": meta["item_count"],
+        "item_keys": list(manifest.get("item_keys") or []),
+        "delta": meta["delta"],
         "chunk_count": meta["chunk_count"],
         "bundle_bytes": meta["bundle_bytes"],
         "snapshot_hash": meta["snapshot_hash"],
@@ -21097,6 +21502,17 @@ def _shared_sync_obter_bundle_por_id(bundle_id: str) -> tuple[bytes, dict]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Backup remoto corrompido: {exc}")
     return bundle, meta
+
+
+def _shared_sync_manifest_from_bundle(bundle: bytes) -> dict:
+    try:
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+            raw = zf.read("manifest.json")
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao ler manifest do pacote: %s", exc)
+        return {}
 
 
 def _shared_sync_backup_target(tenant_abs: str, backup_dir: str, rel: str, target_abs: str) -> None:
@@ -21271,7 +21687,7 @@ def _shared_sync_timestamp(valor: Any) -> float:
         return 0.0
 
 
-def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any) -> Any:
+def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any, add_only: bool = False) -> Any:
     if not isinstance(remoto, dict):
         return atual if _shared_sync_valor_preenchido(atual) else remoto
     if not isinstance(atual, dict):
@@ -21295,12 +21711,12 @@ def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any) -> Any:
             continue
         if not _shared_sync_valor_preenchido(atual_valor) and _shared_sync_valor_preenchido(valor):
             merged[chave] = valor
-        elif remoto_mais_novo and _shared_sync_valor_preenchido(valor):
+        elif not add_only and remoto_mais_novo and _shared_sync_valor_preenchido(valor):
             merged[chave] = valor
     return merged
 
 
-def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict) -> dict:
+def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict, add_only: bool = False) -> dict:
     merged = dict(_shared_sync_json_clone(atual or {}))
     for chave, valor in (remoto or {}).items():
         if chave == "integracoes":
@@ -21315,7 +21731,7 @@ def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict) -> dict:
 
     for servico, dados in ((remoto or {}).get("integracoes") or {}).items():
         servico_key = _shared_sync_servico_key(servico)
-        integracoes[servico_key] = _shared_sync_merge_integracao_loja(integracoes.get(servico_key), dados)
+        integracoes[servico_key] = _shared_sync_merge_integracao_loja(integracoes.get(servico_key), dados, add_only=add_only)
     return merged
 
 
@@ -21385,7 +21801,7 @@ def _shared_sync_validar_push_lojas_integracoes(bundle_id: str, bundle: bytes) -
         )
 
 
-def _shared_sync_merge_lojas_integracoes_bytes(target_abs: str, remoto_bytes: bytes) -> bytes:
+def _shared_sync_merge_lojas_integracoes_bytes(target_abs: str, remoto_bytes: bytes, add_only: bool = False) -> bytes:
     remoto_payload = _shared_sync_json_from_bytes(remoto_bytes, "lojas_config.json")
     remoto_lojas = _shared_sync_lojas_from_payload(remoto_payload)
     atual_lojas: list[dict] = []
@@ -21428,9 +21844,215 @@ def _shared_sync_merge_lojas_integracoes_bytes(target_abs: str, remoto_bytes: by
                 if chave:
                     indice[chave] = len(merged) - 1
                 continue
-            merged[idx] = _shared_sync_merge_loja_integracoes(merged[idx], loja_remota)
+            merged[idx] = _shared_sync_merge_loja_integracoes(merged[idx], loja_remota, add_only=add_only)
 
     return json.dumps(merged, ensure_ascii=False, indent=4).encode("utf-8")
+
+
+def _shared_sync_merge_csv_add_only(target_abs: str, remoto_bytes: bytes, scope: str, rel: str) -> dict:
+    remoto_df = _shared_sync_csv_read_bytes(remoto_bytes)
+    if remoto_df.empty:
+        return {"added": 0, "total": 0}
+    if os.path.exists(target_abs):
+        with open(target_abs, "rb") as f:
+            atual_df = _shared_sync_csv_read_bytes(f.read())
+    else:
+        atual_df = pd.DataFrame(columns=list(remoto_df.columns))
+
+    colunas = []
+    for col in list(atual_df.columns) + list(remoto_df.columns):
+        if col not in colunas:
+            colunas.append(col)
+    for col in colunas:
+        if col not in atual_df.columns:
+            atual_df[col] = ""
+        if col not in remoto_df.columns:
+            remoto_df[col] = ""
+    atual_df = atual_df[colunas].fillna("")
+    remoto_df = remoto_df[colunas].fillna("")
+
+    existentes = {
+        _shared_sync_csv_row_key(scope, rel, row, colunas)
+        for _idx, row in atual_df.iterrows()
+    }
+    novas = []
+    vistos_lote = set()
+    for _idx, row in remoto_df.iterrows():
+        chave = _shared_sync_csv_row_key(scope, rel, row, colunas)
+        if chave in existentes or chave in vistos_lote:
+            continue
+        vistos_lote.add(chave)
+        novas.append(row.to_dict())
+
+    if not novas and os.path.exists(target_abs):
+        return {"added": 0, "total": len(atual_df)}
+
+    merged = pd.concat([atual_df, pd.DataFrame(novas, columns=colunas)], ignore_index=True) if novas else atual_df
+    os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+    merged.to_csv(target_abs, index=False, encoding="utf-8-sig")
+    return {"added": len(novas), "total": len(merged)}
+
+
+def _shared_sync_sql_ident(nome: str) -> str:
+    return '"' + str(nome or "").replace('"', '""') + '"'
+
+
+def _shared_sync_sqlite_temp_from_bytes(data: bytes, prefix: str = "shared_sync_") -> str:
+    fd, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=".db")
+    os.close(fd)
+    with open(tmp_path, "wb") as f:
+        f.write(data or b"")
+    return tmp_path
+
+
+def _shared_sync_merge_vendas_db_add_only(target_abs: str, remoto_bytes: bytes, rel: str) -> dict:
+    remoto_tmp = _shared_sync_sqlite_temp_from_bytes(remoto_bytes, "shared_sync_vendas_remote_")
+    inserted = 0
+    try:
+        src = sqlite3.connect(remoto_tmp)
+        try:
+            src_cur = src.cursor()
+            tabela = src_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+            if not tabela:
+                return {"added": 0, "total": 0}
+            src_cols_info = src_cur.execute("PRAGMA table_info(vendas)").fetchall()
+            src_cols = [row[1] for row in src_cols_info]
+            if not src_cols:
+                return {"added": 0, "total": 0}
+            create_row = src_cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+            create_sql = create_row[0] if create_row and create_row[0] else ""
+            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+            dst = sqlite3.connect(target_abs)
+            try:
+                dst_cur = dst.cursor()
+                exists = dst_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+                if not exists:
+                    if create_sql:
+                        dst_cur.execute(create_sql)
+                    else:
+                        col_defs = []
+                        for col in src_cols_info:
+                            nome = str(col[1])
+                            tipo = str(col[2] or "TEXT")
+                            pk = " PRIMARY KEY" if int(col[5] or 0) else ""
+                            col_defs.append(f"{_shared_sync_sql_ident(nome)} {tipo}{pk}")
+                        dst_cur.execute(f"CREATE TABLE vendas ({', '.join(col_defs)})")
+                dst_cols_info = dst_cur.execute("PRAGMA table_info(vendas)").fetchall()
+                dst_cols = [row[1] for row in dst_cols_info]
+                for col in src_cols_info:
+                    nome = str(col[1])
+                    if nome not in dst_cols:
+                        tipo = str(col[2] or "TEXT")
+                        dst_cur.execute(f"ALTER TABLE vendas ADD COLUMN {_shared_sync_sql_ident(nome)} {tipo}")
+                        dst_cols.append(nome)
+
+                comuns = [col for col in src_cols if col in dst_cols]
+                if not comuns:
+                    return {"added": 0, "total": 0}
+                existing_ids = set()
+                if "id_unico" in dst_cols:
+                    try:
+                        existing_ids = {
+                            str(row[0] or "").strip()
+                            for row in dst_cur.execute("SELECT id_unico FROM vendas").fetchall()
+                            if str(row[0] or "").strip()
+                        }
+                    except Exception:
+                        existing_ids = set()
+
+                select_sql = f"SELECT {', '.join(_shared_sync_sql_ident(col) for col in comuns)} FROM vendas"
+                rows = src_cur.execute(select_sql).fetchall()
+                id_idx = comuns.index("id_unico") if "id_unico" in comuns else -1
+                insert_cols = ", ".join(_shared_sync_sql_ident(col) for col in comuns)
+                placeholders = ", ".join(["?"] * len(comuns))
+                for row in rows:
+                    if id_idx >= 0:
+                        id_unico = str(row[id_idx] or "").strip()
+                        if id_unico and id_unico in existing_ids:
+                            continue
+                    try:
+                        dst_cur.execute(f"INSERT OR IGNORE INTO vendas ({insert_cols}) VALUES ({placeholders})", row)
+                        if dst_cur.rowcount > 0:
+                            inserted += 1
+                            if id_idx >= 0 and str(row[id_idx] or "").strip():
+                                existing_ids.add(str(row[id_idx] or "").strip())
+                    except sqlite3.IntegrityError:
+                        continue
+                dst.commit()
+                total = 0
+                try:
+                    total = int(dst_cur.execute("SELECT COUNT(*) FROM vendas").fetchone()[0] or 0)
+                except Exception:
+                    pass
+                return {"added": inserted, "total": total}
+            finally:
+                dst.close()
+        finally:
+            src.close()
+    finally:
+        try:
+            os.remove(remoto_tmp)
+        except Exception:
+            pass
+
+
+def _shared_sync_write_missing_file(target_abs: str, data: bytes) -> dict:
+    if os.path.exists(target_abs):
+        return {"added": 0, "skipped_existing": True}
+    os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+    with open(target_abs, "wb") as f:
+        f.write(data or b"")
+    return {"added": 1, "skipped_existing": False}
+
+
+def _shared_sync_aplicar_user_share_add_only(
+    client_id: str,
+    scope: str,
+    username: str,
+    fontes: list[tuple[str, bytes]],
+    tenant_abs: str,
+    backup_dir: str,
+) -> dict:
+    if not fontes:
+        return {"file_count": 0, "files": [], "added": 0}
+    if bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")):
+        return _shared_sync_aplicar_user_scoped_share(client_id, scope, username, fontes, tenant_abs, backup_dir)
+
+    escritos = []
+    added = 0
+    details = []
+    for rel, data in fontes:
+        target_abs = os.path.abspath(os.path.join(tenant_abs, rel))
+        if not target_abs.startswith(tenant_abs + os.sep):
+            raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+        lower = rel.lower()
+        if scope == "cadastro" and lower.endswith(".csv"):
+            _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
+            info = _shared_sync_merge_csv_add_only(target_abs, data, scope, rel)
+        elif scope == "vendas" and lower.endswith((".db", ".sqlite")):
+            _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
+            info = _shared_sync_merge_vendas_db_add_only(target_abs, data, rel)
+        elif scope == "lojas_integracoes" and lower == "lojas_config.json":
+            _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
+            merged = _shared_sync_merge_lojas_integracoes_bytes(target_abs, data, add_only=True)
+            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+            with open(target_abs, "wb") as f:
+                f.write(merged)
+            info = {"added": 1, "merged": True}
+        elif scope == "vendas" and lower.endswith(".json"):
+            info = {"added": 0, "skipped_state": True}
+        else:
+            info = _shared_sync_write_missing_file(target_abs, data)
+        if int(info.get("added") or 0) > 0 or info.get("merged"):
+            escritos.append(rel)
+            added += int(info.get("added") or 0)
+        details.append({"file": rel, **info})
+    return {
+        "file_count": len(escritos),
+        "files": escritos[:250],
+        "added": added,
+        "details": details[:250],
+    }
 
 
 def _shared_sync_aplicar_pacote(
@@ -21445,6 +22067,8 @@ def _shared_sync_aplicar_pacote(
     backup_dir = os.path.join(tenant_abs, "_shared_sync_backups", f"{scope}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     escritos = []
     user_scoped_fontes: list[tuple[str, bytes]] = []
+    user_share_fontes: list[tuple[str, bytes]] = []
+    user_share = bool((scope_config or {}).get("user_share"))
     share_between_users = bool((scope_config or {}).get("share_between_users")) and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
         manifest_raw = zf.read("manifest.json")
@@ -21460,6 +22084,9 @@ def _shared_sync_aplicar_pacote(
                 data = zf.read(member)
             except KeyError:
                 raise HTTPException(status_code=502, detail=f"Backup remoto sem arquivo esperado: {rel}")
+            if user_share:
+                user_share_fontes.append((rel, data))
+                continue
             if share_between_users:
                 user_scoped_fontes.append((rel, data))
                 continue
@@ -21473,6 +22100,9 @@ def _shared_sync_aplicar_pacote(
             with open(target_abs, "wb") as f:
                 f.write(data)
             escritos.append(rel)
+    if user_share:
+        resultado_share = _shared_sync_aplicar_user_share_add_only(client_id, scope, username, user_share_fontes, tenant_abs, backup_dir)
+        escritos.extend(resultado_share.get("files") or [])
     if share_between_users:
         resultado_share = _shared_sync_aplicar_user_scoped_share(client_id, scope, username, user_scoped_fontes, tenant_abs, backup_dir)
         escritos.extend(resultado_share.get("files") or [])
@@ -21871,6 +22501,59 @@ def _shared_sync_link_id_for_pair(item: dict) -> str:
     return _shared_sync_safe_doc_id("shared-sync-link", *_shared_sync_item_pair_key(item))
 
 
+def _shared_sync_link_direction_parts(link: dict, direction_key: str) -> tuple[str, str, str, str]:
+    if direction_key == "target_to_source":
+        return (
+            _shared_sync_normalizar_client_id(link.get("target_client_id")),
+            _shared_sync_normalizar_username(link.get("target_username")),
+            _shared_sync_normalizar_client_id(link.get("source_client_id")),
+            _shared_sync_normalizar_username(link.get("source_username")),
+        )
+    return (
+        _shared_sync_normalizar_client_id(link.get("source_client_id")),
+        _shared_sync_normalizar_username(link.get("source_username")),
+        _shared_sync_normalizar_client_id(link.get("target_client_id")),
+        _shared_sync_normalizar_username(link.get("target_username")),
+    )
+
+
+def _shared_sync_link_direction_for_session(sessao: dict, link: dict) -> str:
+    if _shared_sync_session_is_source(sessao, link):
+        return "source_to_target"
+    if _shared_sync_session_is_target(sessao, link):
+        return "target_to_source"
+    raise HTTPException(status_code=403, detail="Voce nao participa deste compartilhamento.")
+
+
+def _shared_sync_link_reverse_direction(direction_key: str) -> str:
+    return "source_to_target" if direction_key == "target_to_source" else "target_to_source"
+
+
+def _shared_sync_link_bundle_id_for_direction(link: dict, scope: str, direction_key: str) -> str:
+    directional = link.get("directional_bundles") if isinstance(link.get("directional_bundles"), dict) else {}
+    direction_map = directional.get(direction_key) if isinstance(directional.get(direction_key), dict) else {}
+    if direction_map.get(scope):
+        return str(direction_map.get(scope))
+    if direction_key == "source_to_target":
+        bundles = link.get("bundles") if isinstance(link.get("bundles"), dict) else {}
+        if bundles.get(scope):
+            return str(bundles.get(scope))
+    from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
+    return _shared_sync_pair_doc_id(from_client, from_username, to_client, to_username, scope)
+
+
+def _shared_sync_link_set_bundle_for_direction(link: dict, scope: str, direction_key: str, bundle_id: str) -> None:
+    directional = link.get("directional_bundles") if isinstance(link.get("directional_bundles"), dict) else {}
+    direction_map = directional.get(direction_key) if isinstance(directional.get(direction_key), dict) else {}
+    direction_map[scope] = str(bundle_id or "")
+    directional[direction_key] = direction_map
+    link["directional_bundles"] = directional
+    if direction_key == "source_to_target":
+        bundles = link.get("bundles") if isinstance(link.get("bundles"), dict) else {}
+        bundles[scope] = str(bundle_id or "")
+        link["bundles"] = bundles
+
+
 def _shared_sync_item_timestamp(item: dict) -> int:
     for key in ("updated_ts", "created_ts", "responded_ts"):
         try:
@@ -21943,6 +22626,16 @@ def _shared_sync_merge_link_items(existing: dict, incoming: dict) -> dict:
     if isinstance(incoming.get("bundles"), dict):
         bundles.update(incoming.get("bundles") or {})
     merged["bundles"] = bundles
+    directional = {}
+    if isinstance(merged.get("directional_bundles"), dict):
+        directional.update(_shared_sync_json_clone(merged.get("directional_bundles") or {}))
+    if isinstance(incoming.get("directional_bundles"), dict):
+        for direction_key, value in (incoming.get("directional_bundles") or {}).items():
+            current = directional.get(direction_key) if isinstance(directional.get(direction_key), dict) else {}
+            if isinstance(value, dict):
+                current.update(value)
+            directional[direction_key] = current
+    merged["directional_bundles"] = directional
     if _shared_sync_item_timestamp(incoming) >= _shared_sync_item_timestamp(merged):
         merged["updated_at"] = incoming.get("updated_at") or merged.get("updated_at") or _shared_sync_now_iso()
         merged["updated_ts"] = int(incoming.get("updated_ts") or merged.get("updated_ts") or time.time())
@@ -21998,6 +22691,70 @@ def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dic
     }
 
 
+def _shared_sync_link_sync_status_public(item: dict, sessao: Optional[dict], scopes: list[str]) -> dict:
+    if not sessao:
+        return {"scopes": {}, "pending_receive": 0}
+    try:
+        send_direction = _shared_sync_link_direction_for_session(sessao, item)
+    except HTTPException:
+        return {"scopes": {}, "pending_receive": 0}
+    receive_direction = _shared_sync_link_reverse_direction(send_direction)
+    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+    por_scope = {}
+    pending_receive = 0
+    last_sent_at = ""
+    last_received_at = ""
+    for scope in scopes:
+        send_bundle = _shared_sync_link_bundle_id_for_direction(item, scope, send_direction)
+        receive_bundle = _shared_sync_link_bundle_id_for_direction(item, scope, receive_direction)
+        send_meta = _shared_sync_remote_meta_by_id(send_bundle) or {}
+        receive_meta = _shared_sync_remote_meta_by_id(receive_bundle) or {}
+        send_state_key = _shared_sync_user_share_state_scope(item.get("id"), send_direction, scope)
+        receive_state_key = _shared_sync_user_share_state_scope(item.get("id"), receive_direction, scope)
+        send_state = state_scopes.get(send_state_key) if isinstance(state_scopes.get(send_state_key), dict) else {}
+        receive_state = state_scopes.get(receive_state_key) if isinstance(state_scopes.get(receive_state_key), dict) else {}
+        remote_hash = str(receive_meta.get("snapshot_hash") or "")
+        received_hash = str(receive_state.get("snapshot_hash") or "")
+        has_pending = bool(receive_meta and remote_hash and remote_hash != received_hash)
+        if has_pending:
+            pending_receive += 1
+        last_sent_at = max(last_sent_at, str(send_meta.get("updated_at") or ""))
+        last_received_at = max(last_received_at, str(receive_state.get("synced_at") or ""))
+        por_scope[scope] = {
+            "label": (SHARED_SYNC_SCOPES.get(scope) or {}).get("label") or scope,
+            "send_direction": send_direction,
+            "receive_direction": receive_direction,
+            "send": {
+                "exists": bool(send_meta),
+                "updated_at": send_meta.get("updated_at") or "",
+                "updated_by": send_meta.get("updated_by") or "",
+                "item_count": send_meta.get("item_count") or 0,
+                "file_count": send_meta.get("file_count") or 0,
+                "skipped": bool(send_state.get("skipped")),
+                "state": send_state,
+            },
+            "receive": {
+                "exists": bool(receive_meta),
+                "updated_at": receive_meta.get("updated_at") or "",
+                "updated_by": receive_meta.get("updated_by") or "",
+                "item_count": receive_meta.get("item_count") or 0,
+                "file_count": receive_meta.get("file_count") or 0,
+                "pending": has_pending,
+                "state": receive_state,
+            },
+            "known_count": _shared_sync_user_share_known_count(state, item.get("id"), scope),
+        }
+    return {
+        "send_direction": send_direction,
+        "receive_direction": receive_direction,
+        "pending_receive": pending_receive,
+        "last_sent_at": last_sent_at,
+        "last_received_at": last_received_at,
+        "scopes": por_scope,
+    }
+
+
 def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
     scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item)
     source = sessao and _shared_sync_session_is_source(sessao, item)
@@ -22020,8 +22777,9 @@ def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
         "created_at": item.get("created_at") or "",
         "updated_at": item.get("updated_at") or "",
         "direction": "source" if source else "target" if target else "",
-        "can_push": bool(source and item.get("active", True)),
-        "can_pull": bool(target and item.get("active", True)),
+        "can_push": bool((source or target) and item.get("active", True)),
+        "can_pull": bool((source or target) and item.get("active", True)),
+        "sync_status": _shared_sync_link_sync_status_public(item, sessao, scopes),
     }
 
 
@@ -22054,14 +22812,7 @@ def _shared_sync_user_shares_for_session(sessao: dict) -> dict:
 
 
 def _shared_sync_link_bundle_id(link: dict, scope: str) -> str:
-    bundles = link.get("bundles") if isinstance(link.get("bundles"), dict) else {}
-    return str(bundles.get(scope) or _shared_sync_pair_doc_id(
-        link.get("source_client_id"),
-        link.get("source_username"),
-        link.get("target_client_id"),
-        link.get("target_username"),
-        scope,
-    ))
+    return _shared_sync_link_bundle_id_for_direction(link, scope, "source_to_target")
 
 
 def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, machine_id: str = "", link_id: str = "", invite_id: str = "") -> dict:
@@ -22071,6 +22822,19 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
     }
     if not _shared_sync_scope_permitido_entre_clientes(item_ref, scope):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
+    link_ref = {
+        "id": str(link_id or _shared_sync_link_id_for_pair({
+            "source_client_id": source_sessao.get("client_id"),
+            "source_username": source_sessao.get("username"),
+            "target_client_id": target.get("client_id"),
+            "target_username": target.get("username"),
+        })),
+        "source_client_id": source_sessao.get("client_id"),
+        "source_username": source_sessao.get("username"),
+        "target_client_id": target.get("client_id"),
+        "target_username": target.get("username"),
+    }
+    direction_key = "source_to_target"
     bundle_id = _shared_sync_pair_doc_id(
         source_sessao.get("client_id"),
         source_sessao.get("username"),
@@ -22078,7 +22842,8 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
         target.get("username"),
         scope,
     )
-    return _shared_sync_push_scope(
+    known_keys = _shared_sync_user_share_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link_ref["id"], scope)
+    result = _shared_sync_push_scope(
         source_sessao.get("client_id"),
         scope,
         source_sessao,
@@ -22094,7 +22859,12 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
             "link_id": str(link_id or ""),
         },
         user_only=True,
+        state_scope=_shared_sync_user_share_state_scope(link_ref["id"], direction_key, scope),
+        known_keys=known_keys,
+        allow_empty_delta=True,
     )
+    _shared_sync_user_share_add_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link_ref["id"], scope, result.get("item_keys") or [])
+    return result
 
 
 def _shared_sync_exception_message(exc: Exception) -> str:
@@ -22108,9 +22878,15 @@ def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, de
     bundles: dict[str, str] = {}
     results: list[dict] = []
     errors: list[dict] = []
+    link_id = _shared_sync_link_id_for_pair({
+        "source_client_id": source_sessao.get("client_id"),
+        "source_username": source_sessao.get("username"),
+        "target_client_id": destino.get("client_id"),
+        "target_username": destino.get("username"),
+    })
     for scope in scopes:
         try:
-            result = _shared_sync_push_pair_scope(source_sessao, destino, scope, machine_id, invite_id=invite_id)
+            result = _shared_sync_push_pair_scope(source_sessao, destino, scope, machine_id, link_id=link_id, invite_id=invite_id)
             bundles[scope] = result.get("id") or _shared_sync_pair_doc_id(
                 source_sessao.get("client_id"),
                 source_sessao.get("username"),
@@ -22134,6 +22910,7 @@ def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, de
 
     agora = _shared_sync_now_iso()
     invite["bundles"] = bundles
+    invite["directional_bundles"] = {"source_to_target": dict(bundles)}
     invite["prepared_results"] = results
     invite["prepare_errors"] = errors
     invite["updated_at"] = agora
@@ -22161,18 +22938,30 @@ def _shared_sync_start_invite_prepare_thread(invite_id: str, source_sessao: dict
 def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
     if not _shared_sync_scope_permitido_entre_clientes(link, scope):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser importadas entre clientes diferentes.")
-    bundle_id = _shared_sync_link_bundle_id(link, scope)
+    my_direction = _shared_sync_link_direction_for_session(target_sessao, link)
+    receive_direction = _shared_sync_link_reverse_direction(my_direction)
+    bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, receive_direction)
     bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id)
-    scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}
+    manifest = _shared_sync_manifest_from_bundle(bundle)
+    scope_config = {"user_share": True, "share_between_users": True}
     result = _shared_sync_aplicar_pacote(target_sessao.get("client_id"), scope, bundle, target_sessao.get("username") or "", scope_config)
-    state_scope = f"user-share:{link.get('id')}:{scope}"
+    state_scope = _shared_sync_user_share_state_scope(link.get("id"), receive_direction, scope)
     _shared_sync_state_update(target_sessao.get("client_id"), target_sessao.get("username") or "", state_scope, meta, "pull")
+    _shared_sync_user_share_add_known_keys(
+        target_sessao.get("client_id"),
+        target_sessao.get("username") or "",
+        link.get("id"),
+        scope,
+        manifest.get("item_keys") or [],
+    )
     return {
         "scope": scope,
         "success": True,
         "direction": "pull",
+        "sync_direction": receive_direction,
         "link_id": link.get("id"),
         "file_count": result.get("file_count") or 0,
+        "item_count": manifest.get("item_count") or meta.get("item_count") or 0,
         "backup_dir": result.get("backup_dir") or "",
         "snapshot_hash": meta.get("snapshot_hash") or "",
         "remote_updated_at": meta.get("updated_at") or "",
@@ -22181,15 +22970,12 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
 
 
 def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "") -> dict:
-    if not _shared_sync_session_is_source(source_sessao, link):
-        raise HTTPException(status_code=403, detail="Apenas o usuario de origem pode enviar estes dados.")
+    direction_key = _shared_sync_link_direction_for_session(source_sessao, link)
     if not _shared_sync_scope_permitido_entre_clientes(link, scope):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
-    target = {
-        "username": link.get("target_username"),
-        "client_id": link.get("target_client_id"),
-    }
-    bundle_id = _shared_sync_link_bundle_id(link, scope)
+    from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
+    bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, direction_key)
+    known_keys = _shared_sync_user_share_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link.get("id"), scope)
     result = _shared_sync_push_scope(
         source_sessao.get("client_id"),
         scope,
@@ -22198,18 +22984,32 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         bundle_id=bundle_id,
         extra_meta={
             "visibility": "user-share",
-            "source_client_id": link.get("source_client_id"),
-            "source_username": link.get("source_username"),
-            "target_client_id": link.get("target_client_id"),
-            "target_username": link.get("target_username"),
+            "source_client_id": from_client,
+            "source_username": from_username,
+            "target_client_id": to_client,
+            "target_username": to_username,
+            "sync_direction": direction_key,
             "invite_id": link.get("invite_id") or "",
             "link_id": link.get("id") or "",
         },
         user_only=True,
+        state_scope=_shared_sync_user_share_state_scope(link.get("id"), direction_key, scope),
+        known_keys=known_keys,
+        allow_empty_delta=False,
     )
-    bundles = link.get("bundles") if isinstance(link.get("bundles"), dict) else {}
-    bundles[scope] = result.get("id") or bundle_id
-    link["bundles"] = bundles
+    if result.get("skipped"):
+        state = _shared_sync_state_read(source_sessao.get("client_id"), source_sessao.get("username") or "")
+        scopes_state = state.setdefault("scopes", {})
+        scopes_state[_shared_sync_user_share_state_scope(link.get("id"), direction_key, scope)] = {
+            "direction": "push",
+            "skipped": True,
+            "reason": result.get("reason") or "already_shared",
+            "synced_at": _shared_sync_now_iso(),
+        }
+        _shared_sync_state_write(source_sessao.get("client_id"), source_sessao.get("username") or "", state)
+        return result
+    _shared_sync_link_set_bundle_for_direction(link, scope, direction_key, result.get("id") or bundle_id)
+    _shared_sync_user_share_add_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link.get("id"), scope, result.get("item_keys") or [])
     link["updated_at"] = _shared_sync_now_iso()
     link["updated_ts"] = int(time.time())
     _shared_sync_save_link(link)
@@ -22355,6 +23155,7 @@ def shared_sync_user_shares_accept(
         "target_name": invite.get("target_name") or invite.get("target_username"),
         "scopes": scopes,
         "bundles": invite.get("bundles") if isinstance(invite.get("bundles"), dict) else {},
+        "directional_bundles": invite.get("directional_bundles") if isinstance(invite.get("directional_bundles"), dict) else {"source_to_target": invite.get("bundles") if isinstance(invite.get("bundles"), dict) else {}},
         "source_keep_synced": bool(invite.get("source_keep_synced")),
         "target_keep_synced": bool(payload.keep_synced),
         "created_at": _shared_sync_now_iso(),
@@ -22456,8 +23257,7 @@ def shared_sync_user_shares_link_push(
     link = _shared_sync_get_link(link_id)
     if not bool(link.get("active", True)):
         raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
-    if not _shared_sync_session_is_source(sessao, link):
-        raise HTTPException(status_code=403, detail="Apenas o usuario de origem pode enviar estes dados.")
+    _shared_sync_link_direction_for_session(sessao, link)
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
     scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link)
     results = [_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "") for scope in scopes]
@@ -22475,8 +23275,7 @@ def shared_sync_user_shares_link_pull(
     link = _shared_sync_get_link(link_id)
     if not bool(link.get("active", True)):
         raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
-    if not _shared_sync_session_is_target(sessao, link):
-        raise HTTPException(status_code=403, detail="Apenas o usuario de destino pode importar estes dados.")
+    _shared_sync_link_direction_for_session(sessao, link)
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
     scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link)
     results = [_shared_sync_pull_pair_scope(sessao, link, scope) for scope in scopes]
@@ -22494,7 +23293,9 @@ def shared_sync_user_shares_auto_push(
     results = []
     skipped = []
     for link in _shared_sync_links_all():
-        if not _shared_sync_session_is_source(sessao, link):
+        try:
+            _shared_sync_link_direction_for_session(sessao, link)
+        except HTTPException:
             continue
         if not bool(link.get("active", True)):
             skipped.append({"link_id": link.get("id"), "reason": "inactive"})
@@ -22510,15 +23311,72 @@ def shared_sync_user_shares_auto_push(
                 continue
             if requested and scope not in requested:
                 continue
-            entries, _warnings = _shared_sync_coletar_arquivos(sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True)
-            local_hash = _shared_sync_snapshot_hash(entries)
-            bundle_id = _shared_sync_link_bundle_id(link, scope)
-            remote = _shared_sync_remote_meta_by_id(bundle_id) or {}
-            if local_hash and local_hash == str(remote.get("snapshot_hash") or ""):
-                skipped.append({"link_id": link.get("id"), "scope": scope, "reason": "already_current"})
+            result = _shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "")
+            if result.get("skipped"):
+                skipped.append({"link_id": link.get("id"), "scope": scope, "reason": result.get("reason") or "already_shared"})
                 continue
-            results.append(_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or ""))
+            results.append(result)
     return {"success": True, "direction": "auto-push", "results": results, "skipped": skipped}
+
+
+@app.post("/api/shared-sync/user-shares/auto")
+def shared_sync_user_shares_auto(
+    payload: SharedSyncUserLinkRunRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    requested = set(str(scope or "").strip() for scope in (payload.scopes or []) if str(scope or "").strip())
+    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
+    results = []
+    skipped = []
+    for link in _shared_sync_links_all():
+        try:
+            my_direction = _shared_sync_link_direction_for_session(sessao, link)
+        except HTTPException:
+            continue
+        if not bool(link.get("active", True)):
+            skipped.append({"link_id": link.get("id"), "reason": "inactive"})
+            continue
+        if not (link.get("source_keep_synced") and link.get("target_keep_synced")):
+            skipped.append({"link_id": link.get("id"), "reason": "sync_disabled_by_participant"})
+            continue
+        receive_direction = _shared_sync_link_reverse_direction(my_direction)
+        for scope in link.get("scopes") or []:
+            if scope not in SHARED_SYNC_SCOPES:
+                continue
+            if requested and scope not in requested:
+                continue
+            if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+                skipped.append({"link_id": link.get("id"), "scope": scope, "reason": "cross_client_sensitive_scope"})
+                continue
+
+            receive_bundle = _shared_sync_link_bundle_id_for_direction(link, scope, receive_direction)
+            meta = _shared_sync_remote_meta_by_id(receive_bundle)
+            if meta:
+                remote_hash = str(meta.get("snapshot_hash") or "")
+                state_scope = _shared_sync_user_share_state_scope(link.get("id"), receive_direction, scope)
+                local_hash = str(((state_scopes.get(state_scope) or {}).get("snapshot_hash")) or "")
+                if remote_hash and remote_hash != local_hash:
+                    try:
+                        results.append(_shared_sync_pull_pair_scope(sessao, link, scope))
+                    except Exception as exc:
+                        skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "pull", "reason": _shared_sync_exception_message(exc)})
+                else:
+                    skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "pull", "reason": "already_current"})
+            else:
+                skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "pull", "reason": "no_remote"})
+
+            try:
+                result = _shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "")
+                if result.get("skipped"):
+                    skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "push", "reason": result.get("reason") or "already_shared"})
+                else:
+                    results.append(result)
+            except Exception as exc:
+                skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "push", "reason": _shared_sync_exception_message(exc)})
+    return {"success": True, "direction": "user-share-auto", "results": results, "skipped": skipped}
 
 
 @app.get("/api/shared-sync/machine-sync")
@@ -22644,7 +23502,9 @@ def shared_sync_auto_pull(
         resultados.append(_shared_sync_pull_scope(client_id, scope, sessao, payload.machine_id or "", scope_cfg))
 
     for link in _shared_sync_links_all():
-        if not _shared_sync_session_is_target(sessao, link):
+        try:
+            my_direction = _shared_sync_link_direction_for_session(sessao, link)
+        except HTTPException:
             continue
         if not bool(link.get("active", True)):
             ignorados.append({"link_id": link.get("id"), "reason": "user_share_inactive"})
@@ -22652,6 +23512,7 @@ def shared_sync_auto_pull(
         if not (link.get("source_keep_synced") and link.get("target_keep_synced")):
             ignorados.append({"link_id": link.get("id"), "reason": "user_share_sync_disabled_by_participant"})
             continue
+        receive_direction = _shared_sync_link_reverse_direction(my_direction)
         for scope in link.get("scopes") or []:
             if scope not in SHARED_SYNC_SCOPES:
                 continue
@@ -22660,13 +23521,13 @@ def shared_sync_auto_pull(
                 continue
             if requested and scope not in requested:
                 continue
-            bundle_id = _shared_sync_link_bundle_id(link, scope)
+            bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, receive_direction)
             meta = _shared_sync_remote_meta_by_id(bundle_id)
             if not meta:
                 ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "user_share_no_remote"})
                 continue
             remote_hash = str(meta.get("snapshot_hash") or "")
-            state_scope = f"user-share:{link.get('id')}:{scope}"
+            state_scope = _shared_sync_user_share_state_scope(link.get("id"), receive_direction, scope)
             local_hash = str(((state_scopes.get(state_scope) or {}).get("snapshot_hash")) or "")
             if remote_hash and local_hash == remote_hash:
                 ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})

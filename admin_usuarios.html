@@ -324,6 +324,27 @@
             padding: 10px;
         }
         .user-share-item strong { display: block; color: #d8ecff; margin-bottom: 4px; }
+        .user-share-sync-status {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .user-share-sync-status .sync-card {
+            border: 1px solid rgba(79, 172, 254, 0.18);
+            background: rgba(79, 172, 254, 0.06);
+            border-radius: 8px;
+            padding: 6px 8px;
+            min-width: 0;
+        }
+        .sync-card-title {
+            color: #d8ecff;
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+        .sync-card.pending { border-color: rgba(255, 184, 77, 0.58); }
+        .sync-card.ok { border-color: rgba(51, 195, 125, 0.42); }
         .user-share-item .row {
             display: flex;
             align-items: center;
@@ -646,6 +667,7 @@
     let usuariosCompartilhamentoCache = [];
     let compartilhamentoUsuariosCache = null;
     let sincronizacaoMaquinasCache = null;
+    let sincronizacaoUsuariosAutomaticaRodando = false;
     let hiddenPermissionsState = { full: false, configuracoes: false };
     let secaoAtual = usuarioAdmin ? 'visao-geral' : 'compartilhar';
 
@@ -1357,6 +1379,60 @@
         return (item && item.label) || scope;
     }
 
+    function textoDataSync(valor) {
+        const raw = String(valor || '').trim();
+        if (!raw) return 'sem registro';
+        try {
+            const data = new Date(raw);
+            if (!Number.isNaN(data.getTime())) {
+                return data.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+            }
+        } catch (_err) {}
+        return raw;
+    }
+
+    function statusEscoposVinculo(link) {
+        const status = (link && link.sync_status) || {};
+        const scopes = status.scopes || {};
+        const labelsPendentes = [];
+        Object.keys(scopes).forEach(scope => {
+            if (scopes[scope] && scopes[scope].receive && scopes[scope].receive.pending) {
+                labelsPendentes.push(scopes[scope].label || escopoLabelUsuario(scope));
+            }
+        });
+        return {
+            pending: Number(status.pending_receive || labelsPendentes.length || 0),
+            pendingLabels: labelsPendentes,
+            lastSent: status.last_sent_at || '',
+            lastReceived: status.last_received_at || ''
+        };
+    }
+
+    function renderStatusSincronizacaoVinculo(link) {
+        const resumo = statusEscoposVinculo(link);
+        const receiveClass = resumo.pending > 0 ? 'pending' : 'ok';
+        const receiveText = resumo.pending > 0
+            ? `${resumo.pending} tipo(s) aguardando`
+            : 'em dia';
+        const detalhesPendentes = resumo.pendingLabels.length
+            ? `<div class="muted-line">${escaparHtml(resumo.pendingLabels.slice(0, 3).join(', '))}</div>`
+            : '';
+        return `
+            <div class="user-share-sync-status">
+                <div class="sync-card ok">
+                    <div class="sync-card-title">Envio</div>
+                    <div class="muted-line">${escaparHtml(textoDataSync(resumo.lastSent))}</div>
+                </div>
+                <div class="sync-card ${receiveClass}">
+                    <div class="sync-card-title">Recebimento</div>
+                    <div class="muted-line">${escaparHtml(receiveText)}</div>
+                    ${detalhesPendentes}
+                    <div class="muted-line">Último recebimento: ${escaparHtml(textoDataSync(resumo.lastReceived))}</div>
+                </div>
+            </div>
+        `;
+    }
+
     function renderUsuariosCompartilhamento(data) {
         usuariosCompartilhamentoCache = Array.isArray(data && data.users) ? data.users : [];
         const select = document.getElementById('userShareTarget');
@@ -1463,20 +1539,24 @@
             const syncStatus = link.auto_sync_enabled
                 ? 'sincronização contínua ativa'
                 : `sincronização contínua incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
-            const action = souOrigem
-                ? `<button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>`
-                : `<button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Importar agora</button>`;
+            const autoHint = link.auto_sync_enabled
+                ? '<div class="muted-line">Automático: recebe novidades do outro lado e envia as suas.</div>'
+                : '';
             return `
                 <div class="user-share-item">
                     <strong>${escaparHtml(pessoa)}</strong>
                     <div class="small">${escaparHtml((link.scope_labels || []).join(', '))}</div>
                     <div class="muted-line">${link.active ? 'ativo' : 'pausado'} | ${escaparHtml(syncStatus)}</div>
+                    ${renderStatusSincronizacaoVinculo(link)}
+                    ${autoHint}
                     <label class="sync-auto-row">
                         <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
                         <span>Manter sincronizado do meu lado</span>
                     </label>
                     <div class="row">
-                        ${action}
+                        <button class="btn-primary" onclick="rodarSincronizacaoAutomaticaEntreUsuarios(false)">Sincronizar agora</button>
+                        <button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>
+                        <button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Receber agora</button>
                         <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
                     </div>
                 </div>
@@ -1722,8 +1802,8 @@
 
     async function aceitarConviteCompartilhamentoUsuario(inviteId) {
         const keepSynced = !!document.getElementById('acceptSync_' + inviteId)?.checked;
-        if (!confirm('Aceitar e importar os dados deste usuário? O sistema cria backup local antes de aplicar.')) return;
-        setStatus('Aceitando convite e importando dados...');
+        if (!confirm('Aceitar e adicionar os dados deste usuário? O sistema cria backup local antes de aplicar.')) return;
+        setStatus('Aceitando convite e adicionando dados...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/accept', {
                 method: 'POST',
@@ -1735,6 +1815,7 @@
             await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
             setStatus(data.message || 'Convite aceito.');
+            setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
             setStatus(error.message || 'Erro ao aceitar convite.', true);
         }
@@ -1768,6 +1849,7 @@
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao atualizar vínculo.');
             await carregarCompartilhamentoEntreUsuarios();
             setStatus(data.message || 'Preferências atualizadas.');
+            setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
             setStatus(error.message || 'Erro ao atualizar vínculo.', true);
         }
@@ -1792,8 +1874,8 @@
 
     async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
         const endpoint = direcao === 'push' ? 'push' : 'pull';
-        if (direcao === 'pull' && !confirm('Importar estes dados agora? O sistema cria backup local antes de aplicar.')) return;
-        setStatus(direcao === 'push' ? 'Enviando dados do vínculo...' : 'Importando dados do vínculo...');
+        if (direcao === 'pull' && !confirm('Receber e adicionar dados novos deste usuário? O sistema cria backup local antes de aplicar.')) return;
+        setStatus(direcao === 'push' ? 'Enviando novidades do vínculo...' : 'Recebendo novidades do vínculo...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
                 method: 'POST',
@@ -1804,7 +1886,7 @@
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
             if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
+            setStatus((direcao === 'push' ? 'Novidades enviadas. ' : 'Novidades recebidas. ') + resumoResultadosSync(data.results));
         } catch (error) {
             setStatus(error.message || 'Erro ao sincronizar vínculo.', true);
         }
@@ -1816,6 +1898,41 @@
 
     function receberVinculoCompartilhamentoUsuario(linkId) {
         executarVinculoCompartilhamentoUsuario(linkId, 'pull');
+    }
+
+    async function rodarSincronizacaoAutomaticaEntreUsuarios(silencioso = true) {
+        if (sincronizacaoUsuariosAutomaticaRodando) return false;
+        const links = Array.isArray(compartilhamentoUsuariosCache && compartilhamentoUsuariosCache.links)
+            ? compartilhamentoUsuariosCache.links
+            : [];
+        const ativos = links.filter(link => link && link.active && link.auto_sync_enabled);
+        if (!ativos.length) return false;
+        sincronizacaoUsuariosAutomaticaRodando = true;
+        if (!silencioso) setStatus('Sincronizando vínculos entre usuários...');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/auto', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtual() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro na sincronização automática.');
+            const results = Array.isArray(data.results) ? data.results : [];
+            const recebeu = results.some(item => item && item.direction === 'pull');
+            if (recebeu) await atualizarCacheHistoricoFavoritosSincronizado(results);
+            await carregarCompartilhamentoEntreUsuarios();
+            if (!silencioso && results.length) {
+                setStatus('Sincronização concluída. ' + resumoResultadosSync(results));
+            } else if (!silencioso) {
+                setStatus('Sincronização conferida. Nenhuma novidade.');
+            }
+            return true;
+        } catch (error) {
+            if (!silencioso) setStatus(error.message || 'Erro na sincronização automática.', true);
+            return false;
+        } finally {
+            sincronizacaoUsuariosAutomaticaRodando = false;
+        }
     }
 
     async function carregarOnlineUsuarios() {
@@ -2030,7 +2147,9 @@
         setInterval(carregarOnlineUsuarios, 30000);
     }
     setInterval(carregarSincronizacaoMinhasMaquinas, 90000);
-    setInterval(carregarCompartilhamentoEntreUsuarios, 90000);
+    setInterval(carregarCompartilhamentoEntreUsuarios, 30000);
+    setInterval(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 15000);
+    setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 5000);
 </script>
 <script src="/ia-sidebar.js"></script>
 </body>
