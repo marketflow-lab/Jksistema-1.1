@@ -275,6 +275,15 @@
             padding: 12px;
             margin: 0 0 16px;
         }
+        .user-share-action-status {
+            min-height: 18px;
+            color: #bfe4ff;
+            font-size: 12px;
+            line-height: 1.35;
+            margin-top: 4px;
+        }
+        .user-share-action-status.is-error { color: #ffb1b1; }
+        .user-share-action-status.is-success { color: #b9f8d1; }
         .machine-sync-panel {
             border: 1px solid rgba(51, 195, 125, 0.30);
             background: rgba(51, 195, 125, 0.07);
@@ -543,6 +552,7 @@
                         <div>
                             <h3>Compartilhar entre usuários</h3>
                             <div id="userShareSummary" class="small">Carregando convites e vínculos...</div>
+                            <div id="userShareActionStatus" class="user-share-action-status" aria-live="polite"></div>
                         </div>
                         <button class="btn-muted" onclick="carregarCompartilhamentoEntreUsuarios()">Atualizar</button>
                     </div>
@@ -803,6 +813,16 @@
         if (!box) return;
         box.textContent = msg || '';
         box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
+    }
+
+    function setUserShareStatus(msg, erro) {
+        const box = document.getElementById('userShareActionStatus');
+        if (box) {
+            box.textContent = msg || '';
+            box.classList.toggle('is-error', !!erro);
+            box.classList.toggle('is-success', !!msg && !erro);
+        }
+        setStatus(msg, erro);
     }
 
     function labelBackendUsuarios(backend) {
@@ -1764,16 +1784,16 @@
     async function enviarConviteCompartilhamentoUsuario() {
         const targetRaw = String(document.getElementById('userShareTarget')?.value || '').trim();
         if (!targetRaw) {
-            setStatus('Selecione o usuário de destino.', true);
+            setUserShareStatus('Selecione o usuário de destino.', true);
             return;
         }
         const [target_username, target_client_id] = targetRaw.split('|');
         const scopes = scopesSelecionadosCompartilhamentoUsuario();
         if (!scopes.length) {
-            setStatus('Selecione pelo menos um dado para compartilhar.', true);
+            setUserShareStatus('Selecione pelo menos um dado para compartilhar.', true);
             return;
         }
-        setStatus('Enviando convite e preparando pacote...');
+        setUserShareStatus('Enviando convite e preparando pacote...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/invite', {
                 method: 'POST',
@@ -1791,19 +1811,19 @@
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar convite.');
             limparConviteCompartilhamentoUsuario();
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus(data.message || 'Convite enviado.');
+            setUserShareStatus(data.message || 'Convite enviado.');
             setTimeout(carregarCompartilhamentoEntreUsuarios, 2500);
             setTimeout(carregarCompartilhamentoEntreUsuarios, 9000);
             setTimeout(carregarCompartilhamentoEntreUsuarios, 20000);
         } catch (error) {
-            setStatus(error.message || 'Erro ao enviar convite.', true);
+            setUserShareStatus(error.message || 'Erro ao enviar convite.', true);
         }
     }
 
     async function aceitarConviteCompartilhamentoUsuario(inviteId) {
         const keepSynced = !!document.getElementById('acceptSync_' + inviteId)?.checked;
         if (!confirm('Aceitar e adicionar os dados deste usuário? O sistema cria backup local antes de aplicar.')) return;
-        setStatus('Aceitando convite e adicionando dados...');
+        setUserShareStatus('Aceitando convite e adicionando dados...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/accept', {
                 method: 'POST',
@@ -1814,16 +1834,16 @@
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao aceitar convite.');
             await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus(data.message || 'Convite aceito.');
+            setUserShareStatus(data.message || 'Convite aceito.');
             setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
-            setStatus(error.message || 'Erro ao aceitar convite.', true);
+            setUserShareStatus(error.message || 'Erro ao aceitar convite.', true);
         }
     }
 
     async function recusarConviteCompartilhamentoUsuario(inviteId) {
         if (!confirm('Recusar este convite de compartilhamento?')) return;
-        setStatus('Recusando convite...');
+        setUserShareStatus('Recusando convite...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/reject', {
                 method: 'POST',
@@ -1832,9 +1852,9 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recusar convite.');
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus(data.message || 'Convite recusado.');
+            setUserShareStatus(data.message || 'Convite recusado.');
         } catch (error) {
-            setStatus(error.message || 'Erro ao recusar convite.', true);
+            setUserShareStatus(error.message || 'Erro ao recusar convite.', true);
         }
     }
 
@@ -1848,10 +1868,10 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao atualizar vínculo.');
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus(data.message || 'Preferências atualizadas.');
+            setUserShareStatus(data.message || 'Preferências atualizadas.');
             setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
-            setStatus(error.message || 'Erro ao atualizar vínculo.', true);
+            setUserShareStatus(error.message || 'Erro ao atualizar vínculo.', true);
         }
     }
 
@@ -1866,16 +1886,16 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao pausar vínculo.');
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus(data.message || 'Compartilhamento pausado.');
+            setUserShareStatus(data.message || 'Compartilhamento pausado.');
         } catch (error) {
-            setStatus(error.message || 'Erro ao pausar vínculo.', true);
+            setUserShareStatus(error.message || 'Erro ao pausar vínculo.', true);
         }
     }
 
     async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
         const endpoint = direcao === 'push' ? 'push' : 'pull';
         if (direcao === 'pull' && !confirm('Receber e adicionar dados novos deste usuário? O sistema cria backup local antes de aplicar.')) return;
-        setStatus(direcao === 'push' ? 'Enviando novidades do vínculo...' : 'Recebendo novidades do vínculo...');
+        setUserShareStatus(direcao === 'push' ? 'Enviando novidades do vínculo...' : 'Recebendo novidades do vínculo...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
                 method: 'POST',
@@ -1886,9 +1906,9 @@
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
             if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
-            setStatus((direcao === 'push' ? 'Novidades enviadas. ' : 'Novidades recebidas. ') + resumoResultadosSync(data.results));
+            setUserShareStatus((direcao === 'push' ? 'Novidades enviadas. ' : 'Novidades recebidas. ') + resumoResultadosSync(data.results));
         } catch (error) {
-            setStatus(error.message || 'Erro ao sincronizar vínculo.', true);
+            setUserShareStatus(error.message || 'Erro ao sincronizar vínculo.', true);
         }
     }
 
@@ -1906,9 +1926,12 @@
             ? compartilhamentoUsuariosCache.links
             : [];
         const ativos = links.filter(link => link && link.active && link.auto_sync_enabled);
-        if (!ativos.length) return false;
+        if (!ativos.length) {
+            if (!silencioso) setUserShareStatus('Nenhum vínculo com sincronização contínua ativa.', true);
+            return false;
+        }
         sincronizacaoUsuariosAutomaticaRodando = true;
-        if (!silencioso) setStatus('Sincronizando vínculos entre usuários...');
+        if (!silencioso) setUserShareStatus('Sincronizando vínculos entre usuários...');
         try {
             const resp = await fetch('/api/shared-sync/user-shares/auto', {
                 method: 'POST',
@@ -1922,13 +1945,13 @@
             if (recebeu) await atualizarCacheHistoricoFavoritosSincronizado(results);
             await carregarCompartilhamentoEntreUsuarios();
             if (!silencioso && results.length) {
-                setStatus('Sincronização concluída. ' + resumoResultadosSync(results));
+                setUserShareStatus('Sincronização concluída. ' + resumoResultadosSync(results));
             } else if (!silencioso) {
-                setStatus('Sincronização conferida. Nenhuma novidade.');
+                setUserShareStatus('Sincronização conferida. Nenhuma novidade.');
             }
             return true;
         } catch (error) {
-            if (!silencioso) setStatus(error.message || 'Erro na sincronização automática.', true);
+            if (!silencioso) setUserShareStatus(error.message || 'Erro na sincronização automática.', true);
             return false;
         } finally {
             sincronizacaoUsuariosAutomaticaRodando = false;

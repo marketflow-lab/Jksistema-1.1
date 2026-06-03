@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.34",
+  "version": "1.0.35",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -68,12 +68,16 @@
           "promo_worker_api.py",
           "medias_compras.py",
           "requirements.txt",
+          "*.html",
+          "*.js",
           "jkjkjk-*.json",
           "firebase-service-account.json",
           "firebase_service_account.json",
           "*service-account*.json",
           "static/**",
           "img/**",
+          "python_runtime/**",
+          "python_wheels/**",
           "NCM.xlsx",
           "NCM1.xlsx",
           "openapi_bling.json"

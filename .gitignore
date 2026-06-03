@@ -40,6 +40,8 @@ android_app/*.keystore
 __pycache__/
 *.py[cod]
 .tmp_checks/
+python_runtime/
+python_wheels/
 
 # Logs
 logs/

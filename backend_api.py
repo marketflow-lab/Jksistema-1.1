@@ -21174,7 +21174,8 @@ def _shared_sync_vendas_delta_db_bytes(rel: str, abs_path: str, known_keys: set[
             return None, []
         create_row = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
         create_sql = create_row[0] if create_row and create_row[0] else ""
-        rows = cur.execute(f"SELECT {', '.join('\"' + c.replace('\"', '\"\"') + '\"' for c in cols)} FROM vendas").fetchall()
+        colunas_sql = ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
+        rows = cur.execute(f"SELECT {colunas_sql} FROM vendas").fetchall()
         selected = []
         keys = []
         vistos_lote = set()
@@ -21205,10 +21206,11 @@ def _shared_sync_vendas_delta_db_bytes(rel: str, abs_path: str, known_keys: set[
                     nome = str(col[1])
                     tipo = str(col[2] or "TEXT")
                     pk = " PRIMARY KEY" if int(col[5] or 0) else ""
-                    col_defs.append(f'"{nome.replace("\"", "\"\"")}" {tipo}{pk}')
+                    nome_sql = '"' + nome.replace('"', '""') + '"'
+                    col_defs.append(f"{nome_sql} {tipo}{pk}")
                 dst_cur.execute(f"CREATE TABLE vendas ({', '.join(col_defs)})")
             placeholders = ", ".join(["?"] * len(cols))
-            quoted_cols = ", ".join(f'"{c.replace("\"", "\"\"")}"' for c in cols)
+            quoted_cols = ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
             dst_cur.executemany(f"INSERT OR IGNORE INTO vendas ({quoted_cols}) VALUES ({placeholders})", selected)
             dst.commit()
         finally:

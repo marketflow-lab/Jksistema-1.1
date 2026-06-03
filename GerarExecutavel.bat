@@ -24,13 +24,29 @@ if not defined FIREBASE_CREDENTIAL_FOUND (
     exit /b 1
 )
 
+echo.
+echo Preparando Python e dependencias para o instalador...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\prepare_installer_runtime.ps1"
+if errorlevel 1 (
+    echo.
+    echo ERRO: Falha ao preparar as dependencias do instalador.
+    pause
+    exit /b 1
+)
+
 cd electron_app
 call npm install
 call npm run dist
+if errorlevel 1 (
+    echo.
+    echo ERRO: Falha ao gerar o instalador.
+    pause
+    exit /b 1
+)
 
 echo.
 echo ------------------------------------------
 echo SUCESSO! O instalador esta na pasta:
-echo electron_app\dist
+echo electron_app\dist-client-setup
 echo ------------------------------------------
 pause
