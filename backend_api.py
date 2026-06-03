@@ -21849,6 +21849,106 @@ def _shared_sync_session_is_target(sessao: dict, item: dict) -> bool:
     )
 
 
+def _shared_sync_pair_key(source_client_id: str, source_username: str, target_client_id: str, target_username: str) -> tuple[str, str, str, str]:
+    return (
+        _shared_sync_normalizar_client_id(source_client_id),
+        _shared_sync_normalizar_username(source_username),
+        _shared_sync_normalizar_client_id(target_client_id),
+        _shared_sync_normalizar_username(target_username),
+    )
+
+
+def _shared_sync_item_pair_key(item: dict) -> tuple[str, str, str, str]:
+    return _shared_sync_pair_key(
+        item.get("source_client_id"),
+        item.get("source_username"),
+        item.get("target_client_id"),
+        item.get("target_username"),
+    )
+
+
+def _shared_sync_link_id_for_pair(item: dict) -> str:
+    return _shared_sync_safe_doc_id("shared-sync-link", *_shared_sync_item_pair_key(item))
+
+
+def _shared_sync_item_timestamp(item: dict) -> int:
+    for key in ("updated_ts", "created_ts", "responded_ts"):
+        try:
+            value = int((item or {}).get(key) or 0)
+            if value:
+                return value
+        except Exception:
+            pass
+    return 0
+
+
+def _shared_sync_unir_scopes(*listas) -> list[str]:
+    saida = []
+    for lista in listas:
+        for scope in lista or []:
+            scope_norm = str(scope or "").strip()
+            if scope_norm in SHARED_SYNC_SCOPES and scope_norm not in saida:
+                saida.append(scope_norm)
+    return saida
+
+
+def _shared_sync_mesmo_par(item: dict, source_user: dict, target_user: dict) -> bool:
+    return _shared_sync_item_pair_key(item) == _shared_sync_pair_key(
+        source_user.get("client_id"),
+        source_user.get("username"),
+        target_user.get("client_id"),
+        target_user.get("username"),
+    )
+
+
+def _shared_sync_find_pending_invite(source_user: dict, target_user: dict) -> Optional[dict]:
+    candidatos = [
+        item for item in _shared_sync_invites_all()
+        if str(item.get("status") or "pending") == "pending"
+        and _shared_sync_mesmo_par(item, source_user, target_user)
+    ]
+    if not candidatos:
+        return None
+    candidatos.sort(key=_shared_sync_item_timestamp, reverse=True)
+    return candidatos[0]
+
+
+def _shared_sync_find_active_link(source_user: dict, target_user: dict) -> Optional[dict]:
+    candidatos = [
+        item for item in _shared_sync_links_all()
+        if bool(item.get("active", True))
+        and _shared_sync_mesmo_par(item, source_user, target_user)
+    ]
+    if not candidatos:
+        return None
+    candidatos.sort(key=_shared_sync_item_timestamp, reverse=True)
+    return candidatos[0]
+
+
+def _shared_sync_merge_link_items(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing or {})
+    incoming = dict(incoming or {})
+    merged["id"] = merged.get("id") or incoming.get("id") or _shared_sync_link_id_for_pair(incoming or merged)
+    merged["invite_id"] = merged.get("invite_id") or incoming.get("invite_id") or ""
+    for key in ("source_username", "source_client_id", "source_name", "target_username", "target_client_id", "target_name", "created_at", "created_ts"):
+        if not merged.get(key) and incoming.get(key):
+            merged[key] = incoming.get(key)
+    merged["active"] = bool(incoming.get("active", merged.get("active", True)))
+    merged["source_keep_synced"] = bool(merged.get("source_keep_synced") or incoming.get("source_keep_synced"))
+    merged["target_keep_synced"] = bool(merged.get("target_keep_synced") or incoming.get("target_keep_synced"))
+    merged["scopes"] = _shared_sync_unir_scopes(merged.get("scopes"), incoming.get("scopes"))
+    bundles = {}
+    if isinstance(merged.get("bundles"), dict):
+        bundles.update(merged.get("bundles") or {})
+    if isinstance(incoming.get("bundles"), dict):
+        bundles.update(incoming.get("bundles") or {})
+    merged["bundles"] = bundles
+    if _shared_sync_item_timestamp(incoming) >= _shared_sync_item_timestamp(merged):
+        merged["updated_at"] = incoming.get("updated_at") or merged.get("updated_at") or _shared_sync_now_iso()
+        merged["updated_ts"] = int(incoming.get("updated_ts") or merged.get("updated_ts") or time.time())
+    return merged
+
+
 def _shared_sync_scope_permitido_entre_clientes(item: dict, scope: str) -> bool:
     if scope != "lojas_integracoes":
         return True
@@ -21926,14 +22026,22 @@ def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
 
 
 def _shared_sync_user_shares_for_session(sessao: dict) -> dict:
-    invites = []
+    invites_por_par = {}
     for item in _shared_sync_invites_all():
         if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
-            invites.append(_shared_sync_invite_public(item, sessao))
-    links = []
+            status = str(item.get("status") or "pending")
+            key = (*_shared_sync_item_pair_key(item), status)
+            atual = invites_por_par.get(key)
+            if not atual or _shared_sync_item_timestamp(item) >= _shared_sync_item_timestamp(atual):
+                invites_por_par[key] = item
+    links_por_par = {}
     for item in _shared_sync_links_all():
         if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
-            links.append(_shared_sync_link_public(item, sessao))
+            key = _shared_sync_item_pair_key(item)
+            atual = links_por_par.get(key)
+            links_por_par[key] = _shared_sync_merge_link_items(atual, item) if atual else item
+    invites = [_shared_sync_invite_public(item, sessao) for item in invites_por_par.values()]
+    links = [_shared_sync_link_public(item, sessao) for item in links_por_par.values()]
     invites.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     links.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
     return {
@@ -22156,15 +22264,19 @@ def shared_sync_user_shares_invite(
     sessao = _shared_sync_session(authorization, client_id)
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes)
     destino = _shared_sync_resolver_usuario_destino(payload.target_username, payload.target_client_id)
+    source_user = _shared_sync_usuario_publico(sessao.get("usuario") or {})
+    source_user["username"] = _shared_sync_normalizar_username(sessao.get("username"))
+    source_user["client_id"] = _shared_sync_normalizar_client_id(sessao.get("client_id"))
     if (
         _shared_sync_normalizar_username(destino.get("username")) == _shared_sync_normalizar_username(sessao.get("username"))
         and _shared_sync_normalizar_client_id(destino.get("client_id")) == _shared_sync_normalizar_client_id(sessao.get("client_id"))
     ):
         raise HTTPException(status_code=400, detail="Escolha outro usuario para receber os dados.")
+    if _shared_sync_find_active_link(source_user, destino):
+        raise HTTPException(status_code=409, detail="Ja existe um compartilhamento ativo com esse usuario. Use o botao Enviar agora no vinculo existente.")
+    if _shared_sync_find_pending_invite(source_user, destino):
+        raise HTTPException(status_code=409, detail="Ja existe um convite pendente para esse usuario. Aguarde o aceite ou recuse o convite anterior.")
 
-    source_user = _shared_sync_usuario_publico(sessao.get("usuario") or {})
-    source_user["username"] = _shared_sync_normalizar_username(sessao.get("username"))
-    source_user["client_id"] = _shared_sync_normalizar_client_id(sessao.get("client_id"))
     invite_id = uuid.uuid4().hex
 
     agora = _shared_sync_now_iso()
@@ -22230,7 +22342,7 @@ def shared_sync_user_shares_accept(
     scopes = [scope for scope in scopes if bundles.get(scope)]
     if not scopes:
         raise HTTPException(status_code=400, detail="Convite sem pacote de dados disponivel para importar.")
-    link_id = _shared_sync_safe_doc_id("shared-sync-link", invite.get("id"))
+    link_id = _shared_sync_link_id_for_pair(invite)
     link = {
         "id": link_id,
         "invite_id": invite.get("id"),
@@ -22250,6 +22362,14 @@ def shared_sync_user_shares_accept(
         "updated_at": _shared_sync_now_iso(),
         "updated_ts": int(time.time()),
     }
+    for existing in _shared_sync_links_all():
+        if str(existing.get("id") or "") == link_id or _shared_sync_item_pair_key(existing) == _shared_sync_item_pair_key(link):
+            link = _shared_sync_merge_link_items(existing, link)
+            link["id"] = link_id
+            link["active"] = True
+            link["updated_at"] = _shared_sync_now_iso()
+            link["updated_ts"] = int(time.time())
+            break
 
     results = []
     for scope in scopes:
