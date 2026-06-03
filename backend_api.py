@@ -19925,7 +19925,7 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
         conn.close()
 
 
-def _listar_usuarios_admin_sql() -> list[dict]:
+def _listar_usuarios_admin_sql(return_backend: bool = False):
     usuarios_fb = _firebase_listar_usuarios(seed_if_empty=True) if _firebase_deve_usar() else None
     if isinstance(usuarios_fb, dict):
         resultado = []
@@ -19946,11 +19946,11 @@ def _listar_usuarios_admin_sql() -> list[dict]:
                 "user_number": item.get("user_number"),
                 "machine_count": len(_normalizar_lista_maquinas(item.get("machine_ids"), item.get("machine_id"))),
             })
-        return resultado
+        return (resultado, "firebase") if return_backend else resultado
 
     usuarios_sql, _headers_sql = _carregar_usuarios_sql(seed_if_empty=True)
     if not isinstance(usuarios_sql, dict):
-        return []
+        return ([], "local") if return_backend else []
 
     resultado = []
     for username in sorted(usuarios_sql.keys()):
@@ -19970,7 +19970,7 @@ def _listar_usuarios_admin_sql() -> list[dict]:
             "user_number": item.get("user_number"),
             "machine_count": len(_normalizar_lista_maquinas(item.get("machine_ids"), item.get("machine_id"))),
         })
-    return resultado
+    return (resultado, "local") if return_backend else resultado
 
 
 def _obter_usuario_sql(username: str) -> dict:
@@ -22612,8 +22612,8 @@ def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
 
 @app.get("/api/admin/users")
 def admin_listar_usuarios(client_id: str = Depends(get_tenant_id)):
-    users = _listar_usuarios_admin_sql()
-    return {"success": True, "users": users}
+    users, backend = _listar_usuarios_admin_sql(return_backend=True)
+    return {"success": True, "users": users, "backend": backend}
 
 
 @app.post("/api/admin/users/message")
@@ -22664,9 +22664,11 @@ def admin_enviar_mensagem_usuario(
 @app.post("/api/admin/users")
 def admin_salvar_usuario(payload: AdminUserUpsertRequest, client_id: str = Depends(get_tenant_id)):
     usuario = _salvar_usuario_admin_sql(payload)
+    backend = "firebase" if _firebase_deve_usar() else "local"
     return {
         "success": True,
         "message": "UsuÃ¡rio salvo com sucesso.",
+        "backend": backend,
         "user": _resumo_usuario_admin(usuario),
     }
 

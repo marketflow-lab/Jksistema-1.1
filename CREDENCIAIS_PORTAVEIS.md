@@ -45,6 +45,21 @@ backup automatico dos arquivos locais substituidos em `backups/`.
 Depois da importacao, saia e entre novamente para o dashboard recarregar as
 permissoes.
 
+## Instalador normal com Firebase
+
+Ao rodar `GerarExecutavel.bat`, o build valida se existe uma service account do
+Firebase na raiz do projeto. Exemplos de nomes aceitos:
+
+```text
+jkjkjk-485920-e598a0a0dcb9.json
+firebase-service-account.json
+firebase_service_account.json
+```
+
+Esse JSON entra no `local_app` do instalador normal. Na outra maquina, o backend
+local encontra essa credencial, ativa `JK_ACCESS_BACKEND=firebase` e consulta os
+usuarios diretamente no Firestore.
+
 ## Opcoes uteis
 
 ```bat

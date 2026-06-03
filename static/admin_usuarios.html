@@ -638,6 +638,7 @@
     ];
 
     let usuariosCache = [];
+    let usuariosBackendAtual = 'local';
     let onlineCache = {};
     let editandoUsuario = null;
     let mensagemDestino = null;
@@ -780,6 +781,10 @@
         if (!box) return;
         box.textContent = msg || '';
         box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
+    }
+
+    function labelBackendUsuarios(backend) {
+        return backend === 'firebase' ? 'Firebase' : 'local deste computador';
     }
 
     function aplicarModoAcesso() {
@@ -1890,6 +1895,7 @@
             setStatus(data.detail || data.message || 'Erro ao carregar usuários.', true);
             return;
         }
+        usuariosBackendAtual = data.backend === 'firebase' ? 'firebase' : 'local';
         usuariosCache = data.users || [];
         aplicarFiltrosUsuarios();
         await carregarOnlineUsuarios();
@@ -1946,9 +1952,13 @@
             setStatus(data.detail || data.message || 'Erro ao salvar usuário.', true);
             return;
         }
+        const backendSalvo = data.backend === 'firebase' ? 'firebase' : usuariosBackendAtual;
         limparFormulario();
         await carregarUsuarios();
-        setStatus(data.message || 'Usuário salvo com sucesso.');
+        const detalheBackend = backendSalvo === 'firebase'
+            ? 'Sincronizado no Firebase.'
+            : 'Atenção: salvo apenas no armazenamento local desta máquina.';
+        setStatus(`${data.message || 'Usuário salvo com sucesso.'} Destino: ${labelBackendUsuarios(backendSalvo)}. ${detalheBackend}`, backendSalvo !== 'firebase');
     }
 
     async function alterarSenha(username) {
