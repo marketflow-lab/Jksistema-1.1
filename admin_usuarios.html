@@ -1078,6 +1078,55 @@
         }
     }
 
+    const FAVORITOS_HISTORICO_SYNC_STORAGE_KEY = 'favoritosMlHistoricoSyncEvento';
+    const FAVORITOS_HISTORICO_SYNC_CHANNEL = 'jkFavoritosMlHistoricoSync';
+
+    function chaveCacheHistoricoFavoritosCentral() {
+        const user = usuarioAtualSessao();
+        const cid = user && user.client_id ? String(user.client_id) : 'default';
+        const usuario = user && (user.username || user.email || user.name || user.nome)
+            ? String(user.username || user.email || user.name || user.nome)
+            : 'usuario';
+        const usuarioKey = usuario.trim().toLowerCase().replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60) || 'usuario';
+        return `favoritos_ml_historico_${cid}_${usuarioKey}`;
+    }
+
+    function resultadosIncluemHistoricoFavoritos(results, scopes = []) {
+        if (Array.isArray(scopes) && scopes.includes('favoritos_historico')) return true;
+        return Array.isArray(results) && results.some(item => item && item.scope === 'favoritos_historico');
+    }
+
+    async function atualizarCacheHistoricoFavoritosSincronizado(results, scopes = []) {
+        if (!resultadosIncluemHistoricoFavoritos(results, scopes)) return;
+        try {
+            const resp = await fetch('/api/favoritos/historico', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recarregar histórico de favoritos.');
+            const historico = Array.isArray(data.historico) ? data.historico.slice(0, 30) : [];
+            const evento = {
+                tipo: 'historico-favoritos-importado',
+                ts: Date.now(),
+                key: chaveCacheHistoricoFavoritosCentral()
+            };
+            try {
+                localStorage.setItem(evento.key, JSON.stringify(historico));
+                localStorage.setItem(FAVORITOS_HISTORICO_SYNC_STORAGE_KEY, JSON.stringify(evento));
+            } catch (_err) {}
+            try {
+                if (typeof BroadcastChannel === 'function') {
+                    const canal = new BroadcastChannel(FAVORITOS_HISTORICO_SYNC_CHANNEL);
+                    canal.postMessage(evento);
+                    canal.close();
+                }
+            } catch (_err) {}
+        } catch (error) {
+            console.warn('Histórico de favoritos importado, mas o cache local não foi atualizado:', error);
+        }
+    }
+
     function formatarBytes(valor) {
         const bytes = Number(valor || 0);
         if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
@@ -1280,6 +1329,7 @@
             if (!resp.ok || data.success === false) {
                 throw new Error(data.detail || data.message || 'Erro ao sincronizar dados.');
             }
+            if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
             await carregarCompartilhamentoDados();
             setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados restaurados. ') + resumoResultadosSync(data.results));
         } catch (error) {
@@ -1349,14 +1399,25 @@
         el.innerHTML = invites.slice(0, 12).map(invite => {
             const receivedPending = invite.direction === 'received' && invite.status === 'pending';
             const sentPending = invite.direction === 'sent' && invite.status === 'pending';
+            const prepareStatus = String(invite.prepare_status || 'ready').toLowerCase();
+            const preparando = prepareStatus === 'preparing';
+            const preparoFalhou = prepareStatus === 'failed';
+            const preparoParcial = prepareStatus === 'partial';
             const pessoa = invite.direction === 'received'
                 ? `${invite.source_client_id} - ${invite.source_name || invite.source_username}`
                 : `${invite.target_client_id} - ${invite.target_name || invite.target_username}`;
-            const status = invite.status === 'pending'
+            let status = invite.status === 'pending'
                 ? (sentPending ? 'aguardando aceite' : 'pendente')
-                : invite.status === 'accepted' ? 'aceito' : 'recusado';
+                : invite.status === 'accepted' ? 'aceito' : invite.status === 'failed' ? 'falhou' : 'recusado';
+            if (invite.status === 'pending' && preparando) status = 'preparando dados';
+            if (invite.status === 'pending' && preparoParcial) status = 'parcial: alguns dados não foram preparados';
+            if (preparoFalhou) status = 'falhou ao preparar dados';
             const syncText = invite.source_keep_synced ? 'Origem quer manter sincronizado.' : 'Envio único pela origem.';
-            const actions = receivedPending ? `
+            const erros = Array.isArray(invite.prepare_errors) ? invite.prepare_errors : [];
+            const errosHtml = erros.length
+                ? `<div class="muted-line">Falhas: ${escaparHtml(erros.map(err => `${err.label || err.scope}: ${err.message || 'erro'}`).join(' | '))}</div>`
+                : '';
+            const actions = receivedPending && !preparando && !preparoFalhou ? `
                 <label class="sync-auto-row">
                     <input type="checkbox" id="acceptSync_${escaparHtml(invite.id)}">
                     <span>Também quero manter sincronizado</span>
@@ -1372,6 +1433,7 @@
                     <div class="small">${escaparHtml((invite.scope_labels || []).join(', '))}</div>
                     <div class="muted-line">${escaparHtml(status)} | ${escaparHtml(syncText)}</div>
                     ${invite.message ? `<div class="muted-line">${escaparHtml(invite.message)}</div>` : ''}
+                    ${errosHtml}
                     ${actions}
                 </div>
             `;
@@ -1576,6 +1638,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
+            if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
             await carregarSincronizacaoMinhasMaquinas();
             setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
         } catch (error) {
@@ -1644,6 +1707,9 @@
             limparConviteCompartilhamentoUsuario();
             await carregarCompartilhamentoEntreUsuarios();
             setStatus(data.message || 'Convite enviado.');
+            setTimeout(carregarCompartilhamentoEntreUsuarios, 2500);
+            setTimeout(carregarCompartilhamentoEntreUsuarios, 9000);
+            setTimeout(carregarCompartilhamentoEntreUsuarios, 20000);
         } catch (error) {
             setStatus(error.message || 'Erro ao enviar convite.', true);
         }
@@ -1661,6 +1727,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao aceitar convite.');
+            await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
             setStatus(data.message || 'Convite aceito.');
         } catch (error) {
@@ -1730,6 +1797,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
+            if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
             setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
         } catch (error) {

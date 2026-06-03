@@ -263,15 +263,119 @@
             background:rgba(8, 24, 40, 0.38);
             color:#fff;
         }
+        .api-field--promos { grid-column: 1 / -1; }
         .api-promo-summary {
             min-height: 44px;
-            padding:10px 12px;
+            max-height: 380px;
+            overflow-y: auto;
+            padding:12px;
             border-radius:6px;
             border:1px solid rgba(126, 181, 231, 0.22);
             background:rgba(18, 40, 64, 0.72);
             color:var(--muted);
             display:flex;
+            flex-direction:column;
+            align-items:stretch;
+            gap:10px;
+        }
+        .api-promo-toolbar {
+            display:flex;
             align-items:center;
+            justify-content:space-between;
+            gap:10px;
+            flex-wrap:wrap;
+        }
+        .api-promo-selection-summary {
+            color:#cfe7ff;
+            font-size:0.92rem;
+            font-weight:700;
+        }
+        .api-promo-actions {
+            display:flex;
+            align-items:center;
+            gap:8px;
+            flex-wrap:wrap;
+        }
+        .api-promo-mini-btn {
+            border:1px solid rgba(126, 181, 231, 0.35);
+            background:rgba(11, 28, 48, 0.72);
+            color:#d8ecff;
+            border-radius:6px;
+            cursor:pointer;
+            font-weight:800;
+            padding:6px 10px;
+        }
+        .api-promo-mini-btn:hover {
+            background:rgba(28, 162, 255, 0.18);
+            border-color:rgba(99, 187, 255, 0.6);
+            color:#ffffff;
+        }
+        .api-promo-card-grid {
+            display:grid;
+            grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+            gap:10px;
+        }
+        .api-promo-card {
+            display:flex;
+            align-items:flex-start;
+            gap:10px;
+            min-height:108px;
+            border:1px solid rgba(126, 181, 231, 0.24);
+            border-radius:6px;
+            background:rgba(8, 24, 40, 0.38);
+            cursor:pointer;
+            padding:12px;
+            transition:border-color .18s ease, box-shadow .18s ease, background .18s ease, transform .18s ease;
+        }
+        .api-promo-card:hover {
+            border-color:rgba(99, 187, 255, 0.62);
+            background:rgba(15, 44, 72, 0.62);
+        }
+        .api-promo-card.is-selected {
+            border-color:rgba(76, 205, 135, 0.72);
+            box-shadow:0 0 0 1px rgba(76, 205, 135, 0.24) inset;
+            background:linear-gradient(180deg, rgba(23, 62, 54, 0.7), rgba(12, 36, 58, 0.58));
+        }
+        .api-promo-card input {
+            width:17px;
+            height:17px;
+            margin-top:2px;
+            accent-color:#25b76d;
+            flex:0 0 auto;
+        }
+        .api-promo-card-body {
+            display:flex;
+            flex-direction:column;
+            gap:7px;
+            min-width:0;
+            flex:1 1 auto;
+        }
+        .api-promo-card-title {
+            color:#f5fbff;
+            font-size:0.96rem;
+            font-weight:800;
+            line-height:1.25;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            display:-webkit-box;
+            -webkit-line-clamp:2;
+            -webkit-box-orient:vertical;
+        }
+        .api-promo-card-meta {
+            color:#9cb7d7;
+            font-size:0.82rem;
+            line-height:1.3;
+            word-break:break-word;
+        }
+        .api-promo-card-counts {
+            align-self:flex-start;
+            border:1px solid rgba(126, 181, 231, 0.22);
+            border-radius:999px;
+            background:rgba(12, 30, 50, 0.72);
+            color:#cfe7ff;
+            font-size:0.78rem;
+            font-weight:800;
+            padding:4px 8px;
         }
         .api-promo-empty {
             color:var(--muted);
@@ -595,7 +699,7 @@
                 <label for="apiPromoASelect">Promoção 1</label>
                 <select id="apiPromoASelect"></select>
             </div>
-            <div class="api-field">
+            <div class="api-field api-field--promos">
                 <label for="apiPromoBSelect">Promoções 2</label>
                 <div id="apiPromoBSelect" class="api-promo-summary"></div>
             </div>
@@ -744,6 +848,9 @@
     let pendingWidthPrefs = null;
     let saveWidthPrefsTimer = null;
     let apiPromoBCampaigns = [];
+    let apiPromoBSelectedIds = new Set();
+    let apiPromoBSelectionReady = false;
+    let apiPromoBPendingSelectedIds = null;
     let apiAnalisesPorCampanha = [];
     let apiAnaliseAtiva = 0;
     let apiAnaliseJobPolling = null;
@@ -890,6 +997,17 @@
         } catch (_e) {}
     }
 
+    function extractApiPromoBIdsFromMeta(meta) {
+        if (!Array.isArray(meta)) return [];
+        const ids = meta.map((item) => {
+            if (item && typeof item === 'object') {
+                return String(item.promo_b_id || item.promotion_id || item.value || item.id || '').trim();
+            }
+            return String(item || '').trim();
+        }).filter(Boolean);
+        return Array.from(new Set(ids));
+    }
+
     function getApiAutoPrefs() {
         try {
             const parsed = JSON.parse(localStorage.getItem(getApiAutoPrefsKey()) || '{}');
@@ -912,6 +1030,7 @@
                 intervalValue,
                 intervalMinutes,
                 nextRunAt,
+                promoBSelectedIds: Array.isArray(parsed.promoBSelectedIds) ? parsed.promoBSelectedIds.map((id) => String(id || '').trim()).filter(Boolean) : [],
             };
         } catch (_e) {
             return {
@@ -921,6 +1040,7 @@
                 intervalValue: API_AUTO_DEFAULT_INTERVAL_MIN,
                 intervalMinutes: API_AUTO_DEFAULT_INTERVAL_MIN,
                 nextRunAt: 0,
+                promoBSelectedIds: [],
             };
         }
     }
@@ -983,6 +1103,7 @@
                 intervalValue: interval.intervalValue,
                 intervalMinutes: interval.intervalMinutes,
                 nextRunAt,
+                promoBSelectedIds: getApiPromoBSelections().map((promo) => promo.value),
             }));
         } catch (_e) {}
     }
@@ -996,6 +1117,7 @@
                 intervalValue: Number(prefs.intervalValue || API_AUTO_DEFAULT_INTERVAL_MIN),
                 intervalMinutes: Number(prefs.intervalMinutes || API_AUTO_DEFAULT_INTERVAL_MIN),
                 nextRunAt: Number(prefs.nextRunAt || 0),
+                promoBSelectedIds: Array.isArray(prefs.promoBSelectedIds) ? prefs.promoBSelectedIds : getApiPromoBSelections().map((promo) => promo.value),
             }));
         } catch (_e) {}
     }
@@ -1029,6 +1151,7 @@
             lastError: String(cfg.last_error || ''),
             updatedAt: Number(cfg.updated_at || 0),
             due: cfg.due === true,
+            promoBSelectedIds: extractApiPromoBIdsFromMeta(cfg.promocoes_b_meta),
         };
     }
 
@@ -1066,6 +1189,13 @@
         if (enabledEl) enabledEl.checked = !!prefs.enabled;
         if (approvalEl) approvalEl.checked = prefs.approvalRequired !== false;
         aplicarApiAutoIntervalPrefs(prefs);
+        if (Array.isArray(prefs.promoBSelectedIds) && prefs.promoBSelectedIds.length) {
+            apiPromoBPendingSelectedIds = new Set(prefs.promoBSelectedIds.map((id) => String(id || '').trim()).filter(Boolean));
+            if (Array.isArray(apiPromoBCampaigns) && apiPromoBCampaigns.length) {
+                apiPromoBSelectionReady = false;
+                renderApiPromoBButtons(apiPromoBCampaigns);
+            }
+        }
         persistApiAutoPrefsObject(prefs);
         if (prefs.enabled) {
             apiAutoNextRunAt = Number(prefs.nextRunAt || 0);
@@ -2751,8 +2881,8 @@
         }
     }
 
-    function getApiPromoBSelections() {
-        return Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns.map((campanha) => ({
+    function buildApiPromoBSelectionInfo(campanha) {
+        return {
             value: String(campanha?.id || '').trim(),
             promoType: String(campanha?.type || campanha?.promotion_type || '').trim(),
             text: formatPromoOption(campanha),
@@ -2760,7 +2890,26 @@
             matchName: String(campanha?.name || campanha?.title || campanha?.id || '').trim(),
             activeCount: resolvePromoActiveCount(campanha),
             eligibleCount: resolvePromoEligibleCount(campanha),
-        })).filter((item) => item.value) : [];
+        };
+    }
+
+    function getApiPromoBSelectedIdSet() {
+        if (apiPromoBSelectionReady && apiPromoBSelectedIds instanceof Set) {
+            return apiPromoBSelectedIds;
+        }
+        if (apiPromoBPendingSelectedIds instanceof Set && apiPromoBPendingSelectedIds.size) {
+            return apiPromoBPendingSelectedIds;
+        }
+        return new Set((Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [])
+            .map((campanha) => String(campanha?.id || '').trim())
+            .filter(Boolean));
+    }
+
+    function getApiPromoBSelections() {
+        const selectedIds = getApiPromoBSelectedIdSet();
+        return Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns
+            .map((campanha) => buildApiPromoBSelectionInfo(campanha))
+            .filter((item) => item.value && selectedIds.has(item.value)) : [];
     }
 
     function normalizePromoMatchText(raw) {
@@ -2873,6 +3022,85 @@
         });
     }
 
+    function hydrateApiPromoBSelections(lista) {
+        const validIds = new Set(lista.map((campanha) => String(campanha?.id || '').trim()).filter(Boolean));
+        if (apiPromoBPendingSelectedIds instanceof Set && apiPromoBPendingSelectedIds.size) {
+            apiPromoBSelectedIds = new Set(Array.from(apiPromoBPendingSelectedIds).filter((id) => validIds.has(id)));
+            apiPromoBPendingSelectedIds = null;
+            apiPromoBSelectionReady = true;
+            return;
+        }
+        if (!apiPromoBSelectionReady) {
+            apiPromoBSelectedIds = new Set(validIds);
+            apiPromoBSelectionReady = true;
+            return;
+        }
+        apiPromoBSelectedIds = new Set(Array.from(apiPromoBSelectedIds || []).filter((id) => validIds.has(id)));
+    }
+
+    function formatApiPromoBCardMeta(campanha) {
+        const partes = [];
+        const status = String(campanha?.status || '').trim();
+        const tipo = String(campanha?.type || campanha?.promotion_type || '').trim();
+        const id = String(campanha?.id || '').trim();
+        if (status) partes.push(status);
+        if (tipo && tipo !== '-') partes.push(tipo);
+        if (id) partes.push(id);
+        return partes.join(' · ');
+    }
+
+    function atualizarApiPromoBSelectionSummary() {
+        const summary = document.getElementById('apiPromoBSelectionSummary');
+        if (!summary) return;
+        const selecionadas = getApiPromoBSelections();
+        const total = Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns.length : 0;
+        const totalAtivos = selecionadas.reduce((sum, promo) => promo.activeCount === null ? sum : sum + promo.activeCount, 0);
+        const totalElegiveis = selecionadas.reduce((sum, promo) => promo.eligibleCount === null ? sum : sum + promo.eligibleCount, 0);
+        const temAtivos = selecionadas.some((promo) => promo.activeCount !== null);
+        const temElegiveis = selecionadas.some((promo) => promo.eligibleCount !== null);
+        summary.textContent = `${selecionadas.length} de ${total} campanha(s) selecionada(s) para análise. Ativos: ${temAtivos ? totalAtivos : '-'} | Elegíveis: ${temElegiveis ? totalElegiveis : '-'}.`;
+    }
+
+    function salvarApiPromoBSelectionPrefs() {
+        saveApiAutoPrefs();
+        if (apiAutoInicializada && getApiAutoPrefs().enabled) {
+            salvarApiAutoPrefsServidor().catch(() => {});
+        }
+    }
+
+    function toggleApiPromoBSelection(input) {
+        const id = String(input?.value || '').trim();
+        if (!id) return;
+        apiPromoBSelectionReady = true;
+        if (!(apiPromoBSelectedIds instanceof Set)) apiPromoBSelectedIds = new Set();
+        if (input.checked) {
+            apiPromoBSelectedIds.add(id);
+        } else {
+            apiPromoBSelectedIds.delete(id);
+        }
+        const card = input.closest('.api-promo-card');
+        if (card) card.classList.toggle('is-selected', input.checked);
+        atualizarApiPromoBSelectionSummary();
+        renderApiPromoBFiles();
+        salvarApiPromoBSelectionPrefs();
+    }
+
+    function selecionarTodasApiPromoB() {
+        apiPromoBSelectedIds = new Set((Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [])
+            .map((campanha) => String(campanha?.id || '').trim())
+            .filter(Boolean));
+        apiPromoBSelectionReady = true;
+        renderApiPromoBButtons(apiPromoBCampaigns);
+        salvarApiPromoBSelectionPrefs();
+    }
+
+    function limparSelecaoApiPromoB() {
+        apiPromoBSelectedIds = new Set();
+        apiPromoBSelectionReady = true;
+        renderApiPromoBButtons(apiPromoBCampaigns);
+        salvarApiPromoBSelectionPrefs();
+    }
+
     function renderApiPromoBButtons(campanhas) {
         const wrap = document.getElementById('apiPromoBSelect');
         if (!wrap) return;
@@ -2880,21 +3108,47 @@
         apiPromoBCampaigns = lista;
         if (!lista.length) {
             apiPromoBCampaigns = [];
-            wrap.innerHTML = 'Nenhuma campanha criada pelo Mercado Livre.';
+            apiPromoBSelectedIds = new Set();
+            apiPromoBSelectionReady = false;
+            wrap.innerHTML = '<div class="api-promo-empty">Nenhuma campanha criada pelo Mercado Livre.</div>';
             renderApiPromoBFiles();
             return;
         }
-        const totalAtivos = lista.reduce((sum, campanha) => {
-            const count = resolvePromoActiveCount(campanha);
-            return count === null ? sum : sum + count;
-        }, 0);
-        const totalElegiveis = lista.reduce((sum, campanha) => {
-            const count = resolvePromoEligibleCount(campanha);
-            return count === null ? sum : sum + count;
-        }, 0);
-        const temAtivos = lista.some((campanha) => resolvePromoActiveCount(campanha) !== null);
-        const temElegiveis = lista.some((campanha) => resolvePromoEligibleCount(campanha) !== null);
-        wrap.textContent = `${lista.length} campanhas criadas pelo Mercado Livre serão consideradas automaticamente. Ativos: ${temAtivos ? totalAtivos : '-'} | Elegíveis: ${temElegiveis ? totalElegiveis : '-'}.`;
+
+        hydrateApiPromoBSelections(lista);
+        const selectedIds = getApiPromoBSelectedIdSet();
+        wrap.innerHTML = `
+            <div class="api-promo-toolbar">
+                <div id="apiPromoBSelectionSummary" class="api-promo-selection-summary"></div>
+                <div class="api-promo-actions">
+                    <button class="api-promo-mini-btn" type="button" onclick="selecionarTodasApiPromoB()">Selecionar todas</button>
+                    <button class="api-promo-mini-btn" type="button" onclick="limparSelecaoApiPromoB()">Limpar</button>
+                </div>
+            </div>
+            <div class="api-promo-card-grid">
+                ${lista.map((campanha) => {
+                    const id = String(campanha?.id || '').trim();
+                    const nome = String(campanha?.name || campanha?.title || id || 'Campanha sem nome').trim();
+                    const selecionada = selectedIds.has(id);
+                    return `
+                        <label class="api-promo-card ${selecionada ? 'is-selected' : ''}">
+                            <input
+                                type="checkbox"
+                                value="${escapeHtml(id)}"
+                                ${selecionada ? 'checked' : ''}
+                                onchange="toggleApiPromoBSelection(this)"
+                            >
+                            <span class="api-promo-card-body">
+                                <span class="api-promo-card-title">${escapeHtml(nome)}</span>
+                                <span class="api-promo-card-meta">${escapeHtml(formatApiPromoBCardMeta(campanha))}</span>
+                                <span class="api-promo-card-counts">${escapeHtml(formatPromoCountsLabel(campanha))}</span>
+                            </span>
+                        </label>
+                    `;
+                }).join('')}
+            </div>
+        `;
+        atualizarApiPromoBSelectionSummary();
         renderApiPromoBFiles();
     }
 
@@ -3276,6 +3530,9 @@
         if (!selectA || !selectB) return;
         selectA.innerHTML = '<option value="">Carregando...</option>';
         selectB.innerHTML = '<div class="api-promo-empty">Carregando...</div>';
+        apiPromoBCampaigns = [];
+        apiPromoBSelectedIds = new Set();
+        apiPromoBSelectionReady = false;
         renderApiPromoBFiles();
         if (!loja) return;
         try {
@@ -3296,15 +3553,6 @@
                 const promoType = campanha.type || campanha.promotion_type || '';
                 optA.dataset.promoType = promoType === '-' ? '' : promoType;
                 selectA.appendChild(optA);
-            });
-            campanhasB.forEach((campanha) => {
-                if (!campanha || !campanha.id) return;
-                const optB = document.createElement('option');
-                optB.value = campanha.id;
-                optB.textContent = formatPromoOption(campanha);
-                const promoType = campanha.type || campanha.promotion_type || '';
-                optB.dataset.promoType = promoType === '-' ? '' : promoType;
-                selectB.appendChild(optB);
             });
             if (!campanhasA.length) {
                 selectA.innerHTML = '<option value="">Nenhuma promoção do usuário</option>';

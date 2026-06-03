@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="jk_bg">#07111F</color>
+    <color name="jk_panel">#0D1B2E</color>
+    <color name="jk_text">#E8F3FF</color>
+    <color name="jk_muted">#A9B9CC</color>
+    <color name="jk_accent">#43B4FF</color>
+    <color name="jk_danger">#FF6B72</color>
+</resources>

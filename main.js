@@ -42,6 +42,8 @@ let embeddedMlBrowserView = null;
 let embeddedMlBrowserOwner = null;
 let chromeExtensionsLoadPromise = null;
 let chromeExtensionSessionEventsRegistered = false;
+let avantProStorageRecoveryAttempted = false;
+let avantProStorageRecoveryPromise = null;
 const mlItemInfoCache = new Map();
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
 const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
@@ -61,6 +63,140 @@ function logElectronLifecycle(...args) {
             process.stdout.write(message);
         }
     } catch (_err) {}
+}
+
+function formatPathTimestamp(date = new Date()) {
+    return date.toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '_');
+}
+
+function sanitizePathPart(value) {
+    return String(value || 'reset')
+        .replace(/[^a-z0-9_-]+/gi, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 48) || 'reset';
+}
+
+function getMlSessionUserDataDir() {
+    const partition = String(JK_BROWSER_SESSION_PARTITION || '');
+    if (/^persist:/i.test(partition)) {
+        return path.join(JK_ELECTRON_USER_DATA_DIR, 'Partitions', partition.replace(/^persist:/i, ''));
+    }
+    return JK_ELECTRON_USER_DATA_DIR;
+}
+
+function getAvantProExtensionStorageDir() {
+    return path.join(
+        getMlSessionUserDataDir(),
+        'Local Extension Settings',
+        AVANTPRO_CHROME_EXTENSION_ID
+    );
+}
+
+function backupAndResetAvantProExtensionStorage(reason = 'reset') {
+    const sourceDir = getAvantProExtensionStorageDir();
+    if (!fs.existsSync(sourceDir)) {
+        return { success: false, missing: true, sourceDir };
+    }
+    const backupRoot = path.join(JK_ELECTRON_USER_DATA_DIR, '_avantpro_storage_backups');
+    fs.mkdirSync(backupRoot, { recursive: true });
+    const baseName = `${AVANTPRO_CHROME_EXTENSION_ID}_${formatPathTimestamp()}_${sanitizePathPart(reason)}`;
+    let backupDir = path.join(backupRoot, baseName);
+    for (let index = 2; fs.existsSync(backupDir); index += 1) {
+        backupDir = path.join(backupRoot, `${baseName}_${index}`);
+    }
+    try {
+        fs.renameSync(sourceDir, backupDir);
+        logElectronLifecycle('avantpro-storage-reset', { sourceDir, backupDir, reason });
+        return { success: true, sourceDir, backupDir };
+    } catch (err) {
+        logElectronLifecycle('avantpro-storage-reset-failed', {
+            sourceDir,
+            backupDir,
+            reason,
+            error: err && err.message ? err.message : String(err)
+        });
+        return {
+            success: false,
+            sourceDir,
+            backupDir,
+            error: err && err.message ? err.message : String(err)
+        };
+    }
+}
+
+async function unloadAvantProExtensionForRecovery() {
+    const ses = getMlSession();
+    if (!ses || typeof ses.removeExtension !== 'function') {
+        return { success: false, unsupported: true };
+    }
+    try {
+        await Promise.resolve(ses.removeExtension(AVANTPRO_CHROME_EXTENSION_ID));
+        logElectronLifecycle('avantpro-extension-unloaded-for-recovery', { id: AVANTPRO_CHROME_EXTENSION_ID });
+        return { success: true };
+    } catch (err) {
+        logElectronLifecycle('avantpro-extension-unload-failed-for-recovery', {
+            id: AVANTPRO_CHROME_EXTENSION_ID,
+            error: err && err.message ? err.message : String(err)
+        });
+        return { success: false, error: err && err.message ? err.message : String(err) };
+    }
+}
+
+async function recoverAvantProExtensionStorage(reason = 'avantpro-not-detected', details = {}) {
+    if (avantProStorageRecoveryPromise) return avantProStorageRecoveryPromise;
+    if (avantProStorageRecoveryAttempted) {
+        return { success: false, skipped: true, reason: 'already-attempted' };
+    }
+    avantProStorageRecoveryAttempted = true;
+    avantProStorageRecoveryPromise = (async () => {
+        logElectronLifecycle('avantpro-storage-recovery-started', { reason, details });
+        await unloadAvantProExtensionForRecovery();
+        const reset = backupAndResetAvantProExtensionStorage(reason);
+        if (!reset.success && !reset.missing) {
+            return { success: false, reset };
+        }
+        chromeExtensionsLoadPromise = null;
+        const loaded = await ensureChromeExtensionsForMlSession();
+        return {
+            success: true,
+            reset,
+            loaded: loaded.map(ext => ({
+                id: ext && ext.id,
+                name: ext && ext.name,
+                path: ext && ext.path
+            }))
+        };
+    })().finally(() => {
+        avantProStorageRecoveryPromise = null;
+    });
+    return avantProStorageRecoveryPromise;
+}
+
+function isAvantProStorageConsoleMessage(message, sourceId) {
+    const text = `${message || ''} ${sourceId || ''}`;
+    return text.includes(AVANTPRO_CHROME_EXTENSION_ID)
+        && /IO error|LevelDB|MANIFEST-\d+|Unable to create sequential file|Invalid argument|corrupt/i.test(text);
+}
+
+function registerAvantProConsoleDiagnostics(webContents) {
+    if (!webContents || webContents.__jkAvantProConsoleDiagnosticsRegistered) return;
+    webContents.__jkAvantProConsoleDiagnosticsRegistered = true;
+    webContents.on('console-message', (_event, level, message, line, sourceId) => {
+        const text = `${message || ''} ${sourceId || ''}`;
+        if (!/avant|chrome-extension|jdefnfmbnchmnjkcknaadaddgjbgephh/i.test(text)) return;
+        const payload = {
+            level,
+            message: String(message || '').slice(0, 500),
+            line,
+            sourceId: String(sourceId || '').slice(0, 500)
+        };
+        logElectronLifecycle('avantpro-console-message', payload);
+        if (isAvantProStorageConsoleMessage(message, sourceId)) {
+            recoverAvantProExtensionStorage('avantpro-console-storage-error', payload).catch((err) => {
+                logElectronLifecycle('avantpro-storage-recovery-error', err);
+            });
+        }
+    });
 }
 
 function isBrokenStdoutPipe(err) {
@@ -303,9 +439,14 @@ function getChromeExtensionManifestIdentity(extensionDir) {
 function findUnpackedChromeExtensions() {
     const candidates = [];
     const explicitRoots = process.env.JK_CHROME_EXTENSIONS_DIR ? [path.resolve(process.env.JK_CHROME_EXTENSIONS_DIR)] : [];
+    const bundledRoots = getChromeExtensionsRoots();
     const chromeInstalledExtensions = findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID);
+    const preferInstalled = /^(1|true|sim|yes)$/i.test(String(process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS || ''));
+    const searchRoots = preferInstalled
+        ? [...explicitRoots, ...chromeInstalledExtensions, ...bundledRoots]
+        : [...explicitRoots, ...bundledRoots, ...chromeInstalledExtensions];
 
-    for (const root of [...explicitRoots, ...chromeInstalledExtensions, ...getChromeExtensionsRoots()]) {
+    for (const root of searchRoots) {
         if (!fs.existsSync(root)) continue;
 
         const rootManifest = path.join(root, 'manifest.json');
@@ -468,6 +609,15 @@ function isMercadoLivreHost(hostname) {
         || host.endsWith('.mercadolivre.com.br')
         || host === 'mercadolibre.com'
         || host.endsWith('.mercadolibre.com');
+}
+
+function isMercadoLivreUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        return isMercadoLivreHost(url.hostname);
+    } catch (_err) {
+        return false;
+    }
 }
 
 function isMercadoLivreAdUrl(targetUrl) {
@@ -636,6 +786,181 @@ function waitForMainFrameLoad(win, timeoutMs = 25000) {
     });
 }
 
+function waitMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function isWebContentsAlive(webContents) {
+    return !!(webContents && typeof webContents.isDestroyed === 'function' && !webContents.isDestroyed());
+}
+
+function waitForWebContentsLoad(webContents, timeoutMs = 25000) {
+    return new Promise((resolve, reject) => {
+        if (!isWebContentsAlive(webContents)) {
+            reject(new Error('Navegador interno indisponivel.'));
+            return;
+        }
+
+        let done = false;
+        let timeout = null;
+        const finish = (err) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            if (isWebContentsAlive(webContents)) {
+                webContents.removeListener('did-finish-load', onLoad);
+                webContents.removeListener('did-fail-load', onFail);
+            }
+            if (err) reject(err);
+            else resolve();
+        };
+
+        const onLoad = () => finish();
+        const onFail = (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+            if (isMainFrame === false) return;
+            finish(new Error(`Falha ao carregar pagina (${errorCode}): ${errorDescription}`));
+        };
+
+        timeout = setTimeout(() => {
+            finish(new Error('Timeout ao carregar pagina no navegador interno.'));
+        }, timeoutMs);
+
+        webContents.once('did-finish-load', onLoad);
+        webContents.once('did-fail-load', onFail);
+    });
+}
+
+async function diagnosticarAvantProWebContents(webContents) {
+    if (!isWebContentsAlive(webContents)) return null;
+    return await webContents.executeJavaScript(`
+        (function () {
+            var AVANT_ID = ${JSON.stringify(AVANTPRO_CHROME_EXTENSION_ID)};
+            var normalizar = function (value) {
+                return String(value || '').replace(/\\s+/g, ' ').trim();
+            };
+            var contemAvant = function (value) {
+                return /avant\\s*pro|avantpro|carregar\\s+dados\\s+avant|informacoes?\\s+avant|informa[c\\u00e7][o\\u00f5]es\\s+avant/i.test(normalizar(value));
+            };
+            var rows = document.querySelectorAll('.avantpro-product-info-row').length;
+            var widgets = document.querySelectorAll('[class*="avantpro"], [id*="avantpro"], [data-testid*="avantpro"]').length;
+            var actionButtons = 0;
+            Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]')).forEach(function (node) {
+                var text = [
+                    node.innerText,
+                    node.textContent,
+                    node.getAttribute && node.getAttribute('aria-label'),
+                    node.getAttribute && node.getAttribute('title')
+                ].map(normalizar).join(' ');
+                if (contemAvant(text)) actionButtons += 1;
+            });
+            var taggedNodes = 0;
+            Array.prototype.slice.call(document.querySelectorAll('[class], [id], script')).forEach(function (node) {
+                var text = [
+                    node.id,
+                    node.className,
+                    node.getAttribute && node.getAttribute('src')
+                ].map(normalizar).join(' ');
+                if (contemAvant(text)) taggedNodes += 1;
+            });
+            var extensionResources = 0;
+            try {
+                extensionResources = performance.getEntriesByType('resource').filter(function (entry) {
+                    var name = String(entry && entry.name || '').toLowerCase();
+                    return name.indexOf('chrome-extension://' + AVANT_ID) >= 0 || name.indexOf('avantpro') >= 0;
+                }).length;
+            } catch (_err) {}
+            var ok = rows > 0 || widgets > 0 || actionButtons > 0 || taggedNodes > 0;
+            return {
+                ok: !!ok,
+                rows: rows,
+                widgets: widgets,
+                actionButtons: actionButtons,
+                taggedNodes: taggedNodes,
+                extensionResources: extensionResources,
+                url: location.href,
+                title: document.title || ''
+            };
+        })();
+    `, true).catch((err) => ({
+        ok: false,
+        error: err && err.message ? err.message : String(err)
+    }));
+}
+
+async function aguardarAvantProWebContents(webContents, options = {}) {
+    const timeoutMs = Math.max(500, Number(options.timeoutMs) || 3500);
+    const pollMs = Math.max(150, Number(options.pollMs) || 300);
+    const startedAt = Date.now();
+    let lastStatus = null;
+    while (Date.now() - startedAt < timeoutMs) {
+        lastStatus = await diagnosticarAvantProWebContents(webContents);
+        if (lastStatus && lastStatus.ok) {
+            return { ...lastStatus, elapsedMs: Date.now() - startedAt };
+        }
+        await waitMs(pollMs);
+    }
+    return lastStatus ? { ...lastStatus, ok: false } : { ok: false, unavailable: true };
+}
+
+async function recarregarWebContentsParaAvantPro(webContents) {
+    if (!isWebContentsAlive(webContents)) return false;
+    const loadPromise = waitForWebContentsLoad(webContents, 25000).catch((err) => err);
+    try {
+        webContents.reloadIgnoringCache();
+    } catch (_err) {
+        return false;
+    }
+    await loadPromise;
+    await waitMs(900);
+    return isWebContentsAlive(webContents);
+}
+
+async function garantirAvantProWebContents(webContents, targetUrl, options = {}) {
+    const url = targetUrl || (isWebContentsAlive(webContents) ? webContents.getURL() : '');
+    if (!isMercadoLivreUrl(url)) return { ok: true, skipped: true };
+    const firstStatus = await aguardarAvantProWebContents(webContents, {
+        timeoutMs: options.timeoutMs || 3500,
+        pollMs: options.pollMs || 300
+    });
+    if (firstStatus && firstStatus.ok) return firstStatus;
+
+    if (options.recarregarSeAusente === false) return firstStatus;
+    logElectronLifecycle('avantpro-not-detected-reloading-embedded-browser', {
+        url,
+        status: firstStatus
+    });
+    const reloaded = await recarregarWebContentsParaAvantPro(webContents);
+    if (!reloaded) return firstStatus;
+    const secondStatus = await aguardarAvantProWebContents(webContents, {
+        timeoutMs: options.timeoutAposReloadMs || 5500,
+        pollMs: options.pollMs || 300
+    });
+    logElectronLifecycle('avantpro-after-embedded-browser-reload', {
+        url: isWebContentsAlive(webContents) ? webContents.getURL() : url,
+        status: secondStatus
+    });
+    if (secondStatus && !secondStatus.ok && options.recuperarStorage !== false) {
+        const recovery = await recoverAvantProExtensionStorage('avantpro-not-detected-after-reload', {
+            url,
+            status: secondStatus
+        });
+        logElectronLifecycle('avantpro-storage-recovery-result', recovery);
+        if (recovery && recovery.success && isWebContentsAlive(webContents)) {
+            await recarregarWebContentsParaAvantPro(webContents);
+            const recoveredStatus = await aguardarAvantProWebContents(webContents, {
+                timeoutMs: options.timeoutAposRecoveryMs || 7000,
+                pollMs: options.pollMs || 300
+            });
+            logElectronLifecycle('avantpro-after-storage-recovery', {
+                url: isWebContentsAlive(webContents) ? webContents.getURL() : url,
+                status: recoveredStatus
+            });
+            return { ...recoveredStatus, reloaded: true, storageRecovery: recovery };
+        }
+    }
+    return { ...secondStatus, reloaded: true };
+}
+
 function ensureInternalBrowser(parent) {
     if (internalBrowserWindow && !internalBrowserWindow.isDestroyed()) {
         if (internalBrowserWindow.isMinimized()) {
@@ -657,6 +982,7 @@ function ensureInternalBrowser(parent) {
             session: getMlSession()
         }
     });
+    registerAvantProConsoleDiagnostics(internalBrowserWindow.webContents);
     internalBrowserWindow.setMenuBarVisibility(false);
     internalBrowserWindow.on('closed', () => {
         internalBrowserWindow = null;
@@ -690,6 +1016,7 @@ function ensureEmbeddedMlBrowser(parent, options = {}) {
                 session: getMlSession()
             }
         });
+        registerAvantProConsoleDiagnostics(embeddedMlBrowserView.webContents);
         embeddedMlBrowserView.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         embeddedMlBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
             logElectronLifecycle('embedded-ml-browser-fail-load', { errorCode, errorDescription, validatedURL });
@@ -1052,6 +1379,12 @@ app.whenReady().then(async () => {
         if (currentUrl !== url) {
             await view.webContents.loadURL(url);
         }
+        await garantirAvantProWebContents(view.webContents, view.webContents.getURL() || url).catch((err) => {
+            logElectronLifecycle('avantpro-embedded-browser-check-failed', {
+                url,
+                error: err && err.message ? err.message : String(err)
+            });
+        });
         return { success: true, url: view.webContents.getURL() || url };
     });
     ipcMain.handle('embedded-ml-browser-position', async (event, bounds) => {

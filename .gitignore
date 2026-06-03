@@ -44,10 +44,18 @@ __pycache__/
 # Logs
 logs/
 *.log
+.idea/
 
 # Electron/Chromium local user data
 info/electron_user_data/
 info/electron_user_data_*/
+info/vertex_agent_api_key.txt
+info/*/_shared_sync_backups/
+info/*/tmp/
+info/promo_jobs/
+info/promo_worker_jobs/
+info/**/*.db
+info/**/*.backup*
 
 # Electron build outputs and installers
 electron_app/dist/

@@ -1190,9 +1190,6 @@
             height: 100%;
             margin-top: 0;
         }
-        .browser-frame-wrap.has-status-overlay .ml-browser-blue-filter {
-            inset: 0;
-        }
         .ml-work-modal-results-slot {
             overflow: auto;
             padding-right: 4px;
@@ -2468,110 +2465,10 @@
             border-color: rgba(56, 189, 248, 0.85);
             box-shadow:
                 inset 0 0 0 1px rgba(14, 165, 233, 0.42),
-                0 0 24px rgba(14, 165, 233, 0.42),
-                0 0 58px rgba(37, 99, 235, 0.28);
-            animation: ml-browser-frame-blue-orbit 1.7s ease-in-out infinite;
-        }
-        .browser-frame-wrap.is-favoritos-running::before,
-        .browser-frame-wrap.is-favoritos-running::after {
-            content: "";
-            border-radius: inherit;
-            inset: 0;
-            pointer-events: none;
-            position: absolute;
-        }
-        .browser-frame-wrap.is-favoritos-running::before {
-            background: conic-gradient(
-                from 0deg,
-                rgba(14, 165, 233, 0.18),
-                rgba(125, 211, 252, 0.92),
-                rgba(37, 99, 235, 0.12),
-                rgba(56, 189, 248, 0.88),
-                rgba(14, 165, 233, 0.18)
-            );
-            padding: 2px;
-            z-index: 18;
-            -webkit-mask:
-                linear-gradient(#000 0 0) content-box,
-                linear-gradient(#000 0 0);
-            -webkit-mask-composite: xor;
-            mask-composite: exclude;
-            animation: ml-browser-frame-blue-spin 2.6s linear infinite;
-        }
-        .browser-frame-wrap.is-favoritos-running::after {
-            border: 1px solid rgba(186, 230, 253, 0.72);
-            box-shadow:
-                inset 0 0 28px rgba(14, 165, 233, 0.22),
-                0 0 34px rgba(56, 189, 248, 0.38);
-            z-index: 17;
+                0 0 18px rgba(14, 165, 233, 0.24);
         }
         .ml-browser-blue-filter {
-            position: absolute;
-            inset: 0;
-            z-index: 5;
-            pointer-events: none;
-            overflow: hidden;
-            background:
-                radial-gradient(circle at 50% 45%, rgba(56, 189, 248, 0.18), transparent 58%),
-                linear-gradient(135deg, rgba(37, 99, 235, 0.16), rgba(14, 165, 233, 0.22));
-            box-shadow: inset 0 0 80px rgba(37, 99, 235, 0.34);
-            animation: ml-browser-blue-pulse 1.6s ease-in-out infinite;
-        }
-        .ml-browser-blue-filter::before,
-        .ml-browser-blue-filter::after {
-            content: "";
-            position: absolute;
-            top: -30%;
-            left: -55%;
-            width: 45%;
-            height: 160%;
-            background:
-                linear-gradient(105deg,
-                    transparent 0%,
-                    rgba(255, 255, 255, 0.0) 28%,
-                    rgba(186, 230, 253, 0.22) 42%,
-                    rgba(255, 255, 255, 0.48) 50%,
-                    rgba(125, 211, 252, 0.18) 58%,
-                    transparent 74%);
-            filter: blur(1px);
-            transform: rotate(10deg) translateX(-120%);
-            animation: ml-browser-blue-reflection 2.7s linear infinite;
-        }
-        .ml-browser-blue-filter::after {
-            left: -75%;
-            width: 30%;
-            opacity: 0.65;
-            animation-duration: 3.6s;
-            animation-delay: 0.9s;
-        }
-        .ml-browser-blue-filter.hidden {
             display: none;
-        }
-        @keyframes ml-browser-blue-pulse {
-            0%, 100% { opacity: 0.34; }
-            50% { opacity: 0.78; }
-        }
-        @keyframes ml-browser-frame-blue-orbit {
-            0%, 100% {
-                box-shadow:
-                    0 0 0 1px rgba(14, 165, 233, 0.32),
-                    0 0 22px rgba(37, 99, 235, 0.48),
-                    0 0 48px rgba(56, 189, 248, 0.30);
-            }
-            50% {
-                box-shadow:
-                    0 0 0 2px rgba(125, 211, 252, 0.58),
-                    0 0 34px rgba(14, 165, 233, 0.72),
-                    0 0 72px rgba(37, 99, 235, 0.48);
-            }
-        }
-        @keyframes ml-browser-frame-blue-spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        @keyframes ml-browser-blue-reflection {
-            0% { transform: rotate(10deg) translateX(-120%); }
-            100% { transform: rotate(10deg) translateX(430%); }
         }
         .browser-host,
         .browser-frame,
@@ -3330,6 +3227,10 @@
         const ML_SKU_SIDEBAR_COLLAPSED_KEY = 'favoritosMlSkuSidebarCollapsed';
         const ML_SKU_SIDEBAR_WIDTH_KEY = 'favoritosMlSkuSidebarWidth';
         const ML_SKU_LOJA_KEY = 'favoritosMlSkuLojaSelecionada';
+        const ML_FAVORITOS_SELECTION_CHANNEL = 'jkFavoritosMlSelecao';
+        const ML_FAVORITOS_SELECTION_STORAGE_KEY = 'favoritosMlSelecaoEvento';
+        const ML_FAVORITOS_HISTORICO_SYNC_CHANNEL = 'jkFavoritosMlHistoricoSync';
+        const ML_FAVORITOS_HISTORICO_SYNC_STORAGE_KEY = 'favoritosMlHistoricoSyncEvento';
         const ML_FAVORITOS_TABLE_LAYOUT_KEY = 'favoritosMlTableLayoutV1';
         const ML_SKU_SIDEBAR_PAGE_SIZE = 50;
         const SKU_API_PAGE_SIZE = 20;
@@ -3388,6 +3289,7 @@
         let favoritosLojaEntradaSelecionada = false;
         let mlSkuSidebarSelecionados = new Set();
         let mlSkuSidebarFiltro = '';
+        let mlFavoritosSelectionBroadcast = null;
         let mlSkuSidebarRenderLimit = ML_SKU_SIDEBAR_PAGE_SIZE;
         let mlSkuBuscaRemotaTimer = null;
         let mlSkuBuscaRemotaRunId = 0;
@@ -3407,6 +3309,8 @@
         let mlHistoricoFavoritosCache = [];
         let mlHistoricoFavoritosServidorCarregado = false;
         let mlHistoricoFavoritosSaveTimer = null;
+        let mlHistoricoFavoritosSyncBroadcast = null;
+        let mlHistoricoFavoritosSyncUltimoTs = 0;
         const FAV_ML_RANKING_ATUAL_ID = '__ranking_atual__';
         let favMlSkuSelecionado = '';
         let favMlLojaSelecionada = '';
@@ -7051,6 +6955,103 @@
                     return { stable: false, elapsedMs: Date.now() - inicio, rows: ultimo ? ultimo.split('|').filter(Boolean).length : 0 };
                 })();
             `, true);
+        }
+
+        async function diagnosticarAvantProNoWebview(webview = mlWebviewEl) {
+            if (!webview || typeof webview.executeJavaScript !== 'function') return null;
+            return await webview.executeJavaScript(`
+                (function () {
+                    var AVANT_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
+                    var normalizar = function (value) {
+                        return String(value || '').replace(/\\s+/g, ' ').trim();
+                    };
+                    var contemAvant = function (value) {
+                        return /avant\\s*pro|avantpro|carregar\\s+dados\\s+avant|informacoes?\\s+avant|informa[c\\u00e7][o\\u00f5]es\\s+avant/i.test(normalizar(value));
+                    };
+                    var rows = document.querySelectorAll('.avantpro-product-info-row').length;
+                    var widgets = document.querySelectorAll('[class*="avantpro"], [id*="avantpro"], [data-testid*="avantpro"]').length;
+                    var actionButtons = 0;
+                    Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]')).forEach(function (node) {
+                        var text = [
+                            node.innerText,
+                            node.textContent,
+                            node.getAttribute && node.getAttribute('aria-label'),
+                            node.getAttribute && node.getAttribute('title')
+                        ].map(normalizar).join(' ');
+                        if (contemAvant(text)) actionButtons += 1;
+                    });
+                    var taggedNodes = 0;
+                    Array.prototype.slice.call(document.querySelectorAll('[class], [id], script')).forEach(function (node) {
+                        var text = [
+                            node.id,
+                            node.className,
+                            node.getAttribute && node.getAttribute('src')
+                        ].map(normalizar).join(' ');
+                        if (contemAvant(text)) taggedNodes += 1;
+                    });
+                    var extensionResources = 0;
+                    try {
+                        extensionResources = performance.getEntriesByType('resource').filter(function (entry) {
+                            var name = String(entry && entry.name || '').toLowerCase();
+                            return name.indexOf('chrome-extension://' + AVANT_ID) >= 0 || name.indexOf('avantpro') >= 0;
+                        }).length;
+                    } catch (_err) {}
+                    var ok = rows > 0 || widgets > 0 || actionButtons > 0 || taggedNodes > 0;
+                    return {
+                        ok: !!ok,
+                        rows: rows,
+                        widgets: widgets,
+                        actionButtons: actionButtons,
+                        taggedNodes: taggedNodes,
+                        extensionResources: extensionResources,
+                        url: location.href,
+                        title: document.title || ''
+                    };
+                })();
+            `, true).catch(() => null);
+        }
+
+        async function recarregarNavegadorMlParaAvantPro() {
+            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return false;
+            await garantirExtensoesNavegadorMl().catch(() => []);
+            const recarregou = await mlWebviewEl.executeJavaScript(`
+                (function () {
+                    if (!/^https?:\\/\\//i.test(location.href)) return false;
+                    location.reload();
+                    return true;
+                })();
+            `, true).catch(() => false);
+            if (!recarregou) return false;
+            await esperar(3400);
+            tentarLoginAvantProNoWebview(mlWebviewEl);
+            return true;
+        }
+
+        async function aguardarAvantProNoWebview(opcoes = {}) {
+            const timeoutMs = Math.max(800, Number(opcoes.timeoutMs) || 6500);
+            const pollMs = Math.max(150, Number(opcoes.pollMs) || 350);
+            const inicio = Date.now();
+            let ultimo = null;
+            while (Date.now() - inicio < timeoutMs) {
+                ultimo = await diagnosticarAvantProNoWebview().catch(() => null);
+                if (ultimo && ultimo.ok) return { ...ultimo, elapsedMs: Date.now() - inicio };
+                await esperar(pollMs);
+            }
+
+            if (opcoes.recarregarSeAusente) {
+                mostrarBalaoFavoritosStatus(opcoes.mensagemRecarregando || 'Avant Pro nao carregou de primeira. Recarregando Mercado Livre...');
+                const recarregou = await recarregarNavegadorMlParaAvantPro().catch(() => false);
+                if (recarregou) {
+                    const depoisReload = await aguardarAvantProNoWebview({
+                        ...opcoes,
+                        recarregarSeAusente: false,
+                        timeoutMs: Number(opcoes.timeoutAposReloadMs) || timeoutMs
+                    }).catch(() => null);
+                    if (depoisReload) return { ...depoisReload, reloaded: true };
+                }
+            }
+
+            return ultimo ? { ...ultimo, ok: false } : { ok: false, unavailable: true };
         }
         function mesclarAnunciosAvant(destino, origem) {
             const mapa = new Map();
@@ -11529,65 +11530,7 @@
 
         function atualizarAnimacaoAzulNoNavegadorMl(ativo) {
             if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return;
-            const script = ativo ? `
-                (() => {
-                    const STYLE_ID = 'jk-favoritos-blue-overlay-style';
-                    const OVERLAY_ID = 'jk-favoritos-blue-overlay';
-                    if (!document.getElementById(STYLE_ID)) {
-                        const style = document.createElement('style');
-                        style.id = STYLE_ID;
-                        style.textContent = \`
-                            #\${OVERLAY_ID} {
-                                position: fixed;
-                                inset: 0;
-                                z-index: 2147483645;
-                                pointer-events: none;
-                                overflow: hidden;
-                                background:
-                                    radial-gradient(circle at 50% 38%, rgba(56, 189, 248, .14), transparent 58%),
-                                    linear-gradient(135deg, rgba(37, 99, 235, .12), rgba(14, 165, 233, .18));
-                                box-shadow: inset 0 0 78px rgba(37, 99, 235, .32);
-                                animation: jkFavoritosBluePulse 1.6s ease-in-out infinite;
-                            }
-                            #\${OVERLAY_ID}::before,
-                            #\${OVERLAY_ID}::after {
-                                content: "";
-                                position: absolute;
-                                top: -30%;
-                                left: -55%;
-                                width: 42%;
-                                height: 160%;
-                                background: linear-gradient(105deg, transparent 0%, rgba(186, 230, 253, .18) 40%, rgba(255, 255, 255, .42) 50%, rgba(125, 211, 252, .18) 58%, transparent 74%);
-                                filter: blur(1px);
-                                transform: rotate(10deg) translateX(-120%);
-                                animation: jkFavoritosBlueReflection 2.7s linear infinite;
-                            }
-                            #\${OVERLAY_ID}::after {
-                                left: -75%;
-                                width: 28%;
-                                opacity: .62;
-                                animation-duration: 3.5s;
-                                animation-delay: .9s;
-                            }
-                            @keyframes jkFavoritosBluePulse {
-                                0%, 100% { opacity: .32; }
-                                50% { opacity: .72; }
-                            }
-                            @keyframes jkFavoritosBlueReflection {
-                                0% { transform: rotate(10deg) translateX(-120%); }
-                                100% { transform: rotate(10deg) translateX(430%); }
-                            }
-                        \`;
-                        document.documentElement.appendChild(style);
-                    }
-                    if (!document.getElementById(OVERLAY_ID)) {
-                        const overlay = document.createElement('div');
-                        overlay.id = OVERLAY_ID;
-                        document.documentElement.appendChild(overlay);
-                    }
-                    return true;
-                })();
-            ` : `
+            const script = `
                 (() => {
                     document.getElementById('jk-favoritos-blue-overlay')?.remove();
                     document.getElementById('jk-favoritos-blue-overlay-style')?.remove();
@@ -12352,6 +12295,85 @@
                 .filter(item => mlSkuSidebarSelecionados.has(item.chave));
         }
 
+        function normalizarSelecionadosFavoritosExecucao(lista) {
+            return (Array.isArray(lista) ? lista : [])
+                .map(item => {
+                    const sku = String(item && item.sku || '').trim();
+                    const loja = String(item && item.loja || '').trim();
+                    const chave = String(item && item.chave || chaveSkuSidebarMercadoLivre(sku, loja)).trim();
+                    if (!sku || !chave) return null;
+                    return {
+                        ...item,
+                        sku,
+                        loja,
+                        chave,
+                        titulo: String(item && item.titulo || '').trim()
+                    };
+                })
+                .filter(Boolean);
+        }
+
+        function aplicarDesmarcacaoSkuFavoritos(evento) {
+            const chave = String(evento && evento.chave || '').trim();
+            if (!chave || !mlSkuSidebarSelecionados.has(chave)) return;
+            mlSkuSidebarSelecionados.delete(chave);
+            renderizarSkuSidebarMercadoLivre();
+            atualizarContadorSkuSidebarSelecionados();
+        }
+
+        function publicarDesmarcacaoSkuFavoritos(evento) {
+            const payload = {
+                tipo: 'desmarcar-sku',
+                chave: String(evento && evento.chave || '').trim(),
+                sku: String(evento && evento.sku || '').trim(),
+                loja: String(evento && evento.loja || '').trim(),
+                enviadoEm: Date.now()
+            };
+            if (!payload.chave) return;
+            try {
+                if (mlFavoritosSelectionBroadcast) mlFavoritosSelectionBroadcast.postMessage(payload);
+            } catch (_err) {}
+            try {
+                localStorage.setItem(ML_FAVORITOS_SELECTION_STORAGE_KEY, JSON.stringify(payload));
+            } catch (_err) {}
+        }
+
+        function desmarcarSkuFavoritosProcessado(item, opcoes = {}) {
+            const sku = String(item && item.sku || '').trim();
+            const loja = String(item && item.loja || '').trim();
+            const chave = String(item && item.chave || chaveSkuSidebarMercadoLivre(sku, loja)).trim();
+            if (!chave) return;
+            const estavaSelecionado = mlSkuSidebarSelecionados.delete(chave);
+            if (estavaSelecionado) {
+                renderizarSkuSidebarMercadoLivre();
+                atualizarContadorSkuSidebarSelecionados();
+            }
+            if (opcoes.notificar !== false) {
+                publicarDesmarcacaoSkuFavoritos({ chave, sku, loja });
+            }
+        }
+
+        function inicializarSincronizacaoSelecaoFavoritos() {
+            try {
+                if (typeof BroadcastChannel === 'function') {
+                    mlFavoritosSelectionBroadcast = new BroadcastChannel(ML_FAVORITOS_SELECTION_CHANNEL);
+                    mlFavoritosSelectionBroadcast.onmessage = (event) => {
+                        const data = event && event.data ? event.data : {};
+                        if (data && data.tipo === 'desmarcar-sku') aplicarDesmarcacaoSkuFavoritos(data);
+                    };
+                }
+            } catch (_err) {
+                mlFavoritosSelectionBroadcast = null;
+            }
+            window.addEventListener('storage', (event) => {
+                if (!event || event.key !== ML_FAVORITOS_SELECTION_STORAGE_KEY || !event.newValue) return;
+                try {
+                    const data = JSON.parse(event.newValue);
+                    if (data && data.tipo === 'desmarcar-sku') aplicarDesmarcacaoSkuFavoritos(data);
+                } catch (_err) {}
+            });
+        }
+
         function mostrarBalaoFavoritosStatus(mensagem, opcoes = {}) {
             if (mlFavoritosStatusEl) mlFavoritosStatusEl.textContent = mensagem || '';
             if (!mlFavoritosBalloonEl || !mlFavoritosBalloonTextEl) return;
@@ -12788,6 +12810,10 @@
                 : (candidatos.find(temPesquisa) || candidatoLoja || candidatos[0]);
         }
 
+        function normalizarTermoPesquisaFavoritos(termo) {
+            return String(termo || '').replace(/[.,/]+/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+
         function montarPesquisasFavoritosSku(item, quantidade) {
             const cadastro = obterCadastroSkuFavoritos(item.sku, item.loja);
             const descricaoCadastro = cadastro
@@ -12795,7 +12821,7 @@
                 : '';
             const termos = [];
             for (let numero = 1; numero <= quantidade; numero += 1) {
-                const termo = String(cadastro ? skuObterPesquisa(cadastro, numero) : '').trim();
+                const termo = normalizarTermoPesquisaFavoritos(cadastro ? skuObterPesquisa(cadastro, numero) : '');
                 if (!termo) continue;
                 if (!termos.some(t => t.termo.toLowerCase() === termo.toLowerCase())) {
                     termos.push({ campo: numero, termo });
@@ -12822,7 +12848,16 @@
             });
             verificarCancelamentoFavoritos();
             if (!abriu) return [];
-            await esperar(2200);
+            mostrarBalaoFavoritosStatus(`Aguardando Avant Pro carregar para "${termo}"...`);
+            const avantStatus = await aguardarAvantProNoWebview({
+                timeoutMs: 6500,
+                timeoutAposReloadMs: 8000,
+                recarregarSeAusente: true
+            }).catch(() => null);
+            if (!avantStatus || !avantStatus.ok) {
+                mostrarBalaoFavoritosStatus('Avant Pro ainda nao apareceu. Tentando coletar os anuncios mesmo assim...');
+                await esperar(1200);
+            }
             verificarCancelamentoFavoritos();
 
             let resultado = await extrairAnunciosWebviewVisivel({
@@ -13697,6 +13732,38 @@
                     mlHistoricoFavoritosStatusEl.textContent = `Usando cache local do historico. Erro ao acessar servidor: ${err && err.message ? err.message : err}`;
                 }
             }
+        }
+
+        async function recarregarHistoricoFavoritosSincronizado(evento = {}) {
+            const ts = Number(evento && evento.ts || Date.now());
+            if (ts && ts <= mlHistoricoFavoritosSyncUltimoTs) return;
+            mlHistoricoFavoritosSyncUltimoTs = ts || Date.now();
+            await carregarHistoricoFavoritosServidor();
+        }
+
+        function inicializarSincronizacaoHistoricoFavoritos() {
+            try {
+                if (typeof BroadcastChannel === 'function') {
+                    mlHistoricoFavoritosSyncBroadcast = new BroadcastChannel(ML_FAVORITOS_HISTORICO_SYNC_CHANNEL);
+                    mlHistoricoFavoritosSyncBroadcast.onmessage = (event) => {
+                        const data = event && event.data ? event.data : {};
+                        if (data && data.tipo === 'historico-favoritos-importado') {
+                            recarregarHistoricoFavoritosSincronizado(data);
+                        }
+                    };
+                }
+            } catch (_err) {
+                mlHistoricoFavoritosSyncBroadcast = null;
+            }
+            window.addEventListener('storage', (event) => {
+                if (!event || event.key !== ML_FAVORITOS_HISTORICO_SYNC_STORAGE_KEY || !event.newValue) return;
+                try {
+                    const data = JSON.parse(event.newValue);
+                    if (data && data.tipo === 'historico-favoritos-importado') {
+                        recarregarHistoricoFavoritosSincronizado(data);
+                    }
+                } catch (_err) {}
+            });
         }
 
         function anuncioHistoricoPayload(anuncio) {
@@ -14601,9 +14668,11 @@
             }
         }
 
-        async function fazerFavoritosSkusSelecionados() {
+        async function fazerFavoritosSkusSelecionados(opcoes = {}) {
+            if (opcoes && opcoes.type && opcoes.target) opcoes = {};
             if (mlFavoritosEmExecucao) return;
-            const selecionados = obterSkusSelecionadosSidebar();
+            const selecionadosPayload = normalizarSelecionadosFavoritosExecucao(opcoes.selecionadosPayload);
+            const selecionados = selecionadosPayload.length ? selecionadosPayload : obterSkusSelecionadosSidebar();
             if (!selecionados.length) {
                 mostrarBalaoFavoritosStatus('Selecione pelo menos um SKU no sidebar antes de fazer favoritos.', {
                     erro: true,
@@ -14614,24 +14683,30 @@
             mostrarBalaoFavoritosStatus(`${selecionados.length} SKU(s) selecionado(s). Escolha a quantidade de pesquisas.`, {
                 manterAcoes: false
             });
-            const quantidade = await perguntarQuantidadePesquisasFavoritos();
+            const quantidade = Number(opcoes.quantidade) || await perguntarQuantidadePesquisasFavoritos();
             if (!quantidade) return;
-            const opcoesPromocao = await perguntarOpcoesPromocaoFavoritos();
+            const opcoesPromocao = opcoes.opcoesPromocao || await perguntarOpcoesPromocaoFavoritos();
             if (!opcoesPromocao) return;
             mlFavoritosOpcoesPromocaoAtual = clonarOpcoesPromocaoFavoritos(opcoesPromocao);
             selecionados.forEach(item => salvarOpcoesPromocaoFavoritosSku(item && item.sku, mlFavoritosOpcoesPromocaoAtual));
             const usarIaRanking = favoritosUsarIaRankingAtivo();
 
             mlFavoritosEmExecucao = true;
-            mlFavoritosExecucaoEmSegundoPlano = true;
+            mlFavoritosExecucaoEmSegundoPlano = false;
             mlFavoritosCancelado = false;
             mlFavoritosAbortController = typeof AbortController === 'function' ? new AbortController() : null;
-            ocultarNavegadorMlShellDefinitivo();
+            const mostrarNavegadorMl = opcoes.mostrarNavegadorMl !== false;
+            if (mostrarNavegadorMl) {
+                mudarAba('navegador');
+            } else {
+                ocultarNavegadorMlShellDefinitivo();
+            }
             abrirBalaoResultadosMl({
                 titulo: 'Fazendo Favorito! Aguarde...',
                 subtitulo: `${selecionados.length} SKU(s), ${quantidade} pesquisa(s) por SKU${usarIaRanking ? ', IA ligada' : ''}`,
                 mostrarFavoritos: true,
-                browserCompleto: true
+                browserCompleto: true,
+                forcarExibicao: mostrarNavegadorMl
             });
             atualizarFiltroAzulFavoritos();
             atualizarContadorSkuSidebarSelecionados();
@@ -14661,6 +14736,7 @@
                             erro: true
                         });
                         renderizarFavoritosPesquisaResultados(grupos);
+                        desmarcarSkuFavoritosProcessado(item);
                         continue;
                     }
 
@@ -14728,6 +14804,7 @@
                     grupos.push(grupoRanking);
                     guardarResultadoRankingFavorito(grupoRanking);
                     renderizarFavoritosPesquisaResultados(grupos);
+                    desmarcarSkuFavoritosProcessado(item);
                 }
 
                 const totalAnuncios = grupos.reduce((acc, grupo) => acc + (grupo.anuncios || []).length, 0);
@@ -16290,6 +16367,8 @@
         inicializarLarguraTabelasFavoritos();
         atualizarTabelasFavoritosEditaveis();
         renderizarVendedoresIgnoradosRanking();
+        inicializarSincronizacaoSelecaoFavoritos();
+        inicializarSincronizacaoHistoricoFavoritos();
         carregarVendedoresIgnoradosRankingServidor();
         renderizarAnunciosIgnoradosSku();
         carregarAnunciosIgnoradosSkuServidor();

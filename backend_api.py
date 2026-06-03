@@ -633,6 +633,8 @@ JK_UPDATE_LATEST_YML_URL = (
     os.getenv("JK_UPDATE_LATEST_YML_URL", "").strip()
     or f"https://github.com/{JK_UPDATE_OWNER}/{JK_UPDATE_REPO}/releases/latest/download/latest.yml"
 )
+JK_ANDROID_UPDATE_MANIFEST = os.getenv("JK_ANDROID_UPDATE_MANIFEST", "").strip()
+JK_ANDROID_APK_URL = os.getenv("JK_ANDROID_APK_URL", "").strip()
 
 
 def _normalizar_versao_app(valor: Any) -> str:
@@ -688,6 +690,33 @@ def _buscar_latest_yml_update() -> dict:
     return dados
 
 
+def _carregar_manifesto_android_update() -> tuple[dict, str]:
+    candidatos = [
+        JK_ANDROID_UPDATE_MANIFEST,
+        os.path.join(PASTA_INFO, "android_update.json"),
+        os.path.join(BASE_DIR, "android_app", "update-manifest.json"),
+    ]
+    for caminho in candidatos:
+        caminho = str(caminho or "").strip()
+        if not caminho or not os.path.exists(caminho):
+            continue
+        try:
+            with open(caminho, "r", encoding="utf-8") as arquivo:
+                dados = json.load(arquivo)
+            if isinstance(dados, dict):
+                return dados, caminho
+        except Exception:
+            continue
+    return {}, ""
+
+
+def _inteiro_update(valor: Any, padrao: int = 0) -> int:
+    try:
+        return int(valor)
+    except Exception:
+        return padrao
+
+
 @app.get("/api/app-update/check")
 def api_app_update_check(current_version: Optional[str] = None):
     """Verificacao rapida pelo backend local para a UI nunca ficar presa no Electron."""
@@ -726,6 +755,60 @@ def api_app_update_check(current_version: Optional[str] = None):
             "currentVersion": atual,
             "message": str(exc) or "Nao foi possivel verificar a atualizacao.",
         }
+
+
+@app.get("/api/mobile-update/check")
+def api_mobile_update_check(
+    platform: str = "android",
+    version: Optional[str] = None,
+    versionCode: Optional[int] = None,
+):
+    """Manifesto simples para o app Android privado consultar novas versoes."""
+    plataforma = str(platform or "android").strip().lower()
+    if plataforma not in {"android", "mobile"}:
+        return {
+            "success": False,
+            "updateAvailable": False,
+            "message": "Plataforma nao suportada.",
+        }
+
+    manifesto, origem = _carregar_manifesto_android_update()
+    ultima_versao = _normalizar_versao_app(
+        manifesto.get("version") or os.getenv("JK_ANDROID_VERSION", "")
+    )
+    codigo_remoto = _inteiro_update(
+        manifesto.get("versionCode") or os.getenv("JK_ANDROID_VERSION_CODE", 0)
+    )
+    apk_url = str(manifesto.get("apkUrl") or manifesto.get("url") or JK_ANDROID_APK_URL or "").strip()
+    versao_atual = _normalizar_versao_app(version) or "0.0.0"
+    codigo_atual = _inteiro_update(versionCode, 0)
+
+    disponivel = False
+    if codigo_remoto and codigo_atual:
+        disponivel = codigo_remoto > codigo_atual
+    elif ultima_versao:
+        disponivel = _chave_comparacao_versao(ultima_versao) > _chave_comparacao_versao(versao_atual)
+    if not apk_url:
+        disponivel = False
+
+    return {
+        "success": True,
+        "platform": "android",
+        "currentVersion": versao_atual,
+        "currentVersionCode": codigo_atual,
+        "version": ultima_versao,
+        "versionCode": codigo_remoto,
+        "latestVersion": ultima_versao,
+        "latestVersionCode": codigo_remoto,
+        "updateAvailable": disponivel,
+        "available": disponivel,
+        "upToDate": not disponivel,
+        "apkUrl": apk_url,
+        "notes": str(manifesto.get("notes") or ""),
+        "required": bool(manifesto.get("required", False)),
+        "source": origem or "env",
+        "checkedAt": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 # --- MODELOS DE DADOS (Pydantic) ---
@@ -1100,7 +1183,15 @@ def _extrair_mapa_promocao2_arquivo(df: pd.DataFrame) -> tuple[dict[str, dict], 
     col_title = _pick_first_col(df, ["TITLE", "TÃƒÂTULO", "TITULO", "TÃ­tulo"])
     col_price = _pick_first_col(df, ["FINAL_PRICEFINAL_PRICE", "FINAL_PRICE", "LOYALTY_PRICE", "PREÃƒâ€¡O FINAL", "PRECO FINAL"])
     col_sale_fee = _pick_first_col(df, ["SALE_FEE", "SALE FEE", "DESCONTO ML"])
-    col_disc = _pick_first_col(df, ["DISCOUNT_PERCENTAGE", "ML % CAMPANHA"])
+    col_disc = _pick_first_col(df, [
+        "DISCOUNT_PERCENTAGE",
+        "ML % CAMPANHA",
+        "DESCONTO SUGERIDO",
+        "DESCONTO OFERECIDO",
+        "SUGGESTED_DISCOUNT_PERCENTAGE",
+        "SUGGESTED DISCOUNT",
+        "RECOMMENDED_DISCOUNT_PERCENTAGE",
+    ])
     col_status = _pick_first_col(df, ["STATUS", "SITUAÃƒâ€¡ÃƒÆ’O", "SITUACAO"])
 
     if not col_item:
@@ -1120,7 +1211,7 @@ def _extrair_mapa_promocao2_arquivo(df: pd.DataFrame) -> tuple[dict[str, dict], 
             "TÃ­tulo": _promo_txt_clean(row.get(col_title, "")) if col_title else "",
             "PreÃ§o Final ML": _format_money_safe(row.get(col_price, "") if col_price else ""),
             "Desconto ML": _format_money_safe(row.get(col_sale_fee, "") if col_sale_fee else ""),
-            "ML % Campanha": _format_pct_br(row.get(col_disc, "") if col_disc else ""),
+            "ML % Campanha": _format_pct_br(_ml_parse_percentual_promocao_texto(row.get(col_disc, "") if col_disc else "")),
             "Status Arquivo": _promo_txt_clean(row.get(col_status, "")) if col_status else "",
         }
     return mapa, ordem
@@ -21131,6 +21222,149 @@ def _shared_sync_aplicar_user_scoped_share(
     }
 
 
+def _shared_sync_json_clone(valor: Any) -> Any:
+    try:
+        return json.loads(json.dumps(valor, ensure_ascii=False, default=str))
+    except Exception:
+        return valor
+
+
+def _shared_sync_valor_preenchido(valor: Any) -> bool:
+    return valor is not None and str(valor).strip() != ""
+
+
+def _shared_sync_lojas_from_payload(payload: Any) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        lojas = payload.get("lojas")
+        if isinstance(lojas, list):
+            return [item for item in lojas if isinstance(item, dict)]
+        if payload.get("nome") or payload.get("integracoes"):
+            return [payload]
+    return []
+
+
+def _shared_sync_loja_key(nome: Any) -> str:
+    texto = unicodedata.normalize("NFKD", str(nome or ""))
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", texto.lower())
+
+
+def _shared_sync_servico_key(servico: Any) -> str:
+    chave = _shared_sync_loja_key(servico)
+    if chave in {"ml", "mercadolivre", "mercadolibre"}:
+        return "mercadolivre"
+    if chave in {"turbo", "mercadoturbo"}:
+        return "mercadoturbo"
+    if chave == "bling":
+        return "bling"
+    return str(servico or "").strip()
+
+
+def _shared_sync_timestamp(valor: Any) -> float:
+    try:
+        return float(valor or 0)
+    except Exception:
+        return 0.0
+
+
+def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any) -> Any:
+    if not isinstance(remoto, dict):
+        return atual if _shared_sync_valor_preenchido(atual) else remoto
+    if not isinstance(atual, dict):
+        return _shared_sync_json_clone(remoto)
+
+    merged = dict(atual)
+    atual_ts = _shared_sync_timestamp(atual.get("updated_at"))
+    remoto_ts = _shared_sync_timestamp(remoto.get("updated_at"))
+    remoto_mais_novo = remoto_ts > atual_ts
+
+    for chave, valor in remoto.items():
+        atual_valor = merged.get(chave)
+        if chave == "connected":
+            merged[chave] = bool(atual_valor) or bool(valor)
+            continue
+        if chave == "updated_at":
+            if remoto_ts > atual_ts:
+                merged[chave] = valor
+            elif "updated_at" not in merged and _shared_sync_valor_preenchido(valor):
+                merged[chave] = valor
+            continue
+        if not _shared_sync_valor_preenchido(atual_valor) and _shared_sync_valor_preenchido(valor):
+            merged[chave] = valor
+        elif remoto_mais_novo and _shared_sync_valor_preenchido(valor):
+            merged[chave] = valor
+    return merged
+
+
+def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict) -> dict:
+    merged = dict(_shared_sync_json_clone(atual or {}))
+    for chave, valor in (remoto or {}).items():
+        if chave == "integracoes":
+            continue
+        if not _shared_sync_valor_preenchido(merged.get(chave)) and _shared_sync_valor_preenchido(valor):
+            merged[chave] = valor
+
+    integracoes = merged.setdefault("integracoes", {})
+    if not isinstance(integracoes, dict):
+        integracoes = {}
+        merged["integracoes"] = integracoes
+
+    for servico, dados in ((remoto or {}).get("integracoes") or {}).items():
+        servico_key = _shared_sync_servico_key(servico)
+        integracoes[servico_key] = _shared_sync_merge_integracao_loja(integracoes.get(servico_key), dados)
+    return merged
+
+
+def _shared_sync_merge_lojas_integracoes_bytes(target_abs: str, remoto_bytes: bytes) -> bytes:
+    remoto_payload = _shared_sync_json_from_bytes(remoto_bytes, "lojas_config.json")
+    remoto_lojas = _shared_sync_lojas_from_payload(remoto_payload)
+    atual_lojas: list[dict] = []
+
+    if os.path.exists(target_abs):
+        with open(target_abs, "rb") as f:
+            atual_payload = _shared_sync_json_from_bytes(f.read(), "lojas_config.json atual")
+        atual_lojas = _shared_sync_lojas_from_payload(atual_payload)
+
+    if atual_lojas and not remoto_lojas:
+        logger.warning("[SHARED-SYNC] Pacote remoto de lojas vazio ignorado para preservar integracoes locais.")
+        merged = atual_lojas
+    else:
+        merged = [_shared_sync_json_clone(loja) for loja in atual_lojas]
+        indice = {
+            _shared_sync_loja_key(loja.get("nome")): idx
+            for idx, loja in enumerate(merged)
+            if isinstance(loja, dict) and _shared_sync_loja_key(loja.get("nome"))
+        }
+
+        for loja_remota in remoto_lojas:
+            chave = _shared_sync_loja_key(loja_remota.get("nome"))
+            idx = indice.get(chave)
+            if idx is None:
+                idx = next(
+                    (
+                        pos
+                        for pos, loja_atual in enumerate(merged)
+                        if _shared_sync_loja_key(loja_atual.get("nome"))
+                        and chave
+                        and (
+                            _shared_sync_loja_key(loja_atual.get("nome")) in chave
+                            or chave in _shared_sync_loja_key(loja_atual.get("nome"))
+                        )
+                    ),
+                    None,
+                )
+            if idx is None:
+                merged.append(_shared_sync_json_clone(loja_remota))
+                if chave:
+                    indice[chave] = len(merged) - 1
+                continue
+            merged[idx] = _shared_sync_merge_loja_integracoes(merged[idx], loja_remota)
+
+    return json.dumps(merged, ensure_ascii=False, indent=4).encode("utf-8")
+
+
 def _shared_sync_aplicar_pacote(
     client_id: str,
     scope: str,
@@ -21165,6 +21399,8 @@ def _shared_sync_aplicar_pacote(
             if not target_abs.startswith(tenant_abs + os.sep):
                 raise HTTPException(status_code=400, detail="Backup contem destino invalido.")
             _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
+            if scope == "lojas_integracoes" and rel == "lojas_config.json":
+                data = _shared_sync_merge_lojas_integracoes_bytes(target_abs, data)
             os.makedirs(os.path.dirname(target_abs), exist_ok=True)
             with open(target_abs, "wb") as f:
                 f.write(data)
@@ -21465,7 +21701,7 @@ def _shared_sync_save_doc(collection_name: str, local_path: str, item: dict) -> 
     db = _firebase_db() if _firebase_deve_usar() else None
     if db is not None and item.get("id"):
         try:
-            db.collection(collection_name).document(str(item["id"])).set(item, merge=True)
+            db.collection(collection_name).document(str(item["id"])).set(item, merge=True, timeout=8)
             item["storage"] = "firebase"
             return item
         except Exception as exc:
@@ -21479,7 +21715,7 @@ def _shared_sync_all_docs(collection_name: str, local_path: str) -> list[dict]:
     db = _firebase_db() if _firebase_deve_usar() else None
     if db is not None:
         try:
-            for snap in db.collection(collection_name).stream():
+            for snap in db.collection(collection_name).stream(timeout=8):
                 data = snap.to_dict() or {}
                 data["id"] = data.get("id") or snap.id
                 docs.append(data)
@@ -21547,6 +21783,7 @@ def _shared_sync_session_is_target(sessao: dict, item: dict) -> bool:
 
 def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dict:
     scopes = [scope for scope in (item.get("scopes") or []) if scope in SHARED_SYNC_SCOPES]
+    prepare_errors = item.get("prepare_errors") if isinstance(item.get("prepare_errors"), list) else []
     return {
         "id": item.get("id"),
         "status": item.get("status") or "pending",
@@ -21561,6 +21798,8 @@ def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dic
         "message": item.get("message") or "",
         "source_keep_synced": bool(item.get("source_keep_synced")),
         "target_keep_synced": bool(item.get("target_keep_synced")),
+        "prepare_status": item.get("prepare_status") or "ready",
+        "prepare_errors": prepare_errors[:10],
         "created_at": item.get("created_at") or "",
         "responded_at": item.get("responded_at") or "",
         "direction": (
@@ -21654,6 +21893,67 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
         },
         user_only=True,
     )
+
+
+def _shared_sync_exception_message(exc: Exception) -> str:
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, str) and detail.strip():
+        return detail.strip()
+    return str(exc or "").strip() or "Erro ao preparar dados."
+
+
+def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, destino: dict, scopes: list[str], machine_id: str = "") -> None:
+    bundles: dict[str, str] = {}
+    results: list[dict] = []
+    errors: list[dict] = []
+    for scope in scopes:
+        try:
+            result = _shared_sync_push_pair_scope(source_sessao, destino, scope, machine_id, invite_id=invite_id)
+            bundles[scope] = result.get("id") or _shared_sync_pair_doc_id(
+                source_sessao.get("client_id"),
+                source_sessao.get("username"),
+                destino.get("client_id"),
+                destino.get("username"),
+                scope,
+            )
+            results.append(result)
+        except Exception as exc:
+            logger.warning("[SHARED-SYNC] Falha ao preparar escopo %s do convite %s: %s", scope, invite_id, exc)
+            errors.append({
+                "scope": scope,
+                "label": (SHARED_SYNC_SCOPES.get(scope) or {}).get("label") or scope,
+                "message": _shared_sync_exception_message(exc),
+            })
+
+    try:
+        invite = _shared_sync_get_invite(invite_id)
+    except Exception:
+        return
+
+    agora = _shared_sync_now_iso()
+    invite["bundles"] = bundles
+    invite["prepared_results"] = results
+    invite["prepare_errors"] = errors
+    invite["updated_at"] = agora
+    invite["updated_ts"] = int(time.time())
+    if bundles:
+        invite["scopes"] = [scope for scope in scopes if scope in bundles]
+        invite["prepare_status"] = "partial" if errors else "ready"
+    else:
+        invite["status"] = "failed"
+        invite["prepare_status"] = "failed"
+        invite["scopes"] = scopes
+    _shared_sync_save_invite(invite)
+
+
+def _shared_sync_start_invite_prepare_thread(invite_id: str, source_sessao: dict, destino: dict, scopes: list[str], machine_id: str = "") -> None:
+    thread = threading.Thread(
+        target=_shared_sync_prepare_invite_packages,
+        args=(invite_id, dict(source_sessao or {}), dict(destino or {}), list(scopes or []), str(machine_id or "")),
+        name=f"shared-sync-invite-{invite_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
 
 
 def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
@@ -21768,12 +22068,6 @@ def shared_sync_user_shares_invite(
     source_user["username"] = _shared_sync_normalizar_username(sessao.get("username"))
     source_user["client_id"] = _shared_sync_normalizar_client_id(sessao.get("client_id"))
     invite_id = uuid.uuid4().hex
-    bundles = {}
-    results = []
-    for scope in scopes:
-        result = _shared_sync_push_pair_scope(sessao, destino, scope, payload.machine_id or "", invite_id=invite_id)
-        bundles[scope] = result.get("id")
-        results.append(result)
 
     agora = _shared_sync_now_iso()
     invite = {
@@ -21786,22 +22080,30 @@ def shared_sync_user_shares_invite(
         "target_client_id": destino.get("client_id"),
         "target_name": destino.get("name") or destino.get("username"),
         "scopes": scopes,
-        "bundles": bundles,
+        "bundles": {},
         "message": str(payload.message or "").strip()[:1000],
         "source_keep_synced": bool(payload.keep_synced),
         "target_keep_synced": False,
+        "prepare_status": "preparing",
+        "prepare_errors": [],
         "created_at": agora,
         "created_ts": int(time.time()),
         "updated_at": agora,
         "updated_ts": int(time.time()),
         "source_machine_id": str(payload.machine_id or "").strip(),
     }
-    _shared_sync_save_invite(invite)
+    invite = _shared_sync_save_invite(invite)
+    _shared_sync_start_invite_prepare_thread(invite_id, sessao, destino, scopes, payload.machine_id or "")
+    firebase_ok = invite.get("storage") == "firebase"
     return {
         "success": True,
-        "message": "Convite enviado. O outro usuario precisa aceitar para importar os dados.",
+        "message": (
+            "Convite enviado. Preparando os dados em segundo plano."
+            if firebase_ok
+            else "Convite salvo localmente, mas o Firebase nao confirmou o envio para outra maquina."
+        ),
         "invite": _shared_sync_invite_public(invite, sessao),
-        "results": results,
+        "results": [],
     }
 
 
@@ -21818,8 +22120,17 @@ def shared_sync_user_shares_accept(
         raise HTTPException(status_code=403, detail="Apenas o usuario de destino pode aceitar este convite.")
     if str(invite.get("status") or "pending") != "pending":
         raise HTTPException(status_code=400, detail="Este convite ja foi respondido.")
+    prepare_status = str(invite.get("prepare_status") or "ready").strip().lower()
+    if prepare_status == "preparing":
+        raise HTTPException(status_code=409, detail="Convite ainda esta preparando os dados. Tente novamente em alguns instantes.")
+    if prepare_status == "failed":
+        raise HTTPException(status_code=400, detail="A origem nao conseguiu preparar os dados deste convite.")
 
     scopes = _shared_sync_resolver_scopes_usuario(invite.get("scopes") or [])
+    bundles = invite.get("bundles") if isinstance(invite.get("bundles"), dict) else {}
+    scopes = [scope for scope in scopes if bundles.get(scope)]
+    if not scopes:
+        raise HTTPException(status_code=400, detail="Convite sem pacote de dados disponivel para importar.")
     link_id = _shared_sync_safe_doc_id("shared-sync-link", invite.get("id"))
     link = {
         "id": link_id,
@@ -27569,6 +27880,190 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
     return preco, desconto
 
 
+def _ml_parse_percentual_promocao_texto(valor):
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    if not texto:
+        return None
+    match_pct = re.search(r"(-?\d+(?:[.,]\d+)?)\s*%", texto)
+    if match_pct:
+        return _parse_float_flex(match_pct.group(1))
+    return _parse_float_flex(valor)
+
+
+def _ml_extrair_percentual_sugerido_campanha_raw(entry: dict, preco_base=None):
+    """Extrai o percentual sugerido/ofertado pela campanha ML, sem usar desconto total do preco como primeira opcao."""
+    if not isinstance(entry, dict):
+        return None
+
+    def _normalizar_chave(chave: str) -> str:
+        chave_txt = str(chave or "").strip().lower().replace("-", "_")
+        return re.sub(r"[^a-z0-9_]", "", chave_txt)
+
+    def _numero_campo(valor, chaves: tuple[str, ...] = ("percentage", "percent", "pct", "amount", "value", "price")):
+        if isinstance(valor, dict):
+            for chave in chaves:
+                numero = _parse_float_flex(valor.get(chave))
+                if numero is not None:
+                    return numero
+            return None
+        return _parse_float_flex(valor)
+
+    def _percentual_valido(valor):
+        pct = _ml_parse_percentual_promocao_texto(valor)
+        if pct is None:
+            pct = _numero_campo(valor, ("percentage", "percent", "pct", "value", "amount"))
+        if pct is None:
+            return None
+        pct = float(pct)
+        if 0 < pct <= 100:
+            return pct
+        return None
+
+    def _primeiro_percentual(candidatos):
+        for valor in candidatos:
+            pct = _percentual_valido(valor)
+            if pct is not None:
+                return pct
+        return None
+
+    def _percentual_por_valor(valor, base):
+        numero = _numero_campo(valor, ("amount", "value", "discount", "price"))
+        base_num = _parse_float_flex(base)
+        if numero is None or base_num is None or base_num <= 0:
+            return None
+        pct = (float(numero) / float(base_num)) * 100.0
+        if 0 < pct <= 100:
+            return pct
+        return None
+
+    def _percentual_por_preco(preco_sugerido, base):
+        preco_num = _numero_campo(preco_sugerido, ("amount", "value", "price"))
+        base_num = _parse_float_flex(base)
+        if preco_num is None or base_num is None or base_num <= 0 or preco_num <= 0:
+            return None
+        pct = ((float(base_num) - float(preco_num)) / float(base_num)) * 100.0
+        if 0 < pct <= 100:
+            return pct
+        return None
+
+    chaves_seller_pct = {
+        "seller_percentage",
+        "seller_discount_percentage",
+        "seller_discount_percent",
+        "sellerpercentage",
+        "sellerdiscountpercentage",
+    }
+    chaves_sugeridas_pct = {
+        "suggested_discount_percentage",
+        "suggested_discount_percent",
+        "recommended_discount_percentage",
+        "recommended_discount_percent",
+        "campaign_discount_percentage",
+        "campaign_discount_percent",
+        "deal_discount_percentage",
+        "offer_discount_percentage",
+        "min_discount_percentage",
+        "minimum_discount_percentage",
+        "max_discount_percentage",
+        "maximum_discount_percentage",
+    }
+    chaves_diretas_pct = {
+        "discount_percentage",
+        "discount_percent",
+    }
+    chaves_valor_desconto = {
+        "seller_discount_amount",
+        "seller_discount_value",
+        "suggested_discount_amount",
+        "suggested_discount_value",
+        "recommended_discount_amount",
+        "recommended_discount_value",
+        "campaign_discount_amount",
+        "campaign_discount_value",
+        "discount_amount",
+        "discount_value",
+    }
+    chaves_preco_sugerido = {
+        "suggested_discounted_price",
+        "suggested_price",
+        "suggested_deal_price",
+        "recommended_discounted_price",
+        "recommended_price",
+        "campaign_price",
+    }
+
+    seller_direto = []
+    sugerido_direto = []
+    direto_pct = []
+    valor_desconto = []
+    preco_sugerido = []
+
+    for chave, valor in entry.items():
+        chave_norm = _normalizar_chave(chave)
+        if chave_norm in chaves_seller_pct:
+            seller_direto.append(valor)
+        elif chave_norm in chaves_sugeridas_pct:
+            sugerido_direto.append(valor)
+        elif chave_norm in chaves_diretas_pct:
+            direto_pct.append(valor)
+        elif chave_norm in chaves_valor_desconto:
+            valor_desconto.append(valor)
+        elif chave_norm in chaves_preco_sugerido:
+            preco_sugerido.append(valor)
+
+    seller_payload = []
+    sugerido_payload = []
+    direto_payload = []
+    valor_payload = []
+    preco_payload = []
+    termos_excluir = ("fee", "tariff", "tarifa", "tax", "imposto", "margin", "margem", "contribution", "receive")
+
+    for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
+        caminho_norm = str(caminho or "").lower()
+        if any(termo in caminho_norm for termo in termos_excluir):
+            continue
+        chave_norm = _normalizar_chave(caminho_norm.rsplit(".", 1)[-1])
+        tem_percentual = "percent" in caminho_norm or "percentage" in caminho_norm or chave_norm.endswith("_pct")
+        if chave_norm in chaves_seller_pct or ("seller" in caminho_norm and tem_percentual):
+            seller_payload.append(valor)
+            continue
+        if chave_norm in chaves_sugeridas_pct or (tem_percentual and any(t in caminho_norm for t in ("suggest", "recommend", "campaign", "deal", "offer"))):
+            sugerido_payload.append(valor)
+            continue
+        if chave_norm in chaves_diretas_pct:
+            direto_payload.append(valor)
+            continue
+        if tem_percentual and "discount" in caminho_norm:
+            direto_payload.append(valor)
+            continue
+        if chave_norm in chaves_valor_desconto or ("discount" in caminho_norm and any(t in caminho_norm for t in ("seller", "suggest", "recommend", "campaign", "deal", "offer")) and not tem_percentual):
+            valor_payload.append(valor)
+            continue
+        if chave_norm in chaves_preco_sugerido:
+            preco_payload.append(valor)
+
+    for grupo in (seller_direto, seller_payload, sugerido_direto, sugerido_payload, direto_pct, direto_payload):
+        pct = _primeiro_percentual(grupo)
+        if pct is not None:
+            return pct
+
+    for grupo in (valor_desconto, valor_payload):
+        for valor in grupo:
+            pct = _percentual_por_valor(valor, preco_base)
+            if pct is not None:
+                return pct
+
+    for grupo in (preco_sugerido, preco_payload):
+        for valor in grupo:
+            pct = _percentual_por_preco(valor, preco_base)
+            if pct is not None:
+                return pct
+
+    return None
+
+
 def _ml_extrair_desconto_tarifa_promocao_raw(entry: dict):
     """Extrai o valor em R$ de reduÃ§Ã£o de tarifa da campanha, quando a API retorna esse detalhe."""
     if not isinstance(entry, dict):
@@ -28771,12 +29266,28 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             except Exception:
                 promocoes_item_a = None
         preco_b_raw, desc_b_raw = _ml_extrair_preco_promocao_raw(raw_b_item, priorizar_percentual_total_api=True)
+        status_promo_a = _ml_classificar_status_promocao_entry(raw_a_item)
+        if str(price_info.get("promotion_id") or "").strip().lower() == promo_a.lower():
+            status_promo_a = "Ativo"
+        if not status_promo_a:
+            try:
+                if promocoes_item_a is None:
+                    promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, req.loja, cfg_local, item_id)
+                status_promo_a = _ml_classificar_status_promocao_por_id(promocoes_item_a, promo_a)
+            except Exception:
+                status_promo_a = ""
+        presente_a = status_promo_a == "Ativo"
+        presente_a_programado = status_promo_a == "Programado"
+        if not presente_a and not presente_a_programado:
+            return None
         desconto_tarifa_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_b_item)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or preco_atual or preco_base_anuncio
 
         desconto_a = desc_a_raw
-        desconto_b = desc_b_raw
+        desconto_b = _ml_extrair_percentual_sugerido_campanha_raw(raw_b_item, preco_base_anuncio)
+        if desconto_b is None:
+            desconto_b = desc_b_raw
         if preco_a_raw is None and desconto_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
             preco_a = round(float(preco_base_anuncio) * max(0.0, 1.0 - (float(desconto_a) / 100.0)), 2)
         if desconto_a is None and preco_base_anuncio and preco_a and preco_base_anuncio > 0:
@@ -28863,12 +29374,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             if preco_b:
                 margem_b = (valor_liquido_b * 100.0) / preco_b
 
-        presente_a = item_id in ids_a
         presente_b = item_id in ids_b
         margem_minima_pct = float(req.margem_minima or 0)
-        if not presente_a:
-            decisao = "NÃ£o participar"
-        elif margem_a is None or margem_a < margem_minima_pct:
+        if margem_a is None or margem_a < margem_minima_pct:
             decisao = "NÃ£o participar"
         elif margem_b is None:
             decisao = "NÃ£o participar"
@@ -28879,7 +29387,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         else:
             decisao = "Participar"
 
-        status = "Ativo" if presente_a else "Sem Promo Fixa"
+        status = status_promo_a
         return {
             "Tipo": fee_b.get("listing_type_name") or fee_a.get("listing_type_name") or _ml_nome_tipo_anuncio(item.get("listing_type_id")),
             "%": _format_pct_br(
@@ -28939,11 +29447,18 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
                 for future in as_completed(future_map):
                     item_id = future_map[future]
                     try:
-                        linhas_por_id[item_id] = future.result()
+                        linha = future.result()
+                        if linha:
+                            linhas_por_id[item_id] = linha
                     except Exception as e:
                         logger.warning(f"[PROMO API] Falha ao montar item {item_id}: {e}")
                 dados_analise.extend([linhas_por_id[item_id] for item_id, _item in item_pairs if item_id in linhas_por_id])
-    dados_analise = [row for row in dados_analise if _promo_linha_pct_fixa_maior_que_zero(row)]
+    dados_analise = [
+        row for row in dados_analise
+        if row
+        and _promo_linha_status_ativo_ou_programado(row)
+        and _promo_linha_pct_fixa_maior_que_zero(row)
+    ]
 
     planilha_nome = _salvar_planilha_analise_promo(client_id, dados_analise, prefixo='analise_promo_api')
     df_payload = _build_df_planilha_analise_promo(dados_analise).fillna("")
@@ -29142,17 +29657,17 @@ async def analisar_promo_via_api_sem_arquivos(
         status_promo_a = _ml_classificar_status_promocao_entry(raw_a_item)
         if str(price_info.get("promotion_id") or "").strip().lower() == promo_a.lower():
             status_promo_a = "Ativo"
-        if not status_promo_a and (promocoes_item_a is not None or not raw_a_item):
+        if not status_promo_a:
             try:
                 if promocoes_item_a is None:
                     promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
                 status_promo_a = _ml_classificar_status_promocao_por_id(promocoes_item_a, promo_a)
             except Exception:
                 status_promo_a = ""
-        if not status_promo_a and item_id in ids_a:
-            status_promo_a = "Ativo"
         presente_a = status_promo_a == "Ativo"
         presente_a_programado = status_promo_a == "Programado"
+        if not presente_a and not presente_a_programado:
+            return None
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or _parse_float_flex(raw_b_item.get("price")) or preco_atual or preco_base_anuncio
 
@@ -29164,11 +29679,13 @@ async def analisar_promo_via_api_sem_arquivos(
         if desconto_a is None and preco_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
             desconto_a = max(0.0, ((preco_base_anuncio - preco_a) / preco_base_anuncio) * 100.0)
 
-        desconto_b = desc_b_raw
+        desconto_b = _ml_extrair_percentual_sugerido_campanha_raw(raw_b_item, preco_base_anuncio)
+        if desconto_b is None:
+            desconto_b = desc_b_raw
         meli_pct = _parse_float_flex(raw_b_item.get("meli_percentage"))
         seller_pct = _parse_float_flex(raw_b_item.get("seller_percentage"))
-        if desconto_b is None and (meli_pct is not None or seller_pct is not None):
-            desconto_b = float(meli_pct or 0.0) + float(seller_pct or 0.0)
+        if desconto_b is None:
+            desconto_b = seller_pct if seller_pct is not None else meli_pct
         if desconto_b is None and preco_base_anuncio and preco_b and preco_base_anuncio > 0:
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
@@ -29436,7 +29953,9 @@ async def analisar_promo_via_api_sem_arquivos(
                 for future in as_completed(future_map):
                     item_id = future_map[future]
                     try:
-                        linhas_por_id[item_id] = future.result()
+                        linha = future.result()
+                        if linha:
+                            linhas_por_id[item_id] = linha
                     except Exception:
                         logger.exception("[PROMO API SEM ARQUIVOS] Falha ao montar item %s", item_id)
                 linhas = [linhas_por_id[item_id] for item_id, _ in item_pairs if item_id in linhas_por_id]
@@ -29691,6 +30210,14 @@ async def analisar_promo_via_api_com_arquivos(
                 raw_a_item, cfg_local = _ml_obter_item_promocao_raw(client_id, loja, cfg_local, promo_a, promo_a_type, item_id)
             except Exception:
                 raw_a_item = {}
+        raw_b_item = {}
+        promo_b_type = str(promo_meta.get("promo_b_type") or "").strip()
+        promo_b_id = str(promo_meta.get("promo_b") or "").strip()
+        if promo_b_type and promo_b_id:
+            try:
+                raw_b_item, cfg_local = _ml_obter_item_promocao_raw(client_id, loja, cfg_local, promo_b_id, promo_b_type, item_id)
+            except Exception:
+                raw_b_item = {}
 
         promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
@@ -29707,21 +30234,23 @@ async def analisar_promo_via_api_com_arquivos(
         status_promo_a = _ml_classificar_status_promocao_entry(raw_a_item)
         if str(price_info.get("promotion_id") or "").strip().lower() == promo_a.lower():
             status_promo_a = "Ativo"
-        if not status_promo_a and (promocoes_item_a is not None or not raw_a_item):
+        if not status_promo_a:
             try:
                 if promocoes_item_a is None:
                     promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
                 status_promo_a = _ml_classificar_status_promocao_por_id(promocoes_item_a, promo_a)
             except Exception:
                 status_promo_a = ""
-        if not status_promo_a and item_id in ids_a:
-            status_promo_a = "Ativo"
         presente_a_ativo = status_promo_a == "Ativo"
         presente_a_programado = status_promo_a == "Programado"
+        if not presente_a_ativo and not presente_a_programado:
+            return None
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
 
         desconto_a = desc_a_raw
-        desconto_b = _parse_float_flex(entrada_b.get("ML % Campanha"))
+        desconto_b = _ml_extrair_percentual_sugerido_campanha_raw(raw_b_item, preco_base_anuncio)
+        if desconto_b is None:
+            desconto_b = _ml_parse_percentual_promocao_texto(entrada_b.get("ML % Campanha"))
         if not presente_a_ativo and not presente_a_programado and desconto_a is None and preco_a is not None:
             desconto_a = 0.0
         if preco_a_raw is None and desconto_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
@@ -29922,7 +30451,9 @@ async def analisar_promo_via_api_com_arquivos(
                 for future in as_completed(future_map):
                     item_id = future_map[future]
                     try:
-                        linhas_por_id[item_id] = future.result()
+                        linha = future.result()
+                        if linha:
+                            linhas_por_id[item_id] = linha
                     except Exception as e:
                         logger.warning(f"[PROMO API ARQUIVOS] Falha ao montar item {item_id}: {e}")
                 linhas = [linhas_por_id[item_id] for item_id, _ in item_pairs if item_id in linhas_por_id]
