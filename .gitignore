@@ -26,3 +26,36 @@ backups/local_before_pesquisa_restore_*/
 # Pacotes criptografados de credenciais locais
 *.jkcred
 credenciais-exportadas/
+
+# Android local build and private signing files
+android_app/.gradle/
+android_app/**/build/
+android_app/local.properties
+android_app/signing.properties
+android_app/private/
+android_app/*.jks
+android_app/*.keystore
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+.tmp_checks/
+
+# Logs
+logs/
+*.log
+
+# Electron/Chromium local user data
+info/electron_user_data/
+info/electron_user_data_*/
+
+# Electron build outputs and installers
+electron_app/dist/
+electron_app/dist-client/
+electron_app/dist-client-final/
+electron_app/dist-client-nosign/
+electron_app/dist-client-setup/
+electron_app/dist-client-setup.zip
+electron_app/dist-private/
+dist-private/
+*.blockmap
