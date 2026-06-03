@@ -21001,8 +21001,10 @@ def _shared_sync_push_scope(
 ) -> dict:
     db = _shared_sync_firestore_required()
     bundle, manifest, warnings = _shared_sync_montar_pacote(client_id, scope, sessao.get("username"), machine_id, user_only=user_only)
-    bundle_b64 = base64.b64encode(bundle).decode("ascii")
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
+    if scope == "lojas_integracoes":
+        _shared_sync_validar_push_lojas_integracoes(bundle_id, bundle)
+    bundle_b64 = base64.b64encode(bundle).decode("ascii")
     chunks = [bundle_b64[i:i + SHARED_SYNC_CHUNK_CHARS] for i in range(0, len(bundle_b64), SHARED_SYNC_CHUNK_CHARS)] or [""]
     _shared_sync_delete_chunks(db, bundle_id)
     chunks_coll = db.collection(_firebase_shared_sync_chunks_collection_name())
@@ -21315,6 +21317,72 @@ def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict) -> dict:
         servico_key = _shared_sync_servico_key(servico)
         integracoes[servico_key] = _shared_sync_merge_integracao_loja(integracoes.get(servico_key), dados)
     return merged
+
+
+def _shared_sync_resumo_lojas_integracoes(lojas: list[dict]) -> dict:
+    nomes = set()
+    conectadas = set()
+    for loja in lojas or []:
+        if not isinstance(loja, dict):
+            continue
+        loja_key = _shared_sync_loja_key(loja.get("nome"))
+        if loja_key:
+            nomes.add(loja_key)
+        integracoes = loja.get("integracoes") if isinstance(loja.get("integracoes"), dict) else {}
+        for servico, dados in (integracoes or {}).items():
+            if not isinstance(dados, dict) or not dados.get("connected"):
+                continue
+            servico_key = _shared_sync_servico_key(servico)
+            conectadas.add(f"{loja_key}:{servico_key}" if loja_key else servico_key)
+    return {"lojas": nomes, "conectadas": conectadas}
+
+
+def _shared_sync_lojas_config_from_bundle(bundle: bytes) -> list[dict]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
+            data = zf.read("files/lojas_config.json")
+    except KeyError:
+        return []
+    payload = _shared_sync_json_from_bytes(data, "lojas_config.json")
+    return _shared_sync_lojas_from_payload(payload)
+
+
+def _shared_sync_validar_push_lojas_integracoes(bundle_id: str, bundle: bytes) -> None:
+    try:
+        remoto_bundle, _meta = _shared_sync_obter_bundle_por_id(bundle_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return
+        logger.warning("[SHARED-SYNC] Nao foi possivel validar regressao de lojas_integracoes: %s", exc.detail)
+        return
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Nao foi possivel validar regressao de lojas_integracoes: %s", exc)
+        return
+
+    try:
+        local = _shared_sync_resumo_lojas_integracoes(_shared_sync_lojas_config_from_bundle(bundle))
+        remoto = _shared_sync_resumo_lojas_integracoes(_shared_sync_lojas_config_from_bundle(remoto_bundle))
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao comparar lojas_integracoes antes do push: %s", exc)
+        return
+    lojas_remotas = remoto.get("lojas") or set()
+    lojas_locais = local.get("lojas") or set()
+    conectadas_remotas = remoto.get("conectadas") or set()
+    conectadas_locais = local.get("conectadas") or set()
+
+    perda_lojas = len(lojas_remotas - lojas_locais)
+    perda_conectadas = len(conectadas_remotas - conectadas_locais)
+    regressao_lojas = len(lojas_remotas) >= 3 and len(lojas_locais) <= 1 and perda_lojas >= 2
+    regressao_conexoes = len(conectadas_remotas) >= 3 and len(conectadas_locais) <= 1 and perda_conectadas >= 2
+    if regressao_lojas or regressao_conexoes:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Push de lojas_integracoes bloqueado: o snapshot local parece remover lojas "
+                "ou conexoes Bling/Mercado Livre existentes no remoto. Restaure ou confirme "
+                "as lojas antes de sincronizar."
+            ),
+        )
 
 
 def _shared_sync_merge_lojas_integracoes_bytes(target_abs: str, remoto_bytes: bytes) -> bytes:
@@ -21781,8 +21849,28 @@ def _shared_sync_session_is_target(sessao: dict, item: dict) -> bool:
     )
 
 
+def _shared_sync_scope_permitido_entre_clientes(item: dict, scope: str) -> bool:
+    if scope != "lojas_integracoes":
+        return True
+    source_client = _shared_sync_normalizar_client_id((item or {}).get("source_client_id"))
+    target_client = _shared_sync_normalizar_client_id((item or {}).get("target_client_id"))
+    return bool(source_client and target_client and source_client == target_client)
+
+
+def _shared_sync_filtrar_scopes_entre_clientes(scopes: list[str], item: dict) -> list[str]:
+    saida = []
+    for scope in scopes or []:
+        if scope not in SHARED_SYNC_SCOPES:
+            continue
+        if not _shared_sync_scope_permitido_entre_clientes(item, scope):
+            continue
+        if scope not in saida:
+            saida.append(scope)
+    return saida
+
+
 def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dict:
-    scopes = [scope for scope in (item.get("scopes") or []) if scope in SHARED_SYNC_SCOPES]
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item)
     prepare_errors = item.get("prepare_errors") if isinstance(item.get("prepare_errors"), list) else []
     return {
         "id": item.get("id"),
@@ -21811,7 +21899,7 @@ def _shared_sync_invite_public(item: dict, sessao: Optional[dict] = None) -> dic
 
 
 def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
-    scopes = [scope for scope in (item.get("scopes") or []) if scope in SHARED_SYNC_SCOPES]
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(item.get("scopes") or [], item)
     source = sessao and _shared_sync_session_is_source(sessao, item)
     target = sessao and _shared_sync_session_is_target(sessao, item)
     return {
@@ -21869,6 +21957,12 @@ def _shared_sync_link_bundle_id(link: dict, scope: str) -> str:
 
 
 def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, machine_id: str = "", link_id: str = "", invite_id: str = "") -> dict:
+    item_ref = {
+        "source_client_id": source_sessao.get("client_id"),
+        "target_client_id": target.get("client_id"),
+    }
+    if not _shared_sync_scope_permitido_entre_clientes(item_ref, scope):
+        raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
     bundle_id = _shared_sync_pair_doc_id(
         source_sessao.get("client_id"),
         source_sessao.get("username"),
@@ -21957,6 +22051,8 @@ def _shared_sync_start_invite_prepare_thread(invite_id: str, source_sessao: dict
 
 
 def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
+    if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+        raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser importadas entre clientes diferentes.")
     bundle_id = _shared_sync_link_bundle_id(link, scope)
     bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id)
     scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}
@@ -21979,6 +22075,8 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
 def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "") -> dict:
     if not _shared_sync_session_is_source(source_sessao, link):
         raise HTTPException(status_code=403, detail="Apenas o usuario de origem pode enviar estes dados.")
+    if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+        raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
     target = {
         "username": link.get("target_username"),
         "client_id": link.get("target_client_id"),
@@ -22127,6 +22225,7 @@ def shared_sync_user_shares_accept(
         raise HTTPException(status_code=400, detail="A origem nao conseguiu preparar os dados deste convite.")
 
     scopes = _shared_sync_resolver_scopes_usuario(invite.get("scopes") or [])
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, invite)
     bundles = invite.get("bundles") if isinstance(invite.get("bundles"), dict) else {}
     scopes = [scope for scope in scopes if bundles.get(scope)]
     if not scopes:
@@ -22240,6 +22339,7 @@ def shared_sync_user_shares_link_push(
     if not _shared_sync_session_is_source(sessao, link):
         raise HTTPException(status_code=403, detail="Apenas o usuario de origem pode enviar estes dados.")
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link)
     results = [_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "") for scope in scopes]
     return {"success": True, "direction": "push", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
@@ -22258,6 +22358,7 @@ def shared_sync_user_shares_link_pull(
     if not _shared_sync_session_is_target(sessao, link):
         raise HTTPException(status_code=403, detail="Apenas o usuario de destino pode importar estes dados.")
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
+    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link)
     results = [_shared_sync_pull_pair_scope(sessao, link, scope) for scope in scopes]
     return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
@@ -22283,6 +22384,9 @@ def shared_sync_user_shares_auto_push(
             continue
         for scope in link.get("scopes") or []:
             if scope not in SHARED_SYNC_SCOPES:
+                continue
+            if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+                skipped.append({"link_id": link.get("id"), "scope": scope, "reason": "cross_client_sensitive_scope"})
                 continue
             if requested and scope not in requested:
                 continue
@@ -22430,6 +22534,9 @@ def shared_sync_auto_pull(
             continue
         for scope in link.get("scopes") or []:
             if scope not in SHARED_SYNC_SCOPES:
+                continue
+            if not _shared_sync_scope_permitido_entre_clientes(link, scope):
+                ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "user_share_cross_client_sensitive_scope"})
                 continue
             if requested and scope not in requested:
                 continue
@@ -34128,6 +34235,11 @@ def _integracoes_coletar_legadas():
     return por_loja
 
 
+def _integracoes_pode_criar_lojas_legadas(client_id) -> bool:
+    client_norm = str(client_id or "default").strip().lower() or "default"
+    return client_norm == "default"
+
+
 def _integracoes_mesclar_legadas(client_id, lojas):
     if not isinstance(lojas, list):
         lojas = []
@@ -34146,7 +34258,7 @@ def _integracoes_mesclar_legadas(client_id, lojas):
     for nome_legado, integracoes_legadas in legadas.items():
         chave = _integracoes_nome_normalizado(nome_legado)
         loja = indice.get(chave)
-        pode_criar = not lojas
+        pode_criar = not lojas and _integracoes_pode_criar_lojas_legadas(client_id)
         if not loja and pode_criar:
             loja = {"nome": nome_legado, "integracoes": {}}
             lojas.append(loja)

@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openInternalBrowser: (url) => ipcRenderer.invoke('open-internal-browser', url),
     openExternalChrome: (url) => ipcRenderer.invoke('open-external-chrome', url),
     extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url),
+    showEmbeddedMlBrowser: (url, bounds) => ipcRenderer.invoke('embedded-ml-browser-show', url, bounds),
+    positionEmbeddedMlBrowser: (bounds) => ipcRenderer.invoke('embedded-ml-browser-position', bounds),
+    hideEmbeddedMlBrowser: () => ipcRenderer.invoke('embedded-ml-browser-hide'),
+    executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code),
     importCredentials: () => ipcRenderer.invoke('import-credentials')
 });
 

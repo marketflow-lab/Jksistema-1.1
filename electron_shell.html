@@ -1044,6 +1044,16 @@
             return { found, bounds: data.bounds };
         }
 
+        function getEmbeddedMlBrowserApi() {
+            const api = window.electronAPI || null;
+            if (!api) return null;
+            if (typeof api.showEmbeddedMlBrowser !== 'function') return null;
+            if (typeof api.positionEmbeddedMlBrowser !== 'function') return null;
+            if (typeof api.hideEmbeddedMlBrowser !== 'function') return null;
+            if (typeof api.executeEmbeddedMlBrowser !== 'function') return null;
+            return api;
+        }
+
         function restaurarEmbeddedMlBrowserSeAtivo() {
             if (!activeId) return;
             const url = mlBrowserUrlByTab.get(activeId);
@@ -1055,8 +1065,9 @@
             if (boundsSalvos && boundsSalvos.background) return;
             const data = getMlBrowserBoundsForTab(tab, boundsSalvos);
             if (!data || !data.bounds) return;
-            if (window.electronAPI && typeof window.electronAPI.showEmbeddedMlBrowser === 'function') {
-                window.electronAPI.showEmbeddedMlBrowser(url, data.bounds).catch(() => {});
+            const embeddedApi = getEmbeddedMlBrowserApi();
+            if (embeddedApi) {
+                embeddedApi.showEmbeddedMlBrowser(url, data.bounds).catch(() => {});
                 return;
             }
             const positioned = positionMlBrowserForTabId(activeId, mlBrowserBoundsByTab.get(activeId) || null);
@@ -1099,8 +1110,9 @@
             if (mlBrowserWebview) {
                 mlBrowserWebview.classList.toggle('is-active', !!activeHasMlState && activeMlVisible && !activeMlBackground);
             }
-            if ((!activeHasMlState || !activeMlVisible || activeMlBackground) && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
-                window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
+            const embeddedApi = getEmbeddedMlBrowserApi();
+            if ((!activeHasMlState || !activeMlVisible || activeMlBackground) && embeddedApi) {
+                embeddedApi.hideEmbeddedMlBrowser().catch(() => {});
                 hideMlBrowserShell();
             } else {
                 restaurarEmbeddedMlBrowserSeAtivo();
@@ -1265,7 +1277,8 @@
                     ? { ...(payload.bounds || {}), background: true }
                     : (payload.bounds || null);
                 const embedded = getMlBrowserBoundsForMainWindow(event.source, boundsPayload);
-                if (embedded && window.electronAPI && typeof window.electronAPI.showEmbeddedMlBrowser === 'function') {
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (embedded && embeddedApi) {
                     mlBrowserOwnerId = embedded.found.id;
                     mlBrowserBoundsByTab.set(embedded.found.id, boundsPayload || null);
                     mlBrowserVisibleByTab.set(embedded.found.id, !(embedded.bounds && embedded.bounds.background));
@@ -1273,15 +1286,13 @@
                         mlBrowserUrlByTab.set(embedded.found.id, payload.url);
                     }
                     if (data.channel === 'jk-ml-browser-position' && embedded.bounds && embedded.bounds.background) {
-                        if (typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
-                            window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
-                        }
+                        embeddedApi.hideEmbeddedMlBrowser().catch(() => {});
                         hideMlBrowserShell();
                         return;
                     }
                     const action = data.channel === 'jk-ml-browser-show'
-                        ? window.electronAPI.showEmbeddedMlBrowser(mlBrowserUrlByTab.get(embedded.found.id) || payload.url, embedded.bounds)
-                        : window.electronAPI.positionEmbeddedMlBrowser(embedded.bounds);
+                        ? embeddedApi.showEmbeddedMlBrowser(mlBrowserUrlByTab.get(embedded.found.id) || payload.url, embedded.bounds)
+                        : embeddedApi.positionEmbeddedMlBrowser(embedded.bounds);
                     action
                         .then(result => {
                             if (data.channel === 'jk-ml-browser-show') {
@@ -1336,8 +1347,9 @@
                 } else if (mlBrowserOwnerId) {
                     mlBrowserVisibleByTab.set(mlBrowserOwnerId, false);
                 }
-                if (found && found.id === mlBrowserOwnerId && window.electronAPI && typeof window.electronAPI.hideEmbeddedMlBrowser === 'function') {
-                    window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (found && found.id === mlBrowserOwnerId && embeddedApi) {
+                    embeddedApi.hideEmbeddedMlBrowser().catch(() => {});
                 }
                 if (found && found.id === mlBrowserOwnerId) hideMlBrowserShell();
                 return;
@@ -1348,8 +1360,9 @@
                 const requestId = payload.requestId;
                 const code = payload.code || '';
                 const found = findTabBySource(event.source);
-                if (found && found.id === mlBrowserOwnerId && window.electronAPI && typeof window.electronAPI.executeEmbeddedMlBrowser === 'function') {
-                    window.electronAPI.executeEmbeddedMlBrowser(code)
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (found && found.id === mlBrowserOwnerId && embeddedApi) {
+                    embeddedApi.executeEmbeddedMlBrowser(code)
                         .then(result => {
                             postToTab(found.tab, { channel: 'jk-ml-browser-execute-result', requestId, result });
                         })
