@@ -1921,7 +1921,7 @@
             grid.innerHTML = '<div class="user-share-empty">Nenhum tipo de dado disponível.</div>';
             return;
         }
-        const preferidos = new Set(['cadastro', 'lojas_integracoes', 'vendas', 'favoritos_historico', 'sku_campos_pesquisa']);
+        const preferidos = new Set(['cadastro', 'lojas_integracoes', 'vendas', 'favoritos_historico', 'sku_campos_pesquisa', 'anuncios_ml']);
         grid.innerHTML = keys.map(scope => {
             const item = scopes[scope] || {};
             return `
@@ -2376,10 +2376,12 @@
         setUserShareProcesso(nomeProcesso, 0, direcao === 'push' ? 'Preparando novidades locais.' : 'Buscando novidades remotas.');
         try {
             setUserShareProcesso(nomeProcesso, 30, direcao === 'push' ? 'Enviando pacote.' : 'Importando pacote.');
+            const body = { machine_id: machineIdAtual() };
+            if (direcao === 'push') body.scopes = scopesSelecionadosCompartilhamentoUsuario();
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ machine_id: machineIdAtual() })
+                body: JSON.stringify(body)
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');

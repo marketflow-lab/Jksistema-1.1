@@ -20808,6 +20808,17 @@ SHARED_SYNC_SCOPES = {
         "user_scoped": True,
         "sensitive": False,
     },
+    "anuncios_ml": {
+        "label": "Anuncios ML",
+        "description": "Preferencias de anuncios, vendedores e SKUs ignorados no modulo Favoritos.",
+        "patterns": [
+            "favoritos_anuncios_ignorados_*.json",
+            "favoritos_vendedores_ignorados_*.json",
+            "favoritos_skus_ocultos_*.json",
+        ],
+        "user_scoped": True,
+        "sensitive": False,
+    },
 }
 
 SHARED_SYNC_ALLOWED_EXTENSIONS = {".json", ".csv", ".db", ".sqlite", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".webp"}
@@ -21146,6 +21157,7 @@ def _shared_sync_machine_scope_allowed(scope: str, sessao: dict) -> bool:
         "vendas": "vendas",
         "favoritos_historico": "favoritos",
         "sku_campos_pesquisa": "favoritos",
+        "anuncios_ml": "favoritos",
     }
     chave = mapa.get(scope)
     return bool(chave and permissoes.get(chave) is True)
@@ -21227,6 +21239,21 @@ def _shared_sync_relativo_seguro(rel_path: str) -> str:
     return norm
 
 
+def _shared_sync_user_scoped_rels(scope: str, username: str) -> list[str]:
+    slug = _favoritos_usuario_slug(username)
+    if scope == "favoritos_historico":
+        return [f"favoritos_historico_{slug}.json"]
+    if scope == "sku_campos_pesquisa":
+        return [f"favoritos_pesquisas_{slug}.json"]
+    if scope == "anuncios_ml":
+        return [
+            f"favoritos_anuncios_ignorados_{slug}.json",
+            f"favoritos_vendedores_ignorados_{slug}.json",
+            f"favoritos_skus_ocultos_{slug}.json",
+        ]
+    return []
+
+
 def _shared_sync_scope_match(scope: str, rel_path: str) -> bool:
     info = SHARED_SYNC_SCOPES.get(scope) or {}
     rel = _shared_sync_relativo_seguro(rel_path).lower()
@@ -21297,13 +21324,9 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
     entries: list[dict] = []
     if not os.path.exists(tenant_abs):
         return entries, warnings
-    user_scoped_rel = ""
+    user_scoped_rels: set[str] = set()
     if user_only and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")):
-        slug = _favoritos_usuario_slug(username)
-        if scope == "favoritos_historico":
-            user_scoped_rel = f"favoritos_historico_{slug}.json"
-        elif scope == "sku_campos_pesquisa":
-            user_scoped_rel = f"favoritos_pesquisas_{slug}.json"
+        user_scoped_rels = set(_shared_sync_user_scoped_rels(scope, username))
 
     for root, dirs, files in os.walk(tenant_abs):
         dirs[:] = [
@@ -21323,7 +21346,7 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             if not abs_path.startswith(tenant_abs + os.sep):
                 continue
             rel = os.path.relpath(abs_path, tenant_abs).replace("\\", "/")
-            if user_scoped_rel and rel != user_scoped_rel:
+            if user_scoped_rels and rel not in user_scoped_rels:
                 continue
             if not _shared_sync_scope_match(scope, rel):
                 continue
@@ -21491,6 +21514,86 @@ def _shared_sync_pesquisas_delta_bytes(scope: str, rel: str, data: bytes, known_
     return _shared_sync_json_dump_bytes({"pesquisas": filtradas, "updated_at": _shared_sync_now_iso()}), keys
 
 
+def _shared_sync_anuncio_ignorado_key(sku: str, item: dict) -> str:
+    if not isinstance(item, dict):
+        bruto = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
+    item_id = str(item.get("id") or "").strip().upper()
+    if item_id:
+        return f"id:{item_id}"
+    chaves = item.get("chaves") if isinstance(item.get("chaves"), list) else []
+    for chave in chaves:
+        chave_txt = str(chave or "").strip().lower()
+        if chave_txt:
+            return f"chave:{chave_txt}"
+    base = "|".join([
+        str(sku or "").strip().lower(),
+        str(item.get("titulo") or "").strip().lower(),
+        str(item.get("vendedor") or "").strip().lower(),
+        str(item.get("url") or "").strip().lower(),
+    ])
+    return "hash:" + hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def _shared_sync_lista_str_payload(payload: Any, key: str, normalizador) -> list[str]:
+    bruto = payload.get(key) if isinstance(payload, dict) and key in payload else payload
+    return normalizador(bruto)
+
+
+def _shared_sync_anuncios_ml_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    payload = _shared_sync_json_from_bytes(data, rel)
+    lower = os.path.basename(str(rel or "")).lower()
+    if lower.startswith("favoritos_anuncios_ignorados_"):
+        anuncios = _favoritos_normalizar_anuncios_ignorados(
+            payload.get("anuncios_ignorados") if isinstance(payload, dict) and "anuncios_ignorados" in payload else payload
+        )
+        filtrados: dict[str, list[dict]] = {}
+        keys = []
+        vistos_lote = set()
+        for sku, itens in anuncios.items():
+            for item in itens or []:
+                item_key = _shared_sync_anuncio_ignorado_key(sku, item)
+                chave = f"{scope}:anuncio_ignorado:{sku}:{item_key}"
+                if chave in known_keys or chave in vistos_lote:
+                    continue
+                vistos_lote.add(chave)
+                filtrados.setdefault(sku, []).append(item)
+                keys.append(chave)
+        if not filtrados:
+            return None, []
+        return _shared_sync_json_dump_bytes({"anuncios_ignorados": filtrados, "updated_at": _shared_sync_now_iso()}), keys
+
+    if lower.startswith("favoritos_vendedores_ignorados_"):
+        vendedores = _shared_sync_lista_str_payload(payload, "vendedores_ignorados", _favoritos_normalizar_vendedores_ignorados)
+        filtrados = []
+        keys = []
+        for vendedor in vendedores:
+            chave = f"{scope}:vendedor_ignorado:{_shared_sync_texto_chave(vendedor)}"
+            if chave in known_keys:
+                continue
+            filtrados.append(vendedor)
+            keys.append(chave)
+        if not filtrados:
+            return None, []
+        return _shared_sync_json_dump_bytes({"vendedores_ignorados": filtrados, "updated_at": _shared_sync_now_iso()}), keys
+
+    if lower.startswith("favoritos_skus_ocultos_"):
+        skus = _shared_sync_lista_str_payload(payload, "skus_ocultos", _favoritos_normalizar_skus_ocultos)
+        filtrados = []
+        keys = []
+        for sku in skus:
+            chave = f"{scope}:sku_oculto:{_normalizar_sku_match_favoritos(sku)}"
+            if chave in known_keys:
+                continue
+            filtrados.append(sku)
+            keys.append(chave)
+        if not filtrados:
+            return None, []
+        return _shared_sync_json_dump_bytes({"skus_ocultos": filtrados, "updated_at": _shared_sync_now_iso()}), keys
+
+    return None, []
+
+
 def _shared_sync_lojas_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
     payload = _shared_sync_json_from_bytes(data, rel)
     lojas = _shared_sync_lojas_from_payload(payload)
@@ -21608,6 +21711,8 @@ def _shared_sync_delta_for_entry(scope: str, entry: dict, known_keys: set[str]) 
         return _shared_sync_favoritos_delta_bytes(scope, rel, data, known_keys)
     if scope == "sku_campos_pesquisa":
         return _shared_sync_pesquisas_delta_bytes(scope, rel, data, known_keys)
+    if scope == "anuncios_ml":
+        return _shared_sync_anuncios_ml_delta_bytes(scope, rel, data, known_keys)
     if scope == "lojas_integracoes" and lower == "lojas_config.json":
         return _shared_sync_lojas_delta_bytes(scope, rel, data, known_keys)
 
@@ -21894,12 +21999,15 @@ def _shared_sync_backup_target(tenant_abs: str, backup_dir: str, rel: str, targe
     shutil.copy2(target_abs, backup_abs)
 
 
-def _shared_sync_target_rel_usuario(scope: str, username: str) -> str:
-    slug = _favoritos_usuario_slug(username)
-    if scope == "favoritos_historico":
-        return f"favoritos_historico_{slug}.json"
-    if scope == "sku_campos_pesquisa":
-        return f"favoritos_pesquisas_{slug}.json"
+def _shared_sync_target_rel_usuario(scope: str, username: str, source_rel: str = "") -> str:
+    rels = _shared_sync_user_scoped_rels(scope, username)
+    if len(rels) == 1:
+        return rels[0]
+    lower = os.path.basename(str(source_rel or "")).lower()
+    for rel in rels:
+        prefix = re.sub(r"_[^_]+\.json$", "_", rel.lower())
+        if prefix and lower.startswith(prefix):
+            return rel
     raise HTTPException(status_code=400, detail="Escopo nao permite compartilhamento entre usuarios.")
 
 
@@ -21981,6 +22089,71 @@ def _shared_sync_merge_pesquisas_usuario(client_id: str, username: str, fontes: 
     return {"pesquisas": pesquisas, "updated_at": agora}
 
 
+def _shared_sync_union_lista_texto(atual: list[str], remoto: list[str], normalizador) -> list[str]:
+    saida = list(normalizador(atual))
+    vistos = {_shared_sync_texto_chave(item) for item in saida}
+    for item in normalizador(remoto):
+        chave = _shared_sync_texto_chave(item)
+        if not chave or chave in vistos:
+            continue
+        vistos.add(chave)
+        saida.append(item)
+    return saida
+
+
+def _shared_sync_merge_anuncios_ignorados_add_only(atual: Any, remoto: Any) -> dict[str, list[dict]]:
+    merged = _favoritos_normalizar_anuncios_ignorados(atual)
+    remoto_norm = _favoritos_normalizar_anuncios_ignorados(remoto)
+    for sku, itens in remoto_norm.items():
+        destino = merged.setdefault(sku, [])
+        vistos = {_shared_sync_anuncio_ignorado_key(sku, item) for item in destino}
+        for item in itens or []:
+            chave = _shared_sync_anuncio_ignorado_key(sku, item)
+            if not chave or chave in vistos:
+                continue
+            vistos.add(chave)
+            destino.append(item)
+    return merged
+
+
+def _shared_sync_merge_anuncios_ml_usuario(
+    client_id: str,
+    username: str,
+    fontes: list[tuple[str, bytes]],
+    tenant_abs: str,
+    backup_dir: str,
+) -> list[str]:
+    escritos = []
+    for rel, data in fontes:
+        lower = os.path.basename(str(rel or "")).lower()
+        target_rel = _shared_sync_target_rel_usuario("anuncios_ml", username, rel)
+        target_abs = os.path.abspath(os.path.join(tenant_abs, target_rel))
+        if not target_abs.startswith(tenant_abs + os.sep):
+            raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+        _shared_sync_backup_target(tenant_abs, backup_dir, target_rel, target_abs)
+        payload = _shared_sync_json_from_bytes(data, rel)
+        if lower.startswith("favoritos_anuncios_ignorados_"):
+            atual = _favoritos_carregar_anuncios_ignorados(client_id, username).get("anuncios_ignorados") or {}
+            remoto = payload.get("anuncios_ignorados") if isinstance(payload, dict) and "anuncios_ignorados" in payload else payload
+            merged = _shared_sync_merge_anuncios_ignorados_add_only(atual, remoto)
+            _favoritos_salvar_anuncios_ignorados(client_id, username, merged)
+        elif lower.startswith("favoritos_vendedores_ignorados_"):
+            atual = _favoritos_carregar_vendedores_ignorados(client_id, username).get("vendedores_ignorados") or []
+            remoto = _shared_sync_lista_str_payload(payload, "vendedores_ignorados", _favoritos_normalizar_vendedores_ignorados)
+            merged = _shared_sync_union_lista_texto(atual, remoto, _favoritos_normalizar_vendedores_ignorados)
+            _favoritos_salvar_vendedores_ignorados(client_id, username, merged)
+        elif lower.startswith("favoritos_skus_ocultos_"):
+            atual = _favoritos_carregar_skus_ocultos(client_id, username).get("skus_ocultos") or []
+            remoto = _shared_sync_lista_str_payload(payload, "skus_ocultos", _favoritos_normalizar_skus_ocultos)
+            merged = _shared_sync_union_lista_texto(atual, remoto, _favoritos_normalizar_skus_ocultos)
+            _favoritos_salvar_skus_ocultos(client_id, username, merged)
+        else:
+            continue
+        if target_rel not in escritos:
+            escritos.append(target_rel)
+    return escritos
+
+
 def _shared_sync_aplicar_user_scoped_share(
     client_id: str,
     scope: str,
@@ -21991,6 +22164,13 @@ def _shared_sync_aplicar_user_scoped_share(
 ) -> dict:
     if not fontes:
         return {"file_count": 0, "files": []}
+    if scope == "anuncios_ml":
+        arquivos = _shared_sync_merge_anuncios_ml_usuario(client_id, username, fontes, tenant_abs, backup_dir)
+        return {
+            "file_count": len(arquivos),
+            "files": arquivos,
+            "shared_source_count": len(fontes),
+        }
     target_rel = _shared_sync_target_rel_usuario(scope, username)
     target_abs = os.path.abspath(os.path.join(tenant_abs, target_rel))
     if not target_abs.startswith(tenant_abs + os.sep):
@@ -22822,7 +23002,7 @@ def _shared_sync_get_invite(invite_id: str) -> dict:
     invite_id = str(invite_id or "").strip()
     for item in _shared_sync_invites_all():
         if str(item.get("id") or "") == invite_id:
-            return item
+            return _shared_sync_marcar_admin_origem(item)
     raise HTTPException(status_code=404, detail="Convite de compartilhamento nao encontrado.")
 
 
@@ -22830,7 +23010,7 @@ def _shared_sync_get_link(link_id: str) -> dict:
     link_id = str(link_id or "").strip()
     for item in _shared_sync_links_all():
         if str(item.get("id") or "") == link_id:
-            return item
+            return _shared_sync_marcar_admin_origem(item)
     raise HTTPException(status_code=404, detail="Vinculo de compartilhamento nao encontrado.")
 
 
@@ -23016,7 +23196,44 @@ def _shared_sync_session_is_admin(sessao: Optional[dict]) -> bool:
     if not isinstance(sessao, dict):
         return False
     permissoes = sessao.get("permissions") if isinstance(sessao.get("permissions"), dict) else {}
-    return bool(sessao.get("is_admin") or permissoes.get("full") is True or permissoes.get("admin_usuarios") is True)
+    if bool(sessao.get("is_admin") or permissoes.get("full") is True or permissoes.get("admin_usuarios") is True):
+        return True
+    return _shared_sync_usuario_identity_is_admin(sessao.get("username"), sessao.get("client_id"))
+
+
+def _shared_sync_permissoes_indicam_admin(permissoes: Optional[dict]) -> bool:
+    perms = _normalizar_permissoes(permissoes or {})
+    return bool(perms.get("full") is True or perms.get("admin_usuarios") is True)
+
+
+def _shared_sync_usuario_identity_is_admin(username: str, client_id: str = "") -> bool:
+    username_norm = _shared_sync_normalizar_username(username)
+    client_norm = _shared_sync_normalizar_client_id(client_id)
+    if not username_norm:
+        return False
+    if username_norm in {"admin", "administrador"}:
+        return True
+    try:
+        for usuario in _listar_usuarios_admin_sql():
+            if _shared_sync_normalizar_username(usuario.get("username")) != username_norm:
+                continue
+            usuario_client = _shared_sync_normalizar_client_id(usuario.get("client_id"))
+            if client_norm and usuario_client and usuario_client != client_norm:
+                continue
+            if _shared_sync_permissoes_indicam_admin(usuario.get("permissions") if isinstance(usuario.get("permissions"), dict) else {}):
+                return True
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao conferir admin do usuario %s/%s: %s", username_norm, client_norm, exc)
+    return False
+
+
+def _shared_sync_marcar_admin_origem(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return item
+    if not bool(item.get("source_is_admin")) and _shared_sync_usuario_identity_is_admin(item.get("source_username"), item.get("source_client_id")):
+        item = dict(item)
+        item["source_is_admin"] = True
+    return item
 
 
 def _shared_sync_source_is_admin(item: dict, sessao: Optional[dict] = None) -> bool:
@@ -23027,15 +23244,7 @@ def _shared_sync_source_is_admin(item: dict, sessao: Optional[dict] = None) -> b
         return True
     source_username = _shared_sync_normalizar_username(item.get("source_username"))
     source_client = _shared_sync_normalizar_client_id(item.get("source_client_id"))
-    if source_username == "admin":
-        return True
-    if not source_username:
-        return False
-    try:
-        permissoes = _carregar_permissoes_usuario(source_username, source_client)
-        return bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True)
-    except Exception:
-        return False
+    return _shared_sync_usuario_identity_is_admin(source_username, source_client)
 
 
 def _shared_sync_scope_permitido_entre_clientes(item: dict, scope: str, sessao: Optional[dict] = None) -> bool:
@@ -23205,6 +23414,7 @@ def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
 def _shared_sync_user_shares_for_session(sessao: dict) -> dict:
     invites_por_par = {}
     for item in _shared_sync_invites_all():
+        item = _shared_sync_marcar_admin_origem(item)
         if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
             status = str(item.get("status") or "pending")
             key = (*_shared_sync_item_pair_key(item), status)
@@ -23213,6 +23423,7 @@ def _shared_sync_user_shares_for_session(sessao: dict) -> dict:
                 invites_por_par[key] = item
     links_por_par = {}
     for item in _shared_sync_links_all():
+        item = _shared_sync_marcar_admin_origem(item)
         if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
             key = _shared_sync_item_pair_key(item)
             atual = links_por_par.get(key)
@@ -23320,6 +23531,8 @@ def _shared_sync_save_invite_prepare_progress(
         progress = 100
     elif total_int:
         progress = int(round((done_int / total_int) * 100))
+        if done_int < total_int and (current_scope or message):
+            progress = max(1, progress)
     else:
         progress = 0
     progress = max(0, min(100, progress))
@@ -23370,6 +23583,30 @@ def _shared_sync_prepare_invite_packages(invite_id: str, source_sessao: dict, de
         _shared_sync_mark_invite_prepare_failed(invite_id, exc)
 
 
+def _shared_sync_compactar_resultado_preparo(result: dict) -> dict:
+    result = result if isinstance(result, dict) else {}
+    compacto = {
+        "scope": result.get("scope") or "",
+        "success": bool(result.get("success")),
+        "direction": result.get("direction") or "",
+        "id": result.get("id") or "",
+        "file_count": int(result.get("file_count") or 0),
+        "item_count": int(result.get("item_count") or 0),
+        "delta": bool(result.get("delta")),
+        "chunk_count": int(result.get("chunk_count") or 0),
+        "bundle_bytes": int(result.get("bundle_bytes") or 0),
+        "snapshot_hash": result.get("snapshot_hash") or "",
+        "updated_at": result.get("updated_at") or "",
+    }
+    if result.get("skipped"):
+        compacto["skipped"] = True
+        compacto["reason"] = result.get("reason") or ""
+    warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    if warnings:
+        compacto["warnings"] = warnings[:10]
+    return compacto
+
+
 def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dict, destino: dict, scopes: list[str], machine_id: str = "") -> None:
     bundles: dict[str, str] = {}
     results: list[dict] = []
@@ -23408,7 +23645,7 @@ def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dic
                 destino.get("username"),
                 scope,
             )
-            results.append(result)
+            results.append(_shared_sync_compactar_resultado_preparo(result))
             _shared_sync_save_invite_prepare_progress(
                 invite_id,
                 status="preparing",
@@ -23548,6 +23785,7 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         return result
     _shared_sync_link_set_bundle_for_direction(link, scope, direction_key, result.get("id") or bundle_id)
     _shared_sync_user_share_add_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link.get("id"), scope, result.get("item_keys") or [])
+    link["scopes"] = _shared_sync_unir_scopes(link.get("scopes"), [scope])
     link["updated_at"] = _shared_sync_now_iso()
     link["updated_ts"] = int(time.time())
     _shared_sync_save_link(link)
@@ -23610,8 +23848,33 @@ def shared_sync_user_shares_invite(
         and _shared_sync_normalizar_client_id(destino.get("client_id")) == _shared_sync_normalizar_client_id(sessao.get("client_id"))
     ):
         raise HTTPException(status_code=400, detail="Escolha outro usuario para receber os dados.")
-    if _shared_sync_find_active_link(source_user, destino):
-        raise HTTPException(status_code=409, detail="Ja existe um compartilhamento ativo com esse usuario. Use o botao Enviar agora no vinculo existente.")
+    active_link = _shared_sync_find_active_link(source_user, destino)
+    if active_link:
+        active_link = _shared_sync_marcar_admin_origem(active_link)
+        active_link["source_is_admin"] = bool(active_link.get("source_is_admin") or _shared_sync_session_is_admin(sessao))
+        active_link["source_keep_synced"] = bool(active_link.get("source_keep_synced") or payload.keep_synced)
+        active_link["scopes"] = _shared_sync_unir_scopes(active_link.get("scopes"), scopes)
+        active_link["updated_at"] = _shared_sync_now_iso()
+        active_link["updated_ts"] = int(time.time())
+        results = []
+        for scope in _shared_sync_filtrar_scopes_entre_clientes(scopes, active_link, sessao):
+            try:
+                results.append(_shared_sync_push_link_scope(sessao, active_link, scope, payload.machine_id or ""))
+            except Exception as exc:
+                results.append({
+                    "scope": scope,
+                    "success": False,
+                    "direction": "push",
+                    "error": _shared_sync_exception_message(exc),
+                })
+        active_link = _shared_sync_save_link(active_link)
+        return {
+            "success": True,
+            "message": "Compartilhamento ativo atualizado. Dados selecionados enviados.",
+            "invite": None,
+            "link": _shared_sync_link_public(active_link, sessao),
+            "results": results,
+        }
     pending_invite = _shared_sync_find_pending_invite(source_user, destino)
     if pending_invite:
         agora = _shared_sync_now_iso()
@@ -23620,6 +23883,9 @@ def shared_sync_user_shares_invite(
             pending_invite["message"] = str(payload.message or "").strip()[:1000]
         pending_invite["source_is_admin"] = bool(pending_invite.get("source_is_admin") or _shared_sync_session_is_admin(sessao))
         pending_invite["source_keep_synced"] = bool(pending_invite.get("source_keep_synced") or payload.keep_synced)
+        pending_invite["bundles"] = {}
+        pending_invite["directional_bundles"] = {}
+        pending_invite["prepared_results"] = []
         pending_invite["prepare_status"] = "preparing"
         pending_invite["prepare_progress"] = 0
         pending_invite["prepare_done"] = 0
