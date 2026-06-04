@@ -141,6 +141,10 @@ MACHINE_PRESENCE_LOCK = threading.RLock()
 ADMIN_MESSAGES_LOCK = threading.RLock()
 USER_CHAT_MESSAGES_LOCK = threading.RLock()
 SHARED_SYNC_USER_LINKS_LOCK = threading.RLock()
+SHARED_SYNC_SQLITE_FILE_LOCKS_LOCK = threading.RLock()
+SHARED_SYNC_SQLITE_FILE_LOCKS: dict[str, Any] = {}
+SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS = 15000
+SHARED_SYNC_SQLITE_LOCK_RETRIES = 4
 # Jobs de sincronizaÃƒÂ§ÃƒÂ£o de NCM no Cadastro por tarefa
 SYNC_NCM_JOBS = {}
 # Controle de sincronizaÃƒÂ§ÃƒÂ£o de vendas ativa por cliente (para background threading)
@@ -890,10 +894,12 @@ class LoginRequest(BaseModel):
     password: str
     client_id: str = None
     machine_id: str = None
+    app_version: Optional[str] = None
 
 class GoogleLoginRequest(BaseModel):
     credential: str
     machine_id: str = None
+    app_version: Optional[str] = None
 
 class LoginResponse(BaseModel):
     success: bool
@@ -946,6 +952,7 @@ class UserChatMessageRequest(BaseModel):
 class MachinePresenceHeartbeatRequest(BaseModel):
     machine_id: Optional[str] = None
     page: Optional[str] = ""
+    app_version: Optional[str] = None
 
 class SharedSyncScopeConfigRequest(BaseModel):
     enabled: bool = False
@@ -21252,6 +21259,7 @@ SHARED_SYNC_ALLOWED_EXTENSIONS = {".json", ".csv", ".db", ".sqlite", ".xlsx", ".
 SHARED_SYNC_CHUNK_CHARS = 620_000
 SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
 SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES = 75 * 1024 * 1024
+SHARED_SYNC_DEFAULT_LOCAL_BACKUP_RETENTION = 24
 
 
 def _firebase_shared_sync_config_collection_name() -> str:
@@ -21313,6 +21321,34 @@ def _shared_sync_max_file_bytes() -> int:
 
 def _shared_sync_max_bundle_bytes() -> int:
     return _shared_sync_env_int("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
+
+
+def _shared_sync_local_backup_retention() -> int:
+    return _shared_sync_env_int("JK_SHARED_SYNC_LOCAL_BACKUP_RETENTION", SHARED_SYNC_DEFAULT_LOCAL_BACKUP_RETENTION, 0, 500)
+
+
+def _shared_sync_prune_local_backups(tenant_abs: str) -> None:
+    keep = _shared_sync_local_backup_retention()
+    if keep <= 0:
+        return
+    backup_root = os.path.abspath(os.path.join(tenant_abs, "_shared_sync_backups"))
+    if not os.path.isdir(backup_root):
+        return
+    try:
+        backups = []
+        for entry in os.scandir(backup_root):
+            if not entry.is_dir():
+                continue
+            try:
+                backups.append((entry.stat().st_mtime, os.path.abspath(entry.path)))
+            except OSError:
+                continue
+        backups.sort(reverse=True)
+        for _mtime, path_abs in backups[keep:]:
+            if path_abs.startswith(backup_root + os.sep):
+                shutil.rmtree(path_abs, ignore_errors=True)
+    except Exception as exc:
+        logger.warning("[SHARED-SYNC] Falha ao limpar backups locais antigos: %s", exc)
 
 
 def _shared_sync_scope_public(scope: str) -> dict:
@@ -22948,90 +22984,154 @@ def _shared_sync_sqlite_temp_from_bytes(data: bytes, prefix: str = "shared_sync_
     return tmp_path
 
 
+def _shared_sync_sqlite_lock_for_path(path: str):
+    key = os.path.abspath(str(path or ""))
+    with SHARED_SYNC_SQLITE_FILE_LOCKS_LOCK:
+        lock = SHARED_SYNC_SQLITE_FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            SHARED_SYNC_SQLITE_FILE_LOCKS[key] = lock
+        return lock
+
+
+def _shared_sync_sqlite_is_locked(exc: Exception) -> bool:
+    texto = str(exc or "").lower()
+    return "database is locked" in texto or "database table is locked" in texto or "database is busy" in texto
+
+
+def _shared_sync_sqlite_configure(conn: sqlite3.Connection, *, writable: bool = False) -> None:
+    try:
+        conn.execute(f"PRAGMA busy_timeout={SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS}")
+    except Exception:
+        pass
+    if writable:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            if _shared_sync_sqlite_is_locked(exc):
+                raise
+        except Exception:
+            pass
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
+
+
+def _shared_sync_sqlite_retry_locked(operation: Callable[[], dict], label: str) -> dict:
+    delay = 0.35
+    last_exc: Optional[Exception] = None
+    for tentativa in range(1, SHARED_SYNC_SQLITE_LOCK_RETRIES + 1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not _shared_sync_sqlite_is_locked(exc):
+                raise
+            last_exc = exc
+            logger.warning(
+                "[SHARED-SYNC] Banco SQLite ocupado em %s; tentativa %s/%s.",
+                label,
+                tentativa,
+                SHARED_SYNC_SQLITE_LOCK_RETRIES,
+            )
+            time.sleep(delay)
+            delay = min(delay * 1.8, 4.0)
+    raise HTTPException(
+        status_code=423,
+        detail=f"Banco de vendas em uso no momento ({label}). Tente sincronizar novamente em instantes.",
+    ) from last_exc
+
+
 def _shared_sync_merge_vendas_db_add_only(target_abs: str, remoto_bytes: bytes, rel: str) -> dict:
     remoto_tmp = _shared_sync_sqlite_temp_from_bytes(remoto_bytes, "shared_sync_vendas_remote_")
-    inserted = 0
     try:
-        src = sqlite3.connect(remoto_tmp)
-        try:
-            src_cur = src.cursor()
-            tabela = src_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
-            if not tabela:
-                return {"added": 0, "total": 0}
-            src_cols_info = src_cur.execute("PRAGMA table_info(vendas)").fetchall()
-            src_cols = [row[1] for row in src_cols_info]
-            if not src_cols:
-                return {"added": 0, "total": 0}
-            create_row = src_cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
-            create_sql = create_row[0] if create_row and create_row[0] else ""
-            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
-            dst = sqlite3.connect(target_abs)
+        def _merge() -> dict:
+            inserted = 0
+            src = sqlite3.connect(remoto_tmp, timeout=max(5, SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS // 1000))
             try:
-                dst_cur = dst.cursor()
-                exists = dst_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
-                if not exists:
-                    if create_sql:
-                        dst_cur.execute(create_sql)
-                    else:
-                        col_defs = []
+                _shared_sync_sqlite_configure(src)
+                src_cur = src.cursor()
+                tabela = src_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+                if not tabela:
+                    return {"added": 0, "total": 0}
+                src_cols_info = src_cur.execute("PRAGMA table_info(vendas)").fetchall()
+                src_cols = [row[1] for row in src_cols_info]
+                if not src_cols:
+                    return {"added": 0, "total": 0}
+                create_row = src_cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+                create_sql = create_row[0] if create_row and create_row[0] else ""
+                os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+                with _shared_sync_sqlite_lock_for_path(target_abs):
+                    dst = sqlite3.connect(target_abs, timeout=max(5, SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS // 1000))
+                    try:
+                        _shared_sync_sqlite_configure(dst, writable=True)
+                        dst_cur = dst.cursor()
+                        exists = dst_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
+                        if not exists:
+                            if create_sql:
+                                dst_cur.execute(create_sql)
+                            else:
+                                col_defs = []
+                                for col in src_cols_info:
+                                    nome = str(col[1])
+                                    tipo = str(col[2] or "TEXT")
+                                    pk = " PRIMARY KEY" if int(col[5] or 0) else ""
+                                    col_defs.append(f"{_shared_sync_sql_ident(nome)} {tipo}{pk}")
+                                dst_cur.execute(f"CREATE TABLE vendas ({', '.join(col_defs)})")
+                        dst_cols_info = dst_cur.execute("PRAGMA table_info(vendas)").fetchall()
+                        dst_cols = [row[1] for row in dst_cols_info]
                         for col in src_cols_info:
                             nome = str(col[1])
-                            tipo = str(col[2] or "TEXT")
-                            pk = " PRIMARY KEY" if int(col[5] or 0) else ""
-                            col_defs.append(f"{_shared_sync_sql_ident(nome)} {tipo}{pk}")
-                        dst_cur.execute(f"CREATE TABLE vendas ({', '.join(col_defs)})")
-                dst_cols_info = dst_cur.execute("PRAGMA table_info(vendas)").fetchall()
-                dst_cols = [row[1] for row in dst_cols_info]
-                for col in src_cols_info:
-                    nome = str(col[1])
-                    if nome not in dst_cols:
-                        tipo = str(col[2] or "TEXT")
-                        dst_cur.execute(f"ALTER TABLE vendas ADD COLUMN {_shared_sync_sql_ident(nome)} {tipo}")
-                        dst_cols.append(nome)
+                            if nome not in dst_cols:
+                                tipo = str(col[2] or "TEXT")
+                                dst_cur.execute(f"ALTER TABLE vendas ADD COLUMN {_shared_sync_sql_ident(nome)} {tipo}")
+                                dst_cols.append(nome)
 
-                comuns = [col for col in src_cols if col in dst_cols]
-                if not comuns:
-                    return {"added": 0, "total": 0}
-                existing_ids = set()
-                if "id_unico" in dst_cols:
-                    try:
-                        existing_ids = {
-                            str(row[0] or "").strip()
-                            for row in dst_cur.execute("SELECT id_unico FROM vendas").fetchall()
-                            if str(row[0] or "").strip()
-                        }
-                    except Exception:
+                        comuns = [col for col in src_cols if col in dst_cols]
+                        if not comuns:
+                            return {"added": 0, "total": 0}
                         existing_ids = set()
+                        if "id_unico" in dst_cols:
+                            try:
+                                existing_ids = {
+                                    str(row[0] or "").strip()
+                                    for row in dst_cur.execute("SELECT id_unico FROM vendas").fetchall()
+                                    if str(row[0] or "").strip()
+                                }
+                            except Exception:
+                                existing_ids = set()
 
-                select_sql = f"SELECT {', '.join(_shared_sync_sql_ident(col) for col in comuns)} FROM vendas"
-                rows = src_cur.execute(select_sql).fetchall()
-                id_idx = comuns.index("id_unico") if "id_unico" in comuns else -1
-                insert_cols = ", ".join(_shared_sync_sql_ident(col) for col in comuns)
-                placeholders = ", ".join(["?"] * len(comuns))
-                for row in rows:
-                    if id_idx >= 0:
-                        id_unico = str(row[id_idx] or "").strip()
-                        if id_unico and id_unico in existing_ids:
-                            continue
-                    try:
-                        dst_cur.execute(f"INSERT OR IGNORE INTO vendas ({insert_cols}) VALUES ({placeholders})", row)
-                        if dst_cur.rowcount > 0:
-                            inserted += 1
-                            if id_idx >= 0 and str(row[id_idx] or "").strip():
-                                existing_ids.add(str(row[id_idx] or "").strip())
-                    except sqlite3.IntegrityError:
-                        continue
-                dst.commit()
-                total = 0
-                try:
-                    total = int(dst_cur.execute("SELECT COUNT(*) FROM vendas").fetchone()[0] or 0)
-                except Exception:
-                    pass
-                return {"added": inserted, "total": total}
+                        select_sql = f"SELECT {', '.join(_shared_sync_sql_ident(col) for col in comuns)} FROM vendas"
+                        rows = src_cur.execute(select_sql).fetchall()
+                        id_idx = comuns.index("id_unico") if "id_unico" in comuns else -1
+                        insert_cols = ", ".join(_shared_sync_sql_ident(col) for col in comuns)
+                        placeholders = ", ".join(["?"] * len(comuns))
+                        for row in rows:
+                            if id_idx >= 0:
+                                id_unico = str(row[id_idx] or "").strip()
+                                if id_unico and id_unico in existing_ids:
+                                    continue
+                            try:
+                                dst_cur.execute(f"INSERT OR IGNORE INTO vendas ({insert_cols}) VALUES ({placeholders})", row)
+                                if dst_cur.rowcount > 0:
+                                    inserted += 1
+                                    if id_idx >= 0 and str(row[id_idx] or "").strip():
+                                        existing_ids.add(str(row[id_idx] or "").strip())
+                            except sqlite3.IntegrityError:
+                                continue
+                        dst.commit()
+                        total = 0
+                        try:
+                            total = int(dst_cur.execute("SELECT COUNT(*) FROM vendas").fetchone()[0] or 0)
+                        except Exception:
+                            pass
+                        return {"added": inserted, "total": total}
+                    finally:
+                        dst.close()
             finally:
-                dst.close()
-        finally:
-            src.close()
+                src.close()
+
+        return _shared_sync_sqlite_retry_locked(_merge, rel or os.path.basename(target_abs))
     finally:
         try:
             os.remove(remoto_tmp)
@@ -23149,6 +23249,8 @@ def _shared_sync_aplicar_pacote(
     if share_between_users:
         resultado_share = _shared_sync_aplicar_user_scoped_share(client_id, scope, username, user_scoped_fontes, tenant_abs, backup_dir)
         escritos.extend(resultado_share.get("files") or [])
+    if escritos:
+        _shared_sync_prune_local_backups(tenant_abs)
     return {
         "file_count": len(escritos),
         "files": escritos[:250],
@@ -24836,7 +24938,15 @@ def shared_sync_auto_pull(
         if remote_hash and local_hash == remote_hash:
             ignorados.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
             continue
-        resultados.append(_shared_sync_pull_scope(client_id, scope, sessao, payload.machine_id or "", scope_cfg))
+        try:
+            resultados.append(_shared_sync_pull_scope(client_id, scope, sessao, payload.machine_id or "", scope_cfg))
+        except HTTPException as exc:
+            ignorados.append({
+                "scope": scope,
+                "reason": "pull_failed",
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            })
 
     for link in _shared_sync_links_all():
         try:
@@ -24869,7 +24979,16 @@ def shared_sync_auto_pull(
             if remote_hash and local_hash == remote_hash:
                 ignorados.append({"link_id": link.get("id"), "scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
                 continue
-            resultados.append(_shared_sync_pull_pair_scope(sessao, link, scope))
+            try:
+                resultados.append(_shared_sync_pull_pair_scope(sessao, link, scope))
+            except HTTPException as exc:
+                ignorados.append({
+                    "link_id": link.get("id"),
+                    "scope": scope,
+                    "reason": "user_share_pull_failed",
+                    "status_code": exc.status_code,
+                    "detail": exc.detail,
+                })
     return {
         "success": True,
         "direction": "auto-pull",
@@ -25346,10 +25465,39 @@ def _machine_presence_sanitize_page(page: str) -> str:
     return value
 
 
-def _machine_presence_record(username: str, client_id: str, machine_id: str, request: Optional[Request], page: str = "") -> dict:
+def _machine_presence_normalize_app_version(value: Optional[Any]) -> str:
+    texto = str(value or "").strip()
+    if not texto or texto.lower() in {"none", "null", "undefined"}:
+        return ""
+    texto = re.sub(r"^v\s*", "", texto, flags=re.IGNORECASE)
+    match = re.search(r"\d+(?:\.\d+){0,5}(?:[-+][0-9A-Za-z._-]+)?", texto)
+    if match:
+        return match.group(0)[:60]
+    return re.sub(r"\s+", " ", texto)[:60]
+
+
+def _machine_presence_app_version_from_user_agent(user_agent: Optional[str]) -> str:
+    ua = str(user_agent or "").strip()
+    if not ua:
+        return ""
+    match = re.search(r"\bjk-sistema-desktop/([0-9A-Za-z._+-]+)", ua, re.IGNORECASE)
+    if match:
+        return _machine_presence_normalize_app_version(match.group(1))
+    return ""
+
+
+def _machine_presence_resolve_app_version(app_version: Optional[Any], user_agent: Optional[str]) -> str:
+    return (
+        _machine_presence_normalize_app_version(app_version)
+        or _machine_presence_app_version_from_user_agent(user_agent)
+    )
+
+
+def _machine_presence_record(username: str, client_id: str, machine_id: str, request: Optional[Request], page: str = "", app_version: Optional[str] = None) -> dict:
     machine_final, meta = _montar_machine_id_login(request, machine_id)
     now_ts = int(time.time())
     timeout_s = _machine_presence_timeout_seconds()
+    app_version_final = _machine_presence_resolve_app_version(app_version, meta.get("user_agent"))
     return {
         "id": _machine_presence_doc_id(username, client_id, machine_final),
         "username": str(username or "").strip().lower(),
@@ -25357,6 +25505,7 @@ def _machine_presence_record(username: str, client_id: str, machine_id: str, req
         "machine_id": machine_final,
         "label": _machine_presence_label(machine_final),
         "page": _machine_presence_sanitize_page(page),
+        "app_version": app_version_final,
         "ip_address": meta.get("ip_address"),
         "host_name": meta.get("host_name"),
         "user_agent": meta.get("user_agent"),
@@ -25491,6 +25640,7 @@ def _machine_presence_list(username: str, client_id: str) -> list[dict]:
             "machine_id": machine_id,
             "label": str(item.get("label") or _machine_presence_label(machine_id)),
             "page": _machine_presence_sanitize_page(item.get("page") or ""),
+            "app_version": _machine_presence_resolve_app_version(item.get("app_version"), item.get("user_agent")),
             "last_seen_at": item.get("last_seen_at") or "",
             "last_seen_ts": last_seen,
             "seconds_since_seen": max(0, now_ts - last_seen) if last_seen else None,
@@ -25579,6 +25729,7 @@ def user_machine_heartbeat(
         payload.machine_id or "",
         request,
         payload.page or "",
+        payload.app_version,
     )
     _machine_presence_save(record)
     return {
@@ -25586,6 +25737,7 @@ def user_machine_heartbeat(
         "machine": {
             "machine_id": record.get("machine_id"),
             "label": record.get("label"),
+            "app_version": record.get("app_version"),
             "last_seen_at": record.get("last_seen_at"),
             "online_timeout_seconds": record.get("online_timeout_seconds"),
         },
@@ -26263,7 +26415,7 @@ def _montar_resposta_login_sucesso(username: str, usuario: dict, permissoes: dic
     )
 
 
-def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, request: Request) -> LoginResponse:
+def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, request: Request, app_version: Optional[str] = None) -> LoginResponse:
     issuer = str((token_info or {}).get("iss") or "")
     if issuer not in {"accounts.google.com", "https://accounts.google.com"}:
         return LoginResponse(success=False, message="Origem da conta Google invalida.")
@@ -26311,7 +26463,7 @@ def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, reque
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar auditoria de login Google para %s: %s", username, exc)
     try:
-        _machine_presence_save(_machine_presence_record(username, client_id, machine_final, request, "login-google"))
+        _machine_presence_save(_machine_presence_record(username, client_id, machine_final, request, "login-google", app_version))
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial Google para %s: %s", username, exc)
 
@@ -26434,7 +26586,7 @@ def google_auth_config(request: Request):
 
 
 @app.get("/api/auth/google/start")
-def google_auth_start(request: Request, machine_id: str = "", mode: str = ""):
+def google_auth_start(request: Request, machine_id: str = "", mode: str = "", app_version: str = ""):
     mode = str(mode or "").strip().lower()
     client_id_google = _google_login_client_id()
     client_secret_google = _google_login_client_secret()
@@ -26456,6 +26608,7 @@ def google_auth_start(request: Request, machine_id: str = "", mode: str = ""):
         GOOGLE_LOGIN_STATES[state] = {
             "created_at": agora,
             "machine_id": str(machine_id or ""),
+            "app_version": _machine_presence_normalize_app_version(app_version),
             "redirect_uri": redirect_uri,
             "poll": mode == "json",
         }
@@ -26591,6 +26744,7 @@ def google_auth_callback(request: Request, code: Optional[str] = None, state: Op
         token_info,
         str(state_data.get("machine_id") or ""),
         request,
+        str(state_data.get("app_version") or ""),
     )
     if login_resp.success:
         try:
@@ -26630,7 +26784,7 @@ async def google_login_endpoint(payload: GoogleLoginRequest, request: Request):
         logger.warning("[LOGIN] Falha ao validar token Google: %s", exc)
         return LoginResponse(success=False, message="Erro ao validar login Google.")
 
-    return _autenticar_usuario_por_google_info(token_info, payload.machine_id, request)
+    return _autenticar_usuario_por_google_info(token_info, payload.machine_id, request, payload.app_version)
 
 
 DRIVE_SYNC_FOLDER_ROOT = "JK Sistema Backups"
@@ -26957,7 +27111,7 @@ def _drive_sync_coletar_arquivos(client_id: str) -> list[dict]:
     for root, dirs, files in os.walk(tenant_abs):
         dirs[:] = [
             d for d in dirs
-            if d not in {"__pycache__", "_drive_restore_backup"} and not d.startswith(".")
+            if d not in {"__pycache__", "_drive_restore_backup", "_shared_sync_backups"} and not d.startswith(".")
         ]
         for filename in files:
             name_lower = filename.lower()
@@ -27442,7 +27596,7 @@ async def login_endpoint(payload: LoginRequest, request: Request):
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar auditoria de login para %s: %s", username, exc)
     try:
-        _machine_presence_save(_machine_presence_record(username, client_id, machine_final, request, "login"))
+        _machine_presence_save(_machine_presence_record(username, client_id, machine_final, request, "login", payload.app_version))
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial para %s: %s", username, exc)
 

@@ -197,6 +197,8 @@
         .online-card.online { border-color: rgba(51, 195, 125, 0.45); }
         .online-card strong { display: block; margin-bottom: 4px; }
         .online-line { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .online-machines { margin-top: 8px; display: grid; gap: 6px; }
+        .online-machine { border-top: 1px solid rgba(181, 200, 228, 0.12); padding-top: 6px; color: var(--text); font-size: 12px; line-height: 1.35; }
         .online-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 10px rgba(255, 107, 107, 0.5); flex: 0 0 auto; }
         .online-card.online .online-dot { background: var(--success); box-shadow: 0 0 10px rgba(51, 195, 125, 0.65); }
         .message-panel {
@@ -1324,6 +1326,29 @@
         });
     }
 
+    function appVersionMaquina(machine) {
+        const versao = String((machine && (machine.app_version || machine.appVersion || machine.client_version)) || '').trim();
+        return versao || 'não informada';
+    }
+
+    function renderMaquinasOnlineUsuario(maquinas) {
+        if (!Array.isArray(maquinas) || !maquinas.length) return '';
+        const visiveis = maquinas.slice(0, 4);
+        const linhas = visiveis.map((machine) => {
+            const status = machine.online ? 'online agora' : (machine.seconds_since_seen ? `visto ${textoTempo(machine.seconds_since_seen)}` : 'sem presença');
+            return `
+                <div class="online-machine">
+                    <div>${escaparHtml(machine.label || machine.machine_id || 'Máquina')}</div>
+                    <div class="muted-line">${escaparHtml(status)} | Versão: ${escaparHtml(appVersionMaquina(machine))}${machine.page ? ' | ' + escaparHtml(machine.page) : ''}</div>
+                </div>
+            `;
+        }).join('');
+        const extras = maquinas.length > visiveis.length
+            ? `<div class="muted-line">+${maquinas.length - visiveis.length} máquina(s) online</div>`
+            : '';
+        return `<div class="online-machines">${linhas}${extras}</div>`;
+    }
+
     function renderOnlineUsuarios(payload) {
         const grid = document.getElementById('onlineUsersGrid');
         const resumo = document.getElementById('onlineSummary');
@@ -1344,7 +1369,6 @@
         const principais = users.filter(u => u.online).concat(users.filter(u => !u.online)).slice(0, 8);
         grid.innerHTML = principais.map((user) => {
             const maquinas = Array.isArray(user.machines) ? user.machines : [];
-            const maquina = maquinas[0] || {};
             const tempo = user.online ? 'online agora' : (user.last_seen_at ? `visto ${textoTempo(user.seconds_since_seen)}` : 'sem presença');
             const detalhe = user.online
                 ? `${user.online_count || maquinas.length || 1} máquina(s) conectada(s)`
@@ -1354,7 +1378,7 @@
                     <strong>${escaparHtml(user.name || user.username)}</strong>
                     <div class="small">${escaparHtml(user.username)} | ${escaparHtml(user.client_id || '')}</div>
                     <div class="online-line"><span class="online-dot"></span><span>${escaparHtml(detalhe)}</span></div>
-                    ${maquina.label ? `<div class="online-line">${escaparHtml(maquina.label)}${maquina.page ? ' | ' + escaparHtml(maquina.page) : ''}</div>` : ''}
+                    ${renderMaquinasOnlineUsuario(maquinas)}
                 </div>
             `;
         }).join('');
@@ -2173,7 +2197,7 @@
                     return `
                         <div class="machine-item ${machine.current ? 'current' : ''}">
                             <strong>${escaparHtml(machine.label || machine.machine_id || 'Máquina')}</strong>
-                            <div class="small">${escaparHtml(status)}${machine.current ? ' | esta máquina' : ''}</div>
+                            <div class="small">${escaparHtml(status)}${machine.current ? ' | esta máquina' : ''} | Versão: ${escaparHtml(appVersionMaquina(machine))}</div>
                             ${machine.page ? `<div class="muted-line">${escaparHtml(machine.page)}</div>` : ''}
                         </div>
                     `;

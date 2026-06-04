@@ -1234,6 +1234,9 @@ app.whenReady().then(async () => {
     ipcMain.handle('get-mac', () => {
         return getMacAddress();
     });
+    ipcMain.handle('get-app-version', () => {
+        return app.getVersion();
+    });
     ipcMain.handle('get-browser-session-partition', () => {
         return getBrowserSessionPartition();
     });

@@ -607,6 +607,25 @@
             return `browser:${plataforma} | id:${browserId}`;
         }
 
+        let appVersionLoginCache = null;
+        async function obterVersaoAplicativo() {
+            if (appVersionLoginCache !== null) return appVersionLoginCache;
+            let versao = '';
+            try {
+                if (window.electronAPI && typeof window.electronAPI.getAppVersion === 'function') {
+                    versao = String(await window.electronAPI.getAppVersion() || '').trim();
+                }
+            } catch (_e) {
+                versao = '';
+            }
+            if (!versao) {
+                const match = String(navigator.userAgent || '').match(/\bjk-sistema-desktop\/([0-9A-Za-z._+-]+)/i);
+                versao = match ? String(match[1] || '').trim() : '';
+            }
+            appVersionLoginCache = versao;
+            return appVersionLoginCache;
+        }
+
         async function fazerLogin() {
             const user = document.getElementById('username').value;
             const pass = document.getElementById('password').value;
@@ -623,13 +642,14 @@
             }
             
             let machineId = await obterIdentificacaoMaquina();
+            const appVersion = await obterVersaoAplicativo();
 
             try {
                 setAutenticando(true);
                 const response = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: user, password: pass, machine_id: machineId })
+                    body: JSON.stringify({ username: user, password: pass, machine_id: machineId, app_version: appVersion })
                 });
                 
                 // Tratamento de erros HTTP (ex: 500 Internal Server Error)
@@ -757,10 +777,11 @@
             try {
                 setAutenticando(true);
                 const machineId = await obterIdentificacaoMaquina();
+                const appVersion = await obterVersaoAplicativo();
                 const resp = await fetch('/api/auth/google', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ credential, machine_id: machineId })
+                    body: JSON.stringify({ credential, machine_id: machineId, app_version: appVersion })
                 });
                 const data = await lerRespostaGoogleLogin(resp);
                 if (data.success) {
@@ -786,8 +807,9 @@
             try {
                 setAutenticando(true);
                 const machineId = await obterIdentificacaoMaquina();
+                const appVersion = await obterVersaoAplicativo();
                 if (window.electronAPI && typeof window.electronAPI.openExternalChrome === 'function') {
-                    const resp = await fetch('/api/auth/google/start?mode=json&machine_id=' + encodeURIComponent(machineId || ''), { cache: 'no-store' });
+                    const resp = await fetch('/api/auth/google/start?mode=json&machine_id=' + encodeURIComponent(machineId || '') + '&app_version=' + encodeURIComponent(appVersion || ''), { cache: 'no-store' });
                     const data = await lerRespostaGoogleLogin(resp);
                     if (!data.success || !data.auth_url || !data.state) {
                         throw new Error(data.message || 'Nao foi possivel iniciar o login Google.');
@@ -797,7 +819,7 @@
                     await aguardarResultadoGoogleLogin(data.state);
                     return;
                 }
-                window.location.href = '/api/auth/google/start?machine_id=' + encodeURIComponent(machineId || '');
+                window.location.href = '/api/auth/google/start?machine_id=' + encodeURIComponent(machineId || '') + '&app_version=' + encodeURIComponent(appVersion || '');
             } catch (e) {
                 setAutenticando(false);
                 definirStatusLoginGoogle('Validando credenciais e preparando seu acesso');

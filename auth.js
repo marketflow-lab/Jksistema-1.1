@@ -495,6 +495,8 @@ function obterAuthHeaders(extra) {
     let ultimoHeartbeat = 0;
     let timer = null;
     let emExecucao = false;
+    let appVersionCache = null;
+    let appVersionPromise = null;
 
     function obterUserDataPresenca() {
         try {
@@ -509,6 +511,30 @@ function obterAuthHeaders(extra) {
         return String((userData && userData.machine_id) || '').trim();
     }
 
+    function extrairAppVersionUserAgent() {
+        const match = String(navigator.userAgent || '').match(/\bjk-sistema-desktop\/([0-9A-Za-z._+-]+)/i);
+        return match ? String(match[1] || '').trim() : '';
+    }
+
+    async function obterAppVersionPresenca() {
+        if (appVersionCache !== null) return appVersionCache;
+        if (appVersionPromise) return appVersionPromise;
+        appVersionPromise = (async () => {
+            let versao = '';
+            try {
+                if (window.electronAPI && typeof window.electronAPI.getAppVersion === 'function') {
+                    versao = String(await window.electronAPI.getAppVersion() || '').trim();
+                }
+            } catch (_err) {
+                versao = '';
+            }
+            appVersionCache = versao || extrairAppVersionUserAgent();
+            appVersionPromise = null;
+            return appVersionCache;
+        })();
+        return appVersionPromise;
+    }
+
     async function enviarHeartbeat(motivo) {
         if (emExecucao || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
@@ -521,6 +547,8 @@ function obterAuthHeaders(extra) {
                 machine_id: obterMachineIdPresenca(),
                 page: `${window.location.pathname || ''}${window.location.search || ''}`
             };
+            const appVersion = await obterAppVersionPresenca();
+            if (appVersion) payload.app_version = appVersion;
             const resp = await fetch('/api/user/machines/heartbeat', {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -581,6 +609,7 @@ function obterAuthHeaders(extra) {
     async function executarBackupSeMudou(motivo) {
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
         if (motivo !== 'manual' && agora - ultimaExecucao < 30000) return null;
         ultimaExecucao = agora;
@@ -607,7 +636,7 @@ function obterAuthHeaders(extra) {
     setTimeout(() => executarBackupSeMudou('inicio'), 60000);
     setInterval(() => executarBackupSeMudou('intervalo'), INTERVALO_MS);
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') executarBackupSeMudou('hidden');
+        if (document.visibilityState === 'visible') executarBackupSeMudou('visible');
     });
 })();
 
@@ -637,6 +666,7 @@ function obterAuthHeaders(extra) {
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         if (!telaSeguraParaSincronizar()) return null;
+        if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
         if (motivo !== 'manual' && agora - ultimaExecucao < 60000) return null;
         ultimaExecucao = agora;

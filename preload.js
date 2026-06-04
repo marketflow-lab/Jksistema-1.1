@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     getMac: () => ipcRenderer.invoke('get-mac'),
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
     ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
