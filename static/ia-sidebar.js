@@ -13,8 +13,10 @@
       style.id = styleId;
       style.textContent = `
         @keyframes jkLeftModuleGlyphSpin{from{transform:rotate(0deg) scale(1.14);}to{transform:rotate(360deg) scale(1.14);}}
-        #jk-left-sidebar-menu{overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;}
+        #jk-left-sidebar-menu{width:360px!important;overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;scrollbar-width:none!important;-ms-overflow-style:none!important;z-index:10001!important;}
+        #jk-left-sidebar-menu::-webkit-scrollbar{width:0!important;height:0!important;display:none!important;}
         .jk-left-module-link{overflow:visible!important;}
+        .jk-left-module-label{left:78px!important;z-index:5!important;max-width:244px!important;padding-left:14px!important;border-left:1px solid rgba(120,227,212,.3)!important;border-radius:12px!important;}
         .jk-left-module-icon{transform-origin:left center!important;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease!important;}
         .jk-left-module-link:hover>.jk-left-module-icon,
         .jk-left-module-link.jk-left-module-zoom>.jk-left-module-icon{transform:translateX(8px) scale(1.7)!important;border-color:rgba(255,255,255,.82)!important;box-shadow:0 0 0 5px rgba(120,227,212,.22),0 10px 28px rgba(19,196,160,.58)!important;}
@@ -638,23 +640,23 @@
   const CSS = `
   #jk-left-sidebar-hotspot{position:fixed;top:0;left:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
   #jk-left-sidebar-hotspot::before{content:"";position:absolute;top:0;left:0;bottom:0;width:8px;background:transparent;}
-  #jk-left-sidebar-menu{position:fixed;top:50%;left:10px;width:272px;max-height:calc(100vh - 28px);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;
+  #jk-left-sidebar-menu{position:fixed;top:50%;left:10px;width:360px;max-height:calc(100vh - 28px);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;z-index:10001;
     display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:7px 0;transform:translate(calc(-100% - 28px),-50%);
-    opacity:0;pointer-events:none;transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.52) transparent;}
-  #jk-left-sidebar-menu::-webkit-scrollbar{width:7px;}
+    opacity:0;pointer-events:none;transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;scrollbar-width:none;-ms-overflow-style:none;}
+  #jk-left-sidebar-menu::-webkit-scrollbar{width:0;height:0;display:none;}
   #jk-left-sidebar-menu::-webkit-scrollbar-track{background:transparent;}
-  #jk-left-sidebar-menu::-webkit-scrollbar-thumb{background:rgba(120,227,212,.48);border-radius:999px;}
+  #jk-left-sidebar-menu::-webkit-scrollbar-thumb{background:transparent;}
   #jk-left-sidebar-hotspot:hover #jk-left-sidebar-menu,
   #jk-left-sidebar-hotspot:focus-within #jk-left-sidebar-menu{transform:translate(0,-50%);opacity:1;pointer-events:auto;}
-  .jk-left-module-link{position:relative;width:272px;min-height:46px;display:flex;align-items:center;text-decoration:none;color:#e8fffb;overflow:visible;
+  .jk-left-module-link{position:relative;width:344px;min-height:46px;display:flex;align-items:center;text-decoration:none;color:#e8fffb;overflow:visible;
     border:0;background:transparent;outline:none;}
   .jk-left-module-icon{position:relative;z-index:2;width:46px;height:46px;border-radius:14px;border:1px solid rgba(120,227,212,.32);
     display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#0f6bbd,#13b99a);box-shadow:0 4px 16px rgba(19,196,160,.34);
     font-size:1.25rem;line-height:1;transform:scale(1);transform-origin:left center;will-change:transform;
     transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
   .jk-left-module-glyph{display:inline-flex;align-items:center;justify-content:center;line-height:1;transform:rotate(0deg) scale(1);transform-origin:center center;will-change:transform;animation:none;}
-  .jk-left-module-label{position:absolute;left:31px;top:50%;z-index:1;min-width:118px;max-width:214px;min-height:34px;display:flex;align-items:center;
-    padding:0 13px 0 25px;border-radius:0 12px 12px 0;border:1px solid rgba(120,227,212,.3);border-left:0;
+  .jk-left-module-label{position:absolute;left:78px;top:50%;z-index:5;min-width:118px;max-width:244px;min-height:34px;display:flex;align-items:center;
+    padding:0 13px 0 14px;border-radius:12px;border:1px solid rgba(120,227,212,.3);
     background:linear-gradient(90deg,rgba(8,43,59,.96),rgba(6,71,84,.92));box-shadow:0 8px 22px rgba(0,0,0,.34);
     color:#e8fffb;font-size:.76rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     transform:translate(-18px,-50%) scaleX(.25);transform-origin:left center;opacity:0;transition:transform .16s cubic-bezier(.2,.9,.2,1),opacity .12s ease;}
@@ -711,9 +713,10 @@
   #jk-msg-body::-webkit-scrollbar-thumb{background:rgba(120,227,212,.28);border-radius:999px;}
   .jk-msg-status{min-height:18px;color:#9ee8df;font-size:.74rem;font-weight:800;line-height:1.35;}
   #jk-msg-main-view{display:flex;flex-direction:column;gap:12px;}
-  #jk-msg-chat-header{display:none;align-items:center;gap:10px;padding:8px 0 2px;}
+  #jk-msg-chat-header{display:none;align-items:center;gap:10px;padding:8px 0 8px;position:sticky;top:0;z-index:6;
+    background:linear-gradient(165deg,rgba(9,29,49,.98),rgba(6,42,34,.98));box-shadow:0 10px 18px rgba(0,0,0,.24);}
   #jk-msg-chat-header.ativo{display:flex;}
-  #jk-msg-back{flex:0 0 34px;width:34px;height:34px;border-radius:8px;border:1px solid rgba(120,227,212,.32);background:rgba(35,142,165,.2);color:#e8fffb;font-weight:900;cursor:pointer;}
+  #jk-msg-back{flex:0 0 34px;width:34px;height:34px;border-radius:8px;border:1px solid rgba(120,227,212,.42);background:rgba(35,142,165,.44);color:#e8fffb;font-weight:900;cursor:pointer;box-shadow:0 8px 18px rgba(0,0,0,.26);}
   #jk-msg-back:hover{background:rgba(36,161,160,.32);border-color:rgba(120,227,212,.64);}
   #jk-msg-chat-title{min-width:0;color:#fff;font-size:.86rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #jk-msg-history{display:none;flex:1 1 auto;flex-direction:column;gap:8px;padding:2px 0 8px;}
@@ -732,9 +735,11 @@
   .jk-msg-user-item:hover,.jk-msg-user-item.ativo{border-color:rgba(120,227,212,.62);background:rgba(20,92,85,.48);}
   .jk-msg-user-item:disabled{cursor:default;opacity:.68;}
   .jk-msg-dot{width:10px;height:10px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.13);flex:0 0 10px;}
+  .jk-msg-user-item.offline .jk-msg-dot{background:#ef4444;box-shadow:0 0 0 4px rgba(239,68,68,.12);}
   .jk-msg-user-info{min-width:0;display:grid;gap:2px;flex:1 1 auto;}
   .jk-msg-user-name{font-size:.84rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .jk-msg-user-meta{font-size:.7rem;color:#9ee8df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-unread-count{flex:0 0 auto;border-radius:999px;background:#ef4444;color:#fff;border:1px solid rgba(255,255,255,.38);font-size:.66rem;font-weight:900;min-width:24px;min-height:22px;padding:3px 7px;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 14px rgba(239,68,68,.34);}
   .jk-msg-card{display:grid;gap:6px;}
   .jk-msg-card-title{font-size:.82rem;font-weight:900;color:#fff;}
   .jk-msg-card-meta{font-size:.68rem;color:#9ee8df;}
@@ -930,8 +935,8 @@
           <div class="jk-msg-section-title">Mensagens recebidas</div>
           <div class="jk-msg-list" id="jk-msg-inbox-list"></div>
         </section>
-        <section class="jk-msg-section" aria-label="Usuarios online">
-          <div class="jk-msg-section-title">Usuarios online</div>
+        <section class="jk-msg-section" aria-label="Usuarios">
+          <div class="jk-msg-section-title">Usuarios</div>
           <div class="jk-msg-list" id="jk-msg-online-list"></div>
         </section>
       </div>
@@ -942,7 +947,7 @@
       <div id="jk-msg-history" aria-live="polite"></div>
     </div>
     <div id="jk-msg-compose">
-      <div id="jk-msg-selected">Selecione um usuario online para enviar mensagem.</div>
+      <div id="jk-msg-selected">Selecione um usuario para enviar mensagem.</div>
       <textarea id="jk-msg-text" maxlength="2000" placeholder="Digite sua mensagem..." aria-label="Texto da mensagem"></textarea>
       <button id="jk-msg-send" type="button">Enviar mensagem</button>
     </div>
@@ -1042,10 +1047,12 @@
     let iaTemMensagemNaoVista = false;
     let msgTemMensagemNaoVista = false;
     let msgNotificacoesConhecidas = null;
+    let msgNaoLidasPorUsuario = new Map();
     const PANEL_WIDTH_KEY = 'jk_ia_sidebar_width_px';
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
     const MSG_NOTIFICACOES_KEY = 'jk_msg_notificacoes_exibidas_v1';
+    const MSG_REFRESH_INTERVAL_MS = 10000;
     const MODULOS_LATERAIS = [
       { key: 'analise_promo', href: 'frontend_promo.html', icon: '&#128200;', label: 'Promocao ML' },
       { key: 'renovacao_fixa', href: 'renovacao.html', icon: '&#128260;', label: 'Renovacao Fixa' },
@@ -1386,6 +1393,12 @@
       return String((user && (user.name || user.username || user.email)) || 'Usuario').trim();
     }
 
+    function _msgChaveUsuario(username, clientId) {
+      const user = String(username || '').trim().toLowerCase();
+      const client = String(clientId || _clientId() || 'default').trim() || 'default';
+      return `${user}|${client}`;
+    }
+
     function _msgRenderVazio(el, texto) {
       if (!el) return;
       el.innerHTML = '';
@@ -1489,7 +1502,7 @@
 
     function _msgVoltarLista() {
       _msgSetChatView(false);
-      _msgSetStatus('Selecione um usuario online para abrir o chat.');
+      _msgSetStatus('Selecione um usuario para abrir o chat.');
       void _msgCarregarPainel(true);
     }
 
@@ -1499,7 +1512,7 @@
       if (selected) {
         selected.textContent = msgChatAberto && msgUsuarioSelecionado
           ? `Chat com ${_msgLabelUsuario(msgUsuarioSelecionado)}`
-          : 'Selecione um usuario online para enviar mensagem.';
+          : 'Selecione um usuario para enviar mensagem.';
       }
       if (send) send.disabled = !(msgChatAberto && msgUsuarioSelecionado);
       document.querySelectorAll('.jk-msg-user-item').forEach(btn => {
@@ -1569,9 +1582,18 @@
     function _msgRenderUsuarios(usuarios) {
       const el = document.getElementById('jk-msg-online-list');
       if (!el) return;
-      const lista = (Array.isArray(usuarios) ? usuarios : []).filter(user => user && (user.online !== false));
+      const listaBase = (Array.isArray(usuarios) ? usuarios : []).filter(user => user && user.username);
+      const vistos = new Set(listaBase.map(user => _msgChaveUsuario(user.username, user.client_id)));
+      const extrasNaoLidas = Array.from(msgNaoLidasPorUsuario.values()).filter(item => item && item.username && !vistos.has(_msgChaveUsuario(item.username, item.client_id)));
+      const lista = listaBase.concat(extrasNaoLidas.map(item => ({
+        username: item.username,
+        client_id: item.client_id,
+        name: item.name || item.username,
+        online: false,
+        unread_count: item.unread_count,
+      })));
       if (!lista.length) {
-        _msgRenderVazio(el, 'Nenhum usuario online agora.');
+        _msgRenderVazio(el, 'Nenhum usuario encontrado.');
         return;
       }
       const atual = _msgUsernameAtual();
@@ -1579,10 +1601,15 @@
       lista.forEach(user => {
         const username = String(user.username || '').trim().toLowerCase();
         const isSelf = username && username === atual;
+        const clientId = String(user.client_id || _clientId() || 'default').trim() || 'default';
+        const unread = msgNaoLidasPorUsuario.get(_msgChaveUsuario(username, clientId)) || {};
+        const unreadCount = Number(user.unread_count || unread.unread_count || 0);
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'jk-msg-user-item';
+        btn.classList.toggle('offline', user.online === false);
         btn.dataset.username = username;
+        btn.dataset.clientId = clientId;
         btn.disabled = !!isSelf;
 
         const dot = document.createElement('span');
@@ -1595,14 +1622,19 @@
         name.textContent = _msgLabelUsuario(user) + (isSelf ? ' (voce)' : '');
         const meta = document.createElement('span');
         meta.className = 'jk-msg-user-meta';
-        const machineCount = Number(user.online_count || (Array.isArray(user.machines) ? user.machines.length : 0) || 0);
-        const page = Array.isArray(user.machines) && user.machines[0] ? String(user.machines[0].page || '').trim() : '';
-        meta.textContent = `${machineCount || 1} conexao online${page ? ' - ' + page : ''}`;
+        meta.textContent = user.online === false ? 'Offline' : 'Online';
         info.appendChild(name);
         info.appendChild(meta);
 
         btn.appendChild(dot);
         btn.appendChild(info);
+        if (unreadCount > 0) {
+          const badge = document.createElement('span');
+          badge.className = 'jk-msg-unread-count';
+          badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+          badge.title = `${unreadCount} mensagem(ns) nao lida(s)`;
+          btn.appendChild(badge);
+        }
         if (!isSelf) btn.addEventListener('click', () => _msgAbrirChat(user));
         el.appendChild(btn);
       });
@@ -1642,6 +1674,15 @@
         type: 'admin',
       }));
       const chatConversations = Array.isArray(chatData.conversations) ? chatData.conversations : [];
+      msgNaoLidasPorUsuario = new Map(chatConversations.map(item => [
+        _msgChaveUsuario(item.username, item.client_id),
+        {
+          username: item.username,
+          client_id: item.client_id,
+          name: item.name,
+          unread_count: Number(item.unread_count || 0),
+        },
+      ]));
       _msgNotificarConversas(chatConversations);
       const chatMessages = chatConversations.map(item => ({
         type: 'chat',
@@ -1669,7 +1710,7 @@
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
-          return data.users.filter(user => user && user.online);
+          return data.users.filter(user => user && user.active !== false);
         }
       } catch (_) {}
 
@@ -1778,7 +1819,7 @@
             if (msgChatAberto) void _msgCarregarHistorico(true);
           }
           else void _msgBuscarMensagens().catch(() => {});
-        }, 45000);
+        }, MSG_REFRESH_INTERVAL_MS);
       }
     }
 

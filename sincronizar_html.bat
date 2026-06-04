@@ -22,6 +22,7 @@ set arquivos=^
     frontend_etiquetas.html ^
     debug_vendas.html ^
     dashboard.html
+    perguntas_pos_venda.html
 
 for %%f in (%arquivos%) do (
     if exist "%%f" (

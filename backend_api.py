@@ -1029,7 +1029,7 @@ class PerguntasLojaConfigRequest(BaseModel):
     responder_automaticamente: bool = False
     solicitar_aprovacao: bool = False
     habilitar_pos_venda_automatico: bool = False
-    intervalo_minutos: Optional[int] = 10
+    intervalo_minutos: Optional[float] = 10
 
 class PerguntasAprovacaoRequest(BaseModel):
     approval_id: str
@@ -15209,7 +15209,7 @@ IA_CHAT_MESSAGE_COMPACT_TARGET_CHARS = 3900
 ML_POS_VENDA_DEFAULT_MAX_CHARS = 350
 ML_POS_VENDA_LIMITE_SEGURO = 340
 PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN = 10
-PERGUNTAS_AUTOMACAO_INTERVALO_MIN = 1
+PERGUNTAS_AUTOMACAO_INTERVALO_MIN = 0.25
 PERGUNTAS_AUTOMACAO_INTERVALO_MAX = 1440
 PERGUNTAS_AUTOMACAO_BG_LOCK = threading.Lock()
 PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED = False
@@ -15238,10 +15238,12 @@ def _perguntas_loja_configs_carregar(client_id: str) -> dict:
 def _perguntas_loja_config_normalizar(config: dict | None = None) -> dict:
     config = config if isinstance(config, dict) else {}
     try:
-        intervalo_minutos = int(config.get("intervalo_minutos") or PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN)
+        intervalo_minutos = float(config.get("intervalo_minutos") or PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN)
     except Exception:
         intervalo_minutos = PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN
     intervalo_minutos = max(PERGUNTAS_AUTOMACAO_INTERVALO_MIN, min(intervalo_minutos, PERGUNTAS_AUTOMACAO_INTERVALO_MAX))
+    if float(intervalo_minutos).is_integer():
+        intervalo_minutos = int(intervalo_minutos)
     pos_venda_raw = config.get("habilitar_pos_venda_automatico")
     if pos_venda_raw is None:
         pos_venda_raw = config.get("usar_pos_venda") if "usar_pos_venda" in config else config.get("responder_automaticamente")
@@ -15282,7 +15284,7 @@ def _perguntas_loja_config_salvar(
     responder_automaticamente: bool,
     solicitar_aprovacao: bool,
     habilitar_pos_venda_automatico: bool,
-    intervalo_minutos: int | None = None,
+    intervalo_minutos: float | None = None,
 ) -> dict:
     nome_loja = str(loja or "").strip()
     if not nome_loja:
@@ -37605,6 +37607,7 @@ def ml_perguntas_automacao_poll(
             perguntas = [q for q in perguntas if isinstance(q, dict)]
             item_ids = list(dict.fromkeys([str(q.get("item_id") or "").strip() for q in perguntas if str(q.get("item_id") or "").strip()]))
             itens, cfg = _ml_buscar_itens_batch(client_id, nome_loja, cfg, item_ids)
+            itens = _ml_perguntas_completar_skus_itens(client_id, nome_loja, cfg, itens)
             item_por_id = {str(item.get("id") or "").strip(): item for item in itens if isinstance(item, dict)}
 
             processadas_loja = 0
@@ -37857,6 +37860,8 @@ def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, clien
         item = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id) or {}
     if not isinstance(item, dict):
         item = {}
+    if item and not _ml_extrair_sku(item):
+        item = _ml_perguntas_completar_skus_itens(client_id, loja, cfg, [item])[0]
     if not item:
         item = {
             "id": item_id,
@@ -38175,6 +38180,23 @@ def _ml_perguntas_normalizar(pergunta: dict, item_por_id: dict[str, dict], usuar
             "date_created": answer.get("date_created") or "",
         } if answer else None,
     }
+
+
+def _ml_perguntas_completar_skus_itens(client_id: str, loja: str, cfg: dict, itens: list[dict]) -> list[dict]:
+    """Completa variações apenas quando o item da pergunta veio sem SKU."""
+    completos = []
+    for item in itens or []:
+        if not isinstance(item, dict):
+            continue
+        if _ml_extrair_sku(item):
+            completos.append(item)
+            continue
+        try:
+            item = _ml_favoritos_completar_variacoes_item(client_id, loja, cfg, item)
+        except Exception as exc:
+            logger.debug("[ML PERGUNTAS] Nao foi possivel completar SKU do item %s: %s", item.get("id"), exc)
+        completos.append(item)
+    return completos
 
 
 def _ml_perguntas_chave_historico(pergunta: dict) -> tuple[str, str]:
@@ -39790,8 +39812,8 @@ def _perguntas_automacao_bg_tick() -> None:
                 continue
 
             intervalo_segundos = max(
-                60,
-                int(config.get("intervalo_minutos") or PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN) * 60,
+                15,
+                int(float(config.get("intervalo_minutos") or PERGUNTAS_AUTOMACAO_INTERVALO_PADRAO_MIN) * 60),
             )
             _perguntas_automacao_bg_executar(client_id, nome_loja, "perguntas", intervalo_segundos)
             if config.get("habilitar_pos_venda_automatico"):
@@ -39799,13 +39821,13 @@ def _perguntas_automacao_bg_tick() -> None:
 
 
 def _perguntas_automacao_bg_worker() -> None:
-    time.sleep(12)
+    time.sleep(4)
     while True:
         try:
             _perguntas_automacao_bg_tick()
         except Exception:
             logger.exception("[ML PERGUNTAS AUTO BG] Falha inesperada no verificador")
-        time.sleep(30)
+        time.sleep(10)
 
 
 @app.on_event("startup")
@@ -40041,6 +40063,7 @@ def ml_listar_perguntas(
                 break
 
         itens, cfg = _ml_buscar_itens_batch(client_id, nome_loja, cfg, item_ids)
+        itens = _ml_perguntas_completar_skus_itens(client_id, nome_loja, cfg, itens)
         item_por_id = {str(item.get("id") or "").strip(): item for item in itens if isinstance(item, dict)}
         usuario_por_id, cfg = _ml_perguntas_buscar_usuarios(client_id, nome_loja, cfg, user_ids)
         perguntas_norm = [_ml_perguntas_normalizar(pergunta, item_por_id, usuario_por_id) for pergunta in perguntas]

@@ -9294,13 +9294,17 @@
             if (!favMlEfetivarPanelEl || !favMlEfetivarInfoEl || !favMlEfetivarBtnEl) return;
             const sku = String(favMlSkuSelecionado || '').trim();
             const lista = Array.isArray(favMlAnunciosSkuAtual) ? favMlAnunciosSkuAtual : [];
-            if (!sku || !lista.length) {
+            const rankingSelecionado = sku ? obterRankingFavoritosParaSimulador(sku) : [];
+            const temRankingSelecionado = rankingSelecionado.length > 0;
+            if (!sku || (!lista.length && !temRankingSelecionado)) {
                 favMlEfetivarPanelEl.classList.add('hidden');
                 return;
             }
             favMlEfetivarPanelEl.classList.remove('hidden');
             const opcoesPromocao = obterOpcoesPromocaoFavoritosSku(sku);
-            const registros = obterRegistrosSimulacaoFavoritos(lista, sku, opcoesPromocao, favMlSimulacoesSkuAtual);
+            const registros = lista.length
+                ? obterRegistrosSimulacaoFavoritos(lista, sku, opcoesPromocao, favMlSimulacoesSkuAtual)
+                : [];
             const validos = filtrarRegistrosEfetivaveisFavoritos(registros);
             const invalidos = registros.filter(registro => !validos.includes(registro));
             if (!opcoesPromocao || !opcoesPromocao.usar_promocao) {
@@ -9311,6 +9315,14 @@
             if (promocaoFavoritosSemPercentualFixo(opcoesPromocao)) {
                 favMlEfetivarInfoEl.textContent = 'A promocao selecionada nao tem percentual fixo salvo. Refaca o favorito informando a porcentagem da campanha.';
                 favMlEfetivarBtnEl.disabled = true;
+                return;
+            }
+            if (!lista.length) {
+                const origemRanking = favMlHistoricoExecucaoSelecionadaId === FAV_ML_RANKING_ATUAL_ID
+                    ? 'Ranking atual'
+                    : 'Ranking do historico';
+                favMlEfetivarInfoEl.textContent = `${origemRanking} habilitado para aprovar e alterar. Clique para buscar os anuncios do SKU e simular.`;
+                favMlEfetivarBtnEl.disabled = favMlEfetivacaoEmExecucao || !temRankingSelecionado;
                 return;
             }
             const exemploErro = invalidos.find(registro => registro && registro.sim && !registro.sim.ok);
@@ -9338,12 +9350,16 @@
             const incluirOutrasContas = !!(favMlEfetivarOutrasContasEl && favMlEfetivarOutrasContasEl.checked);
             let anuncios = Array.isArray(favMlAnunciosSkuAtual) ? favMlAnunciosSkuAtual : [];
             let cache = favMlSimulacoesSkuAtual;
-            if (incluirOutrasContas) {
-                mostrarBalaoFavoritosStatus('Buscando anuncios deste SKU em todas as contas integradas...', { larga: true });
+            let buscouAnunciosAoAprovar = false;
+            if (incluirOutrasContas || !anuncios.length) {
+                const mensagemBusca = incluirOutrasContas
+                    ? 'Buscando anuncios deste SKU em todas as contas integradas...'
+                    : 'Buscando anuncios deste SKU para aprovar o ranking selecionado...';
+                mostrarBalaoFavoritosStatus(mensagemBusca, { larga: true });
                 try {
                     anuncios = await carregarFavoritosAnunciosSkuTodasContas(sku);
                 } catch (err) {
-                    mostrarBalaoFavoritosStatus(`Erro ao buscar outras contas: ${err && err.message ? err.message : err}`, {
+                    mostrarBalaoFavoritosStatus(`Erro ao buscar anuncios do SKU: ${err && err.message ? err.message : err}`, {
                         erro: true,
                         larga: true
                     });
@@ -9351,6 +9367,7 @@
                     return;
                 }
                 cache = null;
+                buscouAnunciosAoAprovar = true;
             }
             const lojaAtualNorm = skuNormalizarLoja(favoritosLojaSelecionadaParaApi(favMlLojaSelecionada || ''));
             let registros = obterRegistrosSimulacaoFavoritos(anuncios, sku, opcoesPromocao, cache);
@@ -9370,7 +9387,9 @@
             const nomeCampanha = opcoesPromocao.campanha && (opcoesPromocao.campanha.nome || opcoesPromocao.campanha.id) || 'campanha selecionada';
             const pergunta = [
                 `Aprovar e alterar ${validos.length} anuncio(s)?`,
-                incluirOutrasContas ? 'Inclui outras contas que tenham este SKU.' : 'Somente a conta/loja atual.',
+                incluirOutrasContas
+                    ? 'Inclui outras contas que tenham este SKU.'
+                    : (buscouAnunciosAoAprovar ? 'Somente a conta/loja atual apos buscar os anuncios do SKU.' : 'Somente a conta/loja atual.'),
                 `Campanha: ${nomeCampanha}`,
                 'O sistema vai sair da promocao atual, ajustar o preco cheio, aplicar a promocao e conferir no Mercado Livre.',
                 'Quando houver mais de um anuncio nosso, os precos finais e cheios nao serao iguais.'
@@ -14138,6 +14157,22 @@
             renderizarFavoritosSkuSidebar();
             renderizarSkuSidebarMercadoLivre();
             renderizarFavoritosOutrosAnuncios(sku);
+            carregarFavoritosAnunciosSku(sku, favMlLojaSelecionada, {
+                manterRankingSelecionado: true,
+                compartilharSku: true
+            });
+        }
+
+        function abrirRankingHistoricoParaAprovarFavoritos(grupo, entrada) {
+            const sku = String(grupo && grupo.sku || '').trim();
+            if (!sku) return;
+            abrirFavoritoRecenteNaAbaFavoritos({
+                sku,
+                grupo,
+                entrada_id: idEntradaHistoricoFavoritos(entrada),
+                data_iso: entrada && entrada.data_iso || grupo.data_iso || grupo.data_ranking_iso || '',
+                loja: grupo.loja || entrada && entrada.loja || ''
+            });
         }
 
         function abrirFavoritoRecenteNoHistorico(item) {
@@ -15113,6 +15148,15 @@
                         ? 'Este histórico não tem termos salvos.'
                         : 'Refazer uma nova consulta com os mesmos termos.';
                     refazerBtn.addEventListener('click', () => refazerRankingHistoricoFavoritos(grupo, entrada));
+                    const aprovarBtn = document.createElement('button');
+                    aprovarBtn.type = 'button';
+                    aprovarBtn.className = 'btn-back ml-favoritos-refazer-btn';
+                    aprovarBtn.textContent = 'Aprovar e alterar';
+                    aprovarBtn.disabled = grupoRankingFavoritosEhAvulso(grupo) || !Array.isArray(grupo.anuncios) || !grupo.anuncios.length;
+                    aprovarBtn.title = aprovarBtn.disabled
+                        ? 'Este historico nao tem ranking de SKU para aprovar.'
+                        : 'Abrir este ranking no modulo Favoritos para aprovar e alterar.';
+                    aprovarBtn.addEventListener('click', () => abrirRankingHistoricoParaAprovarFavoritos(grupo, entrada));
                     const termos = document.createElement('div');
                     termos.className = 'ml-favoritos-termos';
                     const termosTexto = formatarTermosPesquisaFavoritos(grupo.termos);
@@ -15121,6 +15165,7 @@
                         : 'Sem pesquisas registradas.';
                     grupoHead.appendChild(subtitulo);
                     grupoHead.appendChild(refazerBtn);
+                    grupoHead.appendChild(aprovarBtn);
                     bloco.appendChild(grupoHead);
                     bloco.appendChild(termos);
                     bloco.appendChild(criarTabelaHistoricoFavoritos(grupo.anuncios, grupo.sku, {

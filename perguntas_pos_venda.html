@@ -280,6 +280,11 @@
             transform: none;
         }
 
+        .store-card.all-stores-card {
+            border-color: rgba(56, 212, 255, 0.46);
+            background: rgba(56, 212, 255, 0.09);
+        }
+
         .store-name {
             display: block;
             font-size: 1.05rem;
@@ -1660,6 +1665,7 @@
             automacaoPosVendaRodando: false,
             aprovacoesNotificadas: new Set()
         };
+        const TODAS_LOJAS_VALUE = '__todas_contas__';
 
         const lojasGrid = document.getElementById('lojas-grid');
         const lojasStatus = document.getElementById('lojas-status');
@@ -1842,6 +1848,52 @@
             return String(nome || '').trim();
         }
 
+        function lojasMercadoLivreConectadas() {
+            return state.lojas.filter((loja) => {
+                const nome = String(loja && loja.nome || '').trim();
+                return nome && loja.mercadolivre_conectado === true;
+            });
+        }
+
+        function todasAsLojasSelecionadas() {
+            return state.lojaSelecionada === TODAS_LOJAS_VALUE;
+        }
+
+        function lojaOrigemItem(item) {
+            return String(
+                item && (
+                    item.loja ||
+                    item.nome_loja ||
+                    item.store ||
+                    item._loja ||
+                    item.loja_nome ||
+                    ''
+                ) || ''
+            ).trim();
+        }
+
+        function rotuloEscopoSelecionado() {
+            if (todasAsLojasSelecionadas()) return 'todas as contas conectadas';
+            return state.lojaSelecionada || '';
+        }
+
+        function anexarLojaOrigem(item, nomeLoja) {
+            return {
+                ...(item || {}),
+                loja: lojaOrigemItem(item) || String(nomeLoja || '').trim()
+            };
+        }
+
+        function somarStatusResumoPerguntas(resultados) {
+            return resultados.reduce((acc, resultado) => {
+                const resumo = resultado && resultado.data && resultado.data.status_resumo ? resultado.data.status_resumo : {};
+                Object.entries(resumo).forEach(([status, valor]) => {
+                    acc[status] = Number(acc[status] || 0) + Number(valor || 0);
+                });
+                return acc;
+            }, {});
+        }
+
         function textoProximaChecagemLoja(nome, loja) {
             const config = loja && loja.config_perguntas ? loja.config_perguntas : {};
             if (!loja || loja.mercadolivre_conectado !== true) return 'Proxima checagem: Mercado Livre desconectado.';
@@ -1879,6 +1931,10 @@
 
         function renderizarControlesAutomacaoSelecionada() {
             if (!perguntasAutomationControls) return;
+            if (todasAsLojasSelecionadas()) {
+                perguntasAutomationControls.innerHTML = '<span class="store-next-check automation-next-check">Escolha uma loja especifica para ajustar a checagem automatica.</span>';
+                return;
+            }
             const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(state.lojaSelecionada));
             if (!loja || loja.mercadolivre_conectado !== true) {
                 perguntasAutomationControls.innerHTML = '<span class="store-next-check automation-next-check">Escolha uma loja para configurar a checagem.</span>';
@@ -1886,11 +1942,11 @@
             }
             const nome = String(loja.nome || '').trim();
             const config = loja.config_perguntas || {};
-            const intervaloMinutos = Math.max(1, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+            const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
             perguntasAutomationControls.innerHTML = `
                 <label class="automation-interval-control">
                     <span>Verificar a cada</span>
-                    <input id="perguntas-intervalo-global" type="number" min="1" max="1440" step="1" value="${intervaloMinutos}" aria-label="Intervalo de checagem em minutos">
+                    <input id="perguntas-intervalo-global" type="number" min="0.25" max="1440" step="0.25" value="${intervaloMinutos}" aria-label="Intervalo de checagem em minutos">
                     <span>minuto(s)</span>
                     <button class="store-config-save" type="button" id="btn-salvar-intervalo-perguntas">Aplicar</button>
                     <span class="store-next-check automation-next-check" data-next-check-loja="${escapeHtml(nome)}">${escapeHtml(textoProximaChecagemLoja(nome, loja))}</span>
@@ -1925,8 +1981,13 @@
             if (nome === 'pos-venda' && state.lojaSelecionada) {
                 carregarPosVenda();
             }
-            if (nome === 'mediacao' && state.lojaSelecionada) {
+            if (nome === 'mediacao' && state.lojaSelecionada && !todasAsLojasSelecionadas()) {
                 carregarMediacoes();
+            }
+            if (nome === 'mediacao' && todasAsLojasSelecionadas()) {
+                atualizarCabecalhoMediacao();
+                resetarMediacoes();
+                mediacaoStatus.textContent = 'Selecione uma loja especifica para consultar mediacoes.';
             }
             if (nome === 'treinar-ai') {
                 carregarTreinamentoAI();
@@ -1946,6 +2007,17 @@
                 return;
             }
 
+            const lojasConectadas = lojasMercadoLivreConectadas();
+            const todasActive = todasAsLojasSelecionadas();
+            const todasHtml = lojasConectadas.length ? `
+                <div class="store-card all-stores-card ${todasActive ? 'active' : ''}" data-loja="${TODAS_LOJAS_VALUE}" tabindex="0" aria-disabled="false">
+                    <span class="store-name">Todas as contas</span>
+                    <span class="store-meta">
+                        <span class="badge ok">${lojasConectadas.length} conta(s)</span>
+                        <span>Perguntas e pos-venda juntos</span>
+                    </span>
+                </div>
+            ` : '';
             const lojasHtml = state.lojas.map((loja) => {
                 const nome = String(loja.nome || '').trim();
                 const conectado = loja.mercadolivre_conectado === true;
@@ -1957,7 +2029,7 @@
                 const active = nome === state.lojaSelecionada;
                 const seller = loja.seller_id ? `Conta ${escapeHtml(loja.seller_id)}` : (precisaReconectar ? 'OAuth incompleto' : 'Mercado Livre pendente');
                 const config = loja.config_perguntas || {};
-                const intervaloMinutos = Math.max(1, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+                const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
                 return `
                     <div class="store-card ${active ? 'active' : ''} ${conectado ? '' : 'disabled'}" data-loja="${escapeHtml(nome)}" tabindex="${conectado ? '0' : '-1'}" aria-disabled="${conectado ? 'false' : 'true'}">
                         <span class="store-name">${escapeHtml(nome)}</span>
@@ -1983,8 +2055,8 @@
                 `;
             }).join('');
 
-            lojasGrid.innerHTML = lojasHtml;
-            posVendaLojasGrid.innerHTML = lojasHtml;
+            lojasGrid.innerHTML = todasHtml + lojasHtml;
+            posVendaLojasGrid.innerHTML = todasHtml + lojasHtml;
             vincularEventosLojas(lojasGrid);
             vincularEventosLojas(posVendaLojasGrid);
             renderizarControlesAutomacaoSelecionada();
@@ -2041,7 +2113,7 @@
             const lojaAtual = state.lojas.find((item) => String(item.nome || '') === nome);
             const configAtual = lojaAtual && lojaAtual.config_perguntas ? lojaAtual.config_perguntas : {};
             const intervaloInput = card.querySelector('[data-config="intervalo_minutos"]');
-            const intervaloMinutos = Math.max(1, Math.min(1440, Number((intervaloInput && intervaloInput.value) || configAtual.intervalo_minutos || 10) || 10));
+            const intervaloMinutos = Math.max(0.25, Math.min(1440, Number((intervaloInput && intervaloInput.value) || configAtual.intervalo_minutos || 10) || 10));
             if (intervaloInput) intervaloInput.value = String(intervaloMinutos);
             try {
                 const response = await fetch('/api/mercadolivre/perguntas/lojas/config', {
@@ -2076,7 +2148,7 @@
             if (!loja) return;
             const input = document.getElementById('perguntas-intervalo-global');
             const config = loja.config_perguntas || {};
-            const intervaloMinutos = Math.max(1, Math.min(1440, Number(input?.value || config.intervalo_minutos || 10) || 10));
+            const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(input?.value || config.intervalo_minutos || 10) || 10));
             if (input) input.value = String(intervaloMinutos);
             try {
                 const response = await fetch('/api/mercadolivre/perguntas/lojas/config', {
@@ -2174,8 +2246,8 @@
 
         function intervaloAutomacaoLojaMs(loja) {
             const config = loja && loja.config_perguntas ? loja.config_perguntas : {};
-            const minutos = Math.max(1, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
-            return minutos * 60 * 1000;
+            const minutos = Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+            return Math.round(minutos * 60 * 1000);
         }
 
         async function executarAutomacaoPerguntas(lojaNome = '') {
@@ -2272,8 +2344,8 @@
             lojasAtivas.forEach((loja, index) => {
                 const nomeLoja = String(loja.nome || '').trim();
                 const intervaloMs = intervaloAutomacaoLojaMs(loja);
-                const delayPerguntas = 1500 + (index * 600);
-                const delayPosVenda = 2500 + (index * 600);
+                const delayPerguntas = 250 + (index * 250);
+                const delayPosVenda = 750 + (index * 250);
                 registrarProximaChecagemLoja(nomeLoja, Date.now() + Math.min(delayPerguntas, delayPosVenda));
                 setTimeout(() => {
                     executarAutomacaoPerguntas(nomeLoja);
@@ -2293,6 +2365,25 @@
         }
 
         function renderizarResumo(data) {
+            if (data && data.modo_todas) {
+                const resumoTodas = data.status_resumo || {};
+                const totalTodas = Number(data.total || 0);
+                const retornadasTodas = Number(data.retornadas || 0);
+                const respondidasTodas = Number(resumoTodas.ANSWERED || 0);
+                const pendentesTodas = Number(resumoTodas.UNANSWERED || 0);
+                const lojasConsultadas = Number(data.lojas_consultadas || 0);
+                const erros = Array.isArray(data.erros) ? data.erros.length : 0;
+                perguntasSummary.classList.remove('hidden');
+                perguntasSummary.innerHTML = `
+                    <div class="metric"><strong>${retornadasTodas}</strong><span>Perguntas carregadas</span></div>
+                    <div class="metric"><strong>${totalTodas}</strong><span>Total nas contas</span></div>
+                    <div class="metric"><strong>${pendentesTodas}</strong><span>Nao respondidas</span></div>
+                    <div class="metric"><strong>${respondidasTodas}</strong><span>Respondidas</span></div>
+                    <div class="metric"><strong>${lojasConsultadas}</strong><span>Contas consultadas</span></div>
+                    <div class="metric"><strong>${erros}</strong><span>Contas com erro</span></div>
+                `;
+                return;
+            }
             const resumo = data.status_resumo || {};
             const total = Number(data.total || 0);
             const retornadas = Number(data.retornadas || 0);
@@ -2372,7 +2463,10 @@
         function renderizarPerguntas() {
             const perguntas = state.perguntas;
             if (!perguntas.length) {
-                perguntasList.innerHTML = '<div class="empty-state"><div><h2>Nenhuma pergunta encontrada</h2><p>Não há perguntas para o filtro selecionado nesta loja.</p></div></div>';
+                const textoVazio = todasAsLojasSelecionadas()
+                    ? 'Não há perguntas para o filtro selecionado nas contas conectadas.'
+                    : 'Não há perguntas para o filtro selecionado nesta loja.';
+                perguntasList.innerHTML = `<div class="empty-state"><div><h2>Nenhuma pergunta encontrada</h2><p>${escapeHtml(textoVazio)}</p></div></div>`;
                 perguntasPagination.classList.add('hidden');
                 perguntasPagination.innerHTML = '';
                 return;
@@ -2384,6 +2478,10 @@
             const pagina = perguntas;
 
             perguntasList.innerHTML = pagina.map((pergunta) => {
+                const lojaOrigem = lojaOrigemItem(pergunta);
+                const lojaBadge = lojaOrigem
+                    ? `<span class="badge ok">Loja ${escapeHtml(lojaOrigem)}</span>`
+                    : '';
                 const titulo = pergunta.item_title || pergunta.item_id || 'Anúncio';
                 const tituloHtml = pergunta.item_permalink
                     ? `<a href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">${escapeHtml(titulo)}</a>`
@@ -2409,13 +2507,14 @@
                     </div>
                 ` : '';
                 return `
-                    <article class="question-card" data-question-card data-question-id="${escapeHtml(pergunta.id || '')}">
+                    <article class="question-card" data-question-card data-question-id="${escapeHtml(pergunta.id || '')}" data-question-loja="${escapeHtml(lojaOrigem)}">
                         <div class="question-body">
                             <div class="question-thumb">${foto}</div>
                             <div>
                                 <div class="question-top">
                                     <div>
                                         <h3 class="question-title">${tituloHtml}</h3>
+                                        ${lojaBadge}
                                         <span class="badge ${classeStatus(pergunta.status)}">${escapeHtml(rotuloStatus(pergunta.status))}</span>
                                         <div class="question-meta">
                                             <span>Anúncio ${escapeHtml(pergunta.item_id || '-')}</span>
@@ -2438,9 +2537,15 @@
             renderizarPaginacaoPerguntas(state.totalPerguntas || perguntas.length);
         }
 
-        function obterPerguntaPorId(questionId) {
+        function obterPerguntaPorId(questionId, loja = '') {
             const id = String(questionId || '').trim();
-            return state.perguntas.find((pergunta) => String(pergunta.id || '').trim() === id) || null;
+            const lojaFiltro = String(loja || '').trim();
+            return state.perguntas.find((pergunta) => {
+                const mesmaPergunta = String(pergunta.id || '').trim() === id;
+                if (!mesmaPergunta) return false;
+                if (!lojaFiltro) return true;
+                return lojaOrigemItem(pergunta) === lojaFiltro;
+            }) || null;
         }
 
         function setStatusRespostaPergunta(statusEl, texto, tipo = '') {
@@ -2453,6 +2558,7 @@
         function configurarAcoesRespostaPerguntas() {
             perguntasList.querySelectorAll('[data-question-card]').forEach((card) => {
                 const questionId = card.dataset.questionId || '';
+                const questionLoja = card.dataset.questionLoja || '';
                 const textarea = card.querySelector('.question-answer-text');
                 const btnGerar = card.querySelector('.question-ai-answer-btn');
                 const btnEnviar = card.querySelector('.question-send-answer-btn');
@@ -2463,17 +2569,18 @@
                     btnEnviar.disabled = !textarea.value.trim();
                 };
                 textarea.addEventListener('input', atualizarBotaoEnviar);
-                btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, textarea, btnEnviar, btnGerar, status));
+                btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
                 if (btnGerar) {
-                    btnGerar.addEventListener('click', () => gerarRespostaPerguntaIa(questionId, textarea, btnEnviar, btnGerar, status));
+                    btnGerar.addEventListener('click', () => gerarRespostaPerguntaIa(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
                 }
                 atualizarBotaoEnviar();
             });
         }
 
-        async function gerarRespostaPerguntaIa(questionId, textarea, btnEnviar, btnGerar, status) {
-            const pergunta = obterPerguntaPorId(questionId);
-            if (!pergunta || !state.lojaSelecionada) return;
+        async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, btnGerar, status) {
+            const pergunta = obterPerguntaPorId(questionId, loja);
+            const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
+            if (!pergunta || !lojaResposta) return;
             btnGerar.disabled = true;
             btnEnviar.disabled = true;
             setStatusRespostaPergunta(status, 'Gerando sugestao com IA...');
@@ -2485,7 +2592,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        loja: state.lojaSelecionada,
+                        loja: lojaResposta,
                         pergunta
                     })
                 });
@@ -2503,10 +2610,11 @@
             }
         }
 
-        async function enviarRespostaPerguntaManual(questionId, textarea, btnEnviar, btnGerar, status) {
-            const pergunta = obterPerguntaPorId(questionId);
+        async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnviar, btnGerar, status) {
+            const pergunta = obterPerguntaPorId(questionId, loja);
             const texto = String(textarea.value || '').trim();
-            if (!pergunta || !state.lojaSelecionada || !texto) return;
+            const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
+            if (!pergunta || !lojaResposta || !texto) return;
             btnEnviar.disabled = true;
             if (btnGerar) btnGerar.disabled = true;
             setStatusRespostaPergunta(status, 'Enviando resposta ao Mercado Livre...');
@@ -2518,7 +2626,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        loja: state.lojaSelecionada,
+                        loja: lojaResposta,
                         question_id: questionId,
                         resposta: texto
                     })
@@ -2531,7 +2639,7 @@
                     date_created: new Date().toISOString()
                 };
                 pergunta.status = 'ANSWERED';
-                perguntasStatus.textContent = 'Resposta enviada ao Mercado Livre.';
+                perguntasStatus.textContent = `Resposta enviada ao Mercado Livre pela loja ${lojaResposta}.`;
                 renderizarPerguntas();
             } catch (error) {
                 setStatusRespostaPergunta(status, `Erro ao enviar: ${mensagemErro(error)}`, 'error');
@@ -2551,8 +2659,11 @@
                 if (!response.ok) throw new Error(data.detail || 'Erro ao carregar lojas.');
                 state.lojas = Array.isArray(data.lojas) ? data.lojas : [];
                 const primeiraConectada = state.lojas.find((loja) => loja.mercadolivre_conectado);
+                const haLojasConectadas = lojasMercadoLivreConectadas().length > 0;
                 const lojaSelecionadaAtual = state.lojas.find((loja) => String(loja.nome || '') === String(state.lojaSelecionada || ''));
-                if (!lojaSelecionadaAtual || lojaSelecionadaAtual.mercadolivre_conectado !== true) {
+                if (todasAsLojasSelecionadas() && haLojasConectadas) {
+                    state.lojaSelecionada = TODAS_LOJAS_VALUE;
+                } else if (!lojaSelecionadaAtual || lojaSelecionadaAtual.mercadolivre_conectado !== true) {
                     state.lojaSelecionada = primeiraConectada ? (primeiraConectada.nome || '') : '';
                 } else if (!state.lojaSelecionada && primeiraConectada) {
                     state.lojaSelecionada = primeiraConectada.nome || '';
@@ -2582,10 +2693,83 @@
             if (document.getElementById('aba-pos-venda').classList.contains('active')) {
                 await carregarPosVenda();
             } else if (document.getElementById('aba-mediacao').classList.contains('active')) {
+                if (todasAsLojasSelecionadas()) {
+                    mediacaoStatus.textContent = 'Selecione uma loja especifica para consultar mediacoes.';
+                    return;
+                }
                 await carregarMediacoes(true);
             } else {
                 await carregarPerguntas();
             }
+        }
+
+        async function carregarPerguntasTodasLojas() {
+            const lojas = lojasMercadoLivreConectadas();
+            if (!lojas.length) {
+                return {
+                    questions: [],
+                    total: 0,
+                    retornadas: 0,
+                    status_resumo: {},
+                    lojas_consultadas: 0,
+                    erros: []
+                };
+            }
+            const limitePorLoja = Math.min(
+                100,
+                Math.max(state.tamanhoPaginaPerguntas, state.paginaPerguntas * state.tamanhoPaginaPerguntas)
+            );
+            const resultados = await Promise.all(lojas.map(async (loja) => {
+                const nomeLoja = String(loja.nome || '').trim();
+                try {
+                    const params = new URLSearchParams({
+                        loja: nomeLoja,
+                        carregar_todas: 'false',
+                        offset: '0',
+                        limit: String(limitePorLoja)
+                    });
+                    if (statusFiltro.value) params.set('status', statusFiltro.value);
+                    const response = await fetch(`/api/mercadolivre/perguntas?${params.toString()}`, {
+                        headers: obterAuthHeaders(),
+                        cache: 'no-store'
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data.detail || `Erro ao carregar perguntas de ${nomeLoja}.`);
+                    return { loja: nomeLoja, data };
+                } catch (error) {
+                    return { loja: nomeLoja, error };
+                }
+            }));
+            const sucessos = resultados.filter((resultado) => resultado.data);
+            const erros = resultados
+                .filter((resultado) => resultado.error)
+                .map((resultado) => ({ loja: resultado.loja, erro: mensagemErro(resultado.error) }));
+            const todasPerguntas = ordenarPerguntasRecentes(sucessos.flatMap((resultado) => {
+                const perguntas = Array.isArray(resultado.data.questions) ? resultado.data.questions : [];
+                return perguntas.map((pergunta) => anexarLojaOrigem(pergunta, resultado.loja));
+            }));
+            const inicio = (state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas;
+            const fim = inicio + state.tamanhoPaginaPerguntas;
+            const pagina = todasPerguntas.slice(inicio, fim);
+            const hasNext = sucessos.some((resultado) => (
+                resultado.data &&
+                resultado.data.next_offset !== null &&
+                resultado.data.next_offset !== undefined
+            ));
+            return {
+                questions: pagina,
+                total_carregado: todasPerguntas.length,
+                total_paginacao: Math.max(todasPerguntas.length, fim + (hasNext ? 1 : 0)),
+                total: sucessos.reduce((acc, resultado) => acc + Number(resultado.data.total || 0), 0),
+                retornadas: todasPerguntas.length,
+                status_resumo: somarStatusResumoPerguntas(sucessos),
+                lojas_consultadas: sucessos.length,
+                lojas_total: lojas.length,
+                erros,
+                has_next: hasNext,
+                interrompido: sucessos.some((resultado) => resultado.data && resultado.data.interrompido),
+                modo_todas: true
+            };
         }
 
         async function carregarPerguntas(pagina = 1) {
@@ -2599,9 +2783,24 @@
             state.perguntas = [];
             state.totalPerguntas = 0;
             state.paginaPerguntas = Math.max(1, Number(pagina) || 1);
-            perguntasStatus.textContent = `Carregando perguntas de ${state.lojaSelecionada}...`;
+            perguntasStatus.textContent = todasAsLojasSelecionadas()
+                ? `Carregando perguntas de ${lojasMercadoLivreConectadas().length} conta(s)...`
+                : `Carregando perguntas de ${state.lojaSelecionada}...`;
 
             try {
+                if (todasAsLojasSelecionadas()) {
+                    const dataTodas = await carregarPerguntasTodasLojas();
+                    const perguntasTodas = ordenarPerguntasRecentes(Array.isArray(dataTodas.questions) ? dataTodas.questions : []);
+                    state.perguntas = perguntasTodas;
+                    state.totalPerguntas = Number(dataTodas.total_paginacao || dataTodas.total_carregado || perguntasTodas.length || 0);
+                    const errosTexto = dataTodas.erros && dataTodas.erros.length
+                        ? ` ${dataTodas.erros.length} conta(s) tiveram erro.`
+                        : '';
+                    perguntasStatus.textContent = `${perguntasTodas.length} pergunta(s) nesta pagina, de ${Number(dataTodas.total_carregado || perguntasTodas.length || 0)} carregada(s) em ${Number(dataTodas.lojas_consultadas || 0)} conta(s).${errosTexto}`;
+                    renderizarResumo(dataTodas);
+                    renderizarPerguntas();
+                    return;
+                }
                 const offset = (state.paginaPerguntas - 1) * state.tamanhoPaginaPerguntas;
                 const params = new URLSearchParams({
                     loja: state.lojaSelecionada,
@@ -2636,7 +2835,9 @@
         }
 
         function atualizarCabecalhoPosVenda() {
-            posVendaLojaStatus.textContent = state.lojaSelecionada
+            posVendaLojaStatus.textContent = todasAsLojasSelecionadas()
+                ? `Todas as contas conectadas (${lojasMercadoLivreConectadas().length})`
+                : state.lojaSelecionada
                 ? `Loja selecionada: ${state.lojaSelecionada}`
                 : 'Escolha uma loja conectada.';
         }
@@ -2657,7 +2858,9 @@
         }
 
         function atualizarCabecalhoMediacao() {
-            mediacaoLojaStatus.textContent = state.lojaSelecionada
+            mediacaoLojaStatus.textContent = todasAsLojasSelecionadas()
+                ? 'Selecione uma loja específica'
+                : state.lojaSelecionada
                 ? `Loja selecionada: ${state.lojaSelecionada}`
                 : 'Escolha uma loja conectada.';
         }
@@ -2692,6 +2895,9 @@
         }
 
         function chaveCachePosVenda() {
+            if (todasAsLojasSelecionadas()) {
+                return `jk_pos_venda_cache:${TODAS_LOJAS_VALUE}:${posVendaDias.value}:pagina-${state.posVendaPagina}:${obterBuscaPosVenda().toLowerCase()}`;
+            }
             return `jk_pos_venda_cache:${state.lojaSelecionada || 'sem-loja'}:${posVendaDias.value}:${state.posVendaOffset}:${obterBuscaPosVenda().toLowerCase()}`;
         }
 
@@ -2717,7 +2923,122 @@
             }
         }
 
+        function ordenarConversasPosVendaRecentes(conversas) {
+            return [...(conversas || [])].sort((a, b) => {
+                const dataA = new Date(a.last_message_date || a.date_created || 0).getTime() || 0;
+                const dataB = new Date(b.last_message_date || b.date_created || 0).getTime() || 0;
+                return dataB - dataA;
+            });
+        }
+
+        async function carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca) {
+            let offset = 0;
+            let nextOffset = 0;
+            let chamadas = 0;
+            const conversas = [];
+            const conversasVistas = new Set();
+            let resumo = {
+                orders_total: 0,
+                orders_avaliadas: 0,
+                conversas_total: 0,
+                has_next: false,
+                dias: Number(posVendaDias.value || 0)
+            };
+
+            while (conversas.length < quantidadeNecessaria && nextOffset !== null && nextOffset !== undefined && chamadas < 8) {
+                const params = new URLSearchParams({
+                    loja: nomeLoja,
+                    dias: posVendaDias.value,
+                    offset: String(offset),
+                    limit: '20',
+                    max_orders: '10000'
+                });
+                if (busca) params.set('busca', busca);
+                const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || `Erro ao carregar pós venda de ${nomeLoja}.`);
+                resumo = {
+                    orders_total: Number(data.orders_total || resumo.orders_total || 0),
+                    orders_avaliadas: Number(resumo.orders_avaliadas || 0) + Number(data.orders_avaliadas || 0),
+                    conversas_total: Math.max(Number(resumo.conversas_total || 0), Number(data.conversas_total || 0)),
+                    has_next: data.has_next === true || data.next_offset !== null && data.next_offset !== undefined,
+                    dias: Number(data.dias || resumo.dias || 0)
+                };
+                const lote = Array.isArray(data.conversas) ? data.conversas : [];
+                lote.forEach((conversa) => {
+                    const chave = `${nomeLoja}:${conversa.pack_id || ''}:${conversa.order_id || ''}`;
+                    if (conversasVistas.has(chave)) return;
+                    conversasVistas.add(chave);
+                    conversas.push(anexarLojaOrigem(conversa, nomeLoja));
+                });
+                nextOffset = data.next_offset;
+                if (nextOffset === null || nextOffset === undefined || busca) break;
+                const novoOffset = Number(nextOffset);
+                if (!Number.isFinite(novoOffset) || novoOffset <= offset) break;
+                offset = novoOffset;
+                chamadas += 1;
+            }
+
+            return {
+                loja: nomeLoja,
+                conversas,
+                resumo,
+                has_next: resumo.has_next
+            };
+        }
+
+        async function carregarPosVendaTodasLojas(busca) {
+            const lojas = lojasMercadoLivreConectadas();
+            const quantidadeNecessaria = Math.max(20, state.posVendaPagina * 20);
+            const resultados = await Promise.all(lojas.map(async (loja) => {
+                const nomeLoja = String(loja.nome || '').trim();
+                try {
+                    return await carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca);
+                } catch (error) {
+                    return { loja: nomeLoja, error };
+                }
+            }));
+            const sucessos = resultados.filter((resultado) => resultado.conversas);
+            const erros = resultados
+                .filter((resultado) => resultado.error)
+                .map((resultado) => ({ loja: resultado.loja, erro: mensagemErro(resultado.error) }));
+            const todasConversas = ordenarConversasPosVendaRecentes(sucessos.flatMap((resultado) => resultado.conversas || []));
+            const inicio = (state.posVendaPagina - 1) * 20;
+            const fim = inicio + 20;
+            const pagina = todasConversas.slice(inicio, fim);
+            const hasNext = todasConversas.length > fim || sucessos.some((resultado) => resultado.has_next);
+            return {
+                success: true,
+                modo_todas: true,
+                dias: Number(posVendaDias.value || 0),
+                lojas_consultadas: sucessos.length,
+                lojas_total: lojas.length,
+                erros,
+                orders_total: sucessos.reduce((acc, resultado) => acc + Number(resultado.resumo?.orders_total || 0), 0),
+                orders_avaliadas: sucessos.reduce((acc, resultado) => acc + Number(resultado.resumo?.orders_avaliadas || 0), 0),
+                conversas_total: todasConversas.length,
+                has_next: hasNext,
+                next_offset: hasNext ? fim : null,
+                conversas: pagina
+            };
+        }
+
         function renderizarResumoPosVenda(data) {
+            if (data && data.modo_todas) {
+                const erros = Array.isArray(data.erros) ? data.erros.length : 0;
+                posVendaSummary.classList.remove('hidden');
+                posVendaSummary.innerHTML = `
+                    <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>Vendas com conversa</span></div>
+                    <div class="metric"><strong>${Number(data.orders_avaliadas || 0)}</strong><span>Vendas avaliadas</span></div>
+                    <div class="metric"><strong>${Number(data.lojas_consultadas || 0)}</strong><span>Contas consultadas</span></div>
+                    <div class="metric"><strong>${Number(data.dias || 0)}</strong><span>Dias consultados</span></div>
+                    <div class="metric"><strong>${erros}</strong><span>Contas com erro</span></div>
+                `;
+                return;
+            }
             posVendaSummary.classList.remove('hidden');
             posVendaSummary.innerHTML = `
                 <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>Vendas com conversa</span></div>
@@ -2850,8 +3171,11 @@
 
         function renderizarPaginacaoPosVenda(data, conversas) {
             const temAnterior = state.posVendaPagina > 1;
+            const modoTodas = data && data.modo_todas === true;
             const proximo = data && data.next_offset !== null && data.next_offset !== undefined ? Number(data.next_offset) : null;
-            const temProxima = proximo !== null && !Number.isNaN(proximo);
+            const temProxima = modoTodas
+                ? data.has_next === true
+                : proximo !== null && !Number.isNaN(proximo);
             state.posVendaNextOffset = temProxima ? proximo : null;
 
             if (!temAnterior && !temProxima) {
@@ -2874,10 +3198,20 @@
                     const action = button.dataset.action;
                     if (action === 'prev' && temAnterior) {
                         state.posVendaPagina -= 1;
-                        state.posVendaOffset = state.posVendaOffsets[state.posVendaPagina - 1] || 0;
+                        if (modoTodas) {
+                            state.posVendaOffset = 0;
+                        } else {
+                            state.posVendaOffset = state.posVendaOffsets[state.posVendaPagina - 1] || 0;
+                        }
                         carregarPosVenda(true);
                     }
                     if (action === 'next' && temProxima) {
+                        if (modoTodas) {
+                            state.posVendaPagina += 1;
+                            state.posVendaOffset = 0;
+                            carregarPosVenda(true);
+                            return;
+                        }
                         if (state.posVendaOffsets.length <= state.posVendaPagina) {
                             state.posVendaOffsets.push(proximo);
                         }
@@ -2900,12 +3234,16 @@
                 posVendaList.classList.remove('hidden');
                 posVendaList.innerHTML = busca
                     ? `<div class="empty-state"><div><h2>Nenhuma venda encontrada</h2><p>Nenhuma conversa foi encontrada para "${escapeHtml(busca)}".</p></div></div>`
-                    : '<div class="empty-state"><div><h2>Nenhuma conversa encontrada</h2><p>Não há vendas com conversa iniciada no período selecionado.</p></div></div>';
+                    : `<div class="empty-state"><div><h2>Nenhuma conversa encontrada</h2><p>${escapeHtml(todasAsLojasSelecionadas() ? 'Não há vendas com conversa iniciada nas contas conectadas neste período.' : 'Não há vendas com conversa iniciada no período selecionado.')}</p></div></div>`;
                 return;
             }
 
             state.posVendaConversas = conversas;
             posVendaList.innerHTML = conversas.map((venda, index) => {
+                const lojaOrigem = lojaOrigemItem(venda);
+                const lojaBadge = lojaOrigem
+                    ? `<span class="badge ok">Loja ${escapeHtml(lojaOrigem)}</span>`
+                    : '';
                 const itens = Array.isArray(venda.items) ? venda.items : [];
                 const itemComFoto = itens.find((item) => item.thumbnail) || itens[0] || {};
                 const foto = itemComFoto.thumbnail
@@ -2920,7 +3258,9 @@
                     : escapeHtml(venda.item_title || 'Produtos da venda');
                 const conversa = venda.conversation_status || {};
                 const conversaBadge = conversa.status === 'active' ? 'ok' : (conversa.status ? 'warn' : 'danger');
-                const active = state.posVendaConversaSelecionada && String(state.posVendaConversaSelecionada.pack_id || '') === String(venda.pack_id || '');
+                const active = state.posVendaConversaSelecionada
+                    && String(state.posVendaConversaSelecionada.pack_id || '') === String(venda.pack_id || '')
+                    && (!lojaOrigem || lojaOrigemItem(state.posVendaConversaSelecionada) === lojaOrigem);
                 const ultimaMensagem = escapeHtml(venda.last_message_text || 'Conversa iniciada sem prévia disponível.');
                 const ultimaMensagemRotulo = venda.last_message_text ? rotuloUltimaMensagem(venda) : '';
                 const ultimaMensagemCabecalho = ultimaMensagemRotulo ? `<span class="last-message-sender">Última mensagem: ${escapeHtml(ultimaMensagemRotulo)}</span>` : '';
@@ -2932,6 +3272,7 @@
                         <div class="question-top">
                             <div>
                                 <h3 class="question-title">Venda ${escapeHtml(venda.order_id || '-')}</h3>
+                                ${lojaBadge}
                                 <div class="sale-meta">
                                     <span>Pack ${escapeHtml(venda.pack_id || '-')}</span>
                                     <span>Comprador ${escapeHtml(venda.buyer_nickname || venda.buyer_id || '-')}</span>
@@ -2982,12 +3323,15 @@
             if (state.posVendaConversas.length) {
                 posVendaSummary.classList.remove('hidden');
                 if (posVendaPagination.innerHTML.trim()) posVendaPagination.classList.remove('hidden');
-                posVendaStatus.textContent = `${state.posVendaConversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`;
+                posVendaStatus.textContent = todasAsLojasSelecionadas()
+                    ? `${state.posVendaConversas.length} venda(s) com conversa iniciada nas contas conectadas.`
+                    : `${state.posVendaConversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`;
                 renderizarPosVenda(state.posVendaConversas);
             }
         }
 
         function renderizarDetalhePosVenda(conversa, mensagemStatus = '') {
+            const lojaOrigem = lojaOrigemItem(conversa);
             const mensagens = Array.isArray(conversa.messages) ? conversa.messages : [];
             const itens = Array.isArray(conversa.items) ? conversa.items : [];
             const item = itens[0] || {};
@@ -3023,13 +3367,14 @@
                 `).join('')
                 : '<div class="answer-box empty">Nenhuma mensagem anterior foi encontrada para esta conversa.</div>';
 
-            abrirPaginaDetalhePosVenda(`Conversa da venda ${conversa.order_id || conversa.pack_id || '-'} aberta.`);
+            abrirPaginaDetalhePosVenda(`Conversa da venda ${conversa.order_id || conversa.pack_id || '-'} aberta${lojaOrigem ? ` na loja ${lojaOrigem}` : ''}.`);
             posVendaDetail.classList.remove('hidden');
             posVendaDetail.innerHTML = `
                 <div class="pos-sale-detail-head">
                     <div>
                         <h3>${escapeHtml(titulo)}</h3>
                         <div class="sale-meta">
+                            ${lojaOrigem ? `<span>Loja ${escapeHtml(lojaOrigem)}</span>` : ''}
                             <span>Pack ${escapeHtml(conversa.pack_id || '-')}</span>
                             <span>Pedido ${escapeHtml(conversa.order_id || '-')}</span>
                             <span>SKU ${escapeHtml(item.sku || '-')}</span>
@@ -3082,6 +3427,11 @@
 
         async function abrirConversaPosVenda(venda) {
             if (!venda || state.posVendaDetalheCarregando) return;
+            const lojaConversa = lojaOrigemItem(venda) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
+            if (!lojaConversa) {
+                posVendaStatus.textContent = 'Não foi possível identificar a loja desta conversa.';
+                return;
+            }
             state.posVendaConversaSelecionada = venda;
             abrirPaginaDetalhePosVenda('Carregando histórico completo da conversa...');
             renderizarPosVenda(state.posVendaConversas);
@@ -3089,7 +3439,7 @@
             state.posVendaDetalheCarregando = true;
             try {
                 const params = new URLSearchParams({
-                    loja: state.lojaSelecionada,
+                    loja: lojaConversa,
                     pack_id: String(venda.pack_id || '')
                 });
                 if (venda.order_id) params.set('order_id', String(venda.order_id));
@@ -3099,7 +3449,7 @@
                 });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(data.detail || 'Erro ao carregar conversa.');
-                const conversa = data.conversa || {};
+                const conversa = anexarLojaOrigem(data.conversa || {}, lojaConversa);
                 state.posVendaConversaSelecionada = conversa;
                 state.posVendaDetalheCarregando = false;
                 renderizarPosVenda(state.posVendaConversas);
@@ -3113,6 +3463,11 @@
 
         async function gerarRespostaIaPosVenda(conversa, textarea, botaoIa, botaoEnviar, status) {
             if (!conversa || !textarea || !botaoIa) return;
+            const lojaConversa = lojaOrigemItem(conversa) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
+            if (!lojaConversa) {
+                status.textContent = 'Não foi possível identificar a loja desta conversa.';
+                return;
+            }
             botaoIa.disabled = true;
             if (botaoEnviar) botaoEnviar.disabled = true;
             status.textContent = 'Gerando resposta com IA...';
@@ -3124,7 +3479,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        loja: String(state.lojaSelecionada || ''),
+                        loja: lojaConversa,
                         pack_id: String(conversa.pack_id || ''),
                         order_id: String(conversa.order_id || ''),
                         buyer_id: String(conversa.buyer_id || ''),
@@ -3147,6 +3502,11 @@
         async function enviarRespostaPosVenda(conversa, textarea, botao, status) {
             const texto = String(textarea.value || '').trim();
             if (!texto) return;
+            const lojaConversa = lojaOrigemItem(conversa) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
+            if (!lojaConversa) {
+                status.textContent = 'Não foi possível identificar a loja desta conversa.';
+                return;
+            }
             botao.disabled = true;
             status.textContent = 'Enviando resposta ao Mercado Livre...';
             try {
@@ -3157,7 +3517,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        loja: String(state.lojaSelecionada || ''),
+                        loja: lojaConversa,
                         pack_id: String(conversa.pack_id || ''),
                         order_id: String(conversa.order_id || ''),
                         buyer_id: String(conversa.buyer_id || ''),
@@ -3169,7 +3529,7 @@
                 if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
                 textarea.value = '';
                 status.textContent = 'Resposta enviada. Atualizando conversa...';
-                await abrirConversaPosVenda(conversa);
+                await abrirConversaPosVenda(anexarLojaOrigem(conversa, lojaConversa));
                 carregarPosVenda(true);
             } catch (error) {
                 status.textContent = `Erro ao enviar resposta: ${mensagemErro(error)}`;
@@ -3180,25 +3540,33 @@
         function renderizarDadosPosVenda(data, origemCache = false) {
             const conversas = Array.isArray(data.conversas) ? data.conversas : [];
             const busca = obterBuscaPosVenda();
+            const rotuloEscopo = rotuloEscopoSelecionado();
             posVendaStatus.textContent = origemCache
-                ? `Exibindo informações salvas de ${state.lojaSelecionada}. Atualizando pela API...`
-                : (busca
-                    ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em ${state.lojaSelecionada}.`
-                    : data.interrompido
-                    ? `${conversas.length} venda(s) com conversa. A consulta foi limitada às vendas mais recentes.`
-                    : `${conversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`);
+                ? `Exibindo informações salvas de ${rotuloEscopo}. Atualizando pela API...`
+                : data.modo_todas
+                    ? (busca
+                        ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em todas as contas.`
+                        : `${conversas.length} venda(s) nesta página, de ${Number(data.conversas_total || conversas.length || 0)} conversa(s) carregada(s) em ${Number(data.lojas_consultadas || 0)} conta(s).`)
+                    : (busca
+                        ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em ${state.lojaSelecionada}.`
+                        : data.interrompido
+                        ? `${conversas.length} venda(s) com conversa. A consulta foi limitada às vendas mais recentes.`
+                        : `${conversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`);
             renderizarResumoPosVenda(data);
             renderizarPosVenda(conversas);
             renderizarPaginacaoPosVenda(data, conversas);
             if (state.posVendaModoDetalhe) {
-                abrirPaginaDetalhePosVenda(`Conversa da venda ${state.posVendaConversaSelecionada?.order_id || state.posVendaConversaSelecionada?.pack_id || '-'} aberta.`);
+                const lojaDetalhe = lojaOrigemItem(state.posVendaConversaSelecionada);
+                abrirPaginaDetalhePosVenda(`Conversa da venda ${state.posVendaConversaSelecionada?.order_id || state.posVendaConversaSelecionada?.pack_id || '-'} aberta${lojaDetalhe ? ` na loja ${lojaDetalhe}` : ''}.`);
             }
         }
 
         async function carregarPosVenda(forcar = false) {
             if (!state.lojaSelecionada || state.carregandoPosVenda) return;
             const busca = obterBuscaPosVenda();
-            const chave = `${state.lojaSelecionada}:${posVendaDias.value}:${state.posVendaOffset}:${busca.toLowerCase()}`;
+            const chave = todasAsLojasSelecionadas()
+                ? `${TODAS_LOJAS_VALUE}:${posVendaDias.value}:${state.posVendaPagina}:${busca.toLowerCase()}`
+                : `${state.lojaSelecionada}:${posVendaDias.value}:${state.posVendaOffset}:${busca.toLowerCase()}`;
             const cacheLocal = carregarCachePosVenda();
             if (!forcar && state.posVendaCarregadoPara === chave && !cacheLocal) return;
 
@@ -3212,11 +3580,18 @@
                 posVendaPagination.classList.add('hidden');
                 posVendaPagination.innerHTML = '';
                 posVendaStatus.textContent = busca
-                    ? `Buscando "${busca}" nas vendas com conversa de ${state.lojaSelecionada}...`
-                    : `Carregando página ${state.posVendaPagina} de vendas com conversa de ${state.lojaSelecionada}...`;
+                    ? `Buscando "${busca}" nas vendas com conversa de ${rotuloEscopoSelecionado()}...`
+                    : `Carregando página ${state.posVendaPagina} de vendas com conversa de ${rotuloEscopoSelecionado()}...`;
             }
 
             try {
+                if (todasAsLojasSelecionadas()) {
+                    const dataTodas = await carregarPosVendaTodasLojas(busca);
+                    salvarCachePosVenda(dataTodas);
+                    renderizarDadosPosVenda(dataTodas, false);
+                    state.posVendaCarregadoPara = chave;
+                    return;
+                }
                 const params = new URLSearchParams({
                     loja: state.lojaSelecionada,
                     dias: posVendaDias.value,
