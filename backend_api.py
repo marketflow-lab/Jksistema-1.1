@@ -1504,6 +1504,7 @@ class SalaReuniaoCriarSalaRequest(BaseModel):
     privacidade: str | None = "public"
     expira_em_minutos: int | None = 120
     duracao_maxima_minutos: int | None = None
+    limitar_participantes: bool | None = False
     max_participantes: int | None = 12
     idioma: str | None = "pt-BR"
     iniciar_audio_desligado: bool | None = True
@@ -1536,6 +1537,14 @@ class SalaReuniaoCriarSalaRequest(BaseModel):
     nome_host: str | None = "Anfitriao JK Sistema"
     auto_iniciar_gravacao: bool | None = False
     auto_iniciar_transcricao: bool | None = False
+
+
+class SalaReuniaoUsoAdicionarRequest(BaseModel):
+    room_name: str | None = None
+    room_url: str | None = None
+    participant_seconds: float | None = 0
+    participant_count: int | None = None
+    reason: str | None = None
 
 
 class SiscomexConfigRequest(BaseModel):
@@ -47488,12 +47497,287 @@ def _sala_reuniao_url_com_token(room_url: Optional[str], token: Optional[str]) -
     return f"{room_url}{separador}t={quote(str(token), safe='')}"
 
 
+SALA_REUNIAO_FREE_PARTICIPANT_MINUTES = 10000
+
+
+def _sala_reuniao_uso_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "sala_reuniao_uso.json")
+
+
+def _sala_reuniao_mes_atual() -> str:
+    return datetime.now().strftime("%Y-%m")
+
+
+def _sala_reuniao_proximo_reset(month_key: Optional[str] = None) -> str:
+    try:
+        ano, mes = [int(parte) for parte in str(month_key or _sala_reuniao_mes_atual()).split("-", 1)]
+        if mes == 12:
+            ano += 1
+            mes = 1
+        else:
+            mes += 1
+        return datetime(ano, mes, 1).date().isoformat()
+    except Exception:
+        hoje = datetime.now()
+        proximo = datetime(hoje.year + (1 if hoje.month == 12 else 0), 1 if hoje.month == 12 else hoje.month + 1, 1)
+        return proximo.date().isoformat()
+
+
+def _sala_reuniao_carregar_uso(client_id: str) -> dict[str, Any]:
+    path = _sala_reuniao_uso_path(client_id)
+    if not os.path.exists(path):
+        return {"months": {}}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            payload = json.load(fh)
+        if isinstance(payload, dict):
+            months = payload.get("months")
+            if isinstance(months, dict):
+                return payload
+    except Exception:
+        logger.exception("Erro ao carregar uso mensal da sala de reuniao")
+    return {"months": {}}
+
+
+def _sala_reuniao_salvar_uso(client_id: str, payload: dict[str, Any]) -> None:
+    path = _sala_reuniao_uso_path(client_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+
+def _sala_reuniao_resumo_uso(client_id: str) -> dict[str, Any]:
+    month_key = _sala_reuniao_mes_atual()
+    payload = _sala_reuniao_carregar_uso(client_id)
+    months = payload.setdefault("months", {})
+    month_data = months.setdefault(month_key, {"participant_seconds": 0.0, "events": []})
+    seconds = max(0.0, float(month_data.get("participant_seconds") or 0))
+    minutes = seconds / 60.0
+    limit = float(SALA_REUNIAO_FREE_PARTICIPANT_MINUTES)
+    return {
+        "month": month_key,
+        "participant_seconds": round(seconds, 3),
+        "participant_minutes": round(minutes, 3),
+        "free_participant_minutes": SALA_REUNIAO_FREE_PARTICIPANT_MINUTES,
+        "remaining_participant_minutes": round(max(0.0, limit - minutes), 3),
+        "percent_used": round(min(100.0, (minutes / limit) * 100.0), 2) if limit else 0,
+        "resets_at": _sala_reuniao_proximo_reset(month_key),
+        "updated_at": month_data.get("updated_at"),
+        "events": month_data.get("events") or [],
+    }
+
+
+def _sala_reuniao_adicionar_uso(client_id: str, req: SalaReuniaoUsoAdicionarRequest) -> dict[str, Any]:
+    seconds = max(0.0, float(req.participant_seconds or 0))
+    seconds = min(seconds, 60 * 60 * 24 * 500)
+    payload = _sala_reuniao_carregar_uso(client_id)
+    months = payload.setdefault("months", {})
+    month_key = _sala_reuniao_mes_atual()
+    month_data = months.setdefault(month_key, {"participant_seconds": 0.0, "events": []})
+    month_data["participant_seconds"] = max(0.0, float(month_data.get("participant_seconds") or 0)) + seconds
+    month_data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    events = month_data.setdefault("events", [])
+    if not isinstance(events, list):
+        events = []
+    if seconds > 0:
+        events.append({
+            "created_at": month_data["updated_at"],
+            "room_name": (req.room_name or "")[:160],
+            "room_url": (req.room_url or "")[:300],
+            "participant_seconds": round(seconds, 3),
+            "participant_minutes": round(seconds / 60.0, 3),
+            "participant_count": req.participant_count,
+            "reason": (req.reason or "")[:80],
+        })
+        month_data["events"] = events[-60:]
+    payload["updated_at"] = month_data["updated_at"]
+    _sala_reuniao_salvar_uso(client_id, payload)
+    return _sala_reuniao_resumo_uso(client_id)
+
+
+def _sala_reuniao_salas_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "sala_reuniao_salas.json")
+
+
+def _sala_reuniao_carregar_salas(client_id: str) -> dict[str, Any]:
+    path = _sala_reuniao_salas_path(client_id)
+    if not os.path.exists(path):
+        return {"rooms": []}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            payload = json.load(fh)
+        if isinstance(payload, dict) and isinstance(payload.get("rooms"), list):
+            return payload
+    except Exception:
+        logger.exception("Erro ao carregar salas de reuniao")
+    return {"rooms": []}
+
+
+def _sala_reuniao_salvar_salas(client_id: str, payload: dict[str, Any]) -> None:
+    path = _sala_reuniao_salas_path(client_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+
+def _sala_reuniao_domain_host() -> str:
+    domain = str(os.getenv("DAILY_DOMAIN") or os.getenv("JK_DAILY_DOMAIN") or "").strip()
+    if not domain:
+        return ""
+    if domain.startswith(("http://", "https://")):
+        try:
+            domain = urlparse(domain).hostname or ""
+        except Exception:
+            domain = ""
+    domain = domain.strip().strip("/")
+    if domain and "." not in domain:
+        domain = f"{domain}.daily.co"
+    return domain
+
+
+def _sala_reuniao_room_url(room_name: str, known_url: str = "") -> str:
+    known_url = str(known_url or "").strip()
+    if known_url:
+        return known_url
+    domain = _sala_reuniao_domain_host()
+    if not domain:
+        return ""
+    room_name = str(room_name or "").strip()
+    if not room_name:
+        return ""
+    return f"https://{domain}/{quote(room_name, safe='A-Za-z0-9_-')}"
+
+
+def _sala_reuniao_iso_from_timestamp(value: Any) -> str:
+    try:
+        ts = float(value)
+        if ts > 100000000000:
+            ts = ts / 1000.0
+        return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+    except Exception:
+        return ""
+
+
+def _sala_reuniao_participant_count(participants: Any) -> int:
+    if isinstance(participants, list):
+        return len(participants)
+    if isinstance(participants, dict):
+        for key in ("count", "total", "present"):
+            try:
+                if key in participants:
+                    return max(0, int(participants.get(key) or 0))
+            except Exception:
+                pass
+        return len(participants)
+    return 0
+
+
+def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_token: Optional[str], exp_timestamp: int) -> None:
+    room_name = str(room.get("name") or "").strip()
+    room_url = str(room.get("url") or "").strip()
+    if not room_name and not room_url:
+        return
+    payload = _sala_reuniao_carregar_salas(client_id)
+    rooms = payload.setdefault("rooms", [])
+    if not isinstance(rooms, list):
+        rooms = []
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    rooms = [item for item in rooms if str(item.get("name") or "") != room_name]
+    rooms.append({
+        "name": room_name,
+        "url": room_url,
+        "host_url": _sala_reuniao_url_com_token(room_url, host_token),
+        "privacy": room.get("privacy") or "public",
+        "expires_at": datetime.utcfromtimestamp(exp_timestamp).isoformat() + "Z",
+        "expires_at_ts": int(exp_timestamp),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    })
+    now_ts = int(time.time())
+    rooms = [
+        item for item in rooms[-120:]
+        if int(item.get("expires_at_ts") or 0) <= 0 or int(item.get("expires_at_ts") or 0) > now_ts
+    ]
+    payload["rooms"] = rooms
+    payload["updated_at"] = now_iso
+    _sala_reuniao_salvar_salas(client_id, payload)
+
+
+def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
+    now_ts = int(time.time())
+    payload = _sala_reuniao_carregar_salas(client_id)
+    by_name: dict[str, dict[str, Any]] = {}
+    for item in payload.get("rooms") or []:
+        try:
+            exp_ts = int(item.get("expires_at_ts") or 0)
+        except Exception:
+            exp_ts = 0
+        if exp_ts and exp_ts <= now_ts:
+            continue
+        name = str(item.get("name") or "").strip()
+        url = _sala_reuniao_room_url(name, item.get("url") or "")
+        if not name and not url:
+            continue
+        key = name or url
+        by_name[key] = {
+            "name": name,
+            "url": url,
+            "host_url": item.get("host_url") or "",
+            "privacy": item.get("privacy") or "public",
+            "expires_at": item.get("expires_at") or "",
+            "created_at": item.get("created_at") or "",
+            "participants_count": 0,
+            "ongoing": False,
+            "status": "Aberta",
+            "source": "local",
+        }
+
+    warning = ""
+    api_key = _sala_reuniao_daily_api_key()
+    if api_key:
+        try:
+            data = _sala_reuniao_daily_get("/meetings", api_key, {
+                "ongoing": "true",
+                "limit": 50,
+            })
+            for meeting in data.get("data") or []:
+                if not isinstance(meeting, dict):
+                    continue
+                name = str(meeting.get("room") or meeting.get("room_name") or "").strip()
+                if not name:
+                    continue
+                current = by_name.get(name, {})
+                participants_count = _sala_reuniao_participant_count(meeting.get("participants"))
+                current.update({
+                    "name": name,
+                    "url": _sala_reuniao_room_url(name, current.get("url") or ""),
+                    "host_url": current.get("host_url") or "",
+                    "privacy": current.get("privacy") or "public",
+                    "participants_count": participants_count,
+                    "ongoing": bool(meeting.get("ongoing", True)),
+                    "status": "Em andamento",
+                    "source": "daily",
+                    "meeting_id": meeting.get("id") or "",
+                    "started_at": _sala_reuniao_iso_from_timestamp(meeting.get("start_time")),
+                    "duration_seconds": meeting.get("duration") or 0,
+                })
+                by_name[name] = current
+        except HTTPException as exc:
+            warning = str(exc.detail or "Nao foi possivel consultar reunioes ativas na Daily.")
+
+    rooms = list(by_name.values())
+    rooms.sort(key=lambda item: (
+        0 if item.get("ongoing") else 1,
+        str(item.get("started_at") or item.get("created_at") or ""),
+    ), reverse=False)
+    return {"rooms": rooms, "warning": warning}
+
+
 def _sala_reuniao_criar_token_host(
     api_key: str,
     room_name: str,
     req: SalaReuniaoCriarSalaRequest,
     exp_timestamp: int,
-    recording_mode: str,
     idioma: str,
 ) -> dict[str, Any]:
     nome_host = str(req.nome_host or "Anfitriao JK Sistema").strip() or "Anfitriao JK Sistema"
@@ -47504,19 +47788,16 @@ def _sala_reuniao_criar_token_host(
         "exp": exp_timestamp,
         "eject_at_token_exp": True,
         "enable_screenshare": _sala_reuniao_bool(req.habilitar_compartilhar_tela, True),
-        "enable_recording_ui": bool(recording_mode),
+        "enable_recording_ui": False,
         "enable_prejoin_ui": _sala_reuniao_bool(req.habilitar_prejoin, True),
-        "enable_live_captions_ui": _sala_reuniao_bool(req.habilitar_legendas, True),
+        "enable_live_captions_ui": False,
         "start_audio_off": _sala_reuniao_bool(req.iniciar_audio_desligado, True),
         "start_video_off": _sala_reuniao_bool(req.iniciar_video_desligado, True),
         "lang": idioma,
     }
-    if recording_mode:
-        properties["enable_recording"] = recording_mode
-    if recording_mode == "cloud" and _sala_reuniao_bool(req.auto_iniciar_gravacao, False):
-        properties["start_cloud_recording"] = True
-    if _sala_reuniao_bool(req.auto_iniciar_transcricao, False):
-        properties["auto_start_transcription"] = True
+    if req.duracao_maxima_minutos:
+        duracao = max(5, min(int(req.duracao_maxima_minutos), 480))
+        properties["eject_after_elapsed"] = duracao * 60
     return _sala_reuniao_daily_post("/meeting-tokens", api_key, {"properties": properties})
 
 
@@ -47533,13 +47814,26 @@ async def sala_reuniao_status(_client_id: str = Depends(get_tenant_id)):
             "token_host": True,
             "compartilhar_tela": True,
             "chat": True,
-            "gravacao": True,
-            "transcricao": True,
-            "live_streaming": True,
-            "legendas": True,
+            "gravacao": False,
+            "transcricao": False,
+            "live_streaming": False,
+            "legendas": False,
             "sala_espera": True,
             "salas_grupo": True,
+            "dialout": False,
+            "limite_manual_participantes": False,
+            "chamadas_grandes": False,
+            "cancelamento_ruido": False,
         },
+        "recursos_pagos_removidos": [
+            "gravacao_cloud",
+            "transcricao",
+            "live_rtmp",
+            "dialout",
+            "limite_manual_participantes",
+            "chamadas_grandes",
+            "cancelamento_ruido",
+        ],
     }
 
 
@@ -47552,16 +47846,12 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
 
     privacidade = _sala_reuniao_privacidade(req.privacidade)
     idioma = _sala_reuniao_idioma(req.idioma)
-    recording_mode = _sala_reuniao_modo_gravacao(req.modo_gravacao)
     expira_em = int(req.expira_em_minutos or 120)
     expira_em = max(15, min(expira_em, 480))
-    max_participantes = int(req.max_participantes or 12)
-    max_participantes = max(2, min(max_participantes, 200))
     exp_timestamp = int(time.time()) + (expira_em * 60)
     nome_sala = _sala_reuniao_daily_room_name(req.nome)
     properties: dict[str, Any] = {
         "exp": exp_timestamp,
-        "max_participants": max_participantes,
         "enable_prejoin_ui": _sala_reuniao_bool(req.habilitar_prejoin, True),
         "enable_knocking": _sala_reuniao_bool(req.habilitar_sala_espera, False),
         "enable_screenshare": _sala_reuniao_bool(req.habilitar_compartilhar_tela, True),
@@ -47573,25 +47863,23 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
         "enable_emoji_reactions": _sala_reuniao_bool(req.habilitar_reacoes, True),
         "enable_pip_ui": _sala_reuniao_bool(req.habilitar_pip, True),
         "enable_network_ui": _sala_reuniao_bool(req.habilitar_rede, True),
-        "enable_live_captions_ui": _sala_reuniao_bool(req.habilitar_legendas, True),
-        "enable_noise_cancellation_ui": _sala_reuniao_bool(req.habilitar_cancelamento_ruido, True),
+        "enable_live_captions_ui": False,
+        "enable_noise_cancellation_ui": False,
         "enable_video_processing_ui": _sala_reuniao_bool(req.habilitar_fundo_virtual, True),
         "enable_breakout_rooms": _sala_reuniao_bool(req.habilitar_salas_grupo, False),
         "enable_cpu_warning_notifications": _sala_reuniao_bool(req.habilitar_alerta_cpu, True),
-        "enable_hidden_participants": _sala_reuniao_bool(req.habilitar_participantes_ocultos, False),
-        "experimental_optimize_large_calls": _sala_reuniao_bool(req.habilitar_chamadas_grandes, False),
-        "enable_adaptive_simulcast": _sala_reuniao_bool(req.habilitar_simulcast_adaptativo, False),
-        "enable_multiparty_adaptive_simulcast": _sala_reuniao_bool(req.habilitar_simulcast_adaptativo, False),
+        "enable_hidden_participants": False,
+        "experimental_optimize_large_calls": False,
+        "enable_adaptive_simulcast": False,
+        "enable_multiparty_adaptive_simulcast": False,
         "enforce_unique_user_ids": _sala_reuniao_bool(req.exigir_user_id_unico, False),
-        "enable_terse_logging": _sala_reuniao_bool(req.habilitar_log_reduzido, False),
-        "enable_dialout": _sala_reuniao_bool(req.habilitar_dialout, False),
+        "enable_terse_logging": False,
+        "enable_dialout": False,
         "eject_at_room_exp": _sala_reuniao_bool(req.ejetar_na_expiracao, False),
         "lang": idioma,
         "start_audio_off": _sala_reuniao_bool(req.iniciar_audio_desligado, True),
         "start_video_off": _sala_reuniao_bool(req.iniciar_video_desligado, True),
     }
-    if recording_mode:
-        properties["enable_recording"] = recording_mode
     if req.duracao_maxima_minutos:
         duracao = max(5, min(int(req.duracao_maxima_minutos), 480))
         properties["eject_after_elapsed"] = duracao * 60
@@ -47606,9 +47894,14 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
     host_token = None
     token_data: dict[str, Any] = {}
     if _sala_reuniao_bool(req.criar_token_host, True):
-        token_data = _sala_reuniao_criar_token_host(api_key, data.get("name") or nome_sala, req, exp_timestamp, recording_mode, idioma)
+        token_data = _sala_reuniao_criar_token_host(api_key, data.get("name") or nome_sala, req, exp_timestamp, idioma)
         host_token = token_data.get("token")
     room_url = data.get("url")
+    _sala_reuniao_registrar_sala(_client_id, {
+        "name": data.get("name") or nome_sala,
+        "url": room_url,
+        "privacy": data.get("privacy") or privacidade,
+    }, host_token, exp_timestamp)
     return {
         "success": True,
         "room": {
@@ -47622,6 +47915,48 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
         },
         "host_token": host_token,
         "token": token_data,
+    }
+
+
+@app.get("/api/sala-reuniao/reunioes-ativas")
+async def sala_reuniao_reunioes_ativas(_client_id: str = Depends(get_tenant_id)):
+    """Lista salas abertas e sessoes em andamento para a tela inicial do modulo."""
+    data = _sala_reuniao_listar_reunioes_ativas(_client_id)
+    return {
+        "success": True,
+        "daily_configurado": bool(_sala_reuniao_daily_api_key()),
+        "rooms": data.get("rooms") or [],
+        "warning": data.get("warning") or "",
+    }
+
+
+@app.get("/api/sala-reuniao/salas-ativas")
+async def sala_reuniao_salas_ativas_alias(_client_id: str = Depends(get_tenant_id)):
+    """Alias de compatibilidade para listar reunioes ativas."""
+    return await sala_reuniao_reunioes_ativas(_client_id)
+
+
+@app.get("/api/sala-reuniao/salas")
+async def sala_reuniao_salas_listar(_client_id: str = Depends(get_tenant_id)):
+    """Alias GET para listar salas ativas sem conflitar com o POST de criacao."""
+    return await sala_reuniao_reunioes_ativas(_client_id)
+
+
+@app.get("/api/sala-reuniao/uso-mensal")
+async def sala_reuniao_uso_mensal(_client_id: str = Depends(get_tenant_id)):
+    """Retorna o uso estimado em participant-minutes da sala de reuniao no mes atual."""
+    return {
+        "success": True,
+        "usage": _sala_reuniao_resumo_uso(_client_id),
+    }
+
+
+@app.post("/api/sala-reuniao/uso-mensal/adicionar")
+async def sala_reuniao_uso_mensal_adicionar(req: SalaReuniaoUsoAdicionarRequest, _client_id: str = Depends(get_tenant_id)):
+    """Acumula participant-seconds estimados pela interface durante uma chamada."""
+    return {
+        "success": True,
+        "usage": _sala_reuniao_adicionar_uso(_client_id, req),
     }
 
 

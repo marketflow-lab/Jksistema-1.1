@@ -210,6 +210,38 @@
                 return {};
             }
 
+            function solicitarAberturaExternaViaShell(url) {
+                return new Promise((resolve) => {
+                    if (!window.top || window.top === window || typeof window.top.postMessage !== 'function') {
+                        resolve(false);
+                        return;
+                    }
+
+                    const requestId = `jk-auth-open-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const timer = setTimeout(() => {
+                        window.removeEventListener('message', receberResposta);
+                        resolve(false);
+                    }, 1800);
+
+                    function receberResposta(event) {
+                        const data = event && event.data ? event.data : {};
+                        if (!data || data.channel !== 'jk-open-external-chrome-result' || data.requestId !== requestId) {
+                            return;
+                        }
+                        clearTimeout(timer);
+                        window.removeEventListener('message', receberResposta);
+                        resolve(!!data.success);
+                    }
+
+                    window.addEventListener('message', receberResposta);
+                    window.top.postMessage({
+                        channel: 'jk-open-external-chrome',
+                        requestId,
+                        payload: { url }
+                    }, '*');
+                });
+            }
+
             async function abrirUrlAutenticacao(authUrl) {
                 const url = String(authUrl || '').trim();
                 if (!url) {
@@ -223,6 +255,10 @@
                     } catch (err) {
                         console.warn('Falha ao abrir autenticacao no navegador externo:', err && err.message ? err.message : err);
                     }
+                }
+
+                if (await solicitarAberturaExternaViaShell(url)) {
+                    return true;
                 }
 
                 const popup = window.open(url, '_blank', 'noopener,noreferrer');

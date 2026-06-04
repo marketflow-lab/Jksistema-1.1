@@ -1621,6 +1621,30 @@
       return `${user}|${client}`;
     }
 
+    function _msgFormatarHorarioVisto(raw) {
+      const texto = String(raw || '').trim();
+      if (!texto) return '';
+      const data = new Date(texto.replace(' ', 'T'));
+      if (Number.isNaN(data.getTime())) return texto;
+      const agora = new Date();
+      const mesmoDia = data.getFullYear() === agora.getFullYear()
+        && data.getMonth() === agora.getMonth()
+        && data.getDate() === agora.getDate();
+      return mesmoDia
+        ? data.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+        : data.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function _msgStatusUsuarioTexto(user) {
+      if (user && user.online !== false) return 'Online';
+      const direto = String(user && user.last_seen_at || '').trim();
+      const maquina = Array.isArray(user && user.all_recent_machines) && user.all_recent_machines[0]
+        ? String(user.all_recent_machines[0].last_seen_at || '').trim()
+        : '';
+      const visto = _msgFormatarHorarioVisto(direto || maquina);
+      return visto ? `Offline - visto ${visto}` : 'Offline';
+    }
+
     function _msgRenderVazio(el, texto) {
       if (!el) return;
       el.innerHTML = '';
@@ -2131,8 +2155,9 @@
         info.className = 'jk-msg-user-info';
         const name = document.createElement('span');
         name.className = 'jk-msg-user-name';
-        const statusUsuario = user.online === false ? 'Offline' : 'Online';
+        const statusUsuario = _msgStatusUsuarioTexto(user);
         name.textContent = `${_msgLabelUsuario(user)}${isSelf ? ' (voce)' : ''} - ${statusUsuario}`;
+        name.title = name.textContent;
         const meta = document.createElement('span');
         meta.className = 'jk-msg-user-meta';
         meta.textContent = statusUsuario;

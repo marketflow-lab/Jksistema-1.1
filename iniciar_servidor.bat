@@ -3,14 +3,18 @@ setlocal
 TITLE JK Sistema Backend
 cd /d "%~dp0"
 
-REM Callback publico usado no OAuth do Mercado Livre quando o app esta no ngrok.
-set "JK_REDIRECT_URI=https://mournful-clinic-helping.ngrok-free.dev/auth/callback"
+REM Callback publico usado no OAuth local. O Firebase Hosting redireciona de volta para 127.0.0.1:8001.
+set "JK_REDIRECT_URI=https://jkjkjk-485920.web.app/auth/callback"
+set "JK_BLING_REDIRECT_URI=https://jkjkjk-485920.web.app/auth/callback"
+set "GOOGLE_LOGIN_REDIRECT_URI_LOCAL=https://jkjkjk-485920.web.app/auth/google/callback"
 
 echo ==========================================
 echo   INICIANDO SERVIDOR JK SISTEMA (FASTAPI)
 echo ==========================================
 echo.
 echo Mercado Livre OAuth callback: %JK_REDIRECT_URI%
+echo Bling OAuth callback: %JK_BLING_REDIRECT_URI%
+echo Google OAuth local callback: %GOOGLE_LOGIN_REDIRECT_URI_LOCAL%
 echo.
 
 echo 0. Limpando processos antigos do JK Sistema...

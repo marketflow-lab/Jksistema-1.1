@@ -1211,7 +1211,8 @@ function writeLocalBackendLauncher(localAppDir) {
     const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
     const logPath = path.join(localAppDir, 'logs', 'local_backend.log');
     const depsMarker = `.venv\\.jk_deps_${sanitizeMarkerVersion(app.getVersion())}.ok`;
-    const localCallback = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`;
+    const localCallback = process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback';
+    const localGoogleCallback = process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback';
     const pythonRuntimeDir = '.python-runtime';
     const lines = [
         '@echo off',
@@ -1223,6 +1224,7 @@ function writeLocalBackendLauncher(localAppDir) {
         `set "JK_INFO_DIR=${cmdValue(infoDir)}"`,
         `set "JK_REDIRECT_URI=${localCallback}"`,
         `set "JK_BLING_REDIRECT_URI=${localCallback}"`,
+        `set "GOOGLE_LOGIN_REDIRECT_URI_LOCAL=${localGoogleCallback}"`,
         `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
         `set "JK_APP_VERSION=${cmdValue(app.getVersion())}"`,
         'set "IA_RAG_ENABLED=true"',
@@ -1352,8 +1354,9 @@ function ensureLocalBackendStarted() {
                 ...process.env,
                 ...firebaseEnv,
                 JK_INFO_DIR: path.join(localAppDir, 'info'),
-                JK_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
-                JK_BLING_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
+                JK_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
+                JK_BLING_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
+                GOOGLE_LOGIN_REDIRECT_URI_LOCAL: process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback',
                 PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
                 JK_APP_VERSION: app.getVersion(),
                 IA_RAG_ENABLED: 'true',
@@ -2458,6 +2461,27 @@ function openMercadoLivreAdInChrome(targetUrl) {
     });
 }
 
+function isOAuthExternalAuthUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        const host = url.hostname.toLowerCase();
+        const pathAndQuery = `${url.pathname}${url.search}`.toLowerCase();
+        if ((host === 'www.bling.com.br' || host === 'bling.com.br') && pathAndQuery.includes('/api/v3/oauth/authorize')) {
+            return true;
+        }
+        return (host === 'auth.mercadolivre.com.br' || host === 'auth.mercadolibre.com' || host.endsWith('.mercadolibre.com'))
+            && pathAndQuery.includes('/authorization');
+    } catch (_err) {
+        return false;
+    }
+}
+
+function openOAuthExternalAuthInChrome(targetUrl) {
+    openUrlInGoogleChrome(targetUrl).catch((err) => {
+        console.error('Falha ao abrir autenticacao OAuth no Chrome:', err && err.message ? err.message : err);
+    });
+}
+
 function normalizeMlText(value) {
     return String(value || '')
         .replace(/\\u002F/g, '/')
@@ -3281,6 +3305,11 @@ app.whenReady().then(async () => {
                 logElectronLifecycle('blocked-automation-navigation', { url });
                 return;
             }
+            if (isOAuthExternalAuthUrl(url)) {
+                event.preventDefault();
+                openOAuthExternalAuthInChrome(url);
+                return;
+            }
             if (isMercadoLivreAdUrl(url) && !contents.__jkAllowMlAdNavigation) {
                 event.preventDefault();
                 openMercadoLivreAdInChrome(url);
@@ -3303,6 +3332,11 @@ app.whenReady().then(async () => {
                 logElectronLifecycle('blocked-automation-frame-navigation', { url });
                 return;
             }
+            if (isOAuthExternalAuthUrl(url)) {
+                event.preventDefault();
+                openOAuthExternalAuthInChrome(url);
+                return;
+            }
             if (!isAllowedNavigationUrl(url)) {
                 event.preventDefault();
             }
@@ -3316,6 +3350,10 @@ app.whenReady().then(async () => {
                 }
                 if (isBlockedAutomationPopupUrl(url)) {
                     logElectronLifecycle('blocked-automation-popup', { url });
+                    return { action: 'deny' };
+                }
+                if (isOAuthExternalAuthUrl(url)) {
+                    openOAuthExternalAuthInChrome(url);
                     return { action: 'deny' };
                 }
                 if (isMercadoLivreAdUrl(url) && !contents.__jkAllowMlAdNavigation) {

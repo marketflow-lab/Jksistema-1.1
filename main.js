@@ -707,6 +707,27 @@ function openMercadoLivreAdInChrome(targetUrl) {
     });
 }
 
+function isOAuthExternalAuthUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        const host = url.hostname.toLowerCase();
+        const pathAndQuery = `${url.pathname}${url.search}`.toLowerCase();
+        if ((host === 'www.bling.com.br' || host === 'bling.com.br') && pathAndQuery.includes('/api/v3/oauth/authorize')) {
+            return true;
+        }
+        return (host === 'auth.mercadolivre.com.br' || host === 'auth.mercadolibre.com' || host.endsWith('.mercadolibre.com'))
+            && pathAndQuery.includes('/authorization');
+    } catch (_err) {
+        return false;
+    }
+}
+
+function openOAuthExternalAuthInChrome(targetUrl) {
+    openUrlInGoogleChrome(targetUrl).catch((err) => {
+        console.error('Falha ao abrir autenticacao OAuth no Chrome:', err && err.message ? err.message : err);
+    });
+}
+
 function isAllowedNavigationUrl(targetUrl) {
     const value = String(targetUrl || '').trim();
     if (!value) return true;
@@ -1296,6 +1317,11 @@ app.whenReady().then(async () => {
     app.on('web-contents-created', (_event, contents) => {
         contents.on('will-navigate', (event, urlOrDetails) => {
             const url = getNavigationEventUrl(urlOrDetails);
+            if (isOAuthExternalAuthUrl(url)) {
+                event.preventDefault();
+                openOAuthExternalAuthInChrome(url);
+                return;
+            }
             if (isMercadoLivreAdUrl(url) && !contents.__jkAllowMlAdNavigation) {
                 event.preventDefault();
                 openMercadoLivreAdInChrome(url);
@@ -1308,6 +1334,11 @@ app.whenReady().then(async () => {
 
         contents.on('will-frame-navigate', (event, urlOrDetails, maybeDetails) => {
             const url = getNavigationEventUrl(urlOrDetails, maybeDetails);
+            if (isOAuthExternalAuthUrl(url)) {
+                event.preventDefault();
+                openOAuthExternalAuthInChrome(url);
+                return;
+            }
             if (!isAllowedNavigationUrl(url)) {
                 event.preventDefault();
             }
@@ -1315,6 +1346,10 @@ app.whenReady().then(async () => {
 
         if (typeof contents.setWindowOpenHandler === 'function') {
             contents.setWindowOpenHandler(({ url }) => {
+                if (isOAuthExternalAuthUrl(url)) {
+                    openOAuthExternalAuthInChrome(url);
+                    return { action: 'deny' };
+                }
                 if (isMercadoLivreAdUrl(url) && !contents.__jkAllowMlAdNavigation) {
                     openMercadoLivreAdInChrome(url);
                     return { action: 'deny' };

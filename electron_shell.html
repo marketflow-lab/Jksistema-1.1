@@ -1333,6 +1333,41 @@
             const data = event && event.data ? event.data : {};
             if (!data || typeof data !== 'object') return;
 
+            if (data.channel === 'jk-open-external-chrome') {
+                const payload = data.payload || {};
+                const requestId = data.requestId || payload.requestId || '';
+                const sourceWindow = event.source;
+                const responder = (resultado) => {
+                    try {
+                        if (sourceWindow && typeof sourceWindow.postMessage === 'function') {
+                            sourceWindow.postMessage({
+                                channel: 'jk-open-external-chrome-result',
+                                requestId,
+                                ...resultado
+                            }, '*');
+                        }
+                    } catch (_err) {}
+                };
+                const url = String(payload.url || '').trim();
+                if (!/^https?:\/\//i.test(url)) {
+                    responder({ success: false, error: 'URL externa invalida.' });
+                    return;
+                }
+                if (window.electronAPI && typeof window.electronAPI.openExternalChrome === 'function') {
+                    window.electronAPI.openExternalChrome(url)
+                        .then((result) => responder({ success: true, result }))
+                        .catch((err) => responder({ success: false, error: err && err.message ? err.message : String(err) }));
+                    return;
+                }
+                try {
+                    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+                    responder({ success: !!popup, fallback: 'window.open' });
+                } catch (err) {
+                    responder({ success: false, error: err && err.message ? err.message : String(err) });
+                }
+                return;
+            }
+
             if (data.channel === 'jk-prepare-for-update-result') {
                 const pending = pendingUpdateSaveRequests.get(data.requestId || '');
                 if (pending) {

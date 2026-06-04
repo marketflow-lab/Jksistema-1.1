@@ -5,6 +5,11 @@ echo Iniciando o sistema JK...
 :: 1. Garante que o diretÃ³rio de trabalho Ã© a pasta do arquivo
 cd /d "%~dp0"
 
+:: Callback publico usado no OAuth local. O Firebase Hosting redireciona de volta para 127.0.0.1:8001.
+set "JK_REDIRECT_URI=https://jkjkjk-485920.web.app/auth/callback"
+set "JK_BLING_REDIRECT_URI=https://jkjkjk-485920.web.app/auth/callback"
+set "GOOGLE_LOGIN_REDIRECT_URI_LOCAL=https://jkjkjk-485920.web.app/auth/google/callback"
+
 :: 2. Inicia o Servidor Backend (FastAPI) na porta 8001
 if exist ".venv\Scripts\python.exe" (
     start /min cmd /c "cd /d \"%~dp0\" && .venv\Scripts\python.exe -m uvicorn backend_api:app --host 127.0.0.1 --port 8001"
