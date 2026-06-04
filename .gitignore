@@ -10,6 +10,9 @@ jkjkjk-*.json
 .env
 node_modules
 node_modules
+bug-hunter-report/
+test-results/
+playwright-report/
 
 # Artefatos de runtime/build locais (nao versionar)
 logs/

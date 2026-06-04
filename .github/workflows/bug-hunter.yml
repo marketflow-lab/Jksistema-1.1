@@ -1,0 +1,82 @@
+name: Bug Hunter Mercado Livre
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bug-hunter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BUG_HUNTER_BASE_URL: ${{ secrets.BUG_HUNTER_BASE_URL || 'http://127.0.0.1:8001' }}
+      BUG_HUNTER_USERNAME: ${{ secrets.BUG_HUNTER_USERNAME }}
+      BUG_HUNTER_EMAIL: ${{ secrets.BUG_HUNTER_EMAIL }}
+      BUG_HUNTER_PASSWORD: ${{ secrets.BUG_HUNTER_PASSWORD }}
+      BUG_HUNTER_STORE: ${{ secrets.BUG_HUNTER_STORE }}
+      BUG_HUNTER_TEST_LISTING_ID: ${{ secrets.BUG_HUNTER_TEST_LISTING_ID }}
+      BUG_HUNTER_TEST_SKU: ${{ secrets.BUG_HUNTER_TEST_SKU }}
+      BUG_HUNTER_DRY_RUN: 'true'
+      MELI_SANDBOX: ${{ secrets.MELI_SANDBOX || 'false' }}
+      BUG_HUNTER_ALLOW_MUTATIONS: 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Start backend
+        run: |
+          python -m uvicorn backend_api:app --host 127.0.0.1 --port 8001 > backend-bug-hunter.log 2>&1 &
+          echo $! > backend-bug-hunter.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8001/frontend_index.html > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat backend-bug-hunter.log
+          exit 1
+
+      - name: Run Bug Hunter
+        run: npm run bug-hunter
+
+      - name: Upload Bug Hunter report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bug-hunter-report
+          path: |
+            bug-hunter-report/
+            test-results/bug-hunter/
+            backend-bug-hunter.log
+          if-no-files-found: warn
