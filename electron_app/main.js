@@ -1157,6 +1157,10 @@ function writeLocalBackendLauncher(localAppDir) {
         `set "JK_BLING_REDIRECT_URI=${localCallback}"`,
         `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
         `set "JK_APP_VERSION=${cmdValue(app.getVersion())}"`,
+        'set "IA_RAG_ENABLED=true"',
+        'set "IA_RAG_BACKEND=local"',
+        'set "IA_RAG_TOP_K=5"',
+        'set "IA_RAG_SEARCH_TIMEOUT_S=4"',
         `set "JK_ACCESS_BACKEND=${cmdValue(firebaseEnv.JK_ACCESS_BACKEND || 'auto')}"`,
         ...(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE ? [
             `set "FIREBASE_SERVICE_ACCOUNT_FILE=${cmdValue(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE)}"`
@@ -1262,6 +1266,10 @@ function ensureLocalBackendStarted() {
                 JK_BLING_REDIRECT_URI: `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/auth/callback`,
                 PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
                 JK_APP_VERSION: app.getVersion(),
+                IA_RAG_ENABLED: 'true',
+                IA_RAG_BACKEND: 'local',
+                IA_RAG_TOP_K: '5',
+                IA_RAG_SEARCH_TIMEOUT_S: '4',
                 PYTHONUNBUFFERED: '1',
                 PYTHONUTF8: '1'
             },

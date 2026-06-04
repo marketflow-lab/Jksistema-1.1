@@ -405,7 +405,7 @@
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
         'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
-        'cadastro', 'impostos', 'simulador', 'configuracoes', 'importacoes', 'full'
+        'cadastro', 'impostos', 'simulador', 'configuracoes', 'importacoes', 'admin_usuarios', 'full'
     ];
 
     let usuariosCache = [];
@@ -537,7 +537,8 @@
             integracao: 'Integrações', etiquetas: 'Etiquetas', mercado_full: 'Full', full: 'Administrador', favoritos: 'Favoritos',
             perguntas_pos_venda: 'Perguntas/Pós-venda',
             anuncios_ml: 'Anúncios ML', medias_compras: 'Médias/Compras', cadastro: 'Cadastro', impostos: 'Impostos',
-            simulador: 'Simulador', configuracoes: 'Configurações', importacoes: 'Importações'
+            simulador: 'Simulador', configuracoes: 'Configurações', importacoes: 'Importações',
+            admin_usuarios: 'Central de Usuários'
         };
         return map[key] || key;
     }

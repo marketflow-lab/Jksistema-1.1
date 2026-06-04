@@ -6,9 +6,96 @@
 (function () {
   'use strict';
 
+  function _jkAplicarZoomSidebarEsquerdoExistente() {
+    const styleId = 'jk-left-sidebar-zoom-patch';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        @keyframes jkLeftModuleGlyphSpin{from{transform:rotate(0deg) scale(1.14);}to{transform:rotate(360deg) scale(1.14);}}
+        #jk-left-sidebar-menu{overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;}
+        .jk-left-module-link{overflow:visible!important;}
+        .jk-left-module-icon{transform-origin:left center!important;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease!important;}
+        .jk-left-module-link:hover>.jk-left-module-icon,
+        .jk-left-module-link.jk-left-module-zoom>.jk-left-module-icon{transform:translateX(8px) scale(1.7)!important;border-color:rgba(255,255,255,.82)!important;box-shadow:0 0 0 5px rgba(120,227,212,.22),0 10px 28px rgba(19,196,160,.58)!important;}
+        .jk-left-module-link:hover .jk-left-module-glyph,
+        .jk-left-module-link.jk-left-module-zoom .jk-left-module-glyph{animation:jkLeftModuleGlyphSpin .52s linear infinite!important;}
+      `;
+      document.head.appendChild(style);
+    }
+
+    const normalizarGlyph = (icon) => {
+      if (!icon) return null;
+      let glyph = Array.from(icon.children || []).find(child => child && child.classList && child.classList.contains('jk-left-module-glyph'));
+      if (glyph) return glyph;
+      glyph = document.createElement('span');
+      glyph.className = 'jk-left-module-glyph';
+      while (icon.firstChild) glyph.appendChild(icon.firstChild);
+      icon.appendChild(glyph);
+      return glyph;
+    };
+
+    const ativar = (link) => {
+      if (!link) return;
+      const icon = link.querySelector('.jk-left-module-icon');
+      const glyph = normalizarGlyph(icon);
+      link.classList.add('jk-left-module-zoom');
+      if (icon) {
+        icon.style.setProperty('transform', 'translateX(8px) scale(1.7)', 'important');
+        icon.style.setProperty('border-color', 'rgba(255,255,255,.82)', 'important');
+        icon.style.setProperty('box-shadow', '0 0 0 5px rgba(120,227,212,.22),0 10px 28px rgba(19,196,160,.58)', 'important');
+      }
+      if (glyph) glyph.style.setProperty('animation', 'jkLeftModuleGlyphSpin .52s linear infinite', 'important');
+    };
+
+    const desativar = (link) => {
+      if (!link) return;
+      const icon = link.querySelector('.jk-left-module-icon');
+      const glyph = icon ? Array.from(icon.children || []).find(child => child && child.classList && child.classList.contains('jk-left-module-glyph')) : null;
+      link.classList.remove('jk-left-module-zoom');
+      if (icon) {
+        icon.style.removeProperty('transform');
+        icon.style.removeProperty('border-color');
+        icon.style.removeProperty('box-shadow');
+      }
+      if (glyph) glyph.style.removeProperty('animation');
+    };
+
+    document.querySelectorAll('.jk-left-module-icon').forEach(normalizarGlyph);
+    if (!window.__JK_LEFT_SIDEBAR_ZOOM_PATCH_BOUND__) {
+      window.__JK_LEFT_SIDEBAR_ZOOM_PATCH_BOUND__ = true;
+      let ativo = null;
+      document.addEventListener('mousemove', (event) => {
+        const alvo = event.target && event.target.closest ? event.target.closest('.jk-left-module-link') : null;
+        if (alvo === ativo) return;
+        desativar(ativo);
+        ativo = alvo;
+        ativar(ativo);
+      }, true);
+      document.addEventListener('mouseleave', () => {
+        desativar(ativo);
+        ativo = null;
+      }, true);
+      try {
+        const observer = new MutationObserver(() => {
+          document.querySelectorAll('.jk-left-module-icon').forEach(normalizarGlyph);
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      } catch (_) {}
+    }
+  }
+
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', _jkAplicarZoomSidebarEsquerdoExistente);
+  else
+    _jkAplicarZoomSidebarEsquerdoExistente();
+
   if (window.__JK_IA_SIDEBAR_BOOTSTRAPPED__) return;
   window.__JK_IA_SIDEBAR_BOOTSTRAPPED__ = true;
-  if (document.getElementById('jk-ia-panel') || document.getElementById('jk-ia-fab')) return;
+  if (document.getElementById('jk-ia-panel') || document.getElementById('jk-ia-fab')) {
+    _jkAplicarZoomSidebarEsquerdoExistente();
+    return;
+  }
 
   /* ── Utilitários de auth ── */
   function _token() { return localStorage.getItem('access_token') || ''; }
@@ -551,17 +638,19 @@
   const CSS = `
   #jk-left-sidebar-hotspot{position:fixed;top:0;left:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
   #jk-left-sidebar-hotspot::before{content:"";position:absolute;top:0;left:0;bottom:0;width:8px;background:transparent;}
-  #jk-left-sidebar-menu{position:fixed;top:50%;left:10px;width:272px;max-height:calc(100vh - 28px);overflow-y:auto;overflow-x:visible;
+  #jk-left-sidebar-menu{position:fixed;top:50%;left:10px;width:272px;max-height:calc(100vh - 28px);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;
     display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:7px 0;transform:translate(calc(-100% - 28px),-50%);
-    opacity:0;pointer-events:none;transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;scrollbar-width:none;}
-  #jk-left-sidebar-menu::-webkit-scrollbar{display:none;}
+    opacity:0;pointer-events:none;transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.52) transparent;}
+  #jk-left-sidebar-menu::-webkit-scrollbar{width:7px;}
+  #jk-left-sidebar-menu::-webkit-scrollbar-track{background:transparent;}
+  #jk-left-sidebar-menu::-webkit-scrollbar-thumb{background:rgba(120,227,212,.48);border-radius:999px;}
   #jk-left-sidebar-hotspot:hover #jk-left-sidebar-menu,
   #jk-left-sidebar-hotspot:focus-within #jk-left-sidebar-menu{transform:translate(0,-50%);opacity:1;pointer-events:auto;}
-  .jk-left-module-link{position:relative;width:272px;min-height:46px;display:flex;align-items:center;text-decoration:none;color:#e8fffb;
+  .jk-left-module-link{position:relative;width:272px;min-height:46px;display:flex;align-items:center;text-decoration:none;color:#e8fffb;overflow:visible;
     border:0;background:transparent;outline:none;}
   .jk-left-module-icon{position:relative;z-index:2;width:46px;height:46px;border-radius:14px;border:1px solid rgba(120,227,212,.32);
     display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#0f6bbd,#13b99a);box-shadow:0 4px 16px rgba(19,196,160,.34);
-    font-size:1.25rem;line-height:1;transform:scale(1);transform-origin:center center;will-change:transform;
+    font-size:1.25rem;line-height:1;transform:scale(1);transform-origin:left center;will-change:transform;
     transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
   .jk-left-module-glyph{display:inline-flex;align-items:center;justify-content:center;line-height:1;transform:rotate(0deg) scale(1);transform-origin:center center;will-change:transform;animation:none;}
   .jk-left-module-label{position:absolute;left:31px;top:50%;z-index:1;min-width:118px;max-width:214px;min-height:34px;display:flex;align-items:center;
@@ -572,7 +661,7 @@
   @keyframes jkLeftModuleGlyphSpin{from{transform:rotate(0deg) scale(1.14);}to{transform:rotate(360deg) scale(1.14);}}
   .jk-left-module-link:hover .jk-left-module-icon,
   .jk-left-module-icon:hover,
-  .jk-left-module-link:focus-visible .jk-left-module-icon{transform:scale(1.28);border-color:rgba(255,255,255,.76);box-shadow:0 0 0 4px rgba(120,227,212,.18),0 8px 24px rgba(19,196,160,.48);}
+  .jk-left-module-link:focus-visible .jk-left-module-icon{transform:translateX(8px) scale(1.7);border-color:rgba(255,255,255,.82);box-shadow:0 0 0 5px rgba(120,227,212,.22),0 10px 28px rgba(19,196,160,.58);}
   .jk-left-module-link:hover .jk-left-module-glyph,
   .jk-left-module-icon:hover .jk-left-module-glyph,
   .jk-left-module-link:focus-visible .jk-left-module-glyph{animation:jkLeftModuleGlyphSpin .58s linear infinite;}
@@ -784,7 +873,7 @@
     <div id="jk-ia-resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar assistente IA" tabindex="0"></div>
     <div id="jk-ia-panel-header">
       <h3>🤖 Assistente IA</h3>
-      <select id="jk-ia-model-sel" title="Modelo de IA" style="background:#0b3040;border:1px solid rgba(120,227,212,.3);color:#8ee9de;font-size:.68rem;border-radius:8px;padding:6px 8px;cursor:pointer;max-width:90px;min-height:36px;">
+      <select id="jk-ia-model-sel" title="Modelo de IA" style="display:none;background:#0b3040;border:1px solid rgba(120,227,212,.3);color:#8ee9de;font-size:.68rem;border-radius:8px;padding:6px 8px;cursor:pointer;max-width:90px;min-height:36px;">
         <optgroup label="OpenAI">
           <option value="gpt-5.4-nano">Nano</option>
           <option value="gpt-5.4-mini">Mini</option>
@@ -916,7 +1005,7 @@
         _substituirGrupoModelos(selectEl, 'Gemini API', data.gemini || []);
         _substituirGrupoModelos(selectEl, 'Vertex AI (Google Cloud)', data.vertex || []);
         const valores = Array.from(selectEl.options).map(opt => opt.value);
-        const modeloSistema = data?.defaults?.sistema || '';
+        const modeloSistema = data?.defaults?.chat || data?.defaults?.sistema || '';
         const valorPreferido = podeEscolher && valores.includes(valorSalvo)
           ? valorSalvo
           : (valores.includes(modeloSistema) ? modeloSistema : selectEl.value);
@@ -1062,10 +1151,30 @@
         label.className = 'jk-left-module-label';
         label.textContent = mod.label;
 
+        const ativarZoom = () => {
+          icon.style.setProperty('transform', 'translateX(8px) scale(1.7)', 'important');
+          icon.style.setProperty('border-color', 'rgba(255,255,255,.82)', 'important');
+          icon.style.setProperty('box-shadow', '0 0 0 5px rgba(120,227,212,.22),0 10px 28px rgba(19,196,160,.58)', 'important');
+          glyph.style.setProperty('animation', 'jkLeftModuleGlyphSpin .52s linear infinite', 'important');
+        };
+        const removerZoom = () => {
+          icon.style.removeProperty('transform');
+          icon.style.removeProperty('border-color');
+          icon.style.removeProperty('box-shadow');
+          glyph.style.removeProperty('animation');
+        };
+        link.addEventListener('mouseenter', ativarZoom);
+        link.addEventListener('mouseleave', removerZoom);
+        link.addEventListener('focus', ativarZoom);
+        link.addEventListener('blur', removerZoom);
+        icon.addEventListener('mouseenter', ativarZoom);
+        icon.addEventListener('mouseleave', removerZoom);
+
         link.appendChild(icon);
         link.appendChild(label);
         menu.appendChild(link);
       });
+      _jkAplicarZoomSidebarEsquerdoExistente();
     }
 
     function clampPanelWidth(width) {

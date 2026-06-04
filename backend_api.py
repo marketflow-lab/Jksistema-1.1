@@ -521,17 +521,10 @@ PERMISSION_KEYS = [
 ]
 
 
-def _carregar_configuracoes_globais() -> dict:
+def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
     dados = dict(CONFIG_GLOBAIS_DEFAULT)
-    if not os.path.exists(ARQUIVO_CONFIG_GLOBAIS):
-        return dados
-    try:
-        with open(ARQUIVO_CONFIG_GLOBAIS, "r", encoding="utf-8-sig") as f:
-            payload = json.load(f)
-        if isinstance(payload, dict):
-            dados.update(payload)
-    except Exception:
-        logger.exception("Erro ao carregar configuracoes globais")
+    if isinstance(payload, dict):
+        dados.update(payload)
     dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))
     dados["ia_deepseek_ativa"] = bool(dados.get("ia_deepseek_ativa", True))
     dados["ia_gemini_ativa"] = bool(dados.get("ia_gemini_ativa", False))
@@ -540,18 +533,95 @@ def _carregar_configuracoes_globais() -> dict:
     return dados
 
 
-def _salvar_configuracoes_globais(dados: dict) -> None:
-    payload = dict(CONFIG_GLOBAIS_DEFAULT)
-    if isinstance(dados, dict):
-        payload.update(dados)
+def _carregar_configuracoes_globais_local() -> dict:
+    dados = dict(CONFIG_GLOBAIS_DEFAULT)
+    if not os.path.exists(ARQUIVO_CONFIG_GLOBAIS):
+        return _normalizar_configuracoes_globais(dados)
+    try:
+        with open(ARQUIVO_CONFIG_GLOBAIS, "r", encoding="utf-8-sig") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            dados.update(payload)
+    except Exception:
+        logger.exception("Erro ao carregar configuracoes globais")
+    return _normalizar_configuracoes_globais(dados)
+
+
+def _salvar_configuracoes_globais_local(payload: dict) -> None:
     for chave in ("ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada"):
         payload.pop(chave, None)
-    payload["ia_openai_ativa"] = bool(payload.get("ia_openai_ativa", True))
-    payload["ia_deepseek_ativa"] = bool(payload.get("ia_deepseek_ativa", True))
-    payload["ia_gemini_ativa"] = bool(payload.get("ia_gemini_ativa", False))
-    payload["ia_vertex_ativa"] = bool(payload.get("ia_vertex_ativa", True))
     with open(ARQUIVO_CONFIG_GLOBAIS, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def _firebase_configuracoes_globais_collection_name() -> str:
+    return _env_texto("FIREBASE_CONFIG_COLLECTION", "JK_FIREBASE_CONFIG_COLLECTION") or "jk_sistema_configuracoes"
+
+
+def _firebase_configuracoes_globais_doc_id() -> str:
+    return _env_texto("FIREBASE_CONFIG_DOC_ID", "JK_FIREBASE_CONFIG_DOC_ID") or "configuracoes_globais"
+
+
+def _firebase_configuracoes_globais_db():
+    deve_usar = globals().get("_firebase_deve_usar")
+    firebase_db = globals().get("_firebase_db")
+    if not callable(deve_usar) or not callable(firebase_db):
+        return None
+    if not deve_usar():
+        return None
+    return firebase_db()
+
+
+def _carregar_configuracoes_globais_firebase() -> Optional[dict]:
+    try:
+        db = _firebase_configuracoes_globais_db()
+        if db is None:
+            return None
+        snap = db.collection(_firebase_configuracoes_globais_collection_name()).document(_firebase_configuracoes_globais_doc_id()).get()
+        if not snap.exists:
+            return None
+        payload = snap.to_dict() or {}
+        if not isinstance(payload, dict):
+            return None
+        dados = _normalizar_configuracoes_globais(payload)
+        _salvar_configuracoes_globais_local(dict(dados))
+        return dados
+    except Exception as exc:
+        logger.warning("[CONFIG] Falha ao carregar configuracoes globais no Firebase: %s", exc)
+        return None
+
+
+def _salvar_configuracoes_globais_firebase(payload: dict) -> bool:
+    try:
+        db = _firebase_configuracoes_globais_db()
+        if db is None:
+            return False
+        data = dict(payload)
+        for chave in ("ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada"):
+            data.pop(chave, None)
+        data["updated_at"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        db.collection(_firebase_configuracoes_globais_collection_name()).document(_firebase_configuracoes_globais_doc_id()).set(data, merge=True)
+        return True
+    except Exception as exc:
+        logger.warning("[CONFIG] Falha ao salvar configuracoes globais no Firebase: %s", exc)
+        if callable(globals().get("_firebase_access_obrigatorio")) and _firebase_access_obrigatorio():
+            raise HTTPException(status_code=503, detail=f"Firebase indisponivel para salvar configuracoes: {exc}")
+        return False
+
+
+def _carregar_configuracoes_globais() -> dict:
+    local = _carregar_configuracoes_globais_local()
+    remoto = _carregar_configuracoes_globais_firebase()
+    if remoto:
+        return remoto
+    _salvar_configuracoes_globais_firebase(dict(local))
+    return local
+
+
+def _salvar_configuracoes_globais(dados: dict) -> None:
+    payload = _normalizar_configuracoes_globais(dados)
+    _salvar_configuracoes_globais_local(dict(payload))
+    _salvar_configuracoes_globais_firebase(dict(payload))
 
 
 app = FastAPI(title="JK Sistema API")
@@ -12267,6 +12337,24 @@ def _ia_conversas_contexto_usuario(client_id: str, usuario: str, limite_conversa
             )
     return "\n".join(linhas)[:6000]
 
+def _ia_rag_backend_configurado() -> str:
+    valor = (
+        os.getenv("IA_RAG_BACKEND")
+        or os.getenv("JK_IA_RAG_BACKEND")
+        or "auto"
+    ).strip().lower().replace("-", "_")
+    aliases = {
+        "sqlite": "local",
+        "embedded": "local",
+        "embutido": "local",
+        "local_sqlite": "local",
+        "pg": "postgres",
+        "postgresql": "postgres",
+        "cloudsql": "postgres",
+        "cloud_sql": "postgres",
+    }
+    return aliases.get(valor, valor if valor in {"auto", "local", "postgres"} else "auto")
+
 def _ia_rag_pg_dsn() -> str:
     return (
         os.getenv("IA_VECTOR_DATABASE_URL")
@@ -12275,18 +12363,34 @@ def _ia_rag_pg_dsn() -> str:
         or ""
     ).strip()
 
+def _ia_rag_backend_efetivo() -> str:
+    backend = _ia_rag_backend_configurado()
+    if backend == "local":
+        return "local"
+    if backend == "postgres":
+        return "postgres"
+    return "postgres" if _ia_rag_pg_dsn() else "local"
+
 def _ia_rag_ativo() -> bool:
     valor = (os.getenv("IA_RAG_ENABLED") or "").strip().lower()
-    return valor in {"1", "true", "yes", "sim", "on"} and bool(_ia_rag_pg_dsn())
+    if valor not in {"1", "true", "yes", "sim", "on"}:
+        return False
+    return _ia_rag_backend_efetivo() == "local" or bool(_ia_rag_pg_dsn())
 
 def _ia_rag_config() -> dict:
+    backend = _ia_rag_backend_efetivo()
     return {
         "enabled": _ia_rag_ativo(),
+        "backend": backend,
+        "backend_configurado": _ia_rag_backend_configurado(),
         "postgres_configurado": bool(_ia_rag_pg_dsn()),
         "psycopg_instalado": psycopg is not None,
         "ollama_base_url": (os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/"),
         "ollama_embedding_model": (os.getenv("OLLAMA_EMBED_MODEL") or "nomic-embed-text").strip(),
         "top_k": int(os.getenv("IA_RAG_TOP_K") or "5"),
+        "local_dim": _ia_rag_local_dim(),
+        "local_engine": "sqlite-hash",
+        "usa_ollama": backend == "postgres",
     }
 
 def _ia_rag_conectar():
@@ -12315,6 +12419,151 @@ def _ia_rag_cosine_score(a: list[float], b: list[float]) -> float:
     if norm_a <= 0 or norm_b <= 0:
         return 0.0
     return dot / ((norm_a ** 0.5) * (norm_b ** 0.5))
+
+IA_RAG_LOCAL_STOPWORDS = {
+    "a", "ao", "aos", "as", "com", "como", "da", "das", "de", "do", "dos",
+    "e", "em", "esta", "este", "isso", "na", "nas", "no", "nos", "o", "os",
+    "ou", "para", "por", "qual", "quais", "que", "se", "sem", "sobre", "um",
+    "uma", "vendas", "dados", "todos", "todas", "sistema",
+}
+
+def _ia_rag_local_dim() -> int:
+    try:
+        return max(128, min(int(os.getenv("IA_RAG_LOCAL_DIM") or "512"), 4096))
+    except Exception:
+        return 512
+
+def _ia_rag_normalizar_texto_busca(texto: str) -> str:
+    raw = str(texto or "").lower()
+    sem_acento = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode("ascii")
+    return sem_acento
+
+def _ia_rag_local_tokens(texto: str) -> list[str]:
+    normalizado = _ia_rag_normalizar_texto_busca(texto)
+    tokens = re.findall(r"[a-z0-9][a-z0-9_-]{1,}", normalizado)
+    filtrados = []
+    for token in tokens:
+        token = token.strip("_-")
+        if len(token) < 2 or token in IA_RAG_LOCAL_STOPWORDS:
+            continue
+        filtrados.append(token[:80])
+    return filtrados[:1200]
+
+def _ia_rag_local_hash_index(token: str, dim: int) -> int:
+    digest = hashlib.blake2b(token.encode("utf-8", "ignore"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % dim
+
+def _ia_rag_local_vector(texto: str, dim: Optional[int] = None) -> np.ndarray:
+    dim = int(dim or _ia_rag_local_dim())
+    vetor = np.zeros(dim, dtype=np.float32)
+    tokens = _ia_rag_local_tokens(texto)
+    if not tokens:
+        return vetor
+
+    for token in tokens:
+        peso = 1.0
+        if any(ch.isdigit() for ch in token):
+            peso = 1.35
+        vetor[_ia_rag_local_hash_index(token, dim)] += peso
+
+    for atual, proximo in zip(tokens, tokens[1:]):
+        if atual != proximo:
+            vetor[_ia_rag_local_hash_index(f"{atual}_{proximo}", dim)] += 0.75
+
+    norma = float(np.linalg.norm(vetor))
+    if norma > 0:
+        vetor = vetor / norma
+    return vetor.astype(np.float32, copy=False)
+
+def _ia_rag_local_db_path(client_id: str) -> str:
+    client_norm = str(client_id or "default").strip() or "default"
+    pasta = os.path.join(PASTA_INFO, client_norm)
+    os.makedirs(pasta, exist_ok=True)
+    return os.path.join(pasta, "ia_rag_local.db")
+
+def _ia_rag_local_conectar(client_id: str):
+    db_path = _ia_rag_local_db_path(client_id)
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ia_rag_local_documentos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            vector BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ia_rag_local_cliente_source_idx
+        ON ia_rag_local_documentos (client_id, source)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ia_rag_local_created_idx
+        ON ia_rag_local_documentos (created_at)
+        """
+    )
+    conn.commit()
+    return conn
+
+def _ia_rag_local_blob_para_vetor(blob, dim: int) -> Optional[np.ndarray]:
+    if blob is None:
+        return None
+    try:
+        vetor = np.frombuffer(bytes(blob), dtype=np.float32)
+        if vetor.size != int(dim):
+            return None
+        return vetor
+    except Exception:
+        return None
+
+def _ia_rag_local_text_boost(query_terms: list[str], row: sqlite3.Row) -> float:
+    if not query_terms:
+        return 0.0
+    texto = _ia_rag_normalizar_texto_busca(
+        f"{row['title']} {row['source']} {row['content'][:5000]}"
+    )
+    hits = 0
+    for termo in query_terms[:8]:
+        termo_norm = _ia_rag_normalizar_texto_busca(termo)
+        if termo_norm and termo_norm in texto:
+            hits += 1
+    return min(0.22, hits * 0.045)
+
+def _ia_rag_local_status(client_id: str) -> dict:
+    db_path = _ia_rag_local_db_path(client_id)
+    status = {
+        "local_db_path": db_path,
+        "local_db_exists": os.path.exists(db_path),
+        "local_db_mb": 0.0,
+        "local_documentos": 0,
+        "local_ok": False,
+        "local_error": "",
+    }
+    try:
+        if os.path.exists(db_path):
+            status["local_db_mb"] = round(os.path.getsize(db_path) / (1024 * 1024), 3)
+        with _ia_rag_local_conectar(client_id) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM ia_rag_local_documentos WHERE client_id = ?",
+                (str(client_id or "default").strip() or "default",),
+            ).fetchone()
+            status["local_documentos"] = int(row["total"] if row else 0)
+            status["local_ok"] = True
+    except Exception as exc:
+        status["local_error"] = str(exc)
+    return status
 
 def _ia_rag_termos_busca(query: str) -> list[str]:
     texto = str(query or "")
@@ -12540,6 +12789,39 @@ def _ia_rag_indexar_documentos(client_id: str, documentos: list[IARagDocumento])
     if not docs_validos:
         return 0
 
+    if _ia_rag_backend_efetivo() == "local":
+        dim = _ia_rag_local_dim()
+        inseridos = 0
+        client_norm = str(client_id or "default").strip() or "default"
+        with _ia_rag_local_conectar(client_norm) as conn:
+            for doc in docs_validos:
+                texto = str(doc.content or "").strip()
+                vetor = _ia_rag_local_vector(
+                    f"{doc.title or ''}\n{doc.source or ''}\n{texto}",
+                    dim,
+                )
+                if not np.any(vetor):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO ia_rag_local_documentos
+                        (client_id, source, title, content, metadata, vector, dim)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        client_norm,
+                        str(doc.source or "manual")[:200],
+                        str(doc.title or "")[:300],
+                        texto,
+                        json.dumps(doc.metadata or {}, ensure_ascii=False, default=str),
+                        vetor.tobytes(),
+                        dim,
+                    ),
+                )
+                inseridos += 1
+            conn.commit()
+        return inseridos
+
     primeiro_embedding = _ia_rag_gerar_embedding(str(docs_validos[0].content or "").strip())
 
     inseridos = 0
@@ -12590,6 +12872,49 @@ def _ia_rag_indexar_documentos(client_id: str, documentos: list[IARagDocumento])
 def _ia_rag_buscar(query: str, client_id: str, top_k: Optional[int] = None) -> list[dict]:
     if not _ia_rag_ativo():
         return []
+
+    if _ia_rag_backend_efetivo() == "local":
+        dim = _ia_rag_local_dim()
+        query_vec = _ia_rag_local_vector(query, dim)
+        if not np.any(query_vec):
+            return _ia_rag_busca_textual(query, client_id, top_k)
+        limite = int(top_k or _ia_rag_config()["top_k"] or 5)
+        scan_limit = max(limite * 20, int(os.getenv("IA_RAG_LOCAL_SCAN_LIMIT") or "5000"))
+        client_norm = str(client_id or "default").strip() or "default"
+        termos = _ia_rag_termos_busca(query)
+        resultados = []
+        with _ia_rag_local_conectar(client_norm) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, source, title, content, metadata, vector, dim
+                FROM ia_rag_local_documentos
+                WHERE client_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (client_norm, scan_limit),
+            ).fetchall()
+            for row in rows:
+                vetor = _ia_rag_local_blob_para_vetor(row["vector"], int(row["dim"] or dim))
+                if vetor is None or vetor.size != query_vec.size:
+                    continue
+                score = float(np.dot(query_vec, vetor)) + _ia_rag_local_text_boost(termos, row)
+                if score <= 0:
+                    continue
+                try:
+                    metadata = json.loads(row["metadata"] or "{}")
+                except Exception:
+                    metadata = {}
+                resultados.append({
+                    "id": row["id"],
+                    "source": row["source"],
+                    "title": row["title"],
+                    "content": row["content"],
+                    "metadata": metadata,
+                    "score": min(score, 1.0),
+                })
+        resultados.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+        return resultados[: max(limite, min(12, limite + len(termos)))]
 
     embedding = _ia_rag_gerar_embedding(query)
     embedding_sql = _ia_rag_embedding_sql(embedding)
@@ -12648,6 +12973,42 @@ def _ia_rag_busca_textual(query: str, client_id: str, top_k: Optional[int] = Non
             termos = [bruto[:80]]
     if not termos:
         return []
+
+    if _ia_rag_backend_efetivo() == "local":
+        limite = int(top_k or _ia_rag_config()["top_k"] or 5)
+        client_norm = str(client_id or "default").strip() or "default"
+        resultados: list[dict] = []
+        vistos: set[int] = set()
+        with _ia_rag_local_conectar(client_norm) as conn:
+            for termo in termos[:4]:
+                rows = conn.execute(
+                    """
+                    SELECT id, source, title, content, metadata
+                    FROM ia_rag_local_documentos
+                    WHERE client_id = ? AND content LIKE ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (client_norm, f"%{termo}%", max(4, limite)),
+                ).fetchall()
+                for row in rows:
+                    if int(row["id"]) in vistos:
+                        continue
+                    vistos.add(int(row["id"]))
+                    try:
+                        metadata = json.loads(row["metadata"] or "{}")
+                    except Exception:
+                        metadata = {}
+                    resultados.append({
+                        "id": row["id"],
+                        "source": row["source"],
+                        "title": row["title"],
+                        "content": row["content"],
+                        "metadata": metadata,
+                        "score": 0.55 + _ia_rag_local_text_boost(termos, row),
+                    })
+        resultados.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+        return resultados[:limite]
 
     termos_top = termos[:3]
     resultados: list[dict] = []
@@ -12716,6 +13077,17 @@ def _ia_rag_contexto(query: str, client_id: str) -> str:
     return "\n\n".join(partes).strip()
 
 def _ia_rag_limpar_fontes(client_id: str, prefixo: str) -> int:
+    if _ia_rag_backend_efetivo() == "local":
+        client_norm = str(client_id or "default").strip() or "default"
+        with _ia_rag_local_conectar(client_norm) as conn:
+            cur = conn.execute(
+                "DELETE FROM ia_rag_local_documentos WHERE client_id = ? AND source LIKE ?",
+                (client_norm, f"{prefixo}%"),
+            )
+            removidos = cur.rowcount or 0
+            conn.commit()
+            return removidos
+
     if not _ia_rag_pg_dsn() or psycopg is None:
         return 0
     with _ia_rag_conectar() as conn:
@@ -12729,6 +13101,18 @@ def _ia_rag_limpar_fontes(client_id: str, prefixo: str) -> int:
     return removidos
 
 def _ia_rag_fontes_existentes(client_id: str, prefixo: str = "jkdata:") -> set[str]:
+    if _ia_rag_backend_efetivo() == "local":
+        client_norm = str(client_id or "default").strip() or "default"
+        try:
+            with _ia_rag_local_conectar(client_norm) as conn:
+                rows = conn.execute(
+                    "SELECT source FROM ia_rag_local_documentos WHERE client_id = ? AND source LIKE ?",
+                    (client_norm, f"{prefixo}%"),
+                ).fetchall()
+                return {str(row["source"] or "") for row in rows}
+        except Exception:
+            return set()
+
     if not _ia_rag_pg_dsn() or psycopg is None:
         return set()
     try:
@@ -16457,6 +16841,40 @@ def _payload_sessao_por_authorization(authorization: Optional[str]) -> dict:
     return {"username": username, "client_id": client_id}
 
 
+def _require_full_admin_user_management(authorization: Optional[str], client_id: str) -> dict:
+    sessao = _payload_sessao_por_authorization(authorization)
+    username = str(sessao.get("username") or "").strip().lower()
+    client_sessao = str(sessao.get("client_id") or "default").strip() or "default"
+    client_norm = str(client_id or client_sessao or "default").strip() or "default"
+    if client_sessao != client_norm:
+        raise HTTPException(status_code=403, detail="Sessao invalida para esse cliente.")
+    permissoes = _carregar_permissoes_usuario(username, client_norm)
+    if permissoes.get("full") is not True:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem gerenciar usuarios.")
+    return {
+        "username": username,
+        "client_id": client_norm,
+        "permissions": permissoes,
+    }
+
+
+def _require_admin_usuarios_access(authorization: Optional[str], client_id: str) -> dict:
+    sessao = _payload_sessao_por_authorization(authorization)
+    username = str(sessao.get("username") or "").strip().lower()
+    client_sessao = str(sessao.get("client_id") or "default").strip() or "default"
+    client_norm = str(client_id or client_sessao or "default").strip() or "default"
+    if client_sessao != client_norm:
+        raise HTTPException(status_code=403, detail="Sessao invalida para esse cliente.")
+    permissoes = _carregar_permissoes_usuario(username, client_norm)
+    if not (permissoes.get("full") is True or permissoes.get("admin_usuarios") is True):
+        raise HTTPException(status_code=403, detail="Acesso negado: usuario sem permissao para a Central de Usuarios.")
+    return {
+        "username": username,
+        "client_id": client_norm,
+        "permissions": permissoes,
+    }
+
+
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
     """Extrai o client_id do JWT e valida a permissÃƒÂ£o do mÃƒÂ³dulo acessado."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -16544,7 +16962,11 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
             logger.warning(f"[IA TOOLS] Falha ao preparar funcoes do chat: {exc}")
             payload.tool_results = []
     perf_tools = time.perf_counter() - perf_tools_t0
-    model_req = str(payload.model or "").strip() or _ia_modelo_chat_configurado()
+    modelo_chat_padrao = _ia_modelo_chat_configurado()
+    if _usuario_pode_escolher_modelo_chat(request, client_id):
+        model_req = str(payload.model or "").strip() or modelo_chat_padrao
+    else:
+        model_req = modelo_chat_padrao
     model_req = _normalizar_ia_modelo_padrao(model_req)
     payload.model = model_req
     # GeraÃƒÂ§ÃƒÂ£o de imagem deve considerar apenas a mensagem atual.
@@ -16628,13 +17050,13 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             {"name": "gpt-5.4-mini", "display_name": "Mini"},
             {"name": "gpt-5.4", "display_name": "GPT-5.4"},
             {"name": "gpt-5.5", "display_name": "GPT-5.5"},
-        ],
+        ] if pode_escolher_modelo else [],
         "deepseek": [
             {"name": "deepseek-v4-flash", "display_name": "DS V4 Flash"},
             {"name": "deepseek-v4-pro", "display_name": "DS V4 Pro"},
-        ],
+        ] if pode_escolher_modelo else [],
         "gemini": [],
-        "vertex": _listar_modelos_vertex_ai(),
+        "vertex": _listar_modelos_vertex_ai() if pode_escolher_modelo else [],
         "defaults": {
             "sistema": _ia_modelo_padrao_configurado(),
             "perguntas": _ia_modelo_perguntas_configurado(),
@@ -16726,14 +17148,17 @@ async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
         "pgvector_ok": False,
     }
 
-    try:
-        requests.get(f"{cfg['ollama_base_url']}/api/tags", timeout=5).raise_for_status()
-        status["ollama_ok"] = True
-    except Exception as exc:
-        status["ollama_error"] = str(exc)
+    if cfg.get("backend") == "local":
+        status.update(_ia_rag_local_status(client_id))
+    else:
+        try:
+            requests.get(f"{cfg['ollama_base_url']}/api/tags", timeout=5).raise_for_status()
+            status["ollama_ok"] = True
+        except Exception as exc:
+            status["ollama_error"] = str(exc)
 
     try:
-        if psycopg is not None and _ia_rag_pg_dsn():
+        if cfg.get("backend") == "postgres" and psycopg is not None and _ia_rag_pg_dsn():
             with _ia_rag_conectar() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
@@ -21478,6 +21903,59 @@ def _shared_sync_json_dump_bytes(payload: Any) -> bytes:
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
 
+def _shared_sync_sanitizar_oauth_integracao_usuario(servico: str, dados: Any) -> Any:
+    if not isinstance(dados, dict):
+        return _shared_sync_json_clone(dados)
+    servico_key = _shared_sync_servico_key(servico)
+    saida = _shared_sync_json_clone(dados)
+    if servico_key not in {"bling", "mercadolivre"}:
+        return saida
+    token_keys = {
+        "access_token",
+        "refresh_token",
+        "token_type",
+        "expires_at",
+        "expires_in",
+        "authorization",
+        "jwt",
+    }
+    tinha_token = any(_shared_sync_valor_preenchido(saida.get(chave)) for chave in token_keys)
+    for chave in token_keys:
+        saida.pop(chave, None)
+    if tinha_token or saida.get("connected"):
+        saida["connected"] = False
+        saida["status"] = "reautenticacao_necessaria"
+        saida["motivo"] = (
+            "Loja recebida por compartilhamento. Tokens OAuth da integracao nao sao reutilizados "
+            "entre usuarios; autentique esta loja nesta instalacao."
+        )
+        saida["shared_without_oauth_tokens"] = True
+    return saida
+
+
+def _shared_sync_sanitizar_lojas_integracoes_user_share_bytes(data: bytes) -> bytes:
+    payload = _shared_sync_json_from_bytes(data, "lojas_config.json")
+    lojas = _shared_sync_lojas_from_payload(payload)
+    sanitizadas = []
+    for loja in lojas:
+        nova_loja = _shared_sync_json_clone(loja)
+        integracoes = nova_loja.get("integracoes") if isinstance(nova_loja.get("integracoes"), dict) else {}
+        novas_integracoes = {}
+        for servico, dados in (integracoes or {}).items():
+            servico_key = _shared_sync_servico_key(servico)
+            novas_integracoes[servico_key] = _shared_sync_sanitizar_oauth_integracao_usuario(servico_key, dados)
+        if integracoes:
+            nova_loja["integracoes"] = novas_integracoes
+        sanitizadas.append(nova_loja)
+    if isinstance(payload, dict) and isinstance(payload.get("lojas"), list):
+        saida = _shared_sync_json_clone(payload)
+        saida["lojas"] = sanitizadas
+        return _shared_sync_json_dump_bytes(saida)
+    if isinstance(payload, dict) and (payload.get("nome") or payload.get("integracoes")):
+        return _shared_sync_json_dump_bytes(sanitizadas[0] if sanitizadas else payload)
+    return _shared_sync_json_dump_bytes(sanitizadas)
+
+
 def _shared_sync_favoritos_delta_bytes(scope: str, rel: str, data: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
     payload = _shared_sync_json_from_bytes(data, rel)
     historico_raw = payload.get("historico") if isinstance(payload, dict) else payload
@@ -21769,6 +22247,7 @@ def _shared_sync_montar_pacote(
     machine_id: str = "",
     user_only: bool = False,
     known_keys: Optional[set[str]] = None,
+    sanitize_user_share_oauth: bool = False,
 ) -> tuple[bytes, dict, list[str]]:
     item_keys: list[str] = []
     if known_keys is None:
@@ -21781,6 +22260,17 @@ def _shared_sync_montar_pacote(
             user_only=user_only,
             known_keys=known_keys,
         )
+    if sanitize_user_share_oauth and scope == "lojas_integracoes":
+        sanitizadas = []
+        for item in entries:
+            rel = item.get("relative_path") or ""
+            if rel.lower() != "lojas_config.json":
+                sanitizadas.append(item)
+                continue
+            data = item.get("data") if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"])
+            data = _shared_sync_sanitizar_lojas_integracoes_user_share_bytes(data or b"")
+            sanitizadas.append(_shared_sync_entry_from_bytes(rel, data, item.get("mtime") or time.time(), item.get("item_keys") or []))
+        entries = sanitizadas
     manifest = {
         "schema": 1,
         "app": "JK Sistema",
@@ -21848,6 +22338,7 @@ def _shared_sync_push_scope(
     state_scope: Optional[str] = None,
     known_keys: Optional[set[str]] = None,
     allow_empty_delta: bool = False,
+    sanitize_user_share_oauth: bool = False,
 ) -> dict:
     db = _shared_sync_firestore_required()
     bundle, manifest, warnings = _shared_sync_montar_pacote(
@@ -21857,6 +22348,7 @@ def _shared_sync_push_scope(
         machine_id,
         user_only=user_only,
         known_keys=known_keys,
+        sanitize_user_share_oauth=sanitize_user_share_oauth,
     )
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
     if known_keys is not None and not manifest.get("item_count") and not allow_empty_delta:
@@ -23495,6 +23987,7 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
         state_scope=_shared_sync_user_share_state_scope(link_ref["id"], direction_key, scope),
         known_keys=known_keys,
         allow_empty_delta=True,
+        sanitize_user_share_oauth=True,
     )
     _shared_sync_user_share_add_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link_ref["id"], scope, result.get("item_keys") or [])
     return result
@@ -23771,6 +24264,7 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         state_scope=_shared_sync_user_share_state_scope(link.get("id"), direction_key, scope),
         known_keys=known_keys,
         allow_empty_delta=False,
+        sanitize_user_share_oauth=True,
     )
     if result.get("skipped"):
         state = _shared_sync_state_read(source_sessao.get("client_id"), source_sessao.get("username") or "")
@@ -24433,7 +24927,11 @@ def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
 
 
 @app.get("/api/admin/users")
-def admin_listar_usuarios(client_id: str = Depends(get_tenant_id)):
+def admin_listar_usuarios(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     users, backend = _listar_usuarios_admin_sql(return_backend=True)
     return {"success": True, "users": users, "backend": backend}
 
@@ -24444,6 +24942,7 @@ def admin_enviar_mensagem_usuario(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
+    _require_full_admin_user_management(authorization, client_id)
     username_norm = str(payload.username or "").strip().lower()
     texto = str(payload.message or "").strip()
     if not username_norm:
@@ -24484,7 +24983,12 @@ def admin_enviar_mensagem_usuario(
 
 
 @app.post("/api/admin/users")
-def admin_salvar_usuario(payload: AdminUserUpsertRequest, client_id: str = Depends(get_tenant_id)):
+def admin_salvar_usuario(
+    payload: AdminUserUpsertRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     usuario = _salvar_usuario_admin_sql(payload)
     backend = "firebase" if _firebase_deve_usar() else "local"
     return {
@@ -24496,7 +25000,13 @@ def admin_salvar_usuario(payload: AdminUserUpsertRequest, client_id: str = Depen
 
 
 @app.put("/api/admin/users/{username}/password")
-def admin_trocar_senha_usuario(username: str, payload: AdminUserPasswordRequest, client_id: str = Depends(get_tenant_id)):
+def admin_trocar_senha_usuario(
+    username: str,
+    payload: AdminUserPasswordRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     usuario = _atualizar_senha_usuario_sql(username, payload.password)
     return {
         "success": True,
@@ -24566,7 +25076,12 @@ def minha_sessao_auth(
 
 
 @app.put("/api/admin/users/{username}/reset-devices")
-def admin_resetar_dispositivos_usuario(username: str, client_id: str = Depends(get_tenant_id)):
+def admin_resetar_dispositivos_usuario(
+    username: str,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     usuario = _resetar_maquinas_usuario_sql(username)
     return {
         "success": True,
@@ -24576,7 +25091,13 @@ def admin_resetar_dispositivos_usuario(username: str, client_id: str = Depends(g
 
 
 @app.put("/api/admin/users/{username}/status")
-def admin_alterar_status_usuario(username: str, payload: AdminUserStatusRequest, client_id: str = Depends(get_tenant_id)):
+def admin_alterar_status_usuario(
+    username: str,
+    payload: AdminUserStatusRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     usuario = _atualizar_status_usuario_sql(username, payload.active)
     return {
         "success": True,
@@ -24586,7 +25107,13 @@ def admin_alterar_status_usuario(username: str, payload: AdminUserStatusRequest,
 
 
 @app.put("/api/admin/users/{username}/permissions")
-def admin_alterar_permissoes_usuario(username: str, payload: AdminUserPermissionsRequest, client_id: str = Depends(get_tenant_id)):
+def admin_alterar_permissoes_usuario(
+    username: str,
+    payload: AdminUserPermissionsRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     usuario = _atualizar_permissoes_usuario_sql(username, payload.permissions)
     return {
         "success": True,
@@ -24596,7 +25123,13 @@ def admin_alterar_permissoes_usuario(username: str, payload: AdminUserPermission
 
 
 @app.put("/api/admin/users/{username}/max-machines")
-def admin_alterar_limite_dispositivos_usuario(username: str, payload: AdminUserMaxMachinesRequest, client_id: str = Depends(get_tenant_id)):
+def admin_alterar_limite_dispositivos_usuario(
+    username: str,
+    payload: AdminUserMaxMachinesRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     usuario = _atualizar_max_machines_usuario_sql(username, payload.max_machines)
     return {
         "success": True,
@@ -24606,7 +25139,12 @@ def admin_alterar_limite_dispositivos_usuario(username: str, payload: AdminUserM
 
 
 @app.delete("/api/admin/users/{username}")
-def admin_excluir_usuario(username: str, client_id: str = Depends(get_tenant_id)):
+def admin_excluir_usuario(
+    username: str,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_full_admin_user_management(authorization, client_id)
     _remover_usuario_sql(username)
     return {"success": True, "message": "UsuÃ¡rio removido."}
 
@@ -24973,7 +25511,11 @@ def _machine_presence_mark_current(maquinas: list[dict], current_machine_id: str
 
 
 @app.get("/api/admin/users/online")
-def admin_listar_usuarios_online(client_id: str = Depends(get_tenant_id)):
+def admin_listar_usuarios_online(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_admin_usuarios_access(authorization, client_id)
     usuarios = _listar_usuarios_admin_sql()
     resultados = []
     total_online = 0
@@ -29614,7 +30156,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
             'Imposto %': _format_pct_br(imposto_pct_rate * 100.0) if imposto_pct_rate is not None else item.get('Imposto %', item.get('Imposto', '')),
             'Imposto': formatar_moeda_br(imposto_valor) if imposto_valor is not None else item.get('Imposto', ''),
             'Imposto Fixa': item.get('Imposto Fixa', formatar_moeda_br(imposto_valor) if imposto_valor is not None else item.get('Imposto', '')),
-            'PreÃ§o Final ML': formatar_moeda_br(preco_final_ml_display) if preco_final_ml_display is not None else (formatar_moeda_br(preco_final_ml) if preco_final_ml is not None else item.get('PreÃ§o Final ML', item.get('M ML', ''))),
+            'PreÃ§o Final ML': formatar_moeda_br(preco_final_ml) if preco_final_ml is not None else item.get('PreÃ§o Final ML', item.get('M ML', '')),
             'Imposto ML': formatar_moeda_br(imposto_ml_valor) if imposto_ml_valor is not None else item.get('Imposto ML', ''),
             'Desconto ML': formatar_moeda_br(desconto_ml_val) if desconto_ml_val is not None else item.get('Desconto ML', item.get('Desconto', '')),
             'Valor LÃ­quido': formatar_moeda_br(valor_liquido) if valor_liquido is not None else item.get('Valor LÃ­quido', ''),
@@ -29647,7 +30189,8 @@ def _salvar_planilha_analise_promo(client_id: str, dados_analise: list[dict], pr
 
 def _promo_linha_status_ativo_ou_programado(row: dict) -> bool:
     status = str((row or {}).get("Status") or "").strip().lower()
-    return status in {"ativo", "programado", "active", "scheduled", "programmed"}
+    status_norm = normalizar_texto(status)
+    return status_norm in {"ativo", "programado", "programada", "active", "scheduled", "programmed", "elegivel", "eligible"}
 
 
 def _promo_linha_pct_fixa_maior_que_zero(row: dict) -> bool:
@@ -29696,13 +30239,19 @@ def _ml_classificar_status_promocao_valor(valor) -> str:
 def _ml_classificar_status_promocao_entry(entry: dict) -> str:
     if not isinstance(entry, dict):
         return ""
+    status_item_real = _promo_status_item_promocao(entry)
+    if status_item_real in {"candidate", "eligible"}:
+        return ""
+    classificacao_real = _ml_classificar_status_promocao_valor(status_item_real)
+    if classificacao_real:
+        return classificacao_real
     candidatos = [
-        entry.get("_jk_status_item_consultado"),
         entry.get("status"),
         entry.get("promotion_status"),
         entry.get("status_item"),
         entry.get("item_status"),
         entry.get("state"),
+        entry.get("_jk_status_item_consultado"),
     ]
     for chave in ("promotion", "campaign", "deal", "offer"):
         obj = entry.get(chave)
@@ -29785,6 +30334,15 @@ def _ml_classificar_status_promocao_por_id(promocoes_item, campaign_id: str) -> 
     if "Ativo" in classificacoes:
         return "Ativo"
     return ""
+
+
+def _ml_status_promocao_usuario_exibicao(status: str) -> str:
+    status_norm = str(status or "").strip()
+    if status_norm == "Ativo":
+        return "Ativo"
+    if status_norm == "Programado":
+        return "Programada"
+    return "Elegível"
 
 
 def _ml_iterar_campos_payload_limitado(obj, *, max_depth: int = 8, max_nodes: int = 4000):
@@ -30005,6 +30563,89 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
         if preco_original is not None and preco_original > 0 and preco is not None and preco > 0:
             desconto = max(0.0, min(100.0, ((float(preco_original) - float(preco)) / float(preco_original)) * 100.0))
     return preco, desconto
+
+
+def _ml_calcular_percentual_desconto_por_preco(preco_base, preco_final):
+    base_num = _parse_float_flex(preco_base)
+    final_num = _parse_float_flex(preco_final)
+    if base_num is None or final_num is None:
+        return None
+    if base_num <= 0 or final_num <= 0 or final_num > base_num:
+        return None
+    pct = ((float(base_num) - float(final_num)) / float(base_num)) * 100.0
+    if 0 < pct <= 100:
+        return pct
+    return None
+
+
+def _ml_extrair_percentual_total_direto_promocao_raw(entry: dict):
+    if not isinstance(entry, dict):
+        return None
+
+    chaves_diretas = {
+        "discount_percentage",
+        "discount_percent",
+        "discountpercentage",
+        "discountpercent",
+    }
+
+    for chave, valor in entry.items():
+        chave_norm = str(chave or "").strip().lower().replace("-", "_")
+        chave_norm = re.sub(r"[^a-z0-9_]", "", chave_norm)
+        if chave_norm in chaves_diretas:
+            pct = _ml_parse_percentual_promocao_texto(valor)
+            if pct is not None and 0 < float(pct) <= 100:
+                return float(pct)
+
+    termos_excluir = (
+        "seller",
+        "meli",
+        "fee",
+        "tariff",
+        "tarifa",
+        "tax",
+        "imposto",
+        "margin",
+        "margem",
+        "contribution",
+        "receive",
+        "receives",
+        "net",
+        "liquid",
+    )
+    for caminho, valor in _ml_iterar_campos_payload_limitado(entry):
+        caminho_norm = str(caminho or "").lower().replace("-", "_")
+        chave_norm = re.sub(r"[^a-z0-9_]", "", caminho_norm.rsplit(".", 1)[-1])
+        if chave_norm not in chaves_diretas:
+            continue
+        if any(termo in caminho_norm for termo in termos_excluir):
+            continue
+        pct = _ml_parse_percentual_promocao_texto(valor)
+        if pct is not None and 0 < float(pct) <= 100:
+            return float(pct)
+    return None
+
+
+def _ml_resolver_percentual_desconto_campanha_raw(entry: dict, preco_base=None, preco_final=None, fallback=None):
+    direto = _ml_extrair_percentual_total_direto_promocao_raw(entry)
+    por_preco = _ml_calcular_percentual_desconto_por_preco(preco_base, preco_final)
+    if direto is not None and por_preco is not None:
+        if abs(float(direto) - float(por_preco)) <= 1.0:
+            return direto
+        return por_preco
+    if por_preco is not None:
+        return por_preco
+    if direto is not None:
+        return direto
+
+    sugerido = _ml_extrair_percentual_sugerido_campanha_raw(entry, preco_base)
+    if sugerido is not None:
+        return sugerido
+
+    pct_fallback = _ml_parse_percentual_promocao_texto(fallback)
+    if pct_fallback is not None:
+        return pct_fallback
+    return None
 
 
 def _ml_parse_percentual_promocao_texto(valor):
@@ -30357,6 +30998,7 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
         f"https://api.mercadolibre.com/seller-promotions/promotions/{campaign_id}/items",
     ]
     consultas_status = [
+        ("", ""),
         ("status_item", "pending"),
         ("status", "pending"),
         ("status_item", "started"),
@@ -30367,7 +31009,6 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
         ("status", "candidate"),
         ("status_item", "eligible"),
         ("status", "eligible"),
-        ("", ""),
     ]
     for status_param, status_item in consultas_status:
         params = {
@@ -30413,7 +31054,7 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
                     entry_id = str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "").strip()
                     if entry_id == item_id:
                         entry = dict(entry)
-                        if status_item:
+                        if status_item and not _promo_status_item_promocao(entry):
                             entry["_jk_status_item_consultado"] = status_item
                             entry["_jk_status_param_consultado"] = status_param
                         return entry, cfg
@@ -31226,7 +31867,7 @@ def _ml_listar_itens_promocao_com_raw(
                         or ""
                     ).strip()
                     if item_id:
-                        if status_consultado:
+                        if status_consultado and not _promo_status_item_promocao(entry):
                             entry = dict(entry)
                             entry["_jk_status_item_consultado"] = status_consultado
                             entry["_jk_status_param_consultado"] = status_param_consultado
@@ -31594,16 +32235,23 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
                 status_promo_a = ""
         presente_a = status_promo_a == "Ativo"
         presente_a_programado = status_promo_a == "Programado"
-        if not presente_a and not presente_a_programado:
-            return None
+        status_exibicao_promo_a = _ml_status_promocao_usuario_exibicao(status_promo_a)
         desconto_tarifa_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_b_item)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or preco_atual or preco_base_anuncio
 
-        desconto_a = desc_a_raw
-        desconto_b = _ml_extrair_percentual_sugerido_campanha_raw(raw_b_item, preco_base_anuncio)
-        if desconto_b is None:
-            desconto_b = desc_b_raw
+        desconto_a = _ml_resolver_percentual_desconto_campanha_raw(
+            raw_a_item,
+            preco_base_anuncio,
+            preco_a_raw or preco_a,
+            desc_a_raw,
+        )
+        desconto_b = _ml_resolver_percentual_desconto_campanha_raw(
+            raw_b_item,
+            preco_base_anuncio,
+            preco_b_raw or preco_b,
+            desc_b_raw,
+        )
         if preco_a_raw is None and desconto_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
             preco_a = round(float(preco_base_anuncio) * max(0.0, 1.0 - (float(desconto_a) / 100.0)), 2)
         if desconto_a is None and preco_base_anuncio and preco_a and preco_base_anuncio > 0:
@@ -31716,7 +32364,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         else:
             decisao = "Participar"
 
-        status = status_promo_a
+        status = status_exibicao_promo_a
         return {
             "Tipo": fee_b.get("listing_type_name") or fee_a.get("listing_type_name") or _ml_nome_tipo_anuncio(item.get("listing_type_id")),
             "%": _format_pct_br(
@@ -31744,7 +32392,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "preco_final_ml_display": recebe_ml,
             "Imposto %": _format_pct_br(imposto_rate * 100.0) if imposto_rate is not None else "",
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
-            "PreÃ§o Final ML": formatar_moeda_br(recebe_ml) if recebe_ml is not None else formatar_moeda_br(preco_b),
+            "PreÃ§o Final ML": formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
             "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
@@ -32014,12 +32662,16 @@ async def analisar_promo_via_api_sem_arquivos(
                 status_promo_a = ""
         presente_a = status_promo_a == "Ativo"
         presente_a_programado = status_promo_a == "Programado"
-        if not presente_a and not presente_a_programado:
-            return None
+        status_exibicao_promo_a = _ml_status_promocao_usuario_exibicao(status_promo_a)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
         preco_b = preco_b_raw or _parse_float_flex(raw_b_item.get("price")) or preco_atual or preco_base_anuncio
 
-        desconto_a = desc_a_raw
+        desconto_a = _ml_resolver_percentual_desconto_campanha_raw(
+            raw_a_item,
+            preco_base_anuncio,
+            preco_a_raw or preco_a,
+            desc_a_raw,
+        )
         if not presente_a and not presente_a_programado and desconto_a is None and preco_a is not None:
             desconto_a = 0.0
         if preco_a_raw is None and desconto_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
@@ -32027,9 +32679,12 @@ async def analisar_promo_via_api_sem_arquivos(
         if desconto_a is None and preco_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
             desconto_a = max(0.0, ((preco_base_anuncio - preco_a) / preco_base_anuncio) * 100.0)
 
-        desconto_b = _ml_extrair_percentual_sugerido_campanha_raw(raw_b_item, preco_base_anuncio)
-        if desconto_b is None:
-            desconto_b = desc_b_raw
+        desconto_b = _ml_resolver_percentual_desconto_campanha_raw(
+            raw_b_item,
+            preco_base_anuncio,
+            preco_b_raw or preco_b,
+            desc_b_raw,
+        )
         meli_pct = _parse_float_flex(raw_b_item.get("meli_percentage"))
         seller_pct = _parse_float_flex(raw_b_item.get("seller_percentage"))
         if desconto_b is None:
@@ -32153,9 +32808,9 @@ async def analisar_promo_via_api_sem_arquivos(
         if presente_a:
             status = "Ativo"
         elif presente_a_programado:
-            status = "Programado"
+            status = "Programada"
         else:
-            status = "Base atual"
+            status = status_exibicao_promo_a
         return {
             "Tipo": tipo_anuncio,
             "%": _format_pct_br(
@@ -32183,7 +32838,7 @@ async def analisar_promo_via_api_sem_arquivos(
             "preco_final_ml_display": recebe_ml,
             "Imposto %": _format_pct_br(imposto_rate * 100.0) if imposto_rate is not None else "",
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
-            "PreÃ§o Final ML": formatar_moeda_br(recebe_ml) if recebe_ml is not None else formatar_moeda_br(preco_b),
+            "PreÃ§o Final ML": formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
             "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",
@@ -32620,14 +33275,21 @@ async def analisar_promo_via_api_com_arquivos(
                 status_promo_a = ""
         presente_a_ativo = status_promo_a == "Ativo"
         presente_a_programado = status_promo_a == "Programado"
-        if not presente_a_ativo and not presente_a_programado:
-            return None
+        status_exibicao_promo_a = _ml_status_promocao_usuario_exibicao(status_promo_a)
         preco_a = preco_a_raw or preco_base_anuncio or preco_atual
 
-        desconto_a = desc_a_raw
-        desconto_b = _ml_extrair_percentual_sugerido_campanha_raw(raw_b_item, preco_base_anuncio)
-        if desconto_b is None:
-            desconto_b = _ml_parse_percentual_promocao_texto(entrada_b.get("ML % Campanha"))
+        desconto_a = _ml_resolver_percentual_desconto_campanha_raw(
+            raw_a_item,
+            preco_base_anuncio,
+            preco_a_raw or preco_a,
+            desc_a_raw,
+        )
+        desconto_b = _ml_resolver_percentual_desconto_campanha_raw(
+            raw_b_item,
+            preco_base_anuncio,
+            preco_b,
+            entrada_b.get("ML % Campanha"),
+        )
         if not presente_a_ativo and not presente_a_programado and desconto_a is None and preco_a is not None:
             desconto_a = 0.0
         if preco_a_raw is None and desconto_a is not None and preco_base_anuncio and preco_base_anuncio > 0:
@@ -32750,9 +33412,9 @@ async def analisar_promo_via_api_com_arquivos(
         if presente_a_ativo:
             status = "Ativo"
         elif presente_a_programado:
-            status = "Programado"
+            status = "Programada"
         else:
-            status = "Base atual"
+            status = status_exibicao_promo_a
 
         margem_minima_pct = float(margem_minima or 0)
         tem_valores_comparacao = (
@@ -32804,7 +33466,7 @@ async def analisar_promo_via_api_com_arquivos(
             "preco_final_ml_display": recebe_ml,
             "Imposto %": _format_pct_br(imposto_rate * 100.0) if imposto_rate is not None else "",
             "Imposto": formatar_moeda_br(imposto_a) if imposto_a is not None else "",
-            "PreÃ§o Final ML": formatar_moeda_br(recebe_ml) if recebe_ml is not None else formatar_moeda_br(preco_b),
+            "PreÃ§o Final ML": formatar_moeda_br(preco_b),
             "Imposto ML": formatar_moeda_br(imposto_b) if imposto_b is not None else "",
             "Desconto ML": formatar_moeda_br(desconto_tarifa_ml) if desconto_tarifa_ml is not None else "",
             "Valor LÃ­quido": formatar_moeda_br(valor_liquido_a) if valor_liquido_a is not None else "",

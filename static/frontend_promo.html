@@ -135,6 +135,163 @@
             background: linear-gradient(180deg, #1a6f49, #145a3a);
             color: #bff7d1;
         }
+        .promo-result-modal-backdrop {
+            align-items: center;
+            background: rgba(2, 8, 18, 0.76);
+            display: flex;
+            inset: 0;
+            justify-content: center;
+            padding: 18px;
+            position: fixed;
+            z-index: 12000;
+        }
+        .promo-result-modal {
+            background: linear-gradient(180deg, rgba(13, 29, 51, 0.98), rgba(8, 18, 32, 0.98));
+            border: 1px solid rgba(126, 181, 231, 0.34);
+            border-radius: 8px;
+            box-shadow: 0 22px 60px rgba(0, 0, 0, 0.48);
+            color: var(--text);
+            max-height: calc(100vh - 42px);
+            overflow: hidden;
+            width: min(920px, calc(100vw - 28px));
+        }
+        .promo-result-modal-header {
+            align-items: flex-start;
+            border-bottom: 1px solid rgba(126, 181, 231, 0.24);
+            display: flex;
+            gap: 16px;
+            justify-content: space-between;
+            padding: 18px 20px 14px;
+        }
+        .promo-result-eyebrow {
+            color: #8ecbff;
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 800;
+            letter-spacing: 0;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+        .promo-result-title {
+            color: #f5fbff;
+            font-size: 1.15rem;
+            line-height: 1.35;
+            margin: 0;
+        }
+        .promo-result-close {
+            align-items: center;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(180, 210, 238, 0.28);
+            border-radius: 6px;
+            color: #d9eeff;
+            cursor: pointer;
+            display: inline-flex;
+            font-size: 1.1rem;
+            height: 34px;
+            justify-content: center;
+            line-height: 1;
+            width: 34px;
+        }
+        .promo-result-close:hover { background: rgba(99, 187, 255, 0.18); }
+        .promo-result-summary {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            padding: 14px 20px;
+        }
+        .promo-result-metric {
+            background: rgba(10, 20, 35, 0.76);
+            border: 1px solid rgba(126, 181, 231, 0.22);
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .promo-result-metric strong {
+            display: block;
+            font-size: 1.45rem;
+            line-height: 1.1;
+        }
+        .promo-result-metric span {
+            color: var(--muted);
+            display: block;
+            font-size: 0.82rem;
+            margin-top: 4px;
+        }
+        .promo-result-metric.success strong { color: #69e39b; }
+        .promo-result-metric.ignored strong { color: #ffd166; }
+        .promo-result-metric.failed strong { color: #ff7b8a; }
+        .promo-result-body {
+            max-height: min(62vh, 610px);
+            overflow: auto;
+            padding: 0 20px 18px;
+        }
+        .promo-result-campaign {
+            border-top: 1px solid rgba(126, 181, 231, 0.18);
+            padding: 14px 0;
+        }
+        .promo-result-campaign-title {
+            color: #dceeff;
+            font-size: 0.98rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+        }
+        .promo-result-columns {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .promo-result-list-title {
+            color: #bfe0ff;
+            font-size: 0.82rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .promo-result-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+        .promo-result-item {
+            background: rgba(255, 255, 255, 0.045);
+            border: 1px solid rgba(126, 181, 231, 0.15);
+            border-radius: 6px;
+            padding: 8px 9px;
+            min-width: 0;
+        }
+        .promo-result-item-id {
+            color: #ffffff;
+            display: block;
+            font-size: 0.86rem;
+            font-weight: 800;
+            overflow-wrap: anywhere;
+        }
+        .promo-result-item-note {
+            color: var(--muted);
+            display: block;
+            font-size: 0.76rem;
+            line-height: 1.35;
+            margin-top: 2px;
+            overflow-wrap: anywhere;
+        }
+        .promo-result-empty {
+            border: 1px dashed rgba(126, 181, 231, 0.18);
+            border-radius: 6px;
+            color: #7795b9;
+            font-size: 0.78rem;
+            padding: 8px;
+        }
+        .promo-result-footer {
+            border-top: 1px solid rgba(126, 181, 231, 0.22);
+            display: flex;
+            justify-content: flex-end;
+            padding: 14px 20px;
+        }
+        @media (max-width: 760px) {
+            .promo-result-summary,
+            .promo-result-columns {
+                grid-template-columns: 1fr;
+            }
+        }
 
         /* Metrics */
         .metrics { display: flex; gap: 20px; margin-bottom: 20px; }
@@ -1561,6 +1718,150 @@
         return pct !== null ? pct : null;
     }
 
+    function chaveResultadoParticipacao(promotionId, itemId) {
+        return `${String(promotionId || '').trim().toLowerCase()}::${String(itemId || '').trim().toUpperCase()}`;
+    }
+
+    function textoItemParticipacao(item) {
+        const itemId = String(item?.item_id || item?.MLB || item?.mlb || '').trim();
+        const sku = String(item?.sku || item?.SKU || '').trim();
+        const titulo = String(item?.titulo || item?.title || item?.Título || item?.Titulo || '').trim();
+        const partes = [];
+        if (sku) partes.push(`SKU ${sku}`);
+        if (titulo) partes.push(titulo);
+        return { itemId: itemId || '-', nota: partes.join(' · ') };
+    }
+
+    function montarLinhasResultadoParticipacao(payload, result) {
+        const detalhes = Array.isArray(result?.detalhes) ? result.detalhes : [];
+        const detalhePorItem = new Map();
+        detalhes.forEach((detalhe) => {
+            const itemId = detalhe?.item_id || detalhe?.MLB || detalhe?.mlb;
+            const promotionId = detalhe?.promotion_id || detalhe?.promo_b_id || detalhe?.id;
+            if (!itemId) return;
+            detalhePorItem.set(chaveResultadoParticipacao(promotionId, itemId), detalhe);
+        });
+
+        const promocoes = Array.isArray(payload?.promocoes) ? payload.promocoes : [];
+        return promocoes.map((promo, idx) => {
+            const promotionId = promo?.promotion_id || promo?.promo_b_id || promo?.id || '';
+            const nome = String(promo?.nome || promo?.name || promo?.promo_b_nome || promotionId || `Campanha ${idx + 1}`).trim();
+            const confirmados = [];
+            const ignorados = [];
+            const falhas = [];
+            const vistos = new Set();
+
+            (Array.isArray(promo?.items) ? promo.items : []).forEach((item) => {
+                const itemId = item?.item_id || item?.MLB || item?.mlb;
+                const chave = chaveResultadoParticipacao(promotionId, itemId);
+                vistos.add(chave);
+                const detalhe = detalhePorItem.get(chave);
+                const base = textoItemParticipacao(item);
+                if (detalhe?.ignored) {
+                    ignorados.push({ ...base, nota: detalhe.message || detalhe.status || base.nota });
+                } else if (detalhe && (detalhe.success === false || detalhe.error)) {
+                    falhas.push({ ...base, nota: detalhe.error || detalhe.message || base.nota });
+                } else {
+                    confirmados.push(base);
+                }
+            });
+
+            detalhes.forEach((detalhe) => {
+                const itemId = detalhe?.item_id || detalhe?.MLB || detalhe?.mlb;
+                const detalhePromotionId = detalhe?.promotion_id || detalhe?.promo_b_id || detalhe?.id || promotionId;
+                const chave = chaveResultadoParticipacao(detalhePromotionId, itemId);
+                if (String(detalhePromotionId || '').trim() !== String(promotionId || '').trim()) return;
+                if (!itemId || vistos.has(chave)) return;
+                const base = textoItemParticipacao(detalhe);
+                if (detalhe?.ignored) {
+                    ignorados.push({ ...base, nota: detalhe.message || detalhe.status || base.nota });
+                } else if (detalhe.success === false || detalhe.error) {
+                    falhas.push({ ...base, nota: detalhe.error || detalhe.message || base.nota });
+                }
+            });
+
+            return { nome, confirmados, ignorados, falhas };
+        });
+    }
+
+    function renderListaResultadoParticipacao(titulo, itens) {
+        const lista = Array.isArray(itens) ? itens : [];
+        const visiveis = lista.slice(0, 80);
+        const restante = lista.length - visiveis.length;
+        const conteudo = visiveis.length
+            ? visiveis.map((item) => `
+                <div class="promo-result-item">
+                    <span class="promo-result-item-id">${escapeHtml(item.itemId || '-')}</span>
+                    ${item.nota ? `<span class="promo-result-item-note">${escapeHtml(item.nota)}</span>` : ''}
+                </div>
+            `).join('')
+            : '<div class="promo-result-empty">Nenhum anúncio.</div>';
+        return `
+            <div class="promo-result-list">
+                <div class="promo-result-list-title">${escapeHtml(titulo)} (${lista.length})</div>
+                ${conteudo}
+                ${restante > 0 ? `<div class="promo-result-empty">+${restante} anúncio(s)</div>` : ''}
+            </div>
+        `;
+    }
+
+    function mostrarResumoParticipacaoPromocoes(payload, result, opcoes = {}) {
+        const anterior = document.querySelector('.promo-result-modal-backdrop');
+        if (anterior) anterior.remove();
+
+        const totalSucesso = Number(result?.total_sucesso || 0);
+        const totalIgnorados = Number(result?.total_ignorados || 0);
+        const totalFalha = Number(result?.total_falha || 0);
+        const titulo = opcoes.titulo || 'Confirmação de participação';
+        const linhas = montarLinhasResultadoParticipacao(payload, result);
+        const campanhasHtml = linhas.map((linha) => `
+            <section class="promo-result-campaign">
+                <div class="promo-result-campaign-title">${escapeHtml(linha.nome)}</div>
+                <div class="promo-result-columns">
+                    ${renderListaResultadoParticipacao('Confirmados', linha.confirmados)}
+                    ${renderListaResultadoParticipacao('Ignorados', linha.ignorados)}
+                    ${renderListaResultadoParticipacao('Falhas', linha.falhas)}
+                </div>
+            </section>
+        `).join('') || '<div class="promo-result-empty">Nenhuma campanha retornada.</div>';
+
+        const modal = document.createElement('div');
+        modal.className = 'promo-result-modal-backdrop';
+        modal.innerHTML = `
+            <div class="promo-result-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(titulo)}">
+                <div class="promo-result-modal-header">
+                    <div>
+                        <span class="promo-result-eyebrow">Mercado Livre</span>
+                        <h3 class="promo-result-title">${escapeHtml(titulo)}</h3>
+                    </div>
+                    <button type="button" class="promo-result-close" data-close-promo-result aria-label="Fechar">×</button>
+                </div>
+                <div class="promo-result-summary">
+                    <div class="promo-result-metric success"><strong>${totalSucesso}</strong><span>confirmado(s)</span></div>
+                    <div class="promo-result-metric ignored"><strong>${totalIgnorados}</strong><span>ignorado(s)</span></div>
+                    <div class="promo-result-metric failed"><strong>${totalFalha}</strong><span>falha(s)</span></div>
+                </div>
+                <div class="promo-result-body">${campanhasHtml}</div>
+                <div class="promo-result-footer">
+                    <button type="button" class="btn btn-primary" data-close-promo-result>OK</button>
+                </div>
+            </div>
+        `;
+
+        const fechar = () => {
+            document.removeEventListener('keydown', onKeydown);
+            modal.remove();
+        };
+        const onKeydown = (event) => {
+            if (event.key === 'Escape') fechar();
+        };
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal || event.target.closest('[data-close-promo-result]')) fechar();
+        });
+        document.addEventListener('keydown', onKeydown);
+        document.body.appendChild(modal);
+    }
+
     function montarPayloadParticipacoesPromocoes(indiceCampanha = null) {
         const loja = document.getElementById('apiLojaSelect')?.value || '';
         const analises = Array.isArray(apiAnalisesPorCampanha) && apiAnalisesPorCampanha.length
@@ -1632,9 +1933,7 @@
         }
         const msg = `Entrada concluida: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
         atualizarStatusAutomacaoPromo(msg);
-        if (Number(result.total_falha || 0) > 0) {
-            alert(`${msg}\nAlguns anuncios nao foram aceitos pelo Mercado Livre.`);
-        }
+        mostrarResumoParticipacaoPromocoes(payload, result, { titulo: 'Entrada concluída nas promoções' });
         return result;
     }
 
@@ -1671,7 +1970,7 @@
             analise.participacao_resultado = result;
             renderApiAnalysisTabs();
             atualizarStatusAutomacaoPromo(msg);
-            alert(Number(result.total_falha || 0) > 0 ? `${msg}\nAlguns anúncios não foram aceitos pelo Mercado Livre.` : msg);
+            mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}` });
         } catch (err) {
             atualizarStatusAutomacaoPromo(`Erro ao confirmar participação: ${err && err.message ? err.message : err}`);
             alert(err && err.message ? err.message : 'Erro ao confirmar participação.');
@@ -1709,14 +2008,14 @@
         const statusOriginal = String(row['Status'] ?? '');
         const statusNorm = statusOriginal.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         const ativoPromo1 = statusNorm === 'ativo' || statusNorm.includes('ativo na promocao 1');
-        const programadoPromo1 = statusNorm === 'programado' || statusNorm.includes('programado na promocao 1');
+        const programadoPromo1 = statusNorm === 'programado' || statusNorm === 'programada' || statusNorm.includes('programado na promocao 1') || statusNorm.includes('programada na promocao 1');
+        const elegivelPromo1 = statusNorm === 'elegivel' || statusNorm === 'eligible';
         const semPromoFixa = (
             statusNorm === 'sem promo fixa' ||
-            statusNorm === 'elegivel' ||
             statusNorm.includes('somente arquivo promocao 2') ||
             statusNorm.includes('somente promocao 2')
         );
-        row['Status'] = ativoPromo1 ? 'Ativo' : (programadoPromo1 ? 'Programado' : 'Sem Promo Fixa');
+        row['Status'] = ativoPromo1 ? 'Ativo' : (programadoPromo1 ? 'Programada' : (elegivelPromo1 ? 'Elegível' : 'Sem Promo Fixa'));
         const margemMinima = Number(document.getElementById('apiMargemMinima')?.value || 15);
         const minPct = Number.isFinite(margemMinima) ? margemMinima : 15;
         const margem1 = parsePercentValue(row['Margem']);

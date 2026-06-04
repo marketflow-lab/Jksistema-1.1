@@ -936,6 +936,12 @@ function verificarSessao() {
             const itens = [
                 ['Client ID', data.client_id || '-'],
                 ['RAG habilitado', boolTexto(data.enabled)],
+                ['Backend RAG', data.backend || '-'],
+                ['Modo configurado', data.backend_configurado || '-'],
+                ['Motor local', data.local_engine || '-'],
+                ['Local ok', data.local_ok == null ? '-' : boolTexto(data.local_ok)],
+                ['Docs locais', data.local_documentos != null ? String(data.local_documentos) : '-'],
+                ['DB local MB', data.local_db_mb != null ? String(data.local_db_mb) : '-'],
                 ['Postgres configurado', boolTexto(data.postgres_configurado)],
                 ['Postgres ok', boolTexto(data.postgres_ok)],
                 ['pgvector ok', boolTexto(data.pgvector_ok)],
@@ -944,6 +950,7 @@ function verificarSessao() {
                 ['Modelo embedding', data.ollama_embedding_model || '-'],
                 ['Top K', data.top_k != null ? String(data.top_k) : '-'],
                 ['psycopg instalado', boolTexto(data.psycopg_instalado)],
+                ['Erro local', textoCurto(data.local_error || '-')],
                 ['Erro Ollama', textoCurto(data.ollama_error || '-')],
                 ['Erro Postgres', textoCurto(data.postgres_error || '-')]
             ];

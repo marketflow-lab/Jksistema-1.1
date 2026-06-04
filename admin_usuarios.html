@@ -83,7 +83,7 @@
             line-height: 1.1;
         }
         .metric-label { color: var(--muted); font-size: 12px; margin-top: 5px; }
-        .layout { display: grid; grid-template-columns: 430px 1fr; gap: 18px; flex: 1; min-height: 0; }
+        .layout { display: grid; grid-template-columns: 1fr; gap: 18px; flex: 1; min-height: 0; }
         .layout.user-only { grid-template-columns: 1fr; }
         .panel {
             background: rgba(16, 26, 42, 0.95);
@@ -576,6 +576,7 @@
             }
         }
         .admin-only.is-hidden { display: none !important; }
+        .user-management-only { display: none !important; }
         .table-scroll { overflow: auto; max-height: calc(100vh - 360px); border-radius: 12px; }
         .table-scroll thead th {
             position: sticky;
@@ -589,6 +590,40 @@
             .table-tools { grid-template-columns: 1fr; }
             .machine-sync-grid { grid-template-columns: 1fr; }
         }
+        body.share-embed {
+            background: transparent;
+            padding: 0;
+            overflow: auto;
+        }
+        body.share-embed .wrap {
+            height: auto;
+            max-width: none;
+            min-height: 100vh;
+        }
+        body.share-embed .topbar,
+        body.share-embed #moduleTabs,
+        body.share-embed .admin-only,
+        body.share-embed #jk-left-sidebar-hotspot,
+        body.share-embed #jk-right-sidebar-hotspot,
+        body.share-embed #jk-ia-panel,
+        body.share-embed #jk-msg-panel {
+            display: none !important;
+        }
+        body.share-embed .layout {
+            display: block;
+            height: auto;
+        }
+        body.share-embed .panel {
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+            box-shadow: none;
+            overflow: visible;
+            padding: 0;
+        }
+        body.share-embed .module-section[data-section="compartilhar"] {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -596,7 +631,7 @@
     <div class="topbar">
         <div>
             <h1>👥 Central de Usuários</h1>
-            <div class="subtitle">Veja usuários online, envie mensagens e gerencie permissões do sistema.</div>
+            <div class="subtitle">Veja usuários online e acompanhe a presença do sistema.</div>
         </div>
         <div class="actions">
             <button class="btn-muted" onclick="navegarComTransicao('/configuracoes.html')">Voltar às configurações</button>
@@ -605,7 +640,7 @@
     </div>
 
     <div class="layout">
-        <div class="panel admin-only">
+        <div class="panel admin-only user-management-only">
             <div class="panel-title-row">
                 <h3 id="formTitle">Novo usuário</h3>
                 <span id="formModePill" class="pill on">Cadastro</span>
@@ -685,8 +720,6 @@
         <div class="panel">
             <div class="module-tabs" id="moduleTabs">
                 <button class="tab-button active admin-only" data-section-target="visao-geral" onclick="abrirSecaoModulo('visao-geral')">Visão geral</button>
-                <button class="tab-button" data-section-target="compartilhar" onclick="abrirSecaoModulo('compartilhar')">Compartilhar</button>
-                <button class="tab-button admin-only" data-section-target="usuarios" onclick="abrirSecaoModulo('usuarios')">Usuários</button>
             </div>
 
             <section class="module-section active admin-only" data-section="visao-geral">
@@ -791,7 +824,7 @@
             </section>
             <div id="userShareStatusBalloon" class="user-share-status-balloon" aria-live="polite"></div>
 
-            <section class="module-section admin-only" data-section="usuarios">
+            <section class="module-section admin-only user-management-only" data-section="usuarios">
                 <div id="messagePanel" class="message-panel hidden">
                     <div class="message-panel-title" id="messagePanelTitle">Enviar mensagem</div>
                     <label>Título</label>
@@ -862,8 +895,16 @@
         throw new Error('Sessão ausente');
     }
 
+    const urlParams = new URLSearchParams(window.location.search);
+    const modoCompartilharEmbutido = urlParams.get('embed') === 'share' || urlParams.get('modo') === 'compartilhar';
+    if (modoCompartilharEmbutido) document.body.classList.add('share-embed');
+
     const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
-    const usuarioAdmin = permissions.full === true || permissions.admin_usuarios === true;
+    const usuarioPodeGerenciarUsuarios = permissions.full === true;
+    const usuarioAdmin = usuarioPodeGerenciarUsuarios || permissions.admin_usuarios === true;
+    if (!usuarioAdmin && !modoCompartilharEmbutido) {
+        window.location.replace('/integracoes.html?tab=compartilhar');
+    }
 
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
@@ -882,7 +923,7 @@
     let sincronizacaoMaquinasCache = null;
     let sincronizacaoUsuariosAutomaticaRodando = false;
     let hiddenPermissionsState = { full: false, configuracoes: false };
-    let secaoAtual = usuarioAdmin ? 'visao-geral' : 'compartilhar';
+    let secaoAtual = modoCompartilharEmbutido ? 'compartilhar' : (usuarioAdmin ? 'visao-geral' : 'compartilhar');
 
     function labelPermissao(key) {
         const map = {
@@ -915,7 +956,11 @@
     }
 
     function abrirSecaoModulo(secao) {
-        const alvo = secao || (usuarioAdmin ? 'visao-geral' : 'compartilhar');
+        if (!modoCompartilharEmbutido && secao === 'compartilhar') {
+            window.location.href = '/integracoes.html?tab=compartilhar';
+            return;
+        }
+        const alvo = modoCompartilharEmbutido ? 'compartilhar' : (secao || (usuarioAdmin ? 'visao-geral' : 'compartilhar'));
         if (!usuarioAdmin && alvo !== 'compartilhar') return;
         secaoAtual = alvo;
         document.querySelectorAll('[data-section]').forEach(section => {
@@ -928,7 +973,7 @@
     }
 
     function atualizarAbaAtual() {
-        if (!usuarioAdmin) {
+        if (modoCompartilharEmbutido || !usuarioAdmin) {
             carregarCompartilhamentoEntreUsuarios();
             carregarSincronizacaoMinhasMaquinas();
             return;
@@ -1046,7 +1091,7 @@
         if (subtitle && !usuarioAdmin) {
             subtitle.textContent = 'Compartilhe dados com outros usuários por convite e aceite.';
         }
-        abrirSecaoModulo(usuarioAdmin ? secaoAtual : 'compartilhar');
+        abrirSecaoModulo(modoCompartilharEmbutido ? 'compartilhar' : (usuarioAdmin ? secaoAtual : 'compartilhar'));
     }
 
     function usuarioAtualSessao() {
@@ -2507,9 +2552,15 @@
     }
 
     async function carregarUsuarios() {
-        if (!usuarioAdmin) {
+        if (modoCompartilharEmbutido || !usuarioAdmin) {
             await carregarSincronizacaoMinhasMaquinas();
             await carregarCompartilhamentoEntreUsuarios();
+            return;
+        }
+        if (!usuarioPodeGerenciarUsuarios) {
+            setStatus('Carregando presença...');
+            await carregarOnlineUsuarios();
+            setStatus('Presença atualizada.');
             return;
         }
         setStatus('Carregando usuários...');
@@ -2643,7 +2694,7 @@
         setStatus(data.message || 'Usuário removido.');
     }
 
-    if (usuarioAdmin) {
+    if (usuarioPodeGerenciarUsuarios) {
         renderPermissionGrid();
         preencherFiltroPermissoes();
         limparFormulario();

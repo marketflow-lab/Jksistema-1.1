@@ -18,6 +18,15 @@
         .tab-button.active { color: #4facfe; border-bottom: 2px solid #4facfe; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+        .main-tab-content { display: none; }
+        .main-tab-content.active { display: block; }
+        .share-frame {
+            width: 100%;
+            min-height: calc(100vh - 190px);
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+        }
         label { display: block; margin-top: 15px; color: #ccc; }
         input[type="text"], input[type="password"] { width: 100%; padding: 8px; background-color: #333; border: 1px solid #555; border-radius: 4px; color: #fff; box-sizing: border-box; }
         button { background-color: #4facfe; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; margin-top: 20px; font-weight: bold; }
@@ -54,9 +63,17 @@
                 <a class="back-btn" href="/dashboard.html">Home</a>
                 <a class="back-btn" href="/dashboard.html">Voltar</a>
             </div>
-            <h1 id="store-title">Selecione uma loja</h1>
-            
-            <div id="integrations-panel" class="hidden">
+            <h1>Central de Integrações</h1>
+
+            <div class="tabs main-tabs">
+                <button class="tab-button active" data-main-tab="lojas">Lojas e APIs</button>
+                <button class="tab-button" data-main-tab="compartilhar">Compartilhar</button>
+            </div>
+
+            <div id="main-tab-lojas" class="main-tab-content active">
+                <h2 id="store-title">Selecione uma loja</h2>
+
+                <div id="integrations-panel" class="hidden">
                 <div class="tabs">
                     <button class="tab-button active" data-tab="bling">Bling</button>
                     <button class="tab-button" data-tab="mercadolivre">Mercado Livre</button>
@@ -104,6 +121,16 @@
                     </form>
                 </div>
             </div>
+            </div>
+
+            <div id="main-tab-compartilhar" class="main-tab-content">
+                <iframe
+                    id="user-share-frame"
+                    class="share-frame"
+                    src="/admin_usuarios.html?embed=share"
+                    title="Compartilhar entre usuários"
+                ></iframe>
+            </div>
         </div>
     </div>
 
@@ -119,8 +146,10 @@
             const storeTitle = document.getElementById('store-title');
             const integrationsPanel = document.getElementById('integrations-panel');
 
-            const tabs = document.querySelectorAll('.tab-button');
-            const tabContents = document.querySelectorAll('.tab-content');
+            const mainTabs = document.querySelectorAll('[data-main-tab]');
+            const mainTabContents = document.querySelectorAll('.main-tab-content');
+            const tabs = integrationsPanel.querySelectorAll('[data-tab]');
+            const tabContents = integrationsPanel.querySelectorAll('.tab-content');
 
             const formBling = document.getElementById('form-bling');
             const formML = document.getElementById('form-ml');
@@ -232,6 +261,26 @@
                 }
             }
 
+            function updateOauthStatus(elementId, cfg) {
+                const dados = cfg || {};
+                const temOAuth = !!(dados.access_token && dados.refresh_token);
+                const conectado = !!dados.connected && temOAuth;
+                updateStatus(elementId, conectado);
+                const el = document.getElementById(elementId);
+                if (el && !conectado && (dados.shared_without_oauth_tokens || dados.status === 'reautenticacao_necessaria')) {
+                    el.textContent = 'Autenticar aqui';
+                    el.title = dados.motivo || 'Esta loja foi compartilhada sem tokens OAuth. Autentique nesta instalação.';
+                }
+            }
+
+            function activateMainTab(nome) {
+                const alvo = nome === 'compartilhar' ? 'compartilhar' : 'lojas';
+                mainTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.mainTab === alvo));
+                mainTabContents.forEach(content => {
+                    content.classList.toggle('active', content.id === `main-tab-${alvo}`);
+                });
+            }
+
             async function selectStore(name) {
                 if (!name) {
                     selectedStore = null;
@@ -259,7 +308,7 @@
 
                     document.getElementById('bling-client-id').value = blingCfg.id || '';
                     document.getElementById('bling-client-secret').value = blingCfg.secret || '';
-                    updateStatus('bling-status', blingCfg.connected);
+                    updateOauthStatus('bling-status', blingCfg);
                     
                     document.getElementById('ml-app-id').value = mlCfg.id || mlCfg.app_id || mlCfg.client_id || '';
                     document.getElementById('ml-client-secret').value = mlCfg.secret || mlCfg.client_secret || '';
@@ -272,6 +321,8 @@
                     updateStatus('ml-status', mlOAuthCompleto);
                     if(mlOAuthCompleto && mlCfg.user_id) {
                         document.getElementById('ml-user-id').textContent = `(ID do Usuário: ${mlCfg.user_id})`;
+                    } else if (mlCfg.shared_without_oauth_tokens || mlCfg.status === 'reautenticacao_necessaria') {
+                        document.getElementById('ml-user-id').textContent = '(Autentique o Mercado Livre nesta instalação para usar esta loja.)';
                     } else if (mlCfg.connected && !mlOAuthCompleto) {
                         document.getElementById('ml-user-id').textContent = `(OAuth incompleto: faltando ${mlCamposFaltando.join(', ')})`;
                     }
@@ -363,6 +414,12 @@
                     tab.classList.add('active');
                     tabContents.forEach(c => c.classList.remove('active'));
                     document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+                });
+            });
+
+            mainTabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    activateMainTab(tab.dataset.mainTab);
                 });
             });
             
@@ -464,8 +521,9 @@
                     alert(`Falha na integração: ${msg || 'Ocorreu um erro.'}`);
                 }
                 if(status) {
-                    window.history.replaceState({}, document.title, "/integracoes.html");
+                    window.history.replaceState({}, document.title, tab === 'compartilhar' ? "/integracoes.html?tab=compartilhar" : "/integracoes.html");
                 }
+                if (tab === 'compartilhar') activateMainTab('compartilhar');
             }
 
             loadStores();
