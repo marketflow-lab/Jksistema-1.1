@@ -27,7 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     positionEmbeddedMlBrowser: (bounds) => ipcRenderer.invoke('embedded-ml-browser-position', bounds),
     hideEmbeddedMlBrowser: () => ipcRenderer.invoke('embedded-ml-browser-hide'),
     executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code),
-    importCredentials: () => ipcRenderer.invoke('import-credentials')
+    importCredentials: () => ipcRenderer.invoke('import-credentials'),
+    showWindowsNotification: (payload) => ipcRenderer.invoke('show-windows-notification', payload || {})
 });
 
 function isMercadoLivreHost(hostname) {

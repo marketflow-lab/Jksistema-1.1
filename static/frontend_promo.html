@@ -3860,10 +3860,17 @@
         renderApiPromoBFiles();
         if (!loja) return;
         try {
+            const errorMsg = document.getElementById('apiErrorMsg');
+            if (errorMsg) {
+                errorMsg.textContent = '';
+                errorMsg.style.display = 'none';
+            }
             const query = new URLSearchParams({ loja });
             const resp = await fetch(`/api/mercadolivre/promocoes?${query.toString()}`, { headers: getAuthHeadersWithClient() });
-            if (!resp.ok) throw new Error('Erro ao carregar promoções');
-            const data = await resp.json();
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                throw new Error(buildApiErrorMessage(resp, data, 'Erro ao carregar promoções'));
+            }
             const campanhas = Array.isArray(data.campaigns) ? data.campaigns : [];
             const campanhasEnriquecidas = campanhas.map((campanha) => applyPromoCounts(campanha));
             selectA.innerHTML = '';
@@ -3895,8 +3902,14 @@
                 }
             }).catch(() => {});
         } catch (e) {
-            selectA.innerHTML = '<option value="">Erro ao carregar promoções</option>';
-            selectB.innerHTML = '<div class="api-promo-empty">Erro ao carregar promoções</div>';
+            const mensagem = e?.message || 'Erro ao carregar promoções';
+            selectA.innerHTML = `<option value="">${escapeHtml(mensagem)}</option>`;
+            selectB.innerHTML = `<div class="api-promo-empty">${escapeHtml(mensagem)}</div>`;
+            const errorMsg = document.getElementById('apiErrorMsg');
+            if (errorMsg) {
+                errorMsg.textContent = mensagem;
+                errorMsg.style.display = 'block';
+            }
             renderApiPromoBFiles();
         }
     }

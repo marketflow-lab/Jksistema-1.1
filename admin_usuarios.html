@@ -399,10 +399,15 @@
         .user-share-item .row {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: flex-start;
             gap: 8px;
             flex-wrap: wrap;
             margin-top: 8px;
+        }
+        .user-share-item .row button {
+            margin-top: 0;
+            padding: 7px 10px;
+            font-size: 12px;
         }
         .user-share-item input[type="checkbox"],
         .user-share-scopes input[type="checkbox"] {
@@ -459,6 +464,11 @@
             color: #ffffff;
             font-weight: 850;
             font-size: 14px;
+        }
+        .share-balloon-updated {
+            color: var(--muted);
+            font-size: 11px;
+            margin-top: 2px;
         }
         .share-balloon-actions {
             display: flex;
@@ -911,7 +921,7 @@
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
         'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras',
-        'cadastro', 'impostos', 'configuracoes', 'importacoes', 'admin_usuarios', 'full'
+        'cadastro', 'impostos', 'configuracoes', 'importacoes', 'sala_reuniao', 'admin_usuarios', 'full'
     ];
 
     let usuariosCache = [];
@@ -924,6 +934,10 @@
     let compartilhamentoUsuariosCache = null;
     let sincronizacaoMaquinasCache = null;
     let sincronizacaoUsuariosAutomaticaRodando = false;
+    let compartilhamentoUsuariosCarregando = false;
+    let compartilhamentoUsuariosTimer = null;
+    let compartilhamentoUltimaAtualizacao = '';
+    let userShareProcessoAtual = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
     let secaoAtual = modoCompartilharEmbutido ? 'compartilhar' : (usuarioAdmin ? 'visao-geral' : 'compartilhar');
 
@@ -944,6 +958,7 @@
             impostos: 'Impostos',
             configuracoes: 'Configurações',
             importacoes: 'Importações',
+            sala_reuniao: 'Sala de Reunião',
             admin_usuarios: 'Central de Usuários'
         };
         return map[key] || key;
@@ -1047,7 +1062,7 @@
 
     function aplicarPresetPermissoes(tipo) {
         const presets = {
-            operacao: ['vendas', 'estoque', 'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras'],
+            operacao: ['vendas', 'estoque', 'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'sala_reuniao'],
             gestao: ['vendas', 'estoque', 'integracao', 'cadastro', 'impostos', 'importacoes', 'configuracoes'],
             admin: permissionKeys,
             limpar: []
@@ -1077,7 +1092,15 @@
 
     function setUserShareProcesso(nome, percentual, detalhe = '', erro = false) {
         const pct = Math.max(0, Math.min(100, Math.round(Number(percentual || 0))));
+        userShareProcessoAtual = {
+            nome: String(nome || 'Processo'),
+            percentual: pct,
+            detalhe: String(detalhe || ''),
+            erro: !!erro,
+            atualizadoEm: Date.now()
+        };
         setUserShareStatus(`${nome} - ${pct}%${detalhe ? ' | ' + detalhe : ''}`, erro);
+        atualizarBalaoStatusCompartilhamento(compartilhamentoUsuariosCache || {});
     }
 
     function labelBackendUsuarios(backend) {
@@ -1753,6 +1776,25 @@
         return `<div class="${classe}" aria-label="Progresso ${valor}%"><span style="width:${valor}%"></span></div>`;
     }
 
+    function textoUltimaAtualizacaoCompartilhamento() {
+        if (!compartilhamentoUltimaAtualizacao) return 'Atualizando em tempo real';
+        return `Atualizado às ${compartilhamentoUltimaAtualizacao}`;
+    }
+
+    function linhaProcessoAtualCompartilhamento() {
+        if (!userShareProcessoAtual) return null;
+        const idade = Date.now() - Number(userShareProcessoAtual.atualizadoEm || 0);
+        const finalizado = Number(userShareProcessoAtual.percentual || 0) >= 100;
+        if (finalizado && !userShareProcessoAtual.erro && idade > 25000) return null;
+        if (userShareProcessoAtual.erro && idade > 90000) return null;
+        return {
+            kind: userShareProcessoAtual.erro ? 'warn' : (finalizado ? 'ok' : 'warn'),
+            title: `${userShareProcessoAtual.nome} - ${percentualSeguro(userShareProcessoAtual.percentual, 0)}%`,
+            detail: userShareProcessoAtual.detalhe || (finalizado ? 'Concluído.' : 'Em andamento.'),
+            progress: percentualSeguro(userShareProcessoAtual.percentual, 0)
+        };
+    }
+
     function primeiroNomeCompartilhamento(item, direcao = '') {
         const recebido = direcao === 'received' || item.direction === 'received' || item.direction === 'target';
         const nome = recebido
@@ -1831,6 +1873,7 @@
                     <div class="share-balloon-heading">
                         <div class="share-balloon-title">Sincronização</div>
                         <div class="share-balloon-minimized-line">${escaparHtml(resumoCurtoBalaoStatusCompartilhamento(rows))}</div>
+                        <div class="share-balloon-updated">${escaparHtml(textoUltimaAtualizacaoCompartilhamento())}</div>
                     </div>
                     ${acoesBalaoStatusCompartilhamento('minimized')}
                 </div>
@@ -1841,6 +1884,7 @@
             <div class="share-balloon-head">
                 <div class="share-balloon-heading">
                     <div class="share-balloon-title">Status da sincronização</div>
+                    <div class="share-balloon-updated">${escaparHtml(textoUltimaAtualizacaoCompartilhamento())}</div>
                 </div>
                 ${acoesBalaoStatusCompartilhamento('open')}
             </div>
@@ -1893,6 +1937,8 @@
             .filter(item => Number(item.resumo.pending || 0) > 0);
         const automaticos = links.filter(link => link && link.active && link.auto_sync_enabled);
         const rows = [];
+        const processoAtual = linhaProcessoAtualCompartilhamento();
+        if (processoAtual) rows.push(processoAtual);
         if (preparando.length) {
             const progresso = progressoConvite(preparando[0]);
             rows.push({
@@ -2024,7 +2070,10 @@
                 : `${invite.target_client_id} - ${invite.target_name || invite.target_username}`;
             let status = invite.status === 'pending'
                 ? (sentPending ? 'aguardando aceite' : 'pendente')
-                : invite.status === 'accepted' ? 'aceito' : invite.status === 'failed' ? 'falhou' : 'recusado';
+                : invite.status === 'accepted' ? 'aceito'
+                : invite.status === 'failed' ? 'falhou'
+                : invite.status === 'cancelled' || invite.status === 'canceled' ? 'cancelado'
+                : 'recusado';
             if (invite.status === 'pending' && preparando) status = 'preparando dados';
             if (invite.status === 'pending' && preparoParcial) status = 'parcial: alguns dados não foram preparados';
             if (preparoFalhou) status = 'falhou ao preparar dados';
@@ -2047,6 +2096,18 @@
                     <button class="btn-danger" onclick="recusarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Recusar</button>
                 </div>
             ` : '';
+            const cancelAction = sentPending ? `
+                <button class="btn-warning" onclick="cancelarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Cancelar</button>
+            ` : '';
+            const deleteAction = `
+                <button class="btn-danger" onclick="excluirConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Excluir</button>
+            `;
+            const extraActions = (cancelAction || deleteAction) ? `
+                <div class="row">
+                    ${cancelAction}
+                    ${deleteAction}
+                </div>
+            ` : '';
             return `
                 <div class="user-share-item">
                     <strong>${escaparHtml(pessoa)}</strong>
@@ -2056,6 +2117,7 @@
                     ${progressoHtml}
                     ${errosHtml}
                     ${actions}
+                    ${extraActions}
                 </div>
             `;
         }).join('');
@@ -2125,6 +2187,11 @@
 
     function renderCompartilhamentoEntreUsuarios(payload) {
         compartilhamentoUsuariosCache = payload || {};
+        compartilhamentoUltimaAtualizacao = new Date().toLocaleTimeString('pt-BR', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
         const summary = document.getElementById('userShareSummary');
         if (summary) {
             const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
@@ -2136,6 +2203,52 @@
         renderConvitesCompartilhamentoUsuario(payload);
         renderVinculosCompartilhamentoUsuario(payload);
         atualizarBalaoStatusCompartilhamento(payload);
+    }
+
+    function removerConviteCompartilhamentoUsuarioDaTela(inviteId) {
+        const id = String(inviteId || '');
+        if (!id || !compartilhamentoUsuariosCache) return;
+        const invites = Array.isArray(compartilhamentoUsuariosCache.invites) ? compartilhamentoUsuariosCache.invites : [];
+        const filtrados = invites.filter(invite => String(invite && invite.id || '') !== id);
+        if (filtrados.length === invites.length) return;
+        renderCompartilhamentoEntreUsuarios({
+            ...compartilhamentoUsuariosCache,
+            invites: filtrados
+        });
+    }
+
+    function precisaAtualizacaoRapidaCompartilhamento(payload = compartilhamentoUsuariosCache) {
+        const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+        const links = Array.isArray(payload && payload.links) ? payload.links : [];
+        const processo = linhaProcessoAtualCompartilhamento();
+        if (processo && processo.progress < 100) return true;
+        if (invites.some(invite => {
+            const status = String(invite.status || '').toLowerCase();
+            const prepareStatus = String(invite.prepare_status || '').toLowerCase();
+            return status === 'pending' && prepareStatus === 'preparing';
+        })) return true;
+        return links.some(link => Number(((link.sync_status || {}).pending_receive) || 0) > 0);
+    }
+
+    function intervaloAtualizacaoCompartilhamento(payload = compartilhamentoUsuariosCache) {
+        if (document.hidden) return 30000;
+        if (precisaAtualizacaoRapidaCompartilhamento(payload)) return 2500;
+        const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+        if (invites.some(invite => String(invite.status || '').toLowerCase() === 'pending')) return 8000;
+        const links = Array.isArray(payload && payload.links) ? payload.links : [];
+        if (links.some(link => link && link.active && link.auto_sync_enabled)) return 8000;
+        return 30000;
+    }
+
+    function agendarAtualizacaoCompartilhamento(delayMs) {
+        if (compartilhamentoUsuariosTimer) clearTimeout(compartilhamentoUsuariosTimer);
+        compartilhamentoUsuariosTimer = setTimeout(() => {
+            carregarCompartilhamentoEntreUsuarios({ silencioso: true });
+        }, Math.max(1500, Number(delayMs) || 30000));
+    }
+
+    function iniciarAtualizacaoTempoRealCompartilhamento() {
+        agendarAtualizacaoCompartilhamento(intervaloAtualizacaoCompartilhamento());
     }
 
     function scopesSelecionadosCompartilhamentoUsuario() {
@@ -2305,11 +2418,22 @@
         }
     }
 
-    async function carregarCompartilhamentoEntreUsuarios() {
+    async function carregarCompartilhamentoEntreUsuarios(opcoes = {}) {
+        const forcar = !!(opcoes && opcoes.forcar);
+        if (compartilhamentoUsuariosCarregando) {
+            if (!forcar) return false;
+            const inicioEspera = Date.now();
+            while (compartilhamentoUsuariosCarregando && Date.now() - inicioEspera < 1500) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            if (compartilhamentoUsuariosCarregando) return false;
+        }
+        compartilhamentoUsuariosCarregando = true;
+        const silencioso = !!(opcoes && opcoes.silencioso);
         const summary = document.getElementById('userShareSummary');
-        if (summary) summary.textContent = 'Carregando convites e vínculos...';
+        if (summary && (!silencioso || !compartilhamentoUsuariosCache)) summary.textContent = 'Carregando convites e vínculos...';
         atualizarBalaoStatusCompartilhamento(compartilhamentoUsuariosCache || {});
-        await carregarUsuariosParaCompartilhar();
+        if (!silencioso || !usuariosCompartilhamentoCache.length) await carregarUsuariosParaCompartilhar();
         try {
             const resp = await fetch('/api/shared-sync/user-shares', { headers: obterAuthHeaders(), cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
@@ -2320,6 +2444,9 @@
             if (summary) summary.textContent = error.message || 'Erro ao carregar compartilhamentos.';
             atualizarBalaoStatusCompartilhamento(null, error.message || 'Erro ao carregar compartilhamentos.');
             return false;
+        } finally {
+            compartilhamentoUsuariosCarregando = false;
+            agendarAtualizacaoCompartilhamento(intervaloAtualizacaoCompartilhamento());
         }
     }
 
@@ -2404,6 +2531,41 @@
         }
     }
 
+    async function cancelarConviteCompartilhamentoUsuario(inviteId) {
+        if (!confirm('Cancelar este convite de compartilhamento? O outro usuário não poderá mais aceitar.')) return;
+        setUserShareProcesso('Cancelamento do convite', 20, 'Marcando convite como cancelado.');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId) + '/cancel', {
+                method: 'POST',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao cancelar convite.');
+            await carregarCompartilhamentoEntreUsuarios({ silencioso: true });
+            setUserShareProcesso('Cancelamento do convite', 100, data.message || 'Convite cancelado.');
+        } catch (error) {
+            setUserShareProcesso('Cancelamento do convite', 100, error.message || 'Erro ao cancelar convite.', true);
+        }
+    }
+
+    async function excluirConviteCompartilhamentoUsuario(inviteId) {
+        if (!confirm('Excluir este convite da lista? Se estiver pendente, ele será cancelado antes de sair da lista.')) return;
+        setUserShareProcesso('Exclusão do convite', 20, 'Removendo registro da lista.');
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/invites/' + encodeURIComponent(inviteId), {
+                method: 'DELETE',
+                headers: obterAuthHeaders()
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao excluir convite.');
+            removerConviteCompartilhamentoUsuarioDaTela(inviteId);
+            await carregarCompartilhamentoEntreUsuarios({ silencioso: true, forcar: true });
+            setUserShareProcesso('Exclusão do convite', 100, data.message || 'Convite excluído.');
+        } catch (error) {
+            setUserShareProcesso('Exclusão do convite', 100, error.message || 'Erro ao excluir convite.', true);
+        }
+    }
+
     async function alterarSyncVinculoCompartilhamentoUsuario(linkId, keepSynced) {
         try {
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId), {
@@ -2446,7 +2608,6 @@
         try {
             setUserShareProcesso(nomeProcesso, 30, direcao === 'push' ? 'Enviando pacote.' : 'Importando pacote.');
             const body = { machine_id: machineIdAtual() };
-            if (direcao === 'push') body.scopes = scopesSelecionadosCompartilhamentoUsuario();
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -2729,7 +2890,8 @@
         setInterval(carregarOnlineUsuarios, 30000);
     }
     setInterval(carregarSincronizacaoMinhasMaquinas, 90000);
-    setInterval(carregarCompartilhamentoEntreUsuarios, 30000);
+    document.addEventListener('visibilitychange', iniciarAtualizacaoTempoRealCompartilhamento);
+    iniciarAtualizacaoTempoRealCompartilhamento();
     setInterval(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 15000);
     setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 5000);
 </script>

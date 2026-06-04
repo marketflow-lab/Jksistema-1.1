@@ -210,6 +210,33 @@
                 return {};
             }
 
+            async function abrirUrlAutenticacao(authUrl) {
+                const url = String(authUrl || '').trim();
+                if (!url) {
+                    return false;
+                }
+
+                if (window.electronAPI && typeof window.electronAPI.openExternalChrome === 'function') {
+                    try {
+                        await window.electronAPI.openExternalChrome(url);
+                        return true;
+                    } catch (err) {
+                        console.warn('Falha ao abrir autenticacao no navegador externo:', err && err.message ? err.message : err);
+                    }
+                }
+
+                const popup = window.open(url, '_blank', 'noopener,noreferrer');
+                if (popup) {
+                    try {
+                        popup.opener = null;
+                    } catch (_err) {}
+                    return true;
+                }
+
+                window.location.href = url;
+                return true;
+            }
+
             const api = {
                 getStores: () => apiFetch('/api/lojas'),
                 getStore: (name) => apiFetch(`/api/lojas/${name}`),
@@ -443,7 +470,7 @@
                         body: JSON.stringify(payload)
                     });
                     if (result && result.url) {
-                        window.location.href = result.url;
+                        await abrirUrlAutenticacao(result.url);
                     } else {
                         alert('Não foi possível obter o link de autorização do Bling.');
                     }
@@ -472,7 +499,7 @@
                         body: JSON.stringify(payload)
                     });
                     if (result && result.url) {
-                        window.location.href = result.url;
+                        await abrirUrlAutenticacao(result.url);
                     } else {
                         alert('Não foi possível obter o link de autorização do Mercado Livre.');
                     }
@@ -515,15 +542,16 @@
                 const params = new URLSearchParams(window.location.search);
                 const status = params.get('status');
                 const msg = params.get('msg');
+                const tabParam = params.get('tab');
                 if (status === 'success') {
                     alert('Integração conectada com sucesso!');
                 } else if (status === 'error') {
                     alert(`Falha na integração: ${msg || 'Ocorreu um erro.'}`);
                 }
                 if(status) {
-                    window.history.replaceState({}, document.title, tab === 'compartilhar' ? "/integracoes.html?tab=compartilhar" : "/integracoes.html");
+                    window.history.replaceState({}, document.title, tabParam === 'compartilhar' ? "/integracoes.html?tab=compartilhar" : "/integracoes.html");
                 }
-                if (tab === 'compartilhar') activateMainTab('compartilhar');
+                if (tabParam === 'compartilhar') activateMainTab('compartilhar');
             }
 
             loadStores();

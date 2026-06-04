@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.51",
+  "version": "1.0.52",
   "description": "Launcher para JK Sistema",
   "main": "main.js",
   "scripts": {

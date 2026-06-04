@@ -721,25 +721,33 @@
   #jk-msg-chat-title{min-width:0;color:#fff;font-size:.86rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #jk-msg-history{display:none;flex:1 1 auto;flex-direction:column;gap:8px;padding:2px 0 8px;}
   #jk-msg-history.ativo{display:flex;}
+  #jk-msg-typing{display:none;color:#9ee8df;font-size:.72rem;font-weight:900;min-height:17px;padding:0 2px 6px;}
+  #jk-msg-typing.ativo{display:block;}
   .jk-msg-bubble{max-width:86%;border:1px solid rgba(120,227,212,.22);border-radius:13px;padding:8px 10px;color:#e8fffb;background:rgba(23,47,70,.55);font-size:.78rem;line-height:1.42;white-space:pre-wrap;}
   .jk-msg-bubble.me{align-self:flex-end;background:linear-gradient(165deg,#1888ff,#0f65d8);border-color:transparent;color:#fff;border-bottom-right-radius:4px;}
   .jk-msg-bubble.other{align-self:flex-start;border-bottom-left-radius:4px;}
   .jk-msg-bubble-meta{display:block;margin-top:4px;font-size:.62rem;color:rgba(232,255,251,.72);white-space:nowrap;}
   .jk-msg-bubble-meta.local-alert{color:#ffd7a3;}
+  .jk-msg-attachments{display:grid;gap:6px;margin-top:7px;}
+  .jk-msg-attachment{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(3,22,32,.48);padding:6px;color:#dffefa;font-size:.7rem;overflow:hidden;}
+  .jk-msg-attachment img{display:block;max-width:190px;max-height:150px;border-radius:7px;object-fit:contain;background:rgba(0,0,0,.22);}
+  .jk-msg-attachment audio{width:210px;max-width:100%;height:34px;display:block;}
+  .jk-msg-attachment a{color:#9ee8df;text-decoration:none;font-weight:900;word-break:break-word;}
+  .jk-msg-attachment a:hover{text-decoration:underline;}
   .jk-msg-section{display:flex;flex-direction:column;gap:8px;}
   .jk-msg-section-title{color:#8ee9de;font-size:.78rem;font-weight:900;text-transform:uppercase;letter-spacing:.03em;}
   .jk-msg-list{display:flex;flex-direction:column;gap:8px;}
   .jk-msg-empty{color:#cfe7e4;font-size:.78rem;opacity:.72;border:1px dashed rgba(120,227,212,.24);border-radius:8px;padding:10px;background:rgba(4,26,35,.36);}
   .jk-msg-user-item,.jk-msg-card{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(8,43,59,.56);color:#e8fffb;padding:10px;}
-  .jk-msg-user-item{display:flex;align-items:center;gap:10px;text-align:left;cursor:pointer;width:100%;}
+  .jk-msg-user-item{display:flex;align-items:center;gap:6px;text-align:left;cursor:pointer;width:100%;min-height:30px;padding:5px 7px;border-radius:6px;}
   .jk-msg-user-item:hover,.jk-msg-user-item.ativo{border-color:rgba(120,227,212,.62);background:rgba(20,92,85,.48);}
   .jk-msg-user-item:disabled{cursor:default;opacity:.68;}
-  .jk-msg-dot{width:10px;height:10px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.13);flex:0 0 10px;}
-  .jk-msg-user-item.offline .jk-msg-dot{background:#ef4444;box-shadow:0 0 0 4px rgba(239,68,68,.12);}
-  .jk-msg-user-info{min-width:0;display:grid;gap:2px;flex:1 1 auto;}
-  .jk-msg-user-name{font-size:.84rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .jk-msg-user-meta{font-size:.7rem;color:#9ee8df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .jk-msg-unread-count{flex:0 0 auto;border-radius:999px;background:#ef4444;color:#fff;border:1px solid rgba(255,255,255,.38);font-size:.66rem;font-weight:900;min-width:24px;min-height:22px;padding:3px 7px;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 14px rgba(239,68,68,.34);}
+  .jk-msg-dot{width:6px;height:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,.12);flex:0 0 6px;}
+  .jk-msg-user-item.offline .jk-msg-dot{background:#ef4444;box-shadow:0 0 0 2px rgba(239,68,68,.11);}
+  .jk-msg-user-info{min-width:0;display:grid;gap:0;flex:1 1 auto;}
+  .jk-msg-user-name{font-size:.72rem;font-weight:900;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-user-meta{display:none;}
+  .jk-msg-unread-count{flex:0 0 auto;border-radius:999px;background:#ef4444;color:#fff;border:1px solid rgba(255,255,255,.3);font-size:.54rem;font-weight:900;min-width:17px;min-height:16px;padding:1px 4px;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(239,68,68,.24);}
   .jk-msg-card{display:grid;gap:6px;}
   .jk-msg-card-title{font-size:.82rem;font-weight:900;color:#fff;}
   .jk-msg-card-meta{font-size:.68rem;color:#9ee8df;}
@@ -749,6 +757,17 @@
   .jk-msg-small-btn:hover{border-color:rgba(120,227,212,.7);background:rgba(36,161,160,.3);}
   #jk-msg-compose{border-top:1px solid rgba(106,225,203,.18);padding:10px 12px 12px;background:rgba(4,26,35,.92);display:grid;gap:8px;}
   #jk-msg-selected{color:#9ee8df;font-size:.74rem;font-weight:800;min-height:18px;}
+  #jk-msg-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .jk-msg-tool-btn{border:1px solid rgba(120,227,212,.28);border-radius:8px;background:rgba(35,142,165,.18);color:#e8fffb;font-weight:900;font-size:.72rem;min-width:32px;height:30px;padding:0 8px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
+  .jk-msg-tool-btn:hover,.jk-msg-tool-btn.ativo{border-color:rgba(120,227,212,.7);background:rgba(36,161,160,.32);}
+  #jk-msg-emoji-panel{display:none;grid-template-columns:repeat(8,1fr);gap:4px;border:1px solid rgba(120,227,212,.2);border-radius:8px;padding:6px;background:rgba(3,22,32,.9);}
+  #jk-msg-emoji-panel.aberto{display:grid;}
+  .jk-msg-emoji-choice{border:0;border-radius:6px;background:rgba(35,142,165,.16);min-height:28px;cursor:pointer;font-size:1rem;}
+  .jk-msg-emoji-choice:hover{background:rgba(36,161,160,.28);}
+  #jk-msg-anexos{display:flex;flex-wrap:wrap;gap:5px;}
+  .jk-msg-anexo-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid rgba(120,227,212,.26);border-radius:999px;background:rgba(25,120,133,.18);color:#dbfffb;font-size:.68rem;font-weight:800;padding:4px 7px;}
+  .jk-msg-anexo-chip span{max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-anexo-chip button{border:0;background:transparent;color:#ffd2d2;font-size:.82rem;font-weight:900;cursor:pointer;padding:0;}
   #jk-msg-text{width:100%;border:1px solid rgba(120,227,212,.26);border-radius:8px;background:rgba(3,22,32,.82);color:#e8fffb;font:inherit;font-size:.78rem;outline:none;padding:8px;}
   #jk-msg-text{min-height:76px;resize:vertical;line-height:1.4;}
   #jk-msg-text:focus{border-color:#53d4b7;box-shadow:0 0 0 2px rgba(83,212,183,.16);}
@@ -945,11 +964,22 @@
         <div id="jk-msg-chat-title">Chat</div>
       </div>
       <div id="jk-msg-history" aria-live="polite"></div>
+      <div id="jk-msg-typing" aria-live="polite"></div>
     </div>
     <div id="jk-msg-compose">
       <div id="jk-msg-selected">Selecione um usuario para enviar mensagem.</div>
+      <div id="jk-msg-tools" aria-label="Ferramentas da mensagem">
+        <button class="jk-msg-tool-btn" id="jk-msg-emoji-btn" type="button" title="Emoji">&#9786;</button>
+        <button class="jk-msg-tool-btn" id="jk-msg-img-btn" type="button" title="Imagem ou GIF">IMG</button>
+        <button class="jk-msg-tool-btn" id="jk-msg-file-btn" type="button" title="Arquivo">&#128206;</button>
+        <button class="jk-msg-tool-btn" id="jk-msg-audio-btn" type="button" title="Gravar audio">&#127908;</button>
+      </div>
+      <div id="jk-msg-emoji-panel" aria-label="Escolher emoji"></div>
+      <div id="jk-msg-anexos" aria-live="polite"></div>
       <textarea id="jk-msg-text" maxlength="2000" placeholder="Digite sua mensagem..." aria-label="Texto da mensagem"></textarea>
       <button id="jk-msg-send" type="button">Enviar mensagem</button>
+      <input type="file" id="jk-msg-img-input" accept="image/*,.gif" multiple style="display:none">
+      <input type="file" id="jk-msg-file-input" multiple style="display:none">
     </div>
   </aside>
   `;
@@ -1048,11 +1078,30 @@
     let msgTemMensagemNaoVista = false;
     let msgNotificacoesConhecidas = null;
     let msgNaoLidasPorUsuario = new Map();
+    let msgAnexos = [];
+    let msgMediaRecorder = null;
+    let msgAudioChunks = [];
+    let msgAudioStream = null;
+    let msgTypingPollTimer = null;
+    let msgTypingStopTimer = null;
+    let msgTypingEnviado = false;
     const PANEL_WIDTH_KEY = 'jk_ia_sidebar_width_px';
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
     const MSG_NOTIFICACOES_KEY = 'jk_msg_notificacoes_exibidas_v1';
     const MSG_REFRESH_INTERVAL_MS = 10000;
+    const MSG_ATTACHMENT_MAX_COUNT = 6;
+    const MSG_ATTACHMENT_MAX_BYTES = 700 * 1024;
+    const MSG_ATTACHMENT_TOTAL_MAX_BYTES = 900 * 1024;
+    const MSG_TYPING_POLL_MS = 2000;
+    const PERGUNTAS_APPROVALS_NOTIFY_KEY = 'jk_perguntas_aprovacoes_notificadas_v1';
+    const PERGUNTAS_MONITOR_OWNER_KEY = 'jk_perguntas_monitor_owner_v1';
+    const PERGUNTAS_MONITOR_INTERVAL_MS = 15000;
+    const PERGUNTAS_MONITOR_STALE_MS = 45000;
+    const perguntasMonitorId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let perguntasMonitorTimer = null;
+    let perguntasMonitorRodando = false;
+    let perguntasAprovacoesNotificadas = null;
     const MODULOS_LATERAIS = [
       { key: 'analise_promo', href: 'frontend_promo.html', icon: '&#128200;', label: 'Promocao ML' },
       { key: 'renovacao_fixa', href: 'renovacao.html', icon: '&#128260;', label: 'Renovacao Fixa' },
@@ -1389,6 +1438,179 @@
       if (alterou) _msgSalvarNotificacoesSet();
     }
 
+    function _perguntasAprovacoesNotificadasSet() {
+      if (perguntasAprovacoesNotificadas) return perguntasAprovacoesNotificadas;
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(PERGUNTAS_APPROVALS_NOTIFY_KEY) || '[]') || []; } catch (_) { lista = []; }
+      perguntasAprovacoesNotificadas = new Set(Array.isArray(lista) ? lista.map(String) : []);
+      return perguntasAprovacoesNotificadas;
+    }
+
+    function _perguntasSalvarAprovacoesNotificadasSet() {
+      try {
+        const lista = Array.from(_perguntasAprovacoesNotificadasSet()).slice(-240);
+        localStorage.setItem(PERGUNTAS_APPROVALS_NOTIFY_KEY, JSON.stringify(lista));
+        perguntasAprovacoesNotificadas = new Set(lista);
+      } catch (_) {}
+    }
+
+    function _perguntasApprovalId(approval) {
+      return String(approval && (approval.id || approval.approval_id || approval.question_id) || '').trim();
+    }
+
+    function _perguntasIsPosVenda(approval) {
+      return String(approval && (approval.tipo || approval.approval_type) || '').toLowerCase() === 'pos_venda';
+    }
+
+    function _perguntasTextoPrincipal(approval) {
+      const direto = String(approval && approval.pergunta || '').trim();
+      if (direto) return direto;
+      const conversa = approval && approval.conversa && typeof approval.conversa === 'object' ? approval.conversa : {};
+      const last = String(conversa.last_message_text || '').trim();
+      if (last) return last;
+      const mensagens = Array.isArray(approval && approval.mensagens) ? approval.mensagens : [];
+      for (let i = mensagens.length - 1; i >= 0; i -= 1) {
+        const msg = mensagens[i] || {};
+        const role = String(msg.from_role || msg.role || '').toLowerCase();
+        if (role === 'seller') continue;
+        const texto = String(msg.text || msg.plain || msg.message || '').trim();
+        if (texto) return texto;
+      }
+      return 'A IA gerou uma resposta e aguarda sua revisao.';
+    }
+
+    function _perguntasTituloNotificacao(approval) {
+      return _perguntasIsPosVenda(approval)
+        ? 'Nova mensagem pos-venda para aprovar'
+        : 'Nova pergunta do Mercado Livre para aprovar';
+    }
+
+    function _perguntasCorpoNotificacao(approval) {
+      const loja = String(approval && approval.loja || '').trim();
+      const sku = String(approval && approval.sku || '').trim();
+      const titulo = String(approval && (approval.titulo || approval.item_id || approval.pack_id) || '').trim();
+      const partes = [];
+      if (loja) partes.push(`Loja ${loja}`);
+      if (sku) partes.push(`SKU ${sku}`);
+      if (titulo) partes.push(titulo);
+      const cabecalho = partes.join(' - ');
+      const texto = _perguntasTextoPrincipal(approval);
+      return `${cabecalho ? cabecalho + '\n' : ''}${texto}`.trim();
+    }
+
+    async function _perguntasMostrarNotificacaoWindows(approval) {
+      const title = _perguntasTituloNotificacao(approval);
+      const body = _perguntasCorpoNotificacao(approval);
+      if (window.electronAPI && typeof window.electronAPI.showWindowsNotification === 'function') {
+        try {
+          const result = await window.electronAPI.showWindowsNotification({
+            title,
+            body,
+            silent: false,
+          });
+          if (result && result.success) return;
+        } catch (_) {}
+      }
+
+      if (!_msgNotificationDisponivel()) return;
+      try {
+        if (Notification.permission === 'default') {
+          const pedido = Notification.requestPermission();
+          if (pedido && typeof pedido.then === 'function') await pedido.catch(() => {});
+        }
+        if (Notification.permission !== 'granted') return;
+        const notificacao = new Notification(title, {
+          body,
+          tag: `jk-perguntas-${_perguntasApprovalId(approval)}`,
+          renotify: true,
+        });
+        notificacao.onclick = () => {
+          try { window.focus(); } catch (_) {}
+          mostrarChat();
+          togglePanel(true);
+          try { notificacao.close(); } catch (_) {}
+        };
+        setTimeout(() => {
+          try { notificacao.close(); } catch (_) {}
+        }, 11000);
+      } catch (_) {}
+    }
+
+    async function _perguntasNotificarWindowsAprovacaoUmaVez(approval) {
+      const approvalId = _perguntasApprovalId(approval);
+      if (!approvalId) return;
+      const status = String(approval && approval.status || 'pending').toLowerCase();
+      if (status && status !== 'pending') return;
+      const conhecidos = _perguntasAprovacoesNotificadasSet();
+      if (conhecidos.has(approvalId)) return;
+      conhecidos.add(approvalId);
+      _perguntasSalvarAprovacoesNotificadasSet();
+      await _perguntasMostrarNotificacaoWindows(approval);
+    }
+
+    function _perguntasMonitorAssumirLideranca() {
+      try {
+        const agora = Date.now();
+        const owner = JSON.parse(localStorage.getItem(PERGUNTAS_MONITOR_OWNER_KEY) || '{}') || {};
+        const ownerId = String(owner.id || '');
+        const ownerTs = Number(owner.ts || 0);
+        if (ownerId && ownerId !== perguntasMonitorId && agora - ownerTs < PERGUNTAS_MONITOR_STALE_MS) {
+          return false;
+        }
+        localStorage.setItem(PERGUNTAS_MONITOR_OWNER_KEY, JSON.stringify({ id: perguntasMonitorId, ts: agora }));
+        return true;
+      } catch (_) {
+        return true;
+      }
+    }
+
+    function _perguntasMonitorLiberarLideranca() {
+      try {
+        const owner = JSON.parse(localStorage.getItem(PERGUNTAS_MONITOR_OWNER_KEY) || '{}') || {};
+        if (String(owner.id || '') === perguntasMonitorId) {
+          localStorage.removeItem(PERGUNTAS_MONITOR_OWNER_KEY);
+        }
+      } catch (_) {}
+    }
+
+    async function _perguntasNotificarAprovacaoPendente(approval) {
+      const approvalId = _perguntasApprovalId(approval);
+      if (!approvalId) return;
+      _adicionarNotificacaoAprovacao(approval, { abrirPainel: false });
+      await _perguntasNotificarWindowsAprovacaoUmaVez(approval);
+    }
+
+    async function _perguntasMonitorBuscarAprovacoes() {
+      if (perguntasMonitorRodando || !_token()) return;
+      if (!_perguntasMonitorAssumirLideranca()) return;
+      perguntasMonitorRodando = true;
+      try {
+        const response = await fetch('/api/mercadolivre/perguntas/aprovacoes', {
+          headers: _authHeaders(),
+          cache: 'no-store',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success === false) return;
+        const pendentes = Array.isArray(data.pendentes) ? data.pendentes : [];
+        for (const approval of pendentes) {
+          await _perguntasNotificarAprovacaoPendente(approval);
+        }
+      } catch (_) {
+      } finally {
+        perguntasMonitorRodando = false;
+        _perguntasMonitorAssumirLideranca();
+      }
+    }
+
+    function _perguntasIniciarMonitorGlobal() {
+      if (perguntasMonitorTimer || !_token()) return;
+      void _perguntasMonitorBuscarAprovacoes();
+      perguntasMonitorTimer = setInterval(() => {
+        void _perguntasMonitorBuscarAprovacoes();
+      }, PERGUNTAS_MONITOR_INTERVAL_MS);
+      window.addEventListener('beforeunload', _perguntasMonitorLiberarLideranca);
+    }
+
     function _msgLabelUsuario(user) {
       return String((user && (user.name || user.username || user.email)) || 'Usuario').trim();
     }
@@ -1408,12 +1630,291 @@
       el.appendChild(vazio);
     }
 
+    function _msgMimeExt(mime) {
+      const tipo = String(mime || '').toLowerCase();
+      if (tipo.includes('ogg')) return 'ogg';
+      if (tipo.includes('mpeg') || tipo.includes('mp3')) return 'mp3';
+      if (tipo.includes('wav')) return 'wav';
+      if (tipo.includes('webm')) return 'webm';
+      return 'webm';
+    }
+
+    function _msgDataUrl(anexo) {
+      if (!anexo || !anexo.data_base64) return '';
+      return `data:${String(anexo.mime_type || 'application/octet-stream')};base64,${anexo.data_base64}`;
+    }
+
+    function _msgTotalAnexosBytes(lista = msgAnexos) {
+      return (Array.isArray(lista) ? lista : []).reduce((acc, item) => acc + Number(item && item.size || 0), 0);
+    }
+
+    function _msgRenderAnexosComposer() {
+      const el = document.getElementById('jk-msg-anexos');
+      if (!el) return;
+      el.innerHTML = '';
+      msgAnexos.forEach((anexo, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'jk-msg-anexo-chip';
+        const nome = document.createElement('span');
+        nome.textContent = String(anexo.name || 'arquivo');
+        const remover = document.createElement('button');
+        remover.type = 'button';
+        remover.title = 'Remover anexo';
+        remover.textContent = 'x';
+        remover.addEventListener('click', () => {
+          msgAnexos.splice(index, 1);
+          _msgRenderAnexosComposer();
+        });
+        chip.appendChild(nome);
+        chip.appendChild(remover);
+        el.appendChild(chip);
+      });
+    }
+
+    function _msgAdicionarAnexo(anexo) {
+      if (!anexo || !anexo.data_base64) return false;
+      if (msgAnexos.length >= MSG_ATTACHMENT_MAX_COUNT) {
+        _msgSetStatus(`Limite de ${MSG_ATTACHMENT_MAX_COUNT} anexos por mensagem.`, true);
+        return false;
+      }
+      const tamanho = Number(anexo.size || 0);
+      if (tamanho > MSG_ATTACHMENT_MAX_BYTES) {
+        _msgSetStatus('Anexo muito grande. Limite de 700 KB por arquivo.', true);
+        return false;
+      }
+      if (_msgTotalAnexosBytes() + tamanho > MSG_ATTACHMENT_TOTAL_MAX_BYTES) {
+        _msgSetStatus('Anexos muito grandes. Limite total de 900 KB por mensagem.', true);
+        return false;
+      }
+      msgAnexos.push(anexo);
+      _msgRenderAnexosComposer();
+      return true;
+    }
+
+    function _msgBlobParaAnexo(blob, nome) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          const base64 = dataUrl.includes(',') ? dataUrl.split(',').pop() : '';
+          resolve({
+            name: nome || 'audio.webm',
+            mime_type: blob.type || 'application/octet-stream',
+            data_base64: base64 || '',
+            size: Number(blob.size || 0),
+          });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function _msgArquivosSelecionados(files) {
+      const lista = Array.from(files || []);
+      for (const file of lista) {
+        const anexo = await _msgBlobParaAnexo(file, file.name || 'arquivo');
+        _msgAdicionarAnexo(anexo);
+      }
+    }
+
+    function _msgRenderAnexoHistorico(anexo) {
+      const item = document.createElement('div');
+      item.className = 'jk-msg-attachment';
+      const url = _msgDataUrl(anexo);
+      const nome = String(anexo && anexo.name || 'arquivo');
+      const mime = String(anexo && anexo.mime_type || '').toLowerCase();
+      if (url && mime.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = nome;
+        item.appendChild(img);
+        return item;
+      }
+      if (url && mime.startsWith('audio/')) {
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = url;
+        item.appendChild(audio);
+        return item;
+      }
+      const link = document.createElement('a');
+      link.href = url || '#';
+      link.download = nome;
+      link.textContent = nome;
+      item.appendChild(link);
+      return item;
+    }
+
+    function _msgRenderAnexosHistorico(bubble, anexos) {
+      const lista = Array.isArray(anexos) ? anexos : [];
+      if (!bubble || !lista.length) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'jk-msg-attachments';
+      lista.forEach(anexo => wrap.appendChild(_msgRenderAnexoHistorico(anexo)));
+      bubble.appendChild(wrap);
+    }
+
+    function _msgToggleEmojiPanel() {
+      document.getElementById('jk-msg-emoji-panel')?.classList.toggle('aberto');
+    }
+
+    function _msgInserirEmoji(emoji) {
+      const input = document.getElementById('jk-msg-text');
+      if (!input) return;
+      const inicio = input.selectionStart || input.value.length;
+      const fim = input.selectionEnd || input.value.length;
+      input.value = input.value.slice(0, inicio) + emoji + input.value.slice(fim);
+      const pos = inicio + emoji.length;
+      input.focus();
+      try { input.setSelectionRange(pos, pos); } catch (_) {}
+    }
+
+    function _msgMontarEmojiPanel() {
+      const panel = document.getElementById('jk-msg-emoji-panel');
+      if (!panel || panel.dataset.montado === '1') return;
+      panel.dataset.montado = '1';
+      ['🙂','😀','😂','😍','👍','🙏','👏','🔥','✅','⭐','⚠️','❤️','😎','🤝','📦','💬'].forEach(emoji => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'jk-msg-emoji-choice';
+        btn.textContent = emoji;
+        btn.addEventListener('click', () => _msgInserirEmoji(emoji));
+        panel.appendChild(btn);
+      });
+    }
+
+    function _msgSetDigitando(ativo, nome = '') {
+      const el = document.getElementById('jk-msg-typing');
+      if (!el) return;
+      const mostrar = !!(ativo && msgChatAberto && msgUsuarioSelecionado);
+      el.classList.toggle('ativo', mostrar);
+      el.textContent = mostrar ? `${nome || _msgLabelUsuario(msgUsuarioSelecionado)} digitando...` : '';
+    }
+
+    async function _msgEnviarDigitando(typing) {
+      if (!msgUsuarioSelecionado || !msgUsuarioSelecionado.username) return;
+      const valor = !!typing;
+      if (msgTypingEnviado === valor) return;
+      msgTypingEnviado = valor;
+      try {
+        await fetch('/api/user/chat/typing', {
+          method: 'POST',
+          headers: _authHeaders(),
+          body: JSON.stringify({
+            username: msgUsuarioSelecionado.username,
+            client_id: msgUsuarioSelecionado.client_id || _clientId() || 'default',
+            typing: valor,
+          }),
+        });
+      } catch (_) {}
+    }
+
+    function _msgMarcarDigitandoLocal() {
+      if (!msgChatAberto || !msgUsuarioSelecionado) return;
+      void _msgEnviarDigitando(true);
+      if (msgTypingStopTimer) clearTimeout(msgTypingStopTimer);
+      msgTypingStopTimer = setTimeout(() => {
+        msgTypingStopTimer = null;
+        void _msgEnviarDigitando(false);
+      }, 3200);
+    }
+
+    function _msgPararDigitandoLocal() {
+      if (msgTypingStopTimer) {
+        clearTimeout(msgTypingStopTimer);
+        msgTypingStopTimer = null;
+      }
+      void _msgEnviarDigitando(false);
+    }
+
+    async function _msgBuscarDigitando() {
+      if (!msgPanelAberto || !msgChatAberto || !msgUsuarioSelecionado || !msgUsuarioSelecionado.username) {
+        _msgSetDigitando(false);
+        return;
+      }
+      try {
+        const params = new URLSearchParams({
+          username: String(msgUsuarioSelecionado.username || ''),
+          client_id: String(msgUsuarioSelecionado.client_id || _clientId() || 'default'),
+        });
+        const resp = await fetch(`/api/user/chat/typing?${params.toString()}`, {
+          method: 'GET',
+          headers: _authHeaders(),
+          cache: 'no-store',
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao buscar digitacao.');
+        _msgSetDigitando(!!data.typing, data.name || _msgLabelUsuario(msgUsuarioSelecionado));
+      } catch (_) {
+        _msgSetDigitando(false);
+      }
+    }
+
+    function _msgAtualizarDigitandoPoll() {
+      if (msgTypingPollTimer) {
+        clearInterval(msgTypingPollTimer);
+        msgTypingPollTimer = null;
+      }
+      _msgSetDigitando(false);
+      if (!msgPanelAberto || !msgChatAberto || !msgUsuarioSelecionado) return;
+      void _msgBuscarDigitando();
+      msgTypingPollTimer = setInterval(() => void _msgBuscarDigitando(), MSG_TYPING_POLL_MS);
+    }
+
+    async function _msgToggleGravacaoAudio() {
+      const btn = document.getElementById('jk-msg-audio-btn');
+      if (msgMediaRecorder && msgMediaRecorder.state === 'recording') {
+        msgMediaRecorder.stop();
+        if (btn) btn.classList.remove('ativo');
+        return;
+      }
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        _msgSetStatus('Gravacao de audio indisponivel neste navegador.', true);
+        return;
+      }
+      try {
+        msgAudioChunks = [];
+        msgAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        msgMediaRecorder = new MediaRecorder(msgAudioStream);
+        msgMediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size) msgAudioChunks.push(event.data);
+        };
+        msgMediaRecorder.onstop = async () => {
+          try {
+            const mime = msgMediaRecorder.mimeType || 'audio/webm';
+            const blob = new Blob(msgAudioChunks, { type: mime });
+            const nome = `audio_${new Date().toISOString().replace(/[:.]/g, '-')}.${_msgMimeExt(mime)}`;
+            const anexo = await _msgBlobParaAnexo(blob, nome);
+            _msgAdicionarAnexo(anexo);
+          } catch (err) {
+            _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel anexar o audio.', true);
+          } finally {
+            try { (msgAudioStream?.getTracks?.() || []).forEach(track => track.stop()); } catch (_) {}
+            msgAudioStream = null;
+            msgMediaRecorder = null;
+            msgAudioChunks = [];
+          }
+        };
+        msgMediaRecorder.start();
+        if (btn) btn.classList.add('ativo');
+        _msgSetStatus('Gravando audio. Clique no microfone novamente para finalizar.');
+      } catch (err) {
+        if (btn) btn.classList.remove('ativo');
+        _msgSetStatus('Nao foi possivel acessar o microfone.', true);
+      }
+    }
+
     function _msgSetChatView(ativo) {
       msgChatAberto = !!ativo;
       document.getElementById('jk-msg-main-view')?.style.setProperty('display', msgChatAberto ? 'none' : 'flex');
       document.getElementById('jk-msg-chat-header')?.classList.toggle('ativo', msgChatAberto);
       document.getElementById('jk-msg-history')?.classList.toggle('ativo', msgChatAberto);
+      if (!msgChatAberto) {
+        _msgPararDigitandoLocal();
+        _msgSetDigitando(false);
+      }
       _msgAtualizarSelecao();
+      _msgAtualizarDigitandoPoll();
     }
 
     function _msgStatusHistorico(msg, fromMe) {
@@ -1446,7 +1947,8 @@
         meta.className = 'jk-msg-bubble-meta';
         if (fromMe && !String(msg && msg.storage || '').includes('firebase')) meta.classList.add('local-alert');
         meta.textContent = _msgStatusHistorico(msg, fromMe);
-        bubble.appendChild(texto);
+        if (texto.textContent) bubble.appendChild(texto);
+        _msgRenderAnexosHistorico(bubble, msg.attachments || []);
         if (meta.textContent) bubble.appendChild(meta);
         el.appendChild(bubble);
       });
@@ -1491,16 +1993,26 @@
         _msgSetStatus('Selecione outro usuario para conversar.', true);
         return;
       }
+      if (
+        msgUsuarioSelecionado &&
+        (String(msgUsuarioSelecionado.username || '').toLowerCase() !== username ||
+          String(msgUsuarioSelecionado.client_id || _clientId() || 'default') !== clientId)
+      ) {
+        _msgPararDigitandoLocal();
+        msgTypingEnviado = false;
+      }
       msgUsuarioSelecionado = {
         username,
         client_id: clientId,
         name: _msgLabelUsuario(user),
       };
       _msgSetChatView(true);
+      _msgAtualizarDigitandoPoll();
       await _msgCarregarHistorico();
     }
 
     function _msgVoltarLista() {
+      _msgPararDigitandoLocal();
       _msgSetChatView(false);
       _msgSetStatus('Selecione um usuario para abrir o chat.');
       void _msgCarregarPainel(true);
@@ -1551,7 +2063,7 @@
 
         const text = document.createElement('div');
         text.className = 'jk-msg-card-text';
-        text.textContent = String(msg.message || msg.last_message || '').trim();
+        text.textContent = String(msg.message || msg.last_message || 'Anexo').trim();
 
         const actions = document.createElement('div');
         actions.className = 'jk-msg-card-actions';
@@ -1619,10 +2131,11 @@
         info.className = 'jk-msg-user-info';
         const name = document.createElement('span');
         name.className = 'jk-msg-user-name';
-        name.textContent = _msgLabelUsuario(user) + (isSelf ? ' (voce)' : '');
+        const statusUsuario = user.online === false ? 'Offline' : 'Online';
+        name.textContent = `${_msgLabelUsuario(user)}${isSelf ? ' (voce)' : ''} - ${statusUsuario}`;
         const meta = document.createElement('span');
         meta.className = 'jk-msg-user-meta';
-        meta.textContent = user.online === false ? 'Offline' : 'Online';
+        meta.textContent = statusUsuario;
         info.appendChild(name);
         info.appendChild(meta);
 
@@ -1782,11 +2295,12 @@
         _msgSetStatus('Abra um chat com um usuario antes de enviar.', true);
         return;
       }
-      if (!texto) {
-        _msgSetStatus('Digite a mensagem antes de enviar.', true);
+      if (!texto && !msgAnexos.length) {
+        _msgSetStatus('Digite a mensagem ou anexe um arquivo antes de enviar.', true);
         return;
       }
       if (send) send.disabled = true;
+      _msgPararDigitandoLocal();
       _msgSetStatus('Enviando mensagem...');
       try {
         const resp = await fetch('/api/user/chat/send', {
@@ -1796,11 +2310,14 @@
             username: destino.username,
             client_id: destino.client_id || _clientId() || 'default',
             message: texto,
+            attachments: msgAnexos,
           }),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar mensagem.');
         if (textEl) textEl.value = '';
+        msgAnexos = [];
+        _msgRenderAnexosComposer();
         _msgSetStatus(data.message || `Mensagem enviada para ${_msgLabelUsuario(destino)}.`);
         await _msgCarregarHistorico(true);
         await _msgCarregarPainel(true);
@@ -2353,18 +2870,31 @@
       return card;
     }
 
-    function _adicionarNotificacaoAprovacao(payload) {
+    function _adicionarNotificacaoAprovacao(payload, options = {}) {
       payload = payload || {};
       const approvalId = String(payload.id || '').trim();
       if (!approvalId) return;
+      const abrirPainel = options.abrirPainel !== false;
       window.__JK_IA_APPROVAL_NOTIFIED__ = window.__JK_IA_APPROVAL_NOTIFIED__ || {};
       const idxExistente = _approvalIndexNoHistorico(approvalId);
       const jaNotificada = !!window.__JK_IA_APPROVAL_NOTIFIED__[approvalId];
-      if (jaNotificada && idxExistente >= 0) return;
+      if (jaNotificada && idxExistente >= 0) {
+        if (abrirPainel) {
+          mostrarChat();
+          togglePanel(true);
+        } else {
+          _iaAvisarMensagemRecebida();
+        }
+        return;
+      }
       window.__JK_IA_APPROVAL_NOTIFIED__[approvalId] = true;
 
       mostrarChat();
-      togglePanel(true);
+      if (abrirPainel) {
+        togglePanel(true);
+      } else {
+        _iaAvisarMensagemRecebida();
+      }
 
       if (idxExistente < 0) {
         _approvalSalvarNoHistorico(payload);
@@ -2374,6 +2904,7 @@
         document.getElementById('jk-ia-msgs').appendChild(div);
       }
       document.getElementById('jk-ia-msgs').scrollTop = 99999;
+      void _perguntasNotificarWindowsAprovacaoUmaVez(payload);
     }
 
     function _resolverNotificacaoAprovacao(approvalId, mensagem) {
@@ -2415,7 +2946,7 @@
       });
     }
 
-    window.JKIASidebarNotifyApproval = _adicionarNotificacaoAprovacao;
+    window.JKIASidebarNotifyApproval = (payload, options) => _adicionarNotificacaoAprovacao(payload, options || {});
     window.JKIASidebarResolveApproval = _resolverNotificacaoAprovacao;
     window.addEventListener('jk-ia-approval', (event) => _adicionarNotificacaoAprovacao(event.detail || {}));
     window.addEventListener('jk-ia-approval-resolved', (event) => {
@@ -2489,6 +3020,7 @@
     function setMsgPanelAberto(aberto) {
       msgPanelAberto = !!aberto;
       if (msgPanelAberto) msgTemMensagemNaoVista = false;
+      if (!msgPanelAberto) _msgPararDigitandoLocal();
       document.getElementById('jk-msg-panel')?.classList.toggle('aberto', msgPanelAberto);
       atualizarMenuLateral();
       if (msgPanelAberto) {
@@ -2496,6 +3028,7 @@
         void _msgCarregarPainel();
         if (msgChatAberto) void _msgCarregarHistorico(true);
       }
+      _msgAtualizarDigitandoPoll();
     }
 
     function togglePanel(forcar) {
@@ -2805,6 +3338,26 @@
     document.getElementById('jk-msg-btn-refresh').addEventListener('click', () => _msgCarregarPainel());
     document.getElementById('jk-msg-send').addEventListener('click', () => _msgEnviarMensagem());
     document.getElementById('jk-msg-back').addEventListener('click', () => _msgVoltarLista());
+    document.getElementById('jk-msg-emoji-btn').addEventListener('click', () => _msgToggleEmojiPanel());
+    document.getElementById('jk-msg-img-btn').addEventListener('click', () => document.getElementById('jk-msg-img-input').click());
+    document.getElementById('jk-msg-file-btn').addEventListener('click', () => document.getElementById('jk-msg-file-input').click());
+    document.getElementById('jk-msg-audio-btn').addEventListener('click', () => _msgToggleGravacaoAudio());
+    document.getElementById('jk-msg-img-input').addEventListener('change', e => _msgArquivosSelecionados(e.target.files).then(() => e.target.value = ''));
+    document.getElementById('jk-msg-file-input').addEventListener('change', e => _msgArquivosSelecionados(e.target.files).then(() => e.target.value = ''));
+    document.getElementById('jk-msg-text').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
+        e.preventDefault();
+        _msgEnviarMensagem();
+      }
+    });
+    document.getElementById('jk-msg-text').addEventListener('input', () => _msgMarcarDigitandoLocal());
+    document.getElementById('jk-msg-text').addEventListener('paste', e => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const files = items.filter(it => it.kind === 'file').map(it => it.getAsFile()).filter(Boolean);
+      if (!files.length) return;
+      e.preventDefault();
+      void _msgArquivosSelecionados(files);
+    });
     document.getElementById('jk-ia-btn-nova').addEventListener('click', () => { mostrarChat(); void novaConversa(); });
     document.getElementById('jk-ia-btn-historico').addEventListener('click', () => convsVisible ? mostrarChat() : mostrarConvs());
     document.getElementById('jk-ia-send').addEventListener('click', () => enviar());
@@ -2838,9 +3391,12 @@
     }
     // Fechar painel ao clicar fora
     _msgPrepararNotificacoesWindows();
+    _msgMontarEmojiPanel();
+    _msgRenderAnexosComposer();
     _msgAtualizarSelecao();
     _msgIniciarAtualizacao();
     void _msgBuscarMensagens().catch(() => {});
+    _perguntasIniciarMonitorGlobal();
 
     document.addEventListener('click', e => {
       const alvo = e.target;

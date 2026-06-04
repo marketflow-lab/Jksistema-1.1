@@ -1756,7 +1756,10 @@ function verificarSessao() {
         widget.style.display = 'block';
     }
 
+    const SYNC_MONITOR_INTERVAL_MS = 10000;
+
     async function atualizarSyncGlobal() {
+        if (document.visibilityState === 'hidden') return;
         if (!obterToken() && !obterClientId()) return;
         try {
             const permissoes = JSON.parse(localStorage.getItem('permissions') || '{}');
@@ -1792,7 +1795,10 @@ function verificarSessao() {
 
     const iniciar = () => {
         atualizarSyncGlobal();
-        window.__jkSyncMonitorTimer = setInterval(atualizarSyncGlobal, 3000);
+        window.__jkSyncMonitorTimer = setInterval(atualizarSyncGlobal, SYNC_MONITOR_INTERVAL_MS);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') atualizarSyncGlobal();
+        });
     };
 
     if (document.readyState === 'loading') {

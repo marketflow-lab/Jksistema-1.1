@@ -340,6 +340,7 @@ ARQUIVO_FIREBASE_SERVICE_ACCOUNT = os.path.join(PASTA_INFO, "firebase-service-ac
 ARQUIVO_MACHINE_PRESENCE = os.path.join(PASTA_INFO, "machine_presence.json")
 ARQUIVO_ADMIN_MESSAGES = os.path.join(PASTA_INFO, "admin_messages.json")
 ARQUIVO_USER_CHAT_MESSAGES = os.path.join(PASTA_INFO, "user_chat_messages.json")
+ARQUIVO_USER_CHAT_TYPING = os.path.join(PASTA_INFO, "user_chat_typing.json")
 ARQUIVO_SHARED_SYNC_USER_INVITES = os.path.join(PASTA_INFO, "shared_sync_user_invites.json")
 ARQUIVO_SHARED_SYNC_USER_LINKS = os.path.join(PASTA_INFO, "shared_sync_user_links.json")
 ARQUIVO_CONFIG_GLOBAIS = os.path.join(PASTA_INFO, "configuracoes_globais.json")
@@ -521,7 +522,7 @@ CONFIG_GLOBAIS_DEFAULT = {
 PERMISSION_KEYS = [
     'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
     'etiquetas', 'full', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
-    'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'admin_usuarios'
+    'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
 
@@ -944,10 +945,22 @@ class AdminUserMessageRequest(BaseModel):
     title: Optional[str] = ""
     message: str
 
+class UserChatAttachment(BaseModel):
+    name: str = ""
+    mime_type: Optional[str] = "application/octet-stream"
+    data_base64: str = ""
+    size: Optional[int] = 0
+
 class UserChatMessageRequest(BaseModel):
     username: str
     client_id: Optional[str] = None
     message: str
+    attachments: Optional[list[UserChatAttachment]] = None
+
+class UserChatTypingRequest(BaseModel):
+    username: str
+    client_id: Optional[str] = None
+    typing: bool = True
 
 class MachinePresenceHeartbeatRequest(BaseModel):
     machine_id: Optional[str] = None
@@ -1484,6 +1497,45 @@ class ConfiguracoesGlobaisRequest(BaseModel):
     ia_deepseek_ativa: bool | None = None
     ia_gemini_ativa: bool | None = None
     ia_vertex_ativa: bool | None = None
+
+
+class SalaReuniaoCriarSalaRequest(BaseModel):
+    nome: str | None = None
+    privacidade: str | None = "public"
+    expira_em_minutos: int | None = 120
+    duracao_maxima_minutos: int | None = None
+    max_participantes: int | None = 12
+    idioma: str | None = "pt-BR"
+    iniciar_audio_desligado: bool | None = True
+    iniciar_video_desligado: bool | None = True
+    habilitar_prejoin: bool | None = True
+    habilitar_sala_espera: bool | None = False
+    habilitar_compartilhar_tela: bool | None = True
+    habilitar_chat: bool | None = True
+    habilitar_historico_chat: bool | None = True
+    habilitar_chat_avancado: bool | None = True
+    habilitar_pessoas: bool | None = True
+    habilitar_mao_levantada: bool | None = True
+    habilitar_reacoes: bool | None = True
+    habilitar_rede: bool | None = True
+    habilitar_pip: bool | None = True
+    habilitar_legendas: bool | None = True
+    habilitar_cancelamento_ruido: bool | None = True
+    habilitar_fundo_virtual: bool | None = True
+    habilitar_salas_grupo: bool | None = False
+    habilitar_alerta_cpu: bool | None = True
+    habilitar_participantes_ocultos: bool | None = False
+    habilitar_chamadas_grandes: bool | None = False
+    habilitar_simulcast_adaptativo: bool | None = False
+    exigir_user_id_unico: bool | None = False
+    habilitar_log_reduzido: bool | None = False
+    habilitar_dialout: bool | None = False
+    ejetar_na_expiracao: bool | None = False
+    modo_gravacao: str | None = ""
+    criar_token_host: bool | None = True
+    nome_host: str | None = "Anfitriao JK Sistema"
+    auto_iniciar_gravacao: bool | None = False
+    auto_iniciar_transcricao: bool | None = False
 
 
 class SiscomexConfigRequest(BaseModel):
@@ -2175,6 +2227,91 @@ def _ml_oauth_status(cfg: dict | None) -> dict:
     }
 
 
+def _ml_oauth_config_completa(cfg: dict | None) -> bool:
+    cfg = cfg if isinstance(cfg, dict) else {}
+    return bool(
+        str(cfg.get("access_token") or "").strip()
+        and str(cfg.get("refresh_token") or "").strip()
+        and str(cfg.get("app_id") or cfg.get("id") or cfg.get("client_id") or "").strip()
+        and str(cfg.get("client_secret") or cfg.get("secret") or "").strip()
+    )
+
+
+def _ml_normalizar_oauth_compartilhado(client_id: str, nome_loja: str, cfg: dict) -> dict:
+    cfg = dict(cfg or {})
+    if not _ml_oauth_config_completa(cfg):
+        return cfg
+
+    mudou = False
+    if cfg.get("shared_without_oauth_tokens"):
+        cfg["shared_without_oauth_tokens"] = False
+        mudou = True
+    if cfg.get("connected") is not True:
+        cfg["connected"] = True
+        mudou = True
+    if str(cfg.get("status") or "").strip().lower() != "conectado":
+        cfg["status"] = "conectado"
+        mudou = True
+    if str(cfg.get("motivo") or "").strip():
+        cfg["motivo"] = ""
+        mudou = True
+    if mudou:
+        cfg["updated_at"] = str(time.time())
+        atualizar_api_loja(client_id, nome_loja, "mercadolivre", cfg)
+    return cfg
+
+
+def _ml_descobrir_user_id_oauth(client_id: str, nome_loja: str, cfg: dict) -> dict:
+    cfg = dict(cfg or {})
+    if str(cfg.get("user_id") or "").strip() or not str(cfg.get("access_token") or "").strip():
+        return cfg
+
+    for tentativa in range(2):
+        try:
+            resp = requests.get(
+                "https://api.mercadolibre.com/users/me",
+                headers=_headers_ml(cfg["access_token"]),
+                timeout=15,
+                verify=_env_bool("ML_VERIFY_SSL", True),
+            )
+        except Exception as exc:
+            logger.warning("[ML OAUTH] Falha ao descobrir user_id da loja %s: %s", nome_loja, exc)
+            return cfg
+
+        if resp.status_code == 401 and tentativa == 0 and str(cfg.get("refresh_token") or "").strip():
+            cfg = _ml_refresh_token(client_id, nome_loja, cfg)
+            continue
+        if resp.status_code != 200:
+            logger.warning("[ML OAUTH] users/me retornou HTTP %s para loja %s", resp.status_code, nome_loja)
+            return cfg
+
+        try:
+            data = resp.json() or {}
+        except Exception:
+            data = {}
+        user_id = str(data.get("id") or data.get("user_id") or "").strip()
+        if not user_id:
+            logger.warning("[ML OAUTH] users/me sem id para loja %s", nome_loja)
+            return cfg
+
+        cfg["user_id"] = user_id
+        if data.get("site_id"):
+            cfg["site_id"] = data.get("site_id")
+        if data.get("nickname"):
+            cfg["nickname"] = data.get("nickname")
+        cfg["connected"] = True
+        cfg["status"] = "conectado"
+        cfg["motivo"] = ""
+        cfg["shared_without_oauth_tokens"] = False
+        cfg["updated_at"] = str(time.time())
+        atualizar_api_loja(client_id, nome_loja, "mercadolivre", cfg)
+        _cache_invalidar_loja(client_id, nome_loja)
+        logger.info("[ML OAUTH] user_id %s recuperado automaticamente para loja %s", user_id, nome_loja)
+        return cfg
+
+    return cfg
+
+
 def _obter_cfg_ml(client_id: str, nome_loja: str) -> dict:
     """ObtÃƒÂ©m e normaliza a configuraÃƒÂ§ÃƒÂ£o do Mercado Livre da loja."""
     loja = buscar_loja(client_id, nome_loja)
@@ -2192,6 +2329,8 @@ def _obter_cfg_ml(client_id: str, nome_loja: str) -> dict:
     if not cfg.get("access_token"):
         raise HTTPException(status_code=401, detail="Token do Mercado Livre ausente. RefaÃƒÂ§a a autenticaÃƒÂ§ÃƒÂ£o OAuth.")
 
+    cfg = _ml_normalizar_oauth_compartilhado(client_id, nome_loja, cfg)
+    cfg = _ml_descobrir_user_id_oauth(client_id, nome_loja, cfg)
     return cfg
 
 
@@ -7707,6 +7846,8 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[str]
         return "configuracoes"
     if rota.startswith("/api/importacoes"):
         return "importacoes"
+    if rota.startswith("/api/sala-reuniao"):
+        return "sala_reuniao"
     if rota.startswith("/api/ia/"):
         return None
     if rota == "/api/estoque" or rota.startswith("/api/estoque/"):
@@ -17221,6 +17362,11 @@ async def ia_rag_reindexar(payload: IARagReindexRequest = IARagReindexRequest(),
 
 def atualizar_api_loja(client_id: str, nome_loja: str, api_nome: str, dados_api: dict):
     """Cria ou atualiza uma loja e sua integraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o para um cliente especÃƒÆ’Ã‚Â­fico."""
+    if isinstance(dados_api, dict) and str(api_nome or "").strip().lower() in {"bling", "mercadolivre", "ml"}:
+        try:
+            dados_api = _shared_sync_normalizar_integracao_conectada(api_nome, dados_api)
+        except Exception:
+            dados_api = dict(dados_api or {})
     lojas = carregar_lojas(client_id)
     encontrou = False
     for l in lojas:
@@ -17409,6 +17555,81 @@ def _bling_refresh_token(client_id, client_secret, refresh_token):
         status_code=502,
         detail=f"Falha ao renovar token do Bling (HTTP {resp.status_code}).",
     )
+
+
+def _bling_marcar_oauth_invalido(client_id: str, nome_loja: str, cfg: dict | None, motivo: str) -> dict:
+    atualizado = dict(cfg or {})
+    atualizado["connected"] = False
+    atualizado["status"] = "reautenticacao_necessaria"
+    atualizado["motivo"] = str(motivo or "Token Bling expirado. Refaça a conexão em Integrações.")
+    atualizado["oauth_invalid"] = True
+    atualizado["shared_without_oauth_tokens"] = False
+    atualizado["updated_at"] = str(time.time())
+    atualizar_api_loja(client_id, nome_loja, "bling", atualizado)
+    return atualizado
+
+
+def _bling_salvar_oauth_valido(client_id: str, nome_loja: str, cfg: dict) -> dict:
+    atualizado = dict(cfg or {})
+    atualizado["connected"] = True
+    atualizado["status"] = "conectado"
+    atualizado["motivo"] = ""
+    atualizado["oauth_invalid"] = False
+    atualizado["shared_without_oauth_tokens"] = False
+    atualizado["updated_at"] = str(time.time())
+    atualizar_api_loja(client_id, nome_loja, "bling", atualizado)
+    try:
+        _shared_sync_propagar_lojas_integracoes_cliente(client_id, "bling-oauth-refresh")
+    except Exception as exc:
+        logger.warning("[BLING] Nao foi possivel propagar token renovado para compartilhamentos: %s", exc)
+    return atualizado
+
+
+def _bling_renovar_token_loja(client_id: str, nome_loja: str, cfg: dict | None) -> dict:
+    cfg = dict(cfg or {})
+    cid = str(cfg.get("id") or cfg.get("client_id") or "").strip()
+    sec = str(cfg.get("secret") or cfg.get("client_secret") or "").strip()
+    refresh_tok = str(cfg.get("refresh_token") or "").strip()
+    if not (cid and sec and refresh_tok):
+        motivo = "Credenciais Bling incompletas para renovar token. Refaça a conexão em Integrações."
+        _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, motivo)
+        raise HTTPException(status_code=401, detail=motivo)
+
+    try:
+        novos = _bling_refresh_token(cid, sec, refresh_tok)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, str(exc.detail or "Token Bling expirado. Refaça a conexão em Integrações."))
+        raise
+
+    access_token = str(novos.get("access_token") or "").strip()
+    if not access_token:
+        motivo = "Bling renovou a sessão sem retornar access_token. Refaça a conexão em Integrações."
+        _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, motivo)
+        raise HTTPException(status_code=401, detail=motivo)
+
+    cfg["id"] = cid
+    cfg["secret"] = sec
+    cfg["access_token"] = access_token
+    cfg["refresh_token"] = str(novos.get("refresh_token") or refresh_tok).strip()
+    return _bling_salvar_oauth_valido(client_id, nome_loja, cfg)
+
+
+def _bling_executar_com_refresh(client_id: str, nome_loja: str, cfg: dict, chamada: Callable[[str], tuple[Any, int]], on_refresh: Optional[Callable[[], None]] = None) -> tuple[Any, int, dict]:
+    cfg = dict(cfg or {})
+    access_token = str(cfg.get("access_token") or "").strip()
+    resultado, status = chamada(access_token)
+    if status == 401:
+        if on_refresh:
+            on_refresh()
+        cfg = _bling_renovar_token_loja(client_id, nome_loja, cfg)
+        resultado, status = chamada(str(cfg.get("access_token") or ""))
+    if status == 401:
+        motivo = "Token Bling expirado. Refaça a conexão em Integrações."
+        _bling_marcar_oauth_invalido(client_id, nome_loja, cfg, motivo)
+    return resultado, status, cfg
+
+
 def _bling_listar_produtos(access_token):
     url = "https://api.bling.com.br/Api/v3/produtos"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -19783,6 +20004,10 @@ def _firebase_user_chat_collection_name() -> str:
     return _env_texto("FIREBASE_USER_CHAT_COLLECTION", "JK_FIREBASE_USER_CHAT_COLLECTION") or "jk_sistema_user_chat_messages"
 
 
+def _firebase_user_chat_typing_collection_name() -> str:
+    return _env_texto("FIREBASE_USER_CHAT_TYPING_COLLECTION", "JK_FIREBASE_USER_CHAT_TYPING_COLLECTION") or "jk_sistema_user_chat_typing"
+
+
 def _firebase_project_id() -> str:
     project_id = _env_texto("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT")
     if project_id:
@@ -20912,6 +21137,180 @@ def _user_chat_local_write(messages: list[dict]) -> None:
             logger.warning("[USER CHAT] Falha ao salvar historico local: %s", exc)
 
 
+USER_CHAT_TYPING_TTL_SECONDS = 6
+USER_CHAT_ATTACHMENT_MAX_COUNT = 6
+USER_CHAT_ATTACHMENT_MAX_BYTES = 700 * 1024
+USER_CHAT_ATTACHMENT_TOTAL_MAX_BYTES = 900 * 1024
+
+
+def _user_chat_typing_key(sender_username: str, sender_client_id: str, recipient_username: str, recipient_client_id: str) -> str:
+    raw = "__".join([
+        _user_chat_norm_client(sender_client_id),
+        _user_chat_norm_username(sender_username),
+        _user_chat_norm_client(recipient_client_id),
+        _user_chat_norm_username(recipient_username),
+    ])
+    return "".join(ch if (ch.isalnum() or ch in {"_", "-", "."}) else "_" for ch in raw)[:220]
+
+
+def _user_chat_typing_public(item: dict) -> dict:
+    data = item if isinstance(item, dict) else {}
+    return {
+        "id": str(data.get("id") or ""),
+        "sender_username": _user_chat_norm_username(data.get("sender_username") or ""),
+        "sender_client_id": _user_chat_norm_client(data.get("sender_client_id") or "default"),
+        "recipient_username": _user_chat_norm_username(data.get("recipient_username") or ""),
+        "recipient_client_id": _user_chat_norm_client(data.get("recipient_client_id") or "default"),
+        "typing": bool(data.get("typing")),
+        "updated_at": str(data.get("updated_at") or ""),
+        "updated_ts": int(float(data.get("updated_ts") or 0)),
+    }
+
+
+def _user_chat_typing_local_read() -> list[dict]:
+    with USER_CHAT_MESSAGES_LOCK:
+        try:
+            if not os.path.exists(ARQUIVO_USER_CHAT_TYPING):
+                return []
+            with open(ARQUIVO_USER_CHAT_TYPING, "r", encoding="utf-8") as arquivo:
+                data = json.load(arquivo)
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao ler digitacao local: %s", exc)
+            return []
+
+
+def _user_chat_typing_local_write(items: list[dict]) -> None:
+    with USER_CHAT_MESSAGES_LOCK:
+        try:
+            agora_ts = int(time.time())
+            filtrados = [
+                _user_chat_typing_public(item)
+                for item in (items or [])
+                if isinstance(item, dict) and agora_ts - int(float(item.get("updated_ts") or 0)) <= 60
+            ]
+            os.makedirs(os.path.dirname(ARQUIVO_USER_CHAT_TYPING), exist_ok=True)
+            tmp = ARQUIVO_USER_CHAT_TYPING + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as arquivo:
+                json.dump(filtrados[-300:], arquivo, ensure_ascii=False, indent=2)
+            os.replace(tmp, ARQUIVO_USER_CHAT_TYPING)
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao salvar digitacao local: %s", exc)
+
+
+def _user_chat_typing_save(sender_username: str, sender_client_id: str, recipient_username: str, recipient_client_id: str, typing: bool) -> dict:
+    agora_ts = int(time.time())
+    item = {
+        "sender_username": _user_chat_norm_username(sender_username),
+        "sender_client_id": _user_chat_norm_client(sender_client_id),
+        "recipient_username": _user_chat_norm_username(recipient_username),
+        "recipient_client_id": _user_chat_norm_client(recipient_client_id),
+        "typing": bool(typing),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_ts": agora_ts,
+    }
+    item["id"] = _user_chat_typing_key(
+        item["sender_username"],
+        item["sender_client_id"],
+        item["recipient_username"],
+        item["recipient_client_id"],
+    )
+
+    local = [raw for raw in _user_chat_typing_local_read() if str((raw or {}).get("id") or "") != item["id"]]
+    local.append(item)
+    _user_chat_typing_local_write(local)
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                db.collection(_firebase_user_chat_typing_collection_name()).document(item["id"]).set(item, merge=True)
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao salvar digitacao no Firebase: %s", exc)
+    return item
+
+
+def _user_chat_typing_status(current_username: str, current_client_id: str, other_username: str, other_client_id: str) -> dict:
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+    current_username = _user_chat_norm_username(current_username)
+    current_client_id = _user_chat_norm_client(current_client_id)
+    doc_id = _user_chat_typing_key(other_username, other_client_id, current_username, current_client_id)
+    candidatos = []
+
+    if _firebase_deve_usar():
+        try:
+            db = _firebase_db()
+            if db is not None:
+                snap = db.collection(_firebase_user_chat_typing_collection_name()).document(doc_id).get()
+                if snap.exists:
+                    data = snap.to_dict() or {}
+                    data["id"] = data.get("id") or snap.id
+                    candidatos.append(data)
+        except Exception as exc:
+            logger.warning("[USER CHAT] Falha ao ler digitacao no Firebase: %s", exc)
+
+    candidatos.extend(raw for raw in _user_chat_typing_local_read() if str((raw or {}).get("id") or "") == doc_id)
+    if not candidatos:
+        return {"typing": False, "updated_at": "", "updated_ts": 0}
+
+    item = max((_user_chat_typing_public(raw) for raw in candidatos), key=lambda raw: int(raw.get("updated_ts") or 0))
+    typing = bool(item.get("typing")) and (int(time.time()) - int(item.get("updated_ts") or 0) <= USER_CHAT_TYPING_TTL_SECONDS)
+    return {
+        "typing": typing,
+        "updated_at": item.get("updated_at") or "",
+        "updated_ts": int(item.get("updated_ts") or 0),
+        "name": _user_chat_user_name(other_username),
+    }
+
+
+def _user_chat_attachments_normalizar(attachments: Any, *, validar_limites: bool = False) -> list[dict]:
+    if not isinstance(attachments, list):
+        return []
+    normalizados = []
+    total_bytes = 0
+    for raw in attachments[:USER_CHAT_ATTACHMENT_MAX_COUNT]:
+        if isinstance(raw, BaseModel):
+            raw = raw.dict()
+        if not isinstance(raw, dict):
+            continue
+        nome = os.path.basename(str(raw.get("name") or "arquivo").strip()) or "arquivo"
+        mime = str(raw.get("mime_type") or raw.get("mime") or "application/octet-stream").strip() or "application/octet-stream"
+        data_base64 = str(raw.get("data_base64") or "").strip()
+        if not data_base64:
+            continue
+        try:
+            tamanho = int(raw.get("size") or (len(data_base64) * 3 / 4))
+        except Exception:
+            tamanho = int(len(data_base64) * 3 / 4)
+        if validar_limites and tamanho > USER_CHAT_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(status_code=400, detail=f"Anexo muito grande: {nome}. Limite de 700 KB por arquivo.")
+        total_bytes += max(0, tamanho)
+        if validar_limites and total_bytes > USER_CHAT_ATTACHMENT_TOTAL_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="Anexos muito grandes. Limite total de 900 KB por mensagem.")
+        normalizados.append({
+            "name": nome[:160],
+            "mime_type": mime[:120],
+            "data_base64": data_base64,
+            "size": max(0, tamanho),
+        })
+    return normalizados
+
+
+def _user_chat_attachment_summary(attachments: Any) -> str:
+    anexos = _user_chat_attachments_normalizar(attachments)
+    if not anexos:
+        return ""
+    if len(anexos) == 1:
+        mime = str(anexos[0].get("mime_type") or "")
+        if mime.startswith("image/"):
+            return "Imagem"
+        if mime.startswith("audio/"):
+            return "Audio"
+        return "Arquivo"
+    return f"{len(anexos)} anexos"
+
+
 def _user_chat_public(message: dict) -> dict:
     item = message if isinstance(message, dict) else {}
     return {
@@ -20928,6 +21327,7 @@ def _user_chat_public(message: dict) -> dict:
         "read_at": str(item.get("read_at") or ""),
         "read_ts": int(float(item.get("read_ts") or 0)),
         "storage": str(item.get("storage") or ""),
+        "attachments": _user_chat_attachments_normalizar(item.get("attachments")),
     }
 
 
@@ -21031,6 +21431,8 @@ def _user_chat_merge_messages(messages: list[dict]) -> list[dict]:
         for campo in ("sender_username", "sender_client_id", "recipient_username", "recipient_client_id", "message", "created_at"):
             if item.get(campo) and not atual.get(campo):
                 atual[campo] = item.get(campo)
+        if item.get("attachments") and not atual.get("attachments"):
+            atual["attachments"] = item.get("attachments")
         atual["created_ts"] = max(int(atual.get("created_ts") or 0), int(item.get("created_ts") or 0))
         if int(item.get("delivered_ts") or 0) > int(atual.get("delivered_ts") or 0):
             atual["delivered_at"] = item.get("delivered_at") or atual.get("delivered_at") or ""
@@ -21192,7 +21594,7 @@ def _user_chat_unread_conversations(username: str, client_id: str) -> list[dict]
             "client_id": sender_client_id,
             "name": _user_chat_user_name(sender_username),
             "last_message_id": last.get("id") or "",
-            "last_message": last.get("message") or "",
+            "last_message": last.get("message") or _user_chat_attachment_summary(last.get("attachments")) or "",
             "created_at": last.get("created_at") or "",
             "created_ts": int(last.get("created_ts") or 0),
             "unread_count": int(grupo.get("unread_count") or 0),
@@ -21741,24 +22143,33 @@ def _shared_sync_sha256_file(path: str) -> str:
     return sha.hexdigest()
 
 
-def _shared_sync_ler_arquivo_pacote(path: str) -> bytes:
-    ext = os.path.splitext(str(path or ""))[1].lower()
-    if ext in {".db", ".sqlite"} and os.path.exists(path):
-        tmp_path = f"{path}.sharedsync_{uuid.uuid4().hex}.tmp"
+def _shared_sync_sqlite_ext(path: str) -> bool:
+    return os.path.splitext(str(path or ""))[1].lower() in {".db", ".sqlite", ".sqlite3"}
+
+
+def _shared_sync_sqlite_backup_bytes(path: str) -> bytes:
+    abs_path = os.path.abspath(str(path or ""))
+    if not os.path.exists(abs_path):
+        return b""
+
+    def _backup() -> bytes:
+        tmp_path = f"{abs_path}.sharedsync_{uuid.uuid4().hex}.tmp"
         src = None
         dst = None
         try:
-            src = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=15)
-            dst = sqlite3.connect(tmp_path)
-            src.backup(dst)
-            dst.close()
-            src.close()
-            dst = None
-            src = None
+            with _shared_sync_sqlite_lock_for_path(abs_path):
+                timeout_s = max(5, SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS // 1000)
+                src = sqlite3.connect(f"file:{abs_path}?mode=ro", uri=True, timeout=timeout_s)
+                _shared_sync_sqlite_configure(src)
+                dst = sqlite3.connect(tmp_path, timeout=timeout_s)
+                _shared_sync_sqlite_configure(dst)
+                src.backup(dst)
+                dst.close()
+                src.close()
+                dst = None
+                src = None
             with open(tmp_path, "rb") as f:
                 return f.read()
-        except Exception as exc:
-            logger.warning("[SHARED-SYNC] Falha no backup online do SQLite %s; usando leitura direta: %s", path, exc)
         finally:
             try:
                 if dst:
@@ -21775,6 +22186,18 @@ def _shared_sync_ler_arquivo_pacote(path: str) -> bytes:
                     os.remove(tmp_path)
             except Exception:
                 pass
+
+    try:
+        return _shared_sync_sqlite_retry_locked(_backup, os.path.basename(abs_path) or abs_path)
+    except HTTPException:
+        raise
+    except sqlite3.DatabaseError as exc:
+        raise HTTPException(status_code=502, detail=f"Banco SQLite invalido para sincronizacao: {os.path.basename(abs_path)}") from exc
+
+
+def _shared_sync_ler_arquivo_pacote(path: str) -> bytes:
+    if _shared_sync_sqlite_ext(path) and os.path.exists(path):
+        return _shared_sync_sqlite_backup_bytes(path)
     with open(path, "rb") as f:
         return f.read()
 
@@ -21814,20 +22237,33 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             if not _shared_sync_scope_match(scope, rel):
                 continue
             try:
-                size = os.path.getsize(abs_path)
-            except OSError:
-                continue
-            if size > max_file:
-                warnings.append(f"{rel} ignorado: arquivo maior que o limite de sincronizacao.")
-                continue
-            try:
-                entries.append({
+                entry = {
                     "relative_path": _shared_sync_relativo_seguro(rel),
                     "abs_path": abs_path,
-                    "size": size,
                     "mtime": os.path.getmtime(abs_path),
-                    "sha256": _shared_sync_sha256_file(abs_path),
-                })
+                }
+                if _shared_sync_sqlite_ext(abs_path):
+                    data = _shared_sync_ler_arquivo_pacote(abs_path)
+                    size = len(data or b"")
+                    entry.update({
+                        "data": data,
+                        "size": size,
+                        "sha256": _shared_sync_bytes_sha256(data),
+                    })
+                else:
+                    size = os.path.getsize(abs_path)
+                    entry.update({
+                        "size": size,
+                        "sha256": _shared_sync_sha256_file(abs_path),
+                    })
+                if size > max_file:
+                    warnings.append(f"{rel} ignorado: arquivo maior que o limite de sincronizacao.")
+                    continue
+                entries.append(entry)
+            except HTTPException:
+                raise
+            except OSError:
+                continue
             except Exception as exc:
                 warnings.append(f"{rel} ignorado: {exc}")
     entries.sort(key=lambda item: item["relative_path"])
@@ -22144,12 +22580,15 @@ def _shared_sync_lojas_delta_bytes(scope: str, rel: str, data: bytes, known_keys
     return _shared_sync_json_dump_bytes(filtradas), keys
 
 
-def _shared_sync_vendas_delta_db_bytes(rel: str, abs_path: str, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
-    if not os.path.exists(abs_path):
+def _shared_sync_vendas_delta_db_bytes(rel: str, sqlite_bytes: bytes, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
+    if not sqlite_bytes:
         return None, []
-    src = sqlite3.connect(abs_path)
+    src_tmp = _shared_sync_sqlite_temp_from_bytes(sqlite_bytes, "shared_sync_vendas_source_")
+    src = None
     tmp_path = ""
     try:
+        src = sqlite3.connect(src_tmp, timeout=max(5, SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS // 1000))
+        _shared_sync_sqlite_configure(src)
         cur = src.cursor()
         tabela = cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'").fetchone()
         if not tabela:
@@ -22204,7 +22643,15 @@ def _shared_sync_vendas_delta_db_bytes(rel: str, abs_path: str, known_keys: set[
         with open(tmp_path, "rb") as f:
             return f.read(), keys
     finally:
-        src.close()
+        try:
+            if src:
+                src.close()
+        except Exception:
+            pass
+        try:
+            os.remove(src_tmp)
+        except Exception:
+            pass
         if tmp_path:
             try:
                 os.remove(tmp_path)
@@ -22215,13 +22662,13 @@ def _shared_sync_vendas_delta_db_bytes(rel: str, abs_path: str, known_keys: set[
 def _shared_sync_delta_for_entry(scope: str, entry: dict, known_keys: set[str]) -> tuple[Optional[bytes], list[str]]:
     rel = entry.get("relative_path") or ""
     abs_path = entry.get("abs_path") or ""
-    data = _shared_sync_ler_arquivo_pacote(abs_path)
+    data = entry.get("data") if "data" in entry else _shared_sync_ler_arquivo_pacote(abs_path)
     lower = rel.lower()
     if scope == "cadastro" and lower.endswith(".csv"):
         return _shared_sync_csv_delta_bytes(scope, rel, data, known_keys)
     if scope == "vendas":
-        if lower.endswith((".db", ".sqlite")):
-            return _shared_sync_vendas_delta_db_bytes(rel, abs_path, known_keys)
+        if lower.endswith((".db", ".sqlite", ".sqlite3")):
+            return _shared_sync_vendas_delta_db_bytes(rel, data or b"", known_keys)
         return None, []
     if scope == "favoritos_historico":
         return _shared_sync_favoritos_delta_bytes(scope, rel, data, known_keys)
@@ -22253,6 +22700,10 @@ def _shared_sync_coletar_arquivos_delta(
         rel = entry.get("relative_path") or ""
         try:
             data_filtrada, keys = _shared_sync_delta_for_entry(scope, entry, conhecidos)
+        except HTTPException:
+            raise
+        except sqlite3.DatabaseError as exc:
+            raise HTTPException(status_code=502, detail=f"{rel} invalido para sincronizacao: {exc}") from exc
         except Exception as exc:
             warnings.append(f"{rel} ignorado no delta: {exc}")
             continue
@@ -22377,6 +22828,7 @@ def _shared_sync_push_scope(
     known_keys: Optional[set[str]] = None,
     allow_empty_delta: bool = False,
     sanitize_user_share_oauth: bool = False,
+    skip_if_remote_hash_matches: bool = False,
 ) -> dict:
     db = _shared_sync_firestore_required()
     bundle, manifest, warnings = _shared_sync_montar_pacote(
@@ -22389,6 +22841,27 @@ def _shared_sync_push_scope(
         sanitize_user_share_oauth=sanitize_user_share_oauth,
     )
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
+    if skip_if_remote_hash_matches:
+        remote_meta = _shared_sync_remote_meta_by_id(bundle_id) or {}
+        remote_hash = str(remote_meta.get("snapshot_hash") or "")
+        local_hash = str(manifest.get("snapshot_hash") or "")
+        if remote_hash and local_hash and remote_hash == local_hash:
+            return {
+                "scope": scope,
+                "success": True,
+                "direction": "push",
+                "id": bundle_id,
+                "skipped": True,
+                "reason": "already_current",
+                "file_count": manifest.get("file_count") or 0,
+                "item_count": manifest.get("item_count") or 0,
+                "item_keys": manifest.get("item_keys") or [],
+                "chunk_count": int(remote_meta.get("chunk_count") or 0),
+                "bundle_bytes": int(remote_meta.get("bundle_bytes") or 0),
+                "snapshot_hash": local_hash,
+                "warnings": warnings,
+                "updated_at": remote_meta.get("updated_at") or _shared_sync_now_iso(),
+            }
     if known_keys is not None and not manifest.get("item_count") and not allow_empty_delta:
         return {
             "scope": scope,
@@ -22766,11 +23239,48 @@ def _shared_sync_timestamp(valor: Any) -> float:
         return 0.0
 
 
-def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any, add_only: bool = False) -> Any:
+def _shared_sync_normalizar_integracao_conectada(servico_key: str, dados: Any) -> Any:
+    if not isinstance(dados, dict):
+        return dados
+    servico_key = _shared_sync_servico_key(servico_key)
+    saida = dict(dados)
+    if saida.get("oauth_invalid"):
+        saida["connected"] = False
+        if not str(saida.get("status") or "").strip():
+            saida["status"] = "reautenticacao_necessaria"
+        if not str(saida.get("motivo") or "").strip():
+            saida["motivo"] = "Token OAuth invalido. Refaça a conexão em Integrações."
+        return saida
+    if servico_key == "mercadolivre":
+        completa = bool(
+            str(saida.get("access_token") or "").strip()
+            and str(saida.get("refresh_token") or "").strip()
+            and str(saida.get("app_id") or saida.get("id") or saida.get("client_id") or "").strip()
+            and str(saida.get("client_secret") or saida.get("secret") or "").strip()
+        )
+    elif servico_key == "bling":
+        completa = bool(
+            str(saida.get("access_token") or "").strip()
+            and str(saida.get("refresh_token") or "").strip()
+            and str(saida.get("id") or saida.get("client_id") or "").strip()
+            and str(saida.get("secret") or saida.get("client_secret") or "").strip()
+        )
+    else:
+        completa = False
+    if completa:
+        saida["oauth_invalid"] = False
+        saida["connected"] = True
+        saida["status"] = "conectado"
+        saida["motivo"] = ""
+        saida["shared_without_oauth_tokens"] = False
+    return saida
+
+
+def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any, add_only: bool = False, servico_key: str = "") -> Any:
     if not isinstance(remoto, dict):
         return atual if _shared_sync_valor_preenchido(atual) else remoto
     if not isinstance(atual, dict):
-        return _shared_sync_json_clone(remoto)
+        return _shared_sync_normalizar_integracao_conectada(servico_key, _shared_sync_json_clone(remoto))
 
     merged = dict(atual)
     atual_ts = _shared_sync_timestamp(atual.get("updated_at"))
@@ -22792,7 +23302,15 @@ def _shared_sync_merge_integracao_loja(atual: Any, remoto: Any, add_only: bool =
             merged[chave] = valor
         elif not add_only and remoto_mais_novo and _shared_sync_valor_preenchido(valor):
             merged[chave] = valor
-    return merged
+    if servico_key == "bling":
+        remoto_access = str(remoto.get("access_token") or "").strip()
+        remoto_refresh = str(remoto.get("refresh_token") or "").strip()
+        if (
+            (remoto_access and remoto_access != str((atual or {}).get("access_token") or "").strip())
+            or (remoto_refresh and remoto_refresh != str((atual or {}).get("refresh_token") or "").strip())
+        ):
+            merged["oauth_invalid"] = False
+    return _shared_sync_normalizar_integracao_conectada(servico_key, merged)
 
 
 def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict, add_only: bool = False) -> dict:
@@ -22810,7 +23328,7 @@ def _shared_sync_merge_loja_integracoes(atual: dict, remoto: dict, add_only: boo
 
     for servico, dados in ((remoto or {}).get("integracoes") or {}).items():
         servico_key = _shared_sync_servico_key(servico)
-        integracoes[servico_key] = _shared_sync_merge_integracao_loja(integracoes.get(servico_key), dados, add_only=add_only)
+        integracoes[servico_key] = _shared_sync_merge_integracao_loja(integracoes.get(servico_key), dados, add_only=add_only, servico_key=servico_key)
     return merged
 
 
@@ -23018,7 +23536,7 @@ def _shared_sync_sqlite_configure(conn: sqlite3.Connection, *, writable: bool = 
             pass
 
 
-def _shared_sync_sqlite_retry_locked(operation: Callable[[], dict], label: str) -> dict:
+def _shared_sync_sqlite_retry_locked(operation: Callable[[], Any], label: str) -> Any:
     delay = 0.35
     last_exc: Optional[Exception] = None
     for tentativa in range(1, SHARED_SYNC_SQLITE_LOCK_RETRIES + 1):
@@ -23553,6 +24071,34 @@ def _shared_sync_save_doc(collection_name: str, local_path: str, item: dict) -> 
     return item
 
 
+def _shared_sync_delete_doc(collection_name: str, local_path: str, doc_id: str) -> dict:
+    doc_id = str(doc_id or "").strip()
+    if not doc_id:
+        return {"local_deleted": False, "firebase_deleted": False}
+
+    local = _shared_sync_json_list_read(local_path)
+    filtrados = [item for item in local if str((item or {}).get("id") or "") != doc_id]
+    local_deleted = len(filtrados) != len(local)
+    if local_deleted:
+        _shared_sync_json_list_write(local_path, filtrados)
+
+    firebase_deleted = False
+    firebase_error = ""
+    db = _firebase_db() if _firebase_deve_usar() else None
+    if db is not None:
+        try:
+            db.collection(collection_name).document(doc_id).delete(timeout=8)
+            firebase_deleted = True
+        except Exception as exc:
+            firebase_error = _shared_sync_exception_message(exc)
+            logger.warning("[SHARED-SYNC] Falha ao excluir documento no Firebase: %s", exc)
+    return {
+        "local_deleted": local_deleted,
+        "firebase_deleted": firebase_deleted,
+        "firebase_error": firebase_error,
+    }
+
+
 def _shared_sync_all_docs(collection_name: str, local_path: str) -> list[dict]:
     docs = []
     db = _firebase_db() if _firebase_deve_usar() else None
@@ -23588,6 +24134,10 @@ def _shared_sync_links_all() -> list[dict]:
 
 def _shared_sync_save_invite(item: dict) -> dict:
     return _shared_sync_save_doc(_firebase_shared_sync_user_invites_collection_name(), ARQUIVO_SHARED_SYNC_USER_INVITES, item)
+
+
+def _shared_sync_delete_invite_doc(invite_id: str) -> dict:
+    return _shared_sync_delete_doc(_firebase_shared_sync_user_invites_collection_name(), ARQUIVO_SHARED_SYNC_USER_INVITES, invite_id)
 
 
 def _shared_sync_save_link(item: dict) -> dict:
@@ -24011,6 +24561,8 @@ def _shared_sync_user_shares_for_session(sessao: dict) -> dict:
     invites_por_par = {}
     for item in _shared_sync_invites_all():
         item = _shared_sync_marcar_admin_origem(item)
+        if str(item.get("status") or "").strip().lower() == "deleted":
+            continue
         if _shared_sync_session_is_source(sessao, item) or _shared_sync_session_is_target(sessao, item):
             status = str(item.get("status") or "pending")
             key = (*_shared_sync_item_pair_key(item), status)
@@ -24071,7 +24623,12 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
         target.get("username"),
         scope,
     )
-    known_keys = _shared_sync_user_share_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link_ref["id"], scope)
+    known_keys = None if scope == "lojas_integracoes" else _shared_sync_user_share_known_keys(
+        source_sessao.get("client_id"),
+        source_sessao.get("username") or "",
+        link_ref["id"],
+        scope,
+    )
     result = _shared_sync_push_scope(
         source_sessao.get("client_id"),
         scope,
@@ -24091,7 +24648,8 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
         state_scope=_shared_sync_user_share_state_scope(link_ref["id"], direction_key, scope),
         known_keys=known_keys,
         allow_empty_delta=True,
-        sanitize_user_share_oauth=True,
+        sanitize_user_share_oauth=False,
+        skip_if_remote_hash_matches=(scope == "lojas_integracoes"),
     )
     _shared_sync_user_share_add_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link_ref["id"], scope, result.get("item_keys") or [])
     return result
@@ -24120,6 +24678,8 @@ def _shared_sync_save_invite_prepare_progress(
     try:
         invite = _shared_sync_get_invite(invite_id)
     except Exception:
+        return
+    if _shared_sync_invite_prepare_should_stop(invite):
         return
     total_int = max(0, int(total or 0))
     done_int = max(0, min(total_int or done, int(done or 0)))
@@ -24150,10 +24710,26 @@ def _shared_sync_save_invite_prepare_progress(
     _shared_sync_save_invite(invite)
 
 
+def _shared_sync_invite_prepare_should_stop(invite: dict) -> bool:
+    status = str((invite or {}).get("status") or "").strip().lower()
+    prepare_status = str((invite or {}).get("prepare_status") or "").strip().lower()
+    return status in {"cancelled", "canceled", "deleted"} or prepare_status in {"cancelled", "canceled", "deleted"}
+
+
+def _shared_sync_invite_prepare_stopped(invite_id: str) -> bool:
+    try:
+        invite = _shared_sync_get_invite(invite_id)
+    except Exception:
+        return True
+    return _shared_sync_invite_prepare_should_stop(invite)
+
+
 def _shared_sync_mark_invite_prepare_failed(invite_id: str, exc: Exception) -> None:
     try:
         invite = _shared_sync_get_invite(invite_id)
     except Exception:
+        return
+    if _shared_sync_invite_prepare_should_stop(invite):
         return
     message = _shared_sync_exception_message(exc)
     agora = _shared_sync_now_iso()
@@ -24224,6 +24800,8 @@ def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dic
         "target_username": destino.get("username"),
     })
     for index, scope in enumerate(scopes, start=1):
+        if _shared_sync_invite_prepare_stopped(invite_id):
+            return
         label = _shared_sync_scope_label(scope)
         _shared_sync_save_invite_prepare_progress(
             invite_id,
@@ -24252,6 +24830,8 @@ def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dic
                 message=f"{label} preparado.",
             )
         except Exception as exc:
+            if _shared_sync_invite_prepare_stopped(invite_id):
+                return
             logger.warning("[SHARED-SYNC] Falha ao preparar escopo %s do convite %s: %s", scope, invite_id, exc)
             errors.append({
                 "scope": scope,
@@ -24270,6 +24850,8 @@ def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dic
     try:
         invite = _shared_sync_get_invite(invite_id)
     except Exception:
+        return
+    if _shared_sync_invite_prepare_should_stop(invite):
         return
 
     agora = _shared_sync_now_iso()
@@ -24347,7 +24929,12 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
     from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
     bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, direction_key)
-    known_keys = _shared_sync_user_share_known_keys(source_sessao.get("client_id"), source_sessao.get("username") or "", link.get("id"), scope)
+    known_keys = None if scope == "lojas_integracoes" else _shared_sync_user_share_known_keys(
+        source_sessao.get("client_id"),
+        source_sessao.get("username") or "",
+        link.get("id"),
+        scope,
+    )
     result = _shared_sync_push_scope(
         source_sessao.get("client_id"),
         scope,
@@ -24368,7 +24955,8 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         state_scope=_shared_sync_user_share_state_scope(link.get("id"), direction_key, scope),
         known_keys=known_keys,
         allow_empty_delta=False,
-        sanitize_user_share_oauth=True,
+        sanitize_user_share_oauth=False,
+        skip_if_remote_hash_matches=(scope == "lojas_integracoes"),
     )
     if result.get("skipped"):
         state = _shared_sync_state_read(source_sessao.get("client_id"), source_sessao.get("username") or "")
@@ -24388,6 +24976,50 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
     link["updated_ts"] = int(time.time())
     _shared_sync_save_link(link)
     return result
+
+
+def _shared_sync_propagar_lojas_integracoes_cliente(client_id: str, machine_id: str = "") -> list[dict]:
+    client_norm = _shared_sync_normalizar_client_id(client_id)
+    if not client_norm or not _firebase_deve_usar():
+        return []
+    resultados = []
+    for link in _shared_sync_links_all():
+        if not bool(link.get("active", True)):
+            continue
+        if "lojas_integracoes" not in (link.get("scopes") or []):
+            continue
+        if not (link.get("source_keep_synced") and link.get("target_keep_synced")):
+            continue
+        sessao = None
+        if _shared_sync_normalizar_client_id(link.get("source_client_id")) == client_norm:
+            sessao = {
+                "client_id": link.get("source_client_id"),
+                "username": link.get("source_username"),
+                "name": link.get("source_name") or link.get("source_username") or "",
+            }
+        elif _shared_sync_normalizar_client_id(link.get("target_client_id")) == client_norm:
+            sessao = {
+                "client_id": link.get("target_client_id"),
+                "username": link.get("target_username"),
+                "name": link.get("target_name") or link.get("target_username") or "",
+            }
+        if not sessao or not sessao.get("username"):
+            continue
+        try:
+            resultado = _shared_sync_push_link_scope(sessao, link, "lojas_integracoes", machine_id or "oauth-refresh")
+            resultados.append({
+                "link_id": link.get("id"),
+                "success": True,
+                "skipped": bool(resultado.get("skipped")),
+                "reason": resultado.get("reason") or "",
+            })
+        except Exception as exc:
+            resultados.append({
+                "link_id": link.get("id"),
+                "success": False,
+                "reason": _shared_sync_exception_message(exc),
+            })
+    return resultados
 
 
 @app.get("/api/shared-sync/users")
@@ -24653,6 +25285,79 @@ def shared_sync_user_shares_reject(
     invite["updated_ts"] = int(time.time())
     _shared_sync_save_invite(invite)
     return {"success": True, "message": "Convite recusado.", "invite": _shared_sync_invite_public(invite, sessao)}
+
+
+@app.post("/api/shared-sync/user-shares/invites/{invite_id}/cancel")
+def shared_sync_user_shares_cancel(
+    invite_id: str,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    invite = _shared_sync_get_invite(invite_id)
+    if not (_shared_sync_session_is_source(sessao, invite) or _shared_sync_session_is_target(sessao, invite)):
+        raise HTTPException(status_code=403, detail="Voce nao participa deste convite.")
+    status_atual = str(invite.get("status") or "pending").strip().lower()
+    if status_atual in {"cancelled", "canceled"}:
+        return {"success": True, "message": "Convite ja estava cancelado.", "invite": _shared_sync_invite_public(invite, sessao)}
+    if status_atual != "pending":
+        raise HTTPException(status_code=400, detail="Apenas convites pendentes podem ser cancelados.")
+    agora = _shared_sync_now_iso()
+    invite["status"] = "cancelled"
+    invite["prepare_status"] = "cancelled"
+    invite["prepare_progress"] = 100
+    invite["prepare_current_scope"] = ""
+    invite["prepare_current_label"] = ""
+    invite["prepare_message"] = "Convite cancelado pelo usuario."
+    invite["cancelled_by"] = sessao.get("username") or ""
+    invite["cancelled_at"] = agora
+    invite["responded_at"] = invite.get("responded_at") or agora
+    invite["responded_ts"] = int(time.time())
+    invite["prepare_finished_at"] = invite.get("prepare_finished_at") or agora
+    invite["updated_at"] = agora
+    invite["updated_ts"] = int(time.time())
+    saved = _shared_sync_save_invite(invite)
+    firebase_ok = saved.get("storage") == "firebase" or not _firebase_deve_usar()
+    return {
+        "success": True,
+        "message": "Convite cancelado." if firebase_ok else "Convite cancelado localmente, mas o Firebase nao confirmou a atualizacao.",
+        "invite": _shared_sync_invite_public(saved, sessao),
+    }
+
+
+@app.delete("/api/shared-sync/user-shares/invites/{invite_id}")
+def shared_sync_user_shares_delete(
+    invite_id: str,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    invite = _shared_sync_get_invite(invite_id)
+    if not (_shared_sync_session_is_source(sessao, invite) or _shared_sync_session_is_target(sessao, invite)):
+        raise HTTPException(status_code=403, detail="Voce nao participa deste convite.")
+    agora = _shared_sync_now_iso()
+    tombstone = dict(invite or {})
+    tombstone["status"] = "deleted"
+    tombstone["prepare_status"] = "deleted"
+    tombstone["prepare_progress"] = 100
+    tombstone["prepare_message"] = "Convite excluido da lista."
+    tombstone["prepare_current_scope"] = ""
+    tombstone["prepare_current_label"] = ""
+    tombstone["prepare_finished_at"] = tombstone.get("prepare_finished_at") or agora
+    tombstone["deleted_by"] = sessao.get("username") or ""
+    tombstone["deleted_at"] = agora
+    tombstone["updated_at"] = agora
+    tombstone["updated_ts"] = int(time.time())
+    _shared_sync_save_invite(tombstone)
+    resultado = _shared_sync_delete_invite_doc(invite_id)
+    firebase_ok = bool(resultado.get("firebase_deleted")) or not _firebase_deve_usar()
+    if not firebase_ok:
+        _shared_sync_save_invite(tombstone)
+    return {
+        "success": True,
+        "message": "Convite excluido da lista." if firebase_ok else "Convite excluido localmente, mas o Firebase nao confirmou a atualizacao.",
+        "delete": resultado,
+    }
 
 
 @app.put("/api/shared-sync/user-shares/links/{link_id}")
@@ -25765,6 +26470,53 @@ def user_machines_online(
     }
 
 
+@app.post("/api/user/chat/typing")
+def user_chat_typing(payload: UserChatTypingRequest, authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    destino = _user_chat_norm_username(payload.username)
+    if not destino:
+        raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
+    destino_client_id = _user_chat_norm_client(payload.client_id or sessao["client_id"])
+    if destino == sessao["username"] and destino_client_id == sessao["client_id"]:
+        return {"success": True, "typing": False}
+    item = _user_chat_typing_save(
+        sessao["username"],
+        sessao["client_id"],
+        destino,
+        destino_client_id,
+        bool(payload.typing),
+    )
+    return {
+        "success": True,
+        "typing": bool(item.get("typing")),
+        "updated_at": item.get("updated_at") or "",
+        "updated_ts": int(item.get("updated_ts") or 0),
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+    }
+
+
+@app.get("/api/user/chat/typing")
+def user_chat_typing_get(
+    username: str,
+    client_id: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    other_username = _user_chat_norm_username(username)
+    if not other_username:
+        raise HTTPException(status_code=400, detail="Informe o usuario da conversa.")
+    other_client_id = _user_chat_norm_client(client_id or sessao["client_id"])
+    status = _user_chat_typing_status(sessao["username"], sessao["client_id"], other_username, other_client_id)
+    return {
+        "success": True,
+        "typing": bool(status.get("typing")),
+        "name": status.get("name") or _user_chat_user_name(other_username),
+        "updated_at": status.get("updated_at") or "",
+        "updated_ts": int(status.get("updated_ts") or 0),
+        "backend": "firebase" if _firebase_deve_usar() else "local",
+    }
+
+
 @app.get("/api/user/chat/unread")
 def user_chat_unread(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
@@ -25808,10 +26560,11 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
     sessao = _payload_sessao_por_authorization(authorization)
     destino = _user_chat_norm_username(payload.username)
     texto = str(payload.message or "").strip()
+    anexos = _user_chat_attachments_normalizar(payload.attachments or [], validar_limites=True)
     if not destino:
         raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
-    if not texto:
-        raise HTTPException(status_code=400, detail="Informe a mensagem.")
+    if not texto and not anexos:
+        raise HTTPException(status_code=400, detail="Informe a mensagem ou anexe um arquivo.")
     if len(texto) > 2000:
         raise HTTPException(status_code=400, detail="A mensagem deve ter no maximo 2000 caracteres.")
     destino_client_id = _user_chat_norm_client(payload.client_id or sessao["client_id"])
@@ -25826,6 +26579,7 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
         "recipient_username": destino,
         "recipient_client_id": destino_client_id,
         "message": texto,
+        "attachments": anexos,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "created_ts": agora_ts,
         "delivered_at": "",
@@ -37390,6 +38144,25 @@ def _integracoes_mesclar_legadas(client_id, lojas):
 
     return lojas, mudou
 
+
+def _integracoes_normalizar_oauth_compartilhado_lojas(lojas):
+    if not isinstance(lojas, list):
+        return lojas, False
+    mudou = False
+    for loja in lojas:
+        if not isinstance(loja, dict):
+            continue
+        integracoes = loja.get("integracoes")
+        if not isinstance(integracoes, dict):
+            continue
+        for servico, dados in list(integracoes.items()):
+            normalizado = _shared_sync_normalizar_integracao_conectada(servico, dados)
+            if isinstance(normalizado, dict) and normalizado != dados:
+                integracoes[servico] = normalizado
+                mudou = True
+    return lojas, mudou
+
+
 def carregar_lojas(client_id: str):
     """Carrega as lojas do cliente do arquivo JSON."""
     arquivo_lojas = _migrar_arquivo_legado_para_tenant(client_id, "lojas_config.json", ARQUIVO_LOJAS)
@@ -37399,6 +38172,8 @@ def carregar_lojas(client_id: str):
             with open(arquivo_lojas, 'r', encoding='utf-8-sig') as f:
                 lojas = json.load(f)
             lojas, mudou = _integracoes_mesclar_legadas(client_id, lojas)
+            lojas, mudou_oauth = _integracoes_normalizar_oauth_compartilhado_lojas(lojas)
+            mudou = mudou or mudou_oauth
             if mudou:
                 salvar_lojas(client_id, lojas)
             return lojas
@@ -37406,6 +38181,8 @@ def carregar_lojas(client_id: str):
             logger.error(f"Erro ao carregar lojas do cliente {client_id}: {e}")
             return []
     lojas, mudou = _integracoes_mesclar_legadas(client_id, [])
+    lojas, mudou_oauth = _integracoes_normalizar_oauth_compartilhado_lojas(lojas)
+    mudou = mudou or mudou_oauth
     if mudou:
         salvar_lojas(client_id, lojas)
     return lojas
@@ -37577,6 +38354,10 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
             "connected": True,
             "updated_at": str(time.time()),
         })
+        try:
+            _shared_sync_propagar_lojas_integracoes_cliente(client_id, "bling-oauth-auth")
+        except Exception as exc:
+            logger.warning("[BLING] Nao foi possivel propagar autenticacao para compartilhamentos: %s", exc)
     else:
         ok, result = auth_ml_exchange(app_id, secret, code, redirect_uri=redirect_uri)
         if not ok:
@@ -46591,6 +47372,299 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     resposta = _carregar_configuracoes_globais()
     return {"success": True, "configuracoes": resposta}
 
+
+def _sala_reuniao_daily_api_key() -> str:
+    return str(os.getenv("DAILY_API_KEY") or os.getenv("JK_DAILY_API_KEY") or "").strip()
+
+
+DAILY_API_BASE_URL = "https://api.daily.co/v1"
+DAILY_RECORDING_MODES = {"cloud", "cloud-audio-only", "local", "raw-tracks"}
+DAILY_LANGS = {"da", "de", "en", "es", "fi", "fr", "it", "jp", "ka", "nl", "no", "pt", "pt-BR", "pl", "ru", "sv", "tr", "user"}
+
+
+def _sala_reuniao_bool(valor: Any, padrao: bool = False) -> bool:
+    return padrao if valor is None else bool(valor)
+
+
+def _sala_reuniao_privacidade(valor: Optional[str]) -> str:
+    texto = str(valor or "public").strip().lower()
+    mapa = {
+        "public": "public",
+        "publica": "public",
+        "publico": "public",
+        "private": "private",
+        "privada": "private",
+        "privado": "private",
+    }
+    if texto not in mapa:
+        raise HTTPException(status_code=400, detail="Privacidade da sala deve ser public ou private.")
+    return mapa[texto]
+
+
+def _sala_reuniao_idioma(valor: Optional[str]) -> str:
+    texto = str(valor or "pt-BR").strip()
+    return texto if texto in DAILY_LANGS else "pt-BR"
+
+
+def _sala_reuniao_modo_gravacao(valor: Optional[str]) -> str:
+    texto = str(valor or "").strip().lower()
+    if texto in {"", "sem", "none", "off", "false", "desativada", "desativado"}:
+        return ""
+    if texto not in DAILY_RECORDING_MODES:
+        raise HTTPException(status_code=400, detail="Modo de gravacao invalido. Use cloud, cloud-audio-only, local ou raw-tracks.")
+    return texto
+
+
+def _sala_reuniao_daily_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _sala_reuniao_daily_room_name(nome: Optional[str] = None) -> str:
+    base = str(nome or "sala-reuniao").strip() or "sala-reuniao"
+    base_ascii = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    base_ascii = re.sub(r"[^A-Za-z0-9_-]+", "-", base_ascii).strip("-_").lower()
+    base_ascii = base_ascii or "sala-reuniao"
+    suffix = f"{datetime.utcnow().strftime('%Y%m%d%H%M')}-{uuid.uuid4().hex[:6]}"
+    max_base = max(1, 128 - len(suffix) - 1)
+    return f"{base_ascii[:max_base].strip('-_') or 'sala-reuniao'}-{suffix}"
+
+
+def _sala_reuniao_daily_error(resp) -> str:
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            return str(payload.get("info") or payload.get("error") or payload.get("message") or resp.text or "").strip()
+    except Exception:
+        pass
+    return str(getattr(resp, "text", "") or "").strip()
+
+
+def _sala_reuniao_daily_get(path: str, api_key: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    try:
+        resp = requests.get(
+            f"{DAILY_API_BASE_URL}{path}",
+            headers=_sala_reuniao_daily_headers(api_key),
+            params=params or {},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Daily indisponivel: {exc}")
+    if resp.status_code < 200 or resp.status_code >= 300:
+        detalhe = _sala_reuniao_daily_error(resp) or f"Daily retornou HTTP {resp.status_code}."
+        raise HTTPException(status_code=502, detail=detalhe)
+    try:
+        return resp.json() or {}
+    except Exception:
+        return {}
+
+
+def _sala_reuniao_daily_post(path: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        resp = requests.post(
+            f"{DAILY_API_BASE_URL}{path}",
+            headers=_sala_reuniao_daily_headers(api_key),
+            json=payload,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Daily indisponivel: {exc}")
+    if resp.status_code < 200 or resp.status_code >= 300:
+        detalhe = _sala_reuniao_daily_error(resp) or f"Daily retornou HTTP {resp.status_code}."
+        raise HTTPException(status_code=502, detail=detalhe)
+    try:
+        return resp.json() or {}
+    except Exception:
+        return {}
+
+
+def _sala_reuniao_url_com_token(room_url: Optional[str], token: Optional[str]) -> Optional[str]:
+    if not room_url or not token:
+        return room_url
+    separador = "&" if "?" in room_url else "?"
+    return f"{room_url}{separador}t={quote(str(token), safe='')}"
+
+
+def _sala_reuniao_criar_token_host(
+    api_key: str,
+    room_name: str,
+    req: SalaReuniaoCriarSalaRequest,
+    exp_timestamp: int,
+    recording_mode: str,
+    idioma: str,
+) -> dict[str, Any]:
+    nome_host = str(req.nome_host or "Anfitriao JK Sistema").strip() or "Anfitriao JK Sistema"
+    properties: dict[str, Any] = {
+        "room_name": room_name,
+        "user_name": nome_host[:80],
+        "is_owner": True,
+        "exp": exp_timestamp,
+        "eject_at_token_exp": True,
+        "enable_screenshare": _sala_reuniao_bool(req.habilitar_compartilhar_tela, True),
+        "enable_recording_ui": bool(recording_mode),
+        "enable_prejoin_ui": _sala_reuniao_bool(req.habilitar_prejoin, True),
+        "enable_live_captions_ui": _sala_reuniao_bool(req.habilitar_legendas, True),
+        "start_audio_off": _sala_reuniao_bool(req.iniciar_audio_desligado, True),
+        "start_video_off": _sala_reuniao_bool(req.iniciar_video_desligado, True),
+        "lang": idioma,
+    }
+    if recording_mode:
+        properties["enable_recording"] = recording_mode
+    if recording_mode == "cloud" and _sala_reuniao_bool(req.auto_iniciar_gravacao, False):
+        properties["start_cloud_recording"] = True
+    if _sala_reuniao_bool(req.auto_iniciar_transcricao, False):
+        properties["auto_start_transcription"] = True
+    return _sala_reuniao_daily_post("/meeting-tokens", api_key, {"properties": properties})
+
+
+@app.get("/api/sala-reuniao/status")
+async def sala_reuniao_status(_client_id: str = Depends(get_tenant_id)):
+    """Informa se a chave Daily esta disponivel para criacao automatica de salas."""
+    domain = str(os.getenv("DAILY_DOMAIN") or os.getenv("JK_DAILY_DOMAIN") or "").strip()
+    return {
+        "success": True,
+        "daily_configurado": bool(_sala_reuniao_daily_api_key()),
+        "daily_domain": domain,
+        "recursos": {
+            "salas": True,
+            "token_host": True,
+            "compartilhar_tela": True,
+            "chat": True,
+            "gravacao": True,
+            "transcricao": True,
+            "live_streaming": True,
+            "legendas": True,
+            "sala_espera": True,
+            "salas_grupo": True,
+        },
+    }
+
+
+@app.post("/api/sala-reuniao/salas")
+async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: str = Depends(get_tenant_id)):
+    """Cria uma sala Daily Prebuilt quando DAILY_API_KEY ou JK_DAILY_API_KEY esta configurada."""
+    api_key = _sala_reuniao_daily_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Configure DAILY_API_KEY ou JK_DAILY_API_KEY para criar salas automaticamente.")
+
+    privacidade = _sala_reuniao_privacidade(req.privacidade)
+    idioma = _sala_reuniao_idioma(req.idioma)
+    recording_mode = _sala_reuniao_modo_gravacao(req.modo_gravacao)
+    expira_em = int(req.expira_em_minutos or 120)
+    expira_em = max(15, min(expira_em, 480))
+    max_participantes = int(req.max_participantes or 12)
+    max_participantes = max(2, min(max_participantes, 200))
+    exp_timestamp = int(time.time()) + (expira_em * 60)
+    nome_sala = _sala_reuniao_daily_room_name(req.nome)
+    properties: dict[str, Any] = {
+        "exp": exp_timestamp,
+        "max_participants": max_participantes,
+        "enable_prejoin_ui": _sala_reuniao_bool(req.habilitar_prejoin, True),
+        "enable_knocking": _sala_reuniao_bool(req.habilitar_sala_espera, False),
+        "enable_screenshare": _sala_reuniao_bool(req.habilitar_compartilhar_tela, True),
+        "enable_chat": _sala_reuniao_bool(req.habilitar_chat, True),
+        "enable_shared_chat_history": _sala_reuniao_bool(req.habilitar_historico_chat, True),
+        "enable_advanced_chat": _sala_reuniao_bool(req.habilitar_chat_avancado, True),
+        "enable_people_ui": _sala_reuniao_bool(req.habilitar_pessoas, True),
+        "enable_hand_raising": _sala_reuniao_bool(req.habilitar_mao_levantada, True),
+        "enable_emoji_reactions": _sala_reuniao_bool(req.habilitar_reacoes, True),
+        "enable_pip_ui": _sala_reuniao_bool(req.habilitar_pip, True),
+        "enable_network_ui": _sala_reuniao_bool(req.habilitar_rede, True),
+        "enable_live_captions_ui": _sala_reuniao_bool(req.habilitar_legendas, True),
+        "enable_noise_cancellation_ui": _sala_reuniao_bool(req.habilitar_cancelamento_ruido, True),
+        "enable_video_processing_ui": _sala_reuniao_bool(req.habilitar_fundo_virtual, True),
+        "enable_breakout_rooms": _sala_reuniao_bool(req.habilitar_salas_grupo, False),
+        "enable_cpu_warning_notifications": _sala_reuniao_bool(req.habilitar_alerta_cpu, True),
+        "enable_hidden_participants": _sala_reuniao_bool(req.habilitar_participantes_ocultos, False),
+        "experimental_optimize_large_calls": _sala_reuniao_bool(req.habilitar_chamadas_grandes, False),
+        "enable_adaptive_simulcast": _sala_reuniao_bool(req.habilitar_simulcast_adaptativo, False),
+        "enable_multiparty_adaptive_simulcast": _sala_reuniao_bool(req.habilitar_simulcast_adaptativo, False),
+        "enforce_unique_user_ids": _sala_reuniao_bool(req.exigir_user_id_unico, False),
+        "enable_terse_logging": _sala_reuniao_bool(req.habilitar_log_reduzido, False),
+        "enable_dialout": _sala_reuniao_bool(req.habilitar_dialout, False),
+        "eject_at_room_exp": _sala_reuniao_bool(req.ejetar_na_expiracao, False),
+        "lang": idioma,
+        "start_audio_off": _sala_reuniao_bool(req.iniciar_audio_desligado, True),
+        "start_video_off": _sala_reuniao_bool(req.iniciar_video_desligado, True),
+    }
+    if recording_mode:
+        properties["enable_recording"] = recording_mode
+    if req.duracao_maxima_minutos:
+        duracao = max(5, min(int(req.duracao_maxima_minutos), 480))
+        properties["eject_after_elapsed"] = duracao * 60
+
+    payload = {
+        "name": nome_sala,
+        "privacy": privacidade,
+        "properties": properties,
+    }
+
+    data = _sala_reuniao_daily_post("/rooms", api_key, payload)
+    host_token = None
+    token_data: dict[str, Any] = {}
+    if _sala_reuniao_bool(req.criar_token_host, True):
+        token_data = _sala_reuniao_criar_token_host(api_key, data.get("name") or nome_sala, req, exp_timestamp, recording_mode, idioma)
+        host_token = token_data.get("token")
+    room_url = data.get("url")
+    return {
+        "success": True,
+        "room": {
+            "name": data.get("name") or nome_sala,
+            "url": room_url,
+            "host_url": _sala_reuniao_url_com_token(room_url, host_token),
+            "privacy": data.get("privacy") or privacidade,
+            "expires_at": datetime.utcfromtimestamp(exp_timestamp).isoformat() + "Z",
+            "config": data.get("config") or data.get("properties") or {},
+            "requested_config": properties,
+        },
+        "host_token": host_token,
+        "token": token_data,
+    }
+
+
+@app.get("/api/sala-reuniao/gravacoes")
+async def sala_reuniao_gravacoes(room_name: str = "", limit: int = 20, _client_id: str = Depends(get_tenant_id)):
+    """Lista gravacoes cloud armazenadas no Daily para esta conta."""
+    api_key = _sala_reuniao_daily_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Configure DAILY_API_KEY ou JK_DAILY_API_KEY para consultar gravacoes.")
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 20), 100))}
+    room_name = str(room_name or "").strip()
+    if room_name:
+        params["room_name"] = room_name
+    data = _sala_reuniao_daily_get("/recordings", api_key, params)
+    return {
+        "success": True,
+        "total_count": data.get("total_count", 0),
+        "recordings": data.get("data", []),
+        "raw": data,
+    }
+
+
+@app.get("/api/sala-reuniao/transcricoes")
+async def sala_reuniao_transcricoes(room_id: str = "", mtg_session_id: str = "", limit: int = 20, _client_id: str = Depends(get_tenant_id)):
+    """Lista transcricoes geradas pelo Daily."""
+    api_key = _sala_reuniao_daily_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Configure DAILY_API_KEY ou JK_DAILY_API_KEY para consultar transcricoes.")
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 20), 100))}
+    room_id = str(room_id or "").strip()
+    mtg_session_id = str(mtg_session_id or "").strip()
+    if room_id:
+        params["roomId"] = room_id
+    if mtg_session_id:
+        params["mtgSessionId"] = mtg_session_id
+    data = _sala_reuniao_daily_get("/transcript", api_key, params)
+    return {
+        "success": True,
+        "total_count": data.get("total_count", 0),
+        "transcripts": data.get("data", []),
+        "raw": data,
+    }
+
 # --- ENDPOINTS IMPOSTOS ---
 
 def _arquivo_regras_impostos(client_id: str) -> str:
@@ -51941,7 +53015,6 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     access_token = bling_cfg.get("access_token")
     cid = bling_cfg.get("id")
     sec = bling_cfg.get("secret")
-    refresh_tok = bling_cfg.get("refresh_token")
 
     if not (access_token and cid and sec):
         raise HTTPException(status_code=400, detail="Credenciais Bling incompletas para esta loja.")
@@ -51949,21 +53022,14 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     _estoque_verificar_cancelamento(client_id)
     _set_estoque_progresso(client_id, _criar_progresso("Bling", 1, 4, 15, "Buscando produtos no Bling..."))
     _estoque_log(client_id, "[ESTOQUE] Etapa 1/4: listando produtos")
-    produtos, status_prod = _bling_listar_produtos(access_token)
-    if status_prod == 401 and refresh_tok:
-        _set_estoque_progresso(client_id, _criar_progresso("Bling", 1, 4, 20, "Renovando token Bling..."))
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, req.loja, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time())
-        })
-        produtos, status_prod = _bling_listar_produtos(access_token)
+    produtos, status_prod, bling_cfg = _bling_executar_com_refresh(
+        client_id,
+        req.loja,
+        bling_cfg,
+        _bling_listar_produtos,
+        on_refresh=lambda: _set_estoque_progresso(client_id, _criar_progresso("Bling", 1, 4, 20, "Renovando token Bling...")),
+    )
+    access_token = bling_cfg.get("access_token")
 
     if status_prod != 200:
         status_err = int(status_prod or 502)
@@ -51980,7 +53046,14 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     _estoque_verificar_cancelamento(client_id)
     _set_estoque_progresso(client_id, _criar_progresso("Bling", 2, 4, 45, "Mapeando depósitos da loja..."))
     _estoque_log(client_id, "[ESTOQUE] Etapa 2/4: mapeando depósitos")
-    mapa_dep, status_dep = _bling_map_depositos(access_token)
+    mapa_dep, status_dep, bling_cfg = _bling_executar_com_refresh(
+        client_id,
+        req.loja,
+        bling_cfg,
+        _bling_map_depositos,
+        on_refresh=lambda: _set_estoque_progresso(client_id, _criar_progresso("Bling", 2, 4, 48, "Renovando token Bling...")),
+    )
+    access_token = bling_cfg.get("access_token")
     if status_dep != 200:
         status_err = int(status_dep or 502)
         _estoque_log(client_id, f"[ESTOQUE] Falha ao mapear depósitos no Bling: {status_err}")
@@ -51994,7 +53067,14 @@ async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     _set_estoque_progresso(client_id, _criar_progresso("Bling", 3, 4, 70, "Calculando saldos de estoque..."))
     _estoque_log(client_id, "[ESTOQUE] Etapa 3/4: consultando saldos")
     ids_prod = [str(p.get("id_bling")).strip() for p in produtos if p.get("id_bling")]
-    saldos, status_saldo = _bling_saldos(access_token, ids_prod, mapa_dep)
+    saldos, status_saldo, bling_cfg = _bling_executar_com_refresh(
+        client_id,
+        req.loja,
+        bling_cfg,
+        lambda token: _bling_saldos(token, ids_prod, mapa_dep),
+        on_refresh=lambda: _set_estoque_progresso(client_id, _criar_progresso("Bling", 3, 4, 72, "Renovando token Bling...")),
+    )
+    access_token = bling_cfg.get("access_token")
     if status_saldo != 200:
         status_err = int(status_saldo or 502)
         _estoque_log(client_id, f"[ESTOQUE] Falha ao consultar saldos no Bling: {status_err}")
@@ -55885,20 +56965,16 @@ async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: st
     unidades_cache = {}
     unidades_mapeamento = _carregar_mapeamento_unidades()
     mapa_lojas_cliente = _carregar_mapeamento_lojas_virtuais_cliente(client_id)
-    registros, status_api = _bling_listar_vendas(access_token, req.data_inicio, req.data_fim, req.loja, client_id, unidades_cache, unidades_mapeamento, mapa_lojas_cliente)
+    registros, status_api, bling_cfg = _bling_executar_com_refresh(
+        client_id,
+        req.loja,
+        bling_cfg,
+        lambda token: _bling_listar_vendas(token, req.data_inicio, req.data_fim, req.loja, client_id, unidades_cache, unidades_mapeamento, mapa_lojas_cliente),
+        on_refresh=lambda: _set_progresso(client_id, _criar_progresso("Bling", 0, 0, 8, "Renovando token da Bling...")),
+    )
+    access_token = bling_cfg.get("access_token")
+    refresh_tok = bling_cfg.get("refresh_token")
     if status_api == 401:
-        _set_progresso(client_id, _criar_progresso("Bling", 0, 0, 8, "Renovando token da Bling..."))
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, req.loja, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time())
-        })
         unidades_cache = {}
         unidades_mapeamento = _carregar_mapeamento_unidades()
         mapa_lojas_cliente = _carregar_mapeamento_lojas_virtuais_cliente(client_id)
@@ -55917,26 +56993,23 @@ async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: st
         client_id,
         mapa_lojas_cliente,
     )
-    if status_nf_saida == 401 and refresh_tok:
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, req.loja, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time())
-        })
-        registros_nf_saida, status_nf_saida = _bling_listar_vendas_fallback_nf_saida(
-            access_token,
-            req.data_inicio,
-            req.data_fim,
-            req.loja,
+    if status_nf_saida == 401:
+        registros_nf_saida, status_nf_saida, bling_cfg = _bling_executar_com_refresh(
             client_id,
-            mapa_lojas_cliente,
+            req.loja,
+            bling_cfg,
+            lambda token: _bling_listar_vendas_fallback_nf_saida(
+                token,
+                req.data_inicio,
+                req.data_fim,
+                req.loja,
+                client_id,
+                mapa_lojas_cliente,
+            ),
+            on_refresh=lambda: _set_progresso(client_id, _criar_progresso("Bling", 0, 0, 12, "Renovando token da Bling para NF-e de saída...")),
         )
+        access_token = bling_cfg.get("access_token")
+        refresh_tok = bling_cfg.get("refresh_token")
 
     if status_nf_saida == 401:
         raise HTTPException(status_code=401, detail="Token Bling expirado ao consultar NF-e de saÃƒÂ­da. RefaÃƒÂ§a a conexÃƒÂ£o em IntegraÃƒÂ§ÃƒÂµes.")
@@ -56135,20 +57208,15 @@ async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: st
                         numero_nf = cache_nf[nf_id]
                         status_nf = 200 if numero_nf else 0
                     else:
-                        numero_nf, status_nf = _bling_obter_numero_nf(access_token, nf_id)
-                        if status_nf == 401 and refresh_tok and cid and sec:
-                            novos = _bling_refresh_token(cid, sec, refresh_tok)
-                            access_token = novos.get("access_token")
-                            refresh_tok = novos.get("refresh_token", refresh_tok)
-                            atualizar_api_loja(client_id, req.loja, "bling", {
-                                "id": cid,
-                                "secret": sec,
-                                "access_token": access_token,
-                                "refresh_token": refresh_tok,
-                                "connected": True,
-                                "updated_at": str(time.time())
-                            })
-                            numero_nf, status_nf = _bling_obter_numero_nf(access_token, nf_id)
+                        numero_nf, status_nf, bling_cfg = _bling_executar_com_refresh(
+                            client_id,
+                            req.loja,
+                            bling_cfg,
+                            lambda token: _bling_obter_numero_nf(token, nf_id),
+                            on_refresh=lambda: _sync_log(client_id, "[SYNC] Etapa 2.6: Renovando token Bling para preencher NF..."),
+                        )
+                        access_token = bling_cfg.get("access_token")
+                        refresh_tok = bling_cfg.get("refresh_token")
 
                         if status_nf != 200:
                             numero_nf = ""
@@ -56207,29 +57275,32 @@ async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: st
     _set_progresso(client_id, _criar_progresso("Notas", 0, 0, 76, "Buscando notas fiscais de entrada..."))
     _verificar_cancelamento(client_id)
     notas_total = 0
-    natureza_map, status_nat = _bling_listar_naturezas(access_token)
+    natureza_map, status_nat, bling_cfg = _bling_executar_com_refresh(
+        client_id,
+        req.loja,
+        bling_cfg,
+        _bling_listar_naturezas,
+        on_refresh=lambda: _sync_log(client_id, "[SYNC] Etapa 3.2: Renovando token Bling para naturezas..."),
+    )
+    access_token = bling_cfg.get("access_token")
+    refresh_tok = bling_cfg.get("refresh_token")
     _sync_log(client_id, f"[SYNC] Etapa 3.1: Naturezas carregadas - Status: {status_nat}")
     _set_progresso(client_id, _criar_progresso("Notas", 0, 0, 78, "Naturezas carregadas. Listando notas..."))
-    
-    if status_nat == 401 and refresh_tok:
-        _sync_log(client_id, "[SYNC] Etapa 3.2: Renovando token Bling para naturezas...")
-        novos = _bling_refresh_token(cid, sec, refresh_tok)
-        access_token = novos.get("access_token")
-        refresh_tok = novos.get("refresh_token", refresh_tok)
-        atualizar_api_loja(client_id, req.loja, "bling", {
-            "id": cid,
-            "secret": sec,
-            "access_token": access_token,
-            "refresh_token": refresh_tok,
-            "connected": True,
-            "updated_at": str(time.time())
-        })
-        natureza_map, status_nat = _bling_listar_naturezas(access_token)
     if status_nat == 401:
         raise HTTPException(status_code=401, detail="Token Bling expirado. RefaÃƒÆ’Ã‚Â§a a conexÃƒÆ’Ã‚Â£o em IntegraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes.")
 
     _verificar_cancelamento(client_id)
     notas, notas_itens, status_nf = _bling_listar_notas_entrada(access_token, req.data_inicio, req.data_fim, natureza_map or {}, client_id)
+    if status_nf == 401:
+        _sync_log(client_id, "[SYNC] Etapa 3.3: Renovando token Bling para notas de entrada...")
+        bling_cfg = _bling_renovar_token_loja(client_id, req.loja, bling_cfg)
+        access_token = bling_cfg.get("access_token")
+        refresh_tok = bling_cfg.get("refresh_token")
+        notas, notas_itens, status_nf = _bling_listar_notas_entrada(access_token, req.data_inicio, req.data_fim, natureza_map or {}, client_id)
+    if status_nf == 401:
+        _bling_marcar_oauth_invalido(client_id, req.loja, bling_cfg, "Token Bling expirado. Refaça a conexão em Integrações.")
+    notas = notas or []
+    notas_itens = notas_itens or []
     _sync_log(client_id, f"[SYNC] Etapa 3.3: Notas fiscais listadas - {len(notas)} notas, {len(notas_itens)} itens (Status: {status_nf})")
     _set_progresso(client_id, _criar_progresso("Notas", 0, 0, 82, f"{len(notas)} notas e {len(notas_itens)} itens encontrados."))
     
@@ -56279,7 +57350,15 @@ async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: st
             _set_progresso(client_id, _criar_progresso("Notas", idx + 1, len(notas_para_detalhar), min(90, pct_notas), f"Processando nota {idx + 1}/{len(notas_para_detalhar)} (NF {numero})"))
             
             # Buscar detalhes da NF (com itens)
-            nf_detalhe, status_detalhe = _bling_obter_detalhes_nf(access_token, str(nid))
+            nf_detalhe, status_detalhe, bling_cfg = _bling_executar_com_refresh(
+                client_id,
+                req.loja,
+                bling_cfg,
+                lambda token: _bling_obter_detalhes_nf(token, str(nid)),
+                on_refresh=lambda: _sync_log(client_id, "[SYNC] Etapa 3.4: Renovando token Bling para detalhe de NF..."),
+            )
+            access_token = bling_cfg.get("access_token")
+            refresh_tok = bling_cfg.get("refresh_token")
             
             if status_detalhe == 401:
                 raise HTTPException(status_code=401, detail="Token Bling expirado. RefaÃƒÆ’Ã‚Â§a a conexÃƒÆ’Ã‚Â£o em IntegraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes.")

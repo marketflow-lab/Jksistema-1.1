@@ -14,7 +14,7 @@ if (!electron || !electron.app) {
     process.exit(0);
 }
 
-const { app, BrowserWindow, BrowserView, ipcMain, session, net, shell, dialog } = electron;
+const { app, BrowserWindow, BrowserView, desktopCapturer, ipcMain, session, net, shell, dialog, Notification } = electron;
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -34,6 +34,9 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('JK Sistema Cliente');
+if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
+    app.setAppUserModelId('com.jksistema.cliente');
+}
 
 const JK_LOCAL_BACKEND_PORT = 8001;
 const JK_PROMO_WORKER_PORT = 8011;
@@ -832,6 +835,20 @@ function isLocalBackendUrlForNotification(rawUrl) {
     }
 }
 
+function isDailyMeetingUrl(rawUrl) {
+    try {
+        const parsed = new URL(String(rawUrl || ''));
+        const host = parsed.hostname.toLowerCase();
+        return parsed.protocol === 'https:' && (host === 'daily.co' || host.endsWith('.daily.co'));
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isAllowedMediaPermissionUrl(rawUrl) {
+    return isDailyMeetingUrl(rawUrl) || isLocalBackendUrlForNotification(rawUrl);
+}
+
 function configureNotificationPermissions() {
     const sessions = [session.defaultSession, getMlSession()];
     for (const ses of sessions) {
@@ -839,6 +856,10 @@ function configureNotificationPermissions() {
         if (typeof ses.setPermissionRequestHandler === 'function') {
             ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
                 const requestingUrl = details && (details.requestingUrl || details.embeddingOrigin) || (webContents && webContents.getURL && webContents.getURL()) || '';
+                if (permission === 'media') {
+                    callback(isAllowedMediaPermissionUrl(requestingUrl));
+                    return;
+                }
                 if (permission === 'notifications') {
                     callback(isLocalBackendUrlForNotification(requestingUrl));
                     return;
@@ -848,12 +869,59 @@ function configureNotificationPermissions() {
         }
         if (typeof ses.setPermissionCheckHandler === 'function') {
             ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-                if (permission !== 'notifications') return false;
                 const currentUrl = requestingOrigin || (webContents && webContents.getURL && webContents.getURL()) || '';
-                return isLocalBackendUrlForNotification(currentUrl);
+                if (permission === 'media') return isAllowedMediaPermissionUrl(currentUrl);
+                if (permission === 'notifications') return isLocalBackendUrlForNotification(currentUrl);
+                return false;
             });
         }
+        if (typeof ses.setDisplayMediaRequestHandler === 'function') {
+            ses.setDisplayMediaRequestHandler((request, callback) => {
+                const requestingUrl = request && (request.securityOrigin || request.requestingUrl || request.frameOrigin) || '';
+                if (!isAllowedMediaPermissionUrl(requestingUrl)) {
+                    callback({});
+                    return;
+                }
+                desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+                    .then((sources) => {
+                        callback(sources && sources[0] ? { video: sources[0] } : {});
+                    })
+                    .catch(() => callback({}));
+            }, { useSystemPicker: true });
+        }
     }
+}
+
+function truncateNotificationText(value, maxLength = 240) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
+}
+
+function focusMainWindowForNotification() {
+    const win = mainWindow && !mainWindow.isDestroyed()
+        ? mainWindow
+        : BrowserWindow.getAllWindows().find(item => item && !item.isDestroyed());
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+}
+
+function showWindowsNotification(payload = {}) {
+    if (!Notification || typeof Notification.isSupported !== 'function' || !Notification.isSupported()) {
+        return { success: false, reason: 'unsupported' };
+    }
+    const title = truncateNotificationText(payload.title || 'JK Sistema', 90);
+    const body = truncateNotificationText(payload.body || payload.message || '', 320);
+    const notification = new Notification({
+        title,
+        body,
+        silent: payload.silent === true,
+    });
+    notification.on('click', focusMainWindowForNotification);
+    notification.show();
+    return { success: true };
 }
 
 async function flushPersistentSessions() {
@@ -3289,6 +3357,9 @@ app.whenReady().then(async () => {
             maybeInstallDeferredUpdate();
         }
         return result;
+    });
+    ipcMain.handle('show-windows-notification', (_event, payload) => {
+        return showWindowsNotification(payload || {});
     });
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();

@@ -21,6 +21,7 @@ set arquivos=^
     frontend_promo.html ^
     frontend_etiquetas.html ^
     debug_vendas.html ^
+    admin_usuarios.html ^
     dashboard.html
     perguntas_pos_venda.html
 
