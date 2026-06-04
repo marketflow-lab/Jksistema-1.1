@@ -1502,7 +1502,7 @@ class ConfiguracoesGlobaisRequest(BaseModel):
 class SalaReuniaoCriarSalaRequest(BaseModel):
     nome: str | None = None
     privacidade: str | None = "public"
-    expira_em_minutos: int | None = 120
+    expira_em_minutos: int | None = None
     duracao_maxima_minutos: int | None = None
     limitar_participantes: bool | None = False
     max_participantes: int | None = 12
@@ -1545,6 +1545,13 @@ class SalaReuniaoUsoAdicionarRequest(BaseModel):
     participant_seconds: float | None = 0
     participant_count: int | None = None
     reason: str | None = None
+
+
+class SalaReuniaoEncerrarLocalRequest(BaseModel):
+    room_name: str | None = None
+    room_url: str | None = None
+    participant_count: int | None = 1
+    suppress_seconds: int | None = 300
 
 
 class SiscomexConfigRequest(BaseModel):
@@ -21426,6 +21433,44 @@ def _user_chat_firebase_for_user(username: str, client_id: str) -> list[dict]:
     return mensagens
 
 
+def _user_chat_firebase_between(username: str, client_id: str, other_username: str, other_client_id: str) -> list[dict]:
+    if not _firebase_deve_usar():
+        return []
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+    mensagens = []
+    try:
+        db = _firebase_db()
+        if db is None:
+            return []
+        coll = db.collection(_firebase_user_chat_collection_name())
+        consultas = [
+            coll.where("sender_username", "==", username).where("recipient_username", "==", other_username).stream(),
+            coll.where("sender_username", "==", other_username).where("recipient_username", "==", username).stream(),
+        ]
+        for stream in consultas:
+            for snap in stream:
+                data = snap.to_dict() or {}
+                if not data.get("id"):
+                    data["id"] = snap.id
+                public = _user_chat_public(data)
+                if _user_chat_is_between(public, username, client_id, other_username, other_client_id):
+                    public["storage"] = "firebase"
+                    mensagens.append(public)
+    except Exception as exc:
+        logger.warning("[USER CHAT] Falha ao listar conversa no Firebase; usando fallback por usuario: %s", exc)
+        try:
+            mensagens.extend(
+                item for item in _user_chat_firebase_for_user(username, client_id)
+                if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
+            )
+        except Exception:
+            pass
+    return mensagens
+
+
 def _user_chat_merge_messages(messages: list[dict]) -> list[dict]:
     por_id = {}
     for raw in messages or []:
@@ -21475,6 +21520,21 @@ def _user_chat_all_for_user(username: str, client_id: str) -> list[dict]:
                 and _user_chat_public(item).get("recipient_client_id") == client_id
             )
         )
+    )
+    return _user_chat_merge_messages(mensagens)
+
+
+def _user_chat_all_between(username: str, client_id: str, other_username: str, other_client_id: str) -> list[dict]:
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+    mensagens = []
+    mensagens.extend(_user_chat_firebase_between(username, client_id, other_username, other_client_id))
+    mensagens.extend(
+        _user_chat_public(item)
+        for item in _user_chat_local_read()
+        if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
     )
     return _user_chat_merge_messages(mensagens)
 
@@ -21571,8 +21631,7 @@ def _user_chat_history(username: str, client_id: str, other_username: str, other
     limit = max(1, min(int(limit or 80), 200))
     mensagens = [
         item
-        for item in _user_chat_all_for_user(username, client_id)
-        if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
+        for item in _user_chat_all_between(username, client_id, other_username, other_client_id)
     ]
     mensagens.sort(key=lambda item: int(item.get("created_ts") or 0))
     return mensagens[-limit:]
@@ -26308,15 +26367,26 @@ def _machine_presence_list_firebase(username: str, client_id: str) -> list[dict]
         return []
 
 
-def _machine_presence_list(username: str, client_id: str) -> list[dict]:
+def _machine_presence_list_firebase_client(client_id: str) -> list[dict]:
+    if not _firebase_deve_usar():
+        return []
+    try:
+        db = _firebase_db()
+        if db is None:
+            return []
+        client_norm = str(client_id or "default").strip() or "default"
+        coll = db.collection(_firebase_presence_collection_name())
+        return [(snap.to_dict() or {}) for snap in coll.where("client_id", "==", client_norm).stream()]
+    except Exception as exc:
+        logger.warning("[MACHINES] Falha ao listar presenca do cliente no Firebase: %s", exc)
+        return []
+
+
+def _machine_presence_list_from_records(username: str, client_id: str, registros: list[dict]) -> list[dict]:
     username_norm = str(username or "").strip().lower()
     client_norm = str(client_id or "default").strip() or "default"
     now_ts = int(time.time())
     timeout_s = _machine_presence_timeout_seconds()
-    registros = []
-    registros.extend(_machine_presence_list_firebase(username_norm, client_norm))
-    registros.extend(list(_machine_presence_local_read().values()))
-
     maquinas = []
     por_chave = {}
     for item in registros:
@@ -26366,6 +26436,15 @@ def _machine_presence_list(username: str, client_id: str) -> list[dict]:
     return maquinas
 
 
+def _machine_presence_list(username: str, client_id: str) -> list[dict]:
+    username_norm = str(username or "").strip().lower()
+    client_norm = str(client_id or "default").strip() or "default"
+    registros = []
+    registros.extend(_machine_presence_list_firebase(username_norm, client_norm))
+    registros.extend(list(_machine_presence_local_read().values()))
+    return _machine_presence_list_from_records(username_norm, client_norm, registros)
+
+
 def _machine_presence_mark_current(maquinas: list[dict], current_machine_id: str) -> list[dict]:
     current = str(current_machine_id or "").strip()
     if not current:
@@ -26386,11 +26465,20 @@ def admin_listar_usuarios_online(
     resultados = []
     total_online = 0
     maquinas_online_unicas = set()
+    client_ids = sorted({
+        str(usuario.get("client_id") or "default").strip() or "default"
+        for usuario in usuarios
+        if isinstance(usuario, dict)
+    })
+    registros_presenca = []
+    for cid in client_ids:
+        registros_presenca.extend(_machine_presence_list_firebase_client(cid))
+    registros_presenca.extend(list(_machine_presence_local_read().values()))
 
     for usuario in usuarios:
         username = str(usuario.get("username") or "").strip().lower()
         user_client_id = str(usuario.get("client_id") or "default").strip() or "default"
-        maquinas = _machine_presence_list(username, user_client_id)
+        maquinas = _machine_presence_list_from_records(username, user_client_id, registros_presenca)
         maquinas_online = [item for item in maquinas if item.get("online")]
         if maquinas_online:
             total_online += 1
@@ -26782,6 +26870,7 @@ def extrair_permissoes(row, headers):
         'configuracoes': ['configuraÃƒÂ§ÃƒÂµes', 'configuracoes', 'configuraÃƒÂ§ÃƒÂ£o', 'configuracao'],
         'importacoes': ['importaÃƒÂ§ÃƒÂµes', 'importacoes', 'importaÃƒÂ§ÃƒÂ£o', 'importacao'],
         'simulador': ['simulador', 'simulaÃƒÂ§ÃƒÂ£o', 'simulacao'],
+        'sala_reuniao': ['sala de reuniao', 'sala reuniÃƒÂ£o', 'sala reuniao', 'reuniao', 'reunioes'],
     }
 
     fallback_map = {
@@ -26789,7 +26878,7 @@ def extrair_permissoes(row, headers):
         'integracao': 14, 'etiquetas': 15, 'full': 16, 'favoritos': 17,
         'perguntas_pos_venda': -1, 'anuncios_ml': 18, 'medias_compras': 19, 'mercado_full': -1,
         'cadastro': -1, 'impostos': -1, 'configuracoes': -1, 'importacoes': -1,
-        'simulador': -1,
+        'simulador': -1, 'sala_reuniao': -1,
     }
 
     for mod_name, candidates in map_headers.items():
@@ -47648,6 +47737,40 @@ def _sala_reuniao_room_url(room_name: str, known_url: str = "") -> str:
     return f"https://{domain}/{quote(room_name, safe='A-Za-z0-9_-')}"
 
 
+def _sala_reuniao_room_name_from_url(room_url: Any) -> str:
+    room_url = str(room_url or "").strip()
+    if not room_url:
+        return ""
+    try:
+        parsed = urlparse(room_url)
+        path = (parsed.path or "").strip("/")
+        if path:
+            return unquote(path.split("/")[-1]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _sala_reuniao_room_keys(room_name: Any = "", room_url: Any = "") -> set[str]:
+    name = str(room_name or "").strip() or _sala_reuniao_room_name_from_url(room_url)
+    url = str(room_url or "").strip()
+    keys: set[str] = set()
+    if name:
+        keys.add(f"name:{name.lower()}")
+    if url:
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").strip().lower()
+            path = (parsed.path or "").rstrip("/").lower()
+            if host and path:
+                keys.add(f"url:{host}{path}")
+            else:
+                keys.add(f"url:{url.split('?')[0].rstrip('/').lower()}")
+        except Exception:
+            keys.add(f"url:{url.split('?')[0].rstrip('/').lower()}")
+    return keys
+
+
 def _sala_reuniao_iso_from_timestamp(value: Any) -> str:
     try:
         ts = float(value)
@@ -47683,13 +47806,14 @@ def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_toke
         rooms = []
     now_iso = datetime.now().isoformat(timespec="seconds")
     rooms = [item for item in rooms if str(item.get("name") or "") != room_name]
+    expires_at = datetime.utcfromtimestamp(exp_timestamp).isoformat() + "Z" if exp_timestamp > 0 else ""
     rooms.append({
         "name": room_name,
         "url": room_url,
         "host_url": _sala_reuniao_url_com_token(room_url, host_token),
         "privacy": room.get("privacy") or "public",
-        "expires_at": datetime.utcfromtimestamp(exp_timestamp).isoformat() + "Z",
-        "expires_at_ts": int(exp_timestamp),
+        "expires_at": expires_at,
+        "expires_at_ts": int(exp_timestamp or 0),
         "created_at": now_iso,
         "updated_at": now_iso,
     })
@@ -47703,11 +47827,81 @@ def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_toke
     _sala_reuniao_salvar_salas(client_id, payload)
 
 
+def _sala_reuniao_marcar_sala_encerrada(client_id: str, req: SalaReuniaoEncerrarLocalRequest) -> dict[str, Any]:
+    room_url = str(req.room_url or "").strip()
+    room_name = str(req.room_name or "").strip() or _sala_reuniao_room_name_from_url(room_url)
+    if not room_name and not room_url:
+        raise HTTPException(status_code=400, detail="Informe o nome ou link da sala para encerrar localmente.")
+
+    payload = _sala_reuniao_carregar_salas(client_id)
+    rooms = payload.setdefault("rooms", [])
+    if not isinstance(rooms, list):
+        rooms = []
+
+    now_ts = int(time.time())
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    try:
+        suppress_seconds = int(req.suppress_seconds or 300)
+    except Exception:
+        suppress_seconds = 300
+    suppress_seconds = max(30, min(suppress_seconds, 1800))
+    target_keys = _sala_reuniao_room_keys(room_name, room_url)
+    participant_count = max(0, int(req.participant_count or 0))
+    matched = False
+
+    for item in rooms:
+        if not isinstance(item, dict):
+            continue
+        item_keys = _sala_reuniao_room_keys(item.get("name") or "", item.get("url") or "")
+        if target_keys and item_keys and target_keys.isdisjoint(item_keys):
+            continue
+        item["ended_at"] = now_iso
+        item["ended_at_ts"] = now_ts
+        item["suppress_until_ts"] = now_ts + suppress_seconds
+        item["last_left_participants"] = participant_count
+        item["updated_at"] = now_iso
+        matched = True
+
+    if not matched:
+        rooms.append({
+            "name": room_name,
+            "url": room_url,
+            "host_url": "",
+            "privacy": "public",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "ended_at": now_iso,
+            "ended_at_ts": now_ts,
+            "suppress_until_ts": now_ts + suppress_seconds,
+            "last_left_participants": participant_count,
+        })
+
+    payload["rooms"] = rooms[-120:]
+    payload["updated_at"] = now_iso
+    _sala_reuniao_salvar_salas(client_id, payload)
+    return _sala_reuniao_listar_reunioes_ativas(client_id)
+
+
 def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
     now_ts = int(time.time())
     payload = _sala_reuniao_carregar_salas(client_id)
     by_name: dict[str, dict[str, Any]] = {}
+    local_by_name: dict[str, dict[str, Any]] = {}
+    suppressed_keys: set[str] = set()
     for item in payload.get("rooms") or []:
+        if not isinstance(item, dict):
+            continue
+        item_keys = _sala_reuniao_room_keys(item.get("name") or "", item.get("url") or "")
+        try:
+            suppress_until_ts = int(item.get("suppress_until_ts") or 0)
+        except Exception:
+            suppress_until_ts = 0
+        if suppress_until_ts > now_ts:
+            suppressed_keys.update(item_keys)
+
+    for item in payload.get("rooms") or []:
+        if not isinstance(item, dict):
+            continue
         try:
             exp_ts = int(item.get("expires_at_ts") or 0)
         except Exception:
@@ -47717,6 +47911,11 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
         name = str(item.get("name") or "").strip()
         url = _sala_reuniao_room_url(name, item.get("url") or "")
         if not name and not url:
+            continue
+        if name:
+            local_by_name[name] = item
+        item_keys = _sala_reuniao_room_keys(name, url)
+        if item_keys and not item_keys.isdisjoint(suppressed_keys):
             continue
         key = name or url
         by_name[key] = {
@@ -47748,11 +47947,18 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
                     continue
                 current = by_name.get(name, {})
                 participants_count = _sala_reuniao_participant_count(meeting.get("participants"))
+                meeting_keys = _sala_reuniao_room_keys(name, current.get("url") or "")
+                if meeting_keys and not meeting_keys.isdisjoint(suppressed_keys) and participants_count <= 1:
+                    continue
+                local_item = local_by_name.get(name) or {}
+                local_url = _sala_reuniao_room_url(name, local_item.get("url") or current.get("url") or "")
                 current.update({
                     "name": name,
-                    "url": _sala_reuniao_room_url(name, current.get("url") or ""),
-                    "host_url": current.get("host_url") or "",
-                    "privacy": current.get("privacy") or "public",
+                    "url": local_url,
+                    "host_url": current.get("host_url") or local_item.get("host_url") or "",
+                    "privacy": current.get("privacy") or local_item.get("privacy") or "public",
+                    "expires_at": current.get("expires_at") or local_item.get("expires_at") or "",
+                    "created_at": current.get("created_at") or local_item.get("created_at") or "",
                     "participants_count": participants_count,
                     "ongoing": bool(meeting.get("ongoing", True)),
                     "status": "Em andamento",
@@ -47785,8 +47991,6 @@ def _sala_reuniao_criar_token_host(
         "room_name": room_name,
         "user_name": nome_host[:80],
         "is_owner": True,
-        "exp": exp_timestamp,
-        "eject_at_token_exp": True,
         "enable_screenshare": _sala_reuniao_bool(req.habilitar_compartilhar_tela, True),
         "enable_recording_ui": False,
         "enable_prejoin_ui": _sala_reuniao_bool(req.habilitar_prejoin, True),
@@ -47795,6 +47999,9 @@ def _sala_reuniao_criar_token_host(
         "start_video_off": _sala_reuniao_bool(req.iniciar_video_desligado, True),
         "lang": idioma,
     }
+    if exp_timestamp > 0:
+        properties["exp"] = exp_timestamp
+        properties["eject_at_token_exp"] = True
     if req.duracao_maxima_minutos:
         duracao = max(5, min(int(req.duracao_maxima_minutos), 480))
         properties["eject_after_elapsed"] = duracao * 60
@@ -47846,12 +48053,16 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
 
     privacidade = _sala_reuniao_privacidade(req.privacidade)
     idioma = _sala_reuniao_idioma(req.idioma)
-    expira_em = int(req.expira_em_minutos or 120)
-    expira_em = max(15, min(expira_em, 480))
-    exp_timestamp = int(time.time()) + (expira_em * 60)
+    try:
+        expira_em = int(req.expira_em_minutos) if req.expira_em_minutos is not None else 0
+    except Exception:
+        expira_em = 0
+    exp_timestamp = 0
+    if expira_em > 0:
+        expira_em = max(15, min(expira_em, 480))
+        exp_timestamp = int(time.time()) + (expira_em * 60)
     nome_sala = _sala_reuniao_daily_room_name(req.nome)
     properties: dict[str, Any] = {
-        "exp": exp_timestamp,
         "enable_prejoin_ui": _sala_reuniao_bool(req.habilitar_prejoin, True),
         "enable_knocking": _sala_reuniao_bool(req.habilitar_sala_espera, False),
         "enable_screenshare": _sala_reuniao_bool(req.habilitar_compartilhar_tela, True),
@@ -47880,6 +48091,8 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
         "start_audio_off": _sala_reuniao_bool(req.iniciar_audio_desligado, True),
         "start_video_off": _sala_reuniao_bool(req.iniciar_video_desligado, True),
     }
+    if exp_timestamp > 0:
+        properties["exp"] = exp_timestamp
     if req.duracao_maxima_minutos:
         duracao = max(5, min(int(req.duracao_maxima_minutos), 480))
         properties["eject_after_elapsed"] = duracao * 60
@@ -47909,7 +48122,7 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
             "url": room_url,
             "host_url": _sala_reuniao_url_com_token(room_url, host_token),
             "privacy": data.get("privacy") or privacidade,
-            "expires_at": datetime.utcfromtimestamp(exp_timestamp).isoformat() + "Z",
+            "expires_at": datetime.utcfromtimestamp(exp_timestamp).isoformat() + "Z" if exp_timestamp > 0 else "",
             "config": data.get("config") or data.get("properties") or {},
             "requested_config": properties,
         },
@@ -47940,6 +48153,23 @@ async def sala_reuniao_salas_ativas_alias(_client_id: str = Depends(get_tenant_i
 async def sala_reuniao_salas_listar(_client_id: str = Depends(get_tenant_id)):
     """Alias GET para listar salas ativas sem conflitar com o POST de criacao."""
     return await sala_reuniao_reunioes_ativas(_client_id)
+
+
+@app.post("/api/sala-reuniao/reunioes-ativas/encerrar-local")
+async def sala_reuniao_encerrar_local(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id)):
+    """Oculta localmente uma sala que acabou de ser encerrada no navegador."""
+    data = _sala_reuniao_marcar_sala_encerrada(_client_id, req)
+    return {
+        "success": True,
+        "rooms": data.get("rooms") or [],
+        "warning": data.get("warning") or "",
+    }
+
+
+@app.post("/api/sala-reuniao/salas/encerrar-local")
+async def sala_reuniao_encerrar_local_alias(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id)):
+    """Alias de compatibilidade para marcar uma sala como encerrada localmente."""
+    return await sala_reuniao_encerrar_local(req, _client_id)
 
 
 @app.get("/api/sala-reuniao/uso-mensal")

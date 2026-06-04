@@ -737,9 +737,10 @@
   .jk-msg-section{display:flex;flex-direction:column;gap:8px;}
   .jk-msg-section-title{color:#8ee9de;font-size:.78rem;font-weight:900;text-transform:uppercase;letter-spacing:.03em;}
   .jk-msg-list{display:flex;flex-direction:column;gap:8px;}
+  #jk-msg-online-list{gap:4px;}
   .jk-msg-empty{color:#cfe7e4;font-size:.78rem;opacity:.72;border:1px dashed rgba(120,227,212,.24);border-radius:8px;padding:10px;background:rgba(4,26,35,.36);}
   .jk-msg-user-item,.jk-msg-card{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(8,43,59,.56);color:#e8fffb;padding:10px;}
-  .jk-msg-user-item{display:flex;align-items:center;gap:6px;text-align:left;cursor:pointer;width:100%;min-height:30px;padding:5px 7px;border-radius:6px;}
+  .jk-msg-user-item{display:flex;align-items:center;gap:6px;text-align:left;cursor:pointer;width:100%;min-height:26px;padding:3px 7px;border-radius:6px;}
   .jk-msg-user-item:hover,.jk-msg-user-item.ativo{border-color:rgba(120,227,212,.62);background:rgba(20,92,85,.48);}
   .jk-msg-user-item:disabled{cursor:default;opacity:.68;}
   .jk-msg-dot{width:6px;height:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,.12);flex:0 0 6px;}
@@ -1085,6 +1086,10 @@
     let msgTypingPollTimer = null;
     let msgTypingStopTimer = null;
     let msgTypingEnviado = false;
+    let msgUsuariosCache = [];
+    let msgUsuariosCacheTs = 0;
+    let msgMensagensCache = [];
+    let msgHistoricoCache = new Map();
     const PANEL_WIDTH_KEY = 'jk_ia_sidebar_width_px';
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
@@ -1094,6 +1099,9 @@
     const MSG_ATTACHMENT_MAX_BYTES = 700 * 1024;
     const MSG_ATTACHMENT_TOTAL_MAX_BYTES = 900 * 1024;
     const MSG_TYPING_POLL_MS = 2000;
+    const MSG_USUARIOS_CACHE_KEY = 'jk_msg_usuarios_cache_v1';
+    const MSG_USUARIOS_CACHE_TTL_MS = 5 * 60 * 1000;
+    const MSG_HISTORY_LIMIT = 50;
     const PERGUNTAS_APPROVALS_NOTIFY_KEY = 'jk_perguntas_aprovacoes_notificadas_v1';
     const PERGUNTAS_MONITOR_OWNER_KEY = 'jk_perguntas_monitor_owner_v1';
     const PERGUNTAS_MONITOR_INTERVAL_MS = 15000;
@@ -1621,6 +1629,37 @@
       return `${user}|${client}`;
     }
 
+    function _msgChaveHistorico(user) {
+      return _msgChaveUsuario(user && user.username, user && user.client_id);
+    }
+
+    function _msgLerUsuariosCache() {
+      if (msgUsuariosCache.length && Date.now() - msgUsuariosCacheTs < MSG_USUARIOS_CACHE_TTL_MS) {
+        return msgUsuariosCache;
+      }
+      try {
+        const raw = JSON.parse(localStorage.getItem(MSG_USUARIOS_CACHE_KEY) || '{}') || {};
+        const lista = Array.isArray(raw.users) ? raw.users : [];
+        const ts = Number(raw.ts || 0);
+        if (lista.length && Date.now() - ts < MSG_USUARIOS_CACHE_TTL_MS) {
+          msgUsuariosCache = lista;
+          msgUsuariosCacheTs = ts;
+          return lista;
+        }
+      } catch (_) {}
+      return [];
+    }
+
+    function _msgSalvarUsuariosCache(usuarios) {
+      const lista = Array.isArray(usuarios) ? usuarios : [];
+      if (!lista.length) return;
+      msgUsuariosCache = lista;
+      msgUsuariosCacheTs = Date.now();
+      try {
+        localStorage.setItem(MSG_USUARIOS_CACHE_KEY, JSON.stringify({ ts: msgUsuariosCacheTs, users: lista.slice(0, 80) }));
+      } catch (_) {}
+    }
+
     function _msgFormatarHorarioVisto(raw) {
       const texto = String(raw || '').trim();
       if (!texto) return '';
@@ -1983,12 +2022,16 @@
 
     async function _msgCarregarHistorico(silencioso = false) {
       if (!msgUsuarioSelecionado || !msgUsuarioSelecionado.username) return;
-      if (!silencioso) _msgSetStatus(`Carregando chat com ${_msgLabelUsuario(msgUsuarioSelecionado)}...`);
+      const alvo = { ...msgUsuarioSelecionado };
+      const cacheKey = _msgChaveHistorico(alvo);
+      const cache = msgHistoricoCache.get(cacheKey);
+      if (Array.isArray(cache) && cache.length) _msgRenderHistorico(cache);
+      if (!silencioso) _msgSetStatus(cache ? `Atualizando chat com ${_msgLabelUsuario(alvo)}...` : `Carregando chat com ${_msgLabelUsuario(alvo)}...`);
       try {
         const params = new URLSearchParams({
-          username: String(msgUsuarioSelecionado.username || ''),
-          client_id: String(msgUsuarioSelecionado.client_id || _clientId() || 'default'),
-          limit: '120',
+          username: String(alvo.username || ''),
+          client_id: String(alvo.client_id || _clientId() || 'default'),
+          limit: String(MSG_HISTORY_LIMIT),
         });
         const resp = await fetch(`/api/user/chat/history?${params.toString()}`, {
           method: 'GET',
@@ -1997,9 +2040,11 @@
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar historico.');
+        if (!msgUsuarioSelecionado || _msgChaveHistorico(msgUsuarioSelecionado) !== cacheKey) return;
+        msgHistoricoCache.set(cacheKey, data.messages || []);
         _msgRenderHistorico(data.messages || []);
         const title = document.getElementById('jk-msg-chat-title');
-        if (title) title.textContent = `Chat com ${data.other_name || _msgLabelUsuario(msgUsuarioSelecionado)}`;
+        if (title) title.textContent = `Chat com ${data.other_name || _msgLabelUsuario(alvo)}`;
         const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
         _msgSetStatus(`Chat atualizado ${hora}.`);
         void _msgBuscarMensagens().catch(() => {});
@@ -2032,7 +2077,7 @@
       };
       _msgSetChatView(true);
       _msgAtualizarDigitandoPoll();
-      await _msgCarregarHistorico();
+      void _msgCarregarHistorico();
     }
 
     function _msgVoltarLista() {
@@ -2248,7 +2293,9 @@
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
-          return data.users.filter(user => user && user.active !== false);
+          const users = data.users.filter(user => user && user.active !== false);
+          _msgSalvarUsuariosCache(users);
+          return users;
         }
       } catch (_) {}
 
@@ -2272,23 +2319,32 @@
     }
 
     async function _msgCarregarPainel(silencioso = false) {
+      const usuariosCache = _msgLerUsuariosCache();
+      if (usuariosCache.length) _msgRenderUsuarios(usuariosCache);
+      if (msgMensagensCache.length) _msgRenderInbox(msgMensagensCache);
       if (msgCarregando) return;
       msgCarregando = true;
       if (!silencioso) _msgSetStatus('Atualizando mensagens e usuarios online...');
       try {
-        const [msgsResult, usersResult] = await Promise.allSettled([
-          _msgBuscarMensagens(),
-          _msgBuscarUsuariosOnline(),
-        ]);
-        const mensagens = msgsResult.status === 'fulfilled' ? msgsResult.value : [];
-        const usuarios = usersResult.status === 'fulfilled' ? usersResult.value : [];
-        _msgRenderInbox(mensagens);
-        _msgRenderUsuarios(usuarios);
+        const msgsPromise = _msgBuscarMensagens()
+          .then(mensagens => {
+            msgMensagensCache = Array.isArray(mensagens) ? mensagens : [];
+            _msgRenderInbox(msgMensagensCache);
+            return msgMensagensCache;
+          });
+        const usersPromise = _msgBuscarUsuariosOnline()
+          .then(usuarios => {
+            const lista = Array.isArray(usuarios) ? usuarios : [];
+            if (lista.length || !usuariosCache.length) _msgRenderUsuarios(lista);
+            return lista;
+          });
+        const [msgsResult, usersResult] = await Promise.allSettled([msgsPromise, usersPromise]);
         if (msgsResult.status === 'rejected') {
           _msgSetStatus(msgsResult.reason?.message || 'Nao foi possivel buscar mensagens.', true);
         } else {
           const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-          _msgSetStatus(`Atualizado ${hora}.`);
+          const complemento = usersResult.status === 'rejected' && usuariosCache.length ? ' (contatos em cache)' : '';
+          _msgSetStatus(`Atualizado ${hora}.${complemento}`);
         }
       } finally {
         msgCarregando = false;
@@ -3421,6 +3477,7 @@
     _msgAtualizarSelecao();
     _msgIniciarAtualizacao();
     void _msgBuscarMensagens().catch(() => {});
+    setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 1200);
     _perguntasIniciarMonitorGlobal();
 
     document.addEventListener('click', e => {
