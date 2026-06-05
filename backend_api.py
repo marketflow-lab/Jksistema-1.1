@@ -7831,7 +7831,7 @@ def _ml_favoritos_obter_descricao_item_rapida(
         return {"success": False, "descricao": "", "description_info": {}, "erro": str(exc)}
 
 
-def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[str]:
+def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]:
     """Mapeia cada grupo de rotas ao mÃƒÂ³dulo correspondente da planilha de usuÃƒÂ¡rios."""
     rota = str(path or "").lower()
     metodo = str(method or "GET").upper()
@@ -7846,6 +7846,8 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[str]
         return "perguntas_pos_venda"
     if rota.startswith("/api/mercadolivre/ia-treinamento"):
         return "perguntas_pos_venda"
+    if rota.startswith("/api/mercadolivre/promocoes"):
+        return ("analise_promo", "anuncios_ml")
     if rota.startswith("/api/mercadolivre/"):
         return "anuncios_ml"
     if rota.startswith("/api/etiquetas/"):
@@ -7884,6 +7886,23 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[str]
     if rota.startswith("/api/admin/"):
         return "admin_usuarios"
     return None
+
+
+def _normalizar_permissoes_exigidas(permissao_necessaria: Any) -> tuple[str, ...]:
+    if not permissao_necessaria:
+        return tuple()
+    if isinstance(permissao_necessaria, str):
+        return (permissao_necessaria,)
+    if isinstance(permissao_necessaria, (list, tuple, set)):
+        return tuple(str(chave or "").strip() for chave in permissao_necessaria if str(chave or "").strip())
+    chave = str(permissao_necessaria or "").strip()
+    return (chave,) if chave else tuple()
+
+
+def _permissoes_autorizam_rota(permissoes: dict, permissao_necessaria: Any) -> bool:
+    if permissoes.get("full") is True:
+        return True
+    return any(permissoes.get(chave) is True for chave in _normalizar_permissoes_exigidas(permissao_necessaria))
 
 def _extrair_texto_openai_response(payload: dict) -> str:
     texto = payload.get("output_text")
@@ -17058,11 +17077,12 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
         permissao_necessaria = _permissao_exigida_por_rota(getattr(request.url, "path", ""), request.method)
         if permissao_necessaria:
             permissoes = _carregar_permissoes_usuario(username, client_id)
-            if not (permissoes.get("full") is True or permissoes.get(permissao_necessaria) is True):
-                logger.warning(f"[AUTH] Acesso negado para usuÃƒÂ¡rio='{username}' em rota='{request.url.path}' (permissÃƒÂ£o requerida: {permissao_necessaria})")
+            if not _permissoes_autorizam_rota(permissoes, permissao_necessaria):
+                permissoes_rotulo = " ou ".join(_normalizar_permissoes_exigidas(permissao_necessaria))
+                logger.warning(f"[AUTH] Acesso negado para usuário='{username}' em rota='{request.url.path}' (permissão requerida: {permissoes_rotulo})")
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Acesso negado: usuÃƒÂ¡rio sem permissÃƒÂ£o para o mÃƒÂ³dulo '{permissao_necessaria}'."
+                    detail=f"Acesso negado: usuário sem permissão para o módulo '{permissoes_rotulo}'."
                 )
 
         return client_id
