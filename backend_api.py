@@ -24991,8 +24991,16 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
     }
 
 
-def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "") -> dict:
+def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, machine_id: str = "", skip_if_remote_hash_matches: bool = False) -> dict:
     direction_key = _shared_sync_link_direction_for_session(source_sessao, link)
+    admin_origem_atualizado = False
+    if direction_key == "source_to_target":
+        link_marcado = _shared_sync_marcar_admin_origem(link)
+        if _shared_sync_session_is_admin(source_sessao) and not bool(link_marcado.get("source_is_admin")):
+            link_marcado = dict(link_marcado)
+            link_marcado["source_is_admin"] = True
+        admin_origem_atualizado = bool(link_marcado.get("source_is_admin")) and not bool((link or {}).get("source_is_admin"))
+        link = link_marcado
     if not _shared_sync_scope_permitido_entre_clientes(link, scope, source_sessao):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
     from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
@@ -25024,9 +25032,13 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         known_keys=known_keys,
         allow_empty_delta=False,
         sanitize_user_share_oauth=False,
-        skip_if_remote_hash_matches=(scope == "lojas_integracoes"),
+        skip_if_remote_hash_matches=(skip_if_remote_hash_matches or scope == "lojas_integracoes"),
     )
     if result.get("skipped"):
+        if admin_origem_atualizado:
+            link["updated_at"] = _shared_sync_now_iso()
+            link["updated_ts"] = int(time.time())
+            _shared_sync_save_link(link)
         state = _shared_sync_state_read(source_sessao.get("client_id"), source_sessao.get("username") or "")
         scopes_state = state.setdefault("scopes", {})
         scopes_state[_shared_sync_user_share_state_scope(link.get("id"), direction_key, scope)] = {

@@ -196,7 +196,7 @@
                 </div>
                 <div>
                     <label class="label" for="iaVertexProjectId">Projeto Vertex AI</label>
-                    <input id="iaVertexProjectId" type="text" placeholder="bot-ai-c2" autocomplete="off">
+                    <input id="iaVertexProjectId" type="text" placeholder="jk-sistema-prod-20260525" autocomplete="off">
                     <div class="hint">Projeto do Google Cloud usado pelo Vertex AI.</div>
                 </div>
                 <div>
@@ -211,7 +211,7 @@
                 </div>
                 <div>
                     <label class="label" for="iaVertexServiceAccountEmail">Conta de serviço</label>
-                    <input id="iaVertexServiceAccountEmail" type="email" placeholder="vertex-express@bot-ai-c2.iam.gserviceaccount.com" autocomplete="off">
+                    <input id="iaVertexServiceAccountEmail" type="email" placeholder="opcional - deixe vazio para usar a credencial local" autocomplete="off">
                     <div class="hint">Opcional. Usada quando houver permissão para autenticar por essa conta.</div>
                 </div>
                 <div style="grid-column: 1 / -1;">
@@ -708,10 +708,10 @@
             if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
             if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
             if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
-            if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(cfg?.ia_vertex_project_id || 'bot-ai-c2').trim();
+            if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(cfg?.ia_vertex_project_id || '').trim();
             if (inputIaVertexLocation) inputIaVertexLocation.value = String(cfg?.ia_vertex_location || 'global').trim();
             if (inputIaVertexModel) inputIaVertexModel.value = String(cfg?.ia_vertex_model || modeloChat.replace(/^vertex:/, '') || 'gemini-2.5-flash').trim();
-            if (inputIaVertexServiceAccountEmail) inputIaVertexServiceAccountEmail.value = String(cfg?.ia_vertex_service_account_email || 'vertex-express@bot-ai-c2.iam.gserviceaccount.com').trim();
+            if (inputIaVertexServiceAccountEmail) inputIaVertexServiceAccountEmail.value = String(cfg?.ia_vertex_service_account_email || '').trim();
             if (inputIaAgentApiKey) inputIaAgentApiKey.value = '';
             if (checkIaAgentApiKeyLimpar) checkIaAgentApiKeyLimpar.checked = false;
             if (iaAgentApiKeyStatus) {
