@@ -1828,6 +1828,18 @@
             background: #1d4ed8;
             border-color: #1d4ed8;
         }
+        .ml-favoritos-efetivar-btn.is-secondary {
+            background: #ffffff;
+            border-color: #93c5fd;
+            color: #1d4ed8;
+        }
+        .ml-favoritos-efetivar-btn.is-secondary:hover:not(:disabled) {
+            background: #eff6ff;
+            border-color: #60a5fa;
+        }
+        .ml-favoritos-efetivar-btn.hidden {
+            display: none;
+        }
         .ml-favoritos-efetivar-btn:disabled {
             cursor: wait;
             opacity: .62;
@@ -2802,6 +2814,7 @@
                             <input id="fav-ml-efetivar-outras-contas" type="checkbox">
                             <span>Fazer tambem nas outras contas</span>
                         </label>
+                        <button id="fav-ml-promocao-btn" type="button" class="ml-favoritos-efetivar-btn is-secondary hidden">Campanha e %</button>
                         <button id="fav-ml-efetivar-btn" type="button" class="ml-favoritos-efetivar-btn">Aprovar e alterar</button>
                     </div>
                     <div id="fav-ml-efetivar-log" class="ml-favoritos-efetivar-log hidden"></div>
@@ -3277,6 +3290,7 @@
         const favMlEfetivarPanelEl = document.getElementById('fav-ml-efetivar-panel');
         const favMlEfetivarInfoEl = document.getElementById('fav-ml-efetivar-info');
         const favMlEfetivarBtnEl = document.getElementById('fav-ml-efetivar-btn');
+        const favMlPromocaoBtnEl = document.getElementById('fav-ml-promocao-btn');
         const favMlEfetivarOutrasContasEl = document.getElementById('fav-ml-efetivar-outras-contas');
         const favMlEfetivarLogEl = document.getElementById('fav-ml-efetivar-log');
         const favMlTablesLayoutEl = document.querySelector('.favoritos-ml-tables');
@@ -5107,6 +5121,9 @@
         }
         if (favMlEfetivarBtnEl) {
             favMlEfetivarBtnEl.addEventListener('click', efetivarFavoritosMercadoLivreAprovados);
+        }
+        if (favMlPromocaoBtnEl) {
+            favMlPromocaoBtnEl.addEventListener('click', () => escolherPromocaoFavoritosSkuAtual({ mostrarStatus: true }));
         }
         if (favRankingIncluirAnuncioBtnEl) {
             favRankingIncluirAnuncioBtnEl.addEventListener('click', mostrarFormularioIncluirAnuncioRankingFavoritos);
@@ -8491,6 +8508,90 @@
                 && obterPercentualPromocaoFixaFavoritos(opcoesPromocao) === null
             );
         }
+        function opcoesPromocaoFavoritosProntas(opcoesPromocao) {
+            const campanha = opcoesPromocao && opcoesPromocao.campanha || {};
+            const campanhaId = String(campanha.id || campanha.campaign_id || '').trim();
+            return !!(
+                opcoesPromocao
+                && opcoesPromocao.usar_promocao
+                && campanhaId
+                && obterPercentualPromocaoFixaFavoritos(opcoesPromocao) !== null
+            );
+        }
+        function aplicarOpcoesPromocaoFavoritosSku(sku, opcoesPromocao) {
+            const chave = skuChaveSku(sku);
+            const opcoes = clonarOpcoesPromocaoFavoritos(opcoesPromocao);
+            if (!chave || !opcoesPromocaoFavoritosProntas(opcoes)) return null;
+            salvarOpcoesPromocaoFavoritosSku(sku, opcoes);
+            mlFavoritosOpcoesPromocaoAtual = clonarOpcoesPromocaoFavoritos(opcoes);
+            const rankingAtual = obterGrupoRankingFavoritosSku(sku);
+            if (rankingAtual && rankingAtual.grupo && typeof rankingAtual.grupo === 'object') {
+                rankingAtual.grupo.opcoes_promocao = clonarOpcoesPromocaoFavoritos(opcoes);
+            }
+            favoritosSalvarEstadoLojaAtual();
+            return clonarOpcoesPromocaoFavoritos(opcoes);
+        }
+        async function escolherPromocaoFavoritosSkuAtual(opcoes = {}) {
+            const sku = String(favMlSkuSelecionado || '').trim();
+            if (!sku) {
+                mostrarBalaoFavoritosStatus('Selecione um SKU antes de escolher campanha e porcentagem.', {
+                    erro: true,
+                    tempoMs: 4500
+                });
+                return null;
+            }
+            const opcoesPromocao = await perguntarOpcoesPromocaoFavoritos({
+                exigirPromocao: true,
+                loja: favMlLojaSelecionada || mlSkuLojaSelecionada || skuLojaSelecionada || ''
+            });
+            const aplicadas = aplicarOpcoesPromocaoFavoritosSku(sku, opcoesPromocao);
+            if (!aplicadas) {
+                atualizarPainelEfetivarFavoritos();
+                return null;
+            }
+            if (Array.isArray(favMlAnunciosSkuAtual) && favMlAnunciosSkuAtual.length) {
+                renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, sku);
+            } else {
+                atualizarPainelEfetivarFavoritos();
+            }
+            if (opcoes.mostrarStatus !== false) {
+                mostrarBalaoFavoritosStatus(`Campanha e porcentagem salvas para ${sku}. Simulacao recalculada para aprovar e alterar.`, {
+                    tempoMs: 5500,
+                    larga: true
+                });
+            }
+            return aplicadas;
+        }
+        async function garantirPromocaoFavoritosSkuAtual(sku) {
+            let opcoesPromocao = obterOpcoesPromocaoFavoritosSku(sku);
+            if (opcoesPromocaoFavoritosProntas(opcoesPromocao)) return opcoesPromocao;
+            mostrarBalaoFavoritosStatus('Escolha a campanha e a porcentagem para recalcular antes de enviar ao Mercado Livre.', {
+                larga: true
+            });
+            opcoesPromocao = await escolherPromocaoFavoritosSkuAtual({ mostrarStatus: false });
+            if (!opcoesPromocaoFavoritosProntas(opcoesPromocao)) {
+                mostrarBalaoFavoritosStatus('Campanha e porcentagem nao foram informadas. A alteracao no Mercado Livre nao foi enviada.', {
+                    erro: true,
+                    tempoMs: 6500,
+                    larga: true
+                });
+                atualizarPainelEfetivarFavoritos();
+                return null;
+            }
+            return opcoesPromocao;
+        }
+        async function definirProtecaoAutomacaoMlFavoritos(ativa, motivo = 'favoritos-efetivar') {
+            if (!(window.electronAPI && typeof window.electronAPI.setMlAutomationActive === 'function')) {
+                return false;
+            }
+            try {
+                const resultado = await window.electronAPI.setMlAutomationActive(!!ativa, motivo);
+                return !!(resultado && resultado.success !== false);
+            } catch (err) {
+                console.warn('Nao foi possivel atualizar a protecao da automacao ML:', err);
+                return false;
+            }
+        }
         function calcularPrecoCheioPromocaoFavoritos(precoFinalAlvo, percentual) {
             const alvo = Number(precoFinalAlvo);
             const pct = Number(percentual);
@@ -9298,23 +9399,26 @@
             const temRankingSelecionado = rankingSelecionado.length > 0;
             if (!sku || (!lista.length && !temRankingSelecionado)) {
                 favMlEfetivarPanelEl.classList.add('hidden');
+                if (favMlPromocaoBtnEl) favMlPromocaoBtnEl.classList.add('hidden');
                 return;
             }
             favMlEfetivarPanelEl.classList.remove('hidden');
             const opcoesPromocao = obterOpcoesPromocaoFavoritosSku(sku);
+            const promocaoPronta = opcoesPromocaoFavoritosProntas(opcoesPromocao);
+            if (!favMlEfetivacaoEmExecucao) favMlEfetivarBtnEl.textContent = 'Aprovar e alterar';
+            if (favMlPromocaoBtnEl) {
+                favMlPromocaoBtnEl.classList.remove('hidden');
+                favMlPromocaoBtnEl.disabled = favMlEfetivacaoEmExecucao || !sku;
+                favMlPromocaoBtnEl.textContent = promocaoPronta ? 'Alterar campanha/%' : 'Campanha e %';
+            }
             const registros = lista.length
                 ? obterRegistrosSimulacaoFavoritos(lista, sku, opcoesPromocao, favMlSimulacoesSkuAtual)
                 : [];
             const validos = filtrarRegistrosEfetivaveisFavoritos(registros);
             const invalidos = registros.filter(registro => !validos.includes(registro));
-            if (!opcoesPromocao || !opcoesPromocao.usar_promocao) {
-                favMlEfetivarInfoEl.textContent = 'Para aprovar e alterar no Mercado Livre, refaca o favorito escolhendo uma campanha e informando a porcentagem.';
-                favMlEfetivarBtnEl.disabled = true;
-                return;
-            }
-            if (promocaoFavoritosSemPercentualFixo(opcoesPromocao)) {
-                favMlEfetivarInfoEl.textContent = 'A promocao selecionada nao tem percentual fixo salvo. Refaca o favorito informando a porcentagem da campanha.';
-                favMlEfetivarBtnEl.disabled = true;
+            if (!promocaoPronta) {
+                favMlEfetivarInfoEl.textContent = 'Ranking alinhado. Escolha campanha e % agora, ou clique em Aprovar e alterar para informar antes de enviar ao Mercado Livre.';
+                favMlEfetivarBtnEl.disabled = favMlEfetivacaoEmExecucao || !temRankingSelecionado;
                 return;
             }
             if (!lista.length) {
@@ -9337,15 +9441,16 @@
         async function efetivarFavoritosMercadoLivreAprovados() {
             if (favMlEfetivacaoEmExecucao) return;
             const sku = String(favMlSkuSelecionado || '').trim();
-            const opcoesPromocao = obterOpcoesPromocaoFavoritosSku(sku);
-            if (!sku || !opcoesPromocao || !opcoesPromocao.usar_promocao || promocaoFavoritosSemPercentualFixo(opcoesPromocao)) {
-                mostrarBalaoFavoritosStatus('Escolha uma campanha e informe a porcentagem antes de aprovar as alteracoes.', {
+            if (!sku) {
+                mostrarBalaoFavoritosStatus('Selecione um SKU antes de aprovar as alteracoes.', {
                     erro: true,
                     tempoMs: 6000
                 });
                 atualizarPainelEfetivarFavoritos();
                 return;
             }
+            let opcoesPromocao = await garantirPromocaoFavoritosSkuAtual(sku);
+            if (!opcoesPromocao) return;
 
             const incluirOutrasContas = !!(favMlEfetivarOutrasContasEl && favMlEfetivarOutrasContasEl.checked);
             let anuncios = Array.isArray(favMlAnunciosSkuAtual) ? favMlAnunciosSkuAtual : [];
@@ -9405,7 +9510,12 @@
             }
             const sucessos = [];
             const falhas = [];
+            let protecaoElectronAtiva = false;
             try {
+                protecaoElectronAtiva = await definirProtecaoAutomacaoMlFavoritos(true, 'favoritos-efetivar-preco');
+                if (protecaoElectronAtiva) {
+                    adicionarStatusEfetivarFavoritos('info', 'Protecao ativada', 'Atualizacoes automaticas serao adiadas ate terminar a alteracao no Mercado Livre.');
+                }
                 for (let i = 0; i < validos.length; i += 1) {
                     const registro = validos[i];
                     const itemId = registro.itemId;
@@ -9459,44 +9569,47 @@
                         );
                     }
                 }
+
+                if (sucessos.length) {
+                    await carregarFavoritosAnunciosSku(sku, favMlLojaSelecionada);
+                }
+                let mensagemFinalEfetivacao = '';
+                const totalFallbackSemCampanha = sucessos.filter(item => item && item.data && item.data.fallback_sem_promocao_aplicado).length;
+                if (falhas.length) {
+                    const primeiraFalha = falhas[0];
+                    const txtFallback = totalFallbackSemCampanha ? ` ${totalFallbackSemCampanha} concluido(s) em fallback sem campanha.` : '';
+                    mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${falhas.length} falharam.${txtFallback} Primeiro erro em ${primeiraFalha.itemId}: ${primeiraFalha.erro}`;
+                    mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
+                        erro: true,
+                        larga: true
+                    });
+                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${falhas.length} falha(s); ${totalFallbackSemCampanha} fallback(s) sem campanha.`;
+                    adicionarStatusEfetivarFavoritos('error', 'Processo concluido com falhas', `Sucesso: ${sucessos.length}. Falhas: ${falhas.length}. Fallback sem campanha: ${totalFallbackSemCampanha}. Veja acima o motivo retornado pelo Mercado Livre para cada MLB.`);
+                } else {
+                    const txtFallback = totalFallbackSemCampanha ? ` (${totalFallbackSemCampanha} em fallback sem campanha)` : '';
+                    mensagemFinalEfetivacao = `Tudo certo: ${sucessos.length} favorito(s) feito(s) no Mercado Livre${txtFallback}.`;
+                    mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
+                        tempoMs: 7500
+                    });
+                    if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s) no Mercado Livre${txtFallback}.`;
+                    if (totalFallbackSemCampanha) {
+                        adicionarStatusEfetivarFavoritos('info', 'Processo concluido', `${sucessos.length} anuncio(s) ajustado(s). ${totalFallbackSemCampanha} sem campanha (fallback por rejeicao da promocao).`);
+                    } else {
+                        adicionarStatusEfetivarFavoritos('success', 'Processo concluido', `${sucessos.length} anuncio(s) alterado(s), com promocao aplicada e conferida no Mercado Livre.`);
+                    }
+                }
+                renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemFinalEfetivacao);
+                agendarOcultarStatusEfetivarFavoritos(5000);
             } finally {
+                if (protecaoElectronAtiva) {
+                    await definirProtecaoAutomacaoMlFavoritos(false, 'favoritos-efetivar-preco');
+                }
                 favMlEfetivacaoEmExecucao = false;
                 if (favMlEfetivarBtnEl) {
                     favMlEfetivarBtnEl.textContent = 'Aprovar e alterar';
                 }
                 atualizarPainelEfetivarFavoritos();
             }
-
-            if (sucessos.length) {
-                await carregarFavoritosAnunciosSku(sku, favMlLojaSelecionada);
-            }
-            const totalFallbackSemCampanha = sucessos.filter(item => item && item.data && item.data.fallback_sem_promocao_aplicado).length;
-            let mensagemFinalEfetivacao = '';
-            if (falhas.length) {
-                const primeiraFalha = falhas[0];
-                const txtFallback = totalFallbackSemCampanha ? ` ${totalFallbackSemCampanha} concluido(s) em fallback sem campanha.` : '';
-                mensagemFinalEfetivacao = `${sucessos.length} favorito(s) feito(s). ${falhas.length} falharam.${txtFallback} Primeiro erro em ${primeiraFalha.itemId}: ${primeiraFalha.erro}`;
-                mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
-                    erro: true,
-                    larga: true
-                });
-                if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s); ${falhas.length} falha(s); ${totalFallbackSemCampanha} fallback(s) sem campanha.`;
-                adicionarStatusEfetivarFavoritos('error', 'Processo concluido com falhas', `Sucesso: ${sucessos.length}. Falhas: ${falhas.length}. Fallback sem campanha: ${totalFallbackSemCampanha}. Veja acima o motivo retornado pelo Mercado Livre para cada MLB.`);
-            } else {
-                const txtFallback = totalFallbackSemCampanha ? ` (${totalFallbackSemCampanha} em fallback sem campanha)` : '';
-                mensagemFinalEfetivacao = `Tudo certo: ${sucessos.length} favorito(s) feito(s) no Mercado Livre${txtFallback}.`;
-                mostrarBalaoFavoritosStatus(mensagemFinalEfetivacao, {
-                    tempoMs: 7500
-                });
-                if (favMlStatusEl) favMlStatusEl.textContent = `${sucessos.length} favorito(s) feito(s) no Mercado Livre${txtFallback}.`;
-                if (totalFallbackSemCampanha) {
-                    adicionarStatusEfetivarFavoritos('info', 'Processo concluido', `${sucessos.length} anuncio(s) ajustado(s). ${totalFallbackSemCampanha} sem campanha (fallback por rejeicao da promocao).`);
-                } else {
-                    adicionarStatusEfetivarFavoritos('success', 'Processo concluido', `${sucessos.length} anuncio(s) alterado(s), com promocao aplicada e conferida no Mercado Livre.`);
-                }
-            }
-            renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemFinalEfetivacao);
-            agendarOcultarStatusEfetivarFavoritos(5000);
         }
         function criarCelulaMargemAnuncioFavoritos(anuncio) {
             const td = document.createElement('td');
@@ -11477,7 +11590,7 @@
 
         function agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca) {
             const termo = String(termoBusca || '').trim();
-            const loja = favoritosLojaSelecionadaParaApi();
+            const loja = favoritosLojaSelecionadaParaApi((opcoes && opcoes.loja) || undefined);
             const chaveBusca = `${skuNormalizarLoja(loja)}:${normalizarSkuBuscaMl(termo) || normalizarTextoMl(termo)}`;
             if (!loja || termo.length < 2 || !normalizarTextoMl(termo) || mlSkuBuscaRemotaCache.has(chaveBusca)) return;
             if (mlSkuBuscaRemotaTimer) clearTimeout(mlSkuBuscaRemotaTimer);
@@ -12844,8 +12957,9 @@
             });
         }
 
-        async function perguntarOpcoesPromocaoFavoritos() {
-            const usarPromocao = await perguntarSimNaoPromocaoFavoritos();
+        async function perguntarOpcoesPromocaoFavoritos(opcoes = {}) {
+            const exigirPromocao = !!(opcoes && opcoes.exigirPromocao);
+            const usarPromocao = exigirPromocao ? true : await perguntarSimNaoPromocaoFavoritos();
             if (usarPromocao === null) return null;
             if (!usarPromocao) return { usar_promocao: false };
             const loja = favoritosLojaSelecionadaParaApi();
@@ -12876,6 +12990,14 @@
                 return null;
             }
             if (!campanhas.length) {
+                if (exigirPromocao) {
+                    mostrarBalaoFavoritosStatus('Nenhuma promocao ativa foi encontrada para escolher campanha e porcentagem.', {
+                        erro: true,
+                        tempoMs: 6500,
+                        larga: true
+                    });
+                    return null;
+                }
                 return perguntarContinuarSemPromocaoFavoritos();
             }
             const campanha = await perguntarSelecionarPromocaoFavoritos(campanhas);

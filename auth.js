@@ -735,6 +735,8 @@ function obterAuthHeaders(extra) {
                     label: item.label
                 });
                 return {
+                    username: String(item.username || '').trim().toLowerCase(),
+                    client_id: String(item.client_id || '').trim(),
                     machine_id: machineId,
                     machine_key: machineKey,
                     label: String(item.label || machineId || 'Maquina'),
@@ -748,17 +750,19 @@ function obterAuthHeaders(extra) {
                 };
             }));
         const lastState = node.lastState && typeof node.lastState === 'object' ? node.lastState : {};
-        const lastSeen = normalizarTimestampSegundos(lastState.last_seen_ts || node.lastOnline);
+        const lastSeen = normalizarTimestampSegundos(lastState.last_seen_ts || node.lastOnline || (maquinas[0] && maquinas[0].last_seen_ts));
         const username = String(
             fallback && fallback.username ||
             lastState.username ||
             (maquinas[0] && maquinas[0].username) ||
+            node.username ||
             ''
         ).trim().toLowerCase();
         const clientId = String(
             fallback && fallback.client_id ||
             lastState.client_id ||
             (maquinas[0] && maquinas[0].client_id) ||
+            node.client_id ||
             'default'
         ).trim() || 'default';
         return {
@@ -1159,6 +1163,87 @@ function obterAuthHeaders(extra) {
     }
 
     window.jkDriveBackupNow = () => executarBackupSeMudou('manual');
+})();
+
+(function initSharedSyncAutoPull() {
+    if (window.__jkSharedSyncAutoPullInit) return;
+    window.__jkSharedSyncAutoPullInit = true;
+
+    let executandoPull = false;
+    let executandoPush = false;
+    let ultimaPull = 0;
+    let ultimaPush = 0;
+
+    function telaSeguraParaRestaurar() {
+        const path = String(window.location.pathname || '').toLowerCase();
+        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$/.test(path);
+    }
+
+    function machineIdAtualSync() {
+        try {
+            const data = JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+            return String(data.machine_id || '').trim();
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    async function executarAutoPull(motivo) {
+        if (executandoPull || !obterToken() || tokenSessaoExpirado()) return null;
+        if (!telaSeguraParaRestaurar()) return null;
+        if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimaPull < 5 * 60 * 1000) return null;
+        ultimaPull = agora;
+        executandoPull = true;
+        try {
+            const resp = await fetch('/api/shared-sync/auto-pull', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtualSync() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
+                console.info('[Shared Sync] Dados compartilhados restaurados:', data.results);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Shared Sync]', err);
+            return null;
+        } finally {
+            executandoPull = false;
+        }
+    }
+
+    async function executarAutoPush(motivo) {
+        if (executandoPush || !obterToken() || tokenSessaoExpirado()) return null;
+        if (!telaSeguraParaRestaurar()) return null;
+        if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && agora - ultimaPush < 5 * 60 * 1000) return null;
+        ultimaPush = agora;
+        executandoPush = true;
+        try {
+            const resp = await fetch('/api/shared-sync/user-shares/auto-push', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtualSync() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
+                console.info('[Shared Sync] Dados compartilhados enviados:', data.results);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Shared Sync Push]', err);
+            return null;
+        } finally {
+            executandoPush = false;
+        }
+    }
+
+    window.jkSharedSyncAutoPullNow = () => executarAutoPull('manual');
+    window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
 })();
 
 (function initMachineSharedSyncAuto() {
@@ -3062,6 +3147,3 @@ function verificarSessao() {
         }
     });
 })();
-
-
-

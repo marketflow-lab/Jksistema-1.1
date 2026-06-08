@@ -241,7 +241,7 @@
 
         .store-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
             gap: 12px;
             margin-bottom: 0;
         }
@@ -305,9 +305,28 @@
             display: flex;
             flex-wrap: wrap;
             gap: 8px 14px;
+            max-height: 0;
+            margin-top: 0;
+            padding-top: 0;
+            overflow: hidden;
+            border-top: 1px solid transparent;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transform: translateY(-4px);
+            transition: max-height 0.18s ease, margin-top 0.18s ease, padding-top 0.18s ease, border-color 0.18s ease, opacity 0.16s ease, visibility 0.16s ease, transform 0.16s ease;
+        }
+
+        .store-card:hover .store-options,
+        .store-card:focus-within .store-options {
+            max-height: 160px;
             margin-top: 12px;
             padding-top: 12px;
-            border-top: 1px solid rgba(157, 231, 255, 0.14);
+            border-top-color: rgba(157, 231, 255, 0.14);
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+            transform: translateY(0);
         }
 
         .store-option {

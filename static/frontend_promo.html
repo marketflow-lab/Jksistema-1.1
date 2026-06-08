@@ -286,10 +286,113 @@
             justify-content: flex-end;
             padding: 14px 20px;
         }
+        .promo-confirm-modal-backdrop {
+            align-items: center;
+            backdrop-filter: blur(6px);
+            background: rgba(2, 8, 18, 0.78);
+            display: flex;
+            inset: 0;
+            justify-content: center;
+            padding: 18px;
+            position: fixed;
+            z-index: 12010;
+        }
+        .promo-confirm-modal {
+            background: linear-gradient(180deg, rgba(13, 29, 51, 0.99), rgba(7, 18, 32, 0.99));
+            border: 1px solid rgba(126, 181, 231, 0.36);
+            border-radius: 8px;
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+            color: var(--text);
+            overflow: hidden;
+            width: min(760px, calc(100vw - 28px));
+        }
+        .promo-confirm-body {
+            padding: 18px 20px 20px;
+        }
+        .promo-confirm-lead {
+            color: #d8ecff;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            margin: 0 0 16px;
+        }
+        .promo-confirm-grid {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .promo-confirm-card {
+            background: rgba(10, 24, 42, 0.78);
+            border: 1px solid rgba(126, 181, 231, 0.22);
+            border-radius: 8px;
+            padding: 12px;
+            min-width: 0;
+        }
+        .promo-confirm-card span {
+            color: #8ecbff;
+            display: block;
+            font-size: 0.74rem;
+            font-weight: 800;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+        .promo-confirm-card strong {
+            color: #f5fbff;
+            display: block;
+            font-size: 0.95rem;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+        }
+        .promo-confirm-card--highlight {
+            background: linear-gradient(165deg, rgba(29, 84, 125, 0.74), rgba(10, 32, 54, 0.82));
+            border-color: rgba(99, 187, 255, 0.52);
+        }
+        .promo-confirm-card--highlight strong {
+            color: #ffffff;
+            font-size: 1.35rem;
+        }
+        .promo-confirm-alert {
+            background: rgba(255, 209, 102, 0.1);
+            border: 1px solid rgba(255, 209, 102, 0.28);
+            border-radius: 8px;
+            color: #ffe6a3;
+            line-height: 1.45;
+            margin-top: 14px;
+            padding: 12px 13px;
+        }
+        .promo-confirm-alert strong {
+            color: #fff4cf;
+            display: block;
+            font-size: 0.88rem;
+            margin-bottom: 4px;
+        }
+        .promo-confirm-alert span {
+            color: #f4d99a;
+            display: block;
+            font-size: 0.84rem;
+        }
+        .promo-confirm-footer {
+            align-items: center;
+            border-top: 1px solid rgba(126, 181, 231, 0.22);
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            padding: 14px 20px;
+        }
+        .promo-confirm-footer .btn {
+            min-width: 132px;
+        }
         @media (max-width: 760px) {
             .promo-result-summary,
-            .promo-result-columns {
+            .promo-result-columns,
+            .promo-confirm-grid {
                 grid-template-columns: 1fr;
+            }
+            .promo-confirm-footer {
+                align-items: stretch;
+                flex-direction: column-reverse;
+            }
+            .promo-confirm-footer .btn {
+                width: 100%;
             }
         }
 
@@ -425,7 +528,7 @@
             min-height: 44px;
             max-height: 380px;
             overflow-y: auto;
-            padding:12px;
+            padding:10px;
             border-radius:6px;
             border:1px solid rgba(126, 181, 231, 0.22);
             background:rgba(18, 40, 64, 0.72);
@@ -433,7 +536,7 @@
             display:flex;
             flex-direction:column;
             align-items:stretch;
-            gap:10px;
+            gap:8px;
         }
         .api-promo-toolbar {
             display:flex;
@@ -469,19 +572,19 @@
         }
         .api-promo-card-grid {
             display:grid;
-            grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
-            gap:10px;
+            grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+            gap:8px;
         }
         .api-promo-card {
             display:flex;
             align-items:flex-start;
-            gap:10px;
-            min-height:108px;
+            gap:7px;
+            min-height:78px;
             border:1px solid rgba(126, 181, 231, 0.24);
             border-radius:6px;
             background:rgba(8, 24, 40, 0.38);
             cursor:pointer;
-            padding:12px;
+            padding:8px;
             transition:border-color .18s ease, box-shadow .18s ease, background .18s ease, transform .18s ease;
         }
         .api-promo-card:hover {
@@ -494,24 +597,24 @@
             background:linear-gradient(180deg, rgba(23, 62, 54, 0.7), rgba(12, 36, 58, 0.58));
         }
         .api-promo-card input {
-            width:17px;
-            height:17px;
-            margin-top:2px;
+            width:15px;
+            height:15px;
+            margin-top:1px;
             accent-color:#25b76d;
             flex:0 0 auto;
         }
         .api-promo-card-body {
             display:flex;
             flex-direction:column;
-            gap:7px;
+            gap:4px;
             min-width:0;
             flex:1 1 auto;
         }
         .api-promo-card-title {
             color:#f5fbff;
-            font-size:0.96rem;
+            font-size:0.88rem;
             font-weight:800;
-            line-height:1.25;
+            line-height:1.18;
             overflow:hidden;
             text-overflow:ellipsis;
             display:-webkit-box;
@@ -520,8 +623,8 @@
         }
         .api-promo-card-meta {
             color:#9cb7d7;
-            font-size:0.82rem;
-            line-height:1.3;
+            font-size:0.76rem;
+            line-height:1.24;
             word-break:break-word;
         }
         .api-promo-card-counts {
@@ -530,9 +633,9 @@
             border-radius:999px;
             background:rgba(12, 30, 50, 0.72);
             color:#cfe7ff;
-            font-size:0.78rem;
+            font-size:0.72rem;
             font-weight:800;
-            padding:4px 8px;
+            padding:3px 7px;
         }
         .api-promo-empty {
             color:var(--muted);
@@ -805,7 +908,7 @@
 </head>
 <body>
 
-<div id="apiStatusBar" class="api-status-bar" role="status" aria-live="polite">
+<div id="apiStatusBar" class="api-status-bar is-hidden" role="status" aria-live="polite" aria-hidden="true">
     <div class="api-status-bar__inner">
         <div class="api-status-bar__top">
             <div id="apiStatusTitle" class="api-status-title">Analise via API</div>
@@ -846,7 +949,6 @@
     </div>
 
     <div id="painelApi" class="upload-section">
-        <h3>Analisar via API</h3>
         <div class="api-grid">
             <div class="api-field">
                 <label for="apiLojaSelect">Loja</label>
@@ -872,7 +974,7 @@
             </label>
             <label class="api-auto-option">
                 <input type="checkbox" id="apiAutoApprovalRequired">
-                Pedir aprovacao antes de participar
+                Nao aprovar automaticamente
             </label>
             <label class="api-auto-option api-auto-interval" for="apiAutoIntervalMinutes">
                 Verificar a cada
@@ -1014,6 +1116,7 @@
     let apiAnaliseJobId = '';
     let apiStatusHideTimer = null;
     let apiStatusFechadoManualmente = false;
+    let promoParticipacaoStatusTimer = null;
     let apiAutoTimer = null;
     let apiAutoCountdownTimer = null;
     let apiAutoServerPollTimer = null;
@@ -1862,6 +1965,112 @@
         document.body.appendChild(modal);
     }
 
+    function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, analise, campanha }) {
+        return new Promise((resolve) => {
+            const anterior = document.querySelector('.promo-confirm-modal-backdrop');
+            if (anterior) anterior.remove();
+
+            const promotionId = String(promo?.promotion_id || analise?.promo_b_id || campanha?.id || '').trim();
+            const promotionType = String(promo?.promotion_type || analise?.promo_b_type || campanha?.type || campanha?.promotion_type || '').trim();
+            const campanhaResumo = {
+                ...(campanha || {}),
+                id: promotionId || campanha?.id,
+                type: promotionType || campanha?.type,
+                promotion_type: promotionType || campanha?.promotion_type,
+                name: nome || campanha?.name || campanha?.title,
+                title: nome || campanha?.title || campanha?.name,
+            };
+            const activeCount = parsePromoCount(analise?.active_count ?? analise?.activeCount ?? analise?.active);
+            const eligibleCount = parsePromoCount(analise?.eligible_count ?? analise?.eligibleCount ?? analise?.eligible);
+            if (activeCount !== null) campanhaResumo.active_count = activeCount;
+            if (eligibleCount !== null) campanhaResumo.eligible_count = eligibleCount;
+
+            const totalAtivos = resolvePromoActiveCount(campanhaResumo);
+            const totalElegiveis = resolvePromoEligibleCount(campanhaResumo);
+            const periodo = formatPromoDateRange(campanhaResumo);
+            const status = String(campanhaResumo.status || '').trim();
+            const items = Array.isArray(promo?.items) ? promo.items : [];
+            const amostraItems = items
+                .slice(0, 5)
+                .map((item) => String(item?.item_id || item?.sku || item?.titulo || '').trim())
+                .filter(Boolean);
+            const outrosItems = Math.max(0, total - amostraItems.length);
+            const amostraTexto = amostraItems.length
+                ? `${amostraItems.join(' · ')}${outrosItems > 0 ? ` · +${outrosItems} outro(s)` : ''}`
+                : '';
+            const cards = [
+                { label: 'Anúncios que serão enviados', value: String(total), highlight: true },
+                { label: 'Campanha', value: nome || 'Campanha sem nome' },
+                { label: 'Loja', value: loja || 'Não informada' },
+                { label: 'Status / Tipo', value: [status, promotionType].filter(Boolean).join(' · ') || '-' },
+                { label: 'ID da campanha', value: promotionId || '-' },
+                { label: 'Janela da campanha', value: periodo && periodo !== '-' ? periodo : '-' },
+                { label: 'Ativos no ML', value: totalAtivos !== null ? String(totalAtivos) : '-' },
+                { label: 'Elegíveis no ML', value: totalElegiveis !== null ? String(totalElegiveis) : '-' },
+            ];
+            const cardsHtml = cards.map((card) => `
+                <div class="promo-confirm-card ${card.highlight ? 'promo-confirm-card--highlight' : ''}">
+                    <span>${escapeHtml(card.label)}</span>
+                    <strong>${escapeHtml(card.value)}</strong>
+                </div>
+            `).join('');
+
+            const modal = document.createElement('div');
+            modal.className = 'promo-confirm-modal-backdrop';
+            modal.innerHTML = `
+                <div class="promo-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="promoConfirmTitle">
+                    <div class="promo-result-modal-header">
+                        <div>
+                            <span class="promo-result-eyebrow">Ação no Mercado Livre</span>
+                            <h3 class="promo-result-title" id="promoConfirmTitle">Confirmar entrada na campanha</h3>
+                        </div>
+                        <button type="button" class="promo-result-close" data-cancel-promo-participation aria-label="Fechar">×</button>
+                    </div>
+                    <div class="promo-confirm-body">
+                        <p class="promo-confirm-lead">
+                            Esta confirmação vai enviar os anúncios marcados como <strong>Participar</strong> para a campanha selecionada.
+                            Confira o resumo antes de continuar.
+                        </p>
+                        <div class="promo-confirm-grid">${cardsHtml}</div>
+                        ${amostraTexto ? `
+                            <div class="promo-confirm-alert">
+                                <strong>Primeiros anúncios na fila</strong>
+                                <span>${escapeHtml(amostraTexto)}</span>
+                            </div>
+                        ` : ''}
+                        <div class="promo-confirm-alert">
+                            <strong>Antes de continuar</strong>
+                            <span>A ação chama a API do Mercado Livre e tenta incluir esses anúncios na promoção. Se algum item não deveria participar, cancele e ajuste a decisão na tabela.</span>
+                        </div>
+                    </div>
+                    <div class="promo-confirm-footer">
+                        <button type="button" class="btn btn-secondary" data-cancel-promo-participation>Cancelar</button>
+                        <button type="button" class="btn btn-success" data-confirm-promo-participation>Confirmar entrada</button>
+                    </div>
+                </div>
+            `;
+
+            let resolvido = false;
+            const finalizar = (valor) => {
+                if (resolvido) return;
+                resolvido = true;
+                document.removeEventListener('keydown', onKeydown);
+                modal.remove();
+                resolve(valor);
+            };
+            const onKeydown = (event) => {
+                if (event.key === 'Escape') finalizar(false);
+            };
+            modal.addEventListener('click', (event) => {
+                if (event.target === modal || event.target.closest('[data-cancel-promo-participation]')) finalizar(false);
+                if (event.target.closest('[data-confirm-promo-participation]')) finalizar(true);
+            });
+            document.addEventListener('keydown', onKeydown);
+            document.body.appendChild(modal);
+            setTimeout(() => modal.querySelector('[data-confirm-promo-participation]')?.focus(), 0);
+        });
+    }
+
     function montarPayloadParticipacoesPromocoes(indiceCampanha = null) {
         const loja = document.getElementById('apiLojaSelect')?.value || '';
         const analises = Array.isArray(apiAnalisesPorCampanha) && apiAnalisesPorCampanha.length
@@ -1915,13 +2124,11 @@
             return null;
         }
         if (prefs.approvalRequired) {
-            const ok = confirm(`Analise concluida. ${total} anuncio(s) estao com acao Participar em ${payload.promocoes.length} promocao(oes). Entrar agora nessas promocoes?`);
-            if (!ok) {
-                atualizarStatusAutomacaoPromo('Participacao automatica aguardou aprovacao e foi cancelada.');
-                return null;
-            }
+            atualizarStatusAutomacaoPromo(`Analise concluida. ${total} anuncio(s) ficaram marcados como Participar, mas a aprovacao automatica esta desativada.`);
+            return null;
         }
         atualizarStatusAutomacaoPromo(`Entrando em ${total} anuncio(s) nas promocoes...`);
+        iniciarStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', total, loja: payload.loja });
         const resp = await fetch('/api/promo/aplicar-participacoes', {
             method: 'POST',
             headers: getAuthHeadersWithClient({ 'Content-Type': 'application/json' }),
@@ -1929,10 +2136,13 @@
         });
         const result = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            throw new Error(buildApiErrorMessage(resp, result, 'Erro ao entrar nas promocoes'));
+            const erro = buildApiErrorMessage(resp, result, 'Erro ao entrar nas promocoes');
+            falharStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', erro });
+            throw new Error(erro);
         }
         const msg = `Entrada concluida: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
         atualizarStatusAutomacaoPromo(msg);
+        concluirStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', result });
         mostrarResumoParticipacaoPromocoes(payload, result, { titulo: 'Entrada concluída nas promoções' });
         return result;
     }
@@ -1951,10 +2161,15 @@
             return;
         }
         const nome = promo.nome || analise.promo_b_nome || `Campanha ${index + 1}`;
-        const ok = confirm(`Confirmar participação em ${total} anúncio(s) da campanha "${nome}"?`);
-        if (!ok) return;
+        const campanha = findApiPromoBCampaignById(promo.promotion_id || analise.promo_b_id) || {};
+        const ok = await pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja: payload.loja, promo, analise, campanha });
+        if (!ok) {
+            atualizarStatusAutomacaoPromo(`Confirmacao cancelada. Campanha ${nome} nao foi enviada ao Mercado Livre.`);
+            return;
+        }
 
         atualizarStatusAutomacaoPromo(`Confirmando participação em ${total} anúncio(s) da campanha ${nome}...`);
+        iniciarStatusParticipacaoPromocoes({ nome, total, loja: payload.loja });
         try {
             const resp = await fetch('/api/promo/aplicar-participacoes', {
                 method: 'POST',
@@ -1970,8 +2185,10 @@
             analise.participacao_resultado = result;
             renderApiAnalysisTabs();
             atualizarStatusAutomacaoPromo(msg);
+            concluirStatusParticipacaoPromocoes({ nome, result });
             mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}` });
         } catch (err) {
+            falharStatusParticipacaoPromocoes({ nome, erro: err && err.message ? err.message : err });
             atualizarStatusAutomacaoPromo(`Erro ao confirmar participação: ${err && err.message ? err.message : err}`);
             alert(err && err.message ? err.message : 'Erro ao confirmar participação.');
         }
@@ -3583,8 +3800,13 @@
         if (!bar) return;
         bar.classList.remove('is-active', 'is-complete', 'is-error');
         bar.classList.add('is-hidden');
+        bar.setAttribute('aria-hidden', 'true');
         bar.style.display = 'none';
         document.body.classList.remove('api-status-active');
+    }
+
+    function deveMostrarApiStatusBar(status) {
+        return ['queued', 'running', 'processing', 'pending', 'completed', 'canceled', 'cancelled', 'error'].includes(String(status || '').toLowerCase());
     }
 
     function prepararBotaoApiStatusBar() {
@@ -3620,16 +3842,23 @@
         const updatedAt = Number(payload.updated_at || 0);
         const ageText = updatedAt > 0 ? `Atualizado ha ${Math.max(0, Math.floor(Date.now() / 1000 - updatedAt))}s` : '';
 
+        if (!deveMostrarApiStatusBar(status)) {
+            aplicarOcultacaoApiStatusBar(bar);
+            return;
+        }
+
         let title = 'Analise via API';
         if (status === 'queued') title = 'Na fila';
         if (status === 'running') title = 'Analisando via API';
         if (status === 'completed') title = 'Analise concluida';
         if (status === 'canceled' || status === 'cancelled') title = 'Analise cancelada';
         if (status === 'error') title = 'Erro na analise';
+        if (payload.title) title = String(payload.title);
 
         bar.style.display = '';
         bar.classList.remove('is-hidden');
         bar.classList.add('is-active');
+        bar.setAttribute('aria-hidden', 'false');
         bar.classList.toggle('is-complete', status === 'completed');
         bar.classList.toggle('is-error', status === 'error');
         document.body.classList.add('api-status-active');
@@ -3637,7 +3866,8 @@
         messageEl.textContent = message;
         percentEl.textContent = `${progress}%`;
         progressEl.style.width = `${progress}%`;
-        detailEl.textContent = [latestLog ? `Ultimo passo: ${latestLog}` : '', ageText].filter(Boolean).join(' | ');
+        const detailOverride = String(payload.detail || '').trim();
+        detailEl.textContent = detailOverride || [latestLog ? `Ultimo passo: ${latestLog}` : '', ageText].filter(Boolean).join(' | ');
 
         if (status === 'completed' || status === 'canceled' || status === 'cancelled') {
             ocultarApiStatusBarDepois(2500);
@@ -3665,6 +3895,85 @@
             apiStatusHideTimer = null;
             ocultarApiStatusBar(false);
         }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    function pararStatusParticipacaoPromocoes() {
+        if (promoParticipacaoStatusTimer) {
+            clearInterval(promoParticipacaoStatusTimer);
+            promoParticipacaoStatusTimer = null;
+        }
+    }
+
+    function iniciarStatusParticipacaoPromocoes({ nome, total, loja }) {
+        pararStatusParticipacaoPromocoes();
+        if (apiStatusHideTimer) {
+            clearTimeout(apiStatusHideTimer);
+            apiStatusHideTimer = null;
+        }
+        apiStatusFechadoManualmente = false;
+
+        const totalItens = Math.max(0, Number(total) || 0);
+        const nomeCampanha = String(nome || 'campanha selecionada').trim();
+        const lojaTexto = String(loja || '').trim();
+        const detalhe = [lojaTexto ? `Loja: ${lojaTexto}` : '', `${totalItens} anúncio(s) na fila`].filter(Boolean).join(' | ');
+        const mensagens = [
+            `Preparando entrada na campanha ${nomeCampanha}...`,
+            'Validando anúncios marcados como Participar...',
+            'Enviando solicitação para o Mercado Livre...',
+            'Aguardando processamento da API...',
+            'Conferindo retorno da confirmação...',
+        ];
+        let tick = 0;
+        let progress = 6;
+
+        const atualizar = () => {
+            const elapsed = tick * 850;
+            const limite = elapsed < 3500 ? 62 : elapsed < 9000 ? 84 : 94;
+            const incremento = elapsed < 3500 ? 9 : elapsed < 9000 ? 4 : 1;
+            progress = Math.min(limite, progress + incremento);
+            const mensagem = mensagens[Math.min(mensagens.length - 1, Math.floor(tick / 2))];
+            atualizarApiStatusBar({
+                status: 'running',
+                progress,
+                title: 'Entrada na campanha',
+                message: mensagem,
+                detail: detalhe,
+            });
+            tick += 1;
+        };
+
+        atualizar();
+        promoParticipacaoStatusTimer = setInterval(atualizar, 850);
+    }
+
+    function concluirStatusParticipacaoPromocoes({ nome, result }) {
+        pararStatusParticipacaoPromocoes();
+        const sucesso = Number(result?.total_sucesso || 0);
+        const falha = Number(result?.total_falha || 0);
+        const ignorados = Number(result?.total_ignorados || 0);
+        const partes = [`${sucesso} sucesso(s)`, `${falha} falha(s)`];
+        if (ignorados) partes.push(`${ignorados} ignorado(s)`);
+        atualizarApiStatusBar({
+            status: 'completed',
+            progress: 100,
+            title: 'Entrada concluida',
+            message: partes.join(', ') + '.',
+            detail: `Campanha: ${String(nome || 'campanha selecionada')}`,
+            force: true,
+        });
+        ocultarApiStatusBarDepois(3500);
+    }
+
+    function falharStatusParticipacaoPromocoes({ nome, erro }) {
+        pararStatusParticipacaoPromocoes();
+        atualizarApiStatusBar({
+            status: 'error',
+            progress: 100,
+            title: 'Erro na entrada',
+            message: String(erro || 'Erro ao confirmar participação.'),
+            detail: `Campanha: ${String(nome || 'campanha selecionada')}`,
+            force: true,
+        });
     }
 
     function renderApiJobDetails(payload) {

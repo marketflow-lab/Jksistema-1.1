@@ -1967,6 +1967,15 @@
       } catch (_) {}
     }
 
+    function _msgUsuarioEstaOnline(user, isSelf = false) {
+      if (isSelf) return true;
+      if (!user || typeof user !== 'object') return false;
+      if (user.online === true) return true;
+      if (Number(user.online_count || 0) > 0) return true;
+      return (Array.isArray(user.machines) ? user.machines : [])
+        .some(machine => machine && machine.online !== false);
+    }
+
     function _msgFormatarHorarioVisto(raw) {
       const texto = String(raw || '').trim();
       if (!texto) return '';
@@ -1982,7 +1991,7 @@
     }
 
     function _msgStatusUsuarioTexto(user) {
-      if (user && user.online !== false) return 'Online';
+      if (_msgUsuarioEstaOnline(user)) return 'Online';
       const direto = String(user && user.last_seen_at || '').trim();
       const maquina = Array.isArray(user && user.all_recent_machines) && user.all_recent_machines[0]
         ? String(user.all_recent_machines[0].last_seen_at || '').trim()
@@ -2560,7 +2569,7 @@
         const unreadCount = Number(user.unread_count || unread.unread_count || 0);
         const btn = document.createElement('button');
         btn.type = 'button';
-        const userOnline = !!isSelf || user.online !== false;
+        const userOnline = _msgUsuarioEstaOnline(user, !!isSelf);
         btn.className = 'jk-msg-user-item';
         btn.classList.toggle('offline', !userOnline);
         btn.classList.toggle('self', !!isSelf);
@@ -2781,9 +2790,9 @@
         limitar_participantes: false,
         max_participantes: null,
         nome_host: _msgNomeAtual() || 'Anfitriao JK Sistema',
-        iniciar_audio_desligado: true,
-        iniciar_video_desligado: true,
-        habilitar_prejoin: true,
+        iniciar_audio_desligado: false,
+        iniciar_video_desligado: false,
+        habilitar_prejoin: false,
         habilitar_sala_espera: false,
         habilitar_compartilhar_tela: true,
         habilitar_chat: true,
@@ -2860,6 +2869,9 @@
         const msgData = await msgResp.json().catch(() => ({}));
         if (!msgResp.ok || msgData.success === false) {
           throw new Error(msgData.detail || msgData.message || 'A sala foi criada, mas nao consegui enviar o convite.');
+        }
+        if (msgData.delivery_available === false) {
+          throw new Error(msgData.message || 'A sala foi criada, mas o convite ficou apenas local e nao chegou ao outro usuario.');
         }
         _msgSetStatus(`Chamando ${_msgLabelUsuario(destino)}...`);
         await _msgCarregarHistorico(true);

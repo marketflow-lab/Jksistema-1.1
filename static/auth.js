@@ -735,6 +735,8 @@ function obterAuthHeaders(extra) {
                     label: item.label
                 });
                 return {
+                    username: String(item.username || '').trim().toLowerCase(),
+                    client_id: String(item.client_id || '').trim(),
                     machine_id: machineId,
                     machine_key: machineKey,
                     label: String(item.label || machineId || 'Maquina'),
@@ -748,17 +750,19 @@ function obterAuthHeaders(extra) {
                 };
             }));
         const lastState = node.lastState && typeof node.lastState === 'object' ? node.lastState : {};
-        const lastSeen = normalizarTimestampSegundos(lastState.last_seen_ts || node.lastOnline);
+        const lastSeen = normalizarTimestampSegundos(lastState.last_seen_ts || node.lastOnline || (maquinas[0] && maquinas[0].last_seen_ts));
         const username = String(
             fallback && fallback.username ||
             lastState.username ||
             (maquinas[0] && maquinas[0].username) ||
+            node.username ||
             ''
         ).trim().toLowerCase();
         const clientId = String(
             fallback && fallback.client_id ||
             lastState.client_id ||
             (maquinas[0] && maquinas[0].client_id) ||
+            node.client_id ||
             'default'
         ).trim() || 'default';
         return {

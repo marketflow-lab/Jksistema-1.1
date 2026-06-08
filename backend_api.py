@@ -4753,6 +4753,9 @@ def _favoritos_lista_texto_historico(valor: Any, limite_item: int = 220, max_ite
     return saida
 
 
+FAVORITOS_HISTORICO_ANUNCIOS_MAX = 60
+
+
 def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
     if not isinstance(lista, list):
         return []
@@ -4768,7 +4771,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             if not sku:
                 continue
             anuncios_saida: list[dict] = []
-            for anuncio in (grupo.get("anuncios") or [])[:25]:
+            for anuncio in (grupo.get("anuncios") or [])[:FAVORITOS_HISTORICO_ANUNCIOS_MAX]:
                 if not isinstance(anuncio, dict):
                     continue
                 anuncio_id = _favoritos_limpar_texto_historico(
@@ -4926,8 +4929,10 @@ def _favoritos_salvar_historico(client_id: str, username: str, historico: Any) -
         "historico": _favoritos_normalizar_historico(historico),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
-    with open(caminho, "w", encoding="utf-8") as f:
+    tmp = caminho + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, caminho)
     return payload
 
 

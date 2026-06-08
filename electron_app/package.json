@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.58",
+  "version": "1.0.60",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -64,9 +64,7 @@
         "from": "../",
         "to": "local_app",
         "filter": [
-          "backend_api.py",
-          "promo_worker_api.py",
-          "medias_compras.py",
+          "*.py",
           "requirements.txt",
           "*.html",
           "*.js",
