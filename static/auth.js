@@ -2522,7 +2522,7 @@ function verificarSessao() {
             });
             if (!jaExisteScript) {
                 const script = document.createElement('script');
-                script.src = '/ia-sidebar.js?v=20260518-img-fallback';
+                script.src = '/ia-sidebar.js?v=20260608-video-call-open-fix';
                 script.async = true;
                 script.setAttribute('data-jk-ia-loader', '1');
                 document.body.appendChild(script);

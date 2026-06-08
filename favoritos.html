@@ -11547,6 +11547,11 @@
                     mudou = true;
                     return;
                 }
+                if ((item.sku_forcado_busca || item.sku_exato_busca) && sku && String(atual.sku || '').trim() !== sku) {
+                    atual.sku_api_original = atual.sku_api_original || atual.sku;
+                    atual.sku = sku;
+                    mudou = true;
+                }
                 const idsAtuais = new Set(Array.isArray(atual.item_ids) ? atual.item_ids : []);
                 (Array.isArray(item.item_ids) ? item.item_ids : []).forEach(id => {
                     if (id && !idsAtuais.has(id)) {
@@ -11590,7 +11595,7 @@
 
         function agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca) {
             const termo = String(termoBusca || '').trim();
-            const loja = favoritosLojaSelecionadaParaApi((opcoes && opcoes.loja) || undefined);
+            const loja = favoritosLojaSelecionadaParaApi();
             const chaveBusca = `${skuNormalizarLoja(loja)}:${normalizarSkuBuscaMl(termo) || normalizarTextoMl(termo)}`;
             if (!loja || termo.length < 2 || !normalizarTextoMl(termo) || mlSkuBuscaRemotaCache.has(chaveBusca)) return;
             if (mlSkuBuscaRemotaTimer) clearTimeout(mlSkuBuscaRemotaTimer);
@@ -11668,6 +11673,26 @@
                 const skuCompacto = normalizarSkuBuscaMl(item && item.sku);
                 return (!!termo && skuTexto.includes(termo)) || (!!termoSku && skuCompacto.includes(termoSku));
             });
+        }
+
+        function skuSidebarTemSkuExatoBusca(itens, termoBusca) {
+            const termo = String(termoBusca || '').trim();
+            if (!termo) return true;
+            const termoLiteral = termo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+            const termoTexto = normalizarTextoMl(termo);
+            return (itens || []).some(item => {
+                const sku = String(item && item.sku || '').trim();
+                if (!sku) return false;
+                const skuLiteral = sku.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                return skuLiteral === termoLiteral || normalizarTextoMl(sku) === termoTexto;
+            });
+        }
+
+        function deveBuscarSkuRemotoParaTermo(itens, termoBusca) {
+            const termo = String(termoBusca || '').trim();
+            if (!termo || termo.length < 2 || !normalizarTextoMl(termo)) return false;
+            if (!(itens || []).length) return true;
+            return !!normalizarSkuBuscaMl(termo) && !skuSidebarTemSkuExatoBusca(itens, termo);
         }
 
         function extrairMlbsItemSkuSidebar(item) {
@@ -12460,7 +12485,7 @@
                 ? 'Nenhum SKU encontrado nos anúncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anúncios ativos.';
             mlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (!itens.length && mlSkuSidebarFiltro) {
+            if (deveBuscarSkuRemotoParaTermo(itens, mlSkuSidebarFiltro)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(mlSkuSidebarFiltro);
             }
             agendarAtualizacaoPosicaoNavegadorMlShell();
@@ -15115,7 +15140,7 @@
                 ? 'Nenhum SKU encontrado nos anuncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anuncios ativos.';
             histMlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (!itens.length && termoBusca.trim()) {
+            if (deveBuscarSkuRemotoParaTermo(itens, termoBusca)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca);
             }
 
@@ -15667,7 +15692,7 @@
                 ? 'Nenhum SKU encontrado nos anuncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anuncios ativos.';
             favMlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (!itens.length && termoBusca.trim()) {
+            if (deveBuscarSkuRemotoParaTermo(itens, termoBusca)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca);
             }
 

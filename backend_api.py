@@ -7485,9 +7485,24 @@ def _favoritos_ml_garantir_sku_busca(skus: list[dict], sku_busca: str, itens: li
     if not sku_txt or not itens:
         return skus
     chave_busca = _normalizar_sku_compacto_favoritos(sku_txt) or sku_txt.lower()
+    sku_match_busca = _normalizar_sku_match_favoritos(sku_txt).lower()
     for item in skus or []:
-        if (_normalizar_sku_compacto_favoritos(item.get("sku") or "") or str(item.get("sku") or "").lower()) == chave_busca:
+        sku_item = str((item or {}).get("sku") or "").strip()
+        if _normalizar_sku_match_favoritos(sku_item).lower() == sku_match_busca:
             return skus
+
+    for item in skus or []:
+        sku_item = str((item or {}).get("sku") or "").strip()
+        if (_normalizar_sku_compacto_favoritos(sku_item) or sku_item.lower()) == chave_busca:
+            item["sku_api_original"] = sku_item
+            item["sku"] = sku_txt
+            item["sku_forcado_busca"] = True
+            return sorted(skus or [], key=lambda item: (
+                0 if (_normalizar_sku_compacto_favoritos(item.get("sku") or "") or "").isdigit() else 1,
+                int(_normalizar_sku_compacto_favoritos(item.get("sku") or "")[:15] or 0)
+                if (_normalizar_sku_compacto_favoritos(item.get("sku") or "") or "").isdigit() else 0,
+                str(item.get("sku") or "").lower(),
+            ))
 
     item_ids = []
     titulo = ""

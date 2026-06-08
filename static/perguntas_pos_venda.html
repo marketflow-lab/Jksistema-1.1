@@ -162,6 +162,7 @@
             font-weight: 700;
             min-height: 54px;
             padding: 0 24px;
+            white-space: nowrap;
             transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
         }
 
@@ -197,6 +198,18 @@
 
         .automation-interval-control input {
             width: 78px;
+            height: 34px;
+            border: 1px solid rgba(104, 168, 255, 0.32);
+            border-radius: 8px;
+            background: rgba(4, 7, 15, 0.74);
+            color: var(--text);
+            padding: 0 10px;
+            font: inherit;
+            font-weight: 800;
+        }
+
+        .automation-interval-control select {
+            min-width: 148px;
             height: 34px;
             border: 1px solid rgba(104, 168, 255, 0.32);
             border-radius: 8px;
@@ -319,7 +332,7 @@
 
         .store-card:hover .store-options,
         .store-card:focus-within .store-options {
-            max-height: 160px;
+            max-height: 260px;
             margin-top: 12px;
             padding-top: 12px;
             border-top-color: rgba(157, 231, 255, 0.14);
@@ -756,6 +769,307 @@
 
         .question-answer-status.ok {
             color: #86efac;
+        }
+
+        html,
+        body {
+            scrollbar-width: none;
+        }
+
+        html::-webkit-scrollbar,
+        body::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+        }
+
+        .questions-inbox-layout {
+            display: grid;
+            grid-template-columns: minmax(290px, 320px) minmax(0, 1fr);
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(7, 18, 28, 0.56);
+            overflow: visible;
+        }
+
+        .questions-list-pane {
+            min-width: 0;
+            border-right: 1px solid rgba(104, 168, 255, 0.22);
+            background: rgba(4, 12, 20, 0.42);
+        }
+
+        .questions-list-pane .question-list {
+            gap: 0;
+        }
+
+        .questions-list-pane .pagination {
+            padding: 10px;
+            margin: 0;
+            border-top: 1px solid rgba(104, 168, 255, 0.16);
+        }
+
+        .question-row {
+            display: grid;
+            grid-template-columns: 54px minmax(0, 1fr) auto;
+            gap: 10px;
+            align-items: start;
+            width: 100%;
+            min-height: 106px;
+            padding: 12px;
+            border: 0;
+            border-bottom: 1px solid rgba(104, 168, 255, 0.16);
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .question-row:hover,
+        .question-row:focus-visible {
+            background: rgba(255, 255, 255, 0.035);
+            outline: none;
+        }
+
+        .question-row.active {
+            background:
+                linear-gradient(90deg, rgba(56, 212, 255, 0.12), transparent 82%),
+                rgba(255, 255, 255, 0.028);
+            box-shadow: inset 3px 0 0 var(--accent);
+        }
+
+        .question-row-thumb {
+            width: 54px;
+            height: 54px;
+            border: 1px solid rgba(157, 231, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            color: var(--muted);
+            font-size: 0.66rem;
+            font-weight: 800;
+            text-align: center;
+        }
+
+        .question-row-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .question-row-title {
+            margin: 0;
+            color: #f4fbff;
+            font-size: 0.9rem;
+            line-height: 1.22;
+            overflow-wrap: anywhere;
+        }
+
+        .question-row-text {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 0.78rem;
+            line-height: 1.3;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+        }
+
+        .question-row-tags {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 7px;
+        }
+
+        .question-row-tags .badge {
+            font-size: 0.64rem;
+            padding: 3px 7px;
+        }
+
+        .question-row-date {
+            color: var(--muted);
+            font-size: 0.74rem;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+
+        .question-detail-pane {
+            min-width: 0;
+            background: rgba(13, 24, 36, 0.56);
+        }
+
+        .question-detail-card {
+            display: grid;
+            min-width: 0;
+        }
+
+        .question-detail-head {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 14px;
+            padding: 15px 18px;
+            border-bottom: 1px solid rgba(104, 168, 255, 0.18);
+        }
+
+        .question-detail-kicker,
+        .question-detail-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .question-detail-title {
+            margin: 7px 0 0;
+            color: #f6fbff;
+            font-size: 1.18rem;
+            line-height: 1.22;
+            overflow-wrap: anywhere;
+        }
+
+        .question-detail-title a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .question-detail-title a:hover {
+            color: var(--accent);
+            text-decoration: underline;
+        }
+
+        .question-detail-meta {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 0.8rem;
+            font-weight: 850;
+        }
+
+        .question-detail-date {
+            color: var(--muted);
+            font-size: 0.8rem;
+            font-weight: 900;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .question-detail-body {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 300px;
+            gap: 16px;
+            padding: 16px 18px;
+            overflow: visible;
+        }
+
+        .question-detail-main,
+        .question-detail-context {
+            display: grid;
+            align-content: start;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .question-detail-label {
+            color: var(--muted);
+            font-size: 0.7rem;
+            font-weight: 950;
+            text-transform: uppercase;
+        }
+
+        .question-detail-text {
+            border-left: 3px solid var(--accent);
+            border-radius: 0 8px 8px 0;
+            background: rgba(56, 212, 255, 0.08);
+            color: #fff;
+            padding: 13px 14px;
+            font-size: 1rem;
+            line-height: 1.42;
+            overflow-wrap: anywhere;
+        }
+
+        .question-context-card {
+            border: 1px solid rgba(104, 168, 255, 0.22);
+            border-radius: 8px;
+            background: rgba(4, 12, 20, 0.45);
+            padding: 12px;
+        }
+
+        .question-context-card h3 {
+            margin: 0 0 8px;
+            color: #f4fbff;
+            font-size: 0.9rem;
+        }
+
+        .question-context-card p,
+        .question-context-card li {
+            color: var(--muted);
+            font-size: 0.78rem;
+            line-height: 1.38;
+        }
+
+        .question-context-card p {
+            margin: 0;
+        }
+
+        .question-context-card ul {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .question-sku-guidance-text {
+            min-height: 84px;
+            field-sizing: content;
+            overflow: hidden;
+            font-size: 0.82rem;
+        }
+
+        .question-context-actions,
+        .question-reply-options {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .question-detail-pane .question-answer-composer {
+            margin-top: 0;
+            border-radius: 0;
+            border-width: 1px 0 0;
+            background: rgba(4, 10, 16, 0.64);
+            padding: 14px 18px;
+        }
+
+        .question-detail-pane .question-answer-composer textarea {
+            min-height: 96px;
+            field-sizing: content;
+            overflow: hidden;
+        }
+
+        .question-reply-options {
+            justify-content: flex-start;
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 0.76rem;
+            font-weight: 800;
+        }
+
+        .question-reply-options label {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            cursor: pointer;
+        }
+
+        .question-reply-options input {
+            width: 15px;
+            height: 15px;
+            accent-color: var(--ok);
+        }
+
+        .question-detail-pane .question-answer-actions {
+            justify-content: flex-end;
         }
 
         .conversation-card {
@@ -1400,6 +1714,24 @@
             .pos-sale-reply {
                 grid-template-columns: 1fr;
             }
+            .questions-inbox-layout,
+            .question-detail-body,
+            .question-detail-head {
+                grid-template-columns: 1fr;
+            }
+            .questions-list-pane {
+                border-right: 0;
+                border-bottom: 1px solid rgba(104, 168, 255, 0.22);
+            }
+            .question-row {
+                grid-template-columns: 48px minmax(0, 1fr);
+            }
+            .question-row-date {
+                grid-column: 2;
+            }
+            .question-detail-date {
+                text-align: left;
+            }
             .question-date { white-space: normal; }
         }
     </style>
@@ -1451,8 +1783,15 @@
 
                 <div id="perguntas-status" class="status-line">Escolha uma loja conectada ao Mercado Livre.</div>
                 <div id="perguntas-summary" class="summary hidden"></div>
-                <div id="perguntas-list" class="question-list"></div>
-                <div id="perguntas-pagination" class="pagination hidden"></div>
+                <div class="questions-inbox-layout">
+                    <aside class="questions-list-pane" aria-label="Fila de perguntas">
+                        <div id="perguntas-list" class="question-list"></div>
+                        <div id="perguntas-pagination" class="pagination hidden"></div>
+                    </aside>
+                    <section id="perguntas-detail" class="question-detail-pane" aria-label="Detalhe da pergunta">
+                        <div class="empty-state"><div><h2>Selecione uma pergunta</h2><p>A resposta, o contexto e as orientações de IA aparecem aqui.</p></div></div>
+                    </section>
+                </div>
             </section>
 
             <section id="aba-pos-venda" class="tab-content" role="tabpanel" aria-labelledby="tab-pos-venda">
@@ -1643,7 +1982,9 @@
         const state = {
             lojas: [],
             lojaSelecionada: '',
+            lojaConfiguracaoPerguntas: '',
             perguntas: [],
+            perguntaSelecionadaKey: '',
             paginaPerguntas: 1,
             totalPerguntas: 0,
             tamanhoPaginaPerguntas: 20,
@@ -1692,6 +2033,7 @@
         const perguntasStatus = document.getElementById('perguntas-status');
         const perguntasSummary = document.getElementById('perguntas-summary');
         const perguntasList = document.getElementById('perguntas-list');
+        const perguntasDetail = document.getElementById('perguntas-detail');
         const perguntasPagination = document.getElementById('perguntas-pagination');
         const statusFiltro = document.getElementById('status-filtro');
         const btnRecarregar = document.getElementById('btn-recarregar');
@@ -1948,23 +2290,40 @@
             state.automacaoPerguntasCountdownTimer = setInterval(atualizarCronometrosAutomacao, 1000);
         }
 
+        function lojaParaConfigurarChecagemPerguntas() {
+            const lojas = lojasMercadoLivreConectadas();
+            if (!lojas.length) return null;
+            const nomePreferido = todasAsLojasSelecionadas()
+                ? (state.lojaConfiguracaoPerguntas || (lojas[0] && lojas[0].nome) || '')
+                : state.lojaSelecionada;
+            return lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(nomePreferido)) || lojas[0] || null;
+        }
+
         function renderizarControlesAutomacaoSelecionada() {
             if (!perguntasAutomationControls) return;
-            if (todasAsLojasSelecionadas()) {
-                perguntasAutomationControls.innerHTML = '<span class="store-next-check automation-next-check">Escolha uma loja especifica para ajustar a checagem automatica.</span>';
-                return;
-            }
-            const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(state.lojaSelecionada));
-            if (!loja || loja.mercadolivre_conectado !== true) {
+            const lojasConectadas = lojasMercadoLivreConectadas();
+            const loja = lojaParaConfigurarChecagemPerguntas();
+            if (!lojasConectadas.length || !loja || loja.mercadolivre_conectado !== true) {
                 perguntasAutomationControls.innerHTML = '<span class="store-next-check automation-next-check">Escolha uma loja para configurar a checagem.</span>';
                 return;
             }
             const nome = String(loja.nome || '').trim();
+            state.lojaConfiguracaoPerguntas = nome;
             const config = loja.config_perguntas || {};
             const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+            const seletorLoja = todasAsLojasSelecionadas() ? `
+                    <select id="perguntas-loja-intervalo" aria-label="Loja para configurar checagem">
+                        ${lojasConectadas.map((item) => {
+                            const itemNome = String(item.nome || '').trim();
+                            return `<option value="${escapeHtml(itemNome)}" ${chaveLojaCronometro(itemNome) === chaveLojaCronometro(nome) ? 'selected' : ''}>${escapeHtml(itemNome)}</option>`;
+                        }).join('')}
+                    </select>
+                ` : `<strong>${escapeHtml(nome)}</strong>`;
             perguntasAutomationControls.innerHTML = `
                 <label class="automation-interval-control">
-                    <span>Verificar a cada</span>
+                    <span>Checagem automatica</span>
+                    ${seletorLoja}
+                    <span>a cada</span>
                     <input id="perguntas-intervalo-global" type="number" min="0.25" max="1440" step="0.25" value="${intervaloMinutos}" aria-label="Intervalo de checagem em minutos">
                     <span>minuto(s)</span>
                     <button class="store-config-save" type="button" id="btn-salvar-intervalo-perguntas">Aplicar</button>
@@ -1973,8 +2332,15 @@
             `;
             const input = document.getElementById('perguntas-intervalo-global');
             const button = document.getElementById('btn-salvar-intervalo-perguntas');
+            const select = document.getElementById('perguntas-loja-intervalo');
             const salvar = () => salvarIntervaloLojaSelecionada();
             if (button) button.addEventListener('click', salvar);
+            if (select) {
+                select.addEventListener('change', () => {
+                    state.lojaConfiguracaoPerguntas = select.value || '';
+                    renderizarControlesAutomacaoSelecionada();
+                });
+            }
             if (input) {
                 input.addEventListener('keydown', (event) => {
                     if (event.key === 'Enter') {
@@ -2068,6 +2434,13 @@
                             <label class="store-option">
                                 <input class="store-config-checkbox" type="checkbox" data-config="habilitar_pos_venda_automatico" ${config.habilitar_pos_venda_automatico ? 'checked' : ''}>
                                 <span>Usar estas configurações também no pós-venda</span>
+                            </label>
+                            <label class="store-option interval-option">
+                                <span>Checar perguntas a cada</span>
+                                <input class="store-config-interval" type="number" min="0.25" max="1440" step="0.25" data-config="intervalo_minutos" value="${intervaloMinutos}" aria-label="Intervalo de checagem em minutos para ${escapeHtml(nome)}">
+                                <span>minuto(s)</span>
+                                <button class="store-config-save" type="button" data-config-action="salvar_intervalo">Aplicar</button>
+                                <span class="store-next-check" data-next-check-loja="${escapeHtml(nome)}">${escapeHtml(textoProximaChecagemLoja(nome, loja))}</span>
                             </label>
                         </span>
                     </div>
@@ -2163,8 +2536,9 @@
         }
 
         async function salvarIntervaloLojaSelecionada() {
-            const loja = state.lojas.find((item) => chaveLojaCronometro(item.nome) === chaveLojaCronometro(state.lojaSelecionada));
+            const loja = lojaParaConfigurarChecagemPerguntas();
             if (!loja) return;
+            state.lojaConfiguracaoPerguntas = String(loja.nome || '').trim();
             const input = document.getElementById('perguntas-intervalo-global');
             const config = loja.config_perguntas || {};
             const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(input?.value || config.intervalo_minutos || 10) || 10));
@@ -2479,6 +2853,152 @@
             });
         }
 
+        function chavePerguntaAtendimento(pergunta) {
+            return `${lojaOrigemItem(pergunta) || ''}::${String(pergunta && pergunta.id || '').trim()}`;
+        }
+
+        function resumoTextoPergunta(texto, limite = 92) {
+            const valor = String(texto || '-').replace(/\s+/g, ' ').trim();
+            return valor.length > limite ? `${valor.slice(0, limite - 1)}...` : valor;
+        }
+
+        function textoNotaSkuAtendimento(sku) {
+            const chave = String(sku || '').trim();
+            if (!chave) return '';
+            return String((state.treinamentoContexto.notas_sku || {})[chave] || '').trim();
+        }
+
+        function garantirTreinamentoAtendimentoCarregado() {
+            if (state.treinamentoCarregado || state.treinamentoAtendimentoCarregando) return;
+            state.treinamentoAtendimentoCarregando = true;
+            carregarTreinamentoAI()
+                .then(() => renderizarPerguntas())
+                .catch(() => {})
+                .finally(() => {
+                    state.treinamentoAtendimentoCarregando = false;
+                });
+        }
+
+        function renderizarLinhaPerguntaAtendimento(pergunta, selecionada) {
+            const lojaOrigem = lojaOrigemItem(pergunta);
+            const titulo = pergunta.item_title || pergunta.item_id || 'Anuncio';
+            const foto = pergunta.item_thumbnail
+                ? `<img src="${escapeHtml(pergunta.item_thumbnail)}" alt="${escapeHtml(titulo)}" loading="lazy" referrerpolicy="no-referrer">`
+                : '<span>Sem foto</span>';
+            const lojaBadge = lojaOrigem ? `<span class="badge ok">${escapeHtml(lojaOrigem)}</span>` : '';
+            const dataKey = chavePerguntaAtendimento(pergunta);
+            return `
+                <button class="question-row ${selecionada ? 'active' : ''}" type="button" data-question-select="${escapeHtml(dataKey)}">
+                    <span class="question-row-thumb">${foto}</span>
+                    <span>
+                        <span class="question-row-title">${escapeHtml(titulo)}</span>
+                        <span class="question-row-text">${escapeHtml(resumoTextoPergunta(pergunta.text))}</span>
+                        <span class="question-row-tags">
+                            ${lojaBadge}
+                            <span class="badge ${classeStatus(pergunta.status)}">${escapeHtml(rotuloStatus(pergunta.status))}</span>
+                        </span>
+                    </span>
+                    <span class="question-row-date">${escapeHtml(formatarData(pergunta.date_created))}</span>
+                </button>
+            `;
+        }
+
+        function renderizarDetalhePerguntaAtendimento(pergunta) {
+            if (!perguntasDetail) return;
+            if (!pergunta) {
+                perguntasDetail.innerHTML = '<div class="empty-state"><div><h2>Selecione uma pergunta</h2><p>A resposta, o contexto e as orienta&ccedil;&otilde;es de IA aparecem aqui.</p></div></div>';
+                return;
+            }
+            garantirTreinamentoAtendimentoCarregado();
+            const lojaOrigem = lojaOrigemItem(pergunta);
+            const lojaBadge = lojaOrigem ? `<span class="badge ok">Loja ${escapeHtml(lojaOrigem)}</span>` : '';
+            const titulo = pergunta.item_title || pergunta.item_id || 'Anuncio';
+            const tituloHtml = pergunta.item_permalink
+                ? `<a href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">${escapeHtml(titulo)}</a>`
+                : escapeHtml(titulo);
+            const sku = String(pergunta.item_sku || '').trim();
+            const comprador = pergunta.buyer_name || pergunta.buyer_nickname || pergunta.from_id || '-';
+            const answer = pergunta.answer && pergunta.answer.text
+                ? `<div class="answer-box">${escapeHtml(pergunta.answer.text)}</div>`
+                : '<div class="answer-box empty">Sem resposta registrada.</div>';
+            const chatPerguntas = renderizarChatPerguntas(pergunta);
+            const podeResponder = !(pergunta.answer && pergunta.answer.text) && String(pergunta.status || '').toUpperCase() === 'UNANSWERED';
+            const dataKey = chavePerguntaAtendimento(pergunta);
+            const notaSku = textoNotaSkuAtendimento(sku);
+            const linkAnuncio = pergunta.item_permalink
+                ? `<a class="action-btn secondary" href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">Abrir an&uacute;ncio</a>`
+                : '';
+            const composer = podeResponder ? `
+                <div class="question-answer-composer">
+                    <textarea class="question-answer-text" maxlength="2000" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
+                    <div class="question-reply-options">
+                        <label><input class="question-save-example-checkbox" type="checkbox" checked>Usar esta resposta como exemplo da IA</label>
+                        <span>Salva pergunta, resposta, loja e SKU no treinamento.</span>
+                    </div>
+                    <div class="question-answer-actions">
+                        <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia">Gerar IA</button>
+                        <button class="action-btn secondary question-save-example-btn" type="button" data-action="salvar-exemplo" disabled>Salvar exemplo</button>
+                        <button class="action-btn secondary question-send-save-example-btn" type="button" data-action="enviar-salvar-exemplo" disabled>Responder e salvar exemplo</button>
+                        <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Responder</button>
+                        <span class="question-answer-status">Limite do Mercado Livre: 2000 caracteres.</span>
+                    </div>
+                </div>
+            ` : '';
+
+            perguntasDetail.innerHTML = `
+                <article class="question-detail-card" data-question-card data-question-id="${escapeHtml(pergunta.id || '')}" data-question-loja="${escapeHtml(lojaOrigem)}" data-question-key="${escapeHtml(dataKey)}">
+                    <header class="question-detail-head">
+                        <div>
+                            <div class="question-detail-kicker">
+                                ${lojaBadge}
+                                <span class="badge ${classeStatus(pergunta.status)}">${escapeHtml(rotuloStatus(pergunta.status))}</span>
+                                ${sku ? '<span class="badge warn">SKU ' + escapeHtml(sku) + '</span>' : ''}
+                            </div>
+                            <h3 class="question-detail-title">${tituloHtml}</h3>
+                            <div class="question-detail-meta">
+                                <span>An&uacute;ncio ${escapeHtml(pergunta.item_id || '-')}</span>
+                                <span>SKU ${escapeHtml(sku || '-')}</span>
+                                <span>Comprador ${escapeHtml(comprador)}</span>
+                                <span>Pergunta ${escapeHtml(pergunta.id || '-')}</span>
+                            </div>
+                        </div>
+                        <span class="question-detail-date">${escapeHtml(formatarData(pergunta.date_created))}</span>
+                    </header>
+                    <div class="question-detail-body">
+                        <div class="question-detail-main">
+                            <span class="question-detail-label">Pergunta do comprador</span>
+                            <div class="question-detail-text">${escapeHtml(pergunta.text || '-')}</div>
+                            ${chatPerguntas || answer}
+                        </div>
+                        <aside class="question-detail-context">
+                            <div class="question-context-card">
+                                <h3>Atalhos de decis&atilde;o</h3>
+                                <ul>
+                                    <li>Revise compatibilidade, c&oacute;digo, lado, motor e ano antes de confirmar.</li>
+                                    <li>Quando faltar dado, pe&ccedil;a foto da etiqueta, c&oacute;digo ou chassi.</li>
+                                    <li>N&atilde;o prometa aplica&ccedil;&atilde;o se o SKU exigir confer&ecirc;ncia.</li>
+                                </ul>
+                            </div>
+                            <div class="question-context-card">
+                                <h3>Dados r&aacute;pidos</h3>
+                                <p>SKU ${escapeHtml(sku || '-')} &middot; ${escapeHtml(titulo)}.</p>
+                            </div>
+                            <div class="question-context-card">
+                                <h3>Orienta&ccedil;&otilde;es da IA para este SKU</h3>
+                                <textarea class="question-sku-guidance-text" ${sku ? '' : 'disabled'} placeholder="${sku ? 'Aplicacoes confirmadas, excecoes, codigos e cuidados deste SKU.' : 'Sem SKU para salvar orientacoes especificas.'}">${escapeHtml(notaSku)}</textarea>
+                                <div class="question-context-actions">
+                                    <button class="action-btn secondary question-sku-guidance-save" type="button" ${sku ? '' : 'disabled'}>Salvar orienta&ccedil;&atilde;o</button>
+                                    ${linkAnuncio}
+                                    <span class="question-answer-status question-sku-guidance-status"></span>
+                                </div>
+                            </div>
+                        </aside>
+                    </div>
+                    ${composer}
+                </article>
+            `;
+        }
+
         function renderizarPerguntas() {
             const perguntas = state.perguntas;
             if (!perguntas.length) {
@@ -2486,6 +3006,7 @@
                     ? 'Não há perguntas para o filtro selecionado nas contas conectadas.'
                     : 'Não há perguntas para o filtro selecionado nesta loja.';
                 perguntasList.innerHTML = `<div class="empty-state"><div><h2>Nenhuma pergunta encontrada</h2><p>${escapeHtml(textoVazio)}</p></div></div>`;
+                if (perguntasDetail) perguntasDetail.innerHTML = '';
                 perguntasPagination.classList.add('hidden');
                 perguntasPagination.innerHTML = '';
                 return;
@@ -2495,6 +3016,25 @@
             const totalPaginas = Math.max(1, Math.ceil(total / state.tamanhoPaginaPerguntas));
             state.paginaPerguntas = Math.min(Math.max(1, state.paginaPerguntas), totalPaginas);
             const pagina = perguntas;
+
+            let perguntaSelecionada = pagina.find((pergunta) => chavePerguntaAtendimento(pergunta) === state.perguntaSelecionadaKey);
+            if (!perguntaSelecionada) {
+                perguntaSelecionada = pagina[0];
+                state.perguntaSelecionadaKey = chavePerguntaAtendimento(perguntaSelecionada);
+            }
+            perguntasList.innerHTML = pagina
+                .map((pergunta) => renderizarLinhaPerguntaAtendimento(pergunta, chavePerguntaAtendimento(pergunta) === state.perguntaSelecionadaKey))
+                .join('');
+            perguntasList.querySelectorAll('[data-question-select]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    state.perguntaSelecionadaKey = button.dataset.questionSelect || '';
+                    renderizarPerguntas();
+                });
+            });
+            renderizarDetalhePerguntaAtendimento(perguntaSelecionada);
+            configurarAcoesRespostaPerguntas();
+            renderizarPaginacaoPerguntas(state.totalPerguntas || perguntas.length);
+            return;
 
             perguntasList.innerHTML = pagina.map((pergunta) => {
                 const lojaOrigem = lojaOrigemItem(pergunta);
@@ -2574,26 +3114,162 @@
             statusEl.classList.toggle('ok', tipo === 'ok');
         }
 
+        function ajustarAlturaTextareaAtendimento(textarea) {
+            if (!textarea) return;
+            textarea.style.height = 'auto';
+            textarea.style.height = `${Math.max(textarea.scrollHeight + 2, textarea.classList.contains('question-answer-text') ? 96 : 84)}px`;
+        }
+
         function configurarAcoesRespostaPerguntas() {
-            perguntasList.querySelectorAll('[data-question-card]').forEach((card) => {
+            [perguntasList, perguntasDetail].filter(Boolean).forEach((container) => container.querySelectorAll('[data-question-card]').forEach((card) => {
                 const questionId = card.dataset.questionId || '';
                 const questionLoja = card.dataset.questionLoja || '';
                 const textarea = card.querySelector('.question-answer-text');
                 const btnGerar = card.querySelector('.question-ai-answer-btn');
                 const btnEnviar = card.querySelector('.question-send-answer-btn');
-                const status = card.querySelector('.question-answer-status');
+                const btnEnviarSalvar = card.querySelector('.question-send-save-example-btn');
+                const btnSalvarExemplo = card.querySelector('.question-save-example-btn');
+                const checkboxSalvarExemplo = card.querySelector('.question-save-example-checkbox');
+                const textareaSku = card.querySelector('.question-sku-guidance-text');
+                const btnSalvarSku = card.querySelector('.question-sku-guidance-save');
+                const statusSku = card.querySelector('.question-sku-guidance-status');
+                const status = card.querySelector('.question-answer-composer .question-answer-status');
+                if (textareaSku && btnSalvarSku) {
+                    ajustarAlturaTextareaAtendimento(textareaSku);
+                    textareaSku.addEventListener('input', () => ajustarAlturaTextareaAtendimento(textareaSku));
+                    btnSalvarSku.addEventListener('click', () => salvarOrientacaoSkuPergunta(questionId, questionLoja, textareaSku, btnSalvarSku, statusSku));
+                }
                 if (!textarea || !btnEnviar) return;
 
                 const atualizarBotaoEnviar = () => {
-                    btnEnviar.disabled = !textarea.value.trim();
+                    const vazio = !textarea.value.trim();
+                    btnEnviar.disabled = vazio;
+                    if (btnEnviarSalvar) btnEnviarSalvar.disabled = vazio;
+                    if (btnSalvarExemplo) btnSalvarExemplo.disabled = vazio;
+                    ajustarAlturaTextareaAtendimento(textarea);
                 };
                 textarea.addEventListener('input', atualizarBotaoEnviar);
                 btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
+                if (btnEnviarSalvar) {
+                    btnEnviarSalvar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviarSalvar, btnGerar, status, { salvarExemplo: true, botoesExtras: [btnEnviar, btnSalvarExemplo] }));
+                }
+                if (btnSalvarExemplo) {
+                    btnSalvarExemplo.addEventListener('click', () => salvarExemploRespostaPergunta(questionId, questionLoja, textarea, btnSalvarExemplo, status));
+                }
+                if (checkboxSalvarExemplo && btnEnviarSalvar) {
+                    checkboxSalvarExemplo.addEventListener('change', () => {
+                        btnEnviarSalvar.classList.toggle('hidden', !checkboxSalvarExemplo.checked);
+                    });
+                }
                 if (btnGerar) {
                     btnGerar.addEventListener('click', () => gerarRespostaPerguntaIa(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
                 }
                 atualizarBotaoEnviar();
+            }));
+        }
+
+        function montarExemploRespostaPergunta(pergunta, resposta) {
+            return {
+                pergunta: String(pergunta && pergunta.text || '').trim(),
+                resposta: String(resposta || '').trim(),
+                sku: String(pergunta && pergunta.item_sku || '').trim(),
+                observacao: 'Modelo salvo a partir da tela de perguntas',
+                updated_at: new Date().toISOString()
+            };
+        }
+
+        async function salvarTreinamentoAtendimentoPergunta(pergunta, opcoes = {}) {
+            await carregarTreinamentoAI().catch(() => {});
+            const tipo = 'perguntas_anuncio';
+            const sku = String(pergunta && pergunta.item_sku || '').trim();
+            const exemplos = normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || []);
+            if (opcoes.exemplo) {
+                exemplos.unshift(opcoes.exemplo);
+            }
+            state.treinamentoDados[tipo] = {
+                ...(state.treinamentoDados[tipo] || {}),
+                exemplos: normalizarExemplosTreinamento(exemplos).slice(0, 60)
+            };
+            if (sku && Object.prototype.hasOwnProperty.call(opcoes, 'notasSku')) {
+                const textoNotas = String(opcoes.notasSku || '').trim();
+                if (textoNotas) {
+                    state.treinamentoContexto.notas_sku[sku] = textoNotas;
+                } else {
+                    delete state.treinamentoContexto.notas_sku[sku];
+                }
+            }
+            const payload = {
+                tipo,
+                orientacoes: (state.treinamentoDados[tipo] || {}).orientacoes || '',
+                contexto_loja: state.treinamentoContexto.contexto_loja || '',
+                compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
+                proibicoes: state.treinamentoContexto.proibicoes || '',
+                exemplos: normalizarExemplosTreinamento((state.treinamentoDados[tipo] || {}).exemplos || [])
+            };
+            if (sku && Object.prototype.hasOwnProperty.call(opcoes, 'notasSku')) {
+                payload.sku = sku;
+                payload.notas_sku = String(opcoes.notasSku || '').trim();
+            }
+            const response = await fetch('/api/mercadolivre/ia-treinamento', {
+                method: 'POST',
+                headers: {
+                    ...obterAuthHeaders(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
             });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || 'Erro ao salvar treinamento da IA.');
+            state.treinamentoCarregado = true;
+            state.treinamentoDados[tipo] = {
+                orientacoes: (state.treinamentoDados[tipo] || {}).orientacoes || '',
+                updated_at: data.updated_at || new Date().toISOString(),
+                exemplos: normalizarExemplosTreinamento(((data.exemplos || {})[tipo]) || (state.treinamentoDados[tipo] || {}).exemplos || [])
+            };
+            state.treinamentoContexto = {
+                contexto_loja: typeof data.contexto_loja === 'string' ? data.contexto_loja : (state.treinamentoContexto.contexto_loja || ''),
+                compatibilidade_autopecas: typeof data.compatibilidade_autopecas === 'string' ? data.compatibilidade_autopecas : (state.treinamentoContexto.compatibilidade_autopecas || ''),
+                proibicoes: typeof data.proibicoes === 'string' ? data.proibicoes : (state.treinamentoContexto.proibicoes || ''),
+                notas_sku: normalizarNotasTreinamento(data.notas_sku || state.treinamentoContexto.notas_sku)
+            };
+            renderizarNotasSkuTreinamento();
+            renderizarExemplosTreinamento();
+            atualizarStatusTreinamentoTipo();
+            return data;
+        }
+
+        async function salvarOrientacaoSkuPergunta(questionId, loja, textarea, botao, status) {
+            const pergunta = obterPerguntaPorId(questionId, loja);
+            const sku = String(pergunta && pergunta.item_sku || '').trim();
+            if (!pergunta || !sku) return;
+            botao.disabled = true;
+            setStatusRespostaPergunta(status, 'Salvando orientacao do SKU...');
+            try {
+                await salvarTreinamentoAtendimentoPergunta(pergunta, { notasSku: textarea.value || '' });
+                setStatusRespostaPergunta(status, 'Orientacao salva.', 'ok');
+            } catch (error) {
+                setStatusRespostaPergunta(status, `Erro ao salvar: ${mensagemErro(error)}`, 'error');
+            } finally {
+                botao.disabled = false;
+            }
+        }
+
+        async function salvarExemploRespostaPergunta(questionId, loja, textarea, botao, status) {
+            const pergunta = obterPerguntaPorId(questionId, loja);
+            const texto = String(textarea.value || '').trim();
+            if (!pergunta || !texto) return;
+            botao.disabled = true;
+            setStatusRespostaPergunta(status, 'Salvando resposta como exemplo da IA...');
+            try {
+                await salvarTreinamentoAtendimentoPergunta(pergunta, {
+                    exemplo: montarExemploRespostaPergunta(pergunta, texto)
+                });
+                setStatusRespostaPergunta(status, 'Exemplo salvo no treinamento da IA.', 'ok');
+            } catch (error) {
+                setStatusRespostaPergunta(status, `Erro ao salvar exemplo: ${mensagemErro(error)}`, 'error');
+            } finally {
+                botao.disabled = !textarea.value.trim();
+            }
         }
 
         async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, btnGerar, status) {
@@ -2629,14 +3305,16 @@
             }
         }
 
-        async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnviar, btnGerar, status) {
+        async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnviar, btnGerar, status, opcoes = {}) {
             const pergunta = obterPerguntaPorId(questionId, loja);
             const texto = String(textarea.value || '').trim();
             const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
             if (!pergunta || !lojaResposta || !texto) return;
+            const botoesExtras = Array.isArray(opcoes.botoesExtras) ? opcoes.botoesExtras.filter(Boolean) : [];
             btnEnviar.disabled = true;
+            botoesExtras.forEach((botao) => { botao.disabled = true; });
             if (btnGerar) btnGerar.disabled = true;
-            setStatusRespostaPergunta(status, 'Enviando resposta ao Mercado Livre...');
+            setStatusRespostaPergunta(status, opcoes.salvarExemplo ? 'Enviando resposta e salvando exemplo da IA...' : 'Enviando resposta ao Mercado Livre...');
             try {
                 const response = await fetch('/api/mercadolivre/perguntas/responder', {
                     method: 'POST',
@@ -2658,11 +3336,19 @@
                     date_created: new Date().toISOString()
                 };
                 pergunta.status = 'ANSWERED';
-                perguntasStatus.textContent = `Resposta enviada ao Mercado Livre pela loja ${lojaResposta}.`;
+                if (opcoes.salvarExemplo) {
+                    await salvarTreinamentoAtendimentoPergunta(pergunta, {
+                        exemplo: montarExemploRespostaPergunta(pergunta, texto)
+                    });
+                }
+                perguntasStatus.textContent = opcoes.salvarExemplo
+                    ? `Resposta enviada ao Mercado Livre pela loja ${lojaResposta} e salva como exemplo da IA.`
+                    : `Resposta enviada ao Mercado Livre pela loja ${lojaResposta}.`;
                 renderizarPerguntas();
             } catch (error) {
                 setStatusRespostaPergunta(status, `Erro ao enviar: ${mensagemErro(error)}`, 'error');
                 btnEnviar.disabled = !textarea.value.trim();
+                botoesExtras.forEach((botao) => { botao.disabled = !textarea.value.trim(); });
                 if (btnGerar) btnGerar.disabled = false;
             }
         }
@@ -2706,6 +3392,7 @@
         async function selecionarLoja(nome) {
             if (!nome || state.carregandoPerguntas) return;
             state.lojaSelecionada = nome;
+            if (!todasAsLojasSelecionadas()) state.lojaConfiguracaoPerguntas = nome;
             resetarPaginacaoPosVenda();
             resetarMediacoes();
             renderizarLojas();

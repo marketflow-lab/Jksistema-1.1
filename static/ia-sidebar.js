@@ -1585,7 +1585,12 @@
       const params = new URLSearchParams();
       params.set('join', url);
       if (call && call.room_name) params.set('room_name', String(call.room_name || ''));
-      return `/sala_reuniao.html?${params.toString()}`;
+      const path = `/sala_reuniao.html?${params.toString()}`;
+      try {
+        return new URL(path, window.location.origin || window.location.href).href;
+      } catch (_) {
+        return path;
+      }
     }
 
     function _msgAbrirSalaReuniao(call, preferHost = false) {
@@ -1594,17 +1599,19 @@
         _msgSetStatus('Link Daily da chamada indisponivel.', true);
         return;
       }
+      let sentToShell = false;
       try {
         if (window.top && window.top !== window && typeof window.top.postMessage === 'function') {
           window.top.postMessage({
             channel: 'jk-open-module-tab',
             payload: { url: target, title: 'Sala de Reuniao' },
           }, '*');
-          return;
+          sentToShell = true;
         }
       } catch (_) {}
+      if (sentToShell) return;
       try {
-        window.open(target, '_blank', 'noopener');
+        window.location.assign(target);
       } catch (_) {
         window.location.href = target;
       }

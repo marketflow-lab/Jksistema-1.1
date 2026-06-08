@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.60",
+  "version": "1.0.61",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -55,6 +55,13 @@
       {
         "from": "../scripts/credenciais.js",
         "to": "scripts/credenciais.js"
+      },
+      {
+        "from": "private",
+        "to": "private",
+        "filter": [
+          "*.jkcred"
+        ]
       },
       {
         "from": "../extensoes_chrome",
