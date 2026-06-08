@@ -99,6 +99,7 @@ let updateFeedConfigured = false;
 let updateFeedSource = '';
 const mlAutomationProtectionByWebContents = new Map();
 const mlItemInfoCache = new Map();
+const configuredMeetingPermissionSessions = new WeakSet();
 const ML_ITEM_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 const AUTO_UPDATE_CHECK_TIMEOUT_MS = 45000;
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
@@ -849,47 +850,218 @@ function isAllowedMediaPermissionUrl(rawUrl) {
     return isDailyMeetingUrl(rawUrl) || isLocalBackendUrlForNotification(rawUrl);
 }
 
-function configureNotificationPermissions() {
-    const sessions = [session.defaultSession, getMlSession()];
-    for (const ses of sessions) {
-        if (!ses) continue;
-        if (typeof ses.setPermissionRequestHandler === 'function') {
-            ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
-                const requestingUrl = details && (details.requestingUrl || details.embeddingOrigin) || (webContents && webContents.getURL && webContents.getURL()) || '';
-                if (permission === 'media') {
-                    callback(isAllowedMediaPermissionUrl(requestingUrl));
-                    return;
-                }
-                if (permission === 'notifications') {
-                    callback(isLocalBackendUrlForNotification(requestingUrl));
-                    return;
-                }
-                callback(false);
-            });
-        }
-        if (typeof ses.setPermissionCheckHandler === 'function') {
-            ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-                const currentUrl = requestingOrigin || (webContents && webContents.getURL && webContents.getURL()) || '';
-                if (permission === 'media') return isAllowedMediaPermissionUrl(currentUrl);
-                if (permission === 'notifications') return isLocalBackendUrlForNotification(currentUrl);
-                return false;
-            });
-        }
-        if (typeof ses.setDisplayMediaRequestHandler === 'function') {
-            ses.setDisplayMediaRequestHandler((request, callback) => {
-                const requestingUrl = request && (request.securityOrigin || request.requestingUrl || request.frameOrigin) || '';
-                if (!isAllowedMediaPermissionUrl(requestingUrl)) {
-                    callback({});
-                    return;
-                }
-                desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
-                    .then((sources) => {
-                        callback(sources && sources[0] ? { video: sources[0] } : {});
-                    })
-                    .catch(() => callback({}));
-            }, { useSystemPicker: true });
-        }
+function labelDisplayMediaSource(source) {
+    const name = String(source && source.name || '').trim() || 'Fonte sem nome';
+    const type = String(source && source.id || '').startsWith('screen:') ? 'Tela' : 'Janela';
+    return `${type}: ${name}`.slice(0, 90);
+}
+
+function publicDisplayMediaSource(source) {
+    if (!source || !source.id) return null;
+    return {
+        id: String(source.id || ''),
+        name: String(source.name || '').trim() || 'Fonte sem nome',
+        type: String(source.id || '').startsWith('screen:') ? 'screen' : 'window',
+        label: labelDisplayMediaSource(source)
+    };
+}
+
+async function chooseDisplayMediaSource(sources) {
+    const validSources = (Array.isArray(sources) ? sources : [])
+        .filter(source => source && source.id)
+        .sort((a, b) => {
+            const aScreen = String(a.id || '').startsWith('screen:') ? 0 : 1;
+            const bScreen = String(b.id || '').startsWith('screen:') ? 0 : 1;
+            return aScreen - bScreen || String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR');
+        })
+        .slice(0, 18);
+    if (!validSources.length) return null;
+    const parent = BrowserWindow.getFocusedWindow() || mainWindow || BrowserWindow.getAllWindows().find(win => win && !win.isDestroyed()) || null;
+    const channel = `jk-display-source-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+    const cards = validSources.map((source, index) => {
+        const isScreen = String(source.id || '').startsWith('screen:');
+        const kind = isScreen ? 'Tela' : 'Janela';
+        const title = String(source.name || '').trim() || 'Fonte sem nome';
+        const icon = isScreen
+            ? '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path></svg>'
+            : '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M4 9h16"></path><path d="M8 7h.01"></path><path d="M11 7h.01"></path></svg>';
+        return `
+            <button class="source-card" type="button" data-index="${index}" title="${escapeHtml(labelDisplayMediaSource(source))}">
+                <span class="source-icon" aria-hidden="true">${icon}</span>
+                <span class="source-text">
+                    <span class="source-kind">${kind}</span>
+                    <strong>${escapeHtml(title)}</strong>
+                    <small>${isScreen ? 'Compartilhar este monitor' : 'Compartilhar esta janela'}</small>
+                </span>
+            </button>
+        `;
+    }).join('');
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:;">
+<title>Compartilhar tela</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; min-height: 100%; background: #0e1117; color: #edf6ff; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+body { overflow: hidden; }
+.share-picker { min-height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid #2f4562; border-radius: 16px; background: #111827; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42); overflow: hidden; }
+.share-head { -webkit-app-region: drag; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px 14px; border-bottom: 1px solid #22354e; background: #141d2c; }
+.share-title { display: grid; gap: 4px; min-width: 0; }
+.share-title span { color: #77b8ff; font-size: 0.72rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; }
+.share-title h1 { margin: 0; font-size: 1.18rem; line-height: 1.2; }
+.share-title p { margin: 0; color: #9fb2c8; font-size: 0.86rem; line-height: 1.35; }
+.close-btn { -webkit-app-region: no-drag; width: 36px; height: 36px; border: 1px solid #324964; border-radius: 10px; background: #101827; color: #dbeafe; font-size: 1.18rem; cursor: pointer; }
+.close-btn:hover { background: #1d2a3d; border-color: #4facfe; }
+.source-grid { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px 18px; overflow: auto; }
+.source-card { min-width: 0; min-height: 92px; display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 12px; border: 1px solid #28405c; border-radius: 14px; background: #151f31; color: #edf6ff; padding: 14px; text-align: left; cursor: pointer; }
+.source-card:hover, .source-card:focus { outline: none; border-color: #4facfe; background: #19273c; box-shadow: 0 14px 32px rgba(79, 172, 254, 0.14); }
+.source-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; background: #0b1424; color: #4facfe; border: 1px solid #28405c; }
+.source-icon svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.source-text { min-width: 0; display: grid; gap: 3px; }
+.source-kind { color: #83c4ff; font-size: 0.72rem; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; }
+.source-text strong { min-width: 0; overflow: hidden; color: #fff; font-size: 0.92rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.source-text small { color: #9fb2c8; font-size: 0.78rem; }
+.share-foot { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 14px 18px 16px; border-top: 1px solid #22354e; background: #101827; }
+.hint { color: #9fb2c8; font-size: 0.82rem; }
+.cancel-btn { min-height: 38px; border: 1px solid #3a516d; border-radius: 10px; background: #182235; color: #edf6ff; padding: 0 16px; font-weight: 800; cursor: pointer; }
+.cancel-btn:hover { border-color: #ff6b6b; color: #ffe6e6; background: #2a1d27; }
+@media (max-width: 720px) { .source-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main class="share-picker">
+    <header class="share-head">
+        <div class="share-title">
+            <span>Compartilhar tela</span>
+            <h1>Escolha o que deseja mostrar</h1>
+            <p>Selecione um monitor ou uma janela. Para trocar depois, pare o compartilhamento e escolha novamente.</p>
+        </div>
+        <button id="closeBtn" class="close-btn" type="button" aria-label="Fechar">x</button>
+    </header>
+    <section class="source-grid" aria-label="Fontes disponiveis">${cards}</section>
+    <footer class="share-foot">
+        <span class="hint">Dica: escolha uma janela especifica para evitar compartilhar as duas telas.</span>
+        <button id="cancelBtn" class="cancel-btn" type="button">Cancelar</button>
+    </footer>
+</main>
+<script>
+const { ipcRenderer } = require('electron');
+const channel = ${JSON.stringify(channel)};
+function send(payload) { ipcRenderer.send(channel, payload); }
+document.querySelectorAll('[data-index]').forEach((button) => {
+    button.addEventListener('click', () => send({ index: Number(button.dataset.index) }));
+});
+document.getElementById('closeBtn').addEventListener('click', () => send({ canceled: true }));
+document.getElementById('cancelBtn').addEventListener('click', () => send({ canceled: true }));
+window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') send({ canceled: true });
+});
+</script>
+</body>
+</html>`;
+    return await new Promise((resolve) => {
+        let settled = false;
+        const height = Math.min(640, Math.max(430, 238 + Math.ceil(validSources.length / 2) * 116));
+        const chooser = new BrowserWindow({
+            parent: parent || undefined,
+            modal: !!parent,
+            width: 880,
+            height,
+            minWidth: 680,
+            minHeight: 420,
+            resizable: true,
+            minimizable: false,
+            maximizable: false,
+            frame: false,
+            title: 'Compartilhar tela',
+            backgroundColor: '#0e1117',
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false,
+                sandbox: false
+            }
+        });
+        const finish = (source) => {
+            if (settled) return;
+            settled = true;
+            ipcMain.removeListener(channel, onChoice);
+            if (chooser && !chooser.isDestroyed()) chooser.close();
+            resolve(source || null);
+        };
+        const onChoice = (_event, payload) => {
+            if (payload && payload.canceled) {
+                finish(null);
+                return;
+            }
+            const index = Number(payload && payload.index);
+            finish(Number.isInteger(index) && index >= 0 && index < validSources.length ? validSources[index] : null);
+        };
+        ipcMain.on(channel, onChoice);
+        chooser.on('closed', () => finish(null));
+        chooser.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => finish(null));
+    });
+}
+
+function configureNotificationPermissionsForSession(ses) {
+    if (!ses || configuredMeetingPermissionSessions.has(ses)) return;
+    configuredMeetingPermissionSessions.add(ses);
+    if (typeof ses.setPermissionRequestHandler === 'function') {
+        ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+            const requestingUrl = details && (details.requestingUrl || details.embeddingOrigin) || (webContents && webContents.getURL && webContents.getURL()) || '';
+            if (permission === 'media') {
+                callback(isAllowedMediaPermissionUrl(requestingUrl));
+                return;
+            }
+            if (permission === 'notifications') {
+                callback(isLocalBackendUrlForNotification(requestingUrl));
+                return;
+            }
+            callback(false);
+        });
     }
+    if (typeof ses.setPermissionCheckHandler === 'function') {
+        ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+            const currentUrl = requestingOrigin || (webContents && webContents.getURL && webContents.getURL()) || '';
+            if (permission === 'media') return isAllowedMediaPermissionUrl(currentUrl);
+            if (permission === 'notifications') return isLocalBackendUrlForNotification(currentUrl);
+            return false;
+        });
+    }
+    if (typeof ses.setDisplayMediaRequestHandler === 'function') {
+        ses.setDisplayMediaRequestHandler((request, callback) => {
+            const requestingUrl = request && (request.securityOrigin || request.requestingUrl || request.frameOrigin) || '';
+            if (!isAllowedMediaPermissionUrl(requestingUrl)) {
+                logElectronLifecycle('display-media-denied', { requestingUrl });
+                callback({});
+                return;
+            }
+            logElectronLifecycle('display-media-request', { requestingUrl });
+            desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+                .then((sources) => chooseDisplayMediaSource(sources))
+                .then((source) => {
+                    logElectronLifecycle('display-media-selected', source ? publicDisplayMediaSource(source) : { canceled: true });
+                    callback(source ? { video: source } : {});
+                })
+                .catch((err) => {
+                    logElectronLifecycle('display-media-error', err);
+                    callback({});
+                });
+        }, { useSystemPicker: false });
+    }
+}
+
+function configureNotificationPermissions() {
+    [session.defaultSession, getMlSession()].forEach(configureNotificationPermissionsForSession);
 }
 
 function truncateNotificationText(value, maxLength = 240) {
@@ -3290,6 +3462,7 @@ app.whenReady().then(async () => {
     configureNotificationPermissions();
 
     app.on('web-contents-created', (_event, contents) => {
+        configureNotificationPermissionsForSession(contents && contents.session);
         if (contents && typeof contents.once === 'function') {
             contents.once('destroyed', () => releaseMlAutomationProtectionForContents(contents));
         }
@@ -3384,6 +3557,27 @@ app.whenReady().then(async () => {
     ipcMain.handle('flush-browser-session', async () => {
         await flushPersistentSessions();
         return { success: true };
+    });
+    ipcMain.handle('choose-display-media-source', async (event) => {
+        const sourceUrl = event && event.senderFrame && event.senderFrame.url
+            ? event.senderFrame.url
+            : (event && event.sender && typeof event.sender.getURL === 'function' ? event.sender.getURL() : '');
+        const isLocalShell = !sourceUrl || /^file:/i.test(String(sourceUrl || ''));
+        if (!isLocalShell && !isAllowedMediaPermissionUrl(sourceUrl)) {
+            return { success: false, message: 'Origem sem permissao para compartilhar tela.' };
+        }
+        try {
+            const sources = await desktopCapturer.getSources({
+                types: ['screen', 'window'],
+                thumbnailSize: { width: 0, height: 0 }
+            });
+            const source = await chooseDisplayMediaSource(sources);
+            return source
+                ? { success: true, source: publicDisplayMediaSource(source) }
+                : { success: false, canceled: true };
+        } catch (err) {
+            return { success: false, message: err && err.message ? err.message : 'Nao foi possivel listar telas.' };
+        }
     });
     ipcMain.handle('set-ml-automation-active', async (event, active, reason) => {
         if (active) {

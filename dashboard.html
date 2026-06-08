@@ -332,8 +332,8 @@
 
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-            gap: 18px;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 14px;
         }
 
         .card {
@@ -360,9 +360,9 @@
                     transparent 302deg 360deg
                 ) border-box;
             border: 1px solid transparent;
-            padding: 26px 22px;
-            border-radius: 16px;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+            padding: 18px 20px;
+            border-radius: 13px;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
             text-align: center;
             cursor: pointer;
             transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
@@ -393,7 +393,7 @@
             content: "";
             position: absolute;
             inset: 1px;
-            border-radius: 14px;
+            border-radius: 11px;
             border: 1px solid rgba(255, 255, 255, 0.03);
             pointer-events: none;
             z-index: 0;
@@ -405,7 +405,7 @@
         }
 
         .card:hover {
-            transform: translateY(-8px) scale(1.08);
+            transform: translateY(-5px) scale(1.035);
             --neon-a: rgba(0, 191, 255, 1);
             --neon-b: rgba(102, 214, 255, 0.92);
             background:
@@ -423,25 +423,25 @@
                     var(--neon-b) 284deg,
                     transparent 302deg 360deg
                 ) border-box;
-            box-shadow: 0 18px 34px rgba(0, 0, 0, 0.36), 0 0 0 1px var(--module-soft), 0 0 22px var(--module-glow), 0 0 28px rgba(0, 191, 255, 0.24);
+            box-shadow: 0 14px 28px rgba(0, 0, 0, 0.34), 0 0 0 1px var(--module-soft), 0 0 18px var(--module-glow), 0 0 22px rgba(0, 191, 255, 0.2);
             z-index: 2;
                 animation: ringRotate 1.2s linear infinite;
         }
 
         .card-head {
             display: grid;
-            grid-template-columns: 44px 1fr;
+            grid-template-columns: 38px 1fr;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
         }
 
         .card-icon {
-            width: 44px;
-            height: 44px;
-            border-radius: 12px;
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
             display: grid;
             place-items: center;
-            font-size: 1.35rem;
+            font-size: 1.15rem;
             background: linear-gradient(160deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03));
             border: 1px solid var(--module-soft);
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -454,8 +454,8 @@
         .card h2 {
             margin: 0;
             color: var(--module);
-            font-size: 1.65rem;
-            line-height: 1.15;
+            font-size: 1.42rem;
+            line-height: 1.2;
             letter-spacing: 0.2px;
             text-wrap: balance;
             text-shadow: 0 2px 12px var(--module-glow);
@@ -463,9 +463,9 @@
 
         .card p {
             color: var(--muted);
-            margin: 14px 0 0;
-            font-size: 0.98rem;
-            line-height: 1.45;
+            margin: 10px 0 0;
+            font-size: 0.9rem;
+            line-height: 1.38;
             text-wrap: balance;
             text-align: left;
         }
@@ -677,26 +677,26 @@
 
             .grid {
                 grid-template-columns: 1fr;
-                gap: 14px;
-            }
-
-            .card {
-                padding: 22px 18px;
-            }
-
-            .card h2 {
-                font-size: 1.45rem;
-            }
-
-            .card-head {
-                grid-template-columns: 40px 1fr;
                 gap: 10px;
             }
 
+            .card {
+                padding: 16px 14px;
+            }
+
+            .card h2 {
+                font-size: 1.24rem;
+            }
+
+            .card-head {
+                grid-template-columns: 36px 1fr;
+                gap: 9px;
+            }
+
             .card-icon {
-                width: 40px;
-                height: 40px;
-                border-radius: 10px;
+                width: 36px;
+                height: 36px;
+                border-radius: 9px;
             }
         }
 
@@ -770,13 +770,13 @@
 
         body.modo-mobile .grid {
             grid-template-columns: 1fr;
-            gap: 12px;
+            gap: 9px;
         }
 
         body.modo-mobile .card {
-            padding: 18px 14px;
-            border-radius: 14px;
-            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+            padding: 14px 12px;
+            border-radius: 12px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
         }
 
         body.modo-mobile .card:hover {
@@ -786,12 +786,12 @@
         }
 
         body.modo-mobile .card h2 {
-            font-size: 1.34rem;
+            font-size: 1.18rem;
         }
 
         body.modo-mobile .card p {
-            font-size: 0.9rem;
-            margin-top: 10px;
+            font-size: 0.84rem;
+            margin-top: 8px;
         }
 
         body.modo-mobile .logout {

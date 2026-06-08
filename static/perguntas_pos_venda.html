@@ -2658,15 +2658,17 @@
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(data.detail || 'Erro ao carregar lojas.');
                 state.lojas = Array.isArray(data.lojas) ? data.lojas : [];
-                const primeiraConectada = state.lojas.find((loja) => loja.mercadolivre_conectado);
                 const haLojasConectadas = lojasMercadoLivreConectadas().length > 0;
                 const lojaSelecionadaAtual = state.lojas.find((loja) => String(loja.nome || '') === String(state.lojaSelecionada || ''));
-                if (todasAsLojasSelecionadas() && haLojasConectadas) {
+                if (!haLojasConectadas) {
+                    state.lojaSelecionada = '';
+                } else if (
+                    !state.lojaSelecionada ||
+                    todasAsLojasSelecionadas() ||
+                    !lojaSelecionadaAtual ||
+                    lojaSelecionadaAtual.mercadolivre_conectado !== true
+                ) {
                     state.lojaSelecionada = TODAS_LOJAS_VALUE;
-                } else if (!lojaSelecionadaAtual || lojaSelecionadaAtual.mercadolivre_conectado !== true) {
-                    state.lojaSelecionada = primeiraConectada ? (primeiraConectada.nome || '') : '';
-                } else if (!state.lojaSelecionada && primeiraConectada) {
-                    state.lojaSelecionada = primeiraConectada.nome || '';
                 }
                 lojasStatus.textContent = state.lojas.length
                     ? `${state.lojas.length} loja(s) cadastrada(s)`

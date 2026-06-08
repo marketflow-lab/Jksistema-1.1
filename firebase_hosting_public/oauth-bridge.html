@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JK Sistema - OAuth local</title>
+  <style>
+    body {
+      align-items: center;
+      background: #071326;
+      color: #e8f3ff;
+      display: grid;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+    }
+    main {
+      margin: auto;
+      max-width: 520px;
+      padding: 32px;
+      text-align: center;
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 12px;
+    }
+    p {
+      color: #b8c7dc;
+      line-height: 1.5;
+      margin: 0 0 16px;
+    }
+    a {
+      color: #7cc8ff;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Concluindo autenticacao...</h1>
+    <p>Voce sera redirecionado para o JK Sistema local.</p>
+    <p><a id="fallback-link" href="#">Abrir callback local</a></p>
+  </main>
+  <script>
+    (function redirectToLocalCallback() {
+      var localOrigin = 'http://127.0.0.1:8001';
+      var targetPath = window.location.pathname || '/auth/callback';
+      if (targetPath.indexOf('/auth/google/callback') !== 0) {
+        targetPath = '/auth/callback';
+      }
+      var target = localOrigin + targetPath + (window.location.search || '') + (window.location.hash || '');
+      var link = document.getElementById('fallback-link');
+      if (link) link.href = target;
+      window.location.replace(target);
+    })();
+  </script>
+</body>
+</html>

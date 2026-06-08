@@ -491,12 +491,30 @@ function obterAuthHeaders(extra) {
     if (window.__jkMachinePresenceInit) return;
     window.__jkMachinePresenceInit = true;
 
-    const HEARTBEAT_INTERVAL_MS = 45000;
+    const FIREBASE_SDK_VERSION = '10.12.5';
+    const FALLBACK_HEARTBEAT_INTERVAL_MS = 45 * 1000;
+    const RTDB_SESSION_ENDPOINT = '/api/firebase/realtime-presence/session';
     let ultimoHeartbeat = 0;
     let timer = null;
     let emExecucao = false;
     let appVersionCache = null;
     let appVersionPromise = null;
+    const rtdbState = {
+        disabled: false,
+        session: null,
+        sessionLoadedAt: 0,
+        modulesPromise: null,
+        startPromise: null,
+        modules: null,
+        app: null,
+        auth: null,
+        db: null,
+        connectionRef: null,
+        lastStateRef: null,
+        unsubscribeConnected: null,
+        started: false,
+        lastUsersPayload: null
+    };
 
     function obterUserDataPresenca() {
         try {
@@ -535,11 +553,326 @@ function obterAuthHeaders(extra) {
         return appVersionPromise;
     }
 
-    async function enviarHeartbeat(motivo) {
+    function normalizarTimestampSegundos(valor) {
+        const numero = Number(valor || 0);
+        if (!Number.isFinite(numero) || numero <= 0) return 0;
+        return numero > 100000000000 ? Math.floor(numero / 1000) : Math.floor(numero);
+    }
+
+    function dataLocalDeTimestamp(segundos) {
+        const ts = normalizarTimestampSegundos(segundos);
+        if (!ts) return '';
+        const data = new Date(ts * 1000);
+        const pad = (v) => String(v).padStart(2, '0');
+        return `${data.getFullYear()}-${pad(data.getMonth() + 1)}-${pad(data.getDate())} ${pad(data.getHours())}:${pad(data.getMinutes())}:${pad(data.getSeconds())}`;
+    }
+
+    function criarConnectionId() {
+        const bytes = new Uint8Array(8);
+        try {
+            crypto.getRandomValues(bytes);
+        } catch (_err) {
+            for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+        }
+        const aleatorio = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        return `${Date.now().toString(36)}-${aleatorio}`;
+    }
+
+    function paginaAtualPresenca() {
+        return `${window.location.pathname || ''}${window.location.search || ''}`.slice(0, 180);
+    }
+
+    async function carregarFirebaseModules() {
+        if (!rtdbState.modulesPromise) {
+            const base = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}`;
+            rtdbState.modulesPromise = Promise.all([
+                import(`${base}/firebase-app.js`),
+                import(`${base}/firebase-auth.js`),
+                import(`${base}/firebase-database.js`)
+            ]).then(([app, auth, database]) => ({ app, auth, database }));
+        }
+        rtdbState.modules = await rtdbState.modulesPromise;
+        return rtdbState.modules;
+    }
+
+    async function obterSessaoRtdb(force = false) {
+        if (rtdbState.disabled && !force) return null;
+        if (!force && rtdbState.session && Date.now() - rtdbState.sessionLoadedAt < 45 * 60 * 1000) {
+            return rtdbState.session;
+        }
+        const machineId = obterMachineIdPresenca();
+        const url = `${RTDB_SESSION_ENDPOINT}?machine_id=${encodeURIComponent(machineId)}`;
+        const resp = await fetch(url, {
+            method: 'GET',
+            headers: obterAuthHeaders(),
+            cache: 'no-store'
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) {
+            throw new Error(data.detail || data.message || 'Nao foi possivel preparar a presenca em tempo real.');
+        }
+        if (!data.enabled) {
+            rtdbState.disabled = true;
+            return null;
+        }
+        rtdbState.session = data;
+        rtdbState.sessionLoadedAt = Date.now();
+        return rtdbState.session;
+    }
+
+    async function prepararRtdb() {
+        const session = await obterSessaoRtdb();
+        if (!session) return null;
+        const modules = await carregarFirebaseModules();
+        const appName = `jk-presence-${String(session.clientKey || 'default').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}`;
+        let app = null;
+        try {
+            app = modules.app.getApp(appName);
+        } catch (_err) {
+            app = modules.app.initializeApp(session.firebaseConfig, appName);
+        }
+        const auth = modules.auth.getAuth(app);
+        await modules.auth.signInWithCustomToken(auth, session.customToken);
+        rtdbState.app = app;
+        rtdbState.auth = auth;
+        rtdbState.db = modules.database.getDatabase(app);
+        return { session, modules, db: rtdbState.db };
+    }
+
+    async function montarPayloadPresencaRtdb(online) {
+        const session = rtdbState.session || {};
+        const machine = session.machine || {};
+        const modules = rtdbState.modules || await carregarFirebaseModules();
+        const appVersion = await obterAppVersionPresenca();
+        const machineId = String(machine.machine_id || obterMachineIdPresenca() || '').trim();
+        const machineKey = chaveFisicaMaquinaPresenca({
+            machine_id: machineId,
+            machine_key: session.machineKey,
+            label: machine.label
+        });
+        return {
+            username: String(session.username || '').trim().toLowerCase(),
+            client_id: String(session.client_id || 'default').trim() || 'default',
+            machine_id: machineId,
+            machine_key: machineKey,
+            label: String(machine.label || machineId || 'Maquina').slice(0, 120),
+            page: paginaAtualPresenca(),
+            app_version: String(appVersion || '').slice(0, 60),
+            online: !!online,
+            client_updated_at: Date.now(),
+            last_seen_ts: modules.database.serverTimestamp()
+        };
+    }
+
+    function normalizarChaveFisicaPresenca(valor) {
+        const texto = String(valor || '').trim();
+        if (!texto) return '';
+        const macMatch = texto.match(/\bmac\s*:\s*([0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}|[0-9a-f]{12})\b/i);
+        if (macMatch) {
+            return `mac:${macMatch[1].toLowerCase().replace(/[^0-9a-f]/g, '')}`;
+        }
+        const pcMatch = texto.match(/\bpc\s*:\s*([^|]+)/i);
+        if (pcMatch) {
+            const pc = pcMatch[1].trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+            if (pc) return `pc:${pc}`;
+        }
+        const normalizado = texto.toLowerCase().replace(/[^a-z0-9]+/g, '');
+        return normalizado ? `id:${normalizado}` : '';
+    }
+
+    function chaveFisicaMaquinaPresenca(machine) {
+        if (!machine || typeof machine !== 'object') return '';
+        const porMachineId = normalizarChaveFisicaPresenca(machine.machine_id);
+        if (porMachineId) return porMachineId;
+        const porLabel = normalizarChaveFisicaPresenca(machine.label);
+        if (porLabel) return porLabel;
+        const key = String(machine.machine_key || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+        return key ? `key:${key}` : '';
+    }
+
+    function deduplicarMaquinasPresenca(maquinas) {
+        const mapa = new Map();
+        (Array.isArray(maquinas) ? maquinas : []).forEach((machine) => {
+            if (!machine || typeof machine !== 'object') return;
+            const key = chaveFisicaMaquinaPresenca(machine);
+            if (!key) return;
+            const atual = mapa.get(key);
+            const item = Object.assign({}, machine, {
+                machine_key: key,
+                online: machine.online !== false
+            });
+            if (!atual) {
+                mapa.set(key, item);
+                return;
+            }
+            const itemOnline = item.online !== false;
+            const atualOnline = atual.online !== false;
+            const itemTs = Number(item.last_seen_ts || 0);
+            const atualTs = Number(atual.last_seen_ts || 0);
+            if ((itemOnline && !atualOnline) || (itemOnline === atualOnline && itemTs >= atualTs)) {
+                mapa.set(key, Object.assign({}, atual, item, { current: !!(atual.current || item.current) }));
+            } else if (item.current) {
+                atual.current = true;
+            }
+        });
+        return Array.from(mapa.values())
+            .sort((a, b) => Number(b.last_seen_ts || 0) - Number(a.last_seen_ts || 0));
+    }
+
+    function montarUsuarioRtdb(userNode, fallback, currentMachineId) {
+        const now = Math.floor(Date.now() / 1000);
+        const node = userNode && typeof userNode === 'object' ? userNode : {};
+        const connections = node.connections && typeof node.connections === 'object' ? node.connections : {};
+        const currentMachineKey = chaveFisicaMaquinaPresenca({ machine_id: currentMachineId });
+        const maquinas = deduplicarMaquinasPresenca(Object.values(connections)
+            .filter(item => item && typeof item === 'object' && item.online !== false)
+            .map((item) => {
+                const lastSeen = normalizarTimestampSegundos(item.last_seen_ts || item.client_updated_at);
+                const machineId = String(item.machine_id || '').trim();
+                const machineKey = chaveFisicaMaquinaPresenca({
+                    machine_id: machineId,
+                    machine_key: item.machine_key,
+                    label: item.label
+                });
+                return {
+                    machine_id: machineId,
+                    machine_key: machineKey,
+                    label: String(item.label || machineId || 'Maquina'),
+                    page: String(item.page || ''),
+                    app_version: String(item.app_version || ''),
+                    last_seen_at: dataLocalDeTimestamp(lastSeen),
+                    last_seen_ts: lastSeen,
+                    seconds_since_seen: lastSeen ? Math.max(0, now - lastSeen) : 0,
+                    online: true,
+                    current: !!(currentMachineKey && machineKey === currentMachineKey)
+                };
+            }));
+        const lastState = node.lastState && typeof node.lastState === 'object' ? node.lastState : {};
+        const lastSeen = normalizarTimestampSegundos(lastState.last_seen_ts || node.lastOnline);
+        const username = String(
+            fallback && fallback.username ||
+            lastState.username ||
+            (maquinas[0] && maquinas[0].username) ||
+            ''
+        ).trim().toLowerCase();
+        const clientId = String(
+            fallback && fallback.client_id ||
+            lastState.client_id ||
+            (maquinas[0] && maquinas[0].client_id) ||
+            'default'
+        ).trim() || 'default';
+        return {
+            username,
+            name: username,
+            client_id: clientId,
+            online: maquinas.length > 0,
+            online_count: maquinas.filter(machine => machine.online !== false).length,
+            machines: maquinas.slice(0, 10),
+            all_recent_machines: maquinas.slice(0, 20),
+            last_seen_at: dataLocalDeTimestamp(lastSeen),
+            seconds_since_seen: lastSeen ? Math.max(0, now - lastSeen) : null
+        };
+    }
+
+    function montarPayloadUsuariosRtdb(rawUsers, session) {
+        const usersRoot = rawUsers && typeof rawUsers === 'object' ? rawUsers : {};
+        const users = Object.values(usersRoot)
+            .map(node => montarUsuarioRtdb(node, null, ''))
+            .filter(user => user.username);
+        const maquinasUnicas = new Set();
+        users.forEach(user => {
+            (user.machines || []).forEach(machine => {
+                const key = chaveFisicaMaquinaPresenca(machine);
+                if (key) maquinasUnicas.add(key);
+            });
+        });
+        users.sort((a, b) => (Number(b.online) - Number(a.online)) || String(a.username).localeCompare(String(b.username)));
+        return {
+            success: true,
+            backend: 'firebase-rtdb',
+            realtime: true,
+            client_id: session && session.client_id,
+            users,
+            online_users: users.filter(user => user.online).length,
+            online_machines: maquinasUnicas.size || users.reduce((total, user) => total + Number(user.online_count || 0), 0),
+            online_timeout_seconds: 0
+        };
+    }
+
+    async function atualizarConexaoRtdb() {
+        if (!rtdbState.connectionRef || !rtdbState.lastStateRef || !rtdbState.modules) return null;
+        const payload = await montarPayloadPresencaRtdb(true);
+        await rtdbState.modules.database.set(rtdbState.connectionRef, payload);
+        await rtdbState.modules.database.set(rtdbState.lastStateRef, payload);
+        return { success: true, backend: 'firebase-rtdb' };
+    }
+
+    async function iniciarPresencaRtdb() {
+        if (rtdbState.disabled) return null;
+        if (rtdbState.startPromise) return rtdbState.startPromise;
+        rtdbState.startPromise = (async () => {
+            const ctx = await prepararRtdb();
+            if (!ctx) return null;
+            const { session, modules, db } = ctx;
+            const userBasePath = `${session.rootPath}/users/${session.userKey}`;
+            const connectedRef = modules.database.ref(db, '.info/connected');
+            if (rtdbState.unsubscribeConnected) rtdbState.unsubscribeConnected();
+            rtdbState.unsubscribeConnected = modules.database.onValue(connectedRef, async (snap) => {
+                if (snap.val() !== true) return;
+                try {
+                    const connectionId = criarConnectionId();
+                    const connectionRef = modules.database.ref(db, `${userBasePath}/connections/${connectionId}`);
+                    const lastOnlineRef = modules.database.ref(db, `${userBasePath}/lastOnline`);
+                    const lastStateRef = modules.database.ref(db, `${userBasePath}/lastState`);
+                    rtdbState.connectionRef = connectionRef;
+                    rtdbState.lastStateRef = lastStateRef;
+                    const onlinePayload = await montarPayloadPresencaRtdb(true);
+                    const offlinePayload = Object.assign({}, onlinePayload, {
+                        online: false,
+                        last_seen_ts: modules.database.serverTimestamp()
+                    });
+                    await modules.database.onDisconnect(connectionRef).remove();
+                    await modules.database.onDisconnect(lastOnlineRef).set(modules.database.serverTimestamp());
+                    await modules.database.onDisconnect(lastStateRef).set(offlinePayload);
+                    await modules.database.set(lastStateRef, onlinePayload);
+                    await modules.database.set(connectionRef, onlinePayload);
+                    rtdbState.started = true;
+                    if (timer) {
+                        clearInterval(timer);
+                        timer = null;
+                    }
+                } catch (_err) {
+                    rtdbState.disabled = true;
+                    iniciarFallbackHeartbeat();
+                }
+            }, () => {
+                rtdbState.disabled = true;
+                iniciarFallbackHeartbeat();
+            });
+            return { success: true, backend: 'firebase-rtdb' };
+        })().catch((err) => {
+            rtdbState.disabled = true;
+            iniciarFallbackHeartbeat();
+            throw err;
+        }).finally(() => {
+            rtdbState.startPromise = null;
+        });
+        return rtdbState.startPromise;
+    }
+
+    async function desconectarPresencaRtdb() {
+        try {
+            if (rtdbState.connectionRef && rtdbState.modules) {
+                await rtdbState.modules.database.remove(rtdbState.connectionRef);
+            }
+        } catch (_err) {}
+    }
+
+    async function enviarHeartbeatBackend(motivo) {
         if (emExecucao || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimoHeartbeat < 12000) return null;
+        if (motivo !== 'manual' && agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
         ultimoHeartbeat = agora;
         emExecucao = true;
         try {
@@ -563,7 +896,20 @@ function obterAuthHeaders(extra) {
         }
     }
 
-    async function buscarMaquinasOnline() {
+    async function enviarHeartbeat(motivo) {
+        if (!obterToken() || tokenSessaoExpirado()) return null;
+        if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        if (!rtdbState.disabled) {
+            try {
+                if (rtdbState.started) return await atualizarConexaoRtdb();
+                const result = await iniciarPresencaRtdb();
+                if (result) return result;
+            } catch (_err) {}
+        }
+        return enviarHeartbeatBackend(motivo);
+    }
+
+    async function buscarMaquinasOnlineBackend() {
         if (!obterToken() || tokenSessaoExpirado()) return null;
         const machineId = obterMachineIdPresenca();
         const url = `/api/user/machines/online?machine_id=${encodeURIComponent(machineId)}`;
@@ -575,15 +921,195 @@ function obterAuthHeaders(extra) {
         return await resp.json().catch(() => ({}));
     }
 
+    async function buscarMaquinasOnlineRtdb() {
+        const ctx = await prepararRtdb();
+        if (!ctx) return null;
+        const { session, modules, db } = ctx;
+        const userRef = modules.database.ref(db, `${session.rootPath}/users/${session.userKey}`);
+        const snap = await modules.database.get(userRef);
+        const machineId = String((session.machine && session.machine.machine_id) || obterMachineIdPresenca() || '').trim();
+        const user = montarUsuarioRtdb(snap.val(), session, machineId);
+        return {
+            success: true,
+            backend: 'firebase-rtdb',
+            realtime: true,
+            username: session.username,
+            client_id: session.client_id,
+            online_count: Number(user.online_count || 0),
+            machines: user.machines || [],
+            all_recent_machines: user.all_recent_machines || [],
+            online_timeout_seconds: 0
+        };
+    }
+
+    async function buscarMaquinasOnline() {
+        if (!obterToken() || tokenSessaoExpirado()) return null;
+        if (!rtdbState.disabled) {
+            try {
+                const data = await buscarMaquinasOnlineRtdb();
+                if (data) return data;
+            } catch (_err) {}
+        }
+        return buscarMaquinasOnlineBackend();
+    }
+
+    function chaveUsuarioPresenca(user) {
+        const username = String(user && user.username || '').trim().toLowerCase();
+        const clientId = String(user && user.client_id || 'default').trim() || 'default';
+        return username ? `${username}|${clientId}` : '';
+    }
+
+    function maquinasUnicasPresenca(users) {
+        const maquinas = new Set();
+        (Array.isArray(users) ? users : []).forEach((user) => {
+            const lista = []
+                .concat(Array.isArray(user && user.machines) ? user.machines : [])
+                .concat(Array.isArray(user && user.all_recent_machines) ? user.all_recent_machines : []);
+            lista.forEach((machine) => {
+                if (!machine || machine.online === false) return;
+                const key = chaveFisicaMaquinaPresenca(machine);
+                if (key) maquinas.add(key);
+            });
+        });
+        return maquinas;
+    }
+
+    function mesclarUsuariosOnline(backendPayload, realtimePayload) {
+        const backend = backendPayload && typeof backendPayload === 'object' ? backendPayload : {};
+        const realtime = realtimePayload && typeof realtimePayload === 'object' ? realtimePayload : {};
+        const baseUsers = Array.isArray(backend.users) ? backend.users : [];
+        const realtimeUsers = Array.isArray(realtime.users) ? realtime.users : [];
+        if (!baseUsers.length && !realtimeUsers.length) return null;
+
+        const realtimePorUsuario = new Map();
+        realtimeUsers.forEach((user) => {
+            const key = chaveUsuarioPresenca(user);
+            if (key) realtimePorUsuario.set(key, user);
+        });
+
+        const vistos = new Set();
+        const users = baseUsers.map((user) => {
+            const key = chaveUsuarioPresenca(user);
+            const presenca = realtimePorUsuario.get(key);
+            if (key) vistos.add(key);
+            if (!presenca) return user;
+            const machines = Array.isArray(presenca.machines) && presenca.machines.length
+                ? presenca.machines
+                : (Array.isArray(user.machines) ? user.machines : []);
+            const allRecent = Array.isArray(presenca.all_recent_machines) && presenca.all_recent_machines.length
+                ? presenca.all_recent_machines
+                : (Array.isArray(user.all_recent_machines) ? user.all_recent_machines : machines);
+            const machinesUnicas = deduplicarMaquinasPresenca(machines);
+            const recentesUnicas = deduplicarMaquinasPresenca(allRecent);
+            return {
+                ...user,
+                online: !!(presenca.online || user.online),
+                online_count: machinesUnicas.filter(machine => machine.online !== false).length || Number(presenca.online_count || user.online_count || 0),
+                machines: machinesUnicas,
+                all_recent_machines: recentesUnicas.length ? recentesUnicas : machinesUnicas,
+                last_seen_at: presenca.last_seen_at || user.last_seen_at || '',
+                seconds_since_seen: presenca.seconds_since_seen !== undefined && presenca.seconds_since_seen !== null
+                    ? presenca.seconds_since_seen
+                    : user.seconds_since_seen
+            };
+        });
+
+        realtimeUsers.forEach((user) => {
+            const key = chaveUsuarioPresenca(user);
+            if (!key || vistos.has(key)) return;
+            users.push(user);
+            vistos.add(key);
+        });
+
+        users.sort((a, b) => (Number(b.online) - Number(a.online)) || String(a.name || a.username || '').localeCompare(String(b.name || b.username || '')));
+        const onlineUsers = users.filter(user => user && user.online);
+        const maquinasOnline = maquinasUnicasPresenca(onlineUsers);
+        return {
+            ...backend,
+            success: true,
+            backend: realtimeUsers.length ? `firebase-rtdb+${backend.backend || 'backend'}` : (backend.backend || 'backend'),
+            realtime: !!(realtime.realtime || realtimeUsers.length),
+            client_id: realtime.client_id || backend.client_id,
+            users,
+            online_users: onlineUsers.length,
+            online_machines: maquinasOnline.size || onlineUsers.reduce((total, user) => total + Number(user.online_count || 0), 0),
+            online_timeout_seconds: Number(realtime.online_timeout_seconds || backend.online_timeout_seconds || 0)
+        };
+    }
+
+    async function buscarUsuariosOnlineBackend() {
+        if (!obterToken() || tokenSessaoExpirado()) return null;
+        const resp = await fetch('/api/admin/users/online', {
+            method: 'GET',
+            headers: obterAuthHeaders(),
+            cache: 'no-store'
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) return null;
+        return data;
+    }
+
+    async function buscarUsuariosOnlineRtdb() {
+        const ctx = await prepararRtdb();
+        if (!ctx || !(ctx.session && ctx.session.admin)) return null;
+        if (rtdbState.lastUsersPayload && Array.isArray(rtdbState.lastUsersPayload.users)) {
+            return rtdbState.lastUsersPayload;
+        }
+        const usersRef = ctx.modules.database.ref(ctx.db, `${ctx.session.rootPath}/users`);
+        const snap = await ctx.modules.database.get(usersRef);
+        const payload = montarPayloadUsuariosRtdb(snap.val(), ctx.session);
+        rtdbState.lastUsersPayload = payload;
+        return payload;
+    }
+
+    async function buscarUsuariosOnline() {
+        if (!obterToken() || tokenSessaoExpirado()) return null;
+        const realtimePromise = !rtdbState.disabled
+            ? buscarUsuariosOnlineRtdb().catch(() => null)
+            : Promise.resolve(null);
+        const backendPromise = buscarUsuariosOnlineBackend().catch(() => null);
+        const [realtimeData, backendData] = await Promise.all([realtimePromise, backendPromise]);
+        return mesclarUsuariosOnline(backendData, realtimeData);
+    }
+
+    async function assinarPresencaUsuarios(onUpdate, onError) {
+        const ctx = await prepararRtdb();
+        if (!ctx || !(ctx.session && ctx.session.admin)) {
+            throw new Error('Presenca em tempo real indisponivel para este usuario.');
+        }
+        const usersRef = ctx.modules.database.ref(ctx.db, `${ctx.session.rootPath}/users`);
+        return ctx.modules.database.onValue(usersRef, (snap) => {
+            const payload = montarPayloadUsuariosRtdb(snap.val(), ctx.session);
+            rtdbState.lastUsersPayload = payload;
+            if (typeof onUpdate === 'function') onUpdate(payload);
+        }, (error) => {
+            if (typeof onError === 'function') onError(error);
+        });
+    }
+
+    function iniciarFallbackHeartbeat() {
+        if (!obterToken() || tokenSessaoExpirado()) return;
+        enviarHeartbeatBackend('inicio');
+        if (!timer) {
+            timer = setInterval(() => enviarHeartbeatBackend('intervalo'), FALLBACK_HEARTBEAT_INTERVAL_MS);
+        }
+    }
+
     window.jkEnviarHeartbeatMaquina = enviarHeartbeat;
     window.jkBuscarMaquinasOnline = buscarMaquinasOnline;
+    window.jkBuscarUsuariosOnline = buscarUsuariosOnline;
+    window.jkAssinarPresencaUsuarios = assinarPresencaUsuarios;
+    window.jkPresencaRealtimeEstado = () => ({
+        enabled: !rtdbState.disabled,
+        connected: !!rtdbState.started,
+        backend: rtdbState.started ? 'firebase-rtdb' : 'fallback'
+    });
 
     function iniciar() {
         if (!obterToken() || tokenSessaoExpirado()) return;
-        enviarHeartbeat('inicio');
-        if (!timer) {
-            timer = setInterval(() => enviarHeartbeat('intervalo'), HEARTBEAT_INTERVAL_MS);
-        }
+        iniciarPresencaRtdb()
+            .then((result) => { if (!result) iniciarFallbackHeartbeat(); })
+            .catch(() => iniciarFallbackHeartbeat());
     }
 
     if (document.readyState === 'loading') {
@@ -591,10 +1117,11 @@ function obterAuthHeaders(extra) {
     } else {
         setTimeout(iniciar, 500);
     }
-    window.addEventListener('focus', () => enviarHeartbeat('focus'));
+    window.addEventListener('focus', () => iniciarPresencaRtdb().catch(() => {}));
+    window.addEventListener('pagehide', () => { desconectarPresencaRtdb(); });
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') enviarHeartbeat('visible');
-        if (document.visibilityState === 'hidden') enviarHeartbeat('hidden');
+        if (document.visibilityState === 'visible') iniciarPresencaRtdb().catch(() => {});
+        if (document.visibilityState === 'hidden' && rtdbState.disabled) enviarHeartbeatBackend('hidden');
     });
 })();
 
@@ -602,7 +1129,6 @@ function obterAuthHeaders(extra) {
     if (window.__jkDriveBackupAutoInit) return;
     window.__jkDriveBackupAutoInit = true;
 
-    const INTERVALO_MS = 5 * 60 * 1000;
     let executando = false;
     let ultimaExecucao = 0;
 
@@ -633,18 +1159,12 @@ function obterAuthHeaders(extra) {
     }
 
     window.jkDriveBackupNow = () => executarBackupSeMudou('manual');
-    setTimeout(() => executarBackupSeMudou('inicio'), 60000);
-    setInterval(() => executarBackupSeMudou('intervalo'), INTERVALO_MS);
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') executarBackupSeMudou('visible');
-    });
 })();
 
 (function initSharedSyncAutoPull() {
     if (window.__jkSharedSyncAutoPullInit) return;
     window.__jkSharedSyncAutoPullInit = true;
 
-    const INTERVALO_MS = 10 * 60 * 1000;
     let executandoPull = false;
     let executandoPush = false;
     let ultimaPull = 0;
@@ -669,7 +1189,7 @@ function obterAuthHeaders(extra) {
         if (!telaSeguraParaRestaurar()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaPull < 45000) return null;
+        if (motivo !== 'manual' && agora - ultimaPull < 5 * 60 * 1000) return null;
         ultimaPull = agora;
         executandoPull = true;
         try {
@@ -696,7 +1216,7 @@ function obterAuthHeaders(extra) {
         if (!telaSeguraParaRestaurar()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaPush < 45000) return null;
+        if (motivo !== 'manual' && agora - ultimaPush < 5 * 60 * 1000) return null;
         ultimaPush = agora;
         executandoPush = true;
         try {
@@ -720,21 +1240,12 @@ function obterAuthHeaders(extra) {
 
     window.jkSharedSyncAutoPullNow = () => executarAutoPull('manual');
     window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
-    setTimeout(() => executarAutoPull('inicio'), 20000);
-    setTimeout(() => executarAutoPush('inicio'), 35000);
-    setInterval(() => executarAutoPull('intervalo'), INTERVALO_MS);
-    setInterval(() => executarAutoPush('intervalo'), INTERVALO_MS);
-    window.addEventListener('focus', () => {
-        executarAutoPull('focus');
-        executarAutoPush('focus');
-    });
 })();
 
 (function initMachineSharedSyncAuto() {
     if (window.__jkMachineSharedSyncAutoInit) return;
     window.__jkMachineSharedSyncAutoInit = true;
 
-    const INTERVALO_MS = 5 * 60 * 1000;
     let executando = false;
     let ultimaExecucao = 0;
 
@@ -758,7 +1269,7 @@ function obterAuthHeaders(extra) {
         if (!telaSeguraParaSincronizar()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaExecucao < 60000) return null;
+        if (motivo !== 'manual' && agora - ultimaExecucao < 5 * 60 * 1000) return null;
         ultimaExecucao = agora;
         executando = true;
         try {
@@ -781,12 +1292,6 @@ function obterAuthHeaders(extra) {
     }
 
     window.jkMachineSyncNow = () => executarMachineSync('manual');
-    setTimeout(() => executarMachineSync('inicio'), 90000);
-    setInterval(() => executarMachineSync('intervalo'), INTERVALO_MS);
-    window.addEventListener('focus', () => executarMachineSync('focus'));
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') executarMachineSync('visible');
-    });
 })();
 
 /** Remove dados de sessão e redireciona para login. */
@@ -2388,9 +2893,13 @@ function verificarSessao() {
     if (window.__jkAdminUserMessagesInit) return;
     window.__jkAdminUserMessagesInit = true;
 
-    const POLL_MS = 45000;
+    const FALLBACK_POLL_MS = 60 * 60 * 1000;
     let buscando = false;
     let mensagemAtualId = '';
+    let filaMensagensAdmin = [];
+    let streamMensagensAdmin = null;
+    let streamConectado = false;
+    let fallbackTimer = null;
 
     function tokenAtual() {
         return localStorage.getItem('access_token') || '';
@@ -2500,6 +3009,24 @@ function verificarSessao() {
         mensagemAtualId = '';
     }
 
+    function idMensagem(msg) {
+        return String(msg && msg.id || '').trim();
+    }
+
+    function mensagemJaPendente(id) {
+        return filaMensagensAdmin.some(item => idMensagem(item) === id);
+    }
+
+    function enfileirarMensagem(msg) {
+        const id = idMensagem(msg);
+        if (!id || id === mensagemAtualId || mensagemJaPendente(id)) return;
+        if (mensagemAtualId) {
+            filaMensagensAdmin.push(msg);
+            return;
+        }
+        mostrarMensagem(msg);
+    }
+
     function mostrarMensagem(msg) {
         if (!msg || !msg.id || mensagemAtualId === msg.id) return;
         mensagemAtualId = msg.id;
@@ -2513,7 +3040,12 @@ function verificarSessao() {
         toast.querySelector('button')?.addEventListener('click', async () => {
             await marcarLida(msg.id);
             esconderToast();
-            setTimeout(buscarMensagensAdmin, 500);
+            const proxima = filaMensagensAdmin.shift();
+            if (proxima) {
+                mostrarMensagem(proxima);
+            } else if (!streamConectado) {
+                setTimeout(buscarMensagensAdmin, 500);
+            }
         });
         requestAnimationFrame(() => toast.classList.add('open'));
     }
@@ -2530,7 +3062,7 @@ function verificarSessao() {
             });
             const data = await resp.json().catch(() => ({}));
             if (resp.ok && data.success !== false && Array.isArray(data.messages) && data.messages.length) {
-                mostrarMensagem(data.messages[0]);
+                data.messages.forEach(enfileirarMensagem);
             }
         } catch (_err) {
         } finally {
@@ -2538,13 +3070,76 @@ function verificarSessao() {
         }
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => setTimeout(buscarMensagensAdmin, 3500), { once: true });
-    } else {
-        setTimeout(buscarMensagensAdmin, 3500);
+    function agendarFallbackMensagens(delayMs = FALLBACK_POLL_MS) {
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        fallbackTimer = setTimeout(async () => {
+            fallbackTimer = null;
+            if (!streamConectado) {
+                await buscarMensagensAdmin();
+                agendarFallbackMensagens(FALLBACK_POLL_MS);
+            }
+        }, Math.max(30000, Number(delayMs) || FALLBACK_POLL_MS));
     }
-    setInterval(buscarMensagensAdmin, POLL_MS);
+
+    function limparFallbackMensagens() {
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+    }
+
+    function iniciarStreamMensagensAdmin() {
+        const token = tokenAtual();
+        if (!token || /frontend_index|login/i.test(String(window.location.pathname || ''))) return;
+        if (!window.EventSource) {
+            agendarFallbackMensagens(60000);
+            return;
+        }
+        if (streamMensagensAdmin && streamMensagensAdmin.readyState !== EventSource.CLOSED) return;
+        try {
+            streamMensagensAdmin = new EventSource('/api/user/messages/stream?token=' + encodeURIComponent(token));
+            streamMensagensAdmin.onopen = () => {
+                streamConectado = true;
+                limparFallbackMensagens();
+            };
+            streamMensagensAdmin.addEventListener('ready', () => {
+                streamConectado = true;
+                limparFallbackMensagens();
+            });
+            streamMensagensAdmin.addEventListener('admin-message', (event) => {
+                streamConectado = true;
+                limparFallbackMensagens();
+                try {
+                    enfileirarMensagem(JSON.parse(event.data || '{}'));
+                } catch (_err) {}
+            });
+            streamMensagensAdmin.addEventListener('fallback', () => {
+                streamConectado = false;
+                try { streamMensagensAdmin.close(); } catch (_err) {}
+                agendarFallbackMensagens(60000);
+            });
+            streamMensagensAdmin.onerror = () => {
+                streamConectado = false;
+                agendarFallbackMensagens(2 * 60 * 1000);
+            };
+        } catch (_err) {
+            streamConectado = false;
+            agendarFallbackMensagens(60000);
+        }
+    }
+
+    function iniciarMensagensAdmin() {
+        buscarMensagensAdmin();
+        iniciarStreamMensagensAdmin();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(iniciarMensagensAdmin, 3500), { once: true });
+    } else {
+        setTimeout(iniciarMensagensAdmin, 3500);
+    }
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) buscarMensagensAdmin();
+        if (!document.hidden) {
+            iniciarStreamMensagensAdmin();
+            if (!streamConectado) buscarMensagensAdmin();
+        }
     });
 })();

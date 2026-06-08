@@ -927,6 +927,10 @@
     let usuariosCache = [];
     let usuariosBackendAtual = 'local';
     let onlineCache = {};
+    let onlineRealtimeUnsubscribe = null;
+    let onlineRealtimeDisponivel = false;
+    let onlineRealtimeBloqueado = false;
+    let onlineRealtimePayload = null;
     let editandoUsuario = null;
     let mensagemDestino = null;
     let compartilhamentoCache = null;
@@ -1378,7 +1382,9 @@
         const users = Array.isArray(payload && payload.users) ? payload.users : [];
         const online = users.filter(u => u.online);
         if (resumo) {
-            const backend = payload && payload.backend === 'firebase' ? 'Firebase' : 'local';
+            const backend = payload && payload.backend === 'firebase-rtdb'
+                ? 'Firebase RTDB'
+                : (payload && payload.backend === 'firebase' ? 'Firebase' : 'local');
             const timeout = Number(payload && payload.online_timeout_seconds || 0);
             const janela = timeout ? ` | janela ${timeout}s` : '';
             resumo.textContent = `${online.length} usuário(s) online | ${Number(payload && payload.online_machines || 0)} máquina(s) física(s) | ${backend}${janela}`;
@@ -2139,8 +2145,8 @@
             const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
             const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
             const syncStatus = link.auto_sync_enabled
-                ? 'Automático ativo'
-                : `sincronização contínua incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
+                ? 'Pronto para sincronização manual'
+                : `sincronização manual incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
             const dados = (link.scope_labels || []).join(', ');
             return `
                 <tr>
@@ -2150,11 +2156,11 @@
                     </td>
                     <td title="${escaparHtml(dados)}">${escaparHtml(dados)}</td>
                     <td>
-                        <span class="share-status-pill ${link.auto_sync_enabled ? 'ok' : 'pending'}">${escaparHtml(link.auto_sync_enabled ? 'Sincronizando' : 'Parcial')}</span>
+                        <span class="share-status-pill ${link.auto_sync_enabled ? 'ok' : 'pending'}">${escaparHtml(link.auto_sync_enabled ? 'Manual' : 'Parcial')}</span>
                         <div class="muted-line">${escaparHtml(syncStatus)}</div>
                         <label class="sync-auto-row">
                             <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
-                            <span>Manter sincronizado do meu lado</span>
+                            <span>Permitir sincronizar do meu lado</span>
                         </label>
                     </td>
                     <td>
@@ -2231,20 +2237,20 @@
     }
 
     function intervaloAtualizacaoCompartilhamento(payload = compartilhamentoUsuariosCache) {
-        if (document.hidden) return 30000;
-        if (precisaAtualizacaoRapidaCompartilhamento(payload)) return 2500;
+        if (document.hidden) return 5 * 60 * 1000;
+        if (precisaAtualizacaoRapidaCompartilhamento(payload)) return 30000;
         const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
-        if (invites.some(invite => String(invite.status || '').toLowerCase() === 'pending')) return 8000;
+        if (invites.some(invite => String(invite.status || '').toLowerCase() === 'pending')) return 60000;
         const links = Array.isArray(payload && payload.links) ? payload.links : [];
-        if (links.some(link => link && link.active && link.auto_sync_enabled)) return 8000;
-        return 30000;
+        if (links.some(link => link && link.active && link.auto_sync_enabled)) return 2 * 60 * 1000;
+        return 5 * 60 * 1000;
     }
 
     function agendarAtualizacaoCompartilhamento(delayMs) {
         if (compartilhamentoUsuariosTimer) clearTimeout(compartilhamentoUsuariosTimer);
         compartilhamentoUsuariosTimer = setTimeout(() => {
             carregarCompartilhamentoEntreUsuarios({ silencioso: true });
-        }, Math.max(1500, Number(delayMs) || 30000));
+        }, Math.max(10000, Number(delayMs) || 5 * 60 * 1000));
     }
 
     function iniciarAtualizacaoTempoRealCompartilhamento() {
@@ -2446,7 +2452,6 @@
             return false;
         } finally {
             compartilhamentoUsuariosCarregando = false;
-            agendarAtualizacaoCompartilhamento(intervaloAtualizacaoCompartilhamento());
         }
     }
 
@@ -2483,9 +2488,6 @@
             limparConviteCompartilhamentoUsuario();
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareProcesso('Convite', 70, data.message || 'Convite enviado. Acompanhando preparo.');
-            setTimeout(carregarCompartilhamentoEntreUsuarios, 2500);
-            setTimeout(carregarCompartilhamentoEntreUsuarios, 9000);
-            setTimeout(carregarCompartilhamentoEntreUsuarios, 20000);
         } catch (error) {
             setUserShareProcesso('Convite', 100, error.message || 'Erro ao enviar convite.', true);
         }
@@ -2508,7 +2510,6 @@
             await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareProcesso('Aceite do convite', 100, data.message || 'Convite aceito.');
-            setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
             setUserShareProcesso('Aceite do convite', 100, error.message || 'Erro ao aceitar convite.', true);
         }
@@ -2577,7 +2578,6 @@
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao atualizar vínculo.');
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareStatus(data.message || 'Preferências atualizadas.');
-            setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 1200);
         } catch (error) {
             setUserShareStatus(error.message || 'Erro ao atualizar vínculo.', true);
         }
@@ -2657,7 +2657,9 @@
             const recebeu = results.some(item => item && item.direction === 'pull');
             if (recebeu) await atualizarCacheHistoricoFavoritosSincronizado(results);
             if (!silencioso) setUserShareProcesso('Sincronização automática', 80, 'Atualizando status na tela.');
-            await carregarCompartilhamentoEntreUsuarios();
+            if (results.length) {
+                await carregarCompartilhamentoEntreUsuarios({ forcar: true });
+            }
             if (!silencioso && results.length) {
                 setUserShareProcesso('Sincronização automática', 100, 'Concluída. ' + resumoResultadosSync(results));
             } else if (!silencioso) {
@@ -2672,23 +2674,182 @@
         }
     }
 
-    async function carregarOnlineUsuarios() {
+    function normalizarChaveFisicaOnline(valor) {
+        const texto = String(valor || '').trim();
+        if (!texto) return '';
+        const macMatch = texto.match(/\bmac\s*:\s*([0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}|[0-9a-f]{12})\b/i);
+        if (macMatch) {
+            return `mac:${macMatch[1].toLowerCase().replace(/[^0-9a-f]/g, '')}`;
+        }
+        const pcMatch = texto.match(/\bpc\s*:\s*([^|]+)/i);
+        if (pcMatch) {
+            const pc = pcMatch[1].trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+            if (pc) return `pc:${pc}`;
+        }
+        const normalizado = texto.toLowerCase().replace(/[^a-z0-9]+/g, '');
+        return normalizado ? `id:${normalizado}` : '';
+    }
+
+    function chaveFisicaMaquinaOnline(machine) {
+        if (!machine || typeof machine !== 'object') return '';
+        const porMachineId = normalizarChaveFisicaOnline(machine.machine_id);
+        if (porMachineId) return porMachineId;
+        const porLabel = normalizarChaveFisicaOnline(machine.label);
+        if (porLabel) return porLabel;
+        const key = String(machine.machine_key || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+        return key ? `key:${key}` : '';
+    }
+
+    function deduplicarMaquinasOnline(maquinas) {
+        const mapa = new Map();
+        (Array.isArray(maquinas) ? maquinas : []).forEach((machine) => {
+            if (!machine || typeof machine !== 'object') return;
+            const key = chaveFisicaMaquinaOnline(machine);
+            if (!key) return;
+            const atual = mapa.get(key);
+            const item = Object.assign({}, machine, {
+                machine_key: key,
+                online: machine.online !== false
+            });
+            if (!atual) {
+                mapa.set(key, item);
+                return;
+            }
+            const itemOnline = item.online !== false;
+            const atualOnline = atual.online !== false;
+            const itemTs = Number(item.last_seen_ts || 0);
+            const atualTs = Number(atual.last_seen_ts || 0);
+            if ((itemOnline && !atualOnline) || (itemOnline === atualOnline && itemTs >= atualTs)) {
+                mapa.set(key, Object.assign({}, atual, item, { current: !!(atual.current || item.current) }));
+            } else if (item.current) {
+                atual.current = true;
+            }
+        });
+        return Array.from(mapa.values())
+            .sort((a, b) => Number(b.last_seen_ts || 0) - Number(a.last_seen_ts || 0));
+    }
+
+    function mesclarPayloadOnlineRealtime(payload) {
+        const presencaPorUsuario = {};
+        (Array.isArray(payload && payload.users) ? payload.users : []).forEach((user) => {
+            const username = String(user && user.username || '').trim().toLowerCase();
+            if (username) presencaPorUsuario[username] = user;
+        });
+
+        const vistos = new Set();
+        const users = [];
+        (Array.isArray(usuariosCache) ? usuariosCache : []).forEach((user) => {
+            const username = String(user && user.username || '').trim().toLowerCase();
+            const presenca = presencaPorUsuario[username] || {};
+            const machines = deduplicarMaquinasOnline(Array.isArray(presenca.machines) ? presenca.machines : []);
+            const recentes = deduplicarMaquinasOnline(Array.isArray(presenca.all_recent_machines) ? presenca.all_recent_machines : machines);
+            vistos.add(username);
+            users.push(Object.assign({}, user, {
+                online: !!presenca.online,
+                online_count: machines.filter(machine => machine.online !== false).length || Number(presenca.online_count || 0),
+                machines,
+                all_recent_machines: recentes.length ? recentes : machines,
+                last_seen_at: presenca.last_seen_at || '',
+                seconds_since_seen: presenca.seconds_since_seen
+            }));
+        });
+
+        Object.values(presencaPorUsuario).forEach((user) => {
+            const username = String(user && user.username || '').trim().toLowerCase();
+            if (!username || vistos.has(username)) return;
+            const machines = deduplicarMaquinasOnline(Array.isArray(user.machines) ? user.machines : []);
+            const recentes = deduplicarMaquinasOnline(Array.isArray(user.all_recent_machines) ? user.all_recent_machines : machines);
+            users.push(Object.assign({}, user, {
+                online_count: machines.filter(machine => machine.online !== false).length || Number(user.online_count || 0),
+                machines,
+                all_recent_machines: recentes.length ? recentes : machines
+            }));
+        });
+
+        const onlineUsers = users.filter(user => user && user.online);
+        const maquinasUnicas = new Set();
+        onlineUsers.forEach((user) => {
+            (Array.isArray(user.machines) ? user.machines : []).forEach((machine) => {
+                const key = chaveFisicaMaquinaOnline(machine);
+                if (key) maquinasUnicas.add(key);
+            });
+        });
+
+        return Object.assign({}, payload || {}, {
+            success: true,
+            backend: 'firebase-rtdb',
+            realtime: true,
+            users,
+            online_users: onlineUsers.length,
+            online_machines: maquinasUnicas.size || onlineUsers.reduce((total, user) => total + Number(user.online_count || 0), 0),
+            online_timeout_seconds: 0
+        });
+    }
+
+    function aplicarPayloadOnlineUsuarios(data) {
+        onlineCache = {};
+        (data.users || []).forEach((user) => {
+            onlineCache[String(user.username || '').toLowerCase()] = user;
+        });
+        renderOnlineUsuarios(data);
+        if (usuariosCache.length) aplicarFiltrosUsuarios();
+    }
+
+    async function carregarOnlineUsuariosBackend() {
         try {
             const resp = await fetch('/api/admin/users/online', { headers: obterAuthHeaders(), cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) {
                 throw new Error(data.detail || data.message || 'Erro ao carregar presença.');
             }
-            onlineCache = {};
-            (data.users || []).forEach((user) => {
-                onlineCache[String(user.username || '').toLowerCase()] = user;
-            });
-            renderOnlineUsuarios(data);
-            if (usuariosCache.length) aplicarFiltrosUsuarios();
+            aplicarPayloadOnlineUsuarios(data);
         } catch (error) {
             const resumo = document.getElementById('onlineSummary');
             if (resumo) resumo.textContent = error.message || 'Não foi possível carregar presença.';
         }
+    }
+
+    async function iniciarRealtimeOnlineUsuarios() {
+        if (!usuarioAdmin || onlineRealtimeBloqueado) return false;
+        if (onlineRealtimeUnsubscribe) return true;
+        if (typeof window.jkAssinarPresencaUsuarios !== 'function') return false;
+        try {
+            const resumo = document.getElementById('onlineSummary');
+            if (resumo) resumo.textContent = 'Conectando presença em tempo real...';
+            const unsubscribe = await window.jkAssinarPresencaUsuarios((payload) => {
+                onlineRealtimeDisponivel = true;
+                onlineRealtimePayload = mesclarPayloadOnlineRealtime(payload);
+                aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
+            }, () => {
+                onlineRealtimeDisponivel = false;
+                onlineRealtimeBloqueado = true;
+                try {
+                    if (typeof onlineRealtimeUnsubscribe === 'function') onlineRealtimeUnsubscribe();
+                } catch (_err) {}
+                onlineRealtimeUnsubscribe = null;
+                carregarOnlineUsuariosBackend();
+            });
+            if (typeof unsubscribe === 'function') {
+                onlineRealtimeUnsubscribe = unsubscribe;
+                return true;
+            }
+        } catch (_error) {
+            onlineRealtimeBloqueado = true;
+        }
+        return false;
+    }
+
+    async function carregarOnlineUsuarios() {
+        if (onlineRealtimeDisponivel && onlineRealtimePayload) {
+            onlineRealtimePayload = mesclarPayloadOnlineRealtime(onlineRealtimePayload);
+            aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
+            return;
+        }
+        if (!onlineRealtimeBloqueado && await iniciarRealtimeOnlineUsuarios()) {
+            if (onlineRealtimePayload) aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
+            return;
+        }
+        await carregarOnlineUsuariosBackend();
     }
 
     function abrirMensagemAdmin(user) {
@@ -2887,13 +3048,10 @@
     aplicarModoAcesso();
     carregarUsuarios();
     if (usuarioAdmin) {
-        setInterval(carregarOnlineUsuarios, 30000);
+        setInterval(() => {
+            if (!onlineRealtimeDisponivel) carregarOnlineUsuarios();
+        }, 10 * 60 * 1000);
     }
-    setInterval(carregarSincronizacaoMinhasMaquinas, 90000);
-    document.addEventListener('visibilitychange', iniciarAtualizacaoTempoRealCompartilhamento);
-    iniciarAtualizacaoTempoRealCompartilhamento();
-    setInterval(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 15000);
-    setTimeout(() => rodarSincronizacaoAutomaticaEntreUsuarios(true), 5000);
 </script>
 <script src="/ia-sidebar.js"></script>
 </body>

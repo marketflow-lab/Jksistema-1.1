@@ -1368,6 +1368,30 @@
                 return;
             }
 
+            if (data.channel === 'jk-choose-display-media-source') {
+                const requestId = data.requestId || '';
+                const sourceWindow = event.source;
+                const responder = (resultado) => {
+                    try {
+                        if (sourceWindow && typeof sourceWindow.postMessage === 'function') {
+                            sourceWindow.postMessage({
+                                channel: 'jk-choose-display-media-source-result',
+                                requestId,
+                                ...resultado
+                            }, '*');
+                        }
+                    } catch (_err) {}
+                };
+                if (window.electronAPI && typeof window.electronAPI.chooseDisplayMediaSource === 'function') {
+                    window.electronAPI.chooseDisplayMediaSource()
+                        .then((result) => responder(result || { success: false, canceled: true }))
+                        .catch((err) => responder({ success: false, message: err && err.message ? err.message : String(err) }));
+                } else {
+                    responder({ success: false, message: 'Seletor de tela do Electron indisponivel nesta janela.' });
+                }
+                return;
+            }
+
             if (data.channel === 'jk-prepare-for-update-result') {
                 const pending = pendingUpdateSaveRequests.get(data.requestId || '');
                 if (pending) {

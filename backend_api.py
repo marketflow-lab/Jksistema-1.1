@@ -62,6 +62,7 @@ import asyncio
 import shutil
 import threading
 import multiprocessing
+import queue
 import math
 import subprocess
 import sys
@@ -82,10 +83,12 @@ import hashlib
 from typing import Any, Optional, Callable
 try:
     import firebase_admin
+    from firebase_admin import auth as firebase_auth
     from firebase_admin import credentials as firebase_credentials
     from firebase_admin import firestore as firebase_firestore
 except Exception:
     firebase_admin = None
+    firebase_auth = None
     firebase_credentials = None
     firebase_firestore = None
 try:
@@ -135,12 +138,15 @@ GOOGLE_LOGIN_STATES = {}
 GOOGLE_LOGIN_RESULTS = {}
 GOOGLE_LOGIN_STATE_LOCK = threading.RLock()
 FIREBASE_AUTH_LOCK = threading.RLock()
+FIREBASE_AUTH_APP = None
 FIREBASE_AUTH_DB = None
 FIREBASE_AUTH_LAST_ERROR = ""
 MACHINE_PRESENCE_LOCK = threading.RLock()
 ADMIN_MESSAGES_LOCK = threading.RLock()
 USER_CHAT_MESSAGES_LOCK = threading.RLock()
 SHARED_SYNC_USER_LINKS_LOCK = threading.RLock()
+SHARED_SYNC_DOCS_CACHE_LOCK = threading.RLock()
+SHARED_SYNC_DOCS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 SHARED_SYNC_SQLITE_FILE_LOCKS_LOCK = threading.RLock()
 SHARED_SYNC_SQLITE_FILE_LOCKS: dict[str, Any] = {}
 SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS = 15000
@@ -956,6 +962,7 @@ class UserChatMessageRequest(BaseModel):
     client_id: Optional[str] = None
     message: str
     attachments: Optional[list[UserChatAttachment]] = None
+    call: Optional[dict[str, Any]] = None
 
 class UserChatTypingRequest(BaseModel):
     username: str
@@ -1552,6 +1559,10 @@ class SalaReuniaoEncerrarLocalRequest(BaseModel):
     room_url: str | None = None
     participant_count: int | None = 1
     suppress_seconds: int | None = 300
+
+
+class SalaReuniaoEncerrarTodasRequest(BaseModel):
+    suppress_seconds: int | None = 1800
 
 
 class SiscomexConfigRequest(BaseModel):
@@ -7903,6 +7914,7 @@ def _permissoes_autorizam_rota(permissoes: dict, permissao_necessaria: Any) -> b
     if permissoes.get("full") is True:
         return True
     return any(permissoes.get(chave) is True for chave in _normalizar_permissoes_exigidas(permissao_necessaria))
+
 
 def _extrair_texto_openai_response(payload: dict) -> str:
     texto = payload.get("output_text")
@@ -17079,10 +17091,10 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
             permissoes = _carregar_permissoes_usuario(username, client_id)
             if not _permissoes_autorizam_rota(permissoes, permissao_necessaria):
                 permissoes_rotulo = " ou ".join(_normalizar_permissoes_exigidas(permissao_necessaria))
-                logger.warning(f"[AUTH] Acesso negado para usuário='{username}' em rota='{request.url.path}' (permissão requerida: {permissoes_rotulo})")
+                logger.warning(f"[AUTH] Acesso negado para usuÃƒÂ¡rio='{username}' em rota='{request.url.path}' (permissÃƒÂ£o requerida: {permissoes_rotulo})")
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Acesso negado: usuário sem permissão para o módulo '{permissoes_rotulo}'."
+                    detail=f"Acesso negado: usuÃƒÂ¡rio sem permissÃƒÂ£o para o mÃƒÂ³dulo '{permissoes_rotulo}'."
                 )
 
         return client_id
@@ -20044,6 +20056,70 @@ def _firebase_user_chat_typing_collection_name() -> str:
     return _env_texto("FIREBASE_USER_CHAT_TYPING_COLLECTION", "JK_FIREBASE_USER_CHAT_TYPING_COLLECTION") or "jk_sistema_user_chat_typing"
 
 
+def _firebase_realtime_database_url() -> str:
+    explicit = _env_texto(
+        "FIREBASE_DATABASE_URL",
+        "FIREBASE_REALTIME_DATABASE_URL",
+        "JK_FIREBASE_DATABASE_URL",
+        "JK_FIREBASE_REALTIME_DATABASE_URL",
+    )
+    if explicit:
+        return explicit.rstrip("/")
+    project_id = _firebase_project_id()
+    if not project_id:
+        return ""
+    return f"https://{project_id}-default-rtdb.firebaseio.com"
+
+
+def _firebase_web_api_key() -> str:
+    return _env_texto(
+        "FIREBASE_WEB_API_KEY",
+        "FIREBASE_API_KEY",
+        "JK_FIREBASE_WEB_API_KEY",
+        "JK_FIREBASE_API_KEY",
+    )
+
+
+def _firebase_web_app_id() -> str:
+    return _env_texto("FIREBASE_WEB_APP_ID", "FIREBASE_APP_ID", "JK_FIREBASE_WEB_APP_ID", "JK_FIREBASE_APP_ID")
+
+
+def _firebase_web_auth_domain() -> str:
+    explicit = _env_texto("FIREBASE_AUTH_DOMAIN", "FIREBASE_WEB_AUTH_DOMAIN", "JK_FIREBASE_AUTH_DOMAIN")
+    if explicit:
+        return explicit
+    project_id = _firebase_project_id()
+    return f"{project_id}.firebaseapp.com" if project_id else ""
+
+
+def _firebase_presence_safe_key(value: str, fallback: str = "default") -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+    slug = re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-")[:40]
+    return f"{slug or fallback}-{digest}"
+
+
+def _firebase_presence_root_path() -> str:
+    root = _env_texto("FIREBASE_RTDB_PRESENCE_ROOT", "JK_FIREBASE_RTDB_PRESENCE_ROOT") or "jk_sistema_presence_v1"
+    root = str(root or "").replace("\\", "/").strip("/")
+    root = re.sub(r"[.#$\[\]]+", "-", root)
+    return root or "jk_sistema_presence_v1"
+
+
+def _firebase_presence_client_key(client_id: str) -> str:
+    return _firebase_presence_safe_key(client_id, "client")
+
+
+def _firebase_presence_user_key(username: str) -> str:
+    return _firebase_presence_safe_key(username, "user")
+
+
+def _firebase_presence_machine_key_hash(machine_id: str) -> str:
+    return _firebase_presence_safe_key(machine_id or "machine", "machine")
+
+
 def _firebase_project_id() -> str:
     project_id = _env_texto("FIREBASE_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT")
     if project_id:
@@ -20169,22 +20245,27 @@ def _firebase_credencial():
     raise RuntimeError("Firebase nao configurado. Informe FIREBASE_SERVICE_ACCOUNT_FILE ou FIREBASE_SERVICE_ACCOUNT_JSON.")
 
 
-def _firebase_db():
-    global FIREBASE_AUTH_DB, FIREBASE_AUTH_LAST_ERROR
+def _firebase_app():
+    global FIREBASE_AUTH_APP, FIREBASE_AUTH_LAST_ERROR
     if not _firebase_deve_usar():
         return None
-    if firebase_admin is None or firebase_credentials is None or firebase_firestore is None:
+    if firebase_admin is None or firebase_credentials is None:
         FIREBASE_AUTH_LAST_ERROR = "Pacote firebase-admin nao instalado."
         if _firebase_access_obrigatorio():
             raise HTTPException(status_code=503, detail=FIREBASE_AUTH_LAST_ERROR)
         return None
 
     with FIREBASE_AUTH_LOCK:
-        if FIREBASE_AUTH_DB is not None:
-            return FIREBASE_AUTH_DB
+        if FIREBASE_AUTH_APP is not None:
+            return FIREBASE_AUTH_APP
         try:
             project_id = _firebase_project_id()
-            options = {"projectId": project_id} if project_id else None
+            options = {}
+            if project_id:
+                options["projectId"] = project_id
+            database_url = _firebase_realtime_database_url()
+            if database_url:
+                options["databaseURL"] = database_url
             app_name = "jk_sistema_access"
             try:
                 app_fb = firebase_admin.get_app(app_name)
@@ -20194,6 +20275,34 @@ def _firebase_db():
                     app_fb = firebase_admin.initialize_app(cred, options=options, name=app_name)
                 else:
                     app_fb = firebase_admin.initialize_app(cred, name=app_name)
+            FIREBASE_AUTH_APP = app_fb
+            FIREBASE_AUTH_LAST_ERROR = ""
+            return FIREBASE_AUTH_APP
+        except Exception as exc:
+            FIREBASE_AUTH_LAST_ERROR = str(exc)
+            logger.warning("[FIREBASE-AUTH] Nao foi possivel inicializar Firebase: %s", exc)
+            if _firebase_access_obrigatorio():
+                raise HTTPException(status_code=503, detail=f"Firebase indisponivel: {exc}")
+            return None
+
+
+def _firebase_db():
+    global FIREBASE_AUTH_DB, FIREBASE_AUTH_LAST_ERROR
+    if not _firebase_deve_usar():
+        return None
+    if firebase_firestore is None:
+        FIREBASE_AUTH_LAST_ERROR = "Pacote firebase-admin nao instalado."
+        if _firebase_access_obrigatorio():
+            raise HTTPException(status_code=503, detail=FIREBASE_AUTH_LAST_ERROR)
+        return None
+
+    with FIREBASE_AUTH_LOCK:
+        if FIREBASE_AUTH_DB is not None:
+            return FIREBASE_AUTH_DB
+        try:
+            app_fb = _firebase_app()
+            if app_fb is None:
+                return None
             FIREBASE_AUTH_DB = firebase_firestore.client(app_fb)
             FIREBASE_AUTH_LAST_ERROR = ""
             return FIREBASE_AUTH_DB
@@ -21126,6 +21235,71 @@ def _admin_messages_mark_read(message_id: str, username: str, client_id: str) ->
     return atualizado
 
 
+def _sse_event(event: str, data: Any) -> str:
+    payload = json.dumps(data, ensure_ascii=False, default=str)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+def _admin_messages_stream(username: str, client_id: str):
+    eventos: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+    unsubscribe = None
+    username_norm = str(username or "").strip().lower()
+    client_norm = str(client_id or "default").strip() or "default"
+
+    def on_snapshot(_snapshots, changes, _read_time):
+        for change in changes or []:
+            change_type = str(getattr(change, "type", "") or "").lower()
+            if "removed" in change_type:
+                continue
+            doc = getattr(change, "document", None)
+            if doc is None:
+                continue
+            data = doc.to_dict() or {}
+            data["id"] = data.get("id") or doc.id
+            if _admin_message_for_user(data, username_norm, client_norm, unread_only=True):
+                eventos.put(("admin-message", _admin_message_public(data)))
+
+    try:
+        if not _firebase_deve_usar():
+            eventos.put(("fallback", {"reason": "firebase_disabled"}))
+        else:
+            db = _firebase_db()
+            if db is None:
+                eventos.put(("fallback", {"reason": FIREBASE_AUTH_LAST_ERROR or "firebase_unavailable"}))
+            else:
+                query_ref = (
+                    db.collection(_firebase_admin_messages_collection_name())
+                    .where("username", "==", username_norm)
+                    .where("client_id", "==", client_norm)
+                    .where("read_ts", "==", 0)
+                )
+                unsubscribe = query_ref.on_snapshot(on_snapshot)
+                eventos.put(("ready", {"backend": "firebase"}))
+    except Exception as exc:
+        logger.warning("[ADMIN MSG] Stream Firebase indisponivel: %s", exc)
+        eventos.put(("fallback", {"reason": "stream_unavailable"}))
+
+    try:
+        yield "retry: 15000\n\n"
+        while True:
+            try:
+                event, data = eventos.get(timeout=25)
+                yield _sse_event(event, data)
+                if event == "fallback":
+                    break
+            except queue.Empty:
+                yield _sse_event("ping", {"ts": int(time.time())})
+    finally:
+        if unsubscribe is not None:
+            try:
+                if callable(unsubscribe):
+                    unsubscribe()
+                elif hasattr(unsubscribe, "unsubscribe"):
+                    unsubscribe.unsubscribe()
+            except Exception:
+                pass
+
+
 def _user_chat_norm_username(username: str) -> str:
     return str(username or "").strip().lower()
 
@@ -21347,6 +21521,46 @@ def _user_chat_attachment_summary(attachments: Any) -> str:
     return f"{len(anexos)} anexos"
 
 
+def _user_chat_call_normalizar(call: Any) -> dict:
+    if not isinstance(call, dict):
+        return {}
+    tipo = str(call.get("type") or call.get("tipo") or "daily_video").strip().lower()
+    if tipo not in {"daily_video", "video", "video_call", "chamada_video"}:
+        return {}
+    room_url = str(call.get("room_url") or call.get("url") or "").strip()
+    if not room_url:
+        return {}
+    try:
+        parsed = urlparse(room_url)
+        host = (parsed.hostname or "").strip().lower()
+        if parsed.scheme != "https" or not (host == "daily.co" or host.endswith(".daily.co")):
+            return {}
+    except Exception:
+        return {}
+    host_url = str(call.get("host_url") or "").strip()
+    if host_url:
+        try:
+            parsed_host = urlparse(host_url)
+            host = (parsed_host.hostname or "").strip().lower()
+            if parsed_host.scheme != "https" or not (host == "daily.co" or host.endswith(".daily.co")):
+                host_url = ""
+        except Exception:
+            host_url = ""
+    room_name = str(call.get("room_name") or call.get("name") or _sala_reuniao_room_name_from_url(room_url) or "").strip()
+    return {
+        "type": "daily_video",
+        "room_name": room_name[:160],
+        "room_url": room_url[:400],
+        "host_url": host_url[:500],
+        "started_at": str(call.get("started_at") or "")[:40],
+        "expires_at": str(call.get("expires_at") or "")[:40],
+        "created_by": _user_chat_norm_username(call.get("created_by") or ""),
+        "created_by_name": str(call.get("created_by_name") or "")[:120],
+        "invited_username": _user_chat_norm_username(call.get("invited_username") or ""),
+        "invited_client_id": _user_chat_norm_client(call.get("invited_client_id") or "default"),
+    }
+
+
 def _user_chat_public(message: dict) -> dict:
     item = message if isinstance(message, dict) else {}
     return {
@@ -21364,6 +21578,7 @@ def _user_chat_public(message: dict) -> dict:
         "read_ts": int(float(item.get("read_ts") or 0)),
         "storage": str(item.get("storage") or ""),
         "attachments": _user_chat_attachments_normalizar(item.get("attachments")),
+        "call": _user_chat_call_normalizar(item.get("call")),
     }
 
 
@@ -21507,6 +21722,8 @@ def _user_chat_merge_messages(messages: list[dict]) -> list[dict]:
                 atual[campo] = item.get(campo)
         if item.get("attachments") and not atual.get("attachments"):
             atual["attachments"] = item.get("attachments")
+        if item.get("call") and not atual.get("call"):
+            atual["call"] = item.get("call")
         atual["created_ts"] = max(int(atual.get("created_ts") or 0), int(item.get("created_ts") or 0))
         if int(item.get("delivered_ts") or 0) > int(atual.get("delivered_ts") or 0):
             atual["delivered_at"] = item.get("delivered_at") or atual.get("delivered_at") or ""
@@ -21682,7 +21899,8 @@ def _user_chat_unread_conversations(username: str, client_id: str) -> list[dict]
             "client_id": sender_client_id,
             "name": _user_chat_user_name(sender_username),
             "last_message_id": last.get("id") or "",
-            "last_message": last.get("message") or _user_chat_attachment_summary(last.get("attachments")) or "",
+            "last_message": last.get("message") or ("Chamada de video Daily" if last.get("call") else "") or _user_chat_attachment_summary(last.get("attachments")) or "",
+            "call": last.get("call") or {},
             "created_at": last.get("created_at") or "",
             "created_ts": int(last.get("created_ts") or 0),
             "unread_count": int(grupo.get("unread_count") or 0),
@@ -21803,6 +22021,54 @@ def _shared_sync_env_int(nome: str, padrao: int, minimo: int, maximo: int) -> in
         return max(minimo, min(valor, maximo))
     except Exception:
         return padrao
+
+
+def _shared_sync_docs_cache_ttl_seconds() -> int:
+    return _shared_sync_env_int("JK_SHARED_SYNC_DOCS_CACHE_TTL_S", 300, 30, 3600)
+
+
+def _shared_sync_docs_cache_key(collection_name: str, local_path: str) -> tuple[str, str]:
+    return (str(collection_name or "").strip(), os.path.abspath(str(local_path or "")))
+
+
+def _shared_sync_clone_docs(items: list[dict]) -> list[dict]:
+    return [_shared_sync_json_clone(item) for item in (items or []) if isinstance(item, dict)]
+
+
+def _shared_sync_docs_cache_get(collection_name: str, local_path: str, allow_expired: bool = False) -> Optional[list[dict]]:
+    key = _shared_sync_docs_cache_key(collection_name, local_path)
+    now = time.time()
+    ttl = _shared_sync_docs_cache_ttl_seconds()
+    with SHARED_SYNC_DOCS_CACHE_LOCK:
+        cached = SHARED_SYNC_DOCS_CACHE.get(key)
+        if not cached:
+            return None
+        if not allow_expired and now - float(cached.get("ts") or 0) > ttl:
+            return None
+        return _shared_sync_clone_docs(cached.get("docs") or [])
+
+
+def _shared_sync_docs_cache_set(collection_name: str, local_path: str, docs: list[dict]) -> None:
+    key = _shared_sync_docs_cache_key(collection_name, local_path)
+    with SHARED_SYNC_DOCS_CACHE_LOCK:
+        SHARED_SYNC_DOCS_CACHE[key] = {
+            "ts": time.time(),
+            "docs": _shared_sync_clone_docs(docs),
+        }
+
+
+def _shared_sync_docs_cache_invalidate(collection_name: Optional[str] = None, local_path: Optional[str] = None) -> None:
+    with SHARED_SYNC_DOCS_CACHE_LOCK:
+        if collection_name is None and local_path is None:
+            SHARED_SYNC_DOCS_CACHE.clear()
+            return
+        target_key = _shared_sync_docs_cache_key(collection_name or "", local_path or "")
+        for key in list(SHARED_SYNC_DOCS_CACHE.keys()):
+            if collection_name is not None and key[0] != target_key[0]:
+                continue
+            if local_path is not None and key[1] != target_key[1]:
+                continue
+            SHARED_SYNC_DOCS_CACHE.pop(key, None)
 
 
 def _shared_sync_max_file_bytes() -> int:
@@ -23889,7 +24155,7 @@ def _shared_sync_machine_remote_meta(sessao: dict, scope: str) -> Optional[dict]
     return _shared_sync_remote_meta_by_id(_shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope))
 
 
-def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = "") -> dict:
+def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = "", skip_if_remote_hash_matches: bool = False) -> dict:
     bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
     return _shared_sync_push_scope(
         sessao.get("client_id"),
@@ -23904,6 +24170,7 @@ def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = 
         },
         user_only=True,
         state_scope=_shared_sync_machine_state_scope(scope),
+        skip_if_remote_hash_matches=skip_if_remote_hash_matches,
     )
 
 
@@ -23998,7 +24265,7 @@ def _shared_sync_machine_auto_run(sessao: dict, machine_id: str = "", requested:
         if remote_hash and local_hash == remote_hash:
             skipped.append({"scope": scope, "reason": "already_current", "snapshot_hash": remote_hash})
             continue
-        results.append(_shared_sync_machine_push_scope(sessao, scope, machine_id))
+        results.append(_shared_sync_machine_push_scope(sessao, scope, machine_id, skip_if_remote_hash_matches=True))
     return {"success": True, "direction": "machine-auto", "results": results, "skipped": skipped}
 
 
@@ -24146,11 +24413,13 @@ def _shared_sync_save_doc(collection_name: str, local_path: str, item: dict) -> 
     if not found:
         local.append(item)
     _shared_sync_json_list_write(local_path, local)
+    _shared_sync_docs_cache_invalidate(collection_name, local_path)
 
     db = _firebase_db() if _firebase_deve_usar() else None
     if db is not None and item.get("id"):
         try:
             db.collection(collection_name).document(str(item["id"])).set(item, merge=True, timeout=8)
+            _shared_sync_docs_cache_invalidate(collection_name, local_path)
             item["storage"] = "firebase"
             return item
         except Exception as exc:
@@ -24169,6 +24438,7 @@ def _shared_sync_delete_doc(collection_name: str, local_path: str, doc_id: str) 
     local_deleted = len(filtrados) != len(local)
     if local_deleted:
         _shared_sync_json_list_write(local_path, filtrados)
+        _shared_sync_docs_cache_invalidate(collection_name, local_path)
 
     firebase_deleted = False
     firebase_error = ""
@@ -24176,6 +24446,7 @@ def _shared_sync_delete_doc(collection_name: str, local_path: str, doc_id: str) 
     if db is not None:
         try:
             db.collection(collection_name).document(doc_id).delete(timeout=8)
+            _shared_sync_docs_cache_invalidate(collection_name, local_path)
             firebase_deleted = True
         except Exception as exc:
             firebase_error = _shared_sync_exception_message(exc)
@@ -24191,13 +24462,23 @@ def _shared_sync_all_docs(collection_name: str, local_path: str) -> list[dict]:
     docs = []
     db = _firebase_db() if _firebase_deve_usar() else None
     if db is not None:
-        try:
-            for snap in db.collection(collection_name).stream(timeout=8):
-                data = snap.to_dict() or {}
-                data["id"] = data.get("id") or snap.id
-                docs.append(data)
-        except Exception as exc:
-            logger.warning("[SHARED-SYNC] Falha ao listar documentos no Firebase: %s", exc)
+        cached = _shared_sync_docs_cache_get(collection_name, local_path)
+        if cached is not None:
+            docs.extend(cached)
+        else:
+            remote_docs = []
+            try:
+                for snap in db.collection(collection_name).stream(timeout=8):
+                    data = snap.to_dict() or {}
+                    data["id"] = data.get("id") or snap.id
+                    remote_docs.append(data)
+                _shared_sync_docs_cache_set(collection_name, local_path, remote_docs)
+                docs.extend(remote_docs)
+            except Exception as exc:
+                logger.warning("[SHARED-SYNC] Falha ao listar documentos no Firebase: %s", exc)
+                fallback = _shared_sync_docs_cache_get(collection_name, local_path, allow_expired=True)
+                if fallback is not None:
+                    docs.extend(fallback)
     docs.extend(_shared_sync_json_list_read(local_path))
     por_id = {}
     for item in docs:
@@ -25555,7 +25836,7 @@ def shared_sync_user_shares_auto_push(
                 continue
             if requested and scope not in requested:
                 continue
-            result = _shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "")
+            result = _shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "", skip_if_remote_hash_matches=True)
             if result.get("skipped"):
                 skipped.append({"link_id": link.get("id"), "scope": scope, "reason": result.get("reason") or "already_shared"})
                 continue
@@ -25613,7 +25894,7 @@ def shared_sync_user_shares_auto(
                 skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "pull", "reason": "no_remote"})
 
             try:
-                result = _shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "")
+                result = _shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "", skip_if_remote_hash_matches=True)
                 if result.get("skipped"):
                     skipped.append({"link_id": link.get("id"), "scope": scope, "direction": "push", "reason": result.get("reason") or "already_shared"})
                 else:
@@ -25849,6 +26130,114 @@ def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
         "firebase_admin_messages_collection": _firebase_admin_messages_collection_name(),
         "firebase_credential_loaded": bool(firebase_file and os.path.exists(firebase_file)),
         "last_error": FIREBASE_AUTH_LAST_ERROR,
+    }
+
+
+@app.get("/api/firebase/realtime-presence/session")
+def firebase_realtime_presence_session(
+    request: Request,
+    machine_id: Optional[str] = "",
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    if not _firebase_deve_usar():
+        return {
+            "success": True,
+            "enabled": False,
+            "reason": "firebase_disabled",
+            "message": "Firebase nao esta ativo para presenca em tempo real.",
+        }
+    if firebase_auth is None:
+        return {
+            "success": True,
+            "enabled": False,
+            "reason": "firebase_auth_unavailable",
+            "message": "firebase-admin auth nao esta disponivel neste ambiente.",
+        }
+
+    project_id = _firebase_project_id()
+    database_url = _firebase_realtime_database_url()
+    api_key = _firebase_web_api_key()
+    if not project_id or not database_url or not api_key:
+        return {
+            "success": True,
+            "enabled": False,
+            "reason": "missing_web_config",
+            "message": "Configure FIREBASE_WEB_API_KEY e FIREBASE_DATABASE_URL para ativar a presenca pelo Realtime Database.",
+            "project_id": project_id,
+            "database_url_configured": bool(database_url),
+            "api_key_configured": bool(api_key),
+        }
+
+    app_fb = _firebase_app()
+    if app_fb is None:
+        return {
+            "success": True,
+            "enabled": False,
+            "reason": "firebase_unavailable",
+            "message": FIREBASE_AUTH_LAST_ERROR or "Firebase indisponivel.",
+        }
+
+    username = str(sessao.get("username") or "").strip().lower()
+    client_norm = str(sessao.get("client_id") or "default").strip() or "default"
+    permissoes = _carregar_permissoes_usuario(username, client_norm)
+    machine_final, meta = _montar_machine_id_login(request, machine_id or "")
+    client_key = _firebase_presence_client_key(client_norm)
+    user_key = _firebase_presence_user_key(username)
+    machine_key = _firebase_presence_machine_key_hash(machine_final)
+    uid = "jkpres_" + hashlib.sha256(f"{client_norm}|{username}|{machine_key}".encode("utf-8")).hexdigest()[:48]
+    claims = {
+        "jk_client_id": client_norm,
+        "jk_client_key": client_key,
+        "jk_username": username,
+        "jk_user_key": user_key,
+        "jk_machine_key": machine_key,
+        "jk_admin": bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True),
+    }
+    try:
+        token = firebase_auth.create_custom_token(uid, claims, app=app_fb)
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+    except Exception as exc:
+        logger.warning("[FIREBASE-RTDB] Falha ao gerar token de presenca: %s", exc)
+        return {
+            "success": True,
+            "enabled": False,
+            "reason": "custom_token_failed",
+            "message": f"Nao foi possivel gerar token Firebase: {exc}",
+        }
+
+    config = {
+        "apiKey": api_key,
+        "authDomain": _firebase_web_auth_domain(),
+        "databaseURL": database_url,
+        "projectId": project_id,
+    }
+    app_id = _firebase_web_app_id()
+    if app_id:
+        config["appId"] = app_id
+
+    root = f"{_firebase_presence_root_path()}/clients/{client_key}"
+    return {
+        "success": True,
+        "enabled": True,
+        "backend": "firebase-rtdb",
+        "firebaseConfig": config,
+        "customToken": token,
+        "rootPath": root,
+        "clientKey": client_key,
+        "userKey": user_key,
+        "machineKey": machine_key,
+        "username": username,
+        "client_id": client_norm,
+        "admin": bool(claims["jk_admin"]),
+        "machine": {
+            "machine_id": machine_final,
+            "label": _machine_presence_label(machine_final),
+            "host_name": meta.get("host_name"),
+            "ip_address": meta.get("ip_address"),
+        },
+        "online_timeout_seconds": _machine_presence_timeout_seconds(),
     }
 
 
@@ -26303,11 +26692,13 @@ def _machine_presence_record(username: str, client_id: str, machine_id: str, req
     now_ts = int(time.time())
     timeout_s = _machine_presence_timeout_seconds()
     app_version_final = _machine_presence_resolve_app_version(app_version, meta.get("user_agent"))
+    machine_key = _machine_presence_machine_key(machine_final)
     return {
         "id": _machine_presence_doc_id(username, client_id, machine_final),
         "username": str(username or "").strip().lower(),
         "client_id": str(client_id or "default").strip() or "default",
         "machine_id": machine_final,
+        "machine_key": machine_key,
         "label": _machine_presence_label(machine_final),
         "page": _machine_presence_sanitize_page(page),
         "app_version": app_version_final,
@@ -26431,7 +26822,7 @@ def _machine_presence_list_from_records(username: str, client_id: str, registros
         machine_id = str(item.get("machine_id") or "").strip()
         if not machine_id:
             continue
-        chave = _machine_presence_doc_id(username_norm, client_norm, machine_id)
+        chave = _machine_presence_machine_key(machine_id) or _machine_presence_doc_id(username_norm, client_norm, machine_id)
         atual = por_chave.get(chave) or {}
         try:
             last_seen = int(float(item.get("last_seen_ts") or 0))
@@ -26447,6 +26838,7 @@ def _machine_presence_list_from_records(username: str, client_id: str, registros
 
     for item in por_chave.values():
         machine_id = str(item.get("machine_id") or "").strip()
+        machine_key = _machine_presence_machine_key(machine_id)
         try:
             last_seen = int(float(item.get("last_seen_ts") or 0))
         except Exception:
@@ -26454,6 +26846,7 @@ def _machine_presence_list_from_records(username: str, client_id: str, registros
         online = last_seen >= (now_ts - timeout_s)
         maquinas.append({
             "machine_id": machine_id,
+            "machine_key": machine_key,
             "label": str(item.get("label") or _machine_presence_label(machine_id)),
             "page": _machine_presence_sanitize_page(item.get("page") or ""),
             "app_version": _machine_presence_resolve_app_version(item.get("app_version"), item.get("user_agent")),
@@ -26481,8 +26874,11 @@ def _machine_presence_mark_current(maquinas: list[dict], current_machine_id: str
     current = str(current_machine_id or "").strip()
     if not current:
         return maquinas
+    current_key = _machine_presence_machine_key(current)
     for item in maquinas:
-        if str(item.get("machine_id") or "").strip() == current:
+        item_id = str(item.get("machine_id") or "").strip()
+        item_key = str(item.get("machine_key") or _machine_presence_machine_key(item_id) or "").strip()
+        if item_id == current or (current_key and item_key == current_key):
             item["current"] = True
     return maquinas
 
@@ -26690,9 +27086,10 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
     destino = _user_chat_norm_username(payload.username)
     texto = str(payload.message or "").strip()
     anexos = _user_chat_attachments_normalizar(payload.attachments or [], validar_limites=True)
+    call = _user_chat_call_normalizar(payload.call)
     if not destino:
         raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
-    if not texto and not anexos:
+    if not texto and not anexos and not call:
         raise HTTPException(status_code=400, detail="Informe a mensagem ou anexe um arquivo.")
     if len(texto) > 2000:
         raise HTTPException(status_code=400, detail="A mensagem deve ter no maximo 2000 caracteres.")
@@ -26709,6 +27106,7 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
         "recipient_client_id": destino_client_id,
         "message": texto,
         "attachments": anexos,
+        "call": call,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "created_ts": agora_ts,
         "delivered_at": "",
@@ -26737,6 +27135,20 @@ def user_admin_messages(authorization: Optional[str] = Header(default=None)):
         "unread_count": len(mensagens),
         "backend": "firebase" if _firebase_deve_usar() else "local",
     }
+
+
+@app.get("/api/user/messages/stream")
+def user_admin_messages_stream(token: str = ""):
+    authorization = f"Bearer {str(token or '').strip()}"
+    sessao = _payload_sessao_por_authorization(authorization)
+    return StreamingResponse(
+        _admin_messages_stream(sessao["username"], sessao["client_id"]),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/user/messages/{message_id}/read")
@@ -47611,6 +48023,26 @@ def _sala_reuniao_daily_post(path: str, api_key: str, payload: dict[str, Any]) -
         return {}
 
 
+def _sala_reuniao_daily_delete(path: str, api_key: str) -> dict[str, Any]:
+    try:
+        resp = requests.delete(
+            f"{DAILY_API_BASE_URL}{path}",
+            headers=_sala_reuniao_daily_headers(api_key),
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Daily indisponivel: {exc}")
+    if resp.status_code == 404:
+        return {"not_found": True}
+    if resp.status_code < 200 or resp.status_code >= 300:
+        detalhe = _sala_reuniao_daily_error(resp) or f"Daily retornou HTTP {resp.status_code}."
+        raise HTTPException(status_code=502, detail=detalhe)
+    try:
+        return resp.json() or {}
+    except Exception:
+        return {}
+
+
 def _sala_reuniao_url_com_token(room_url: Optional[str], token: Optional[str]) -> Optional[str]:
     if not room_url or not token:
         return room_url
@@ -47619,6 +48051,21 @@ def _sala_reuniao_url_com_token(room_url: Optional[str], token: Optional[str]) -
 
 
 SALA_REUNIAO_FREE_PARTICIPANT_MINUTES = 10000
+SALA_REUNIAO_BLOCK_PARTICIPANT_MINUTES = 9950
+
+
+def _sala_reuniao_username(valor: Any) -> str:
+    return str(valor or "").strip().lower()
+
+
+def _sala_reuniao_sessao(authorization: Optional[str], client_id: str) -> dict[str, Any]:
+    sessao = _shared_sync_session(authorization, client_id)
+    return {
+        "username": _sala_reuniao_username(sessao.get("username")),
+        "client_id": str(sessao.get("client_id") or client_id or "default").strip() or "default",
+        "is_admin": bool(sessao.get("is_admin")),
+        "permissions": sessao.get("permissions") if isinstance(sessao.get("permissions"), dict) else {},
+    }
 
 
 def _sala_reuniao_uso_path(client_id: str) -> str:
@@ -47675,13 +48122,17 @@ def _sala_reuniao_resumo_uso(client_id: str) -> dict[str, Any]:
     seconds = max(0.0, float(month_data.get("participant_seconds") or 0))
     minutes = seconds / 60.0
     limit = float(SALA_REUNIAO_FREE_PARTICIPANT_MINUTES)
+    block_limit = float(SALA_REUNIAO_BLOCK_PARTICIPANT_MINUTES)
     return {
         "month": month_key,
         "participant_seconds": round(seconds, 3),
         "participant_minutes": round(minutes, 3),
         "free_participant_minutes": SALA_REUNIAO_FREE_PARTICIPANT_MINUTES,
+        "block_participant_minutes": SALA_REUNIAO_BLOCK_PARTICIPANT_MINUTES,
         "remaining_participant_minutes": round(max(0.0, limit - minutes), 3),
+        "remaining_until_block_minutes": round(max(0.0, block_limit - minutes), 3),
         "percent_used": round(min(100.0, (minutes / limit) * 100.0), 2) if limit else 0,
+        "blocked": bool(block_limit and minutes >= block_limit),
         "resets_at": _sala_reuniao_proximo_reset(month_key),
         "updated_at": month_data.get("updated_at"),
         "events": month_data.get("events") or [],
@@ -47817,17 +48268,84 @@ def _sala_reuniao_participant_count(participants: Any) -> int:
     if isinstance(participants, list):
         return len(participants)
     if isinstance(participants, dict):
-        for key in ("count", "total", "present"):
+        for key in ("count", "total", "participant_count", "participants_count", "present"):
             try:
                 if key in participants:
                     return max(0, int(participants.get(key) or 0))
             except Exception:
                 pass
+        for key in ("data", "participants", "users"):
+            nested = participants.get(key)
+            if isinstance(nested, (list, dict)):
+                return _sala_reuniao_participant_count(nested)
         return len(participants)
     return 0
 
 
-def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_token: Optional[str], exp_timestamp: int) -> None:
+def _sala_reuniao_participant_names(participants: Any, limit: int = 8) -> list[str]:
+    names: list[str] = []
+
+    def add_name(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        if text.lower() in {"none", "null", "undefined"}:
+            return
+        if text not in names:
+            names.append(text[:80])
+
+    def walk(value: Any) -> None:
+        if len(names) >= limit:
+            return
+        if isinstance(value, str):
+            add_name(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+                if len(names) >= limit:
+                    break
+            return
+        if isinstance(value, dict):
+            for key in ("user_name", "userName", "name", "display_name", "displayName", "username", "user_id", "userId", "id"):
+                if value.get(key):
+                    add_name(value.get(key))
+                    return
+            for key in ("data", "participants", "users"):
+                if key in value:
+                    walk(value.get(key))
+                    return
+            for item in value.values():
+                walk(item)
+                if len(names) >= limit:
+                    break
+
+    walk(participants)
+    return names[:limit]
+
+
+def _sala_reuniao_iso_timestamp(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return int(parsed.timestamp())
+        return int(time.mktime(parsed.timetuple()))
+    except Exception:
+        return 0
+
+
+def _sala_reuniao_local_pending_seconds() -> int:
+    try:
+        seconds = int(os.getenv("JK_SALA_REUNIAO_LOCAL_PENDING_SECONDS", "900") or 900)
+    except Exception:
+        seconds = 900
+    return max(120, min(seconds, 7200))
+
+
+def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_token: Optional[str], exp_timestamp: int, created_by: str = "") -> None:
     room_name = str(room.get("name") or "").strip()
     room_url = str(room.get("url") or "").strip()
     if not room_name and not room_url:
@@ -47846,6 +48364,7 @@ def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_toke
         "privacy": room.get("privacy") or "public",
         "expires_at": expires_at,
         "expires_at_ts": int(exp_timestamp or 0),
+        "created_by": _sala_reuniao_username(created_by),
         "created_at": now_iso,
         "updated_at": now_iso,
     })
@@ -47859,7 +48378,42 @@ def _sala_reuniao_registrar_sala(client_id: str, room: dict[str, Any], host_toke
     _sala_reuniao_salvar_salas(client_id, payload)
 
 
-def _sala_reuniao_marcar_sala_encerrada(client_id: str, req: SalaReuniaoEncerrarLocalRequest) -> dict[str, Any]:
+def _sala_reuniao_encontrar_sala_local(client_id: str, room_name: Any = "", room_url: Any = "") -> Optional[dict[str, Any]]:
+    target_keys = _sala_reuniao_room_keys(room_name, room_url)
+    if not target_keys:
+        return None
+    payload = _sala_reuniao_carregar_salas(client_id)
+    for item in payload.get("rooms") or []:
+        if not isinstance(item, dict):
+            continue
+        item_keys = _sala_reuniao_room_keys(item.get("name") or "", item.get("url") or "")
+        if item_keys and not target_keys.isdisjoint(item_keys):
+            return item
+    return None
+
+
+def _sala_reuniao_usuario_pode_encerrar(room: Optional[dict[str, Any]], sessao: Optional[dict[str, Any]]) -> bool:
+    if not sessao:
+        return False
+    if bool(sessao.get("is_admin")):
+        return True
+    if not isinstance(room, dict):
+        return False
+    created_by = _sala_reuniao_username(room.get("created_by") or room.get("creator") or room.get("created_by_username"))
+    username = _sala_reuniao_username(sessao.get("username"))
+    return bool(created_by and username and created_by == username)
+
+
+def _sala_reuniao_exigir_permissao_encerrar(client_id: str, req: SalaReuniaoEncerrarLocalRequest, sessao: dict[str, Any]) -> None:
+    room_url = str(req.room_url or "").strip()
+    room_name = str(req.room_name or "").strip() or _sala_reuniao_room_name_from_url(room_url)
+    local_room = _sala_reuniao_encontrar_sala_local(client_id, room_name, room_url)
+    if _sala_reuniao_usuario_pode_encerrar(local_room, sessao):
+        return
+    raise HTTPException(status_code=403, detail="Apenas o criador da sala ou um administrador pode encerrar esta reuniao.")
+
+
+def _sala_reuniao_marcar_sala_encerrada(client_id: str, req: SalaReuniaoEncerrarLocalRequest, sessao: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     room_url = str(req.room_url or "").strip()
     room_name = str(req.room_name or "").strip() or _sala_reuniao_room_name_from_url(room_url)
     if not room_name and not room_url:
@@ -47911,10 +48465,37 @@ def _sala_reuniao_marcar_sala_encerrada(client_id: str, req: SalaReuniaoEncerrar
     payload["rooms"] = rooms[-120:]
     payload["updated_at"] = now_iso
     _sala_reuniao_salvar_salas(client_id, payload)
-    return _sala_reuniao_listar_reunioes_ativas(client_id)
+    return _sala_reuniao_listar_reunioes_ativas(client_id, sessao)
 
 
-def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
+def _sala_reuniao_encerrar_sala(client_id: str, req: SalaReuniaoEncerrarLocalRequest, sessao: dict[str, Any]) -> dict[str, Any]:
+    room_url = str(req.room_url or "").strip()
+    room_name = str(req.room_name or "").strip() or _sala_reuniao_room_name_from_url(room_url)
+    if not room_name and not room_url:
+        raise HTTPException(status_code=400, detail="Informe o nome ou link da sala para encerrar.")
+
+    _sala_reuniao_exigir_permissao_encerrar(client_id, req, sessao)
+    warning = ""
+    daily_encerrada = False
+    api_key = _sala_reuniao_daily_api_key()
+    if api_key and room_name:
+        try:
+            _sala_reuniao_daily_delete(f"/rooms/{quote(room_name, safe='')}", api_key)
+            daily_encerrada = True
+        except HTTPException as exc:
+            warning = str(exc.detail or "Nao foi possivel encerrar a sala na Daily.")
+    elif not api_key:
+        warning = "Sem chave Daily configurada; a sala foi encerrada apenas na lista local."
+
+    data = _sala_reuniao_marcar_sala_encerrada(client_id, req, sessao)
+    return {
+        "rooms": data.get("rooms") or [],
+        "warning": warning or data.get("warning") or "",
+        "daily_encerrada": daily_encerrada,
+    }
+
+
+def _sala_reuniao_listar_reunioes_ativas(client_id: str, sessao: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     now_ts = int(time.time())
     payload = _sala_reuniao_carregar_salas(client_id)
     by_name: dict[str, dict[str, Any]] = {}
@@ -47940,6 +48521,15 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
             exp_ts = 0
         if exp_ts and exp_ts <= now_ts:
             continue
+        try:
+            ended_ts = int(item.get("ended_at_ts") or 0)
+        except Exception:
+            ended_ts = 0
+        if ended_ts > 0:
+            continue
+        created_ts = _sala_reuniao_iso_timestamp(item.get("created_at"))
+        if not exp_ts and created_ts and now_ts - created_ts > _sala_reuniao_local_pending_seconds():
+            continue
         name = str(item.get("name") or "").strip()
         url = _sala_reuniao_room_url(name, item.get("url") or "")
         if not name and not url:
@@ -47957,7 +48547,9 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
             "privacy": item.get("privacy") or "public",
             "expires_at": item.get("expires_at") or "",
             "created_at": item.get("created_at") or "",
+            "created_by": _sala_reuniao_username(item.get("created_by")),
             "participants_count": 0,
+            "participant_names": [],
             "ongoing": False,
             "status": "Aberta",
             "source": "local",
@@ -47979,6 +48571,17 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
                     continue
                 current = by_name.get(name, {})
                 participants_count = _sala_reuniao_participant_count(meeting.get("participants"))
+                participant_names = _sala_reuniao_participant_names(meeting.get("participants"))
+                try:
+                    presence = _sala_reuniao_daily_get(f"/rooms/{quote(name, safe='')}/presence", api_key, {"limit": 12})
+                    presence_names = _sala_reuniao_participant_names(presence)
+                    if presence_names:
+                        participant_names = presence_names
+                    presence_count = _sala_reuniao_participant_count(presence)
+                    if presence_count > 0:
+                        participants_count = presence_count
+                except Exception:
+                    pass
                 meeting_keys = _sala_reuniao_room_keys(name, current.get("url") or "")
                 if meeting_keys and not meeting_keys.isdisjoint(suppressed_keys) and participants_count <= 1:
                     continue
@@ -47991,7 +48594,9 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
                     "privacy": current.get("privacy") or local_item.get("privacy") or "public",
                     "expires_at": current.get("expires_at") or local_item.get("expires_at") or "",
                     "created_at": current.get("created_at") or local_item.get("created_at") or "",
+                    "created_by": current.get("created_by") or _sala_reuniao_username(local_item.get("created_by")),
                     "participants_count": participants_count,
+                    "participant_names": participant_names,
                     "ongoing": bool(meeting.get("ongoing", True)),
                     "status": "Em andamento",
                     "source": "daily",
@@ -48004,6 +48609,10 @@ def _sala_reuniao_listar_reunioes_ativas(client_id: str) -> dict[str, Any]:
             warning = str(exc.detail or "Nao foi possivel consultar reunioes ativas na Daily.")
 
     rooms = list(by_name.values())
+    for room in rooms:
+        room_name = str(room.get("name") or "").strip()
+        local_item = local_by_name.get(room_name) or room
+        room["can_end"] = _sala_reuniao_usuario_pode_encerrar(local_item, sessao)
     rooms.sort(key=lambda item: (
         0 if item.get("ongoing") else 1,
         str(item.get("started_at") or item.get("created_at") or ""),
@@ -48077,11 +48686,24 @@ async def sala_reuniao_status(_client_id: str = Depends(get_tenant_id)):
 
 
 @app.post("/api/sala-reuniao/salas")
-async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: str = Depends(get_tenant_id)):
+async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Cria uma sala Daily Prebuilt quando DAILY_API_KEY ou JK_DAILY_API_KEY esta configurada."""
+    sessao = _sala_reuniao_sessao(authorization, _client_id)
     api_key = _sala_reuniao_daily_api_key()
     if not api_key:
         raise HTTPException(status_code=503, detail="Configure DAILY_API_KEY ou JK_DAILY_API_KEY para criar salas automaticamente.")
+    uso = _sala_reuniao_resumo_uso(_client_id)
+    if uso.get("blocked"):
+        usado = float(uso.get("participant_minutes") or 0)
+        bloqueio = int(uso.get("block_participant_minutes") or SALA_REUNIAO_BLOCK_PARTICIPANT_MINUTES)
+        reset = uso.get("resets_at") or "dia 1"
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Uso mensal da Sala de Reuniao atingiu {usado:.1f} de {bloqueio} participant-minutes. "
+                f"O modulo fica bloqueado ate o proximo reset em {reset}."
+            ),
+        )
 
     privacidade = _sala_reuniao_privacidade(req.privacidade)
     idioma = _sala_reuniao_idioma(req.idioma)
@@ -48146,7 +48768,7 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
         "name": data.get("name") or nome_sala,
         "url": room_url,
         "privacy": data.get("privacy") or privacidade,
-    }, host_token, exp_timestamp)
+    }, host_token, exp_timestamp, sessao.get("username") or "")
     return {
         "success": True,
         "room": {
@@ -48164,33 +48786,37 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
 
 
 @app.get("/api/sala-reuniao/reunioes-ativas")
-async def sala_reuniao_reunioes_ativas(_client_id: str = Depends(get_tenant_id)):
+async def sala_reuniao_reunioes_ativas(_client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Lista salas abertas e sessoes em andamento para a tela inicial do modulo."""
-    data = _sala_reuniao_listar_reunioes_ativas(_client_id)
+    sessao = _sala_reuniao_sessao(authorization, _client_id)
+    data = _sala_reuniao_listar_reunioes_ativas(_client_id, sessao)
     return {
         "success": True,
         "daily_configurado": bool(_sala_reuniao_daily_api_key()),
+        "is_admin": bool(sessao.get("is_admin")),
         "rooms": data.get("rooms") or [],
         "warning": data.get("warning") or "",
     }
 
 
 @app.get("/api/sala-reuniao/salas-ativas")
-async def sala_reuniao_salas_ativas_alias(_client_id: str = Depends(get_tenant_id)):
+async def sala_reuniao_salas_ativas_alias(_client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Alias de compatibilidade para listar reunioes ativas."""
-    return await sala_reuniao_reunioes_ativas(_client_id)
+    return await sala_reuniao_reunioes_ativas(_client_id, authorization)
 
 
 @app.get("/api/sala-reuniao/salas")
-async def sala_reuniao_salas_listar(_client_id: str = Depends(get_tenant_id)):
+async def sala_reuniao_salas_listar(_client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Alias GET para listar salas ativas sem conflitar com o POST de criacao."""
-    return await sala_reuniao_reunioes_ativas(_client_id)
+    return await sala_reuniao_reunioes_ativas(_client_id, authorization)
 
 
 @app.post("/api/sala-reuniao/reunioes-ativas/encerrar-local")
-async def sala_reuniao_encerrar_local(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id)):
+async def sala_reuniao_encerrar_local(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Oculta localmente uma sala que acabou de ser encerrada no navegador."""
-    data = _sala_reuniao_marcar_sala_encerrada(_client_id, req)
+    sessao = _sala_reuniao_sessao(authorization, _client_id)
+    _sala_reuniao_exigir_permissao_encerrar(_client_id, req, sessao)
+    data = _sala_reuniao_marcar_sala_encerrada(_client_id, req, sessao)
     return {
         "success": True,
         "rooms": data.get("rooms") or [],
@@ -48198,10 +48824,64 @@ async def sala_reuniao_encerrar_local(req: SalaReuniaoEncerrarLocalRequest, _cli
     }
 
 
+@app.post("/api/sala-reuniao/reunioes-ativas/encerrar")
+async def sala_reuniao_encerrar(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
+    """Encerra uma sala Daily quando possivel e remove da lista local de reunioes ativas."""
+    sessao = _sala_reuniao_sessao(authorization, _client_id)
+    data = _sala_reuniao_encerrar_sala(_client_id, req, sessao)
+    return {
+        "success": True,
+        "rooms": data.get("rooms") or [],
+        "warning": data.get("warning") or "",
+        "daily_encerrada": bool(data.get("daily_encerrada")),
+    }
+
+
+@app.post("/api/sala-reuniao/reunioes-ativas/encerrar-todas")
+async def sala_reuniao_encerrar_todas(req: SalaReuniaoEncerrarTodasRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
+    """Encerra todas as salas que aparecem na lista de reunioes ativas."""
+    sessao = _sala_reuniao_sessao(authorization, _client_id)
+    if not sessao.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Apenas administradores podem encerrar todas as reunioes.")
+    try:
+        suppress_seconds = int(req.suppress_seconds or 1800)
+    except Exception:
+        suppress_seconds = 1800
+    suppress_seconds = max(300, min(suppress_seconds, 7200))
+    atuais = _sala_reuniao_listar_reunioes_ativas(_client_id, sessao).get("rooms") or []
+    warnings: list[str] = []
+    encerradas = 0
+    daily_encerradas = 0
+    data = {"rooms": atuais, "warning": ""}
+    for room in atuais:
+        if not isinstance(room, dict):
+            continue
+        encerradas += 1
+        result = _sala_reuniao_encerrar_sala(_client_id, SalaReuniaoEncerrarLocalRequest(
+            room_name=room.get("name") or room.get("room_name") or "",
+            room_url=room.get("url") or "",
+            participant_count=room.get("participants_count") or 0,
+            suppress_seconds=suppress_seconds,
+        ), sessao)
+        data = result
+        if result.get("daily_encerrada"):
+            daily_encerradas += 1
+        if result.get("warning"):
+            warnings.append(str(result.get("warning")))
+    warning = "; ".join(dict.fromkeys([w for w in warnings if w]))
+    return {
+        "success": True,
+        "rooms": data.get("rooms") or [],
+        "warning": warning,
+        "encerradas": encerradas,
+        "daily_encerradas": daily_encerradas,
+    }
+
+
 @app.post("/api/sala-reuniao/salas/encerrar-local")
-async def sala_reuniao_encerrar_local_alias(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id)):
+async def sala_reuniao_encerrar_local_alias(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Alias de compatibilidade para marcar uma sala como encerrada localmente."""
-    return await sala_reuniao_encerrar_local(req, _client_id)
+    return await sala_reuniao_encerrar_local(req, _client_id, authorization)
 
 
 @app.get("/api/sala-reuniao/uso-mensal")

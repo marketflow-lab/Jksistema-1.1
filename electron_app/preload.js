@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     hideEmbeddedMlBrowser: () => ipcRenderer.invoke('embedded-ml-browser-hide'),
     executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code),
     importCredentials: () => ipcRenderer.invoke('import-credentials'),
+    chooseDisplayMediaSource: () => ipcRenderer.invoke('choose-display-media-source'),
     showWindowsNotification: (payload) => ipcRenderer.invoke('show-windows-notification', payload || {})
 });
 

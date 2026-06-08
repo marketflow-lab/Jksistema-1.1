@@ -672,7 +672,7 @@
   .jk-left-module-link.modulo-atual{display:none;}
   #jk-right-sidebar-hotspot{position:fixed;top:0;right:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
   #jk-right-sidebar-hotspot::before{content:"";position:absolute;top:0;right:0;bottom:0;width:8px;background:transparent;}
-  #jk-right-sidebar-menu{position:fixed;top:50%;right:10px;display:flex;flex-direction:column;gap:10px;
+  #jk-right-sidebar-menu{position:fixed;top:50%;right:3px;display:flex;flex-direction:column;gap:10px;
     transform:translate(calc(100% + 22px),-50%);opacity:0;pointer-events:none;
     transition:transform .2s cubic-bezier(.4,0,.2,1),opacity .16s ease;}
   #jk-right-sidebar-hotspot:hover #jk-right-sidebar-menu,
@@ -683,6 +683,7 @@
     background:linear-gradient(145deg,#1888ff,#13c4a0);color:#fff;font-size:1.35rem;cursor:pointer;
     box-shadow:0 4px 18px rgba(19,196,160,.42);display:flex;align-items:center;justify-content:center;
     transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
+  .jk-right-sidebar-icon svg{width:24px;height:24px;stroke:currentColor;stroke-width:2.35;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 1px 1px rgba(0,0,0,.18));}
   .jk-right-sidebar-icon:hover{transform:translateX(-2px) scale(1.04);box-shadow:0 8px 24px rgba(19,196,160,.5);}
   .jk-right-sidebar-icon.ativo{border-color:rgba(255,255,255,.72);box-shadow:0 0 0 3px rgba(120,227,212,.18),0 8px 24px rgba(19,196,160,.48);}
   .jk-right-sidebar-icon.piscando{animation:jkRightSidebarBlink .9s ease-in-out infinite;border-color:rgba(255,255,255,.82);}
@@ -699,26 +700,41 @@
     display:flex;flex-direction:column;box-shadow:-6px 0 32px rgba(0,0,0,.55);
     transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);}
   #jk-ia-panel.aberto{transform:translateX(0);}
-  #jk-msg-panel{--jk-msg-panel-width:380px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-msg-panel-width);min-width:300px;max-width:96vw;
-    background:linear-gradient(165deg,#091d31,#062a22);border-left:1px solid rgba(106,225,203,.28);
-    display:flex;flex-direction:column;box-shadow:-6px 0 32px rgba(0,0,0,.55);
-    transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);}
+  #jk-msg-panel{--jk-msg-panel-width:370px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-msg-panel-width);min-width:320px;max-width:96vw;
+    background:#071923;border-left:1px solid rgba(39,224,205,.32);
+    display:flex;flex-direction:column;box-shadow:-6px 0 28px rgba(0,0,0,.48);
+    transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);
+    -webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;isolation:isolate;}
+  #jk-msg-panel *{text-shadow:none;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;}
   #jk-msg-panel.aberto{transform:translateX(0);}
-  #jk-msg-header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid rgba(106,225,203,.18);background:rgba(4,30,48,.72);}
-  #jk-msg-header h3{flex:1 1 auto;margin:0;color:#8ee9de;font-size:.96rem;font-weight:800;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .jk-msg-hbtn{border:0;background:transparent;color:#8ee9de;cursor:pointer;font-size:1.05rem;padding:0 12px;border-radius:8px;line-height:1;min-height:36px;min-width:40px;height:36px;display:flex;align-items:center;justify-content:center;}
-  .jk-msg-hbtn:hover{background:rgba(19,196,160,.18);transform:scale(1.05);}
-  #jk-msg-body{flex:1 1 auto;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:12px;background:rgba(2,18,30,.4);scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.34) transparent;}
+  #jk-msg-panel::before{content:"";position:absolute;inset:0 0 auto 0;height:132px;pointer-events:none;opacity:.06;
+    background:
+      radial-gradient(circle at 28px 24px,transparent 0 9px,rgba(169,206,213,.75) 10px 11px,transparent 12px),
+      radial-gradient(circle at 118px 14px,transparent 0 7px,rgba(169,206,213,.55) 8px 9px,transparent 10px),
+      linear-gradient(135deg,transparent 0 16px,rgba(169,206,213,.45) 17px 18px,transparent 19px);
+    background-size:92px 56px,116px 62px,78px 48px;}
+  #jk-msg-header{position:relative;display:flex;align-items:center;gap:9px;padding:18px 16px 15px;border-bottom:1px solid rgba(39,224,205,.24);background:#071923;}
+  .jk-msg-title-wrap{flex:1 1 auto;display:flex;align-items:center;gap:10px;min-width:0;}
+  .jk-msg-header-icon{flex:0 0 35px;width:35px;height:35px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#c8d5da;background:rgba(164,181,189,.08);}
+  .jk-msg-header-icon svg{width:22px;height:22px;stroke:currentColor;stroke-width:2.25;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+  #jk-msg-header h3{margin:0;color:#f5fbff;font-size:1.42rem;font-weight:900;line-height:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.01em;}
+  .jk-msg-header-subtitle{display:block;color:#8ca3ad;font-size:.58rem;font-weight:800;margin-top:4px;letter-spacing:.02em;}
+  .jk-msg-hbtn{border:1px solid rgba(39,224,205,.25);background:rgba(18,65,79,.8);color:#5de7dd;cursor:pointer;font-size:.82rem;padding:0;border-radius:9px;line-height:1;min-height:26px;min-width:26px;height:26px;display:flex;align-items:center;justify-content:center;}
+  .jk-msg-hbtn:hover{background:rgba(24,97,112,.86);border-color:rgba(39,224,205,.48);transform:translateY(-1px);}
+  #jk-msg-body{position:relative;flex:1 1 auto;overflow-y:auto;padding:12px 12px 10px;display:flex;flex-direction:column;gap:12px;background:#061923;scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.34) transparent;}
   #jk-msg-body::-webkit-scrollbar{width:7px;}
   #jk-msg-body::-webkit-scrollbar-thumb{background:rgba(120,227,212,.28);border-radius:999px;}
-  .jk-msg-status{min-height:18px;color:#9ee8df;font-size:.74rem;font-weight:800;line-height:1.35;}
+  .jk-msg-status{min-height:16px;color:#8aa5ad;font-size:.68rem;font-weight:800;line-height:1.35;}
   #jk-msg-main-view{display:flex;flex-direction:column;gap:12px;}
   #jk-msg-chat-header{display:none;align-items:center;gap:10px;padding:8px 0 8px;position:sticky;top:0;z-index:6;
     background:linear-gradient(165deg,rgba(9,29,49,.98),rgba(6,42,34,.98));box-shadow:0 10px 18px rgba(0,0,0,.24);}
   #jk-msg-chat-header.ativo{display:flex;}
   #jk-msg-back{flex:0 0 34px;width:34px;height:34px;border-radius:8px;border:1px solid rgba(120,227,212,.42);background:rgba(35,142,165,.44);color:#e8fffb;font-weight:900;cursor:pointer;box-shadow:0 8px 18px rgba(0,0,0,.26);}
   #jk-msg-back:hover{background:rgba(36,161,160,.32);border-color:rgba(120,227,212,.64);}
-  #jk-msg-chat-title{min-width:0;color:#fff;font-size:.86rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #jk-msg-chat-title{flex:1 1 auto;min-width:0;color:#fff;font-size:.86rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #jk-msg-video-call{flex:0 0 36px;width:36px;height:36px;border-radius:999px;border:1px solid rgba(85,201,109,.45);background:rgba(85,201,109,.18);color:#bfffd0;font-size:1rem;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 18px rgba(0,0,0,.24);}
+  #jk-msg-video-call:hover{background:rgba(85,201,109,.28);border-color:rgba(85,201,109,.72);transform:translateY(-1px);}
+  #jk-msg-video-call:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.6);transform:none;}
   #jk-msg-history{display:none;flex:1 1 auto;flex-direction:column;gap:8px;padding:2px 0 8px;}
   #jk-msg-history.ativo{display:flex;}
   #jk-msg-typing{display:none;color:#9ee8df;font-size:.72rem;font-weight:900;min-height:17px;padding:0 2px 6px;}
@@ -728,27 +744,49 @@
   .jk-msg-bubble.other{align-self:flex-start;border-bottom-left-radius:4px;}
   .jk-msg-bubble-meta{display:block;margin-top:4px;font-size:.62rem;color:rgba(232,255,251,.72);white-space:nowrap;}
   .jk-msg-bubble-meta.local-alert{color:#ffd7a3;}
+  .jk-msg-call-card{display:grid;gap:8px;min-width:min(230px,100%);border:1px solid rgba(85,201,109,.35);border-radius:12px;background:rgba(4,35,28,.42);padding:9px;}
+  .jk-msg-call-head{display:flex;align-items:center;gap:8px;color:#f4fff8;font-weight:900;font-size:.82rem;}
+  .jk-msg-call-icon{width:30px;height:30px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:#55c96d;color:#061b12;box-shadow:0 0 0 4px rgba(85,201,109,.12);}
+  .jk-msg-call-text{color:#cfeee0;font-size:.72rem;line-height:1.35;}
+  .jk-msg-call-actions{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap;}
+  .jk-msg-call-join{border:0;border-radius:999px;background:#55c96d;color:#061b12;font-weight:900;font-size:.72rem;min-height:30px;padding:0 12px;cursor:pointer;}
+  .jk-msg-call-join:hover{filter:brightness(1.08);transform:translateY(-1px);}
   .jk-msg-attachments{display:grid;gap:6px;margin-top:7px;}
   .jk-msg-attachment{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(3,22,32,.48);padding:6px;color:#dffefa;font-size:.7rem;overflow:hidden;}
   .jk-msg-attachment img{display:block;max-width:190px;max-height:150px;border-radius:7px;object-fit:contain;background:rgba(0,0,0,.22);}
   .jk-msg-attachment audio{width:210px;max-width:100%;height:34px;display:block;}
   .jk-msg-attachment a{color:#9ee8df;text-decoration:none;font-weight:900;word-break:break-word;}
   .jk-msg-attachment a:hover{text-decoration:underline;}
-  .jk-msg-section{display:flex;flex-direction:column;gap:8px;}
-  .jk-msg-section-title{color:#8ee9de;font-size:.78rem;font-weight:900;text-transform:uppercase;letter-spacing:.03em;}
-  .jk-msg-list{display:flex;flex-direction:column;gap:8px;}
-  #jk-msg-online-list{gap:4px;}
-  .jk-msg-empty{color:#cfe7e4;font-size:.78rem;opacity:.72;border:1px dashed rgba(120,227,212,.24);border-radius:8px;padding:10px;background:rgba(4,26,35,.36);}
-  .jk-msg-user-item,.jk-msg-card{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(8,43,59,.56);color:#e8fffb;padding:10px;}
-  .jk-msg-user-item{display:flex;align-items:center;gap:6px;text-align:left;cursor:pointer;width:100%;min-height:26px;padding:3px 7px;border-radius:6px;}
-  .jk-msg-user-item:hover,.jk-msg-user-item.ativo{border-color:rgba(120,227,212,.62);background:rgba(20,92,85,.48);}
-  .jk-msg-user-item:disabled{cursor:default;opacity:.68;}
-  .jk-msg-dot{width:6px;height:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,.12);flex:0 0 6px;}
-  .jk-msg-user-item.offline .jk-msg-dot{background:#ef4444;box-shadow:0 0 0 2px rgba(239,68,68,.11);}
-  .jk-msg-user-info{min-width:0;display:grid;gap:0;flex:1 1 auto;}
-  .jk-msg-user-name{font-size:.72rem;font-weight:900;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .jk-msg-user-meta{display:none;}
-  .jk-msg-unread-count{flex:0 0 auto;border-radius:999px;background:#ef4444;color:#fff;border:1px solid rgba(255,255,255,.3);font-size:.54rem;font-weight:900;min-width:17px;min-height:16px;padding:1px 4px;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(239,68,68,.24);}
+  .jk-msg-section{display:flex;flex-direction:column;gap:9px;}
+  .jk-msg-inbox-section.jk-msg-section-empty{display:none;}
+  .jk-msg-users-section{border:1px solid rgba(39,224,205,.24);border-radius:14px;background:#071f2a;padding:12px;}
+  .jk-msg-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px;}
+  .jk-msg-section-title{color:#45e4d7;font-size:.64rem;font-weight:900;text-transform:uppercase;letter-spacing:.08em;}
+  .jk-msg-count-pill{min-width:76px;height:22px;border-radius:999px;border:1px solid rgba(39,224,205,.28);background:rgba(35,142,165,.28);color:#bdf9f2;font-size:.55rem;font-weight:900;display:inline-flex;align-items:center;justify-content:center;padding:0 10px;}
+  .jk-msg-list{display:flex;flex-direction:column;gap:7px;}
+  #jk-msg-online-list{gap:7px;}
+  .jk-msg-empty{color:#b9cbd1;font-size:.76rem;opacity:.82;border:1px dashed rgba(120,227,212,.24);border-radius:11px;padding:10px;background:rgba(4,26,35,.36);}
+  .jk-msg-user-item,.jk-msg-card{border:1px solid rgba(39,224,205,.26);border-radius:12px;background:#092a35;color:#e8fffb;padding:10px;}
+  .jk-msg-user-item{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) 16px 10px;align-items:center;gap:9px;text-align:left;cursor:pointer;width:100%;min-height:48px;padding:8px 9px;border-radius:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.02);transition:background .16s ease,border-color .16s ease,transform .16s ease;}
+  .jk-msg-user-item:hover,.jk-msg-user-item.ativo,.jk-msg-user-item.self{border-color:rgba(45,232,218,.44);background:linear-gradient(90deg,#11777e,#124b61);}
+  .jk-msg-user-item:hover{transform:translateY(-1px);}
+  .jk-msg-user-item:disabled{cursor:default;opacity:1;}
+  .jk-msg-avatar{width:31px;height:31px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:.78rem;font-weight:900;background:#6954f2;box-shadow:0 0 0 1px rgba(255,255,255,.16);}
+  .jk-msg-avatar.c1{background:#18bdb8;}
+  .jk-msg-avatar.c2{background:#f3a522;}
+  .jk-msg-avatar.c3{background:#d84ce8;}
+  .jk-msg-avatar.c4{background:#4b8ff4;}
+  .jk-msg-avatar.c5{background:#ef5069;}
+  .jk-msg-avatar.c6{background:#2fcf84;}
+  .jk-msg-avatar.c7{background:#23a5ee;}
+  .jk-msg-user-info{min-width:0;display:grid;gap:2px;flex:1 1 auto;}
+  .jk-msg-user-name{font-size:.78rem;font-weight:900;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;}
+  .jk-msg-user-meta{display:block;color:#9ab0b8;font-size:.62rem;font-weight:800;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-user-item.ativo .jk-msg-user-meta,.jk-msg-user-item.self .jk-msg-user-meta{color:#d3f8f4;}
+  .jk-msg-contact-alert{width:11px;height:11px;border-radius:999px;background:#2fe080;border:2px solid rgba(6,29,39,.88);box-shadow:0 0 0 2px rgba(47,224,128,.14),0 0 10px rgba(47,224,128,.58);}
+  .jk-msg-user-item.offline .jk-msg-contact-alert,.jk-msg-contact-alert.offline{background:#ff4b6a;box-shadow:0 0 0 2px rgba(255,75,106,.13),0 0 10px rgba(255,75,106,.6);}
+  .jk-msg-chevron{color:#7fa2aa;font-size:1rem;line-height:1;font-weight:900;}
+  .jk-msg-unread-count{position:absolute;right:21px;top:7px;border-radius:999px;background:#ff4b6a;color:#fff;border:1px solid rgba(255,255,255,.26);font-size:.52rem;font-weight:900;min-width:16px;min-height:15px;padding:1px 4px;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(239,68,68,.24);}
   .jk-msg-card{display:grid;gap:6px;}
   .jk-msg-card-title{font-size:.82rem;font-weight:900;color:#fff;}
   .jk-msg-card-meta{font-size:.68rem;color:#9ee8df;}
@@ -756,11 +794,13 @@
   .jk-msg-card-actions{display:flex;justify-content:flex-end;}
   .jk-msg-small-btn{border:1px solid rgba(120,227,212,.34);border-radius:8px;background:rgba(35,142,165,.22);color:#e8fffb;font-weight:900;font-size:.72rem;min-height:30px;padding:0 9px;cursor:pointer;}
   .jk-msg-small-btn:hover{border-color:rgba(120,227,212,.7);background:rgba(36,161,160,.3);}
-  #jk-msg-compose{border-top:1px solid rgba(106,225,203,.18);padding:10px 12px 12px;background:rgba(4,26,35,.92);display:grid;gap:8px;}
-  #jk-msg-selected{color:#9ee8df;font-size:.74rem;font-weight:800;min-height:18px;}
-  #jk-msg-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
-  .jk-msg-tool-btn{border:1px solid rgba(120,227,212,.28);border-radius:8px;background:rgba(35,142,165,.18);color:#e8fffb;font-weight:900;font-size:.72rem;min-width:32px;height:30px;padding:0 8px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
-  .jk-msg-tool-btn:hover,.jk-msg-tool-btn.ativo{border-color:rgba(120,227,212,.7);background:rgba(36,161,160,.32);}
+  #jk-msg-compose{border-top:1px solid rgba(39,224,205,.24);padding:9px 10px 11px;background:#071923;display:grid;gap:7px;}
+  #jk-msg-selected{color:#8ea8b0;font-size:.68rem;font-weight:800;min-height:16px;padding:0 4px;}
+  #jk-msg-tools{display:flex;align-items:center;gap:8px;min-height:44px;}
+  .jk-msg-input-pill{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:4px;min-height:44px;border:1px solid rgba(39,224,205,.16);border-radius:18px;background:#20272b;padding:5px 7px;}
+  .jk-msg-tool-btn{border:0;border-radius:999px;background:transparent;color:#9fb2b9;font-weight:900;font-size:1.05rem;min-width:32px;height:32px;padding:0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 32px;}
+  .jk-msg-tool-btn svg{width:17px;height:17px;stroke:currentColor;stroke-width:2.3;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+  .jk-msg-tool-btn:hover,.jk-msg-tool-btn.ativo{background:rgba(39,224,205,.12);color:#45e4d7;}
   #jk-msg-emoji-panel{display:none;grid-template-columns:repeat(8,1fr);gap:4px;border:1px solid rgba(120,227,212,.2);border-radius:8px;padding:6px;background:rgba(3,22,32,.9);}
   #jk-msg-emoji-panel.aberto{display:grid;}
   .jk-msg-emoji-choice{border:0;border-radius:6px;background:rgba(35,142,165,.16);min-height:28px;cursor:pointer;font-size:1rem;}
@@ -769,14 +809,28 @@
   .jk-msg-anexo-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid rgba(120,227,212,.26);border-radius:999px;background:rgba(25,120,133,.18);color:#dbfffb;font-size:.68rem;font-weight:800;padding:4px 7px;}
   .jk-msg-anexo-chip span{max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .jk-msg-anexo-chip button{border:0;background:transparent;color:#ffd2d2;font-size:.82rem;font-weight:900;cursor:pointer;padding:0;}
-  #jk-msg-text{width:100%;border:1px solid rgba(120,227,212,.26);border-radius:8px;background:rgba(3,22,32,.82);color:#e8fffb;font:inherit;font-size:.78rem;outline:none;padding:8px;}
-  #jk-msg-text{min-height:76px;resize:vertical;line-height:1.4;}
-  #jk-msg-text:focus{border-color:#53d4b7;box-shadow:0 0 0 2px rgba(83,212,183,.16);}
-  #jk-msg-send{border:0;border-radius:8px;background:linear-gradient(165deg,#53d4b7,#33a7d7);color:#03272f;font-weight:900;font-size:.78rem;min-height:36px;cursor:pointer;}
-  #jk-msg-send:disabled{cursor:not-allowed;opacity:.55;}
-  #jk-ia-resizer{position:absolute;left:-7px;top:0;bottom:0;width:14px;cursor:ew-resize;touch-action:none;z-index:2;}
-  #jk-ia-resizer::after{content:"";position:absolute;left:6px;top:12px;bottom:12px;width:2px;border-radius:999px;background:rgba(120,227,212,.18);transition:background .15s ease,box-shadow .15s ease;}
-  #jk-ia-resizer:hover::after,#jk-ia-resizer:focus-visible::after,body.jk-ia-resizing #jk-ia-resizer::after{background:rgba(120,227,212,.74);box-shadow:0 0 12px rgba(120,227,212,.42);}
+  #jk-msg-text{flex:1 1 auto;width:100%;min-width:0;border:0;border-radius:0;background:transparent;color:#eef7f7;font:inherit;font-size:.92rem;font-weight:500;outline:none;padding:5px 2px;min-height:28px;max-height:86px;resize:none;line-height:1.25;}
+  #jk-msg-text::placeholder{color:#9fa8ad;}
+  #jk-msg-text:focus{box-shadow:none;}
+  #jk-msg-send{border:0;border-radius:999px;background:#55c96d;color:#061b12;font-weight:900;font-size:1rem;min-width:44px;width:44px;height:44px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;padding:0;box-shadow:0 8px 18px rgba(85,201,109,.22);}
+  #jk-msg-send svg{width:18px;height:18px;stroke:currentColor;stroke-width:2.45;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+  #jk-msg-send:disabled{cursor:not-allowed;opacity:.55;filter:saturate(.55);}
+  #jk-msg-call-modal[hidden]{display:none;}
+  #jk-msg-call-modal{position:fixed;inset:0;z-index:10050;display:grid;place-items:center;padding:18px;background:rgba(0,0,0,.5);backdrop-filter:blur(5px);}
+  .jk-msg-call-dialog{width:min(330px,94vw);border:1px solid rgba(85,201,109,.42);border-radius:18px;background:linear-gradient(160deg,#081923,#0a3327);box-shadow:0 22px 60px rgba(0,0,0,.55);padding:20px 18px;color:#f5fff8;display:grid;gap:14px;text-align:center;}
+  .jk-msg-call-avatar{width:72px;height:72px;margin:0 auto;border-radius:999px;display:flex;align-items:center;justify-content:center;background:#55c96d;color:#061b12;font-size:2rem;font-weight:900;box-shadow:0 0 0 8px rgba(85,201,109,.14);animation:jkMsgCallPulse 1.15s ease-in-out infinite;}
+  .jk-msg-call-dialog h3{margin:0;font-size:1.18rem;}
+  .jk-msg-call-dialog p{margin:0;color:#cfeee0;font-size:.84rem;line-height:1.45;}
+  .jk-msg-call-dialog-actions{display:flex;justify-content:center;gap:12px;margin-top:4px;}
+  .jk-msg-call-dialog-actions button{border:0;border-radius:999px;min-width:96px;min-height:42px;font-weight:900;cursor:pointer;}
+  #jk-msg-call-decline{background:#ef4444;color:#fff;}
+  #jk-msg-call-answer{background:#55c96d;color:#061b12;}
+  @keyframes jkMsgCallPulse{0%,100%{transform:scale(1);box-shadow:0 0 0 8px rgba(85,201,109,.14);}50%{transform:scale(1.06);box-shadow:0 0 0 14px rgba(85,201,109,.08);}}
+  #jk-ia-resizer{position:absolute;left:-8px;top:0;bottom:0;width:18px;cursor:ew-resize;touch-action:none;z-index:3;}
+  #jk-ia-resizer::before{content:"";position:absolute;left:4px;top:50%;width:11px;height:52px;transform:translateY(-50%);border:1px solid rgba(120,227,212,.34);border-right:0;border-radius:999px 0 0 999px;background:rgba(35,142,165,.42);box-shadow:0 0 14px rgba(120,227,212,.18);transition:background .15s ease,border-color .15s ease,box-shadow .15s ease;}
+  #jk-ia-resizer::after{content:"";position:absolute;left:9px;top:50%;width:2px;height:26px;transform:translateY(-50%);border-radius:999px;background:rgba(224,255,250,.66);box-shadow:-3px 0 0 rgba(224,255,250,.32),3px 0 0 rgba(224,255,250,.32);transition:background .15s ease,box-shadow .15s ease;}
+  #jk-ia-resizer:hover::before,#jk-ia-resizer:focus-visible::before,body.jk-ia-resizing #jk-ia-resizer::before{background:rgba(36,161,160,.66);border-color:rgba(120,227,212,.72);box-shadow:0 0 18px rgba(120,227,212,.34);}
+  #jk-ia-resizer:hover::after,#jk-ia-resizer:focus-visible::after,body.jk-ia-resizing #jk-ia-resizer::after{background:#eafffb;box-shadow:-3px 0 0 rgba(234,255,251,.52),3px 0 0 rgba(234,255,251,.52),0 0 12px rgba(120,227,212,.42);}
   body.jk-ia-resizing{cursor:ew-resize;user-select:none;}
   #jk-ia-panel-header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid rgba(106,225,203,.18);background:rgba(4,30,48,.7);}
   #jk-ia-panel-header h3{flex:1 1 auto;margin:0;color:#8ee9de;font-size:.96rem;font-weight:700;}
@@ -842,9 +896,8 @@
   .jk-ia-approval-title{font-weight:900;color:#fff;}
   .jk-ia-approval-meta{font-size:.73rem;color:#9ee8df;line-height:1.35;}
   .jk-ia-approval-question,.jk-ia-approval-answer{padding:8px;border-radius:8px;background:rgba(4,26,35,.56);border:1px solid rgba(120,227,212,.18);}
-  .jk-ia-approval-conversation{display:grid;gap:7px;max-height:280px;overflow:auto;padding:8px;border-radius:8px;background:rgba(4,26,35,.38);border:1px solid rgba(120,227,212,.18);scrollbar-width:thin;scrollbar-color:rgba(120,227,212,.36) transparent;}
-  .jk-ia-approval-conversation::-webkit-scrollbar{width:6px;height:6px;}
-  .jk-ia-approval-conversation::-webkit-scrollbar-thumb{background:rgba(120,227,212,.28);border-radius:999px;}
+  .jk-ia-approval-conversation{display:grid;gap:7px;max-height:280px;overflow:auto;padding:8px;border-radius:8px;background:rgba(4,26,35,.38);border:1px solid rgba(120,227,212,.18);scrollbar-width:none;-ms-overflow-style:none;}
+  .jk-ia-approval-conversation::-webkit-scrollbar{width:0;height:0;display:none;}
   .jk-ia-approval-message{padding:7px 8px;border-radius:9px;border:1px solid rgba(120,227,212,.14);background:rgba(11,48,64,.5);}
   .jk-ia-approval-message.seller{background:rgba(16,95,76,.34);margin-left:18px;}
   .jk-ia-approval-message.buyer{background:rgba(23,47,70,.55);margin-right:18px;}
@@ -852,7 +905,8 @@
   .jk-ia-approval-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;}
   .jk-ia-approval-attachment-img{display:block;width:76px;height:76px;object-fit:cover;border-radius:9px;border:1px solid rgba(120,227,212,.28);background:rgba(2,19,29,.75);}
   .jk-ia-approval-file{display:inline-flex;align-items:center;min-height:30px;padding:5px 8px;border-radius:8px;border:1px solid rgba(120,227,212,.26);color:#e8fffb;text-decoration:none;background:rgba(2,19,29,.55);font-size:.72rem;}
-  .jk-ia-approval-edit{width:100%;min-height:130px;resize:vertical;border-radius:8px;border:1px solid rgba(120,227,212,.26);background:rgba(3,22,32,.82);color:#e8fffb;padding:8px;font:inherit;font-size:.78rem;line-height:1.45;outline:none;}
+  .jk-ia-approval-edit{width:100%;min-height:130px;resize:vertical;border-radius:8px;border:1px solid rgba(120,227,212,.26);background:rgba(3,22,32,.82);color:#e8fffb;padding:8px;font:inherit;font-size:.78rem;line-height:1.45;outline:none;scrollbar-width:none;-ms-overflow-style:none;}
+  .jk-ia-approval-edit::-webkit-scrollbar{width:0;height:0;display:none;}
   .jk-ia-approval-edit:focus{border-color:#53d4b7;box-shadow:0 0 0 2px rgba(83,212,183,.16);}
   .jk-ia-approval-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.03em;color:#8ee9de;font-weight:900;margin-bottom:4px;}
   .jk-ia-approval-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;}
@@ -944,45 +998,70 @@
   </aside>
   <aside id="jk-msg-panel" role="complementary" aria-label="Mensagens">
     <div id="jk-msg-header">
-      <h3>&#128172; Mensagens</h3>
+      <div class="jk-msg-title-wrap">
+        <span class="jk-msg-header-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a3.5 3.5 0 0 0-2.5-3.35"/><path d="M16 3.2a4 4 0 0 1 0 7.6"/></svg></span>
+        <div>
+          <h3>Mensagens</h3>
+          <span class="jk-msg-header-subtitle">Central de comunicacao</span>
+        </div>
+      </div>
       <button class="jk-msg-hbtn" id="jk-msg-btn-refresh" title="Atualizar">&#8635;</button>
       <button class="jk-msg-hbtn" id="jk-msg-btn-fechar" title="Fechar">&times;</button>
     </div>
     <div id="jk-msg-body">
       <div class="jk-msg-status" id="jk-msg-status">Aguardando abertura do painel.</div>
       <div id="jk-msg-main-view">
-        <section class="jk-msg-section" aria-label="Mensagens recebidas">
+        <section class="jk-msg-section jk-msg-users-section" aria-label="Usuarios">
+          <div class="jk-msg-section-head">
+            <div class="jk-msg-section-title">Usuarios</div>
+            <div class="jk-msg-count-pill" id="jk-msg-contact-count">0 contatos</div>
+          </div>
+          <div class="jk-msg-list" id="jk-msg-online-list"></div>
+        </section>
+        <section class="jk-msg-section jk-msg-inbox-section jk-msg-section-empty" aria-label="Mensagens recebidas">
           <div class="jk-msg-section-title">Mensagens recebidas</div>
           <div class="jk-msg-list" id="jk-msg-inbox-list"></div>
-        </section>
-        <section class="jk-msg-section" aria-label="Usuarios">
-          <div class="jk-msg-section-title">Usuarios</div>
-          <div class="jk-msg-list" id="jk-msg-online-list"></div>
         </section>
       </div>
       <div id="jk-msg-chat-header">
         <button id="jk-msg-back" type="button" title="Voltar para usuarios">&#8592;</button>
         <div id="jk-msg-chat-title">Chat</div>
+        <button id="jk-msg-video-call" type="button" title="Iniciar videochamada Daily" disabled>&#128249;</button>
       </div>
       <div id="jk-msg-history" aria-live="polite"></div>
       <div id="jk-msg-typing" aria-live="polite"></div>
     </div>
     <div id="jk-msg-compose">
       <div id="jk-msg-selected">Selecione um usuario para enviar mensagem.</div>
-      <div id="jk-msg-tools" aria-label="Ferramentas da mensagem">
-        <button class="jk-msg-tool-btn" id="jk-msg-emoji-btn" type="button" title="Emoji">&#9786;</button>
-        <button class="jk-msg-tool-btn" id="jk-msg-img-btn" type="button" title="Imagem ou GIF">IMG</button>
-        <button class="jk-msg-tool-btn" id="jk-msg-file-btn" type="button" title="Arquivo">&#128206;</button>
-        <button class="jk-msg-tool-btn" id="jk-msg-audio-btn" type="button" title="Gravar audio">&#127908;</button>
-      </div>
       <div id="jk-msg-emoji-panel" aria-label="Escolher emoji"></div>
       <div id="jk-msg-anexos" aria-live="polite"></div>
-      <textarea id="jk-msg-text" maxlength="2000" placeholder="Digite sua mensagem..." aria-label="Texto da mensagem"></textarea>
-      <button id="jk-msg-send" type="button">Enviar mensagem</button>
+      <div id="jk-msg-tools" aria-label="Ferramentas da mensagem">
+        <div class="jk-msg-input-pill">
+          <button class="jk-msg-tool-btn" id="jk-msg-emoji-btn" type="button" title="Emoji"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M8 14.5c1.2 1.2 2.5 1.8 4 1.8s2.8-.6 4-1.8"/></svg></button>
+          <textarea id="jk-msg-text" maxlength="2000" placeholder="Mensagem" aria-label="Texto da mensagem"></textarea>
+          <button class="jk-msg-tool-btn" id="jk-msg-file-btn" type="button" title="Arquivo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.6l-8.5 8.5a5 5 0 0 1-7.1-7.1l9.2-9.2a3.5 3.5 0 0 1 5 5L10.6 18a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
+          <button class="jk-msg-tool-btn" id="jk-msg-img-btn" type="button" title="Imagem ou GIF"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 16l-5.2-5.2a2 2 0 0 0-2.8 0L5 19"/></svg></button>
+          <button class="jk-msg-tool-btn" id="jk-msg-audio-btn" type="button" title="Gravar audio"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg></button>
+        </div>
+        <button id="jk-msg-send" type="button" title="Enviar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg></button>
+      </div>
       <input type="file" id="jk-msg-img-input" accept="image/*,.gif" multiple style="display:none">
       <input type="file" id="jk-msg-file-input" multiple style="display:none">
     </div>
   </aside>
+  <div id="jk-msg-call-modal" hidden role="dialog" aria-modal="true" aria-labelledby="jk-msg-call-title">
+    <div class="jk-msg-call-dialog">
+      <div class="jk-msg-call-avatar" id="jk-msg-call-avatar">?</div>
+      <div>
+        <h3 id="jk-msg-call-title">Chamada de video</h3>
+        <p id="jk-msg-call-subtitle">Usuario chamando.</p>
+      </div>
+      <div class="jk-msg-call-dialog-actions">
+        <button id="jk-msg-call-decline" type="button">Recusar</button>
+        <button id="jk-msg-call-answer" type="button">Atender</button>
+      </div>
+    </div>
+  </div>
   `;
 
   function _nomeModeloLimpo(item) {
@@ -1090,6 +1169,10 @@
     let msgUsuariosCacheTs = 0;
     let msgMensagensCache = [];
     let msgHistoricoCache = new Map();
+    let msgCallRinging = null;
+    let msgCallRingTimer = null;
+    let msgCallAudioCtx = null;
+    let msgCallSeenSet = null;
     const PANEL_WIDTH_KEY = 'jk_ia_sidebar_width_px';
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
@@ -1102,6 +1185,8 @@
     const MSG_USUARIOS_CACHE_KEY = 'jk_msg_usuarios_cache_v1';
     const MSG_USUARIOS_CACHE_TTL_MS = 5 * 60 * 1000;
     const MSG_HISTORY_LIMIT = 50;
+    const MSG_CALL_RING_SEEN_KEY = 'jk_msg_call_seen_v1';
+    const MSG_CALL_RING_MAX_AGE_MS = 3 * 60 * 1000;
     const PERGUNTAS_APPROVALS_NOTIFY_KEY = 'jk_perguntas_aprovacoes_notificadas_v1';
     const PERGUNTAS_MONITOR_OWNER_KEY = 'jk_perguntas_monitor_owner_v1';
     const PERGUNTAS_MONITOR_INTERVAL_MS = 15000;
@@ -1419,7 +1504,9 @@
         const key = _msgNotificacaoKey(conversa);
         if (!key || conhecidos.has(key)) return;
         const nome = String(conversa.name || conversa.username || 'Usuario').trim();
-        const body = String(conversa.last_message || 'Nova mensagem recebida.').trim();
+        const body = _msgIsDailyCall(conversa.call)
+          ? `${nome} esta chamando por video.`
+          : String(conversa.last_message || 'Nova mensagem recebida.').trim();
         try {
           const notificacao = new Notification(`${nome} te enviou uma mensagem`, {
             body,
@@ -1444,6 +1531,226 @@
         } catch (_) {}
       });
       if (alterou) _msgSalvarNotificacoesSet();
+    }
+
+    function _msgCallSeen() {
+      if (msgCallSeenSet) return msgCallSeenSet;
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(MSG_CALL_RING_SEEN_KEY) || '[]') || []; } catch (_) { lista = []; }
+      msgCallSeenSet = new Set(Array.isArray(lista) ? lista.map(String) : []);
+      return msgCallSeenSet;
+    }
+
+    function _msgSalvarCallSeen() {
+      try {
+        const lista = Array.from(_msgCallSeen()).slice(-120);
+        localStorage.setItem(MSG_CALL_RING_SEEN_KEY, JSON.stringify(lista));
+        msgCallSeenSet = new Set(lista);
+      } catch (_) {}
+    }
+
+    function _msgMarcarCallSeen(id) {
+      const key = String(id || '').trim();
+      if (!key) return;
+      _msgCallSeen().add(key);
+      _msgSalvarCallSeen();
+    }
+
+    function _msgIsDailyCall(call) {
+      return !!(call && typeof call === 'object' && String(call.type || '') === 'daily_video' && String(call.room_url || call.url || '').trim());
+    }
+
+    function _msgCallUrl(call, preferHost = false) {
+      const raw = preferHost ? (call && (call.host_url || call.room_url || call.url)) : (call && (call.room_url || call.url || call.host_url));
+      const texto = String(raw || '').trim();
+      if (!texto) return '';
+      try {
+        const url = new URL(texto, window.location.href);
+        const host = url.hostname.toLowerCase();
+        if (url.protocol !== 'https:' || !(host === 'daily.co' || host.endsWith('.daily.co'))) return '';
+        return url.href;
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function _msgNomeAtual() {
+      const data = _msgUserData();
+      return String(data.name || data.nome || data.username || data.user || _msgUsernameAtual() || 'Usuario').trim();
+    }
+
+    function _msgSalaReuniaoUrl(call, preferHost = false) {
+      const url = _msgCallUrl(call, preferHost);
+      if (!url) return '';
+      const params = new URLSearchParams();
+      params.set('join', url);
+      if (call && call.room_name) params.set('room_name', String(call.room_name || ''));
+      return `/sala_reuniao.html?${params.toString()}`;
+    }
+
+    function _msgAbrirSalaReuniao(call, preferHost = false) {
+      const target = _msgSalaReuniaoUrl(call, preferHost);
+      if (!target) {
+        _msgSetStatus('Link Daily da chamada indisponivel.', true);
+        return;
+      }
+      try {
+        if (window.top && window.top !== window && typeof window.top.postMessage === 'function') {
+          window.top.postMessage({
+            channel: 'jk-open-module-tab',
+            payload: { url: target, title: 'Sala de Reuniao' },
+          }, '*');
+          return;
+        }
+      } catch (_) {}
+      try {
+        window.open(target, '_blank', 'noopener');
+      } catch (_) {
+        window.location.href = target;
+      }
+    }
+
+    function _msgTocarChamadaPulso() {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        if (!msgCallAudioCtx) msgCallAudioCtx = new AudioCtx();
+        if (msgCallAudioCtx.state === 'suspended') msgCallAudioCtx.resume().catch(() => {});
+        const now = msgCallAudioCtx.currentTime;
+        [0, 0.34].forEach((offset, idx) => {
+          const osc = msgCallAudioCtx.createOscillator();
+          const gain = msgCallAudioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = idx ? 620 : 520;
+          gain.gain.setValueAtTime(0.0001, now + offset);
+          gain.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.28);
+          osc.connect(gain);
+          gain.connect(msgCallAudioCtx.destination);
+          osc.start(now + offset);
+          osc.stop(now + offset + 0.3);
+        });
+      } catch (_) {}
+    }
+
+    function _msgIniciarToqueChamada() {
+      _msgPararToqueChamada();
+      _msgTocarChamadaPulso();
+      msgCallRingTimer = setInterval(_msgTocarChamadaPulso, 1300);
+    }
+
+    function _msgPararToqueChamada() {
+      if (msgCallRingTimer) {
+        clearInterval(msgCallRingTimer);
+        msgCallRingTimer = null;
+      }
+    }
+
+    function _msgFecharModalChamada() {
+      _msgPararToqueChamada();
+      const modal = document.getElementById('jk-msg-call-modal');
+      if (modal) modal.hidden = true;
+    }
+
+    async function _msgNotificarChamadaWindows(chamada) {
+      const nome = String(chamada && chamada.name || chamada && chamada.username || 'Usuario').trim();
+      if (window.electronAPI && typeof window.electronAPI.showWindowsNotification === 'function') {
+        try {
+          await window.electronAPI.showWindowsNotification({
+            title: 'Chamada de video',
+            body: `${nome} esta chamando. Abra o chat para atender.`,
+            silent: false,
+          });
+          return;
+        } catch (_) {}
+      }
+      if (!_msgNotificationDisponivel() || Notification.permission !== 'granted') return;
+      try {
+        new Notification('Chamada de video', {
+          body: `${nome} esta chamando.`,
+          tag: `jk-video-call-${String(chamada && chamada.messageId || '')}`,
+          renotify: true,
+        });
+      } catch (_) {}
+    }
+
+    function _msgMostrarChamadaRecebida(chamada) {
+      if (!chamada || !_msgIsDailyCall(chamada.call)) return;
+      const id = String(chamada.messageId || '').trim();
+      if (!id || _msgCallSeen().has(id)) return;
+      msgCallRinging = chamada;
+      const modal = document.getElementById('jk-msg-call-modal');
+      const avatar = document.getElementById('jk-msg-call-avatar');
+      const title = document.getElementById('jk-msg-call-title');
+      const subtitle = document.getElementById('jk-msg-call-subtitle');
+      const nome = String(chamada.name || chamada.username || 'Usuario').trim();
+      if (avatar) avatar.textContent = _msgInicialUsuario({ name: nome, username: chamada.username });
+      if (title) title.textContent = `${nome} esta chamando`;
+      if (subtitle) subtitle.textContent = 'Videochamada Daily pelo JK Sistema.';
+      if (modal) modal.hidden = false;
+      _msgIniciarToqueChamada();
+      void _msgNotificarChamadaWindows(chamada);
+    }
+
+    function _msgAtenderChamadaRecebida() {
+      const chamada = msgCallRinging;
+      if (!chamada) return;
+      _msgMarcarCallSeen(chamada.messageId);
+      _msgFecharModalChamada();
+      msgCallRinging = null;
+      if (chamada.username) {
+        void _msgAbrirChat({
+          username: chamada.username,
+          client_id: chamada.client_id,
+          name: chamada.name || chamada.username,
+        });
+      }
+      _msgAbrirSalaReuniao(chamada.call, false);
+    }
+
+    async function _msgRecusarChamadaRecebida() {
+      const chamada = msgCallRinging;
+      if (chamada && chamada.messageId) _msgMarcarCallSeen(chamada.messageId);
+      _msgFecharModalChamada();
+      msgCallRinging = null;
+      if (chamada && chamada.username) {
+        try {
+          await fetch('/api/user/chat/send', {
+            method: 'POST',
+            headers: _authHeaders(),
+            body: JSON.stringify({
+              username: chamada.username,
+              client_id: chamada.client_id || _clientId() || 'default',
+              message: 'Chamada recusada.',
+              attachments: [],
+            }),
+          });
+        } catch (_) {}
+      }
+    }
+
+    function _msgProcessarChamadasRecebidas(conversas) {
+      const lista = Array.isArray(conversas) ? conversas : [];
+      const agora = Date.now();
+      for (const conversa of lista) {
+        if (!conversa || Number(conversa.unread_count || 0) <= 0 || !_msgIsDailyCall(conversa.call)) continue;
+        const id = String(conversa.last_message_id || '').trim();
+        if (!id || _msgCallSeen().has(id)) continue;
+        const createdTs = Number(conversa.created_ts || 0);
+        if (createdTs && agora - createdTs * 1000 > MSG_CALL_RING_MAX_AGE_MS) {
+          _msgMarcarCallSeen(id);
+          continue;
+        }
+        _msgMostrarChamadaRecebida({
+          messageId: id,
+          username: conversa.username,
+          client_id: conversa.client_id,
+          name: conversa.name || conversa.username,
+          call: conversa.call,
+          created_ts: createdTs,
+        });
+        break;
+      }
     }
 
     function _perguntasAprovacoesNotificadasSet() {
@@ -1681,7 +1988,26 @@
         ? String(user.all_recent_machines[0].last_seen_at || '').trim()
         : '';
       const visto = _msgFormatarHorarioVisto(direto || maquina);
-      return visto ? `Offline - visto ${visto}` : 'Offline';
+      return visto ? `visto ${visto}` : 'Offline';
+    }
+
+    function _msgSubtituloUsuario(user, isSelf) {
+      const status = _msgStatusUsuarioTexto(user);
+      return isSelf ? 'Voc\u00ea \u2022 Online' : status;
+    }
+
+    function _msgInicialUsuario(user) {
+      const label = _msgLabelUsuario(user) || String(user && user.username || 'U');
+      const limpo = String(label || 'U').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      return (limpo.charAt(0) || 'U').toUpperCase();
+    }
+
+    function _msgAvatarClasse(user) {
+      const fonte = String(user && (user.username || user.name || user.email) || 'usuario').toLowerCase();
+      let hash = 0;
+      for (let i = 0; i < fonte.length; i += 1) hash = ((hash << 5) - hash) + fonte.charCodeAt(i);
+      const idx = Math.abs(hash) % 8;
+      return idx ? ` c${idx}` : '';
     }
 
     function _msgRenderVazio(el, texto) {
@@ -1990,6 +2316,43 @@
       return criado ? `${criado} - ${status}` : status;
     }
 
+    function _msgRenderCallHistorico(bubble, msg, fromMe) {
+      const call = msg && msg.call;
+      if (!_msgIsDailyCall(call)) return false;
+      const card = document.createElement('div');
+      card.className = 'jk-msg-call-card';
+
+      const head = document.createElement('div');
+      head.className = 'jk-msg-call-head';
+      const icon = document.createElement('span');
+      icon.className = 'jk-msg-call-icon';
+      icon.innerHTML = '&#128249;';
+      const title = document.createElement('span');
+      title.textContent = fromMe ? 'Videochamada iniciada' : 'Chamada de video recebida';
+      head.appendChild(icon);
+      head.appendChild(title);
+
+      const text = document.createElement('div');
+      text.className = 'jk-msg-call-text';
+      const roomName = String(call.room_name || '').trim();
+      text.textContent = roomName ? `Sala Daily: ${roomName}` : 'Sala Daily pronta para entrar.';
+
+      const actions = document.createElement('div');
+      actions.className = 'jk-msg-call-actions';
+      const join = document.createElement('button');
+      join.type = 'button';
+      join.className = 'jk-msg-call-join';
+      join.textContent = fromMe ? 'Entrar' : 'Atender';
+      join.addEventListener('click', () => _msgAbrirSalaReuniao(call, false));
+      actions.appendChild(join);
+
+      card.appendChild(head);
+      card.appendChild(text);
+      card.appendChild(actions);
+      bubble.appendChild(card);
+      return true;
+    }
+
     function _msgRenderHistorico(mensagens) {
       const el = document.getElementById('jk-msg-history');
       if (!el) return;
@@ -2010,7 +2373,8 @@
         meta.className = 'jk-msg-bubble-meta';
         if (fromMe && !String(msg && msg.storage || '').includes('firebase')) meta.classList.add('local-alert');
         meta.textContent = _msgStatusHistorico(msg, fromMe);
-        if (texto.textContent) bubble.appendChild(texto);
+        const callRendered = _msgRenderCallHistorico(bubble, msg, fromMe);
+        if (texto.textContent && !callRendered) bubble.appendChild(texto);
         _msgRenderAnexosHistorico(bubble, msg.attachments || []);
         if (meta.textContent) bubble.appendChild(meta);
         el.appendChild(bubble);
@@ -2090,12 +2454,14 @@
     function _msgAtualizarSelecao() {
       const selected = document.getElementById('jk-msg-selected');
       const send = document.getElementById('jk-msg-send');
+      const video = document.getElementById('jk-msg-video-call');
       if (selected) {
         selected.textContent = msgChatAberto && msgUsuarioSelecionado
           ? `Chat com ${_msgLabelUsuario(msgUsuarioSelecionado)}`
           : 'Selecione um usuario para enviar mensagem.';
       }
       if (send) send.disabled = !(msgChatAberto && msgUsuarioSelecionado);
+      if (video) video.disabled = !(msgChatAberto && msgUsuarioSelecionado);
       document.querySelectorAll('.jk-msg-user-item').forEach(btn => {
         const username = String(btn.dataset.username || '').toLowerCase();
         const ativo = msgUsuarioSelecionado && username === String(msgUsuarioSelecionado.username || '').toLowerCase();
@@ -2107,6 +2473,8 @@
       const el = document.getElementById('jk-msg-inbox-list');
       if (!el) return;
       const lista = Array.isArray(mensagens) ? mensagens : [];
+      const section = el.closest('.jk-msg-inbox-section');
+      if (section) section.classList.toggle('jk-msg-section-empty', !lista.length);
       if (!lista.length) {
         _msgRenderVazio(el, 'Nenhuma mensagem nova.');
         return;
@@ -2132,7 +2500,9 @@
 
         const text = document.createElement('div');
         text.className = 'jk-msg-card-text';
-        text.textContent = String(msg.message || msg.last_message || 'Anexo').trim();
+        text.textContent = _msgIsDailyCall(msg.call)
+          ? 'Chamada de video Daily'
+          : String(msg.message || msg.last_message || 'Anexo').trim();
 
         const actions = document.createElement('div');
         actions.className = 'jk-msg-card-actions';
@@ -2173,8 +2543,11 @@
         online: false,
         unread_count: item.unread_count,
       })));
+      const countEl = document.getElementById('jk-msg-contact-count');
+      if (countEl) countEl.textContent = `${lista.length} contato${lista.length === 1 ? '' : 's'}`;
       if (!lista.length) {
         _msgRenderVazio(el, 'Nenhum usuario encontrado.');
+        _msgAtualizarSelecao();
         return;
       }
       const atual = _msgUsernameAtual();
@@ -2187,30 +2560,44 @@
         const unreadCount = Number(user.unread_count || unread.unread_count || 0);
         const btn = document.createElement('button');
         btn.type = 'button';
+        const userOnline = !!isSelf || user.online !== false;
         btn.className = 'jk-msg-user-item';
-        btn.classList.toggle('offline', user.online === false);
+        btn.classList.toggle('offline', !userOnline);
+        btn.classList.toggle('self', !!isSelf);
         btn.dataset.username = username;
         btn.dataset.clientId = clientId;
         btn.disabled = !!isSelf;
 
-        const dot = document.createElement('span');
-        dot.className = 'jk-msg-dot';
+        const avatar = document.createElement('span');
+        avatar.className = `jk-msg-avatar${_msgAvatarClasse(user)}`;
+        avatar.textContent = _msgInicialUsuario(user);
 
         const info = document.createElement('span');
         info.className = 'jk-msg-user-info';
         const name = document.createElement('span');
         name.className = 'jk-msg-user-name';
         const statusUsuario = _msgStatusUsuarioTexto(user);
-        name.textContent = `${_msgLabelUsuario(user)}${isSelf ? ' (voce)' : ''} - ${statusUsuario}`;
+        name.textContent = _msgLabelUsuario(user);
         name.title = name.textContent;
         const meta = document.createElement('span');
         meta.className = 'jk-msg-user-meta';
-        meta.textContent = statusUsuario;
+        meta.textContent = _msgSubtituloUsuario(user, isSelf);
         info.appendChild(name);
         info.appendChild(meta);
 
-        btn.appendChild(dot);
+        const alertDot = document.createElement('span');
+        alertDot.className = `jk-msg-contact-alert ${userOnline ? 'online' : 'offline'}`;
+        alertDot.title = unreadCount > 0 ? `${unreadCount} mensagem(ns) nao lida(s) | ${statusUsuario}` : statusUsuario;
+
+        const chevron = document.createElement('span');
+        chevron.className = 'jk-msg-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+        chevron.textContent = '\u203A';
+
+        btn.appendChild(avatar);
         btn.appendChild(info);
+        btn.appendChild(alertDot);
+        btn.appendChild(chevron);
         if (unreadCount > 0) {
           const badge = document.createElement('span');
           badge.className = 'jk-msg-unread-count';
@@ -2264,9 +2651,11 @@
           client_id: item.client_id,
           name: item.name,
           unread_count: Number(item.unread_count || 0),
+          call: item.call || null,
         },
       ]));
       _msgNotificarConversas(chatConversations);
+      _msgProcessarChamadasRecebidas(chatConversations);
       const chatMessages = chatConversations.map(item => ({
         type: 'chat',
         username: item.username,
@@ -2276,6 +2665,7 @@
         last_message_id: item.last_message_id,
         last_message: item.last_message,
         message: item.last_message,
+        call: item.call || null,
         created_at: item.created_at,
         created_ts: item.created_ts,
       }));
@@ -2285,6 +2675,17 @@
     }
 
     async function _msgBuscarUsuariosOnline() {
+      if (typeof window.jkBuscarUsuariosOnline === 'function') {
+        try {
+          const data = await window.jkBuscarUsuariosOnline();
+          if (data && data.success !== false && Array.isArray(data.users)) {
+            const users = data.users.filter(user => user && user.active !== false);
+            _msgSalvarUsuariosCache(users);
+            return users;
+          }
+        } catch (_) {}
+      }
+
       try {
         const resp = await fetch('/api/admin/users/online', {
           method: 'GET',
@@ -2364,6 +2765,113 @@
         await _msgCarregarPainel(true);
       } catch (err) {
         _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel marcar como lida.', true);
+      }
+    }
+
+    function _msgBuildDailyCallPayload(destino) {
+      const hoje = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const atual = _msgUsernameAtual() || 'usuario';
+      const outro = String(destino && destino.username || 'usuario').trim().toLowerCase() || 'usuario';
+      return {
+        nome: `chamada-${atual}-${outro}-${hoje}`,
+        privacidade: 'public',
+        idioma: 'pt-BR',
+        expira_em_minutos: 180,
+        duracao_maxima_minutos: null,
+        limitar_participantes: false,
+        max_participantes: null,
+        nome_host: _msgNomeAtual() || 'Anfitriao JK Sistema',
+        iniciar_audio_desligado: true,
+        iniciar_video_desligado: true,
+        habilitar_prejoin: true,
+        habilitar_sala_espera: false,
+        habilitar_compartilhar_tela: true,
+        habilitar_chat: true,
+        habilitar_historico_chat: true,
+        habilitar_chat_avancado: true,
+        habilitar_pessoas: true,
+        habilitar_mao_levantada: true,
+        habilitar_reacoes: true,
+        habilitar_rede: true,
+        habilitar_pip: true,
+        habilitar_legendas: false,
+        habilitar_cancelamento_ruido: false,
+        habilitar_fundo_virtual: true,
+        habilitar_salas_grupo: false,
+        habilitar_alerta_cpu: true,
+        habilitar_participantes_ocultos: false,
+        habilitar_chamadas_grandes: false,
+        habilitar_simulcast_adaptativo: false,
+        exigir_user_id_unico: false,
+        habilitar_log_reduzido: false,
+        habilitar_dialout: false,
+        ejetar_na_expiracao: false,
+        modo_gravacao: '',
+        criar_token_host: true,
+        auto_iniciar_gravacao: false,
+        auto_iniciar_transcricao: false,
+      };
+    }
+
+    async function _msgIniciarVideoChamada() {
+      const destino = msgUsuarioSelecionado;
+      const btn = document.getElementById('jk-msg-video-call');
+      if (!msgChatAberto || !destino || !destino.username) {
+        _msgSetStatus('Abra um chat com um usuario antes de iniciar chamada.', true);
+        return;
+      }
+      if (btn) btn.disabled = true;
+      _msgSetStatus(`Criando chamada Daily para ${_msgLabelUsuario(destino)}...`);
+      try {
+        const salaResp = await fetch('/api/sala-reuniao/salas', {
+          method: 'POST',
+          headers: _authHeaders(),
+          body: JSON.stringify(_msgBuildDailyCallPayload(destino)),
+        });
+        const salaData = await salaResp.json().catch(() => ({}));
+        if (!salaResp.ok || salaData.success === false) {
+          throw new Error(salaData.detail || salaData.message || 'Nao foi possivel criar a sala Daily.');
+        }
+        const room = salaData.room || {};
+        const roomUrl = String(room.url || '').trim();
+        if (!roomUrl) throw new Error('A Daily nao retornou o link da sala.');
+        const call = {
+          type: 'daily_video',
+          room_name: room.name || '',
+          room_url: roomUrl,
+          started_at: new Date().toISOString(),
+          expires_at: room.expires_at || '',
+          created_by: _msgUsernameAtual(),
+          created_by_name: _msgNomeAtual(),
+          invited_username: destino.username,
+          invited_client_id: destino.client_id || _clientId() || 'default',
+        };
+        const msgResp = await fetch('/api/user/chat/send', {
+          method: 'POST',
+          headers: _authHeaders(),
+          body: JSON.stringify({
+            username: destino.username,
+            client_id: destino.client_id || _clientId() || 'default',
+            message: 'Chamada de video Daily',
+            attachments: [],
+            call,
+          }),
+        });
+        const msgData = await msgResp.json().catch(() => ({}));
+        if (!msgResp.ok || msgData.success === false) {
+          throw new Error(msgData.detail || msgData.message || 'A sala foi criada, mas nao consegui enviar o convite.');
+        }
+        _msgSetStatus(`Chamando ${_msgLabelUsuario(destino)}...`);
+        await _msgCarregarHistorico(true);
+        await _msgCarregarPainel(true);
+        _msgAbrirSalaReuniao({
+          ...call,
+          host_url: room.host_url || (salaData.host_token ? `${roomUrl}${roomUrl.includes('?') ? '&' : '?'}t=${encodeURIComponent(salaData.host_token)}` : ''),
+        }, true);
+      } catch (err) {
+        _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel iniciar a videochamada.', true);
+      } finally {
+        _msgAtualizarSelecao();
       }
     }
 
@@ -3423,6 +3931,9 @@
     document.getElementById('jk-msg-img-btn').addEventListener('click', () => document.getElementById('jk-msg-img-input').click());
     document.getElementById('jk-msg-file-btn').addEventListener('click', () => document.getElementById('jk-msg-file-input').click());
     document.getElementById('jk-msg-audio-btn').addEventListener('click', () => _msgToggleGravacaoAudio());
+    document.getElementById('jk-msg-video-call').addEventListener('click', () => _msgIniciarVideoChamada());
+    document.getElementById('jk-msg-call-answer').addEventListener('click', () => _msgAtenderChamadaRecebida());
+    document.getElementById('jk-msg-call-decline').addEventListener('click', () => { void _msgRecusarChamadaRecebida(); });
     document.getElementById('jk-msg-img-input').addEventListener('change', e => _msgArquivosSelecionados(e.target.files).then(() => e.target.value = ''));
     document.getElementById('jk-msg-file-input').addEventListener('change', e => _msgArquivosSelecionados(e.target.files).then(() => e.target.value = ''));
     document.getElementById('jk-msg-text').addEventListener('keydown', e => {
@@ -3479,10 +3990,13 @@
     void _msgBuscarMensagens().catch(() => {});
     setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 1200);
     _perguntasIniciarMonitorGlobal();
+    window.addEventListener('beforeunload', _msgPararToqueChamada);
 
     document.addEventListener('click', e => {
       const alvo = e.target;
       const menu = alvo && alvo.closest ? alvo.closest('#jk-right-sidebar-hotspot') : null;
+      const callModal = alvo && alvo.closest ? alvo.closest('#jk-msg-call-modal') : null;
+      if (callModal) return;
       const iaPanel = document.getElementById('jk-ia-panel');
       const msgPanel = document.getElementById('jk-msg-panel');
       if (panelAberto && iaPanel && !iaPanel.contains(alvo) && !menu) togglePanel(false);

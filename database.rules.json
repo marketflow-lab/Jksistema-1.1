@@ -1,0 +1,30 @@
+{
+  "rules": {
+    "jk_sistema_presence_v1": {
+      "clients": {
+        "$clientKey": {
+          "users": {
+            ".read": "auth != null && auth.token.jk_client_key === $clientKey && auth.token.jk_admin === true",
+            "$userKey": {
+              ".read": "auth != null && auth.token.jk_client_key === $clientKey && (auth.token.jk_admin === true || auth.token.jk_user_key === $userKey)",
+              "connections": {
+                "$connectionId": {
+                  ".write": "auth != null && auth.token.jk_client_key === $clientKey && auth.token.jk_user_key === $userKey",
+                  ".validate": "newData.val() === null || (newData.child('username').isString() && newData.child('client_id').isString() && newData.child('machine_id').isString() && newData.child('label').isString() && newData.child('online').isBoolean())"
+                }
+              },
+              "lastOnline": {
+                ".write": "auth != null && auth.token.jk_client_key === $clientKey && auth.token.jk_user_key === $userKey",
+                ".validate": "newData.val() === null || newData.isNumber()"
+              },
+              "lastState": {
+                ".write": "auth != null && auth.token.jk_client_key === $clientKey && auth.token.jk_user_key === $userKey",
+                ".validate": "newData.val() === null || (newData.child('username').isString() && newData.child('client_id').isString() && newData.child('machine_id').isString())"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
