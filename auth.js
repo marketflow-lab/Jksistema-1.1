@@ -841,10 +841,7 @@ function obterAuthHeaders(extra) {
                     await modules.database.set(lastStateRef, onlinePayload);
                     await modules.database.set(connectionRef, onlinePayload);
                     rtdbState.started = true;
-                    if (timer) {
-                        clearInterval(timer);
-                        timer = null;
-                    }
+                    iniciarFallbackHeartbeat();
                 } catch (_err) {
                     rtdbState.disabled = true;
                     iniciarFallbackHeartbeat();

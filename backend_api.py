@@ -436,6 +436,10 @@ def _env_config_bool(keys: tuple[str, ...] | list[str], default: bool = False) -
     return str(value).strip().lower() in {"1", "true", "sim", "yes", "on"}
 
 
+def _agent_service_only() -> bool:
+    return _env_config_bool(("JK_AGENT_SERVICE_ONLY", "IA_AGENT_SERVICE_ONLY"), default=False)
+
+
 def _redirect_uri_eh_local(uri: Optional[str]) -> bool:
     valor = str(uri or "").strip().lower()
     if not valor:
@@ -514,10 +518,16 @@ CONFIG_GLOBAIS_DEFAULT = {
     "ia_modelo_perguntas": "vertex:gemini-2.5-flash",
     "ia_modelo_chat": "vertex:gemini-2.5-flash",
     "ia_modelo_favoritos": "vertex:gemini-2.5-flash",
+    "ia_modo_padrao": "modelo",
+    "ia_modo_perguntas": "modelo",
+    "ia_modo_chat": "modelo",
+    "ia_modo_favoritos": "modelo",
     "ia_vertex_project_id": "",
     "ia_vertex_location": "global",
     "ia_vertex_model": "gemini-2.5-flash",
     "ia_vertex_service_account_email": "",
+    "ia_agent_resource_name": "",
+    "ia_agent_endpoint_url": "",
     "ia_favoritos_usar_imagem": False,
     "ia_openai_ativa": True,
     "ia_deepseek_ativa": True,
@@ -532,14 +542,28 @@ PERMISSION_KEYS = [
 ]
 
 
+def _normalizar_ia_modo(valor: object) -> str:
+    texto = str(valor or "").strip().lower()
+    if texto in {"agente", "agent", "cloud_agent", "agente_cloud", "agent_cloud", "vertex_agent", "agent_engine"}:
+        return "agente"
+    return "modelo"
+
+
 def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
     dados = dict(CONFIG_GLOBAIS_DEFAULT)
     if isinstance(payload, dict):
         dados.update(payload)
+    for chave in ("ia_modo_padrao", "ia_modo_perguntas", "ia_modo_chat", "ia_modo_favoritos"):
+        dados[chave] = _normalizar_ia_modo(dados.get(chave))
+    for chave in ("ia_agent_resource_name", "ia_agent_endpoint_url"):
+        dados[chave] = str(dados.get(chave) or "").strip()
     dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))
     dados["ia_deepseek_ativa"] = bool(dados.get("ia_deepseek_ativa", True))
     dados["ia_gemini_ativa"] = bool(dados.get("ia_gemini_ativa", False))
     dados["ia_vertex_ativa"] = bool(dados.get("ia_vertex_ativa", True))
+    dados["ia_openai_api_key_configurada"] = bool(_obter_openai_api_key())
+    dados["ia_deepseek_api_key_configurada"] = bool(_obter_deepseek_api_key())
+    dados["ia_gemini_api_key_configurada"] = bool(_obter_gemini_api_key())
     dados["ia_agent_api_key_configurada"] = bool(_vertex_ai_agent_api_key())
     return dados
 
@@ -558,8 +582,17 @@ def _carregar_configuracoes_globais_local() -> dict:
     return _normalizar_configuracoes_globais(dados)
 
 
+def _configuracoes_chaves_sensiveis() -> tuple[str, ...]:
+    return (
+        "ia_openai_api_key", "ia_openai_api_key_limpar", "ia_openai_api_key_configurada",
+        "ia_deepseek_api_key", "ia_deepseek_api_key_limpar", "ia_deepseek_api_key_configurada",
+        "ia_gemini_api_key", "ia_gemini_api_key_limpar", "ia_gemini_api_key_configurada",
+        "ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada",
+    )
+
+
 def _salvar_configuracoes_globais_local(payload: dict) -> None:
-    for chave in ("ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada"):
+    for chave in _configuracoes_chaves_sensiveis():
         payload.pop(chave, None)
     with open(ARQUIVO_CONFIG_GLOBAIS, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -608,7 +641,7 @@ def _salvar_configuracoes_globais_firebase(payload: dict) -> bool:
         if db is None:
             return False
         data = dict(payload)
-        for chave in ("ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada"):
+        for chave in _configuracoes_chaves_sensiveis():
             data.pop(chave, None)
         data["updated_at"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         db.collection(_firebase_configuracoes_globais_collection_name()).document(_firebase_configuracoes_globais_doc_id()).set(data, merge=True)
@@ -1032,6 +1065,12 @@ class IAChatRequest(BaseModel):
     modulo: Optional[str] = None
     conversa_mensagens: Optional[list[dict]] = None
 
+
+class IAAgentQueryRequest(BaseModel):
+    input: Optional[Any] = None
+    classMethod: Optional[str] = "query"
+
+
 class IATreinamentoPerguntasPosVendaRequest(BaseModel):
     orientacoes: str = ""
     tipo: Optional[str] = "perguntas_anuncio"
@@ -1173,6 +1212,9 @@ class FavoritosEfetivarPromocaoRequest(BaseModel):
     campanha_id: str
     campanha_nome: Optional[str] = ""
     promotion_type: Optional[str] = "SELLER_CAMPAIGN"
+    listing_type_id_alvo: Optional[str] = ""
+    tipo_anuncio_alvo: Optional[str] = ""
+    tipo_anuncio_atual: Optional[str] = ""
     simulacao: Optional[dict] = None
     anuncio: Optional[dict] = None
 
@@ -1493,10 +1535,22 @@ class ConfiguracoesGlobaisRequest(BaseModel):
     ia_modelo_perguntas: str | None = None
     ia_modelo_chat: str | None = None
     ia_modelo_favoritos: str | None = None
+    ia_modo_padrao: str | None = None
+    ia_modo_perguntas: str | None = None
+    ia_modo_chat: str | None = None
+    ia_modo_favoritos: str | None = None
     ia_vertex_project_id: str | None = None
     ia_vertex_location: str | None = None
     ia_vertex_model: str | None = None
     ia_vertex_service_account_email: str | None = None
+    ia_agent_resource_name: str | None = None
+    ia_agent_endpoint_url: str | None = None
+    ia_openai_api_key: str | None = None
+    ia_openai_api_key_limpar: bool | None = None
+    ia_deepseek_api_key: str | None = None
+    ia_deepseek_api_key_limpar: bool | None = None
+    ia_gemini_api_key: str | None = None
+    ia_gemini_api_key_limpar: bool | None = None
     ia_agent_api_key: str | None = None
     ia_agent_api_key_limpar: bool | None = None
     ia_favoritos_usar_imagem: bool | None = None
@@ -8196,6 +8250,7 @@ def _ia_tool_get_product_data(client_id: str, mensagem: str, limite: int = 5) ->
                 imagem_url = _ia_normalizar_imagem_cadastro_url(foto_local)
         registros.append({
             "sku": str(row.get("sku") or "").strip(),
+            "id_bling": str(row.get("id_bling") or "").strip(),
             "nome": str(row.get("nome_tool") or row.get("nome") or row.get("nome_bling") or "").strip(),
             "marca": str(row.get("marca") or "").strip(),
             "categoria": str(row.get("categoria") or "").strip(),
@@ -8275,6 +8330,7 @@ def _ia_tool_get_product_registry_info(client_id: str, mensagem: str, produto_to
 
             registros.append({
                 "sku": str(row.get("sku") or "").strip(),
+                "id_bling": str(row.get("id_bling") or "").strip(),
                 "nome": str(row.get("nome_tool") or row.get("nome") or row.get("nome_bling") or "").strip(),
                 "descricao": str(row.get("descricao") or row.get("description") or "").strip(),
                 "marca": str(row.get("marca") or "").strip(),
@@ -10463,6 +10519,36 @@ def _ia_chat_pede_consulta_devolucoes(mensagem: str) -> bool:
     return any(gatilho in texto for gatilho in ("DEVOLUCAO", "DEVOLUÃƒâ€¡Ãƒâ€¢ES", "DEVOLUCOES", "DEVOLVIDO", "DEVOLVERAM"))
 
 
+def _ia_chat_pede_status_integracoes(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem or "")
+    if not texto:
+        return False
+    return (
+        any(g in texto for g in ("INTEGRACAO", "INTEGRACOES", "API", "APIS", "CONECTAD", "TOKEN", "OAUTH"))
+        and any(g in texto for g in ("MERCADO LIVRE", "MERCADOLIVRE", "ML", "BLING"))
+    )
+
+
+def _ia_chat_pede_consulta_mercado_livre(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem or "")
+    if not texto:
+        return False
+    if re.search(r"\bMLB[\s_-]*\d{5,}\b", str(mensagem or ""), flags=re.IGNORECASE):
+        return True
+    gatilhos_ml = ("MERCADO LIVRE", "MERCADOLIVRE", "ANUNCIO", "ANUNCIOS", "MLB", "SELLER SKU", "SELLER_SKU")
+    gatilhos_consulta = ("CONSULTE", "CONSULTAR", "BUSQUE", "BUSCAR", "LISTE", "LISTAR", "MOSTRE", "VERIFIQUE", "PRECO", "ESTOQUE", "STATUS", "DESCRICAO", "SKU")
+    return any(g in texto for g in gatilhos_ml) and any(g in texto for g in gatilhos_consulta)
+
+
+def _ia_chat_pede_consulta_bling(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem or "")
+    if not texto:
+        return False
+    gatilhos_bling = ("BLING", "ID BLING", "PRODUTO BLING", "NCM", "CEST")
+    gatilhos_consulta = ("CONSULTE", "CONSULTAR", "BUSQUE", "BUSCAR", "LISTE", "LISTAR", "MOSTRE", "VERIFIQUE", "PRECO", "ESTOQUE", "SALDO", "SKU", "CADASTRO")
+    return any(g in texto for g in gatilhos_bling) and any(g in texto for g in gatilhos_consulta)
+
+
 def _ia_chat_pede_vendas_por_loja_virtual(mensagem: str) -> bool:
     texto = _normalizar_texto(mensagem or "")
     if not texto:
@@ -10679,6 +10765,478 @@ def _ia_lojas_ml_conectadas(client_id: str) -> list[str]:
         if nome and isinstance(cfg, dict) and str(cfg.get("access_token") or "").strip():
             lojas.append(nome)
     return lojas
+
+
+def _ia_lojas_bling_conectadas(client_id: str) -> list[str]:
+    lojas = []
+    for loja in carregar_lojas(client_id) or []:
+        if not isinstance(loja, dict):
+            continue
+        nome = str(loja.get("nome") or "").strip()
+        integracoes = loja.get("integracoes") or {}
+        cfg = integracoes.get("bling") if isinstance(integracoes, dict) else {}
+        if nome and isinstance(cfg, dict) and str(cfg.get("access_token") or "").strip():
+            lojas.append(nome)
+    return lojas
+
+
+def _ia_lojas_com_integracao(client_id: str, provedor: str, loja: Optional[str] = None) -> list[str]:
+    provedor_norm = str(provedor or "").strip().lower()
+    conectadas = _ia_lojas_ml_conectadas(client_id) if provedor_norm in {"ml", "mercadolivre", "mercado_livre"} else _ia_lojas_bling_conectadas(client_id)
+    loja_txt = str(loja or "").strip()
+    if not loja_txt or loja_txt in {"__todas", "Todas as lojas"}:
+        return conectadas[:5]
+
+    alvo_norm = _normalizar_texto(loja_txt)
+    for nome in conectadas:
+        if _normalizar_texto(nome) == alvo_norm:
+            return [nome]
+    for nome in conectadas:
+        nome_norm = _normalizar_texto(nome)
+        if alvo_norm and (alvo_norm in nome_norm or nome_norm in alvo_norm):
+            return [nome]
+    return conectadas[:5]
+
+
+def _ia_obter_cfg_bling(client_id: str, nome_loja: str) -> dict:
+    loja = buscar_loja(client_id, nome_loja)
+    if not loja:
+        raise HTTPException(status_code=404, detail="Loja nao encontrada")
+
+    integracoes = loja.get("integracoes") or {}
+    cfg = dict(integracoes.get("bling") or {})
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Integracao Bling nao configurada para esta loja")
+
+    cfg["id"] = cfg.get("id") or cfg.get("client_id")
+    cfg["secret"] = cfg.get("secret") or cfg.get("client_secret")
+    if not cfg.get("access_token"):
+        raise HTTPException(status_code=401, detail="Token Bling ausente. Refaca a autenticacao OAuth.")
+    return cfg
+
+
+def _ia_tool_get_integrations_status(client_id: str, loja: Optional[str] = None) -> Optional[dict]:
+    try:
+        loja_filtro = str(loja or "").strip()
+        registros = []
+        for loja_cfg in carregar_lojas(client_id) or []:
+            if not isinstance(loja_cfg, dict):
+                continue
+            nome = str(loja_cfg.get("nome") or "").strip()
+            if not nome:
+                continue
+            if loja_filtro and loja_filtro not in {"__todas", "Todas as lojas"}:
+                if _normalizar_texto(loja_filtro) not in _normalizar_texto(nome):
+                    continue
+            integracoes = loja_cfg.get("integracoes") or {}
+            cfg_ml = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
+            cfg_bling = integracoes.get("bling") if isinstance(integracoes, dict) else {}
+            registros.append({
+                "loja": nome,
+                "mercado_livre_conectado": bool(isinstance(cfg_ml, dict) and str(cfg_ml.get("access_token") or "").strip()),
+                "mercado_livre_user_id": str((cfg_ml or {}).get("user_id") or "").strip() if isinstance(cfg_ml, dict) else "",
+                "bling_conectado": bool(isinstance(cfg_bling, dict) and str(cfg_bling.get("access_token") or "").strip()),
+                "bling_cliente_configurado": bool(isinstance(cfg_bling, dict) and str((cfg_bling or {}).get("id") or (cfg_bling or {}).get("client_id") or "").strip()),
+            })
+
+        return {
+            "function": "get_integrations_status",
+            "arguments": {"loja": loja_filtro or ""},
+            "result": {
+                "lojas": registros,
+                "total_lojas": len(registros),
+                "ml_conectadas": sum(1 for item in registros if item.get("mercado_livre_conectado")),
+                "bling_conectadas": sum(1 for item in registros if item.get("bling_conectado")),
+            },
+        }
+    except Exception as exc:
+        logger.warning("[IA TOOLS] Falha ao consultar status das integracoes: %s", exc)
+        return None
+
+
+def _ia_ml_precisa_descricao(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem or "")
+    return any(chave in texto for chave in ("DESCRICAO", "DESCRICAO DO ANUNCIO", "TEXTO DO ANUNCIO", "ANUNCIO COMPLETO"))
+
+
+def _ia_ml_item_resumo(item: dict, loja: str, descricao: str = "") -> dict:
+    variacoes = []
+    for var in (item.get("variations") or [])[:8]:
+        if not isinstance(var, dict):
+            continue
+        variacoes.append({
+            "id": str(var.get("id") or "").strip(),
+            "sku": _ml_extrair_sku(var),
+            "price": var.get("price"),
+            "available_quantity": var.get("available_quantity"),
+            "sold_quantity": var.get("sold_quantity"),
+        })
+    return {
+        "loja": loja,
+        "id": str(item.get("id") or "").strip(),
+        "title": str(item.get("title") or "").strip(),
+        "status": str(item.get("status") or "").strip(),
+        "sub_status": item.get("sub_status") or [],
+        "seller_sku": _ml_extrair_sku(item),
+        "price": item.get("price"),
+        "base_price": item.get("base_price"),
+        "original_price": item.get("original_price"),
+        "available_quantity": item.get("available_quantity"),
+        "sold_quantity": item.get("sold_quantity"),
+        "listing_type_id": str(item.get("listing_type_id") or "").strip(),
+        "category_id": str(item.get("category_id") or "").strip(),
+        "permalink": str(item.get("permalink") or "").strip(),
+        "thumbnail": str(item.get("thumbnail") or "").strip(),
+        "health": item.get("health"),
+        "catalog_listing": bool(item.get("catalog_listing")),
+        "variations": variacoes,
+        "description": descricao[:1500] if descricao else "",
+    }
+
+
+def _ia_ml_obter_descricao_item(client_id: str, loja: str, cfg: dict, item_id: str) -> tuple[str, dict]:
+    item_id_txt = str(item_id or "").strip()
+    if not item_id_txt:
+        return "", cfg
+    try:
+        resp, cfg = _ml_api_request(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/items/{item_id_txt}/description",
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return "", cfg
+        data = resp.json() or {}
+        return str(data.get("plain_text") or data.get("text") or "").strip(), cfg
+    except Exception as exc:
+        logger.warning("[IA TOOLS] Falha ao consultar descricao ML %s/%s: %s", loja, item_id_txt, exc)
+        return "", cfg
+
+
+def _ia_ml_listar_anuncios(client_id: str, loja: str, cfg: dict, status_item: str, limite: int = 10) -> tuple[list[dict], dict]:
+    user_id = str(cfg.get("user_id") or "").strip()
+    if not user_id:
+        return [], cfg
+    resp, cfg = _ml_api_request(
+        client_id,
+        loja,
+        cfg,
+        "GET",
+        f"https://api.mercadolibre.com/users/{user_id}/items/search",
+        params={"offset": 0, "limit": max(1, min(int(limite or 10), 20)), "status": status_item},
+        timeout=20,
+    )
+    if resp.status_code != 200:
+        return [], cfg
+    ids = []
+    for item in (resp.json() or {}).get("results") or []:
+        ids.append(str((item.get("id") if isinstance(item, dict) else item) or "").strip())
+    ids = [item_id for item_id in ids if item_id]
+    if not ids:
+        return [], cfg
+    return _ml_buscar_itens_batch(client_id, loja, cfg, ids[:limite])
+
+
+def _ia_tool_get_mercado_livre_listing(
+    client_id: str,
+    mensagem: str,
+    loja: Optional[str] = None,
+    produto_tool: Optional[dict] = None,
+    limite: int = 8,
+) -> Optional[dict]:
+    try:
+        item_ids = _ia_extrair_item_ids_ml(mensagem)
+        sku = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
+        ref = _ia_extrair_referencia_produto_mensagem(mensagem)
+        if not sku and ref.get("sku"):
+            sku = _normalizar_sku_mes(str(ref.get("sku") or "").strip()).upper()
+
+        texto_norm = _normalizar_texto(mensagem)
+        listar_sem_ref = bool(
+            not item_ids
+            and not sku
+            and any(chave in texto_norm for chave in ("ANUNCIOS", "ANUNCIO", "ITENS ATIVOS", "ITENS PAUSADOS", "LISTE", "LISTAR"))
+        )
+        if not item_ids and not sku and not listar_sem_ref:
+            return None
+
+        lojas = _ia_lojas_com_integracao(client_id, "mercadolivre", loja)
+        if not lojas:
+            return {
+                "function": "get_mercado_livre_listing",
+                "arguments": {"sku": sku, "item_ids": item_ids, "loja": loja or ""},
+                "result": {"found": False, "matches": [], "message": "Nenhuma loja com Mercado Livre conectado."},
+            }
+
+        matches = []
+        erros = []
+        incluir_descricao = _ia_ml_precisa_descricao(mensagem)
+        status_item = "paused" if "PAUSAD" in texto_norm else "active"
+        for nome_loja in lojas:
+            if len(matches) >= limite:
+                break
+            try:
+                cfg = _obter_cfg_ml(client_id, nome_loja)
+                itens = []
+                if item_ids:
+                    itens, cfg = _ml_buscar_itens_batch(client_id, nome_loja, cfg, item_ids[:limite])
+                elif sku:
+                    itens, cfg = _ml_favoritos_buscar_itens_por_sku(client_id, nome_loja, cfg, sku)
+                elif listar_sem_ref:
+                    itens, cfg = _ia_ml_listar_anuncios(client_id, nome_loja, cfg, status_item, limite=limite)
+
+                for item in itens:
+                    if not isinstance(item, dict) or len(matches) >= limite:
+                        continue
+                    descricao = ""
+                    if incluir_descricao:
+                        descricao, cfg = _ia_ml_obter_descricao_item(client_id, nome_loja, cfg, str(item.get("id") or ""))
+                    matches.append(_ia_ml_item_resumo(item, nome_loja, descricao=descricao))
+            except Exception as exc:
+                erros.append({"loja": nome_loja, "erro": str(exc)[:180]})
+                logger.warning("[IA TOOLS] Falha ao consultar Mercado Livre para IA (%s): %s", nome_loja, exc)
+
+        return {
+            "function": "get_mercado_livre_listing",
+            "arguments": {
+                "sku": sku,
+                "item_ids": item_ids,
+                "loja": loja or "",
+                "modo": "lista" if listar_sem_ref else ("item_id" if item_ids else "sku"),
+            },
+            "result": {
+                "found": bool(matches),
+                "matches": matches,
+                "errors": erros[:3],
+                "read_only": True,
+            },
+        }
+    except Exception as exc:
+        logger.warning("[IA TOOLS] Falha geral ao consultar Mercado Livre: %s", exc)
+        return None
+
+
+def _ia_bling_produto_detalhe(access_token: str, produto_id: str) -> tuple[Any, int]:
+    pid = str(produto_id or "").strip()
+    if not pid:
+        return None, 400
+    resp = _bling_get_with_adaptive_limit(
+        f"https://api.bling.com.br/Api/v3/produtos/{pid}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=20,
+        limiter=_BlingAdaptiveLimiter(start_interval=0.08),
+        max_attempts=5,
+    )
+    if resp is None:
+        return None, 503
+    if resp.status_code != 200:
+        return None, resp.status_code
+    try:
+        return (resp.json() or {}).get("data") or {}, 200
+    except Exception:
+        return None, 502
+
+
+def _ia_bling_buscar_produtos_codigo(access_token: str, codigo: str) -> tuple[Any, int]:
+    codigo_txt = str(codigo or "").strip()
+    if not codigo_txt:
+        return [], 400
+    tentativas = (
+        {"codigo": codigo_txt, "limite": 20, "pagina": 1},
+        {"criterio": codigo_txt, "limite": 20, "pagina": 1},
+    )
+    headers = {"Authorization": f"Bearer {access_token}"}
+    ultimo_status = 400
+    alvo_norm = _normalizar_sku_match_favoritos(codigo_txt)
+    for params in tentativas:
+        resp = _bling_get_with_adaptive_limit(
+            "https://api.bling.com.br/Api/v3/produtos",
+            headers=headers,
+            params=params,
+            timeout=20,
+            limiter=_BlingAdaptiveLimiter(start_interval=0.08),
+            max_attempts=4,
+        )
+        if resp is None:
+            ultimo_status = 503
+            continue
+        ultimo_status = resp.status_code
+        if resp.status_code == 401:
+            return [], 401
+        if resp.status_code != 200:
+            continue
+        try:
+            dados = (resp.json() or {}).get("data") or []
+        except Exception:
+            return [], 502
+        filtrados = []
+        for prod in dados:
+            if not isinstance(prod, dict):
+                continue
+            codigo_prod = _normalizar_sku_match_favoritos(str(prod.get("codigo") or ""))
+            nome_norm = _normalizar_texto(prod.get("nome") or "")
+            if codigo_prod == alvo_norm or (alvo_norm and alvo_norm in codigo_prod) or _normalizar_texto(codigo_txt) in nome_norm:
+                filtrados.append(prod)
+        if filtrados:
+            return filtrados, 200
+    return [], ultimo_status
+
+
+def _ia_bling_valor_tributario(produto: dict, campo: str) -> str:
+    trib = produto.get("tributacao") if isinstance(produto, dict) else {}
+    candidatos = []
+    if isinstance(trib, dict):
+        candidatos.append(trib.get(campo))
+    candidatos.append((produto or {}).get(campo))
+    for valor in candidatos:
+        if isinstance(valor, dict):
+            valor = valor.get("codigo") or valor.get("id") or valor.get("valor")
+        valor_txt = str(valor or "").strip()
+        if valor_txt:
+            return valor_txt
+    return ""
+
+
+def _ia_bling_resumir_produto(produto: dict, loja: str, saldo: Optional[dict] = None) -> dict:
+    estoque = produto.get("estoque") if isinstance(produto.get("estoque"), dict) else {}
+    return {
+        "loja": loja,
+        "id_bling": str(produto.get("id") or "").strip(),
+        "sku": str(produto.get("codigo") or "").strip(),
+        "nome": str(produto.get("nome") or "").strip(),
+        "situacao": str(produto.get("situacao") or "").strip(),
+        "tipo": str(produto.get("tipo") or "").strip(),
+        "formato": str(produto.get("formato") or "").strip(),
+        "unidade": str(produto.get("unidade") or "").strip(),
+        "preco": produto.get("preco"),
+        "preco_custo": produto.get("precoCusto") or produto.get("preco_custo"),
+        "ncm": _ia_bling_valor_tributario(produto, "ncm"),
+        "cest": _ia_bling_valor_tributario(produto, "cest"),
+        "saldo_loja": float((saldo or {}).get("loja") or estoque.get("saldoVirtualTotal") or 0),
+        "saldo_full": float((saldo or {}).get("full") or 0),
+        "estoque_minimo": estoque.get("minimo"),
+        "estoque_maximo": estoque.get("maximo"),
+    }
+
+
+def _ia_tool_get_bling_product(
+    client_id: str,
+    mensagem: str,
+    loja: Optional[str] = None,
+    produto_tool: Optional[dict] = None,
+    limite: int = 5,
+) -> Optional[dict]:
+    try:
+        ref = _ia_extrair_referencia_produto_mensagem(mensagem)
+        sku = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
+        if not sku and ref.get("sku"):
+            sku = _normalizar_sku_mes(str(ref.get("sku") or "").strip()).upper()
+
+        ids_bling = [m.group(1) for m in re.finditer(r"\b(?:ID\s*)?BLING\s*(\d{3,})\b", str(mensagem or ""), flags=re.IGNORECASE)]
+        if produto_tool:
+            for match in ((produto_tool.get("result") or {}).get("matches") or []):
+                id_bling = str((match or {}).get("id_bling") or "").strip()
+                if id_bling and id_bling not in ids_bling:
+                    ids_bling.append(id_bling)
+        if not ids_bling and sku:
+            cadastro = _ia_tool_get_product_registry_info(client_id, mensagem, produto_tool=produto_tool, limite=3)
+            for match in (((cadastro or {}).get("result") or {}).get("matches") or []):
+                id_bling = str((match or {}).get("id_bling") or "").strip()
+                if id_bling and id_bling not in ids_bling:
+                    ids_bling.append(id_bling)
+
+        if not sku and not ids_bling:
+            return None
+
+        lojas = _ia_lojas_com_integracao(client_id, "bling", loja)
+        if not lojas:
+            return {
+                "function": "get_bling_product",
+                "arguments": {"sku": sku, "ids_bling": ids_bling, "loja": loja or ""},
+                "result": {"found": False, "matches": [], "message": "Nenhuma loja com Bling conectado."},
+            }
+
+        matches = []
+        erros = []
+        for nome_loja in lojas:
+            if len(matches) >= limite:
+                break
+            try:
+                cfg = _ia_obter_cfg_bling(client_id, nome_loja)
+                candidatos = []
+                if ids_bling:
+                    candidatos = [{"id": pid} for pid in ids_bling[:limite]]
+                elif sku:
+                    candidatos, status_busca, cfg = _bling_executar_com_refresh(
+                        client_id,
+                        nome_loja,
+                        cfg,
+                        lambda token: _ia_bling_buscar_produtos_codigo(token, sku),
+                    )
+                    if status_busca != 200:
+                        erros.append({"loja": nome_loja, "erro": f"Bling HTTP {status_busca} ao buscar produto"})
+                        candidatos = []
+
+                produtos_detalhe = []
+                for candidato in candidatos or []:
+                    pid = str((candidato or {}).get("id") or (candidato or {}).get("id_bling") or "").strip()
+                    if not pid:
+                        continue
+                    detalhe, status_det, cfg = _bling_executar_com_refresh(
+                        client_id,
+                        nome_loja,
+                        cfg,
+                        lambda token, _pid=pid: _ia_bling_produto_detalhe(token, _pid),
+                    )
+                    if status_det == 200 and isinstance(detalhe, dict):
+                        produtos_detalhe.append(detalhe)
+                    else:
+                        erros.append({"loja": nome_loja, "erro": f"Bling HTTP {status_det} ao detalhar produto {pid}"})
+
+                saldos = {}
+                ids_saldo = [str((p or {}).get("id") or "").strip() for p in produtos_detalhe if str((p or {}).get("id") or "").strip()]
+                if ids_saldo:
+                    mapa_dep, status_dep, cfg = _bling_executar_com_refresh(
+                        client_id,
+                        nome_loja,
+                        cfg,
+                        _bling_map_depositos,
+                    )
+                    if status_dep == 200 and isinstance(mapa_dep, dict):
+                        saldos, status_saldo, cfg = _bling_executar_com_refresh(
+                            client_id,
+                            nome_loja,
+                            cfg,
+                            lambda token: _bling_saldos(token, ids_saldo, mapa_dep),
+                        )
+                        if status_saldo != 200 or not isinstance(saldos, dict):
+                            saldos = {}
+
+                for produto in produtos_detalhe:
+                    if len(matches) >= limite:
+                        break
+                    pid = str(produto.get("id") or "").strip()
+                    matches.append(_ia_bling_resumir_produto(produto, nome_loja, (saldos or {}).get(pid) or {}))
+            except Exception as exc:
+                erros.append({"loja": nome_loja, "erro": str(exc)[:180]})
+                logger.warning("[IA TOOLS] Falha ao consultar Bling para IA (%s): %s", nome_loja, exc)
+
+        return {
+            "function": "get_bling_product",
+            "arguments": {"sku": sku, "ids_bling": ids_bling, "loja": loja or ""},
+            "result": {
+                "found": bool(matches),
+                "matches": matches,
+                "errors": erros[:3],
+                "read_only": True,
+            },
+        }
+    except Exception as exc:
+        logger.warning("[IA TOOLS] Falha geral ao consultar Bling: %s", exc)
+        return None
 
 
 def _ia_buscar_imagem_ml_sku(client_id: str, sku: str, produto: dict | None = None, cadastro: dict | None = None) -> dict:
@@ -11026,6 +11584,21 @@ def _ia_chat_executar_funcoes(payload: IAChatRequest, client_id: str) -> list[di
         if produto_tool:
             resultados.append(produto_tool)
 
+    if _ia_chat_pede_status_integracoes(mensagem):
+        status_integracoes = _ia_tool_get_integrations_status(client_id, loja)
+        if status_integracoes:
+            resultados.append(status_integracoes)
+
+    if _ia_chat_pede_consulta_mercado_livre(mensagem):
+        ml_tool = _ia_tool_get_mercado_livre_listing(client_id, mensagem, loja, produto_tool)
+        if ml_tool:
+            resultados.append(ml_tool)
+
+    if _ia_chat_pede_consulta_bling(mensagem):
+        bling_tool = _ia_tool_get_bling_product(client_id, mensagem, loja, produto_tool)
+        if bling_tool:
+            resultados.append(bling_tool)
+
     if _ia_chat_pede_imagem_produto(mensagem):
         imagem_produto = _ia_tool_get_product_image(client_id, mensagem, produto_tool)
         if imagem_produto:
@@ -11207,6 +11780,11 @@ def _ia_chat_contexto_funcoes(payload: IAChatRequest, client_id: str) -> str:
         "Quando ela retornar imagem_markdown, use exatamente esse Markdown para mostrar a imagem no chat."
     )
     linhas.append(
+        "Funcoes read-only de integracoes externas: get_integrations_status(loja), "
+        "get_mercado_livre_listing(sku/item_id/loja) e get_bling_product(sku/id_bling/loja). "
+        "Use esses resultados apenas para consulta; nao afirme que alterou preco, estoque, anuncios, pedidos ou produtos."
+    )
+    linhas.append(
         "Funcoes mensais disponiveis: get_sales_by_month_period(data_inicio, data_fim, loja, limite_meses), "
         "get_month_sales_returns_details(mes_ano, loja, limite_skus), "
         "get_sku_sales_by_month(sku, mes_ano, loja), compare_sku_sales_months(sku, meses_ano, loja), "
@@ -11262,6 +11840,63 @@ def _ia_chat_contexto_funcoes(payload: IAChatRequest, client_id: str) -> str:
                     "Instrucao: para enviar a imagem ao usuario, responda usando exatamente esta linha Markdown:"
                 )
                 linhas.append(str(resultado.get("imagem_markdown") or ""))
+        elif nome_funcao == "get_integrations_status":
+            linhas.append(
+                "Resultado: "
+                f"{int(resultado.get('total_lojas') or 0)} lojas avaliadas | "
+                f"Mercado Livre conectado em {int(resultado.get('ml_conectadas') or 0)} | "
+                f"Bling conectado em {int(resultado.get('bling_conectadas') or 0)}"
+            )
+            for loja_item in (resultado.get("lojas") or [])[:12]:
+                linhas.append(
+                    f"- {loja_item.get('loja') or '-'} | ML {'sim' if loja_item.get('mercado_livre_conectado') else 'nao'}"
+                    f" | user_id {loja_item.get('mercado_livre_user_id') or '-'}"
+                    f" | Bling {'sim' if loja_item.get('bling_conectado') else 'nao'}"
+                )
+        elif nome_funcao == "get_mercado_livre_listing":
+            matches = resultado.get("matches") or []
+            linhas.append(
+                "Resultado: "
+                f"consulta read-only Mercado Livre | encontrados {len(matches)} anuncios."
+            )
+            if not matches:
+                linhas.append(str(resultado.get("message") or "Nenhum anuncio encontrado."))
+            for anuncio in matches[:10]:
+                linhas.append(
+                    f"- Loja {anuncio.get('loja') or '-'} | {anuncio.get('id') or '-'} | "
+                    f"{anuncio.get('title') or '-'} | status {anuncio.get('status') or '-'} | "
+                    f"SKU {anuncio.get('seller_sku') or '-'} | preco {anuncio.get('price') or '-'} | "
+                    f"disponivel {anuncio.get('available_quantity') if anuncio.get('available_quantity') is not None else '-'} | "
+                    f"vendidos {anuncio.get('sold_quantity') if anuncio.get('sold_quantity') is not None else '-'} | "
+                    f"link {anuncio.get('permalink') or '-'}"
+                )
+                if anuncio.get("description"):
+                    linhas.append(f"  descricao: {str(anuncio.get('description'))[:700]}")
+                for var in (anuncio.get("variations") or [])[:5]:
+                    linhas.append(
+                        f"  variacao {var.get('id') or '-'} | SKU {var.get('sku') or '-'} | "
+                        f"preco {var.get('price') or '-'} | disponivel {var.get('available_quantity') if var.get('available_quantity') is not None else '-'}"
+                    )
+            for erro in (resultado.get("errors") or [])[:3]:
+                linhas.append(f"- Aviso {erro.get('loja') or '-'}: {erro.get('erro') or '-'}")
+        elif nome_funcao == "get_bling_product":
+            matches = resultado.get("matches") or []
+            linhas.append(
+                "Resultado: "
+                f"consulta read-only Bling | encontrados {len(matches)} produtos."
+            )
+            if not matches:
+                linhas.append(str(resultado.get("message") or "Nenhum produto encontrado no Bling."))
+            for prod in matches[:10]:
+                linhas.append(
+                    f"- Loja {prod.get('loja') or '-'} | id {prod.get('id_bling') or '-'} | "
+                    f"SKU {prod.get('sku') or '-'} | {prod.get('nome') or '-'} | "
+                    f"situacao {prod.get('situacao') or '-'} | preco {prod.get('preco') or '-'} | "
+                    f"custo {prod.get('preco_custo') or '-'} | saldo loja {float(prod.get('saldo_loja') or 0):g} | "
+                    f"saldo full {float(prod.get('saldo_full') or 0):g} | ncm {prod.get('ncm') or '-'} | cest {prod.get('cest') or '-'}"
+                )
+            for erro in (resultado.get("errors") or [])[:3]:
+                linhas.append(f"- Aviso {erro.get('loja') or '-'}: {erro.get('erro') or '-'}")
         elif nome_funcao == "get_stock_data":
             linhas.append(
                 "Resultado: "
@@ -14166,6 +14801,37 @@ def _obter_gemini_api_key() -> str:
     return ""
 
 
+def _salvar_ia_provider_api_key(provider: str, valor: str | None, limpar: bool = False) -> None:
+    provider_norm = str(provider or "").strip().lower()
+    meta = {
+        "openai": ("OPENAI_API_KEY", "openai_api_key.txt"),
+        "deepseek": ("DEEPSEEK_API_KEY", "deepseek_api_key.txt"),
+        "gemini": ("GEMINI_API_KEY", "gemini_api_key.txt"),
+    }.get(provider_norm)
+    if not meta:
+        return
+
+    env_key, filename = meta
+    key_file = os.path.join(PASTA_INFO, filename)
+    if limpar:
+        try:
+            if os.path.exists(key_file):
+                os.remove(key_file)
+        except Exception:
+            logger.exception("[CONFIG] Falha ao limpar chave %s", provider_norm)
+        os.environ.pop(env_key, None)
+        return
+
+    api_key = str(valor or "").strip()
+    if not api_key:
+        return
+
+    os.makedirs(PASTA_INFO, exist_ok=True)
+    with open(key_file, "w", encoding="utf-8") as f:
+        f.write(api_key)
+    os.environ[env_key] = api_key
+
+
 def _gemini_nome_curto(model_name: str) -> str:
     nome = str(model_name or "").strip()
     if nome.lower().startswith("gemini:"):
@@ -14330,6 +14996,43 @@ def _ia_modelo_favoritos_configurado() -> str:
     return _ia_modelo_finalidade_configurado("favoritos")
 
 
+def _ia_modo_finalidade_configurado(finalidade: str) -> str:
+    chave_por_finalidade = {
+        "perguntas": "ia_modo_perguntas",
+        "chat": "ia_modo_chat",
+        "favoritos": "ia_modo_favoritos",
+    }
+    chave = chave_por_finalidade.get(str(finalidade or "").strip().lower())
+    try:
+        cfg = _carregar_configuracoes_globais()
+        fallback = cfg.get("ia_modo_padrao") or "modelo"
+        return _normalizar_ia_modo((cfg.get(chave) if chave else "") or fallback)
+    except Exception:
+        logger.exception("Erro ao carregar modo de IA para finalidade %s", finalidade)
+        return "modelo"
+
+
+def _ia_modo_perguntas_configurado() -> str:
+    return _ia_modo_finalidade_configurado("perguntas")
+
+
+def _ia_agent_resource_name_configurado() -> str:
+    return (
+        _vertex_config_valor("ia_agent_resource_name")
+        or (os.getenv("VERTEX_AI_AGENT_RESOURCE_NAME") or "").strip()
+        or (os.getenv("GEMINI_AGENT_RESOURCE_NAME") or "").strip()
+    ).strip()
+
+
+def _ia_agent_endpoint_url_configurado() -> str:
+    return (
+        _vertex_config_valor("ia_agent_endpoint_url")
+        or (os.getenv("VERTEX_AI_AGENT_ENDPOINT_URL") or "").strip()
+        or (os.getenv("GEMINI_AGENT_ENDPOINT_URL") or "").strip()
+        or (os.getenv("JK_IA_AGENT_ENDPOINT_URL") or "").strip()
+    ).strip()
+
+
 def _ia_favoritos_usar_imagem_configurado() -> bool:
     try:
         cfg = _carregar_configuracoes_globais()
@@ -14431,10 +15134,7 @@ def _vertex_ai_service_account_email() -> str:
     ).strip()
 
 
-def _vertex_ai_agent_api_key() -> str:
-    api_key = _env_config_value(*IA_AGENT_API_KEY_ENV_KEYS, cache_as="GEMINI_AGENT_API_KEY")
-    if api_key:
-        return api_key
+def _vertex_ai_agent_api_key_arquivo() -> str:
     if os.path.exists(ARQUIVO_VERTEX_AGENT_API_KEY):
         try:
             with open(ARQUIVO_VERTEX_AGENT_API_KEY, "r", encoding="utf-8") as f:
@@ -14442,6 +15142,13 @@ def _vertex_ai_agent_api_key() -> str:
         except Exception:
             return ""
     return ""
+
+
+def _vertex_ai_agent_api_key() -> str:
+    api_key = _env_config_value(*IA_AGENT_API_KEY_ENV_KEYS, cache_as="GEMINI_AGENT_API_KEY")
+    if api_key:
+        return api_key
+    return _vertex_ai_agent_api_key_arquivo()
 
 
 def _salvar_vertex_agent_api_key(valor: str | None, limpar: bool = False) -> None:
@@ -14662,6 +15369,19 @@ def _ia_chat_precisa_busca_web(mensagem: str, page: Optional[str] = None, contex
         return False
     texto = _normalizar_texto(mensagem or "")
     if not texto:
+        return False
+
+    gatilhos_web_intencionais = (
+        "PESQUISE", "PESQUISAR", "BUSQUE NA INTERNET", "BUSCAR NA INTERNET",
+        "NA INTERNET", "NO GOOGLE", "SITE OFICIAL", "FONTE OFICIAL", "FONTES",
+        "WEB", "ONLINE", "NOTICIA", "NOTICIAS", "NOTÃƒÂCIA", "NOTÃƒÂCIAS",
+        "ULTIMA VERSAO", "ÃƒÅ¡LTIMA VERSÃƒÆ’O", "ATUALIZADO", "RECENTE", "RECENTES",
+    )
+    if (
+        _ia_chat_pede_status_integracoes(mensagem)
+        or _ia_chat_pede_consulta_mercado_livre(mensagem)
+        or _ia_chat_pede_consulta_bling(mensagem)
+    ) and not any(gatilho in texto for gatilho in gatilhos_web_intencionais):
         return False
 
     gatilhos_explicitos = (
@@ -15754,6 +16474,895 @@ def _perguntas_ia_limitar_prompt(prompt: str, pergunta: str) -> str:
     )[:ML_PERGUNTAS_IA_PROMPT_MAX_CHARS]
 
 
+def _ia_agent_extrair_texto(valor: Any) -> str:
+    if valor is None:
+        return ""
+    if isinstance(valor, str):
+        return valor.strip()
+    if isinstance(valor, dict):
+        for chave in ("resposta", "response", "answer", "text", "message", "content", "output", "result"):
+            texto = _ia_agent_extrair_texto(valor.get(chave))
+            if texto:
+                return texto
+        for chave in ("messages", "candidates", "choices"):
+            lista = valor.get(chave)
+            if isinstance(lista, list):
+                for item in reversed(lista):
+                    texto = _ia_agent_extrair_texto(item)
+                    if texto:
+                        return texto
+        return ""
+    if isinstance(valor, list):
+        partes = [_ia_agent_extrair_texto(item) for item in valor]
+        return "\n".join([parte for parte in partes if parte]).strip()
+    if isinstance(valor, (int, float, bool)):
+        return str(valor).strip()
+    return ""
+
+
+def _ia_agent_engine_query_url(resource_name: str) -> str:
+    resource = str(resource_name or "").strip()
+    if not resource:
+        return ""
+    if resource.startswith(("http://", "https://")):
+        return resource if resource.endswith(":query") else f"{resource.rstrip('/')}:query"
+    resource = resource.strip("/")
+    return f"https://aiplatform.googleapis.com/v1/{resource}:query"
+
+
+def _ia_agent_endpoint_query_url(endpoint_url: str) -> str:
+    url = str(endpoint_url or "").strip()
+    if not url:
+        return ""
+    if url.endswith(("/api/ia/agente/perguntas/query", "/api/ia/agent/perguntas/query")):
+        return url
+    return f"{url.rstrip('/')}/api/ia/agente/perguntas/query"
+
+
+def _ia_agent_endpoint_headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    api_key = (
+        _env_config_value("JK_AGENT_ENDPOINT_API_KEY", "IA_AGENT_ENDPOINT_API_KEY")
+        or _vertex_ai_agent_api_key_arquivo()
+        or _vertex_ai_agent_api_key()
+    )
+    if api_key:
+        headers["X-JK-Agent-Key"] = api_key
+    return headers
+
+
+def _ia_agent_http_post(url: str, body: dict, headers: dict, *, timeout: int = 75) -> dict:
+    try:
+        resp = requests.post(url, headers=headers, json=body, verify=False, timeout=timeout)
+    except requests.RequestException as exc:
+        raise PerguntasIARespostaIndisponivel(f"Agente Cloud indisponivel: {exc}") from exc
+    if not resp.ok:
+        detalhe = resp.text[:500]
+        try:
+            erro = resp.json().get("error") or resp.json().get("detail") or resp.json()
+            if erro:
+                detalhe = json.dumps(erro, ensure_ascii=False)[:500]
+        except Exception:
+            pass
+        raise PerguntasIARespostaIndisponivel(f"Agente Cloud retornou HTTP {resp.status_code}: {detalhe}")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise PerguntasIARespostaIndisponivel("Agente Cloud retornou resposta em formato invalido.") from exc
+    return data if isinstance(data, dict) else {"output": data}
+
+
+def _perguntas_ia_item_para_agente(item: dict) -> dict:
+    item = item if isinstance(item, dict) else {}
+    atributos = []
+    for attr in (item.get("attributes") or [])[:40]:
+        if not isinstance(attr, dict):
+            continue
+        atributos.append({
+            "id": attr.get("id") or "",
+            "name": attr.get("name") or "",
+            "value_name": attr.get("value_name") or attr.get("value_id") or "",
+        })
+    return {
+        "id": item.get("id") or "",
+        "title": item.get("title") or "",
+        "permalink": item.get("permalink") or "",
+        "thumbnail": item.get("thumbnail") or "",
+        "price": item.get("price"),
+        "currency_id": item.get("currency_id") or "",
+        "available_quantity": item.get("available_quantity"),
+        "status": item.get("status") or "",
+        "seller_sku": _ml_extrair_sku(item),
+        "attributes": atributos,
+    }
+
+
+def _perguntas_ia_pergunta_para_agente(pergunta: dict) -> dict:
+    pergunta = pergunta if isinstance(pergunta, dict) else {}
+    historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
+    return {
+        "id": pergunta.get("id") or "",
+        "text": pergunta.get("text") or "",
+        "item_id": pergunta.get("item_id") or "",
+        "date_created": pergunta.get("date_created") or "",
+        "status": pergunta.get("status") or "",
+        "buyer_id": pergunta.get("buyer_id") or "",
+        "buyer_name": pergunta.get("buyer_name") or "",
+        "history": historico[-10:],
+    }
+
+
+def _perguntas_ia_agent_input(
+    client_id: str,
+    loja: str,
+    pergunta: dict,
+    item: dict,
+    contexto: dict,
+    prompt: str,
+) -> dict:
+    return {
+        "task": "mercado_livre_question_draft",
+        "locale": "pt-BR",
+        "tenant_id": str(client_id or "").strip(),
+        "store": str(loja or "").strip(),
+        "prompt": str(prompt or "").strip(),
+        "question": _perguntas_ia_pergunta_para_agente(pergunta),
+        "item": _perguntas_ia_item_para_agente(item),
+        "context": contexto if isinstance(contexto, dict) else {},
+        "constraints": {
+            "read_only": True,
+            "do_not_send_to_mercado_livre": True,
+            "max_chars": ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO,
+            "no_markdown": True,
+            "do_not_invent_links_or_compatibility": True,
+        },
+        "allowed_tools": [
+            "get_mercado_livre_listing",
+            "get_bling_product",
+            "get_product_registry_info",
+            "get_product_data",
+            "web_search",
+        ],
+    }
+
+
+def _perguntas_ia_chamar_agente_cloud(
+    client_id: str,
+    loja: str,
+    pergunta: dict,
+    item: dict,
+    contexto: dict,
+    prompt: str,
+) -> tuple[str, str]:
+    agent_input = _perguntas_ia_agent_input(client_id, loja, pergunta, item, contexto, prompt)
+    endpoint_url = _ia_agent_endpoint_url_configurado()
+    resource_name = _ia_agent_resource_name_configurado()
+    if endpoint_url:
+        body = {"classMethod": "query", "input": agent_input}
+        data = _ia_agent_http_post(_ia_agent_endpoint_query_url(endpoint_url), body, _ia_agent_endpoint_headers())
+        origem = "agent:endpoint"
+    elif resource_name:
+        headers, _project_id = _vertex_ai_headers_e_project()
+        url = _ia_agent_engine_query_url(resource_name)
+        body = {"classMethod": "query", "input": agent_input}
+        data = _ia_agent_http_post(url, body, headers)
+        origem = "agent:reasoningEngine"
+    else:
+        raise PerguntasIARespostaIndisponivel(
+            "Agente Cloud nao configurado. Informe o endpoint ou o resource name nas configuracoes."
+        )
+
+    texto = _ia_agent_extrair_texto(data.get("output") if isinstance(data, dict) else data)
+    resposta_limpa = _perguntas_ia_limpar_resposta(texto)
+    if not resposta_limpa:
+        raise PerguntasIARespostaIndisponivel("Agente Cloud nao retornou uma resposta para enviar ao comprador.")
+    if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
+        raise PerguntasIARespostaIndisponivel("Resposta de fallback do Agente Cloud bloqueada.")
+    return resposta_limpa, origem
+
+
+def _ia_agent_endpoint_api_key_configurada() -> str:
+    return (
+        _env_config_value("JK_AGENT_ENDPOINT_API_KEY", "IA_AGENT_ENDPOINT_API_KEY")
+        or _vertex_ai_agent_api_key()
+        or ""
+    ).strip()
+
+
+def _ia_agent_endpoint_autorizar(request: Request) -> None:
+    expected = _ia_agent_endpoint_api_key_configurada()
+    if not expected:
+        if _env_config_bool(("JK_AGENT_ENDPOINT_ALLOW_WITHOUT_KEY",), default=False):
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="Endpoint do agente sem chave configurada. Configure JK_AGENT_ENDPOINT_API_KEY no Cloud Run.",
+        )
+    auth = str(request.headers.get("authorization") or "").strip()
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    provided = str(request.headers.get("x-jk-agent-key") or bearer or "").strip()
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Chave do agente invalida.")
+
+
+def _ia_agent_input_dict(payload: IAAgentQueryRequest) -> dict:
+    entrada = payload.input
+    if isinstance(entrada, dict):
+        return entrada
+    if isinstance(entrada, str):
+        return {"prompt": entrada, "question": {"text": entrada}}
+    return {}
+
+
+def _ia_agent_perguntas_texto_busca(agent_input: dict) -> str:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    partes = [
+        question.get("text"),
+        question.get("item_id"),
+        item.get("id"),
+        item.get("seller_sku"),
+        item.get("title"),
+        context.get("sku"),
+        context.get("item_id"),
+        context.get("titulo"),
+    ]
+    texto = " ".join([str(parte or "").strip() for parte in partes if str(parte or "").strip()])
+    return texto[:1200]
+
+
+def _ia_agent_perguntas_precisa_web(agent_input: dict) -> bool:
+    if not _ia_web_busca_ativa():
+        return False
+    if bool(agent_input.get("use_web_search") or agent_input.get("usar_pesquisa_web")):
+        return True
+    allowed = agent_input.get("allowed_tools") if isinstance(agent_input.get("allowed_tools"), list) else []
+    if allowed and "web_search" not in [str(item or "").strip() for item in allowed]:
+        return False
+    texto = _normalizar_texto(
+        " ".join([
+            str(agent_input.get("prompt") or ""),
+            _ia_agent_perguntas_texto_busca(agent_input),
+        ])
+    )
+    gatilhos = (
+        "PESQUISE", "PESQUISA", "BUSQUE", "BUSCA", "INTERNET", "GOOGLE", "WEB",
+        "COMPARAR", "COMPARE", "COMPARACAO", "COMPARA", "VERSUS", " VS ",
+        "COMPATIBILIDADE", "COMPATIVEL", "SERVE", "APLICA", "ENCAIXA",
+        "CODIGO OEM", "OEM", "PART NUMBER", "NUMERO ORIGINAL", "REFERENCIA",
+        "MEDIDA", "ESPECIFICACAO", "ESPECIFICACOES", "MODELO", "ANO",
+        "SIMILAR", "EQUIVALENTE", "CONCORRENTE",
+    )
+    return any(gatilho in texto for gatilho in gatilhos)
+
+
+def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -> str:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+
+    def _texto_busca_pergunta(valor: str) -> str:
+        texto = re.sub(r"\s+", " ", str(valor or "").strip())
+        if not texto:
+            return ""
+        padroes_alvo = (
+            r"(?:serve|servir|aplica|encaixa|compat[ií]vel|compativel).*?(?:no|na|em|para|com)\s+(.+)$",
+            r"(?:modelo|veiculo|veículo|carro|moto)\s+(.+)$",
+        )
+        for padrao in padroes_alvo:
+            match = re.search(padrao, texto, flags=re.IGNORECASE)
+            if match:
+                alvo = match.group(1)
+                alvo = re.sub(r"[?!.;,]+$", "", alvo).strip()
+                if len(alvo) >= 4:
+                    return alvo[:160]
+        texto = re.sub(
+            r"\b(compare|comparar|pesquise|pesquisar|busque|buscar|internet|google|esta|essa|esse|este|produto|peca|peça|item)\b",
+            " ",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        texto = re.sub(r"\s+", " ", texto).strip(" ?!.;,")
+        return texto[:180]
+
+    def _adicionar(parte: object, destino: list[str], vistos: set[str]) -> None:
+        texto = re.sub(r"\s+", " ", str(parte or "").strip())
+        if not texto:
+            return
+        chave = _normalizar_texto(texto)
+        if not chave or chave in vistos:
+            return
+        vistos.add(chave)
+        destino.append(texto[:180])
+
+    codigos = _ia_agent_perguntas_codigos_web(agent_input, tool_results)
+    partes: list[str] = []
+    vistos: set[str] = set()
+    _adicionar(item.get("title"), partes, vistos)
+    _adicionar(item.get("seller_sku") or item.get("sku"), partes, vistos)
+    for codigo in codigos[:4]:
+        _adicionar(codigo, partes, vistos)
+    _adicionar(_texto_busca_pergunta(question.get("text")), partes, vistos)
+    for resultado in tool_results or []:
+        if not isinstance(resultado, dict):
+            continue
+        matches = ((resultado.get("result") or {}).get("matches") or [])
+        if not matches:
+            continue
+        primeiro = {}
+        for match in matches:
+            if isinstance(match, dict) and _ia_agent_perguntas_match_relevante_web(agent_input, match):
+                primeiro = match
+                break
+        if not primeiro:
+            continue
+        for valor in (
+            primeiro.get("nome"),
+            primeiro.get("title"),
+            primeiro.get("sku"),
+            primeiro.get("id"),
+            primeiro.get("id_bling"),
+            primeiro.get("mlb_principal"),
+            primeiro.get("marca"),
+            primeiro.get("categoria"),
+        ):
+            _adicionar(valor, partes, vistos)
+    consulta = " ".join([str(parte or "").strip() for parte in partes if str(parte or "").strip()])
+    consulta = re.sub(r"\s+", " ", consulta).strip()
+    if not consulta:
+        return ""
+    if "compat" not in _normalizar_texto(consulta):
+        consulta += " compatibilidade especificacao aplicacao"
+    return consulta[:500]
+
+
+def _ia_agent_perguntas_valor_codigo_web(valor: object) -> str:
+    texto = re.sub(r"\s+", " ", str(valor or "").strip()).strip(" ,;|")
+    if not texto:
+        return ""
+    if len(texto) > 80:
+        return ""
+    norm = re.sub(r"[^A-Z0-9]", "", texto.upper())
+    if len(norm) < 4:
+        return ""
+    if norm in {"NONE", "NULL", "NAN", "TRUE", "FALSE"}:
+        return ""
+    if re.fullmatch(r"(19|20)\d{2}", norm):
+        return ""
+    return texto
+
+
+def _ia_agent_perguntas_codigo_norm_web(valor: object) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(valor or "").upper())
+
+
+def _ia_agent_perguntas_adicionar_codigo_web(valor: object, codigos: list[str], vistos: set[str]) -> None:
+    texto = _ia_agent_perguntas_valor_codigo_web(valor)
+    if not texto:
+        return
+    for parte in re.split(r"[,;|]", texto):
+        parte = _ia_agent_perguntas_valor_codigo_web(parte)
+        if not parte:
+            continue
+        chave = _ia_agent_perguntas_codigo_norm_web(parte)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        codigos.append(parte[:60])
+        if len(codigos) >= 10:
+            return
+
+
+def _ia_agent_perguntas_match_relevante_web(agent_input: dict, match: dict) -> bool:
+    if not isinstance(match, dict):
+        return False
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+
+    campos_codigo_base = ("sku", "seller_sku", "item_id", "id", "mlb_principal", "mlb_ids", "gtin", "ean", "codigo", "code")
+    codigos_base = set()
+    for origem in (question, item, context):
+        for campo in campos_codigo_base:
+            if origem is question and campo == "id":
+                continue
+            valor = origem.get(campo)
+            for parte in re.split(r"[,;|]", str(valor or "")):
+                codigo = _ia_agent_perguntas_valor_codigo_web(parte)
+                if codigo:
+                    codigos_base.add(_ia_agent_perguntas_codigo_norm_web(codigo))
+
+    codigos_match = set()
+    for campo in (
+        "sku", "seller_sku", "id", "item_id", "mlb_principal", "mlb_ids", "id_bling",
+        "gtin", "ean", "codigo", "code", "referencia", "oem", "part_number",
+    ):
+        valor = match.get(campo)
+        for parte in re.split(r"[,;|]", str(valor or "")):
+            codigo = _ia_agent_perguntas_valor_codigo_web(parte)
+            if codigo:
+                codigos_match.add(_ia_agent_perguntas_codigo_norm_web(codigo))
+    for variacao in (match.get("variations") or [])[:5]:
+        if isinstance(variacao, dict):
+            for campo in ("sku", "seller_sku", "id", "gtin", "ean", "codigo"):
+                codigo = _ia_agent_perguntas_valor_codigo_web(variacao.get(campo))
+                if codigo:
+                    codigos_match.add(_ia_agent_perguntas_codigo_norm_web(codigo))
+
+    if codigos_base and codigos_match and codigos_base & codigos_match:
+        return True
+
+    titulo_base = " ".join([
+        str(item.get("title") or ""),
+        str(context.get("titulo") or ""),
+    ])
+    texto_match = " ".join([
+        str(match.get("nome") or ""),
+        str(match.get("title") or ""),
+        str(match.get("descricao") or match.get("description") or ""),
+    ])
+    stopwords = {
+        "DE", "DA", "DO", "DAS", "DOS", "PARA", "COM", "SEM", "POR", "UMA", "UM",
+        "KIT", "NOVO", "ORIGINAL", "PRODUTO", "PECA", "PEÇA", "AUTOMOTIVO",
+        "AUTOMOTIVA", "AUTO", "CARRO", "VEICULO", "VEÍCULO", "MOTOR",
+    }
+    genericos = stopwords | {
+        "SENSOR", "TEMPERATURA", "VALVULA", "VÁLVULA", "FILTRO", "BOMBA",
+        "INTERRUPTOR", "BOTAO", "BOTÃO", "CHAVE", "CABO", "MANGUEIRA",
+        "SUPORTE", "TAMPA", "TRAVA", "CONEXAO", "CONEXÃO", "RESERVATORIO",
+        "RESERVATÓRIO", "CONDICIONADO", "EVAPORADOR",
+    }
+    tokens_base = {
+        token for token in re.findall(r"[A-Z0-9]{3,}", _normalizar_texto(titulo_base))
+        if token not in stopwords and not re.fullmatch(r"(19|20)\d{2}", token)
+    }
+    tokens_match = {
+        token for token in re.findall(r"[A-Z0-9]{3,}", _normalizar_texto(texto_match))
+        if token not in stopwords and not re.fullmatch(r"(19|20)\d{2}", token)
+    }
+    if not tokens_base:
+        return True
+    intersecao = tokens_base & tokens_match
+    tokens_base_fortes = {
+        token for token in tokens_base
+        if token not in genericos and (any(ch.isdigit() for ch in token) or len(token) <= 5)
+    }
+    if tokens_base_fortes:
+        return bool(tokens_base_fortes & tokens_match)
+    return len(intersecao) >= 3 and (len(intersecao) / max(1, len(tokens_base))) >= 0.5
+
+
+def _ia_agent_perguntas_codigos_web(agent_input: dict, tool_results: list[dict]) -> list[str]:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    codigos: list[str] = []
+    vistos: set[str] = set()
+
+    campos_codigo_produto = (
+        "sku", "seller_sku", "id", "item_id", "mlb", "mlb_id", "mlb_principal", "mlb_ids",
+        "id_bling", "codigo", "code", "codigo_produto", "codigo_do_produto",
+        "referencia", "referência", "ref", "oem", "codigo_oem", "part_number",
+        "numero_peca", "numero_da_peca", "ean", "gtin", "barcode", "codigo_barras",
+        "catalog_product_id", "product_id",
+    )
+    campos_codigo_pergunta = tuple(campo for campo in campos_codigo_produto if campo != "id")
+    for origem, campos in (
+        (question, campos_codigo_pergunta),
+        (item, campos_codigo_produto),
+        (context, campos_codigo_produto),
+    ):
+        for campo in campos:
+            _ia_agent_perguntas_adicionar_codigo_web(origem.get(campo), codigos, vistos)
+
+    textos_para_extrair = [
+        question.get("text"),
+        item.get("title"),
+        context.get("titulo"),
+        context.get("descricao"),
+    ]
+    for resultado in tool_results or []:
+        if not isinstance(resultado, dict):
+            continue
+        result = resultado.get("result") if isinstance(resultado.get("result"), dict) else {}
+        for match in (result.get("matches") or [])[:3]:
+            if not isinstance(match, dict):
+                continue
+            if not _ia_agent_perguntas_match_relevante_web(agent_input, match):
+                continue
+            for campo in campos_codigo_produto:
+                _ia_agent_perguntas_adicionar_codigo_web(match.get(campo), codigos, vistos)
+            for variacao in (match.get("variations") or [])[:5]:
+                if isinstance(variacao, dict):
+                    for campo in ("sku", "seller_sku", "id", "codigo", "ean", "gtin"):
+                        _ia_agent_perguntas_adicionar_codigo_web(variacao.get(campo), codigos, vistos)
+            textos_para_extrair.extend([
+                match.get("nome"),
+                match.get("title"),
+                match.get("descricao"),
+                match.get("description"),
+                match.get("titulos_anuncios_mlb"),
+            ])
+
+    for texto in textos_para_extrair:
+        for codigo in _favoritos_busca_externa_extrair_codigos(str(texto or "")):
+            _ia_agent_perguntas_adicionar_codigo_web(codigo, codigos, vistos)
+        for codigo in re.findall(r"\b\d{8,14}\b", str(texto or "")):
+            _ia_agent_perguntas_adicionar_codigo_web(codigo, codigos, vistos)
+        if len(codigos) >= 10:
+            break
+    return codigos[:10]
+
+
+def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict]) -> list[dict]:
+    principal = _ia_agent_perguntas_query_web(agent_input, tool_results)
+    if not principal:
+        return []
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    codigos = _ia_agent_perguntas_codigos_web(agent_input, tool_results)
+    titulo = re.sub(r"\s+", " ", str(item.get("title") or "").strip())[:180]
+    pergunta_norm = _normalizar_texto(question.get("text") or "")
+    quer_comparar_descricao = any(
+        termo in pergunta_norm
+        for termo in ("DESCRICAO", "ANUNCIO", "ANUNCIOS", "MESMO PRODUTO", "COMPARAR", "COMPARE", "SIMILAR", "EQUIVALENTE")
+    )
+    queries = [{"type": "compatibilidade_aplicacao", "query": principal}]
+    base_comparacao = " ".join([parte for parte in [titulo, " ".join(codigos[:3])] if parte]).strip()
+    if base_comparacao and (quer_comparar_descricao or codigos or titulo):
+        comparacao = f"{base_comparacao} Mercado Livre anuncio descricao produto similar"
+        comparacao = re.sub(r"\s+", " ", comparacao).strip()[:500]
+        if _normalizar_texto(comparacao) != _normalizar_texto(principal):
+            queries.append({"type": "anuncios_similares_descricao", "query": comparacao})
+    return queries[:2]
+
+
+def _ia_agent_perguntas_relaxar_query_web(query: str) -> str:
+    texto = str(query or "")
+    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"\bSKU[-_/A-Z0-9]{2,}\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"\b\d{8,14}\b", " ", texto)
+    texto = re.sub(r"\b[A-Z]{2,8}[-./][A-Z0-9]{3,}\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto[:500]
+
+
+def _ia_agent_perguntas_query_ml_publica(query: str) -> str:
+    texto = _ia_agent_perguntas_relaxar_query_web(query)
+    texto = re.sub(
+        r"\b(mercado livre|anuncio|anuncios|descri[cç][aã]o|produto similar|compatibilidade|especificacao|aplicacao)\b",
+        " ",
+        texto,
+        flags=re.IGNORECASE,
+    )
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto[:180]
+
+
+def _ia_agent_perguntas_anuncios_publicos_ml(query: str, max_results: int = 4) -> list[dict]:
+    consulta = _ia_agent_perguntas_query_ml_publica(query)
+    if not consulta:
+        return []
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
+            "Origin": "https://www.mercadolivre.com.br",
+            "Referer": "https://www.mercadolivre.com.br/",
+        }
+        resp = requests.get(
+            "https://api.mercadolibre.com/sites/MLB/search",
+            params={"q": consulta, "limit": max(1, min(int(max_results or 4), 6))},
+            headers=headers,
+            timeout=15,
+            verify=False,
+        )
+        resp.raise_for_status()
+        payload = resp.json() or {}
+        resultados = []
+        for item in (payload.get("results") or [])[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            descricao = ""
+            if item_id:
+                try:
+                    desc_resp = requests.get(
+                        f"https://api.mercadolibre.com/items/{quote(item_id, safe='')}/description",
+                        headers=headers,
+                        timeout=10,
+                        verify=False,
+                    )
+                    if desc_resp.status_code == 200:
+                        desc_data = desc_resp.json() or {}
+                        descricao = str(desc_data.get("plain_text") or desc_data.get("text") or "").strip()
+                except Exception as exc:
+                    logger.warning("[IA AGENT PERGUNTAS] Falha ao consultar descricao publica ML %s: %s", item_id, exc)
+            resultados.append({
+                "id": item_id,
+                "title": str(item.get("title") or "").strip(),
+                "url": str(item.get("permalink") or "").strip(),
+                "price": item.get("price"),
+                "available_quantity": item.get("available_quantity"),
+                "condition": item.get("condition"),
+                "seller": ((item.get("seller") or {}).get("nickname") if isinstance(item.get("seller"), dict) else ""),
+                "description": descricao[:900],
+            })
+        return resultados
+    except Exception as exc:
+        logger.warning("[IA AGENT PERGUNTAS] Falha na busca publica de anuncios ML: %s", exc)
+        return []
+
+
+def _ia_agent_perguntas_anuncios_ml_autenticado(client_id: str, loja: str, query: str, max_results: int = 4) -> list[dict]:
+    consulta = _ia_agent_perguntas_query_ml_publica(query)
+    if not consulta:
+        return []
+    lojas = _ia_lojas_com_integracao(client_id, "mercadolivre", loja)
+    if not lojas:
+        return []
+    for nome_loja in lojas[:3]:
+        try:
+            cfg = _obter_cfg_ml(client_id, nome_loja)
+            resp, cfg = _ml_api_request(
+                client_id,
+                nome_loja,
+                cfg,
+                "GET",
+                "https://api.mercadolibre.com/sites/MLB/search",
+                params={"q": consulta, "limit": max(1, min(int(max_results or 4), 6))},
+                timeout=18,
+            )
+            if resp.status_code != 200:
+                continue
+            payload = resp.json() or {}
+            resultados = []
+            for item in (payload.get("results") or [])[:max_results]:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id") or "").strip()
+                descricao = ""
+                if item_id:
+                    desc_resp, cfg = _ml_api_request(
+                        client_id,
+                        nome_loja,
+                        cfg,
+                        "GET",
+                        f"https://api.mercadolibre.com/items/{quote(item_id, safe='')}/description",
+                        timeout=10,
+                    )
+                    if desc_resp.status_code == 200:
+                        desc_data = desc_resp.json() or {}
+                        descricao = str(desc_data.get("plain_text") or desc_data.get("text") or "").strip()
+                resultados.append({
+                    "loja_consulta": nome_loja,
+                    "id": item_id,
+                    "title": str(item.get("title") or "").strip(),
+                    "url": str(item.get("permalink") or "").strip(),
+                    "price": item.get("price"),
+                    "available_quantity": item.get("available_quantity"),
+                    "condition": item.get("condition"),
+                    "seller": ((item.get("seller") or {}).get("nickname") if isinstance(item.get("seller"), dict) else ""),
+                    "description": descricao[:900],
+                })
+            if resultados:
+                return resultados
+        except Exception as exc:
+            logger.warning("[IA AGENT PERGUNTAS] Falha na busca autenticada de anuncios ML (%s): %s", nome_loja, exc)
+            continue
+    return []
+
+
+def _ia_agent_perguntas_contexto_web(client_id: str, loja: str, queries: list[dict]) -> str:
+    if not queries:
+        return ""
+    linhas: list[str] = []
+    urls_vistas: set[str] = set()
+    for consulta in queries:
+        if not isinstance(consulta, dict):
+            continue
+        query = str(consulta.get("query") or "").strip()
+        tipo = str(consulta.get("type") or "web").strip()
+        if not query:
+            continue
+
+        consultas_tentadas = [query]
+        query_relaxada = _ia_agent_perguntas_relaxar_query_web(query)
+        if query_relaxada and _normalizar_texto(query_relaxada) != _normalizar_texto(query):
+            consultas_tentadas.append(query_relaxada)
+
+        itens = []
+        query_usada = query
+        for tentativa_query in consultas_tentadas:
+            resultados = _ia_web_buscar_cached(tentativa_query, client_id=client_id, max_results=4)
+            for item in resultados or []:
+                if not isinstance(item, dict):
+                    continue
+                url = _ia_web_normalizar_result_url(item.get("url") or "")
+                parsed_url = urlparse(url) if url else None
+                if parsed_url and "duckduckgo.com" in (parsed_url.netloc or "") and parsed_url.path.startswith("/y.js"):
+                    continue
+                chave_url = url.lower().split("?", 1)[0]
+                if not url or chave_url in urls_vistas:
+                    continue
+                urls_vistas.add(chave_url)
+                itens.append((item, url))
+                if len(itens) >= 4:
+                    break
+            if itens:
+                query_usada = tentativa_query
+                break
+
+        anuncios_publicos = (
+            _ia_agent_perguntas_anuncios_ml_autenticado(client_id, loja, query_usada or query, max_results=3)
+            or _ia_agent_perguntas_anuncios_publicos_ml(query_usada or query, max_results=3)
+        )
+        if not itens and not anuncios_publicos:
+            continue
+        linhas.append(f"Busca {len(linhas) + 1} ({tipo}): {query_usada}")
+        for idx, (item, url) in enumerate(itens, start=1):
+            bloco = f"{idx}. {item.get('title')}\nURL: {url}"
+            if item.get("provider"):
+                bloco += f"\nProvedor: {item.get('provider')}"
+            if item.get("source"):
+                bloco += f"\nFonte: {item.get('source')}"
+            if item.get("published_at"):
+                bloco += f"\nData: {item.get('published_at')}"
+            bloco += f"\nResumo: {item.get('snippet') or 'Sem resumo disponivel.'}"
+            linhas.append(bloco)
+        if anuncios_publicos:
+            linhas.append("Anuncios publicos do Mercado Livre para comparar titulo e descricao:")
+            for idx, item in enumerate(anuncios_publicos, start=1):
+                bloco = f"{idx}. {item.get('title')}\nID: {item.get('id')}\nURL: {item.get('url')}"
+                if item.get("loja_consulta"):
+                    bloco += f"\nConsulta API ML via loja conectada: {item.get('loja_consulta')}"
+                if item.get("price") is not None:
+                    bloco += f"\nPreco: {item.get('price')}"
+                if item.get("condition"):
+                    bloco += f"\nCondicao: {item.get('condition')}"
+                if item.get("description"):
+                    bloco += f"\nDescricao: {str(item.get('description') or '')[:700]}"
+                else:
+                    bloco += "\nDescricao: Nao retornada pela API publica."
+                linhas.append(bloco)
+    return "\n\n".join(linhas)
+
+
+def _ia_agent_perguntas_web_tool(client_id: str, agent_input: dict, tool_results: list[dict]) -> Optional[dict]:
+    if not _ia_agent_perguntas_precisa_web(agent_input):
+        return None
+    queries = _ia_agent_perguntas_queries_web(agent_input, tool_results)
+    if not queries:
+        return None
+    try:
+        loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
+        contexto_web = _ia_agent_perguntas_contexto_web(client_id, loja, queries)
+    except Exception as exc:
+        logger.warning("[IA AGENT PERGUNTAS] Falha em web_search: %s", exc)
+        return {
+            "function": "web_search",
+            "arguments": {"query": queries[0].get("query") if queries else "", "queries": queries},
+            "result": {"found": False, "context": "", "error": str(exc)[:180]},
+        }
+    return {
+        "function": "web_search",
+        "arguments": {"query": queries[0].get("query") if queries else "", "queries": queries},
+        "result": {
+            "found": bool(contexto_web),
+            "context": contexto_web[:5000],
+            "read_only": True,
+            "instruction": (
+                "Use a internet apenas como apoio para comparacao/compatibilidade. "
+                "Compare codigos, titulos e descricoes de anuncios similares quando disponiveis. "
+                "Nao trate resultado web como certeza se conflitar com cadastro, Mercado Livre ou Bling."
+            ),
+        },
+    }
+
+
+def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: dict) -> list[dict]:
+    consulta = _ia_agent_perguntas_texto_busca(agent_input)
+    if not consulta:
+        return []
+    resultados = []
+    produto_tool = None
+    try:
+        produto_tool = _ia_tool_get_product_data(client_id, consulta, limite=3)
+        if produto_tool:
+            resultados.append(produto_tool)
+    except Exception as exc:
+        logger.warning("[IA AGENT PERGUNTAS] Falha em get_product_data: %s", exc)
+    try:
+        ml_tool = _ia_tool_get_mercado_livre_listing(client_id, consulta, loja=loja, produto_tool=produto_tool, limite=5)
+        if ml_tool:
+            resultados.append(ml_tool)
+    except Exception as exc:
+        logger.warning("[IA AGENT PERGUNTAS] Falha em get_mercado_livre_listing: %s", exc)
+    try:
+        bling_tool = _ia_tool_get_bling_product(client_id, consulta, loja=loja, produto_tool=produto_tool, limite=3)
+        if bling_tool:
+            resultados.append(bling_tool)
+    except Exception as exc:
+        logger.warning("[IA AGENT PERGUNTAS] Falha em get_bling_product: %s", exc)
+    web_tool = _ia_agent_perguntas_web_tool(client_id, agent_input, resultados)
+    if web_tool:
+        resultados.append(web_tool)
+    return resultados
+
+
+def _ia_agent_perguntas_montar_prompt(agent_input: dict, tool_results: list[dict]) -> str:
+    base_prompt = str(agent_input.get("prompt") or "").strip()
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    constraints = agent_input.get("constraints") if isinstance(agent_input.get("constraints"), dict) else {}
+    bloco_tools = json.dumps(tool_results or [], ensure_ascii=False, default=str)[:12000]
+    bloco_question = json.dumps(question, ensure_ascii=False, default=str)[:4000]
+    bloco_item = json.dumps(item, ensure_ascii=False, default=str)[:5000]
+    return (
+        "Voce e o agente Cloud de perguntas do Mercado Livre do JK Sistema. "
+        "Gere somente um rascunho de resposta ao comprador. "
+        "Nao envie, nao publique e nao altere nada no Mercado Livre, Bling ou cadastro. "
+        "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas. "
+        "Nao invente compatibilidade, prazo, garantia, estoque, medidas, links ou dados tecnicos. "
+        "Use primeiro os resultados das ferramentas e depois o contexto recebido. "
+        "Quando houver web_search, use a internet apenas para apoiar comparacoes externas; "
+        "se a resposta depender da internet, mencione de forma curta que verificou fontes externas e cite o nome do site quando estiver disponivel. "
+        "Se os dados externos divergirem do cadastro, Mercado Livre ou Bling, prefira os dados internos ou peca confirmacao. "
+        "Se o dado estiver ausente, peça a informacao necessaria com cordialidade. "
+        f"Limite de caracteres: {constraints.get('max_chars') or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO}.\n\n"
+        f"Prompt original do app:\n{base_prompt or '-'}\n\n"
+        f"Pergunta normalizada em JSON:\n{bloco_question or '{}'}\n\n"
+        f"Anuncio recebido em JSON:\n{bloco_item or '{}'}\n\n"
+        f"Resultados das ferramentas read-only em JSON:\n{bloco_tools or '[]'}"
+    )
+
+
+def _ia_agent_perguntas_gerar_resposta(client_id: str, agent_input: dict) -> tuple[str, str, list[dict]]:
+    loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
+    if not loja:
+        raise HTTPException(status_code=400, detail="Informe a loja no input do agente.")
+    tool_results = _ia_agent_perguntas_preparar_tools(client_id, loja, agent_input)
+    mensagem = _ia_agent_perguntas_montar_prompt(agent_input, tool_results)
+    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
+    payload = IAChatRequest(
+        message=mensagem,
+        page="Perguntas e pós venda",
+        context={
+            "modulo": "perguntas_pos_venda",
+            "tipo": "agente_cloud_perguntas_ml",
+            "tipo_treinamento": "perguntas_anuncio",
+            "loja": loja,
+            "tool_results": tool_results,
+        },
+        model=model_req,
+        tool_results=tool_results,
+    )
+    if _modelo_eh_vertex_ai(model_req):
+        resposta = _chamar_vertex_ai_chat(payload, client_id)
+        model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
+    elif _modelo_eh_gemini_api(model_req):
+        resposta = _chamar_gemini_chat(payload, client_id)
+        model_usado = f"gemini:{_gemini_nome_curto(model_req) or 'gemini-2.5-flash'}"
+    elif model_req.startswith("deepseek-"):
+        resposta = _chamar_deepseek_chat(payload, client_id)
+        model_usado = model_req
+    else:
+        resposta = _chamar_openai_responses(payload, client_id)
+        model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
+
+    resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+    if not resposta_limpa:
+        raise PerguntasIARespostaIndisponivel("Agente Cloud nao gerou resposta.")
+    if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
+        raise PerguntasIARespostaIndisponivel("Resposta de fallback do Agente Cloud bloqueada.")
+    return resposta_limpa, model_usado, tool_results
+
+
 def _pos_venda_ia_limpar_resposta(texto: str, limite: int | None = None) -> str:
     limite_num = int(limite or ML_POS_VENDA_DEFAULT_MAX_CHARS)
     limite_num = max(1, min(limite_num, ML_POS_VENDA_DEFAULT_MAX_CHARS))
@@ -16084,7 +17693,16 @@ def _perguntas_ia_gerar_resposta(
     )
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
-    if _modelo_eh_vertex_ai(model_req):
+    if _ia_modo_perguntas_configurado() == "agente":
+        resposta, model_usado = _perguntas_ia_chamar_agente_cloud(
+            client_id,
+            loja,
+            pergunta,
+            item,
+            contexto,
+            prompt,
+        )
+    elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif _modelo_eh_gemini_api(model_req):
@@ -17125,6 +18743,41 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+@app.post("/api/ia/agente/perguntas/query")
+@app.post("/api/ia/agent/perguntas/query")
+def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
+    _ia_agent_endpoint_autorizar(request)
+    metodo = str(payload.classMethod or "query").strip() or "query"
+    if metodo not in {"query", "run"}:
+        raise HTTPException(status_code=400, detail="Metodo do agente nao suportado.")
+    agent_input = _ia_agent_input_dict(payload)
+    client_id = str(
+        agent_input.get("tenant_id")
+        or agent_input.get("client_id")
+        or request.headers.get("x-client-id")
+        or ""
+    ).strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Informe tenant_id no input do agente.")
+    task = str(agent_input.get("task") or "").strip()
+    if task and task != "mercado_livre_question_draft":
+        raise HTTPException(status_code=400, detail="Tarefa do agente nao suportada neste endpoint.")
+    try:
+        resposta, model_usado, tool_results = _ia_agent_perguntas_gerar_resposta(client_id, agent_input)
+    except PerguntasIARespostaIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "output": {
+            "success": True,
+            "resposta": resposta,
+            "answer": resposta,
+            "model": model_usado,
+            "tool_results": tool_results,
+            "read_only": True,
+        }
+    }
+
+
 @app.post("/api/ia/chat")
 def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     perf_t0 = time.perf_counter()
@@ -17273,7 +18926,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             {"name": "deepseek-v4-flash", "display_name": "DS V4 Flash"},
             {"name": "deepseek-v4-pro", "display_name": "DS V4 Pro"},
         ] if pode_escolher_modelo else [],
-        "gemini": [],
+        "gemini": _listar_modelos_gemini_api() if pode_escolher_modelo else [],
         "vertex": _listar_modelos_vertex_ai() if pode_escolher_modelo else [],
         "defaults": {
             "sistema": _ia_modelo_padrao_configurado(),
@@ -17283,11 +18936,11 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             "favoritos_usar_imagem": _ia_favoritos_usar_imagem_configurado(),
             "openai_ativa": _ia_provedor_ativo("openai"),
             "deepseek_ativa": _ia_provedor_ativo("deepseek"),
-            "gemini_ativa": False,
+            "gemini_ativa": _ia_provedor_ativo("gemini"),
             "vertex_ativa": _ia_provedor_ativo("vertex"),
             "openai": (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip(),
             "deepseek": "deepseek-v4-flash",
-            "gemini": "",
+            "gemini": "gemini:gemini-2.5-flash",
             "vertex": f"vertex:{_vertex_ai_modelo_padrao()}",
             "vertex_project_id": _vertex_ai_project_id_configurado(),
             "vertex_location": _vertex_ai_location(),
@@ -26903,13 +28556,12 @@ def _machine_presence_mark_current(maquinas: list[dict], current_machine_id: str
     return maquinas
 
 
-@app.get("/api/admin/users/online")
-def admin_listar_usuarios_online(
-    authorization: Optional[str] = Header(default=None),
-    client_id: str = Depends(get_tenant_id),
-):
-    _require_admin_usuarios_access(authorization, client_id)
-    usuarios = _listar_usuarios_admin_sql()
+def _montar_payload_usuarios_online(
+    usuarios: list[dict],
+    *,
+    include_admin_fields: bool = True,
+    include_machine_details: bool = True,
+) -> dict:
     resultados = []
     total_online = 0
     maquinas_online_unicas = set()
@@ -26924,7 +28576,11 @@ def admin_listar_usuarios_online(
     registros_presenca.extend(list(_machine_presence_local_read().values()))
 
     for usuario in usuarios:
+        if not isinstance(usuario, dict):
+            continue
         username = str(usuario.get("username") or "").strip().lower()
+        if not username:
+            continue
         user_client_id = str(usuario.get("client_id") or "default").strip() or "default"
         maquinas = _machine_presence_list_from_records(username, user_client_id, registros_presenca)
         maquinas_online = [item for item in maquinas if item.get("online")]
@@ -26940,20 +28596,27 @@ def admin_listar_usuarios_online(
             if ultima is None or int(item.get("last_seen_ts") or 0) > int(ultima.get("last_seen_ts") or 0):
                 ultima = item
 
-        resultados.append({
+        item_user = {
             "username": username,
             "name": usuario.get("name") or username,
-            "email": _normalizar_email(usuario.get("email")),
             "client_id": user_client_id,
             "active": bool(usuario.get("active", True)),
-            "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
             "online": bool(maquinas_online),
             "online_count": len(maquinas_online),
-            "machines": maquinas_online[:10],
-            "all_recent_machines": maquinas[:20],
             "last_seen_at": (ultima or {}).get("last_seen_at") or "",
             "seconds_since_seen": (ultima or {}).get("seconds_since_seen"),
-        })
+        }
+        if include_admin_fields:
+            item_user.update({
+                "email": _normalizar_email(usuario.get("email")),
+                "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
+            })
+        if include_machine_details:
+            item_user.update({
+                "machines": maquinas_online[:10],
+                "all_recent_machines": maquinas[:20],
+            })
+        resultados.append(item_user)
 
     resultados.sort(key=lambda item: (not bool(item.get("online")), str(item.get("username") or "")))
     return {
@@ -26964,6 +28627,16 @@ def admin_listar_usuarios_online(
         "online_timeout_seconds": _machine_presence_timeout_seconds(),
         "backend": "firebase" if _firebase_deve_usar() else "local",
     }
+
+
+@app.get("/api/admin/users/online")
+def admin_listar_usuarios_online(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _require_admin_usuarios_access(authorization, client_id)
+    usuarios = _listar_usuarios_admin_sql()
+    return _montar_payload_usuarios_online(usuarios, include_admin_fields=True, include_machine_details=True)
 
 
 @app.post("/api/user/machines/heartbeat")
@@ -27013,6 +28686,26 @@ def user_machines_online(
         "online_timeout_seconds": _machine_presence_timeout_seconds(),
         "backend": "firebase" if _firebase_deve_usar() else "local",
     }
+
+
+@app.get("/api/user/chat/contacts")
+def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
+    sessao = _payload_sessao_por_authorization(authorization)
+    usuario_atual = _obter_usuario_sql(sessao["username"])
+    if not _login_usuario_ativo(usuario_atual):
+        raise HTTPException(status_code=403, detail="Usuario inativo.")
+    usuarios = [
+        usuario for usuario in _listar_usuarios_admin_sql()
+        if isinstance(usuario, dict) and bool(usuario.get("active", True))
+    ]
+    payload = _montar_payload_usuarios_online(
+        usuarios,
+        include_admin_fields=False,
+        include_machine_details=False,
+    )
+    payload["current_user"] = sessao["username"]
+    payload["current_client_id"] = sessao["client_id"]
+    return payload
 
 
 @app.post("/api/user/chat/typing")
@@ -35449,6 +37142,9 @@ def _promo_automacao_worker() -> None:
 
 @app.on_event("startup")
 def _promo_automacao_iniciar_background():
+    if _agent_service_only():
+        logger.info("[AGENT SERVICE] Automacao de promocoes desativada neste servico.")
+        return
     global PROMO_AUTOMACAO_THREAD_STARTED
     with PROMO_AUTOMACAO_LOCK:
         if PROMO_AUTOMACAO_THREAD_STARTED:
@@ -38444,6 +40140,9 @@ def _renovacao_agendamento_worker() -> None:
 
 @app.on_event("startup")
 def _renovacao_iniciar_agendamento_background():
+    if _agent_service_only():
+        logger.info("[AGENT SERVICE] Agendamento de renovacao desativado neste servico.")
+        return
     global RENOVACAO_AGENDAMENTO_THREAD_STARTED
     with RENOVACAO_AGENDAMENTO_LOCK:
         if RENOVACAO_AGENDAMENTO_THREAD_STARTED:
@@ -41329,6 +43028,9 @@ def _perguntas_automacao_bg_worker() -> None:
 
 @app.on_event("startup")
 def _perguntas_automacao_iniciar_background() -> None:
+    if _agent_service_only():
+        logger.info("[AGENT SERVICE] Automacao de perguntas/pos-venda desativada neste servico.")
+        return
     global PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED
     with PERGUNTAS_AUTOMACAO_BG_LOCK:
         if PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED:
@@ -42975,6 +44677,173 @@ def _favoritos_ml_remover_promocoes_atuais(
     return resultados, cfg
 
 
+def _favoritos_ml_listing_type_id(valor: Any) -> str:
+    if isinstance(valor, dict):
+        valor = valor.get("id") or valor.get("name") or valor.get("label") or valor.get("title") or ""
+    texto_raw = str(valor or "").strip()
+    if not texto_raw:
+        return ""
+    texto = normalizar_texto(texto_raw).replace("_", " ").replace("-", " ")
+    compacto = re.sub(r"[^a-z0-9]+", "", texto)
+    if "gold pro" in texto or "goldpro" in compacto or "premium" in texto or texto == "pro":
+        return "gold_pro"
+    if (
+        "gold special" in texto
+        or "goldspecial" in compacto
+        or "classico" in texto
+        or "classic" in texto
+        or texto == "gold"
+    ):
+        return "gold_special"
+    if texto == "free" or "gratis" in texto or "gratuito" in texto:
+        return "free"
+    return ""
+
+
+def _favoritos_ml_nome_listing_type(listing_type_id: str) -> str:
+    listing_type = _favoritos_ml_listing_type_id(listing_type_id)
+    if listing_type == "gold_pro":
+        return "Premium"
+    if listing_type == "gold_special":
+        return "Classico"
+    if listing_type == "free":
+        return "Gratis"
+    return str(listing_type_id or "").strip()
+
+
+def _favoritos_ml_listing_type_alvo_req(req: FavoritosEfetivarPromocaoRequest) -> str:
+    candidatos = [
+        req.listing_type_id_alvo,
+        req.tipo_anuncio_alvo,
+    ]
+    if isinstance(req.simulacao, dict):
+        candidatos.extend([
+            req.simulacao.get("listingTypeIdAlvo"),
+            req.simulacao.get("listing_type_id_alvo"),
+            req.simulacao.get("tipoAnuncioAlvo"),
+            req.simulacao.get("tipo_anuncio_alvo"),
+        ])
+    for candidato in candidatos:
+        listing_type = _favoritos_ml_listing_type_id(candidato)
+        if listing_type:
+            return listing_type
+    return ""
+
+
+def _favoritos_ml_atualizar_tipo_listing_item(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    listing_type_alvo: str,
+) -> tuple[dict, dict]:
+    alvo = _favoritos_ml_listing_type_id(listing_type_alvo)
+    if not alvo:
+        return {"success": True, "changed": False, "target": "", "skipped": True}, cfg
+    if alvo not in {"gold_pro", "gold_special"}:
+        raise HTTPException(status_code=400, detail=f"Tipo de anuncio alvo nao suportado para Favoritos: {listing_type_alvo}")
+
+    def _json_response(resp) -> dict:
+        try:
+            data = resp.json() or {}
+            return data if isinstance(data, dict) else {"response": data}
+        except Exception:
+            return {}
+
+    item_resp, cfg = _ml_api_request(
+        client_id,
+        loja,
+        cfg,
+        "GET",
+        f"https://api.mercadolibre.com/items/{item_id}",
+        timeout=15,
+    )
+    item_data = _json_response(item_resp) if item_resp.status_code == 200 else {}
+    atual = _favoritos_ml_listing_type_id(item_data.get("listing_type_id"))
+    if atual == alvo:
+        return {
+            "success": True,
+            "changed": False,
+            "current": atual,
+            "target": alvo,
+            "current_name": _favoritos_ml_nome_listing_type(atual),
+            "target_name": _favoritos_ml_nome_listing_type(alvo),
+            "response": item_data,
+        }, cfg
+
+    ultimo_resp = None
+    ultimo_body = {}
+    ultimo_method = ""
+    for metodo in ("PUT", "POST"):
+        resp, cfg = _ml_api_request(
+            client_id,
+            loja,
+            cfg,
+            metodo,
+            f"https://api.mercadolibre.com/items/{item_id}/listing_type",
+            json={"id": alvo},
+            timeout=25,
+        )
+        ultimo_resp = resp
+        ultimo_body = _json_response(resp)
+        ultimo_method = metodo
+        if resp.status_code in (200, 201, 202, 204):
+            break
+        if resp.status_code not in (400, 405):
+            break
+
+    if not ultimo_resp or ultimo_resp.status_code not in (200, 201, 202, 204):
+        detalhe = _ml_parse_error_detail(ultimo_resp, "Erro ao alterar tipo do anuncio no Mercado Livre")
+        raise HTTPException(status_code=getattr(ultimo_resp, "status_code", 500) or 500, detail=detalhe)
+
+    confirmacao = {}
+    confirmado = False
+    for tentativa in range(6):
+        if tentativa:
+            time.sleep(1.2)
+        resp_conf, cfg = _ml_api_request(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/items/{item_id}",
+            timeout=15,
+        )
+        item_conf = _json_response(resp_conf) if resp_conf.status_code == 200 else {}
+        atual_conf = _favoritos_ml_listing_type_id(item_conf.get("listing_type_id"))
+        confirmacao = {
+            "attempt": tentativa + 1,
+            "status_code": resp_conf.status_code,
+            "listing_type_id": atual_conf,
+            "listing_type_name": _favoritos_ml_nome_listing_type(atual_conf),
+        }
+        if atual_conf == alvo:
+            confirmado = True
+            break
+
+    if not confirmado:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "O tipo do anuncio ainda nao ficou igual ao ranking no Mercado Livre. "
+                f"Tipo esperado: {_favoritos_ml_nome_listing_type(alvo)}. Conferencia: {confirmacao}"
+            ),
+        )
+
+    return {
+        "success": True,
+        "changed": True,
+        "method": ultimo_method,
+        "current": atual,
+        "target": alvo,
+        "current_name": _favoritos_ml_nome_listing_type(atual),
+        "target_name": _favoritos_ml_nome_listing_type(alvo),
+        "payload": {"id": alvo},
+        "response": ultimo_body,
+        "confirmacao": confirmacao,
+    }, cfg
+
+
 def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, item_id: str, preco: float) -> tuple[dict, dict]:
     preco_num = round(float(preco), 2)
     ultimo_resp = None
@@ -43371,6 +45240,19 @@ def favoritos_ml_efetivar_promocao(
     if removidas:
         time.sleep(1.5)
 
+    listing_type_update = None
+    listing_type_alvo = _favoritos_ml_listing_type_alvo_req(req)
+    if listing_type_alvo:
+        listing_type_update, cfg = _favoritos_ml_atualizar_tipo_listing_item(
+            client_id,
+            loja,
+            cfg,
+            item_id,
+            listing_type_alvo,
+        )
+        if listing_type_update and listing_type_update.get("changed"):
+            time.sleep(1.0)
+
     preco_update, cfg = _favoritos_ml_atualizar_preco_item(client_id, loja, cfg, item_id, preco_anuncio)
     preco_confirmacao, cfg = _favoritos_ml_aguardar_preco_anuncio(
         client_id,
@@ -43426,6 +45308,7 @@ def favoritos_ml_efetivar_promocao(
                 "preco_promocional": None,
                 "percentual_promocao": percentual,
                 "promocoes_removidas": removidas,
+                "listing_type_update": listing_type_update,
                 "preco_update": preco_update,
                 "preco_confirmacao": preco_confirmacao,
                 "verificacao": None,
@@ -43473,6 +45356,7 @@ def favoritos_ml_efetivar_promocao(
                 "preco_promocional": None,
                 "percentual_promocao": percentual,
                 "promocoes_removidas": removidas,
+                "listing_type_update": listing_type_update,
                 "preco_update": preco_update,
                 "preco_confirmacao": preco_confirmacao,
                 "verificacao": verificacao,
@@ -43506,6 +45390,7 @@ def favoritos_ml_efetivar_promocao(
             "preco_promocional": None,
             "percentual_promocao": percentual,
             "promocoes_removidas": removidas,
+            "listing_type_update": listing_type_update,
             "preco_update": preco_update,
             "preco_confirmacao": preco_confirmacao,
             "verificacao": verificacao,
@@ -43528,6 +45413,7 @@ def favoritos_ml_efetivar_promocao(
         "preco_promocional": round(float(preco_promocional), 2),
         "percentual_promocao": percentual,
         "promocoes_removidas": removidas,
+        "listing_type_update": listing_type_update,
         "preco_update": preco_update,
         "preco_confirmacao": preco_confirmacao,
         "verificacao": verificacao,
@@ -47901,6 +49787,16 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     atuais["ia_modelo_favoritos"] = _normalizar_ia_modelo_padrao(
         req.ia_modelo_favoritos or atuais.get("ia_modelo_favoritos") or atuais["ia_modelo_padrao"]
     )
+    for campo, valor_modo in (
+        ("ia_modo_padrao", req.ia_modo_padrao),
+        ("ia_modo_perguntas", req.ia_modo_perguntas),
+        ("ia_modo_chat", req.ia_modo_chat),
+        ("ia_modo_favoritos", req.ia_modo_favoritos),
+    ):
+        if valor_modo is not None:
+            atuais[campo] = _normalizar_ia_modo(valor_modo)
+        else:
+            atuais[campo] = _normalizar_ia_modo(atuais.get(campo))
     if req.ia_vertex_project_id is not None:
         atuais["ia_vertex_project_id"] = str(req.ia_vertex_project_id or "").strip()
     if req.ia_vertex_location is not None:
@@ -47915,6 +49811,13 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
         atuais["ia_modelo_favoritos"] = modelo_vertex
     if req.ia_vertex_service_account_email is not None:
         atuais["ia_vertex_service_account_email"] = str(req.ia_vertex_service_account_email or "").strip()
+    if req.ia_agent_resource_name is not None:
+        atuais["ia_agent_resource_name"] = str(req.ia_agent_resource_name or "").strip()
+    if req.ia_agent_endpoint_url is not None:
+        atuais["ia_agent_endpoint_url"] = str(req.ia_agent_endpoint_url or "").strip()
+    _salvar_ia_provider_api_key("openai", req.ia_openai_api_key, limpar=bool(req.ia_openai_api_key_limpar))
+    _salvar_ia_provider_api_key("deepseek", req.ia_deepseek_api_key, limpar=bool(req.ia_deepseek_api_key_limpar))
+    _salvar_ia_provider_api_key("gemini", req.ia_gemini_api_key, limpar=bool(req.ia_gemini_api_key_limpar))
     _salvar_vertex_agent_api_key(req.ia_agent_api_key, limpar=bool(req.ia_agent_api_key_limpar))
     if req.ia_favoritos_usar_imagem is not None:
         atuais["ia_favoritos_usar_imagem"] = bool(req.ia_favoritos_usar_imagem)

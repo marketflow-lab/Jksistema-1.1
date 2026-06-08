@@ -753,7 +753,9 @@
   .jk-msg-call-join:hover{filter:brightness(1.08);transform:translateY(-1px);}
   .jk-msg-attachments{display:grid;gap:6px;margin-top:7px;}
   .jk-msg-attachment{border:1px solid rgba(120,227,212,.24);border-radius:8px;background:rgba(3,22,32,.48);padding:6px;color:#dffefa;font-size:.7rem;overflow:hidden;}
-  .jk-msg-attachment img{display:block;max-width:190px;max-height:150px;border-radius:7px;object-fit:contain;background:rgba(0,0,0,.22);}
+  .jk-msg-image-thumb{display:block;border:0;background:transparent;padding:0;margin:0;cursor:zoom-in;max-width:100%;border-radius:7px;}
+  .jk-msg-image-thumb img{display:block;max-width:190px;max-height:150px;border-radius:7px;object-fit:contain;background:rgba(0,0,0,.22);transition:filter .15s ease,transform .15s ease;}
+  .jk-msg-image-thumb:hover img{filter:brightness(1.08);transform:scale(1.01);}
   .jk-msg-attachment audio{width:210px;max-width:100%;height:34px;display:block;}
   .jk-msg-attachment a{color:#9ee8df;text-decoration:none;font-weight:900;word-break:break-word;}
   .jk-msg-attachment a:hover{text-decoration:underline;}
@@ -826,6 +828,15 @@
   #jk-msg-call-decline{background:#ef4444;color:#fff;}
   #jk-msg-call-answer{background:#55c96d;color:#061b12;}
   @keyframes jkMsgCallPulse{0%,100%{transform:scale(1);box-shadow:0 0 0 8px rgba(85,201,109,.14);}50%{transform:scale(1.06);box-shadow:0 0 0 14px rgba(85,201,109,.08);}}
+  #jk-msg-image-modal[hidden]{display:none;}
+  #jk-msg-image-modal{position:fixed;inset:0;z-index:10060;display:grid;grid-template-rows:auto minmax(0,1fr);background:rgba(0,0,0,.88);backdrop-filter:blur(6px);}
+  .jk-msg-image-modal-bar{display:flex;align-items:center;gap:8px;min-height:52px;padding:8px 12px;background:rgba(3,14,20,.82);border-bottom:1px solid rgba(120,227,212,.22);}
+  .jk-msg-image-modal-title{flex:1 1 auto;min-width:0;color:#effffd;font-size:.84rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .jk-msg-image-modal-btn{border:1px solid rgba(120,227,212,.34);border-radius:9px;background:rgba(35,142,165,.28);color:#e8fffb;font-size:.74rem;font-weight:900;min-height:34px;padding:0 10px;cursor:pointer;}
+  .jk-msg-image-modal-btn:hover{border-color:rgba(120,227,212,.7);background:rgba(36,161,160,.34);}
+  #jk-msg-image-modal-close{min-width:36px;padding:0;font-size:1.2rem;line-height:1;}
+  .jk-msg-image-modal-stage{min-width:0;min-height:0;display:grid;place-items:center;padding:14px;overflow:auto;}
+  #jk-msg-image-modal-img{display:block;max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;background:rgba(255,255,255,.03);box-shadow:0 18px 60px rgba(0,0,0,.52);}
   #jk-ia-resizer{position:absolute;left:-8px;top:0;bottom:0;width:18px;cursor:ew-resize;touch-action:none;z-index:3;}
   #jk-ia-resizer::before{content:"";position:absolute;left:4px;top:50%;width:11px;height:52px;transform:translateY(-50%);border:1px solid rgba(120,227,212,.34);border-right:0;border-radius:999px 0 0 999px;background:rgba(35,142,165,.42);box-shadow:0 0 14px rgba(120,227,212,.18);transition:background .15s ease,border-color .15s ease,box-shadow .15s ease;}
   #jk-ia-resizer::after{content:"";position:absolute;left:9px;top:50%;width:2px;height:26px;transform:translateY(-50%);border-radius:999px;background:rgba(224,255,250,.66);box-shadow:-3px 0 0 rgba(224,255,250,.32),3px 0 0 rgba(224,255,250,.32);transition:background .15s ease,box-shadow .15s ease;}
@@ -1060,6 +1071,17 @@
         <button id="jk-msg-call-decline" type="button">Recusar</button>
         <button id="jk-msg-call-answer" type="button">Atender</button>
       </div>
+    </div>
+  </div>
+  <div id="jk-msg-image-modal" hidden role="dialog" aria-modal="true" aria-labelledby="jk-msg-image-modal-title">
+    <div class="jk-msg-image-modal-bar">
+      <div class="jk-msg-image-modal-title" id="jk-msg-image-modal-title">Imagem</div>
+      <button class="jk-msg-image-modal-btn" id="jk-msg-image-modal-copy" type="button">Copiar</button>
+      <a class="jk-msg-image-modal-btn" id="jk-msg-image-modal-download" href="#" download="imagem" role="button">Baixar</a>
+      <button class="jk-msg-image-modal-btn" id="jk-msg-image-modal-close" type="button" aria-label="Fechar">&times;</button>
+    </div>
+    <div class="jk-msg-image-modal-stage">
+      <img id="jk-msg-image-modal-img" alt="">
     </div>
   </div>
   `;
@@ -2122,6 +2144,72 @@
       }
     }
 
+    function _msgNomeArquivoImagem(nome) {
+      const limpo = String(nome || 'imagem').trim().replace(/[\\/:*?"<>|]+/g, '-');
+      return limpo || 'imagem';
+    }
+
+    function _msgFecharImagemTelaCheia() {
+      const modal = document.getElementById('jk-msg-image-modal');
+      const img = document.getElementById('jk-msg-image-modal-img');
+      if (modal) modal.hidden = true;
+      if (img) {
+        img.removeAttribute('src');
+        img.alt = '';
+      }
+    }
+
+    function _msgAbrirImagemTelaCheia(url, nome) {
+      const modal = document.getElementById('jk-msg-image-modal');
+      const img = document.getElementById('jk-msg-image-modal-img');
+      const title = document.getElementById('jk-msg-image-modal-title');
+      const copy = document.getElementById('jk-msg-image-modal-copy');
+      const download = document.getElementById('jk-msg-image-modal-download');
+      if (!modal || !img || !url) return;
+      const nomeFinal = _msgNomeArquivoImagem(nome);
+      img.src = url;
+      img.alt = nomeFinal;
+      modal.dataset.imageUrl = url;
+      modal.dataset.imageName = nomeFinal;
+      if (title) title.textContent = nomeFinal;
+      if (copy) copy.disabled = false;
+      if (download) {
+        download.href = url;
+        download.download = nomeFinal;
+      }
+      modal.hidden = false;
+    }
+
+    async function _msgCopiarImagemTelaCheia() {
+      const modal = document.getElementById('jk-msg-image-modal');
+      const copy = document.getElementById('jk-msg-image-modal-copy');
+      const url = String(modal && modal.dataset.imageUrl || '').trim();
+      if (!url) return;
+      try {
+        if (copy) copy.disabled = true;
+        const blob = await fetch(url).then(resp => resp.blob());
+        if (navigator.clipboard && window.ClipboardItem) {
+          try {
+            await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+            _msgSetStatus('Imagem copiada.');
+            return;
+          } catch (_) {
+            // Alguns contextos do Chromium aceitam apenas o link no clipboard.
+          }
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(url);
+          _msgSetStatus('Link da imagem copiado.');
+          return;
+        }
+        throw new Error('Area de transferencia indisponivel.');
+      } catch (err) {
+        _msgSetStatus(err && err.message ? err.message : 'Nao foi possivel copiar a imagem.', true);
+      } finally {
+        if (copy) copy.disabled = false;
+      }
+    }
+
     function _msgRenderAnexoHistorico(anexo) {
       const item = document.createElement('div');
       item.className = 'jk-msg-attachment';
@@ -2129,10 +2217,16 @@
       const nome = String(anexo && anexo.name || 'arquivo');
       const mime = String(anexo && anexo.mime_type || '').toLowerCase();
       if (url && mime.startsWith('image/')) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'jk-msg-image-thumb';
+        btn.title = 'Abrir imagem em tela cheia';
         const img = document.createElement('img');
         img.src = url;
         img.alt = nome;
-        item.appendChild(img);
+        btn.appendChild(img);
+        btn.addEventListener('click', () => _msgAbrirImagemTelaCheia(url, nome));
+        item.appendChild(btn);
         return item;
       }
       if (url && mime.startsWith('audio/')) {
@@ -2691,6 +2785,20 @@
     }
 
     async function _msgBuscarUsuariosOnline() {
+      try {
+        const resp = await fetch('/api/user/chat/contacts', {
+          method: 'GET',
+          headers: _authHeaders(),
+          cache: 'no-store',
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
+          const users = data.users.filter(user => user && user.active !== false);
+          _msgSalvarUsuariosCache(users);
+          return users;
+        }
+      } catch (_) {}
+
       if (typeof window.jkBuscarUsuariosOnline === 'function') {
         try {
           const data = await window.jkBuscarUsuariosOnline();
@@ -3953,6 +4061,17 @@
     document.getElementById('jk-msg-video-call').addEventListener('click', () => _msgIniciarVideoChamada());
     document.getElementById('jk-msg-call-answer').addEventListener('click', () => _msgAtenderChamadaRecebida());
     document.getElementById('jk-msg-call-decline').addEventListener('click', () => { void _msgRecusarChamadaRecebida(); });
+    document.getElementById('jk-msg-image-modal-copy').addEventListener('click', () => { void _msgCopiarImagemTelaCheia(); });
+    document.getElementById('jk-msg-image-modal-close').addEventListener('click', () => _msgFecharImagemTelaCheia());
+    document.getElementById('jk-msg-image-modal').addEventListener('click', event => {
+      if (event.target === event.currentTarget || event.target?.classList?.contains('jk-msg-image-modal-stage')) {
+        _msgFecharImagemTelaCheia();
+      }
+    });
+    document.addEventListener('keydown', event => {
+      const modal = document.getElementById('jk-msg-image-modal');
+      if (event.key === 'Escape' && modal && !modal.hidden) _msgFecharImagemTelaCheia();
+    });
     document.getElementById('jk-msg-img-input').addEventListener('change', e => _msgArquivosSelecionados(e.target.files).then(() => e.target.value = ''));
     document.getElementById('jk-msg-file-input').addEventListener('change', e => _msgArquivosSelecionados(e.target.files).then(() => e.target.value = ''));
     document.getElementById('jk-msg-text').addEventListener('keydown', e => {
