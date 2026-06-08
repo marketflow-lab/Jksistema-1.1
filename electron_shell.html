@@ -744,12 +744,9 @@
                 }
                 if (status === 'available' || status === 'manual-update-available') {
                     showUpdateToast(
-                        'Atualizacao disponivel',
-                        `Versao ${version || 'nova'} disponivel. Clique para atualizar agora.`,
-                        {
-                            actionLabel: 'Atualizar agora',
-                            onAction: iniciarAtualizacaoAgora
-                        }
+                        'Atualizacao encontrada',
+                        `Versao ${version || 'nova'} disponivel. Baixando e instalando automaticamente.`,
+                        { progress: 15 }
                     );
                     return;
                 }

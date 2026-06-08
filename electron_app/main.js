@@ -102,6 +102,7 @@ const mlItemInfoCache = new Map();
 const configuredMeetingPermissionSessions = new WeakSet();
 const ML_ITEM_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 const AUTO_UPDATE_CHECK_TIMEOUT_MS = 45000;
+const AUTO_UPDATE_START_DELAY_MS = 1500;
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
 const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 
@@ -658,8 +659,8 @@ function registerAutoUpdateEvents() {
     if (!autoUpdater || updateEventsRegistered) return false;
     updateEventsRegistered = true;
 
-    autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.allowPrerelease = false;
 
     autoUpdater.on('checking-for-update', () => {
@@ -667,8 +668,12 @@ function registerAutoUpdateEvents() {
     });
     autoUpdater.on('update-available', (info) => {
         downloadedUpdateInfo = null;
-        updateInstallRequested = false;
-        sendUpdateStatus('available', { updateInfo: normalizeUpdateInfo(info) });
+        updateInstallRequested = true;
+        sendUpdateStatus('available', {
+            updateInfo: normalizeUpdateInfo(info),
+            autoDownload: true,
+            autoInstall: true
+        });
     });
     autoUpdater.on('update-not-available', (info) => {
         downloadedUpdateInfo = null;
@@ -690,14 +695,12 @@ function registerAutoUpdateEvents() {
         downloadedUpdateInfo = info || {};
         sendUpdateStatus('downloaded', {
             updateInfo: normalizeUpdateInfo(info),
-            autoInstall: false,
-            installRequested: updateInstallRequested
+            autoInstall: true,
+            installRequested: true
         });
-        if (updateInstallRequested) {
-            installDownloadedUpdateSafely(info).catch((err) => {
-                logElectronLifecycle('auto-update-install-now-error', err);
-            });
-        }
+        installDownloadedUpdateSafely(info).catch((err) => {
+            logElectronLifecycle('auto-update-auto-install-error', err);
+        });
     });
     return true;
 }
@@ -809,7 +812,7 @@ function scheduleAutoUpdateCheck() {
         checkForUpdates(false).catch((err) => {
             sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
         });
-    }, 8000);
+    }, AUTO_UPDATE_START_DELAY_MS);
     if (typeof timer.unref === 'function') timer.unref();
 }
 
