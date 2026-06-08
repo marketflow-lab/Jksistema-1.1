@@ -719,13 +719,16 @@
             box-sizing: border-box;
             margin-top: 16px;
             max-height: none;
-            overflow-y: auto;
+            overflow-y: visible;
             border: 1px solid #d9e6fb;
             border-left: 4px solid #4facfe;
             border-radius: 8px;
             background: #f8fbff;
             padding: 14px;
             position: relative;
+        }
+        .ml-ranking-sidebar {
+            overflow-y: auto;
         }
         .ml-sku-sidebar {
             border-left: 0;
@@ -1297,8 +1300,8 @@
             display: flex;
             flex-direction: column;
             gap: 8px;
-            max-height: calc(100vh - 150px);
-            overflow-y: auto;
+            max-height: none;
+            overflow-y: visible;
             padding-right: 2px;
         }
         .ml-sku-sidebar-more {
@@ -2609,12 +2612,13 @@
                 box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
             }
             .ml-sku-sidebar {
-                position: fixed;
+                position: absolute;
                 top: 18px;
                 left: 16px;
                 z-index: 30;
                 width: var(--ml-sku-sidebar-width, 300px);
-                max-height: calc(100vh - 36px);
+                max-height: none;
+                overflow-y: visible;
                 margin-top: 0;
                 box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
             }
@@ -11695,6 +11699,43 @@
             return !!normalizarSkuBuscaMl(termo) && !skuSidebarTemSkuExatoBusca(itens, termo);
         }
 
+        function buscarSkuExatoHistoricoSidebar(termoBusca) {
+            const termo = String(termoBusca || '').trim();
+            if (!termo) return '';
+            const termoLiteral = termo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+            const termoTexto = normalizarTextoMl(termo);
+            for (const entrada of lerHistoricoFavoritos()) {
+                for (const grupo of (entrada && entrada.grupos) || []) {
+                    const sku = String(grupo && grupo.sku || '').trim();
+                    if (!sku) continue;
+                    const skuLiteral = sku.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                    if (skuLiteral === termoLiteral || normalizarTextoMl(sku) === termoTexto) {
+                        return sku;
+                    }
+                }
+            }
+            return '';
+        }
+
+        function aplicarSkuExatoHistoricoSidebar(itens, termoBusca) {
+            const skuExato = buscarSkuExatoHistoricoSidebar(termoBusca);
+            const termoCompacto = normalizarSkuBuscaMl(termoBusca);
+            if (!skuExato || !termoCompacto) return itens;
+            const skuExatoCompacto = normalizarSkuBuscaMl(skuExato);
+            return (itens || []).map(item => {
+                const skuAtual = String(item && item.sku || '').trim();
+                if (!skuAtual || normalizarSkuBuscaMl(skuAtual) !== termoCompacto || normalizarSkuBuscaMl(skuAtual) === skuExatoCompacto && skuAtual === skuExato) {
+                    return item;
+                }
+                return {
+                    ...item,
+                    sku_api_original: item.sku_api_original || skuAtual,
+                    sku: skuExato,
+                    chave: chaveSkuSidebarMercadoLivre(skuExato, item && item.loja)
+                };
+            });
+        }
+
         function extrairMlbsItemSkuSidebar(item) {
             const ids = [];
             const vistos = new Set();
@@ -12471,7 +12512,8 @@
         function renderizarSkuSidebarMercadoLivre() {
             if (!mlSkuSidebarListEl || !mlSkuSidebarEmptyEl || !mlSkuSidebarCountEl) return;
             const totalItens = montarItensSkuSidebarMercadoLivre();
-            const itens = filtrarItensSkuSidebarMercadoLivre(totalItens);
+            const itensFiltrados = filtrarItensSkuSidebarMercadoLivre(totalItens);
+            const itens = aplicarSkuExatoHistoricoSidebar(itensFiltrados, mlSkuSidebarFiltro);
             const limite = Math.max(ML_SKU_SIDEBAR_PAGE_SIZE, Number(mlSkuSidebarRenderLimit || ML_SKU_SIDEBAR_PAGE_SIZE));
             const itensRenderizados = itens.slice(0, limite);
             mlSkuSidebarListEl.innerHTML = '';
@@ -12485,7 +12527,7 @@
                 ? 'Nenhum SKU encontrado nos anúncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anúncios ativos.';
             mlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (deveBuscarSkuRemotoParaTermo(itens, mlSkuSidebarFiltro)) {
+            if (deveBuscarSkuRemotoParaTermo(itensFiltrados, mlSkuSidebarFiltro)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(mlSkuSidebarFiltro);
             }
             agendarAtualizacaoPosicaoNavegadorMlShell();
@@ -15126,7 +15168,8 @@
             if (!histMlSkuSidebarListEl || !histMlSkuSidebarEmptyEl || !histMlSkuSidebarCountEl) return;
             const todosItens = montarItensSkuSidebarMercadoLivre();
             const termoBusca = histMlSkuSidebarSearchEl ? histMlSkuSidebarSearchEl.value || '' : '';
-            const itens = filtrarItensSkuSidebarMercadoLivre(todosItens, termoBusca);
+            const itensFiltrados = filtrarItensSkuSidebarMercadoLivre(todosItens, termoBusca);
+            const itens = aplicarSkuExatoHistoricoSidebar(itensFiltrados, termoBusca);
             const selecionadoChave = skuChaveSku(histMlSkuSelecionado);
             const selecionadoTemHistorico = selecionadoChave && obterHistoricoMaisRecenteSku(histMlSkuSelecionado);
 
@@ -15140,7 +15183,7 @@
                 ? 'Nenhum SKU encontrado nos anuncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anuncios ativos.';
             histMlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (deveBuscarSkuRemotoParaTermo(itens, termoBusca)) {
+            if (deveBuscarSkuRemotoParaTermo(itensFiltrados, termoBusca)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca);
             }
 
@@ -15676,7 +15719,8 @@
             if (!favMlSkuSidebarListEl || !favMlSkuSidebarEmptyEl || !favMlSkuSidebarCountEl) return;
             const todosItens = montarItensSkuSidebarMercadoLivre();
             const termoBusca = favMlSkuSidebarSearchEl ? favMlSkuSidebarSearchEl.value || '' : '';
-            const itens = filtrarItensSkuSidebarMercadoLivre(todosItens, termoBusca);
+            const itensFiltrados = filtrarItensSkuSidebarMercadoLivre(todosItens, termoBusca);
+            const itens = aplicarSkuExatoHistoricoSidebar(itensFiltrados, termoBusca);
             const selecionadoChave = skuChaveSku(favMlSkuSelecionado);
             const selecionadoLoja = skuNormalizarLoja(favMlLojaSelecionada);
             const selecionadoTemRanking = selecionadoChave && favMlHistoricoExecucaoSelecionadaId && obterGrupoRankingFavoritosSku(favMlSkuSelecionado);
@@ -15692,7 +15736,7 @@
                 ? 'Nenhum SKU encontrado nos anuncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anuncios ativos.';
             favMlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (deveBuscarSkuRemotoParaTermo(itens, termoBusca)) {
+            if (deveBuscarSkuRemotoParaTermo(itensFiltrados, termoBusca)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca);
             }
 
