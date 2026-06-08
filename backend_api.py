@@ -16757,12 +16757,14 @@ def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -
                 if len(alvo) >= 4:
                     return alvo[:160]
         texto = re.sub(
-            r"\b(compare|comparar|pesquise|pesquisar|busque|buscar|internet|google|esta|essa|esse|este|produto|peca|peça|item)\b",
+            r"\b(compare|comparar|confira|conferir|verifique|verificar|pesquise|pesquisar|busque|buscar|internet|google|web|anuncio|anuncios|anúncio|anúncios|descricao|descrição|mesmo|mesma|esta|essa|esse|este|produto|peca|peça|item|pela|pelo|pelas|pelos|do|da|dos|das|e)\b",
             " ",
             texto,
             flags=re.IGNORECASE,
         )
         texto = re.sub(r"\s+", " ", texto).strip(" ?!.;,")
+        if len(texto) < 4:
+            return ""
         return texto[:180]
 
     def _adicionar(parte: object, destino: list[str], vistos: set[str]) -> None:
