@@ -16016,8 +16016,18 @@ def _ia_treinamento_ppv_resolver(client_id: str, loja: str | None = None) -> dic
     if loja_key:
         item = (payload.get("por_loja") or {}).get(loja_key)
         if isinstance(item, dict):
-            return {**item, "loja": item.get("loja") or loja_nome, "loja_key": loja_key}
-        return _ia_treinamento_ppv_payload_vazio(loja_nome, loja_key)
+            base_global = {k: v for k, v in payload.items() if k != "por_loja"}
+            combinado = dict(base_global)
+            for chave, valor in item.items():
+                if chave == "por_loja":
+                    continue
+                if isinstance(valor, str):
+                    if valor.strip():
+                        combinado[chave] = valor
+                elif valor not in (None, [], {}):
+                    combinado[chave] = valor
+            return {**combinado, "loja": item.get("loja") or loja_nome, "loja_key": loja_key}
+        return {**payload, "loja": loja_nome, "loja_key": loja_key}
     return payload
 
 
@@ -16600,15 +16610,30 @@ def _perguntas_ia_agent_input(
     contexto: dict,
     prompt: str,
 ) -> dict:
+    contexto_dict = contexto if isinstance(contexto, dict) else {}
+    contexto_treinamento = {
+        "modulo": "perguntas_pos_venda",
+        "tipo": "resposta_automatica_ml",
+        "tipo_treinamento": "perguntas_anuncio",
+        "loja": str(loja or "").strip(),
+        "produto": contexto_dict,
+    }
+    app_guidance = _ia_treinamento_ppv_bloco_prompt(
+        client_id,
+        "Perguntas e pos venda",
+        contexto_treinamento,
+    ).strip()
     return {
         "task": "mercado_livre_question_draft",
         "locale": "pt-BR",
         "tenant_id": str(client_id or "").strip(),
         "store": str(loja or "").strip(),
         "prompt": str(prompt or "").strip(),
+        "app_guidance": app_guidance[:24000],
+        "app_guidance_source": "ia_treinamento_perguntas_pos_venda",
         "question": _perguntas_ia_pergunta_para_agente(pergunta),
         "item": _perguntas_ia_item_para_agente(item),
-        "context": contexto if isinstance(contexto, dict) else {},
+        "context": contexto_dict,
         "constraints": {
             "read_only": True,
             "do_not_send_to_mercado_livre": True,
@@ -17299,6 +17324,14 @@ def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: d
 
 def _ia_agent_perguntas_montar_prompt(agent_input: dict, tool_results: list[dict]) -> str:
     base_prompt = str(agent_input.get("prompt") or "").strip()
+    app_guidance = str(
+        agent_input.get("app_guidance")
+        or agent_input.get("training_guidance")
+        or agent_input.get("orientacoes")
+        or agent_input.get("app_instructions")
+        or agent_input.get("instructions")
+        or ""
+    ).strip()[:24000]
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
     constraints = agent_input.get("constraints") if isinstance(agent_input.get("constraints"), dict) else {}
@@ -17311,12 +17344,14 @@ def _ia_agent_perguntas_montar_prompt(agent_input: dict, tool_results: list[dict
         "Nao envie, nao publique e nao altere nada no Mercado Livre, Bling ou cadastro. "
         "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas. "
         "Nao invente compatibilidade, prazo, garantia, estoque, medidas, links ou dados tecnicos. "
-        "Use primeiro os resultados das ferramentas e depois o contexto recebido. "
+        "Siga as orientacoes do app e do treinamento salvo para tom, estrutura, politica comercial e conteudo permitido. "
+        "Use resultados das ferramentas e contexto recebido como fonte principal de fatos. "
         "Quando houver web_search, use a internet apenas para apoiar comparacoes externas; "
-        "se a resposta depender da internet, mencione de forma curta que verificou fontes externas e cite o nome do site quando estiver disponivel. "
+        "se a resposta depender da internet, mencione de forma curta que verificou fontes externas quando isso nao conflitar com as orientacoes do app. "
         "Se os dados externos divergirem do cadastro, Mercado Livre ou Bling, prefira os dados internos ou peca confirmacao. "
         "Se o dado estiver ausente, peça a informacao necessaria com cordialidade. "
         f"Limite de caracteres: {constraints.get('max_chars') or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO}.\n\n"
+        f"Orientacoes do app e treinamento salvos:\n{app_guidance or '-'}\n\n"
         f"Prompt original do app:\n{base_prompt or '-'}\n\n"
         f"Pergunta normalizada em JSON:\n{bloco_question or '{}'}\n\n"
         f"Anuncio recebido em JSON:\n{bloco_item or '{}'}\n\n"
