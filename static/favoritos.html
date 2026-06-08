@@ -8505,6 +8505,13 @@
             if (!Number.isFinite(numero) || numero <= 0 || numero >= 100) return null;
             return numero;
         }
+        function assinaturaOpcoesPromocaoFavoritos(opcoesPromocao) {
+            const campanha = opcoesPromocao && opcoesPromocao.campanha || {};
+            const campanhaId = String(campanha.id || campanha.campaign_id || '').trim();
+            const percentual = obterPercentualPromocaoFixaFavoritos(opcoesPromocao);
+            if (!campanhaId || percentual === null) return '';
+            return `${campanhaId}|${Number(percentual).toFixed(4)}`;
+        }
         function promocaoFavoritosSemPercentualFixo(opcoesPromocao) {
             return !!(
                 opcoesPromocao
@@ -8813,6 +8820,7 @@
                 precoPromocional: percentualPromocao !== null ? precoSimulado : null,
                 precoPromocionalCalculado,
                 percentualPromocao,
+                assinaturaPromocao: assinaturaOpcoesPromocaoFavoritos(opcoesPromocao),
                 diferencaPromocao,
                 margem,
                 valorLiquido,
@@ -9284,6 +9292,7 @@
             const ranking = obterRankingFavoritosParaSimulador(sku);
             const precosFinaisReservados = new Set();
             const precosCheiosReservados = new Set();
+            const assinaturaPromocaoAtual = assinaturaOpcoesPromocaoFavoritos(opcoesPromocao);
             return lista.map((anuncio, index) => {
                 const rankingLinha = ranking[index];
                 const itemId = obterIdAnuncioFavoritos(anuncio);
@@ -9291,6 +9300,9 @@
                 let sim = cache && cache.itemId === itemId
                     ? cache.sim
                     : null;
+                if (sim && sim.ok && assinaturaPromocaoAtual && sim.assinaturaPromocao !== assinaturaPromocaoAtual) {
+                    sim = null;
+                }
                 if (sim && sim.ok) {
                     const chaveFinalCache = chavePrecoCentavosFavoritos(obterPrecoFinalSimulacaoFavoritos(sim));
                     const chaveCheioCache = chavePrecoCentavosFavoritos(sim.preco);
@@ -9331,6 +9343,25 @@
                 vistos.add(chave);
                 return true;
             });
+        }
+        function explicarRegistrosNaoEfetivaveisFavoritos(registros, registrosAntesFiltro = null) {
+            const lista = Array.isArray(registros) ? registros : [];
+            const listaOriginal = Array.isArray(registrosAntesFiltro) ? registrosAntesFiltro : lista;
+            if (!lista.length && listaOriginal.length) {
+                return 'Os anuncios encontrados pertencem a outra loja. Marque "Fazer tambem nas outras contas" ou selecione a loja do anuncio.';
+            }
+            if (!lista.length) return 'Nenhum anuncio proprio foi encontrado para este SKU.';
+            const semPercentual = lista.find(registro => registro && registro.sim && registro.sim.ok && registro.sim.percentualPromocao === null);
+            if (semPercentual) return 'A simulacao estava sem percentual de promocao. Salve campanha e % novamente para recalcular.';
+            const semSimulacao = lista.find(registro => !registro || !registro.sim || !registro.sim.ok);
+            if (semSimulacao) {
+                return semSimulacao && semSimulacao.sim && semSimulacao.sim.status
+                    ? textoCurtoStatusSimuladorFavoritos(semSimulacao.sim.status)
+                    : 'A simulacao nao ficou valida.';
+            }
+            const semDados = lista.find(registro => !registro || !registro.itemId || !registro.loja);
+            if (semDados) return 'Faltou MLB ou loja em pelo menos um anuncio.';
+            return 'Confira os motivos exibidos na coluna Simulador.';
         }
         function normalizarNomePromocaoFavoritos(valor) {
             return String(valor || '')
@@ -9480,14 +9511,17 @@
             }
             const lojaAtualNorm = skuNormalizarLoja(favoritosLojaSelecionadaParaApi(favMlLojaSelecionada || ''));
             let registros = obterRegistrosSimulacaoFavoritos(anuncios, sku, opcoesPromocao, cache);
+            const registrosAntesFiltroLoja = registros;
             if (!incluirOutrasContas && lojaAtualNorm) {
                 registros = registros.filter(registro => skuNormalizarLoja(registro.loja) === lojaAtualNorm);
             }
             const validos = filtrarRegistrosEfetivaveisFavoritos(registros);
             if (!validos.length) {
-                mostrarBalaoFavoritosStatus('Nenhum anuncio com simulacao valida para aprovar. Veja o motivo exibido na coluna Simulador.', {
+                const motivo = explicarRegistrosNaoEfetivaveisFavoritos(registros, registrosAntesFiltroLoja);
+                mostrarBalaoFavoritosStatus(`Nenhum anuncio com simulacao valida para aprovar. ${motivo}`, {
                     erro: true,
-                    tempoMs: 6500
+                    tempoMs: 7500,
+                    larga: true
                 });
                 atualizarPainelEfetivarFavoritos();
                 return;
@@ -11599,7 +11633,7 @@
 
         function agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca) {
             const termo = String(termoBusca || '').trim();
-            const loja = favoritosLojaSelecionadaParaApi();
+            const loja = favoritosLojaSelecionadaParaApi((opcoes && opcoes.loja) || undefined);
             const chaveBusca = `${skuNormalizarLoja(loja)}:${normalizarSkuBuscaMl(termo) || normalizarTextoMl(termo)}`;
             if (!loja || termo.length < 2 || !normalizarTextoMl(termo) || mlSkuBuscaRemotaCache.has(chaveBusca)) return;
             if (mlSkuBuscaRemotaTimer) clearTimeout(mlSkuBuscaRemotaTimer);
