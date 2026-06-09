@@ -1160,8 +1160,12 @@
 
     function calcularModulosHabilitados() {
         const enabledBase = usuarioFull()
-            ? modules
+            ? modules.slice()
             : modules.filter(m => permissions && permissions[m.key] === true);
+        const centralUsuarios = modules.find(m => m.key === 'admin_usuarios');
+        if (centralUsuarios && !enabledBase.some(m => m.key === 'admin_usuarios')) {
+            enabledBase.push(centralUsuarios);
+        }
         return enabledBase.slice().sort((a, b) => {
             if (a.key === 'admin_usuarios' && b.key !== 'admin_usuarios') return -1;
             if (a.key !== 'admin_usuarios' && b.key === 'admin_usuarios') return 1;
@@ -1173,7 +1177,7 @@
 
     function atualizarBotaoCentralUsuarios() {
         const botao = document.getElementById('btn-admin-usuarios');
-        if (botao) botao.hidden = !usuarioPodeAdmin();
+        if (botao) botao.hidden = false;
     }
 
     function atualizarModuloDashboard() {

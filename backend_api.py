@@ -19354,6 +19354,21 @@ def _require_admin_usuarios_access(authorization: Optional[str], client_id: str)
     }
 
 
+def _require_online_presence_access(authorization: Optional[str], client_id: str) -> dict:
+    sessao = _payload_sessao_por_authorization(authorization)
+    username = str(sessao.get("username") or "").strip().lower()
+    client_sessao = str(sessao.get("client_id") or "default").strip() or "default"
+    client_norm = str(client_id or client_sessao or "default").strip() or "default"
+    if client_sessao != client_norm:
+        raise HTTPException(status_code=403, detail="Sessao invalida para esse cliente.")
+    permissoes = _carregar_permissoes_usuario(username, client_norm)
+    return {
+        "username": username,
+        "client_id": client_norm,
+        "permissions": permissoes,
+    }
+
+
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
     """Extrai o client_id do JWT e valida a permissÃƒÂ£o do mÃƒÂ³dulo acessado."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -28515,7 +28530,6 @@ def firebase_realtime_presence_session(
 
     username = str(sessao.get("username") or "").strip().lower()
     client_norm = str(sessao.get("client_id") or "default").strip() or "default"
-    permissoes = _carregar_permissoes_usuario(username, client_norm)
     machine_final, meta = _montar_machine_id_login(request, machine_id or "")
     client_key = _firebase_presence_client_key(client_norm)
     user_key = _firebase_presence_user_key(username)
@@ -28527,7 +28541,7 @@ def firebase_realtime_presence_session(
         "jk_username": username,
         "jk_user_key": user_key,
         "jk_machine_key": machine_key,
-        "jk_admin": bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True),
+        "jk_admin": True,
     }
     try:
         token = firebase_auth.create_custom_token(uid, claims, app=app_fb)
@@ -29294,11 +29308,16 @@ def _montar_payload_usuarios_online(
 @app.get("/api/admin/users/online")
 def admin_listar_usuarios_online(
     authorization: Optional[str] = Header(default=None),
-    client_id: str = Depends(get_tenant_id),
 ):
-    _require_admin_usuarios_access(authorization, client_id)
+    acesso = _require_online_presence_access(authorization, "")
+    permissoes = acesso.get("permissions") if isinstance(acesso.get("permissions"), dict) else {}
+    pode_ver_campos_admin = bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True)
     usuarios = _listar_usuarios_admin_sql()
-    return _montar_payload_usuarios_online(usuarios, include_admin_fields=True, include_machine_details=True)
+    return _montar_payload_usuarios_online(
+        usuarios,
+        include_admin_fields=pode_ver_campos_admin,
+        include_machine_details=True,
+    )
 
 
 @app.post("/api/user/machines/heartbeat")

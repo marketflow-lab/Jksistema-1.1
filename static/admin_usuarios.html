@@ -914,9 +914,7 @@
     const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
     const usuarioPodeGerenciarUsuarios = permissions.full === true;
     const usuarioAdmin = usuarioPodeGerenciarUsuarios || permissions.admin_usuarios === true;
-    if (!usuarioAdmin && !modoCompartilharEmbutido) {
-        window.location.replace('/integracoes.html?tab=compartilhar');
-    }
+    const usuarioPodeVerPresenca = true;
 
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
@@ -943,7 +941,7 @@
     let compartilhamentoUltimaAtualizacao = '';
     let userShareProcessoAtual = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
-    let secaoAtual = modoCompartilharEmbutido ? 'compartilhar' : (usuarioAdmin ? 'visao-geral' : 'compartilhar');
+    let secaoAtual = modoCompartilharEmbutido ? 'compartilhar' : (usuarioPodeVerPresenca ? 'visao-geral' : 'compartilhar');
 
     function labelPermissao(key) {
         const map = {
@@ -981,8 +979,9 @@
             window.location.href = '/integracoes.html?tab=compartilhar';
             return;
         }
-        const alvo = modoCompartilharEmbutido ? 'compartilhar' : (secao || (usuarioAdmin ? 'visao-geral' : 'compartilhar'));
-        if (!usuarioAdmin && alvo !== 'compartilhar') return;
+        const alvo = modoCompartilharEmbutido ? 'compartilhar' : (secao || (usuarioPodeVerPresenca ? 'visao-geral' : 'compartilhar'));
+        if (!usuarioAdmin && !usuarioPodeVerPresenca && alvo !== 'compartilhar') return;
+        if (!usuarioAdmin && usuarioPodeVerPresenca && alvo !== 'visao-geral' && alvo !== 'compartilhar') return;
         secaoAtual = alvo;
         document.querySelectorAll('[data-section]').forEach(section => {
             section.classList.toggle('active', section.dataset.section === alvo);
@@ -994,9 +993,13 @@
     }
 
     function atualizarAbaAtual() {
-        if (modoCompartilharEmbutido || !usuarioAdmin) {
+        if (modoCompartilharEmbutido || (!usuarioAdmin && !usuarioPodeVerPresenca)) {
             carregarCompartilhamentoEntreUsuarios();
             carregarSincronizacaoMinhasMaquinas();
+            return;
+        }
+        if (!usuarioAdmin && usuarioPodeVerPresenca) {
+            carregarOnlineUsuarios();
             return;
         }
         if (secaoAtual === 'compartilhar') {
@@ -1113,14 +1116,20 @@
 
     function aplicarModoAcesso() {
         document.querySelectorAll('.admin-only').forEach(el => {
-            el.classList.toggle('is-hidden', !usuarioAdmin);
+            const secaoPresenca = usuarioPodeVerPresenca && (
+                el.matches('[data-section="visao-geral"]') ||
+                el.matches('[data-section-target="visao-geral"]')
+            );
+            el.classList.toggle('is-hidden', !(usuarioAdmin || secaoPresenca));
         });
         document.querySelector('.layout')?.classList.toggle('user-only', !usuarioAdmin);
         const subtitle = document.querySelector('.subtitle');
-        if (subtitle && !usuarioAdmin) {
+        if (subtitle && !usuarioAdmin && usuarioPodeVerPresenca) {
+            subtitle.textContent = 'Veja usuarios online e acompanhe a presenca do sistema.';
+        } else if (subtitle && !usuarioAdmin) {
             subtitle.textContent = 'Compartilhe dados com outros usuários por convite e aceite.';
         }
-        abrirSecaoModulo(modoCompartilharEmbutido ? 'compartilhar' : (usuarioAdmin ? secaoAtual : 'compartilhar'));
+        abrirSecaoModulo(modoCompartilharEmbutido ? 'compartilhar' : (usuarioPodeVerPresenca ? secaoAtual : 'compartilhar'));
     }
 
     function usuarioAtualSessao() {
@@ -2824,7 +2833,7 @@
     }
 
     async function iniciarRealtimeOnlineUsuarios() {
-        if (!usuarioAdmin || onlineRealtimeBloqueado) return false;
+        if (!usuarioPodeVerPresenca || onlineRealtimeBloqueado) return false;
         if (onlineRealtimeUnsubscribe) return true;
         if (typeof window.jkAssinarPresencaUsuarios !== 'function') return false;
         try {
@@ -2906,7 +2915,7 @@
     }
 
     async function carregarUsuarios() {
-        if (modoCompartilharEmbutido || !usuarioAdmin) {
+        if (modoCompartilharEmbutido || (!usuarioAdmin && !usuarioPodeVerPresenca)) {
             await carregarSincronizacaoMinhasMaquinas();
             await carregarCompartilhamentoEntreUsuarios();
             return;
@@ -3055,7 +3064,7 @@
     }
     aplicarModoAcesso();
     carregarUsuarios();
-    if (usuarioAdmin) {
+    if (usuarioPodeVerPresenca) {
         setInterval(() => {
             if (!onlineRealtimeDisponivel) carregarOnlineUsuarios();
         }, 10 * 60 * 1000);
