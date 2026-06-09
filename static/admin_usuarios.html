@@ -2809,6 +2809,20 @@
         }
     }
 
+    async function carregarOnlineUsuariosCompleto() {
+        if (typeof window.jkBuscarUsuariosOnline === 'function') {
+            try {
+                const data = await window.jkBuscarUsuariosOnline();
+                if (data && data.success !== false && Array.isArray(data.users)) {
+                    aplicarPayloadOnlineUsuarios(data);
+                    return true;
+                }
+            } catch (_error) {}
+        }
+        await carregarOnlineUsuariosBackend();
+        return false;
+    }
+
     async function iniciarRealtimeOnlineUsuarios() {
         if (!usuarioAdmin || onlineRealtimeBloqueado) return false;
         if (onlineRealtimeUnsubscribe) return true;
@@ -2819,7 +2833,7 @@
             const unsubscribe = await window.jkAssinarPresencaUsuarios((payload) => {
                 onlineRealtimeDisponivel = true;
                 onlineRealtimePayload = mesclarPayloadOnlineRealtime(payload);
-                aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
+                carregarOnlineUsuariosCompleto().catch(() => aplicarPayloadOnlineUsuarios(onlineRealtimePayload));
             }, () => {
                 onlineRealtimeDisponivel = false;
                 onlineRealtimeBloqueado = true;
@@ -2840,16 +2854,10 @@
     }
 
     async function carregarOnlineUsuarios() {
-        if (onlineRealtimeDisponivel && onlineRealtimePayload) {
-            onlineRealtimePayload = mesclarPayloadOnlineRealtime(onlineRealtimePayload);
-            aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
-            return;
+        if (!onlineRealtimeBloqueado && !onlineRealtimeUnsubscribe) {
+            await iniciarRealtimeOnlineUsuarios();
         }
-        if (!onlineRealtimeBloqueado && await iniciarRealtimeOnlineUsuarios()) {
-            if (onlineRealtimePayload) aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
-            return;
-        }
-        await carregarOnlineUsuariosBackend();
+        await carregarOnlineUsuariosCompleto();
     }
 
     function abrirMensagemAdmin(user) {

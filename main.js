@@ -15,22 +15,64 @@ if (!electron || !electron.app) {
 }
 
 const { app, BrowserWindow, BrowserView, desktopCapturer, ipcMain, session, net, shell, dialog, Notification } = electron;
-const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');
+const nodeNet = require('net');
+const http = require('http');
 const { pathToFileURL } = require('url');
+let autoUpdater = null;
+try {
+    ({ autoUpdater } = require('electron-updater'));
+} catch (err) {
+    console.warn('[Atualizacao] electron-updater indisponivel:', err && err.message ? err.message : err);
+}
 
 // Evita crash silencioso de GPU em alguns ambientes Windows.
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-http-cache');
+app.setName('JK Sistema Cliente');
 if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
-    app.setAppUserModelId('com.jksistema.desktop');
+    app.setAppUserModelId('com.jksistema.cliente');
 }
 
-const JK_APP_ROOT_DIR = __dirname;
-const JK_ELECTRON_USER_DATA_DIR = process.env.JK_ELECTRON_USER_DATA_DIR || path.join(JK_APP_ROOT_DIR, 'info', 'electron_user_data');
+const JK_LOCAL_BACKEND_PORT = 8001;
+const JK_PROMO_WORKER_PORT = 8011;
+const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
+const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
+const JK_PRIVATE_CREDENTIALS_FILE_NAME = 'credenciais-jk-private.jkcred';
+let localBackendProcess = null;
+let localBackendStartupPromise = null;
+
+function resolveAppRootDir() {
+    const candidates = [
+        process.env.JK_APP_ROOT_DIR,
+        app.isPackaged ? process.resourcesPath : null,
+        fs.existsSync(path.join(__dirname, 'backend_api.py')) ? __dirname : null,
+        path.resolve(__dirname, '..'),
+        __dirname
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        const root = path.resolve(candidate);
+        if (
+            fs.existsSync(path.join(root, 'electron_shell.html')) ||
+            fs.existsSync(path.join(root, 'extensoes_chrome'))
+        ) {
+            return root;
+        }
+    }
+
+    return path.resolve(candidates[0] || __dirname);
+}
+
+const JK_APP_ROOT_DIR = resolveAppRootDir();
+const JK_DEFAULT_ELECTRON_USER_DATA_DIR = app.isPackaged
+    ? app.getPath('userData')
+    : path.join(JK_APP_ROOT_DIR, 'info', 'electron_user_data');
+const JK_ELECTRON_USER_DATA_DIR = process.env.JK_ELECTRON_USER_DATA_DIR || JK_DEFAULT_ELECTRON_USER_DATA_DIR;
 try {
     fs.mkdirSync(JK_ELECTRON_USER_DATA_DIR, { recursive: true });
     app.setPath('userData', JK_ELECTRON_USER_DATA_DIR);
@@ -47,20 +89,33 @@ let chromeExtensionsLoadPromise = null;
 let chromeExtensionSessionEventsRegistered = false;
 let avantProStorageRecoveryAttempted = false;
 let avantProStorageRecoveryPromise = null;
+let updateEventsRegistered = false;
+let updateCheckInProgress = false;
+let updateInstallInProgress = false;
+let updateInstallRequested = false;
+let downloadedUpdateInfo = null;
+let deferredDownloadedUpdateInfo = null;
+let updateFeedConfigured = false;
+let updateFeedSource = '';
+const mlAutomationProtectionByWebContents = new Map();
 const mlItemInfoCache = new Map();
 const configuredMeetingPermissionSessions = new WeakSet();
+const ML_ITEM_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const AUTO_UPDATE_CHECK_TIMEOUT_MS = 45000;
+const AUTO_UPDATE_START_DELAY_MS = 1500;
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
 const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 
 function logElectronLifecycle(...args) {
+    const logDir = path.join(JK_ELECTRON_USER_DATA_DIR, 'logs');
     const message = `[Electron ${new Date().toISOString()}] ${args.map(value => {
         if (value instanceof Error) return value.stack || value.message;
         if (typeof value === 'string') return value;
         try { return JSON.stringify(value); } catch (_err) { return String(value); }
     }).join(' ')}\n`;
     try {
-        fs.mkdirSync(path.join(__dirname, 'logs'), { recursive: true });
-        fs.appendFileSync(path.join(__dirname, 'logs', 'electron_runtime.log'), message, 'utf8');
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.appendFileSync(path.join(logDir, 'electron_runtime.log'), message, 'utf8');
     } catch (_err) {}
     try {
         if (process.stdout && !process.stdout.destroyed && process.stdout.writable) {
@@ -213,8 +268,10 @@ function ignoreBrokenPipe(stream) {
         stream.on('error', (err) => {
             if (isBrokenStdoutPipe(err)) return;
             try {
+                const logDir = path.join(getAppRootDir(), 'logs');
+                fs.mkdirSync(logDir, { recursive: true });
                 fs.appendFileSync(
-                    path.join(__dirname, 'logs', 'electron_runtime.log'),
+                    path.join(logDir, 'electron_runtime.log'),
                     `[Electron ${new Date().toISOString()}] stream-error ${err && err.stack ? err.stack : String(err)}\n`,
                     'utf8'
                 );
@@ -248,7 +305,7 @@ function quarantineProfileEntry(entryName, recoveryDir) {
 function recoverProfileIfStartupCrashed() {
     if (!fs.existsSync(JK_ELECTRON_STARTUP_MARKER)) return;
     const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
-    const recoveryDir = path.join(JK_APP_ROOT_DIR, 'info', `electron_user_data_recovery_${stamp}`);
+    const recoveryDir = path.join(JK_ELECTRON_USER_DATA_DIR, `electron_user_data_recovery_${stamp}`);
     const entries = [
         'Local Storage',
         'Session Storage',
@@ -293,6 +350,472 @@ process.on('unhandledRejection', (err) => {
     logElectronLifecycle('unhandledRejection', err);
 });
 
+function _cacheNowMs() {
+    return Date.now();
+}
+
+function _cacheGet(cacheMap, key) {
+    const entry = cacheMap.get(key);
+    if (!entry) return null;
+    if (_cacheNowMs() - (entry.at || 0) > ML_ITEM_INFO_CACHE_TTL_MS) {
+        cacheMap.delete(key);
+        return null;
+    }
+    return entry.value;
+}
+
+function _cacheSet(cacheMap, key, value) {
+    cacheMap.set(key, { at: _cacheNowMs(), value });
+}
+
+function normalizeUpdateInfo(info) {
+    if (!info || typeof info !== 'object') {
+        return null;
+    }
+    return {
+        version: info.version || '',
+        releaseName: info.releaseName || '',
+        releaseDate: info.releaseDate || '',
+        files: Array.isArray(info.files) ? info.files.length : 0
+    };
+}
+
+function formatVersionLabel(value) {
+    return String(value || '').trim() || 'desconhecida';
+}
+
+function withUpdateCheckTimeout(promise, timeoutMs, message) {
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
+}
+
+function getUpdateErrorMessage(err) {
+    if (!err) return 'Erro desconhecido ao verificar atualizacao.';
+    const raw = String(err.message || err);
+    if (/app-update\.ya?ml|ENOENT/i.test(raw)) {
+        return 'Canal de atualizacao nao encontrado no pacote instalado. Gere o instalador novamente ou confira o app-update.yml.';
+    }
+    if (/404|not found/i.test(raw)) {
+        return 'Atualizacao nao encontrada no GitHub. Confira se a release e o latest.yml foram publicados.';
+    }
+    if (/401|403|unauthorized|forbidden/i.test(raw)) {
+        return 'GitHub recusou a consulta da atualizacao. Confira o acesso ao repositorio ou token da release privada.';
+    }
+    if (/net::|ENOTFOUND|ECONN|ETIMEDOUT|network/i.test(raw)) {
+        return 'Falha de rede ao consultar atualizacao. Confira a internet e tente novamente.';
+    }
+    return raw.slice(0, 500);
+}
+
+function getAppUpdateConfigPath() {
+    const candidates = [
+        app.isPackaged && process.resourcesPath ? path.join(process.resourcesPath, 'app-update.yml') : '',
+        path.join(getAppRootDir(), 'app-update.yml')
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return '';
+}
+
+function getBundledUpdateFeedConfig() {
+    const fallback = {
+        provider: 'github',
+        owner: 'marketflow-lab',
+        repo: 'Jksistema-1.1',
+        releaseType: 'release'
+    };
+    const candidates = [
+        path.join(__dirname, 'package.json'),
+        path.join(getAppRootDir(), 'package.json')
+    ];
+    for (const candidate of candidates) {
+        try {
+            if (!candidate || !fs.existsSync(candidate)) continue;
+            const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+            const publish = pkg && pkg.build && Array.isArray(pkg.build.publish) ? pkg.build.publish[0] : null;
+            if (publish && publish.provider && publish.owner && publish.repo) {
+                return {
+                    provider: publish.provider,
+                    owner: publish.owner,
+                    repo: publish.repo,
+                    releaseType: publish.releaseType || 'release'
+                };
+            }
+        } catch (_err) {}
+    }
+    return fallback;
+}
+
+function configureAutoUpdaterFeed() {
+    if (!autoUpdater) {
+        return { success: false, reason: 'electron-updater nao esta disponivel neste pacote.' };
+    }
+    if (updateFeedConfigured) {
+        return { success: true, source: updateFeedSource || 'cached' };
+    }
+    const configPath = getAppUpdateConfigPath();
+    if (configPath) {
+        updateFeedConfigured = true;
+        updateFeedSource = 'app-update.yml';
+        return { success: true, source: updateFeedSource, configPath };
+    }
+    const feed = getBundledUpdateFeedConfig();
+    if (!feed || !feed.provider || !feed.owner || !feed.repo) {
+        return {
+            success: false,
+            reason: 'Canal de atualizacao nao configurado no pacote.'
+        };
+    }
+    try {
+        autoUpdater.setFeedURL(feed);
+        updateFeedConfigured = true;
+        updateFeedSource = 'package-publish';
+        logElectronLifecycle('auto-update-feed-configured', { source: updateFeedSource, feed });
+        return { success: true, source: updateFeedSource, feed };
+    } catch (err) {
+        return {
+            success: false,
+            reason: getUpdateErrorMessage(err)
+        };
+    }
+}
+
+function getUpdateUnavailableReason() {
+    if (!app.isPackaged) {
+        return 'Atualizacao automatica funciona apenas no app instalado.';
+    }
+    if (!getAppUpdateConfigPath()) {
+        const feed = getBundledUpdateFeedConfig();
+        if (!feed || !feed.provider || !feed.owner || !feed.repo) {
+            return 'Este instalador privado nao possui canal de atualizacao automatica. Use a versao privada mais recente gerada localmente.';
+        }
+    }
+    return '';
+}
+
+function isMlAutomationProtected() {
+    return mlAutomationProtectionByWebContents.size > 0;
+}
+
+function releaseMlAutomationProtectionForContents(contents) {
+    if (!contents || !contents.id) return;
+    if (mlAutomationProtectionByWebContents.delete(contents.id)) {
+        logElectronLifecycle('ml-automation-protection-released', { webContentsId: contents.id });
+        maybeInstallDeferredUpdate();
+    }
+}
+
+function setMlAutomationProtection(contents, active, reason = '') {
+    if (!contents || !contents.id) {
+        return { success: false, active: isMlAutomationProtected(), count: mlAutomationProtectionByWebContents.size };
+    }
+    if (active) {
+        const firstLock = !mlAutomationProtectionByWebContents.has(contents.id);
+        mlAutomationProtectionByWebContents.set(contents.id, {
+            reason: String(reason || 'favoritos'),
+            startedAt: Date.now()
+        });
+        if (firstLock && typeof contents.once === 'function') {
+            contents.once('destroyed', () => releaseMlAutomationProtectionForContents(contents));
+        }
+        logElectronLifecycle('ml-automation-protection-enabled', {
+            webContentsId: contents.id,
+            reason,
+            count: mlAutomationProtectionByWebContents.size
+        });
+    } else {
+        releaseMlAutomationProtectionForContents(contents);
+    }
+    return { success: true, active: isMlAutomationProtected(), count: mlAutomationProtectionByWebContents.size };
+}
+
+function maybeInstallDeferredUpdate() {
+    if (!deferredDownloadedUpdateInfo || isMlAutomationProtected() || updateInstallInProgress || !autoUpdater) return;
+    const info = deferredDownloadedUpdateInfo;
+    deferredDownloadedUpdateInfo = null;
+    setTimeout(() => {
+        installDownloadedUpdateSafely(info).catch((err) => {
+            logElectronLifecycle('auto-update-deferred-install-error', err);
+        });
+    }, 1200);
+}
+
+async function installUpdateNow() {
+    if (!autoUpdater) {
+        const message = 'electron-updater nao esta disponivel neste pacote.';
+        sendUpdateStatus('error', { error: message });
+        return { success: false, error: message };
+    }
+    const feedStatus = configureAutoUpdaterFeed();
+    if (!feedStatus.success) {
+        const message = feedStatus.reason || 'Canal de atualizacao nao configurado.';
+        sendUpdateStatus('error', { error: message });
+        return { success: false, error: message };
+    }
+    registerAutoUpdateEvents();
+    updateInstallRequested = true;
+    if (downloadedUpdateInfo) {
+        await installDownloadedUpdateSafely(downloadedUpdateInfo);
+        return { success: true, installing: true };
+    }
+    sendUpdateStatus('download-requested');
+    try {
+        await autoUpdater.downloadUpdate();
+        return { success: true, downloading: true };
+    } catch (err) {
+        updateInstallRequested = false;
+        const message = getUpdateErrorMessage(err);
+        sendUpdateStatus('error', { error: message });
+        return { success: false, error: message };
+    }
+}
+
+function sendUpdateStatus(status, payload = {}) {
+    const message = { status, ...payload };
+    logElectronLifecycle('auto-update-status', message);
+    for (const win of BrowserWindow.getAllWindows()) {
+        try {
+            if (!win.isDestroyed()) {
+                win.webContents.send('auto-update-status', message);
+            }
+        } catch (_err) {}
+    }
+}
+
+function withTimeout(promise, timeoutMs, fallbackValue) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(fallbackValue), timeoutMs);
+        promise
+            .then((value) => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch((err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
+async function prepareOpenWorkForUpdate(reason = 'auto-update') {
+    sendUpdateStatus('saving-work', { reason });
+    const windows = BrowserWindow.getAllWindows().filter((win) => win && !win.isDestroyed());
+    const results = [];
+    for (const win of windows) {
+        try {
+            const payload = JSON.stringify({ reason });
+            const result = await withTimeout(
+                win.webContents.executeJavaScript(`
+                    (async () => {
+                        if (typeof window.jkElectronPrepareForUpdate !== 'function') {
+                            return { success: true, reason: 'no-renderer-handler' };
+                        }
+                        return await window.jkElectronPrepareForUpdate(${payload});
+                    })()
+                `, true),
+                15000,
+                { success: false, timedOut: true }
+            );
+            results.push(result);
+        } catch (err) {
+            results.push({ success: false, error: getUpdateErrorMessage(err) });
+        }
+    }
+    await flushPersistentSessions();
+    sendUpdateStatus('work-saved', { reason, results });
+    return { success: true, results };
+}
+
+async function installDownloadedUpdateSafely(info = null) {
+    if (!autoUpdater || updateInstallInProgress) return;
+    if (isMlAutomationProtected()) {
+        deferredDownloadedUpdateInfo = info || deferredDownloadedUpdateInfo;
+        sendUpdateStatus('deferred', {
+            reason: 'favoritos-em-execucao',
+            updateInfo: normalizeUpdateInfo(info)
+        });
+        return;
+    }
+    updateInstallInProgress = true;
+    try {
+        await prepareOpenWorkForUpdate('update-install');
+        sendUpdateStatus('installing', { updateInfo: normalizeUpdateInfo(info) });
+        autoUpdater.quitAndInstall(true, true);
+    } catch (err) {
+        updateInstallInProgress = false;
+        const message = getUpdateErrorMessage(err);
+        sendUpdateStatus('error', { error: message });
+    }
+}
+
+function registerAutoUpdateEvents() {
+    if (!autoUpdater || updateEventsRegistered) return false;
+    updateEventsRegistered = true;
+
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.allowPrerelease = false;
+
+    autoUpdater.on('checking-for-update', () => {
+        sendUpdateStatus('checking');
+    });
+    autoUpdater.on('update-available', (info) => {
+        downloadedUpdateInfo = null;
+        updateInstallRequested = true;
+        sendUpdateStatus('available', {
+            updateInfo: normalizeUpdateInfo(info),
+            autoDownload: true,
+            autoInstall: true
+        });
+    });
+    autoUpdater.on('update-not-available', (info) => {
+        downloadedUpdateInfo = null;
+        updateInstallRequested = false;
+        sendUpdateStatus('not-available', { updateInfo: normalizeUpdateInfo(info) });
+    });
+    autoUpdater.on('download-progress', (progress) => {
+        sendUpdateStatus('downloading', {
+            percent: Math.round(Number(progress && progress.percent || 0)),
+            transferred: progress && progress.transferred || 0,
+            total: progress && progress.total || 0
+        });
+    });
+    autoUpdater.on('error', (err) => {
+        updateInstallRequested = false;
+        sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+        downloadedUpdateInfo = info || {};
+        sendUpdateStatus('downloaded', {
+            updateInfo: normalizeUpdateInfo(info),
+            autoInstall: true,
+            installRequested: true
+        });
+        installDownloadedUpdateSafely(info).catch((err) => {
+            logElectronLifecycle('auto-update-auto-install-error', err);
+        });
+    });
+    return true;
+}
+
+async function checkForUpdates(manual = false) {
+    const unavailableReason = getUpdateUnavailableReason();
+    if (unavailableReason) {
+        const result = {
+            success: false,
+            skipped: true,
+            reason: unavailableReason
+        };
+        sendUpdateStatus('skipped', { reason: result.reason });
+        return result;
+    }
+    if (!autoUpdater) {
+        const result = {
+            success: false,
+            skipped: true,
+            reason: 'electron-updater nao esta disponivel neste pacote.'
+        };
+        sendUpdateStatus('skipped', { reason: result.reason });
+        return result;
+    }
+    const feedStatus = configureAutoUpdaterFeed();
+    if (!feedStatus.success) {
+        const result = {
+            success: false,
+            skipped: true,
+            reason: feedStatus.reason || 'Canal de atualizacao nao configurado.'
+        };
+        sendUpdateStatus('skipped', { reason: result.reason });
+        return result;
+    }
+    if (updateCheckInProgress) {
+        sendUpdateStatus('checking', { reason: 'Verificacao de atualizacao ja em andamento.' });
+        return { success: true, checking: true };
+    }
+
+    registerAutoUpdateEvents();
+    updateCheckInProgress = true;
+    try {
+        const result = await withUpdateCheckTimeout(
+            autoUpdater.checkForUpdates(),
+            AUTO_UPDATE_CHECK_TIMEOUT_MS,
+            'Tempo esgotado ao consultar atualizacao. Confira a internet ou se a release foi publicada no GitHub.'
+        );
+        const updateInfo = normalizeUpdateInfo(result && result.updateInfo);
+        const currentVersion = app.getVersion();
+        const latestVersion = updateInfo && updateInfo.version ? updateInfo.version : currentVersion;
+        const hasNewVersion = !!(updateInfo && updateInfo.version && updateInfo.version !== currentVersion);
+        if (manual && hasNewVersion) {
+            sendUpdateStatus('manual-update-available', {
+                currentVersion,
+                latestVersion,
+                updateInfo
+            });
+        } else if (manual) {
+            sendUpdateStatus('up-to-date', {
+                currentVersion,
+                latestVersion,
+                updateInfo
+            });
+        }
+        return {
+            success: true,
+            currentVersion,
+            latestVersion,
+            upToDate: !hasNewVersion,
+            available: hasNewVersion,
+            updateInfo
+        };
+    } catch (err) {
+        const message = getUpdateErrorMessage(err);
+        sendUpdateStatus('error', { error: message });
+        return {
+            success: false,
+            error: message
+        };
+    } finally {
+        updateCheckInProgress = false;
+    }
+}
+
+function scheduleAutoUpdateCheck() {
+    if (process.env.JK_DISABLE_AUTO_UPDATE === '1') {
+        logElectronLifecycle('auto-update-disabled-by-env');
+        return;
+    }
+    if (!app.isPackaged || !autoUpdater) {
+        logElectronLifecycle('auto-update-skipped', {
+            packaged: app.isPackaged,
+            updaterAvailable: !!autoUpdater
+        });
+        return;
+    }
+    const unavailableReason = getUpdateUnavailableReason();
+    if (unavailableReason) {
+        logElectronLifecycle('auto-update-skipped', { reason: unavailableReason });
+        return;
+    }
+    const feedStatus = configureAutoUpdaterFeed();
+    if (!feedStatus.success) {
+        logElectronLifecycle('auto-update-skipped', { reason: feedStatus.reason || 'Canal de atualizacao nao configurado.' });
+        return;
+    }
+    registerAutoUpdateEvents();
+    const timer = setTimeout(() => {
+        checkForUpdates(false).catch((err) => {
+            sendUpdateStatus('error', { error: getUpdateErrorMessage(err) });
+        });
+    }, AUTO_UPDATE_START_DELAY_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+}
+
 function getMlSession() {
     if (!mlSession) {
         mlSession = session.fromPartition(JK_BROWSER_SESSION_PARTITION);
@@ -302,6 +825,246 @@ function getMlSession() {
 
 function getBrowserSessionPartition() {
     return JK_BROWSER_SESSION_PARTITION;
+}
+
+function isLocalBackendUrlForNotification(rawUrl) {
+    try {
+        const parsed = new URL(String(rawUrl || ''));
+        return (
+            ['127.0.0.1', 'localhost'].includes(parsed.hostname)
+            && String(parsed.port || '80') === String(JK_LOCAL_BACKEND_PORT)
+        );
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isDailyMeetingUrl(rawUrl) {
+    try {
+        const parsed = new URL(String(rawUrl || ''));
+        const host = parsed.hostname.toLowerCase();
+        return parsed.protocol === 'https:' && (host === 'daily.co' || host.endsWith('.daily.co'));
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isAllowedMediaPermissionUrl(rawUrl) {
+    return isDailyMeetingUrl(rawUrl) || isLocalBackendUrlForNotification(rawUrl);
+}
+
+function labelDisplayMediaSource(source) {
+    const name = String(source && source.name || '').trim() || 'Fonte sem nome';
+    const type = String(source && source.id || '').startsWith('screen:') ? 'Tela' : 'Janela';
+    return `${type}: ${name}`.slice(0, 90);
+}
+
+function publicDisplayMediaSource(source) {
+    if (!source || !source.id) return null;
+    return {
+        id: String(source.id || ''),
+        name: String(source.name || '').trim() || 'Fonte sem nome',
+        type: String(source.id || '').startsWith('screen:') ? 'screen' : 'window',
+        label: labelDisplayMediaSource(source)
+    };
+}
+
+async function chooseDisplayMediaSource(sources) {
+    const validSources = (Array.isArray(sources) ? sources : [])
+        .filter(source => source && source.id)
+        .sort((a, b) => {
+            const aScreen = String(a.id || '').startsWith('screen:') ? 0 : 1;
+            const bScreen = String(b.id || '').startsWith('screen:') ? 0 : 1;
+            return aScreen - bScreen || String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR');
+        })
+        .slice(0, 18);
+    if (!validSources.length) return null;
+    const parent = BrowserWindow.getFocusedWindow() || mainWindow || BrowserWindow.getAllWindows().find(win => win && !win.isDestroyed()) || null;
+    const channel = `jk-display-source-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+    const cards = validSources.map((source, index) => {
+        const isScreen = String(source.id || '').startsWith('screen:');
+        const kind = isScreen ? 'Tela' : 'Janela';
+        const title = String(source.name || '').trim() || 'Fonte sem nome';
+        const icon = isScreen
+            ? '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path></svg>'
+            : '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M4 9h16"></path><path d="M8 7h.01"></path><path d="M11 7h.01"></path></svg>';
+        return `
+            <button class="source-card" type="button" data-index="${index}" title="${escapeHtml(labelDisplayMediaSource(source))}">
+                <span class="source-icon" aria-hidden="true">${icon}</span>
+                <span class="source-text">
+                    <span class="source-kind">${kind}</span>
+                    <strong>${escapeHtml(title)}</strong>
+                    <small>${isScreen ? 'Compartilhar este monitor' : 'Compartilhar esta janela'}</small>
+                </span>
+            </button>
+        `;
+    }).join('');
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:;">
+<title>Compartilhar tela</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; min-height: 100%; background: #0e1117; color: #edf6ff; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+body { overflow: hidden; }
+.share-picker { min-height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid #2f4562; border-radius: 16px; background: #111827; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42); overflow: hidden; }
+.share-head { -webkit-app-region: drag; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px 14px; border-bottom: 1px solid #22354e; background: #141d2c; }
+.share-title { display: grid; gap: 4px; min-width: 0; }
+.share-title span { color: #77b8ff; font-size: 0.72rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; }
+.share-title h1 { margin: 0; font-size: 1.18rem; line-height: 1.2; }
+.share-title p { margin: 0; color: #9fb2c8; font-size: 0.86rem; line-height: 1.35; }
+.close-btn { -webkit-app-region: no-drag; width: 36px; height: 36px; border: 1px solid #324964; border-radius: 10px; background: #101827; color: #dbeafe; font-size: 1.18rem; cursor: pointer; }
+.close-btn:hover { background: #1d2a3d; border-color: #4facfe; }
+.source-grid { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px 18px; overflow: auto; }
+.source-card { min-width: 0; min-height: 92px; display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 12px; border: 1px solid #28405c; border-radius: 14px; background: #151f31; color: #edf6ff; padding: 14px; text-align: left; cursor: pointer; }
+.source-card:hover, .source-card:focus { outline: none; border-color: #4facfe; background: #19273c; box-shadow: 0 14px 32px rgba(79, 172, 254, 0.14); }
+.source-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; background: #0b1424; color: #4facfe; border: 1px solid #28405c; }
+.source-icon svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.source-text { min-width: 0; display: grid; gap: 3px; }
+.source-kind { color: #83c4ff; font-size: 0.72rem; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; }
+.source-text strong { min-width: 0; overflow: hidden; color: #fff; font-size: 0.92rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.source-text small { color: #9fb2c8; font-size: 0.78rem; }
+.share-foot { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 14px 18px 16px; border-top: 1px solid #22354e; background: #101827; }
+.hint { color: #9fb2c8; font-size: 0.82rem; }
+.cancel-btn { min-height: 38px; border: 1px solid #3a516d; border-radius: 10px; background: #182235; color: #edf6ff; padding: 0 16px; font-weight: 800; cursor: pointer; }
+.cancel-btn:hover { border-color: #ff6b6b; color: #ffe6e6; background: #2a1d27; }
+@media (max-width: 720px) { .source-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main class="share-picker">
+    <header class="share-head">
+        <div class="share-title">
+            <span>Compartilhar tela</span>
+            <h1>Escolha o que deseja mostrar</h1>
+            <p>Selecione um monitor ou uma janela. Para trocar depois, pare o compartilhamento e escolha novamente.</p>
+        </div>
+        <button id="closeBtn" class="close-btn" type="button" aria-label="Fechar">x</button>
+    </header>
+    <section class="source-grid" aria-label="Fontes disponiveis">${cards}</section>
+    <footer class="share-foot">
+        <span class="hint">Dica: escolha uma janela especifica para evitar compartilhar as duas telas.</span>
+        <button id="cancelBtn" class="cancel-btn" type="button">Cancelar</button>
+    </footer>
+</main>
+<script>
+const { ipcRenderer } = require('electron');
+const channel = ${JSON.stringify(channel)};
+function send(payload) { ipcRenderer.send(channel, payload); }
+document.querySelectorAll('[data-index]').forEach((button) => {
+    button.addEventListener('click', () => send({ index: Number(button.dataset.index) }));
+});
+document.getElementById('closeBtn').addEventListener('click', () => send({ canceled: true }));
+document.getElementById('cancelBtn').addEventListener('click', () => send({ canceled: true }));
+window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') send({ canceled: true });
+});
+</script>
+</body>
+</html>`;
+    return await new Promise((resolve) => {
+        let settled = false;
+        const height = Math.min(640, Math.max(430, 238 + Math.ceil(validSources.length / 2) * 116));
+        const chooser = new BrowserWindow({
+            parent: parent || undefined,
+            modal: !!parent,
+            width: 880,
+            height,
+            minWidth: 680,
+            minHeight: 420,
+            resizable: true,
+            minimizable: false,
+            maximizable: false,
+            frame: false,
+            title: 'Compartilhar tela',
+            backgroundColor: '#0e1117',
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false,
+                sandbox: false
+            }
+        });
+        const finish = (source) => {
+            if (settled) return;
+            settled = true;
+            ipcMain.removeListener(channel, onChoice);
+            if (chooser && !chooser.isDestroyed()) chooser.close();
+            resolve(source || null);
+        };
+        const onChoice = (_event, payload) => {
+            if (payload && payload.canceled) {
+                finish(null);
+                return;
+            }
+            const index = Number(payload && payload.index);
+            finish(Number.isInteger(index) && index >= 0 && index < validSources.length ? validSources[index] : null);
+        };
+        ipcMain.on(channel, onChoice);
+        chooser.on('closed', () => finish(null));
+        chooser.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => finish(null));
+    });
+}
+
+function configureNotificationPermissionsForSession(ses) {
+    if (!ses || configuredMeetingPermissionSessions.has(ses)) return;
+    configuredMeetingPermissionSessions.add(ses);
+    if (typeof ses.setPermissionRequestHandler === 'function') {
+        ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+            const requestingUrl = details && (details.requestingUrl || details.embeddingOrigin) || (webContents && webContents.getURL && webContents.getURL()) || '';
+            if (permission === 'media') {
+                callback(isAllowedMediaPermissionUrl(requestingUrl));
+                return;
+            }
+            if (permission === 'notifications') {
+                callback(isLocalBackendUrlForNotification(requestingUrl));
+                return;
+            }
+            callback(false);
+        });
+    }
+    if (typeof ses.setPermissionCheckHandler === 'function') {
+        ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+            const currentUrl = requestingOrigin || (webContents && webContents.getURL && webContents.getURL()) || '';
+            if (permission === 'media') return isAllowedMediaPermissionUrl(currentUrl);
+            if (permission === 'notifications') return isLocalBackendUrlForNotification(currentUrl);
+            return false;
+        });
+    }
+    if (typeof ses.setDisplayMediaRequestHandler === 'function') {
+        ses.setDisplayMediaRequestHandler((request, callback) => {
+            const requestingUrl = request && (request.securityOrigin || request.requestingUrl || request.frameOrigin) || '';
+            if (!isAllowedMediaPermissionUrl(requestingUrl)) {
+                logElectronLifecycle('display-media-denied', { requestingUrl });
+                callback({});
+                return;
+            }
+            logElectronLifecycle('display-media-request', { requestingUrl });
+            desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+                .then((sources) => chooseDisplayMediaSource(sources))
+                .then((source) => {
+                    logElectronLifecycle('display-media-selected', source ? publicDisplayMediaSource(source) : { canceled: true });
+                    callback(source ? { video: source } : {});
+                })
+                .catch((err) => {
+                    logElectronLifecycle('display-media-error', err);
+                    callback({});
+                });
+        }, { useSystemPicker: false });
+    }
+}
+
+function configureNotificationPermissions() {
+    [session.defaultSession, getMlSession()].forEach(configureNotificationPermissionsForSession);
 }
 
 function truncateNotificationText(value, maxLength = 240) {
@@ -364,11 +1127,474 @@ function getAppRootDir() {
     return JK_APP_ROOT_DIR;
 }
 
-function getImportCredentialsBatPath() {
+function getBundledLocalBackendDir() {
     const candidates = [
-        path.join(getAppRootDir(), 'ImportarCredenciais.bat'),
-        path.join(__dirname, 'ImportarCredenciais.bat'),
-        path.join(process.resourcesPath || '', 'ImportarCredenciais.bat')
+        process.env.JK_LOCAL_BACKEND_SOURCE_DIR,
+        path.join(getAppRootDir(), JK_LOCAL_BACKEND_DIR_NAME),
+        fs.existsSync(path.join(getAppRootDir(), 'backend_api.py')) ? getAppRootDir() : '',
+        path.resolve(__dirname, '..')
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        const resolved = path.resolve(candidate);
+        if (fs.existsSync(path.join(resolved, 'backend_api.py'))) return resolved;
+    }
+    return '';
+}
+
+function getLocalBackendRuntimeDir() {
+    if (process.env.JK_LOCAL_BACKEND_DIR) {
+        return path.resolve(process.env.JK_LOCAL_BACKEND_DIR);
+    }
+    if (app.isPackaged) {
+        return path.join(JK_ELECTRON_USER_DATA_DIR, JK_LOCAL_BACKEND_DIR_NAME);
+    }
+    return getBundledLocalBackendDir() || path.resolve(__dirname, '..');
+}
+
+function getLocalBackendInfoDir() {
+    return path.join(getLocalBackendRuntimeDir(), 'info');
+}
+
+function getFirebaseServiceAccountCandidates(localAppDir) {
+    const infoDir = path.join(localAppDir, 'info');
+    const candidates = [
+        path.join(infoDir, 'firebase-service-account.json'),
+        path.join(infoDir, 'firebase_service_account.json'),
+        path.join(localAppDir, 'firebase-service-account.json'),
+        path.join(localAppDir, 'firebase_service_account.json')
+    ];
+    try {
+        const entries = fs.readdirSync(localAppDir, { withFileTypes: true });
+        for (const entry of entries) {
+            if (!entry.isFile()) continue;
+            const lower = entry.name.toLowerCase();
+            if (
+                /^jkjkjk-.*\.json$/i.test(lower) ||
+                /service[-_ ]?account.*\.json$/i.test(lower) ||
+                /^firebase[-_].*\.json$/i.test(lower)
+            ) {
+                candidates.push(path.join(localAppDir, entry.name));
+            }
+        }
+    } catch (_err) {}
+    return [...new Set(candidates)];
+}
+
+function readFirebaseServiceAccount(filePath) {
+    const data = readJsonFile(filePath);
+    if (
+        data &&
+        data.type === 'service_account' &&
+        data.client_email &&
+        data.private_key
+    ) {
+        return data;
+    }
+    return null;
+}
+
+function getLocalBackendFirebaseEnv(localAppDir) {
+    for (const candidate of getFirebaseServiceAccountCandidates(localAppDir)) {
+        if (!fs.existsSync(candidate)) continue;
+        const account = readFirebaseServiceAccount(candidate);
+        if (!account) continue;
+        return {
+            JK_ACCESS_BACKEND: 'firebase',
+            FIREBASE_SERVICE_ACCOUNT_FILE: candidate,
+            ...(account.project_id ? { FIREBASE_PROJECT_ID: String(account.project_id) } : {})
+        };
+    }
+    return { JK_ACCESS_BACKEND: 'auto' };
+}
+
+function shouldSkipBackendCopyEntry(name, fullPath) {
+    const lower = String(name || '').toLowerCase();
+    if (
+        lower === '.git' ||
+        lower === '.venv' ||
+        lower === 'node_modules' ||
+        lower === 'electron_app' ||
+        lower === 'info' ||
+        lower === 'logs' ||
+        lower === 'backups' ||
+        lower === '__pycache__' ||
+        lower.endsWith('.jkcred') ||
+        lower.startsWith('.env')
+    ) {
+        return true;
+    }
+    try {
+        return fs.statSync(fullPath).isDirectory() && lower.startsWith('dist');
+    } catch (_err) {
+        return false;
+    }
+}
+
+function copyDirectoryRecursive(sourceDir, targetDir) {
+    fs.mkdirSync(targetDir, { recursive: true });
+    const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+    for (const entry of entries) {
+        const sourcePath = path.join(sourceDir, entry.name);
+        const targetPath = path.join(targetDir, entry.name);
+        if (shouldSkipBackendCopyEntry(entry.name, sourcePath)) {
+            continue;
+        }
+        if (entry.isDirectory()) {
+            copyDirectoryRecursive(sourcePath, targetPath);
+            continue;
+        }
+        if (entry.isFile()) {
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.copyFileSync(sourcePath, targetPath);
+        }
+    }
+}
+
+function syncBundledLocalBackend() {
+    const runtimeDir = getLocalBackendRuntimeDir();
+    const bundledDir = getBundledLocalBackendDir();
+    if (!bundledDir) {
+        throw new Error('Backend local nao foi encontrado no pacote.');
+    }
+    if (path.resolve(runtimeDir) !== path.resolve(bundledDir)) {
+        copyDirectoryRecursive(bundledDir, runtimeDir);
+    }
+    fs.mkdirSync(path.join(runtimeDir, 'info'), { recursive: true });
+    fs.mkdirSync(path.join(runtimeDir, 'logs'), { recursive: true });
+    return runtimeDir;
+}
+
+function isTcpPortOpen(port, host = '127.0.0.1', timeoutMs = 700) {
+    return new Promise((resolve) => {
+        const socket = new nodeNet.Socket();
+        let done = false;
+        const finish = (result) => {
+            if (done) return;
+            done = true;
+            try { socket.destroy(); } catch (_err) {}
+            resolve(result);
+        };
+        socket.setTimeout(timeoutMs);
+        socket.once('connect', () => finish(true));
+        socket.once('timeout', () => finish(false));
+        socket.once('error', () => finish(false));
+        socket.connect(port, host);
+    });
+}
+
+function waitForTcpPortOpen(port, timeoutMs = 120000, intervalMs = 650) {
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+        const check = async () => {
+            if (await isTcpPortOpen(port)) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - startedAt >= timeoutMs) {
+                reject(new Error(`Servidor local nao respondeu na porta ${port}.`));
+                return;
+            }
+            setTimeout(check, intervalMs);
+        };
+        check();
+    });
+}
+
+function waitForTcpPortClosed(port, timeoutMs = 15000, intervalMs = 400) {
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+        const check = async () => {
+            if (!(await isTcpPortOpen(port, '127.0.0.1', 350))) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - startedAt >= timeoutMs) {
+                resolve(false);
+                return;
+            }
+            setTimeout(check, intervalMs);
+        };
+        check();
+    });
+}
+
+function fetchLocalBackendJson(pathname, timeoutMs = 2500) {
+    return new Promise((resolve) => {
+        const req = http.get({
+            host: '127.0.0.1',
+            port: JK_LOCAL_BACKEND_PORT,
+            path: pathname,
+            timeout: timeoutMs,
+            headers: {
+                'Cache-Control': 'no-cache',
+                'User-Agent': `JK-Sistema-Desktop/${app.getVersion()}`
+            }
+        }, (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', chunk => { body += chunk; });
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(body || '{}'));
+                } catch (_err) {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('timeout', () => {
+            try { req.destroy(); } catch (_err) {}
+            resolve(null);
+        });
+        req.on('error', () => resolve(null));
+    });
+}
+
+function localBackendHealthCompatible(health) {
+    if (!health || health.ok !== true) return false;
+    const backendVersion = String(health.appVersion || '').replace(/^v/i, '').trim();
+    const desktopVersion = String(app.getVersion() || '').replace(/^v/i, '').trim();
+    return !!backendVersion && backendVersion === desktopVersion;
+}
+
+function stopProcessListeningOnPort(port) {
+    return new Promise((resolve) => {
+        const script = [
+            `$ErrorActionPreference = 'SilentlyContinue'`,
+            `$pids = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen | Select-Object -ExpandProperty OwningProcess -Unique`,
+            `foreach ($pidValue in $pids) { if ($pidValue) { Stop-Process -Id $pidValue -Force } }`
+        ].join('; ');
+        const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+            stdio: 'ignore',
+            windowsHide: true
+        });
+        child.on('error', () => resolve(false));
+        child.on('exit', (code) => resolve(code === 0));
+    });
+}
+
+function sanitizeMarkerVersion(value) {
+    return String(value || 'dev').replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+function cmdValue(value) {
+    return String(value || '').replace(/"/g, '');
+}
+
+function writeLocalBackendLauncher(localAppDir) {
+    const infoDir = path.join(localAppDir, 'info');
+    const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+    const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
+    const logPath = path.join(localAppDir, 'logs', 'local_backend.log');
+    const depsMarker = `.venv\\.jk_deps_${sanitizeMarkerVersion(app.getVersion())}.ok`;
+    const localCallback = process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback';
+    const localGoogleCallback = process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback';
+    const pythonRuntimeDir = '.python-runtime';
+    const lines = [
+        '@echo off',
+        'setlocal',
+        `cd /d "${cmdValue(localAppDir)}"`,
+        'if not exist "logs" mkdir "logs"',
+        'if not exist "info" mkdir "info"',
+        `set "LOG_FILE=${cmdValue(logPath)}"`,
+        `set "JK_INFO_DIR=${cmdValue(infoDir)}"`,
+        `set "JK_REDIRECT_URI=${localCallback}"`,
+        `set "JK_BLING_REDIRECT_URI=${localCallback}"`,
+        `set "GOOGLE_LOGIN_REDIRECT_URI_LOCAL=${localGoogleCallback}"`,
+        `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
+        `set "JK_APP_VERSION=${cmdValue(app.getVersion())}"`,
+        'set "IA_RAG_ENABLED=true"',
+        'set "IA_RAG_BACKEND=local"',
+        'set "IA_RAG_TOP_K=5"',
+        'set "IA_RAG_SEARCH_TIMEOUT_S=4"',
+        `set "JK_ACCESS_BACKEND=${cmdValue(firebaseEnv.JK_ACCESS_BACKEND || 'auto')}"`,
+        ...(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE ? [
+            `set "FIREBASE_SERVICE_ACCOUNT_FILE=${cmdValue(firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE)}"`
+        ] : []),
+        ...(firebaseEnv.FIREBASE_PROJECT_ID ? [
+            `set "FIREBASE_PROJECT_ID=${cmdValue(firebaseEnv.FIREBASE_PROJECT_ID)}"`
+        ] : []),
+        'set "PYTHONUNBUFFERED=1"',
+        'set "PYTHONUTF8=1"',
+        'echo.>> "%LOG_FILE%"',
+        'echo ==== JK Sistema local backend %date% %time% ====>> "%LOG_FILE%"',
+        `set "PYTHON_RUNTIME_DIR=${pythonRuntimeDir}"`,
+        'set "BUNDLED_PYTHON_INSTALLER="',
+        'for %%I in (python_runtime\\python-*.exe) do if exist "%%~fI" if not defined BUNDLED_PYTHON_INSTALLER set "BUNDLED_PYTHON_INSTALLER=%%~fI"',
+        'if exist "%PYTHON_RUNTIME_DIR%\\python.exe" (',
+        '  "%PYTHON_RUNTIME_DIR%\\python.exe" -c "import sys; print(sys.executable)" >> "%LOG_FILE%" 2>&1',
+        '  if errorlevel 1 (',
+        '    echo Python runtime local invalido. Recriando runtime empacotado...>> "%LOG_FILE%"',
+        '    rmdir /s /q "%PYTHON_RUNTIME_DIR%" >> "%LOG_FILE%" 2>&1',
+        '  )',
+        ')',
+        'if not exist "%PYTHON_RUNTIME_DIR%\\python.exe" (',
+        '  if defined BUNDLED_PYTHON_INSTALLER (',
+        '    echo Instalando Python empacotado: %BUNDLED_PYTHON_INSTALLER%>> "%LOG_FILE%"',
+        '    "%BUNDLED_PYTHON_INSTALLER%" /quiet InstallAllUsers=0 TargetDir="%CD%\\%PYTHON_RUNTIME_DIR%" Include_pip=1 Include_launcher=0 AssociateFiles=0 Shortcuts=0 Include_test=0 PrependPath=0 >> "%LOG_FILE%" 2>&1',
+        '  ) else (',
+        '    echo Instalador Python empacotado nao encontrado em python_runtime.>> "%LOG_FILE%"',
+        '  )',
+        ')',
+        'if exist ".venv\\Scripts\\python.exe" (',
+        '  ".venv\\Scripts\\python.exe" -c "import sys; print(sys.executable)" >> "%LOG_FILE%" 2>&1',
+        '  if errorlevel 1 (',
+        '    echo Ambiente Python virtual invalido. Recriando .venv...>> "%LOG_FILE%"',
+        '    rmdir /s /q ".venv" >> "%LOG_FILE%" 2>&1',
+        '  )',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  if exist "%PYTHON_RUNTIME_DIR%\\python.exe" "%PYTHON_RUNTIME_DIR%\\python.exe" -m venv ".venv" >> "%LOG_FILE%" 2>&1',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  where py >nul 2>nul',
+        '  if not errorlevel 1 py -3.11 -m venv ".venv" >> "%LOG_FILE%" 2>&1',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  where py >nul 2>nul',
+        '  if not errorlevel 1 py -3.12 -m venv ".venv" >> "%LOG_FILE%" 2>&1',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  where python >nul 2>nul',
+        '  if not errorlevel 1 python -m venv ".venv" >> "%LOG_FILE%" 2>&1',
+        ')',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  echo Python 3 nao encontrado. Instale Python 3 e abra o JK Sistema novamente.>> "%LOG_FILE%"',
+        '  exit /b 1',
+        ')',
+        'set "PYTHON_EXE=.venv\\Scripts\\python.exe"',
+        '"%PYTHON_EXE%" -c "import sys; print(sys.executable)" >> "%LOG_FILE%" 2>&1',
+        'if errorlevel 1 (',
+        '  echo Ambiente Python virtual continuou invalido apos recriacao.>> "%LOG_FILE%"',
+        '  rmdir /s /q ".venv" >> "%LOG_FILE%" 2>&1',
+        '  exit /b 1',
+        ')',
+        `if not exist "${depsMarker}" (`,
+        '  "%PYTHON_EXE%" -m ensurepip --upgrade >> "%LOG_FILE%" 2>&1',
+        '  if exist "python_wheels\\*.whl" (',
+        '    echo Instalando dependencias offline em python_wheels...>> "%LOG_FILE%"',
+        '    "%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-index --find-links "python_wheels" -r requirements.txt >> "%LOG_FILE%" 2>&1',
+        '    if errorlevel 1 (',
+        '      echo Instalacao offline falhou. Tentando instalar pela internet...>> "%LOG_FILE%"',
+        '      "%PYTHON_EXE%" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1',
+        '      if not errorlevel 1 "%PYTHON_EXE%" -m pip install --disable-pip-version-check -r requirements.txt >> "%LOG_FILE%" 2>&1',
+        '    )',
+        '  ) else (',
+        '    echo Wheelhouse offline ausente. Instalando dependencias pela internet...>> "%LOG_FILE%"',
+        '    "%PYTHON_EXE%" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1',
+        '    if not errorlevel 1 "%PYTHON_EXE%" -m pip install --disable-pip-version-check -r requirements.txt >> "%LOG_FILE%" 2>&1',
+        '  )',
+        '  if errorlevel 1 (',
+        '    echo Falha ao instalar dependencias. Verifique este log.>> "%LOG_FILE%"',
+        '    exit /b %errorlevel%',
+        '  )',
+        '  "%PYTHON_EXE%" -m pip check >> "%LOG_FILE%" 2>&1',
+        '  "%PYTHON_EXE%" -m pip uninstall -y fitz >> "%LOG_FILE%" 2>&1',
+        `  echo ok> "${depsMarker}"`,
+        ')',
+        `"%PYTHON_EXE%" -m uvicorn backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
+    ];
+    fs.writeFileSync(launcherPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+    return launcherPath;
+}
+
+function ensureLocalBackendStarted() {
+    if (localBackendStartupPromise) {
+        return localBackendStartupPromise;
+    }
+
+    localBackendStartupPromise = (async () => {
+        const localAppDir = syncBundledLocalBackend();
+        const launcherPath = writeLocalBackendLauncher(localAppDir);
+        const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+
+        if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
+            const health = await fetchLocalBackendJson('/health');
+            if (localBackendHealthCompatible(health)) {
+                logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT, health });
+                return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
+            }
+            logElectronLifecycle('local-backend-stale-restart', {
+                port: JK_LOCAL_BACKEND_PORT,
+                currentVersion: app.getVersion(),
+                health
+            });
+            await stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT);
+            await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
+        }
+
+        logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
+        const child = spawn('cmd.exe', ['/d', '/c', launcherPath], {
+            cwd: localAppDir,
+            env: {
+                ...process.env,
+                ...firebaseEnv,
+                JK_INFO_DIR: path.join(localAppDir, 'info'),
+                JK_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
+                JK_BLING_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
+                GOOGLE_LOGIN_REDIRECT_URI_LOCAL: process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback',
+                PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
+                JK_APP_VERSION: app.getVersion(),
+                IA_RAG_ENABLED: 'true',
+                IA_RAG_BACKEND: 'local',
+                IA_RAG_TOP_K: '5',
+                IA_RAG_SEARCH_TIMEOUT_S: '4',
+                PYTHONUNBUFFERED: '1',
+                PYTHONUTF8: '1'
+            },
+            stdio: 'ignore',
+            windowsHide: true
+        });
+        localBackendProcess = child;
+        child.on('error', (err) => {
+            logElectronLifecycle('local-backend-process-error', err);
+        });
+        child.on('exit', (code, signal) => {
+            logElectronLifecycle('local-backend-exit', { code, signal });
+            if (localBackendProcess === child) {
+                localBackendProcess = null;
+                localBackendStartupPromise = null;
+            }
+        });
+
+        const exitPromise = new Promise((_resolve, reject) => {
+            child.once('exit', (code, signal) => {
+                reject(new Error(`Servidor local finalizou antes de iniciar. Codigo: ${code ?? ''} ${signal || ''}`.trim()));
+            });
+        });
+        await Promise.race([
+            waitForTcpPortOpen(JK_LOCAL_BACKEND_PORT, 180000),
+            exitPromise
+        ]);
+        logElectronLifecycle('local-backend-ready', { port: JK_LOCAL_BACKEND_PORT });
+        return { success: true, localAppDir, port: JK_LOCAL_BACKEND_PORT };
+    })().catch((err) => {
+        localBackendStartupPromise = null;
+        throw err;
+    });
+
+    return localBackendStartupPromise;
+}
+
+function stopLocalBackend() {
+    if (!localBackendProcess || !localBackendProcess.pid) {
+        return;
+    }
+    try {
+        spawn('taskkill.exe', ['/PID', String(localBackendProcess.pid), '/T', '/F'], {
+            stdio: 'ignore',
+            windowsHide: true
+        }).unref();
+    } catch (err) {
+        logElectronLifecycle('local-backend-stop-error', err);
+    }
+    localBackendProcess = null;
+}
+
+function getCredentialsScriptPath() {
+    const candidates = [
+        path.join(getAppRootDir(), 'scripts', 'credenciais.js'),
+        path.join(process.resourcesPath || '', 'scripts', 'credenciais.js'),
+        path.join(path.resolve(__dirname, '..'), 'scripts', 'credenciais.js')
     ].filter(Boolean);
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) return candidate;
@@ -376,7 +1602,337 @@ function getImportCredentialsBatPath() {
     return '';
 }
 
+function getBundledPrivateCredentialsPaths() {
+    const candidates = [
+        process.env.JK_PRIVATE_CREDENTIALS_PACKAGE,
+        path.join(getAppRootDir(), 'private', JK_PRIVATE_CREDENTIALS_FILE_NAME),
+        path.join(getAppRootDir(), JK_PRIVATE_CREDENTIALS_FILE_NAME),
+        path.join(process.resourcesPath || '', 'private', JK_PRIVATE_CREDENTIALS_FILE_NAME)
+    ].filter(Boolean);
+    const packagePaths = [];
+    for (const candidate of candidates) {
+        const resolved = path.resolve(candidate);
+        if (fs.existsSync(resolved)) packagePaths.push(resolved);
+    }
+    const privateDirs = [
+        path.join(getAppRootDir(), 'private'),
+        path.join(process.resourcesPath || '', 'private')
+    ].filter(Boolean);
+    for (const privateDir of privateDirs) {
+        try {
+            const entries = fs.readdirSync(privateDir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isFile() && entry.name.toLowerCase().endsWith('.jkcred')) {
+                    packagePaths.push(path.join(privateDir, entry.name));
+                }
+            }
+        } catch (_err) {}
+    }
+    return Array.from(new Set(packagePaths.map((item) => path.resolve(item)))).sort((a, b) => a.localeCompare(b));
+}
+
+function getPrivateCredentialsImportMarker() {
+    return path.join(JK_ELECTRON_USER_DATA_DIR, '.private_credentials_imported');
+}
+
+function readLocalDotEnvValues(envPath) {
+    const values = {};
+    try {
+        if (!fs.existsSync(envPath)) return values;
+        const content = fs.readFileSync(envPath, 'utf8');
+        for (const rawLine of content.split(/\r?\n/)) {
+            const line = String(rawLine || '').trim();
+            if (!line || line.startsWith('#') || !line.includes('=')) continue;
+            const index = line.indexOf('=');
+            const key = line.slice(0, index).trim();
+            let value = line.slice(index + 1).trim();
+            if (!key) continue;
+            if (
+                (value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))
+            ) {
+                value = value.slice(1, -1);
+            }
+            values[key] = value;
+        }
+    } catch (_err) {}
+    return values;
+}
+
+function hasAnyEnvValue(values, keys) {
+    return keys.some((key) => String(values[key] || '').trim());
+}
+
+function hasRequiredPrivateRuntimeConfig(localAppDir) {
+    const values = readLocalDotEnvValues(path.join(localAppDir, '.env'));
+    const hasFirebaseDatabase = hasAnyEnvValue(values, [
+        'FIREBASE_DATABASE_URL',
+        'FIREBASE_REALTIME_DATABASE_URL',
+        'JK_FIREBASE_DATABASE_URL',
+        'JK_FIREBASE_REALTIME_DATABASE_URL'
+    ]);
+    const hasFirebaseWebKey = hasAnyEnvValue(values, [
+        'FIREBASE_WEB_API_KEY',
+        'FIREBASE_API_KEY',
+        'JK_FIREBASE_WEB_API_KEY',
+        'JK_FIREBASE_API_KEY'
+    ]);
+    const hasDailyKey = hasAnyEnvValue(values, ['DAILY_API_KEY', 'JK_DAILY_API_KEY']);
+    return hasFirebaseDatabase && hasFirebaseWebKey && hasDailyKey;
+}
+
+function promptPrivateCredentialsPassword(parentWindow) {
+    return new Promise((resolve) => {
+        const channel = `private-credentials-password-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const modal = new BrowserWindow({
+            width: 440,
+            height: 260,
+            title: 'Credenciais privadas',
+            parent: parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined,
+            modal: !!(parentWindow && !parentWindow.isDestroyed()),
+            resizable: false,
+            minimizable: false,
+            maximizable: false,
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false
+            }
+        });
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            ipcMain.removeAllListeners(channel);
+            try {
+                if (!modal.isDestroyed()) modal.close();
+            } catch (_err) {}
+            resolve(value);
+        };
+        ipcMain.once(channel, (_event, payload) => {
+            const action = payload && payload.action;
+            if (action === 'ok') {
+                finish(String(payload.password || ''));
+            } else {
+                finish(null);
+            }
+        });
+        modal.on('closed', () => finish(null));
+        const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Credenciais privadas</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; background: #07111f; color: #eef6ff; font-family: Inter, Segoe UI, Arial, sans-serif; display: grid; place-items: center; }
+        main { width: 100%; padding: 24px; }
+        h1 { margin: 0 0 8px; font-size: 20px; }
+        p { margin: 0 0 18px; color: #b8c9dc; line-height: 1.4; }
+        input { width: 100%; border: 1px solid rgba(130, 180, 230, 0.35); border-radius: 8px; padding: 12px; background: rgba(255,255,255,0.08); color: #fff; outline: none; font-size: 15px; }
+        .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+        button { border: 0; border-radius: 8px; padding: 10px 14px; color: #fff; background: #2387d8; font-weight: 700; cursor: pointer; }
+        button.secondary { background: rgba(255,255,255,0.12); }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Importar dados privados</h1>
+        <p>Digite a senha do pacote criptografado para restaurar as credenciais e dados locais.</p>
+        <input id="senha" type="password" autocomplete="current-password" autofocus>
+        <div class="actions">
+            <button class="secondary" id="cancelar" type="button">Depois</button>
+            <button id="importar" type="button">Importar</button>
+        </div>
+    </main>
+    <script>
+        const { ipcRenderer } = require('electron');
+        const channel = ${JSON.stringify(channel)};
+        const senha = document.getElementById('senha');
+        document.getElementById('cancelar').addEventListener('click', () => ipcRenderer.send(channel, { action: 'cancel' }));
+        document.getElementById('importar').addEventListener('click', () => ipcRenderer.send(channel, { action: 'ok', password: senha.value || '' }));
+        senha.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') ipcRenderer.send(channel, { action: 'ok', password: senha.value || '' });
+            if (event.key === 'Escape') ipcRenderer.send(channel, { action: 'cancel' });
+        });
+    </script>
+</body>
+</html>`;
+        modal.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => finish(null));
+    });
+}
+
+function importCredentialPackage(importFile, password) {
+    const scriptPath = getCredentialsScriptPath();
+    if (!scriptPath) {
+        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
+    }
+    const localAppDir = syncBundledLocalBackend();
+    const logPath = path.join(localAppDir, 'logs', 'private_credentials_import.log');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [
+            scriptPath,
+            'import',
+            '--in',
+            importFile,
+            '--force',
+            '--no-backup'
+        ], {
+            cwd: localAppDir,
+            env: {
+                ...process.env,
+                ELECTRON_RUN_AS_NODE: '1',
+                JK_CREDENTIALS_ROOT: localAppDir,
+                JK_CREDENTIALS_PASSWORD: password
+            },
+            windowsHide: true
+        });
+        const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+        logStream.write(`\n==== Importacao privada ${new Date().toISOString()} ====\n`);
+        child.stdout.on('data', (chunk) => logStream.write(chunk));
+        child.stderr.on('data', (chunk) => logStream.write(chunk));
+        child.once('error', (err) => {
+            logStream.end();
+            reject(err);
+        });
+        child.once('exit', (code, signal) => {
+            logStream.end();
+            if (code === 0) {
+                resolve({ success: true });
+            } else {
+                reject(new Error(`Importacao falhou. Codigo: ${code ?? ''} ${signal || ''}`.trim()));
+            }
+        });
+    });
+}
+
+function writeCredentialsImportRunner(importFile, options = {}) {
+    const scriptPath = getCredentialsScriptPath();
+    if (!scriptPath) {
+        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
+    }
+    const localAppDir = syncBundledLocalBackend();
+    const runnerName = options.runnerName || 'importar-credenciais-local.cmd';
+    const runnerPath = path.join(JK_ELECTRON_USER_DATA_DIR, runnerName);
+    const markerPath = options.markerPath || '';
+    const lines = [
+        '@echo off',
+        'setlocal',
+        `cd /d "${cmdValue(localAppDir)}"`,
+        'set "ELECTRON_RUN_AS_NODE=1"',
+        `set "JK_CREDENTIALS_ROOT=${cmdValue(localAppDir)}"`,
+        'echo Importando credenciais para o JK Sistema local.',
+        'echo.',
+        `"${cmdValue(process.execPath)}" "${cmdValue(scriptPath)}" import --in "${cmdValue(importFile)}" --force`,
+        'set "IMPORT_EXIT=%ERRORLEVEL%"',
+        'echo.',
+        'if "%IMPORT_EXIT%"=="0" (',
+        '  echo Importacao concluida.',
+        ...(markerPath ? [`  echo ok> "${cmdValue(markerPath)}"`] : []),
+        ') else (',
+        '  echo Importacao falhou. Confira a senha e tente novamente.',
+        ')',
+        'echo.',
+        'echo Feche esta janela para continuar.',
+        'pause',
+        'exit /b %IMPORT_EXIT%'
+    ];
+    fs.writeFileSync(runnerPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+    return { runnerPath, localAppDir };
+}
+
+function launchCredentialsImportRunner(runnerPath, localAppDir, options = {}) {
+    if (process.platform !== 'win32') {
+        return shell.openPath(runnerPath).then((result) => {
+            if (result) throw new Error(result);
+            return { code: 0 };
+        });
+    }
+
+    const waitFlag = options.wait ? '/wait ' : '';
+    const child = spawn('cmd.exe', ['/d', '/c', `start ${waitFlag}"" "${cmdValue(runnerPath)}"`], {
+        cwd: localAppDir,
+        detached: !options.wait,
+        stdio: 'ignore',
+        windowsHide: !!options.wait
+    });
+
+    if (!options.wait) {
+        child.unref();
+        return Promise.resolve({ code: 0 });
+    }
+
+    return new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', (code, signal) => {
+            resolve({ code, signal });
+        });
+    });
+}
+
+async function openLocalCredentialsImporter() {
+    const scriptPath = getCredentialsScriptPath();
+    if (!scriptPath) {
+        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
+    }
+
+    const selected = await dialog.showOpenDialog({
+        title: 'Selecionar pacote de credenciais',
+        properties: ['openFile'],
+        filters: [
+            { name: 'Credenciais JK', extensions: ['jkcred'] },
+            { name: 'Todos os arquivos', extensions: ['*'] }
+        ]
+    });
+    if (selected.canceled || !selected.filePaths || !selected.filePaths[0]) {
+        return { success: false, canceled: true };
+    }
+
+    const localAppDir = syncBundledLocalBackend();
+    const importFile = selected.filePaths[0];
+    const runnerPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'importar-credenciais-local.cmd');
+    const lines = [
+        '@echo off',
+        'setlocal',
+        `cd /d "${cmdValue(localAppDir)}"`,
+        'set "ELECTRON_RUN_AS_NODE=1"',
+        `set "JK_CREDENTIALS_ROOT=${cmdValue(localAppDir)}"`,
+        'echo Importando credenciais para o JK Sistema local.',
+        'echo.',
+        `"${cmdValue(process.execPath)}" "${cmdValue(scriptPath)}" import --in "${cmdValue(importFile)}" --force`,
+        'echo.',
+        'echo Se a importacao terminou sem erro, feche esta janela e entre novamente no app.',
+        'pause'
+    ];
+    fs.writeFileSync(runnerPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+
+    if (process.platform !== 'win32') {
+        const result = await shell.openPath(runnerPath);
+        if (result) throw new Error(result);
+        return {
+            success: true,
+            path: runnerPath,
+            message: 'Importador aberto. Informe a senha para restaurar as credenciais locais.'
+        };
+    }
+
+    const child = spawn('cmd.exe', ['/d', '/c', `start "" "${cmdValue(runnerPath)}"`], {
+        cwd: localAppDir,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false
+    });
+    child.unref();
+    return {
+        success: true,
+        path: runnerPath,
+        message: 'Importador aberto. Informe a senha para restaurar as credenciais locais.'
+    };
+}
+
 async function openCredentialsImporter() {
+    return await openLocalCredentialsImporter();
     const batPath = getImportCredentialsBatPath();
     if (!batPath) {
         throw new Error('ImportarCredenciais.bat não foi encontrado na pasta do sistema.');
@@ -404,6 +1960,384 @@ async function openCredentialsImporter() {
         path: batPath,
         message: 'Importador aberto. Siga as instruções na janela para restaurar as credenciais.'
     };
+}
+
+function readJsonFile(filePath) {
+    try {
+        if (!filePath || !fs.existsSync(filePath)) return null;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+        console.warn('[Config] Falha ao ler configuracao:', filePath, err && err.message ? err.message : err);
+        return null;
+    }
+}
+
+function writeJsonFile(filePath, data) {
+    try {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+        return true;
+    } catch (err) {
+        console.warn('[Config] Falha ao salvar configuracao:', filePath, err && err.message ? err.message : err);
+        return false;
+    }
+}
+
+function normalizeAppUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (!/^https?:\/\//i.test(raw)) return '';
+    return raw;
+}
+
+function getConfigPaths() {
+    return {
+        envConfig: process.env.JK_APP_CONFIG ? path.resolve(process.env.JK_APP_CONFIG) : '',
+        userConfig: path.join(JK_ELECTRON_USER_DATA_DIR, 'client-config.json'),
+        bundledConfig: path.join(getAppRootDir(), 'client-config.json'),
+        devConfig: path.join(__dirname, 'client-config.json')
+    };
+}
+
+function ensureUserConfigFile(paths) {
+    if (fs.existsSync(paths.userConfig)) return;
+    const bundled = readJsonFile(paths.bundledConfig) || readJsonFile(paths.devConfig);
+    writeJsonFile(paths.userConfig, bundled || {
+        appUrl: JK_DEFAULT_APP_URL,
+        notes: 'Endereco local do JK Sistema. O app inicia o backend local automaticamente.'
+    });
+}
+
+function loadClientConfig() {
+    const paths = getConfigPaths();
+    ensureUserConfigFile(paths);
+
+    const sources = [
+        readJsonFile(paths.devConfig),
+        readJsonFile(paths.bundledConfig),
+        readJsonFile(paths.userConfig),
+        readJsonFile(paths.envConfig)
+    ].filter(Boolean);
+
+    const merged = Object.assign({}, ...sources);
+    const envAppUrl = normalizeAppUrl(process.env.JK_APP_URL);
+    let appUrl = envAppUrl || normalizeAppUrl(merged.appUrl) || JK_DEFAULT_APP_URL;
+    if (!envAppUrl && (isPlaceholderAppUrl(appUrl) || isLegacyCloudRunAppUrl(appUrl) || isLegacyTunnelAppUrl(appUrl))) {
+        appUrl = JK_DEFAULT_APP_URL;
+        writeJsonFile(paths.userConfig, {
+            appUrl,
+            notes: 'Endereco local do JK Sistema. O app inicia o backend local automaticamente.'
+        });
+    }
+    return { ...merged, appUrl, configPath: paths.userConfig };
+}
+
+function isPlaceholderAppUrl(appUrl) {
+    const value = String(appUrl || '').trim().toLowerCase();
+    return !value || value.includes('seu-servidor.com');
+}
+
+function isLegacyLocalAppUrl(appUrl) {
+    const value = String(appUrl || '').trim().toLowerCase();
+    return value.startsWith('http://127.0.0.1:') || value.startsWith('http://localhost:');
+}
+
+function isLegacyCloudRunAppUrl(appUrl) {
+    const value = String(appUrl || '').trim().toLowerCase();
+    return (
+        value.includes('jk-sistema-api-1077918177671.southamerica-east1.run.app') ||
+        value.includes('.a.run.app') ||
+        value.includes('.run.app/')
+    );
+}
+
+function isLegacyTunnelAppUrl(appUrl) {
+    const value = String(appUrl || '').trim().toLowerCase();
+    return (
+        value.includes('.ngrok-free.app') ||
+        value.includes('.ngrok-free.dev') ||
+        value.includes('.ngrok.app') ||
+        value.includes('.ngrok.io')
+    );
+}
+
+function appendNoCache(appUrl) {
+    const value = normalizeAppUrl(appUrl) || JK_DEFAULT_APP_URL;
+    return `${value}${value.includes('?') ? '&' : '?'}_jk_nocache=${Date.now()}`;
+}
+
+function saveClientAppUrl(appUrl) {
+    const value = normalizeAppUrl(appUrl);
+    if (!value) {
+        throw new Error('Informe um endereco valido com http:// ou https://.');
+    }
+    const paths = getConfigPaths();
+    const payload = {
+        appUrl: value,
+        notes: 'Endereco local ou personalizado do JK Sistema Cliente.'
+    };
+    if (!writeJsonFile(paths.userConfig, payload)) {
+        throw new Error('Nao foi possivel salvar a configuracao do servidor.');
+    }
+    return { ...payload, configPath: paths.userConfig };
+}
+
+function isLocalBackendAppUrl(appUrl) {
+    try {
+        const parsed = new URL(normalizeAppUrl(appUrl) || JK_DEFAULT_APP_URL);
+        const host = parsed.hostname.toLowerCase();
+        return (host === '127.0.0.1' || host === 'localhost') && Number(parsed.port || 80) === JK_LOCAL_BACKEND_PORT;
+    } catch (_err) {
+        return false;
+    }
+}
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderLocalBackendStartupScreen(win, options = {}) {
+    if (!win || win.isDestroyed()) return;
+    const error = options.error ? String(options.error) : '';
+    const detail = error
+        ? `Nao consegui iniciar o servidor local. Veja o log em ${path.join(getLocalBackendRuntimeDir(), 'logs', 'local_backend.log')}`
+        : String(options.detail || 'Preparando o servidor local. Na primeira abertura isso pode levar alguns minutos enquanto as dependencias sao instaladas.');
+    const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>JK Sistema</title>
+    <style>
+        :root { color-scheme: dark; font-family: Inter, Segoe UI, Arial, sans-serif; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07111f; color: #eef6ff; }
+        main { width: min(560px, calc(100vw - 48px)); }
+        h1 { margin: 0 0 10px; font-size: 28px; font-weight: 800; }
+        p { margin: 0; color: #b8c9dc; line-height: 1.5; }
+        .bar { height: 5px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,0.12); margin-top: 24px; }
+        .bar::before { content: ""; display: block; width: 42%; height: 100%; background: #5db7ff; border-radius: inherit; animation: load 1.2s ease-in-out infinite; }
+        .error { color: #ffb4b4; }
+        @keyframes load { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>${error ? 'Servidor local indisponivel' : 'Iniciando JK Sistema'}</h1>
+        <p class="${error ? 'error' : ''}">${escapeHtml(detail)}</p>
+        ${error ? '' : '<div class="bar" aria-hidden="true"></div>'}
+    </main>
+</body>
+</html>`;
+    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch((err) => {
+        logElectronLifecycle('local-backend-startup-screen-error', err);
+    });
+}
+
+async function maybeImportBundledPrivateCredentials(win) {
+    const packagePaths = getBundledPrivateCredentialsPaths();
+    if (!packagePaths.length) {
+        return { imported: false, reason: 'no-package' };
+    }
+
+    const localAppDir = syncBundledLocalBackend();
+    const runtimeConfigReady = hasRequiredPrivateRuntimeConfig(localAppDir);
+    const markerPath = getPrivateCredentialsImportMarker();
+    const markerExists = fs.existsSync(markerPath);
+    if (markerExists && runtimeConfigReady) {
+        return { imported: false, reason: 'already-imported' };
+    }
+
+    const response = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['Importar agora', 'Depois'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Credenciais privadas encontradas',
+        message: runtimeConfigReady
+            ? 'Este instalador privado inclui pacotes criptografados de credenciais e dados locais.'
+            : 'As credenciais de chat, presenca e videochamada nao estao completas nesta instalacao.',
+        detail: runtimeConfigReady
+            ? 'Informe a senha na janela que abrir para restaurar os dados antes de entrar no sistema.'
+            : 'Importe o pacote privado para ativar Firebase e Daily antes de entrar no sistema.'
+    });
+    if (response.response !== 0) {
+        return { imported: false, reason: 'skipped' };
+    }
+
+    let password = await promptPrivateCredentialsPassword(win);
+    if (!password) {
+        return { imported: false, reason: 'password-skipped' };
+    }
+
+    while (true) {
+        try {
+            for (let index = 0; index < packagePaths.length; index += 1) {
+                renderLocalBackendStartupScreen(win, {
+                    detail: `Importando pacote privado ${index + 1} de ${packagePaths.length}. Aguarde, isso pode levar alguns minutos.`
+                });
+                await importCredentialPackage(packagePaths[index], password);
+            }
+            fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
+            break;
+        } catch (err) {
+            logElectronLifecycle('private-credentials-import-failed', err);
+            const retry = await dialog.showMessageBox(win, {
+                type: 'warning',
+                buttons: ['Tentar novamente', 'Continuar sem importar'],
+                defaultId: 0,
+                cancelId: 1,
+                title: 'Falha ao importar credenciais',
+                message: 'Nao foi possivel importar o pacote privado.',
+                detail: 'Confira a senha e tente novamente. O log fica na pasta local_app\\logs.'
+            });
+            if (retry.response !== 0) {
+                return { imported: false, reason: 'failed' };
+            }
+            password = await promptPrivateCredentialsPassword(win);
+            if (!password) {
+                return { imported: false, reason: 'password-skipped' };
+            }
+        }
+    }
+
+    if (!fs.existsSync(markerPath)) {
+        await dialog.showMessageBox(win, {
+            type: 'warning',
+            buttons: ['Continuar'],
+            title: 'Credenciais nao importadas',
+            message: 'A importacao privada nao foi concluida.',
+            detail: 'O sistema vai abrir mesmo assim. Voce tambem pode importar depois pelo botao Importar credenciais no sidebar.'
+        });
+        return { imported: false, reason: 'not-finished' };
+    }
+
+    return { imported: true };
+}
+
+function loadConfiguredApp(win, clientConfig = null) {
+    const config = clientConfig || loadClientConfig();
+    logElectronLifecycle('client-config-loaded', { appUrl: config.appUrl, configPath: config.configPath });
+    if (isLocalBackendAppUrl(config.appUrl)) {
+        renderLocalBackendStartupScreen(win);
+        maybeImportBundledPrivateCredentials(win)
+            .then(() => ensureLocalBackendStarted())
+            .then(() => {
+                if (!win || win.isDestroyed()) return;
+                loadElectronTabbedShell(win, appendNoCache(config.appUrl));
+            })
+            .catch((err) => {
+                logElectronLifecycle('local-backend-start-failed', err);
+                renderLocalBackendStartupScreen(win, { error: err && err.message ? err.message : String(err) });
+            });
+        return;
+    }
+    loadElectronTabbedShell(win, appendNoCache(config.appUrl));
+}
+
+function renderServerSetupScreen(win, clientConfig) {
+    if (!win || win.isDestroyed()) return;
+    const currentUrl = isPlaceholderAppUrl(clientConfig && clientConfig.appUrl) ? '' : String(clientConfig.appUrl || '');
+    const configPath = String((clientConfig && clientConfig.configPath) || '');
+    const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Configurar JK Sistema Cliente</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #eef3f9;
+            color: #0f172a;
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+        main {
+            width: min(560px, calc(100vw - 32px));
+            background: #ffffff;
+            border: 1px solid #d5e2f2;
+            border-radius: 10px;
+            box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
+            padding: 26px;
+        }
+        h1 { margin: 0 0 8px; font-size: 23px; }
+        p { margin: 0 0 18px; color: #475569; line-height: 1.45; }
+        label { display: block; font-size: 13px; font-weight: 800; margin-bottom: 7px; }
+        input {
+            width: 100%;
+            height: 42px;
+            border: 1px solid #b8c7dc;
+            border-radius: 8px;
+            padding: 0 12px;
+            font-size: 14px;
+        }
+        input:focus {
+            outline: 2px solid rgba(37, 99, 235, 0.18);
+            border-color: #2563eb;
+        }
+        .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+        button {
+            height: 38px;
+            border: 0;
+            border-radius: 8px;
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+            font-weight: 800;
+            padding: 0 16px;
+        }
+        button:disabled { cursor: not-allowed; opacity: .55; }
+        .muted { margin-top: 14px; color: #64748b; font-size: 12px; word-break: break-all; }
+        .error { color: #b91c1c; font-size: 13px; min-height: 18px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Configurar servidor</h1>
+        <p>Informe o endereco do servidor do JK Sistema. Essa configuracao sera salva neste computador.</p>
+        <form id="form">
+            <label for="serverUrl">Endereco do servidor</label>
+            <input id="serverUrl" type="url" placeholder="https://seu-servidor.com/dashboard.html" value="${currentUrl.replace(/"/g, '&quot;')}" required>
+            <div id="error" class="error"></div>
+            <div class="actions">
+                <button id="save" type="submit">Salvar e abrir</button>
+            </div>
+        </form>
+        <div class="muted">Arquivo de configuracao: ${configPath.replace(/</g, '&lt;')}</div>
+    </main>
+    <script>
+        const form = document.getElementById('form');
+        const input = document.getElementById('serverUrl');
+        const errorEl = document.getElementById('error');
+        const saveBtn = document.getElementById('save');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            errorEl.textContent = '';
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Salvando...';
+            try {
+                const value = input.value.trim();
+                await window.electronAPI.saveClientConfig(value);
+                saveBtn.textContent = 'Abrindo...';
+            } catch (err) {
+                errorEl.textContent = err && err.message ? err.message : String(err);
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Salvar e abrir';
+            }
+        });
+        setTimeout(() => input.focus(), 80);
+    </script>
+</body>
+</html>`;
+    win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`).catch((err) => {
+        console.error('Falha ao carregar tela de configuracao:', err);
+    });
 }
 
 function getChromeExtensionsRoots() {
@@ -670,6 +2604,53 @@ function isMercadoLivreAdUrl(targetUrl) {
     }
 }
 
+function isMercadoLivreLogoutUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        if (!isMercadoLivreHost(url.hostname)) return false;
+        const text = `${url.pathname}${url.search}${url.hash}`.toLowerCase();
+        return /logout|logou?t|sign[-_]?out|sair|cerrar[-_]?sesion|encerrar[-_]?sessao|end[-_]?session/.test(text);
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isAvantProAuthUrl(targetUrl) {
+    try {
+        const url = new URL(normalizeTargetUrl(targetUrl));
+        const host = String(url.hostname || '').toLowerCase();
+        const text = `${host}${url.pathname}${url.search}${url.hash}`.toLowerCase();
+        return host.includes('avantpro')
+            && (/auth|login|entrar|signin|oauth|callback|mercadolivre|mercadolibre/.test(text));
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isBlockedAutomationPopupUrl(targetUrl) {
+    const raw = String(targetUrl || '').trim();
+    if (!raw || /^about:blank$/i.test(raw) || /^data:/i.test(raw) || /^chrome-extension:/i.test(raw)) return false;
+    try {
+        const url = new URL(normalizeTargetUrl(raw));
+        const host = String(url.hostname || '').toLowerCase();
+        const text = `${host}${url.pathname}${url.search}${url.hash}`.toLowerCase();
+        if (isMercadoLivreHost(host) || isAvantProAuthUrl(url.href)) return false;
+        if (
+            host === 'youtube.com' || host.endsWith('.youtube.com') ||
+            host === 'youtu.be' ||
+            host === 'whatsapp.com' || host.endsWith('.whatsapp.com') ||
+            host === 'wa.me' ||
+            host.includes('web.whatsapp') ||
+            host.includes('hostinger')
+        ) {
+            return true;
+        }
+        return /suporte|support|ajuda|help|tutorial|introducao|introdução|curso|youtube|whatsapp|wa\.me/.test(text);
+    } catch (_err) {
+        return false;
+    }
+}
+
 function chromeExecutableCandidates() {
     return [
         process.env.CHROME_PATH,
@@ -729,6 +2710,384 @@ function openOAuthExternalAuthInChrome(targetUrl) {
     });
 }
 
+function normalizeMlText(value) {
+    return String(value || '')
+        .replace(/\\u002F/g, '/')
+        .replace(/\\\//g, '/')
+        .replace(/\\n/g, ' ')
+        .replace(/\\t/g, ' ')
+        .replace(/\\r/g, ' ')
+        .replace(/&quot;/g, '"')
+        .replace(/\\"/g, '"')
+        .trim();
+}
+
+function parseMlQuantidade(value) {
+    if (value === null || value === undefined) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const match = raw.match(/([0-9][0-9\.,]*)\s*(k|mil)?\b/i);
+    if (!match) return null;
+    let numeroTexto = String(match[1]).replace(/\s+/g, '');
+    if (numeroTexto.includes('.') && numeroTexto.includes(',')) {
+        numeroTexto = numeroTexto.lastIndexOf('.') > numeroTexto.lastIndexOf(',')
+            ? numeroTexto.replace(/,/g, '')
+            : numeroTexto.replace(/\./g, '').replace(',', '.');
+    } else if (numeroTexto.includes(',')) {
+        numeroTexto = /^\d{1,3}(?:,\d{3})+$/.test(numeroTexto)
+            ? numeroTexto.replace(/,/g, '')
+            : numeroTexto.replace(',', '.');
+    } else if (numeroTexto.includes('.')) {
+        numeroTexto = /^\d{1,3}(?:\.\d{3})+$/.test(numeroTexto)
+            ? numeroTexto.replace(/\./g, '')
+            : numeroTexto;
+    }
+    const numero = Number(numeroTexto);
+    const sufixo = String(match[2] || '').toLowerCase();
+    if (!Number.isFinite(numero)) return null;
+    const total = (sufixo === 'k' || sufixo === 'mil') ? numero * 1000 : numero;
+    return Number.isFinite(total) ? Math.round(total) : null;
+}
+
+function normalizarNomeVendedorMl(value) {
+    return String(value || '')
+        .replace(/^\s*(vendido\s+por|loja\s+oficial|oficial\s+loja)\s*/i, '')
+        .replace(/&quot;|\\"/g, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function vendedorMlValido(valor) {
+    const texto = normalizarNomeVendedorMl(valor);
+    if (!texto) return false;
+    if (texto.length < 2 || texto.length > 120) return false;
+    if (!/[A-Za-z0-9]/.test(texto)) return false;
+    if (/^\d+$/.test(texto)) return false;
+    const textoBusca = normalizarNomeVendedorMl(texto)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!textoBusca || textoBusca.length < 2) return false;
+    if (/(^|\b)(anuncio criado|an ncio criado|criado em|catalogo criado|cat logo criado|vendas produto|total vendas|quantidade vendas)(\b|$)/i.test(textoBusca)) return false;
+    return !/^(vendido|vendedor|anuncio|anunci[oÃ´]o|produto|frete|envio|loja|oferta|ofertas|desconto|comprar|comprando|login|entrar|cadastro|email|senha|contato|perfil|busca|filtro|categoria|condi[cÃ§][aÃ£]o|aviso|informa[cÃ§][aÃ£]o|cria[cÃ§][aÃ£]o|valor|pre[cÃ§]o)$/i.test(textoBusca);
+}
+
+function escolherNomeVendedorMl(candidatos) {
+    const itens = Array.isArray(candidatos) ? candidatos : [];
+    const opcoes = [];
+
+    for (let i = 0; i < itens.length; i += 1) {
+        const item = itens[i];
+        const valor = typeof item === 'string' ? item : item && item.valor;
+        const prioridade = Number(item && item.prioridade) || 0;
+        const nome = normalizarNomeVendedorMl(valor);
+        if (!nome || !vendedorMlValido(nome)) continue;
+        opcoes.push({
+            nome,
+            prioridade,
+            score: nome.length + (/\s/.test(nome) ? 6 : 0),
+            ordem: i
+        });
+    }
+
+    if (!opcoes.length) return '';
+    opcoes.sort((a, b) => b.prioridade - a.prioridade || b.score - a.score || a.ordem - b.ordem);
+    return opcoes[0].nome;
+}
+
+function buildMlItemUrl(itemId, targetUrl) {
+    const url = normalizeTargetUrl(targetUrl || '');
+    if (targetUrl && /^https?:\/\//i.test(String(targetUrl))) return url;
+    const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
+    if (/^MLB\d+$/.test(cleanId)) {
+        return `https://produto.mercadolivre.com.br/${cleanId.replace('MLB', 'MLB-')}-_JM`;
+    }
+    return url;
+}
+
+function findMlItemInfoInObject(root, itemId) {
+    const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
+    const dateKeys = new Set([
+        'date_created',
+        'dateCreated',
+        'start_time',
+        'startTime',
+        'item_date_created',
+        'creation_date',
+        'creationDate',
+        'listing_start_time',
+        'start_date',
+        'itemStartTime'
+    ]);
+    const sellerKeys = new Set([
+        'seller_name',
+        'sellerName',
+        'nickname',
+        'official_store_name',
+        'officialStoreName'
+    ]);
+    const stack = [root];
+    const seen = new Set();
+    const info = { data_criacao: '', vendedor: '', seller_id: null, id: cleanId, vendas: null };
+
+    while (stack.length) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== 'object') continue;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        if (seen.size > 8000) break;
+
+        if (Array.isArray(cur)) {
+            for (const item of cur) stack.push(item);
+            continue;
+        }
+
+        const curId = normalizeMlText(cur.id || cur.item_id || cur.itemId || cur.itemID).toUpperCase().replace('-', '');
+        const sameItem = cleanId && curId === cleanId;
+        for (const [key, value] of Object.entries(cur)) {
+            if (!info.data_criacao && dateKeys.has(key) && value) {
+                info.data_criacao = normalizeMlText(value);
+            }
+            if (!info.data_criacao && key === 'date_created' && value && typeof value === 'object' && value.value) {
+                info.data_criacao = normalizeMlText(value.value);
+            }
+            if (!info.vendedor && sellerKeys.has(key) && typeof value !== 'object' && value) {
+                const vendedor = normalizarNomeVendedorMl(value);
+                if (vendedorMlValido(vendedor)) {
+                    info.vendedor = vendedor;
+                }
+            }
+            if (!info.seller_id && (key === 'seller_id' || key === 'sellerId') && value) {
+                info.seller_id = value;
+            }
+            if (info.vendas === null && (key === 'sold_quantity' || key === 'soldQuantity' || key === 'sold') && value !== null && value !== undefined) {
+                const vendas = parseMlQuantidade(value);
+                if (vendas !== null) info.vendas = vendas;
+            }
+            if (key === 'seller' && value && typeof value === 'object') {
+                if (!info.seller_id && value.id) info.seller_id = value.id;
+                if (!info.vendedor) {
+                    const candidato = escolherNomeVendedorMl([
+                        { valor: value.nickname, prioridade: 90 },
+                        { valor: value.official_store_name, prioridade: 82 },
+                        { valor: value.name, prioridade: 70 }
+                    ]);
+                    if (candidato) {
+                        info.vendedor = candidato;
+                    }
+                }
+                continue;
+            }
+            if (key === 'official_store' && value && typeof value === 'object') {
+                if (!info.seller_id && value.seller_id) info.seller_id = value.seller_id;
+                if (!info.vendedor) {
+                    const candidato = escolherNomeVendedorMl([
+                        { valor: value.nickname, prioridade: 92 },
+                        { valor: value.name, prioridade: 82 },
+                        { valor: value.official_store_name, prioridade: 78 }
+                    ]);
+                    if (candidato) {
+                        info.vendedor = candidato;
+                    }
+                }
+                if (!info.data_criacao && value.date_created) {
+                    info.data_criacao = normalizeMlText(value.date_created);
+                }
+            }
+            if (value && typeof value === 'object') stack.push(value);
+        }
+
+        if (sameItem && (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null)) {
+            return info;
+        }
+    }
+
+    return (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null) ? info : null;
+}
+
+function findMlItemInfoInText(text, itemId) {
+    const normalized = normalizeMlText(text);
+    const patterns = [
+        /"date_created"\s*:\s*"([^"]+)"/i,
+        /"dateCreated"\s*:\s*"([^"]+)"/i,
+        /"start_time"\s*:\s*"([^"]+)"/i,
+        /"startTime"\s*:\s*"([^"]+)"/i,
+        /"creationDate"\s*:\s*"([^"]+)"/i,
+        /"listing_start_time"\s*:\s*"([^"]+)"/i
+    ];
+    const sellerPatterns = [
+        /"seller_name"\s*:\s*"([^"]+)"/i,
+        /"sellerName"\s*:\s*"([^"]+)"/i,
+        /"nickname"\s*:\s*"([^"]+)"/i,
+        /"official_store_name"\s*:\s*"([^"]+)"/i,
+        /"officialStoreName"\s*:\s*"([^"]+)"/i
+    ];
+    const info = { id: String(itemId || '').trim().toUpperCase(), data_criacao: '', vendedor: '', seller_id: null, vendas: null };
+    for (const pattern of patterns) {
+        const match = normalized.match(pattern);
+        if (match && match[1]) {
+            info.data_criacao = normalizeMlText(match[1]);
+            break;
+        }
+    }
+    for (const pattern of sellerPatterns) {
+        const match = normalized.match(pattern);
+        if (match && match[1]) {
+            info.vendedor = normalizeMlText(match[1]);
+            break;
+        }
+    }
+    const sellerIdMatch = normalized.match(/"seller_id"\s*:\s*(\d+)/i) || normalized.match(/"sellerId"\s*:\s*(\d+)/i);
+    if (sellerIdMatch && sellerIdMatch[1]) info.seller_id = sellerIdMatch[1];
+    const salesMatch = normalized.match(/"sold_quantity"\s*:\s*([0-9,.]+\s*(?:mil|k)?)/i)
+        || normalized.match(/"soldQuantity"\s*:\s*([0-9,.]+\s*(?:mil|k)?)/i)
+        || normalized.match(/"sold"\s*:\s*([0-9,.]+\s*(?:mil|k)?)/i);
+    if (salesMatch && salesMatch[1]) {
+        const parsed = parseMlQuantidade(salesMatch[1]);
+        if (parsed !== null) info.vendas = parsed;
+    }
+    if (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null) return info;
+
+    try {
+        const parsed = JSON.parse(normalized);
+        return findMlItemInfoInObject(parsed, itemId);
+    } catch (_err) {
+        return null;
+    }
+}
+
+async function extractMlInfoByBrowser(itemId, targetUrl) {
+    const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
+    if (!/^MLB\d+$/.test(cleanId)) {
+        throw new Error('ID de anuncio invalido para leitura no navegador.');
+    }
+
+    const url = buildMlItemUrl(cleanId, targetUrl);
+    const win = new BrowserWindow({
+        width: 1180,
+        height: 760,
+        show: false,
+        webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            session: getMlSession()
+        }
+    });
+    win.webContents.__jkAllowMlAdNavigation = true;
+
+    const found = [];
+    const watchedRequests = new Map();
+    let attached = false;
+
+    try {
+        try {
+            win.webContents.debugger.attach('1.3');
+            attached = true;
+            await win.webContents.debugger.sendCommand('Network.enable');
+            win.webContents.debugger.on('message', async (_event, method, params) => {
+                try {
+                    if (method === 'Network.responseReceived') {
+                        const responseUrl = String(params && params.response && params.response.url || '');
+                        const mime = String(params && params.response && params.response.mimeType || '');
+                        const interesting =
+                            responseUrl.includes(cleanId) ||
+                            responseUrl.includes('/items') ||
+                            responseUrl.includes('/p/api/') ||
+                            responseUrl.includes('/api/') ||
+                            mime.includes('json');
+                        if (interesting && params.requestId) {
+                            watchedRequests.set(params.requestId, responseUrl);
+                        }
+                    }
+                    if (method === 'Network.loadingFinished' && watchedRequests.has(params.requestId)) {
+                        const responseUrl = watchedRequests.get(params.requestId);
+                        watchedRequests.delete(params.requestId);
+                        try {
+                            const body = await win.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId });
+                            const text = body && body.body ? String(body.body) : '';
+                            const info = findMlItemInfoInText(text, cleanId);
+                            if (info) {
+                                info.source = `network:${responseUrl}`;
+                                found.push(info);
+                            }
+                        } catch (_bodyErr) {}
+                    }
+                } catch (_err) {}
+            });
+        } catch (debugErr) {
+            console.warn('Falha ao anexar debugger ML:', debugErr.message || debugErr);
+        }
+
+        const loadPromise = waitForMainFrameLoad(win, 30000).catch(() => null);
+        await win.loadURL(url);
+        await loadPromise;
+        await new Promise(resolve => setTimeout(resolve, 4500));
+
+        const pageInfo = await win.webContents.executeJavaScript(`
+            (function () {
+                try {
+                    return {
+                        html: document.documentElement && document.documentElement.outerHTML ? document.documentElement.outerHTML : '',
+                        title: document.title || '',
+                        url: location.href,
+                        sellerText: (function () {
+                            var selectors = [
+                                '.ui-pdp-seller__header__title',
+                                '.ui-pdp-seller__link-trigger',
+                                '.ui-pdp-seller__nickname',
+                                '.ui-pdp-official-store-label',
+                                '[data-testid="seller-info"]',
+                                '[data-testid="official-store-info"]'
+                            ];
+                            for (var i = 0; i < selectors.length; i += 1) {
+                                var node = document.querySelector(selectors[i]);
+                                if (node && node.textContent) return node.textContent.trim();
+                            }
+                            return '';
+                        })()
+                    };
+                } catch (err) {
+                    return { html: '', title: '', url: location.href, sellerText: '', error: String(err && err.message || err) };
+                }
+            })();
+        `, true);
+
+        const htmlInfo = findMlItemInfoInText(pageInfo && pageInfo.html, cleanId) || {};
+        if (pageInfo && pageInfo.sellerText && !htmlInfo.vendedor) {
+            htmlInfo.vendedor = normalizeMlText(pageInfo.sellerText).replace(/^(vendido por|loja oficial)\s+/i, '').trim();
+        }
+        if (htmlInfo.data_criacao || htmlInfo.vendedor || htmlInfo.seller_id) {
+            htmlInfo.source = htmlInfo.source || 'page_html';
+            found.push(htmlInfo);
+        }
+
+        const best = found.find(item => item && item.data_criacao)
+            || found.find(item => item && item.vendedor)
+            || found.find(item => item && item.vendas !== null && item.vendas !== undefined)
+            || found.find(Boolean);
+        return {
+            id: cleanId,
+            url: pageInfo && pageInfo.url ? pageInfo.url : url,
+            data_criacao: best && best.data_criacao ? best.data_criacao : '',
+            vendedor: best && best.vendedor ? best.vendedor : '',
+            seller_id: best && best.seller_id ? best.seller_id : null,
+            vendas: best && best.vendas !== null && best.vendas !== undefined ? best.vendas : null,
+            source: best && best.source ? best.source : '',
+            attempts: found.length
+        };
+    } finally {
+        if (attached && win && !win.isDestroyed()) {
+            try {
+                win.webContents.debugger.detach();
+            } catch (_err) {}
+        }
+        if (win && !win.isDestroyed()) {
+            win.close();
+        }
+    }
+}
+
 function isAllowedNavigationUrl(targetUrl) {
     const value = String(targetUrl || '').trim();
     if (!value) return true;
@@ -743,306 +3102,10 @@ function getNavigationEventUrl(urlOrDetails, maybeDetails) {
     return '';
 }
 
-function isLocalBackendUrl(targetUrl) {
-        const value = String(targetUrl || '').trim().toLowerCase();
-        return value.startsWith('http://127.0.0.1:8001/') || value.startsWith('http://localhost:8001/');
-}
-
-function isDailyMeetingUrl(rawUrl) {
-    try {
-        const parsed = new URL(String(rawUrl || ''));
-        const host = parsed.hostname.toLowerCase();
-        return parsed.protocol === 'https:' && (host === 'daily.co' || host.endsWith('.daily.co'));
-    } catch (_err) {
-        return false;
-    }
-}
-
-function isAllowedMediaPermissionUrl(rawUrl) {
-    return isDailyMeetingUrl(rawUrl) || isLocalBackendUrl(rawUrl);
-}
-
-function labelDisplayMediaSource(source) {
-    const name = String(source && source.name || '').trim() || 'Fonte sem nome';
-    const type = String(source && source.id || '').startsWith('screen:') ? 'Tela' : 'Janela';
-    return `${type}: ${name}`.slice(0, 90);
-}
-
-function publicDisplayMediaSource(source) {
-    if (!source || !source.id) return null;
-    return {
-        id: String(source.id || ''),
-        name: String(source.name || '').trim() || 'Fonte sem nome',
-        type: String(source.id || '').startsWith('screen:') ? 'screen' : 'window',
-        label: labelDisplayMediaSource(source)
-    };
-}
-
-async function chooseDisplayMediaSource(sources) {
-    const validSources = (Array.isArray(sources) ? sources : [])
-        .filter(source => source && source.id)
-        .sort((a, b) => {
-            const aScreen = String(a.id || '').startsWith('screen:') ? 0 : 1;
-            const bScreen = String(b.id || '').startsWith('screen:') ? 0 : 1;
-            return aScreen - bScreen || String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR');
-        })
-        .slice(0, 18);
-    if (!validSources.length) return null;
-    const parent = BrowserWindow.getFocusedWindow() || mainWindow || BrowserWindow.getAllWindows().find(win => win && !win.isDestroyed()) || null;
-    const channel = `jk-display-source-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (char) => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;'
-    }[char]));
-    const cards = validSources.map((source, index) => {
-        const isScreen = String(source.id || '').startsWith('screen:');
-        const kind = isScreen ? 'Tela' : 'Janela';
-        const title = String(source.name || '').trim() || 'Fonte sem nome';
-        const icon = isScreen
-            ? '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path></svg>'
-            : '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M4 9h16"></path><path d="M8 7h.01"></path><path d="M11 7h.01"></path></svg>';
-        return `
-            <button class="source-card" type="button" data-index="${index}" title="${escapeHtml(labelDisplayMediaSource(source))}">
-                <span class="source-icon" aria-hidden="true">${icon}</span>
-                <span class="source-text">
-                    <span class="source-kind">${kind}</span>
-                    <strong>${escapeHtml(title)}</strong>
-                    <small>${isScreen ? 'Compartilhar este monitor' : 'Compartilhar esta janela'}</small>
-                </span>
-            </button>
-        `;
-    }).join('');
-    const html = `<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:;">
-<title>Compartilhar tela</title>
-<style>
-* { box-sizing: border-box; }
-html, body { margin: 0; width: 100%; min-height: 100%; background: #0e1117; color: #edf6ff; font-family: Inter, "Segoe UI", Arial, sans-serif; }
-body { overflow: hidden; }
-.share-picker { min-height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid #2f4562; border-radius: 16px; background: #111827; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42); overflow: hidden; }
-.share-head { -webkit-app-region: drag; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px 14px; border-bottom: 1px solid #22354e; background: #141d2c; }
-.share-title { display: grid; gap: 4px; min-width: 0; }
-.share-title span { color: #77b8ff; font-size: 0.72rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; }
-.share-title h1 { margin: 0; font-size: 1.18rem; line-height: 1.2; }
-.share-title p { margin: 0; color: #9fb2c8; font-size: 0.86rem; line-height: 1.35; }
-.close-btn { -webkit-app-region: no-drag; width: 36px; height: 36px; border: 1px solid #324964; border-radius: 10px; background: #101827; color: #dbeafe; font-size: 1.18rem; cursor: pointer; }
-.close-btn:hover { background: #1d2a3d; border-color: #4facfe; }
-.source-grid { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px 18px; overflow: auto; }
-.source-card { min-width: 0; min-height: 92px; display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 12px; border: 1px solid #28405c; border-radius: 14px; background: #151f31; color: #edf6ff; padding: 14px; text-align: left; cursor: pointer; }
-.source-card:hover, .source-card:focus { outline: none; border-color: #4facfe; background: #19273c; box-shadow: 0 14px 32px rgba(79, 172, 254, 0.14); }
-.source-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; background: #0b1424; color: #4facfe; border: 1px solid #28405c; }
-.source-icon svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.source-text { min-width: 0; display: grid; gap: 3px; }
-.source-kind { color: #83c4ff; font-size: 0.72rem; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; }
-.source-text strong { min-width: 0; overflow: hidden; color: #fff; font-size: 0.92rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.source-text small { color: #9fb2c8; font-size: 0.78rem; }
-.share-foot { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 14px 18px 16px; border-top: 1px solid #22354e; background: #101827; }
-.hint { color: #9fb2c8; font-size: 0.82rem; }
-.cancel-btn { min-height: 38px; border: 1px solid #3a516d; border-radius: 10px; background: #182235; color: #edf6ff; padding: 0 16px; font-weight: 800; cursor: pointer; }
-.cancel-btn:hover { border-color: #ff6b6b; color: #ffe6e6; background: #2a1d27; }
-@media (max-width: 720px) { .source-grid { grid-template-columns: 1fr; } }
-</style>
-</head>
-<body>
-<main class="share-picker">
-    <header class="share-head">
-        <div class="share-title">
-            <span>Compartilhar tela</span>
-            <h1>Escolha o que deseja mostrar</h1>
-            <p>Selecione um monitor ou uma janela. Para trocar depois, pare o compartilhamento e escolha novamente.</p>
-        </div>
-        <button id="closeBtn" class="close-btn" type="button" aria-label="Fechar">x</button>
-    </header>
-    <section class="source-grid" aria-label="Fontes disponiveis">${cards}</section>
-    <footer class="share-foot">
-        <span class="hint">Dica: escolha uma janela especifica para evitar compartilhar as duas telas.</span>
-        <button id="cancelBtn" class="cancel-btn" type="button">Cancelar</button>
-    </footer>
-</main>
-<script>
-const { ipcRenderer } = require('electron');
-const channel = ${JSON.stringify(channel)};
-function send(payload) { ipcRenderer.send(channel, payload); }
-document.querySelectorAll('[data-index]').forEach((button) => {
-    button.addEventListener('click', () => send({ index: Number(button.dataset.index) }));
-});
-document.getElementById('closeBtn').addEventListener('click', () => send({ canceled: true }));
-document.getElementById('cancelBtn').addEventListener('click', () => send({ canceled: true }));
-window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') send({ canceled: true });
-});
-</script>
-</body>
-</html>`;
-    return await new Promise((resolve) => {
-        let settled = false;
-        const height = Math.min(640, Math.max(430, 238 + Math.ceil(validSources.length / 2) * 116));
-        const chooser = new BrowserWindow({
-            parent: parent || undefined,
-            modal: !!parent,
-            width: 880,
-            height,
-            minWidth: 680,
-            minHeight: 420,
-            resizable: true,
-            minimizable: false,
-            maximizable: false,
-            frame: false,
-            title: 'Compartilhar tela',
-            backgroundColor: '#0e1117',
-            autoHideMenuBar: true,
-            webPreferences: {
-                nodeIntegration: true,
-                contextIsolation: false,
-                sandbox: false
-            }
-        });
-        const finish = (source) => {
-            if (settled) return;
-            settled = true;
-            ipcMain.removeListener(channel, onChoice);
-            if (chooser && !chooser.isDestroyed()) chooser.close();
-            resolve(source || null);
-        };
-        const onChoice = (_event, payload) => {
-            if (payload && payload.canceled) {
-                finish(null);
-                return;
-            }
-            const index = Number(payload && payload.index);
-            finish(Number.isInteger(index) && index >= 0 && index < validSources.length ? validSources[index] : null);
-        };
-        ipcMain.on(channel, onChoice);
-        chooser.on('closed', () => finish(null));
-        chooser.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => finish(null));
-    });
-}
-
-function configureMeetingPermissionsForSession(ses) {
-    if (!ses || configuredMeetingPermissionSessions.has(ses)) return;
-    configuredMeetingPermissionSessions.add(ses);
-    if (typeof ses.setPermissionRequestHandler === 'function') {
-        ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
-            const requestingUrl = details && (details.requestingUrl || details.embeddingOrigin) || (webContents && webContents.getURL && webContents.getURL()) || '';
-            if (permission === 'media') {
-                callback(isAllowedMediaPermissionUrl(requestingUrl));
-                return;
-            }
-            if (permission === 'notifications') {
-                callback(isLocalBackendUrl(requestingUrl));
-                return;
-            }
-            callback(false);
-        });
-    }
-    if (typeof ses.setPermissionCheckHandler === 'function') {
-        ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-            const currentUrl = requestingOrigin || (webContents && webContents.getURL && webContents.getURL()) || '';
-            if (permission === 'media') return isAllowedMediaPermissionUrl(currentUrl);
-            if (permission === 'notifications') return isLocalBackendUrl(currentUrl);
-            return false;
-        });
-    }
-    if (typeof ses.setDisplayMediaRequestHandler === 'function') {
-        ses.setDisplayMediaRequestHandler((request, callback) => {
-            const requestingUrl = request && (request.securityOrigin || request.requestingUrl || request.frameOrigin) || '';
-            if (!isAllowedMediaPermissionUrl(requestingUrl)) {
-                logElectronLifecycle('display-media-denied', { requestingUrl });
-                callback({});
-                return;
-            }
-            logElectronLifecycle('display-media-request', { requestingUrl });
-            desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
-                .then((sources) => chooseDisplayMediaSource(sources))
-                .then((source) => {
-                    logElectronLifecycle('display-media-selected', source ? publicDisplayMediaSource(source) : { canceled: true });
-                    callback(source ? { video: source } : {});
-                })
-                .catch((err) => {
-                    logElectronLifecycle('display-media-error', err);
-                    callback({});
-                });
-        }, { useSystemPicker: false });
-    }
-}
-
-function configureMeetingPermissions() {
-    [session.defaultSession, getMlSession()].forEach(configureMeetingPermissionsForSession);
-}
-
-function renderBackendWaitingScreen(win, targetUrl, tentativa) {
-        if (!win || win.isDestroyed()) return;
-        const html = `<!DOCTYPE html>
-        <html lang="pt-BR">
-        <head>
-            <meta charset="UTF-8" />
-            <title>JK Sistema</title>
-            <style>
-                body { margin: 0; font-family: Segoe UI, Arial, sans-serif; background: linear-gradient(160deg, #061923, #0d3a4a); color: #e8fffb; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-                .box { width: min(560px, 92vw); padding: 28px 30px; border-radius: 18px; background: rgba(4, 24, 34, 0.88); border: 1px solid rgba(120, 227, 212, 0.28); box-shadow: 0 18px 50px rgba(0,0,0,0.35); }
-                h1 { margin: 0 0 10px; font-size: 24px; color: #8ee9de; }
-                p { margin: 8px 0; line-height: 1.5; }
-                .muted { color: #b7d7d2; font-size: 14px; }
-                .pulse { width: 12px; height: 12px; border-radius: 999px; background: #53d4b7; display: inline-block; margin-right: 8px; box-shadow: 0 0 0 rgba(83,212,183,0.7); animation: pulse 1.5s infinite; }
-                @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(83,212,183,0.7); } 70% { box-shadow: 0 0 0 14px rgba(83,212,183,0); } 100% { box-shadow: 0 0 0 0 rgba(83,212,183,0); } }
-            </style>
-        </head>
-        <body>
-            <div class="box">
-                <h1>JK Sistema</h1>
-                <p><span class="pulse"></span>Preparando a tela desktop.</p>
-                <p>O backend local ainda estÃ¡ iniciando. O aplicativo vai tentar se conectar novamente automaticamente.</p>
-                <p class="muted">Tentativa: ${tentativa}</p>
-                <p class="muted">URL local: ${targetUrl}</p>
-            </div>
-        </body>
-        </html>`;
-        win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`).catch(() => {});
-}
-
-function loadLocalAppWithRetry(win, targetUrl, tentativa = 1) {
-        if (!win || win.isDestroyed()) return;
-
-        const retry = () => {
-                if (win.isDestroyed()) return;
-                const nextAttempt = tentativa + 1;
-                setTimeout(() => loadLocalAppWithRetry(win, targetUrl, nextAttempt), 2000);
-        };
-
-        win.loadURL(targetUrl).catch((err) => {
-                console.error('Falha ao carregar URL local do JK Sistema:', err);
-                if (!isLocalBackendUrl(targetUrl)) return;
-                renderBackendWaitingScreen(win, targetUrl, tentativa);
-                retry();
-        });
-}
-
-function loadElectronTabbedShell(win, appUrl) {
-    const shellPath = path.join(getAppRootDir(), 'electron_shell.html');
-    const tabPreloadPath = path.join(getAppRootDir(), 'electron_tab_preload.js');
-
-    if (!fs.existsSync(shellPath) || !fs.existsSync(tabPreloadPath)) {
-        loadLocalAppWithRetry(win, appUrl);
-        return;
-    }
-
-    const shellUrl = `${pathToFileURL(shellPath).toString()}?appUrl=${encodeURIComponent(appUrl)}&tabPreload=${encodeURIComponent(pathToFileURL(tabPreloadPath).toString())}&browserPartition=${encodeURIComponent(getBrowserSessionPartition())}`;
-    win.loadURL(shellUrl).catch((err) => {
-        console.error('Falha ao carregar shell de abas do JK Sistema:', err);
-        loadLocalAppWithRetry(win, appUrl);
-    });
-}
-
 function waitForMainFrameLoad(win, timeoutMs = 25000) {
     return new Promise((resolve, reject) => {
         if (!win || win.isDestroyed()) {
-            reject(new Error('Janela interna indisponÃ­vel.'));
+            reject(new Error('Janela interna indisponivel.'));
             return;
         }
 
@@ -1059,11 +3122,11 @@ function waitForMainFrameLoad(win, timeoutMs = 25000) {
 
         const onLoad = () => finish();
         const onFail = (_event, errorCode, errorDescription) => {
-            finish(new Error(`Falha ao carregar pÃ¡gina (${errorCode}): ${errorDescription}`));
+            finish(new Error(`Falha ao carregar pagina (${errorCode}): ${errorDescription}`));
         };
 
         const timeout = setTimeout(() => {
-            finish(new Error('Timeout ao carregar pÃ¡gina para extraÃ§Ã£o de links.'));
+            finish(new Error('Timeout ao carregar pagina para extracao de links.'));
         }, timeoutMs);
 
         win.webContents.once('did-finish-load', onLoad);
@@ -1246,8 +3309,29 @@ async function garantirAvantProWebContents(webContents, targetUrl, options = {})
     return { ...secondStatus, reloaded: true };
 }
 
+function loadElectronTabbedShell(win, appUrl) {
+    const shellPath = path.join(getAppRootDir(), 'electron_shell.html');
+    const tabPreloadPath = path.join(getAppRootDir(), 'electron_tab_preload.js');
+
+    if (!fs.existsSync(shellPath) || !fs.existsSync(tabPreloadPath)) {
+        win.loadURL(appUrl).catch((err) => {
+            console.error('Falha ao carregar URL local do JK Sistema:', err);
+        });
+        return;
+    }
+
+    const shellUrl = `${pathToFileURL(shellPath).toString()}?appUrl=${encodeURIComponent(appUrl)}&tabPreload=${encodeURIComponent(pathToFileURL(tabPreloadPath).toString())}&browserPartition=${encodeURIComponent(getBrowserSessionPartition())}`;
+    win.loadURL(shellUrl).catch((err) => {
+        console.error('Falha ao carregar shell de abas do JK Sistema:', err);
+        win.loadURL(appUrl).catch((fallbackErr) => {
+            console.error('Falha ao carregar URL local do JK Sistema:', fallbackErr);
+        });
+    });
+}
+
 function ensureInternalBrowser(parent) {
     if (internalBrowserWindow && !internalBrowserWindow.isDestroyed()) {
+        internalBrowserWindow.webContents.__jkAllowMlAdNavigation = true;
         if (internalBrowserWindow.isMinimized()) {
             internalBrowserWindow.restore();
         }
@@ -1267,6 +3351,7 @@ function ensureInternalBrowser(parent) {
             session: getMlSession()
         }
     });
+    internalBrowserWindow.webContents.__jkAllowMlAdNavigation = true;
     registerAvantProConsoleDiagnostics(internalBrowserWindow.webContents);
     internalBrowserWindow.setMenuBarVisibility(false);
     internalBrowserWindow.on('closed', () => {
@@ -1301,12 +3386,14 @@ function ensureEmbeddedMlBrowser(parent, options = {}) {
                 session: getMlSession()
             }
         });
+        embeddedMlBrowserView.webContents.__jkAllowMlAdNavigation = true;
         registerAvantProConsoleDiagnostics(embeddedMlBrowserView.webContents);
         embeddedMlBrowserView.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         embeddedMlBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
             logElectronLifecycle('embedded-ml-browser-fail-load', { errorCode, errorDescription, validatedURL });
         });
     }
+    embeddedMlBrowserView.webContents.__jkAllowMlAdNavigation = true;
     if (!shouldAttach) {
         if (embeddedMlBrowserOwner && !embeddedMlBrowserOwner.isDestroyed()) {
             try { embeddedMlBrowserOwner.removeBrowserView(embeddedMlBrowserView); } catch (_err) {}
@@ -1355,6 +3442,7 @@ function createWindow() {
             nodeIntegrationInSubFrames: true,
             contextIsolation: true,
             webviewTag: true,
+            backgroundThrottling: false,
             defaultEncoding: 'UTF-8'
         }
     });
@@ -1374,9 +3462,8 @@ function createWindow() {
         }
     });
 
-    const localUrlBase = process.env.JK_APP_URL || 'http://127.0.0.1:8001/dashboard.html';
-    const localUrl = `${localUrlBase}${localUrlBase.includes('?') ? '&' : '?'}_jk_nocache=${Date.now()}`;
-    loadElectronTabbedShell(win, localUrl);
+    const clientConfig = loadClientConfig();
+    loadConfiguredApp(win, clientConfig);
     
     // win.webContents.openDevTools(); // Descomente para debug
 }
@@ -1414,62 +3501,6 @@ function netJsonGet(url) {
     });
 }
 
-function normalizarTextoMl(value) {
-    return String(value || '')
-        .replace(/\\u002F/g, '/')
-        .replace(/\\\//g, '/')
-        .replace(/\\n/g, ' ')
-        .replace(/\\t/g, ' ')
-        .replace(/\\r/g, ' ')
-        .replace(/&quot;/g, '"')
-        .replace(/\\"/g, '"')
-        .trim();
-}
-
-function parseMlQuantidade(value) {
-    if (value === null || value === undefined) return null;
-    const texto = String(value).trim();
-    if (!texto) return null;
-    const match = texto.match(/([0-9][0-9\.,]*)\s*(k|mil)?\b/i);
-    if (!match) return null;
-    let numeroTexto = String(match[1]).replace(/\s+/g, '');
-    if (numeroTexto.includes('.') && numeroTexto.includes(',')) {
-        numeroTexto = numeroTexto.lastIndexOf('.') > numeroTexto.lastIndexOf(',')
-            ? numeroTexto.replace(/,/g, '')
-            : numeroTexto.replace(/\./g, '').replace(',', '.');
-    } else if (numeroTexto.includes(',')) {
-        numeroTexto = /^\d{1,3}(?:,\d{3})+$/.test(numeroTexto)
-            ? numeroTexto.replace(/,/g, '')
-            : numeroTexto.replace(',', '.');
-    } else if (numeroTexto.includes('.')) {
-        numeroTexto = /^\d{1,3}(?:\.\d{3})+$/.test(numeroTexto)
-            ? numeroTexto.replace(/\./g, '')
-            : numeroTexto;
-    }
-    const numero = Number(numeroTexto);
-    if (!Number.isFinite(numero)) return null;
-    const sufixo = String(match[2] || '').toLowerCase();
-    const total = (sufixo === 'k' || sufixo === 'mil') ? (numero * 1000) : numero;
-    return Number.isFinite(total) ? Math.round(total) : null;
-}
-
-function normalizarNomeVendedorDaResposta(item) {
-    const seller = item && typeof item.seller === 'object' ? item.seller : {};
-    const officialStore = item && typeof item.official_store === 'object' ? item.official_store : {};
-    const candidatos = [
-        seller.nickname,
-        item && item.seller_name,
-        item && item.official_store_name,
-        officialStore.nickname,
-        officialStore.name
-    ];
-    for (const candidato of candidatos) {
-        const normalizado = normalizarTextoMl(candidato);
-        if (normalizado) return normalizado;
-    }
-    return '';
-}
-
 app.whenReady().then(async () => {
     recoverProfileIfStartupCrashed();
     markStartupIncomplete();
@@ -1484,12 +3515,25 @@ app.whenReady().then(async () => {
     if (typeof flushTimer.unref === 'function') flushTimer.unref();
 
     ensureChromeExtensionsForMlSession();
-    configureMeetingPermissions();
+    configureNotificationPermissions();
 
     app.on('web-contents-created', (_event, contents) => {
-        configureMeetingPermissionsForSession(contents && contents.session);
+        configureNotificationPermissionsForSession(contents && contents.session);
+        if (contents && typeof contents.once === 'function') {
+            contents.once('destroyed', () => releaseMlAutomationProtectionForContents(contents));
+        }
         contents.on('will-navigate', (event, urlOrDetails) => {
             const url = getNavigationEventUrl(urlOrDetails);
+            if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-ml-logout-navigation-during-favoritos', { url });
+                return;
+            }
+            if (isBlockedAutomationPopupUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-automation-navigation', { url });
+                return;
+            }
             if (isOAuthExternalAuthUrl(url)) {
                 event.preventDefault();
                 openOAuthExternalAuthInChrome(url);
@@ -1507,6 +3551,16 @@ app.whenReady().then(async () => {
 
         contents.on('will-frame-navigate', (event, urlOrDetails, maybeDetails) => {
             const url = getNavigationEventUrl(urlOrDetails, maybeDetails);
+            if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-ml-logout-frame-navigation-during-favoritos', { url });
+                return;
+            }
+            if (isBlockedAutomationPopupUrl(url)) {
+                event.preventDefault();
+                logElectronLifecycle('blocked-automation-frame-navigation', { url });
+                return;
+            }
             if (isOAuthExternalAuthUrl(url)) {
                 event.preventDefault();
                 openOAuthExternalAuthInChrome(url);
@@ -1519,6 +3573,14 @@ app.whenReady().then(async () => {
 
         if (typeof contents.setWindowOpenHandler === 'function') {
             contents.setWindowOpenHandler(({ url }) => {
+                if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+                    logElectronLifecycle('blocked-ml-logout-popup-during-favoritos', { url });
+                    return { action: 'deny' };
+                }
+                if (isBlockedAutomationPopupUrl(url)) {
+                    logElectronLifecycle('blocked-automation-popup', { url });
+                    return { action: 'deny' };
+                }
                 if (isOAuthExternalAuthUrl(url)) {
                     openOAuthExternalAuthInChrome(url);
                     return { action: 'deny' };
@@ -1573,6 +3635,17 @@ app.whenReady().then(async () => {
             return { success: false, message: err && err.message ? err.message : 'Nao foi possivel listar telas.' };
         }
     });
+    ipcMain.handle('set-ml-automation-active', async (event, active, reason) => {
+        if (active) {
+            await flushPersistentSessions();
+        }
+        const result = setMlAutomationProtection(event.sender, !!active, reason);
+        if (!active) {
+            await flushPersistentSessions();
+            maybeInstallDeferredUpdate();
+        }
+        return result;
+    });
     ipcMain.handle('show-windows-notification', (_event, payload) => {
         return showWindowsNotification(payload || {});
     });
@@ -1582,31 +3655,65 @@ app.whenReady().then(async () => {
     ipcMain.handle('import-credentials', async () => {
         return await openCredentialsImporter();
     });
+    ipcMain.handle('check-for-updates', async () => {
+        return await checkForUpdates(true);
+    });
+    ipcMain.handle('install-update-now', async () => {
+        return await installUpdateNow();
+    });
+    ipcMain.handle('get-client-config', () => {
+        const config = loadClientConfig();
+        return {
+            appUrl: config.appUrl,
+            configPath: config.configPath,
+            needsSetup: false
+        };
+    });
+    ipcMain.handle('save-client-config', async (event, appUrl) => {
+        const saved = saveClientAppUrl(appUrl);
+        const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+        setTimeout(() => {
+            if (win && !win.isDestroyed()) {
+                loadConfiguredApp(win, saved);
+            }
+        }, 120);
+        return { success: true, ...saved };
+    });
     ipcMain.handle('ml-public-item-info', async (_event, itemId) => {
         const cleanId = String(itemId || '').trim().toUpperCase();
         if (!/^MLB\d+$/.test(cleanId)) {
             throw new Error('ID de anÃºncio invÃ¡lido.');
         }
-        if (mlItemInfoCache.has(cleanId)) {
-            return await mlItemInfoCache.get(cleanId);
+        const cached = _cacheGet(mlItemInfoCache, cleanId);
+        if (cached) {
+            return await cached;
         }
 
-            const requestPromise = (async () => {
+    const requestPromise = (async () => {
             const item = await netJsonGet(`https://api.mercadolibre.com/items/${encodeURIComponent(cleanId)}`);
-            let vendedor = normalizarNomeVendedorDaResposta(item);
-            const sellerId = item.seller_id || (item.seller && item.seller.id) || (item.official_store && item.official_store.seller_id);
-            if (sellerId) {
-                try {
-                    const user = await netJsonGet(`https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`);
-                    const nomeUsuario = [
-                        user.nickname,
-                        user.official_store_name,
-                        user.official_store && user.official_store.name
-                    ].find(Boolean);
-                    if (normalizarTextoMl(nomeUsuario)) {
-                        vendedor = normalizarTextoMl(nomeUsuario);
-                    }
-                } catch (err) {
+                const seller = item && item.seller && typeof item.seller === 'object' ? item.seller : {};
+                const officialStore = item && item.official_store && typeof item.official_store === 'object' ? item.official_store : {};
+                let vendedor = normalizeMlText(
+                    item.seller_name ||
+                    item.official_store_name ||
+                    seller.nickname ||
+                    officialStore.name ||
+                    officialStore.nickname ||
+                    ''
+                );
+                const sellerId = item.seller_id || seller.id || officialStore.seller_id || null;
+                if (sellerId) {
+                    try {
+                        const user = await netJsonGet(`https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`);
+                        const nomeUsuario = [
+                            user.nickname,
+                            user.official_store_name,
+                            user.official_store && user.official_store.name
+                        ].find(Boolean);
+                        if (normalizeMlText(nomeUsuario)) {
+                            vendedor = normalizeMlText(nomeUsuario);
+                        }
+                    } catch (err) {
                     console.warn('Falha ao consultar vendedor ML:', err.message || err);
                 }
             }
@@ -1628,7 +3735,7 @@ app.whenReady().then(async () => {
             };
         })();
 
-        mlItemInfoCache.set(cleanId, requestPromise);
+        _cacheSet(mlItemInfoCache, cleanId, requestPromise);
         try {
             return await requestPromise;
         } catch (err) {
@@ -1636,54 +3743,19 @@ app.whenReady().then(async () => {
             throw err;
         }
     });
-    ipcMain.handle('ml-browser-item-info', async (_event, itemId) => {
+    ipcMain.handle('ml-browser-item-info', async (_event, itemId, targetUrl) => {
         const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
         if (!/^MLB\d+$/.test(cleanId)) {
             throw new Error('ID de anÃºncio invÃ¡lido.');
         }
-        const cacheKey = `browser-public:${cleanId}`;
-        if (mlItemInfoCache.has(cacheKey)) {
-            return await mlItemInfoCache.get(cacheKey);
+        const cacheKey = `browser:${cleanId}:${String(targetUrl || '').trim()}`;
+        const cached = _cacheGet(mlItemInfoCache, cacheKey);
+        if (cached) {
+            return await cached;
         }
 
-        const requestPromise = (async () => {
-            const item = await netJsonGet(`https://api.mercadolibre.com/items/${encodeURIComponent(cleanId)}`);
-            let vendedor = normalizarNomeVendedorDaResposta(item);
-            const sellerId = item.seller_id || (item.seller && item.seller.id) || (item.official_store && item.official_store.seller_id);
-            if (sellerId) {
-                try {
-                    const user = await netJsonGet(`https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`);
-                    const nomeUsuario = [
-                        user.nickname,
-                        user.official_store_name,
-                        user.official_store && user.official_store.name
-                    ].find(Boolean);
-                    if (normalizarTextoMl(nomeUsuario)) {
-                        vendedor = normalizarTextoMl(nomeUsuario);
-                    }
-                } catch (err) {
-                    console.warn('Falha ao consultar vendedor ML:', err.message || err);
-                }
-            }
-            return {
-                id: item.id || cleanId,
-                titulo: item.title || '',
-                data_criacao: item.date_created || item.start_time || '',
-                vendedor,
-                seller_id: sellerId || null,
-                listing_type_id: item.listing_type_id || '',
-                listing_type_name: item.listing_type_id === 'gold_pro' ? 'Premium' : (item.listing_type_id ? 'Classico' : ''),
-                tipo_anuncio: item.listing_type_id === 'gold_pro' ? 'Premium' : (item.listing_type_id ? 'Classico' : ''),
-                shipping: item.shipping || null,
-                logistic_type: item.shipping && item.shipping.logistic_type || '',
-                shipping_mode: item.shipping && item.shipping.mode || '',
-                is_full: String(item.shipping && item.shipping.logistic_type || '').toLowerCase() === 'fulfillment',
-                vendas: parseMlQuantidade(item.sold_quantity ?? item.sold ?? item.soldQuantity),
-                source: 'api'
-            };
-        })();
-
-        mlItemInfoCache.set(cacheKey, requestPromise);
+        const requestPromise = extractMlInfoByBrowser(cleanId, targetUrl);
+        _cacheSet(mlItemInfoCache, cacheKey, requestPromise);
         try {
             return await requestPromise;
         } catch (err) {
@@ -1693,8 +3765,16 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('embedded-ml-browser-show', async (event, targetUrl, bounds) => {
         const url = normalizeTargetUrl(targetUrl);
-        if (isMercadoLivreAdUrl(url)) {
-            return await openUrlInGoogleChrome(url);
+        if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+            logElectronLifecycle('blocked-embedded-ml-logout-load-during-favoritos', { url });
+            return {
+                success: false,
+                blocked: true,
+                reason: 'favoritos-em-execucao',
+                url: embeddedMlBrowserView && !embeddedMlBrowserView.webContents.isDestroyed()
+                    ? embeddedMlBrowserView.webContents.getURL()
+                    : ''
+            };
         }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
@@ -1737,8 +3817,9 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('open-internal-browser', async (event, targetUrl) => {
         const url = normalizeTargetUrl(targetUrl);
-        if (isMercadoLivreAdUrl(url)) {
-            return await openUrlInGoogleChrome(url);
+        if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+            logElectronLifecycle('blocked-internal-ml-logout-load-during-favoritos', { url });
+            return { success: false, blocked: true, reason: 'favoritos-em-execucao', url: '' };
         }
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || null;
@@ -1780,7 +3861,7 @@ app.whenReady().then(async () => {
                 await loadPromise;
             }
 
-            const extracted = await internalBrowser.webContents.executeJavaScript(`
+            return await internalBrowser.webContents.executeJavaScript(`
                 (async function () {
                     try {
                         var sleep = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
@@ -1900,15 +3981,59 @@ app.whenReady().then(async () => {
                     }
                 })();
             `, true);
-
-            return extracted;
         } catch (err) {
             console.error('Erro ao extrair resultados do Mercado Livre:', err);
             throw err;
         }
     });
 
+    ipcMain.handle('fetch-page-links', async (event, targetUrl) => {
+        const parent = BrowserWindow.fromWebContents(event.sender) || null;
+        const internalBrowser = new BrowserWindow({
+            width: 1280,
+            height: 820,
+            title: 'Navegador Interno - JK Sistema',
+            parent,
+            webPreferences: {
+                contextIsolation: true,
+                nodeIntegration: false,
+                session: getMlSession()
+            }
+        });
+        internalBrowser.setMenuBarVisibility(false);
+
+        try {
+            await internalBrowser.loadURL(normalizeTargetUrl(targetUrl));
+
+            // Aguarda o carregamento completo da pÃ¡gina
+            await internalBrowser.webContents.executeJavaScript(`
+                new Promise((resolve) => {
+                    const observer = new MutationObserver((mutations, observer) => {
+                        if (document.readyState === 'complete') {
+                            observer.disconnect();
+                            resolve();
+                        }
+                    });
+                    observer.observe(document, { childList: true, subtree: true });
+                });
+            `);
+
+            // Extrai os links apÃ³s o carregamento completo
+            const links = await internalBrowser.webContents.executeJavaScript(`
+                Array.from(document.querySelectorAll('a')).map(a => a.href).filter(href => href)
+            `);
+
+            internalBrowser.close();
+            return links;
+        } catch (err) {
+            console.error('Erro ao buscar links da pÃ¡gina:', err);
+            internalBrowser.close();
+            throw err;
+        }
+    });
+
     createWindow();
+    scheduleAutoUpdateCheck();
     const stableTimer = setTimeout(() => {
         clearStartupIncomplete();
         logElectronLifecycle('startup-stable');
@@ -1931,6 +4056,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
     logElectronLifecycle('before-quit');
+    stopLocalBackend();
     clearStartupIncomplete();
     flushPersistentSessions().catch(() => {});
 });

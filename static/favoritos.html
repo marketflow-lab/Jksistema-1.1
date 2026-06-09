@@ -993,15 +993,20 @@
             background: #0f172a;
             border: 1px solid #1e3a8a;
             border-radius: 10px;
+            box-sizing: border-box;
             box-shadow: 0 14px 34px rgba(15, 23, 42, 0.28);
             color: #fff;
-            left: 50%;
-            max-height: calc(100vh - 32px);
+            display: flex;
+            flex-direction: column;
+            left: 50vw;
+            max-height: min(640px, calc(100vh - 32px));
+            max-height: min(640px, calc(100dvh - 32px));
             max-width: 380px;
-            overflow: auto;
+            overflow: hidden;
             padding: 13px;
             position: fixed;
-            top: 50%;
+            top: 50vh;
+            top: 50dvh;
             transform: translate(-50%, -50%);
             width: min(380px, calc(100vw - 40px));
             z-index: 80;
@@ -1022,13 +1027,18 @@
             border-color: #ef4444;
         }
         .ml-favoritos-balloon-title {
+            flex: 0 0 auto;
             font-size: 13px;
             font-weight: 700;
             margin-bottom: 5px;
         }
         .ml-favoritos-balloon-text {
+            flex: 1 1 auto;
             font-size: 12px;
             line-height: 1.4;
+            min-height: 0;
+            overflow: auto;
+            padding-right: 4px;
         }
         .ml-favoritos-balloon-status-summary {
             background: rgba(255, 255, 255, 0.10);
@@ -1070,8 +1080,90 @@
         .ml-favoritos-balloon-result-detail {
             overflow-wrap: anywhere;
         }
+        .ml-favoritos-confirm-layout {
+            color: #e5e7eb;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .ml-favoritos-confirm-hero {
+            background: rgba(37, 99, 235, 0.18);
+            border: 1px solid rgba(147, 197, 253, 0.34);
+            border-radius: 9px;
+            padding: 10px 11px;
+        }
+        .ml-favoritos-confirm-hero strong {
+            color: #ffffff;
+            display: block;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        .ml-favoritos-confirm-grid {
+            display: grid;
+            gap: 8px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .ml-favoritos-confirm-card {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 8px;
+            min-width: 0;
+            padding: 8px 9px;
+        }
+        .ml-favoritos-confirm-label {
+            color: #bfdbfe;
+            display: block;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .03em;
+            margin-bottom: 3px;
+            text-transform: uppercase;
+        }
+        .ml-favoritos-confirm-value {
+            color: #ffffff;
+            display: block;
+            font-size: 12px;
+            font-weight: 800;
+            overflow-wrap: anywhere;
+        }
+        .ml-favoritos-confirm-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .ml-favoritos-confirm-steps li {
+            align-items: flex-start;
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid rgba(255, 255, 255, 0.13);
+            border-radius: 8px;
+            display: flex;
+            gap: 7px;
+            padding: 7px 9px;
+        }
+        .ml-favoritos-confirm-steps li::before {
+            background: #60a5fa;
+            border-radius: 999px;
+            content: "";
+            flex: 0 0 7px;
+            height: 7px;
+            margin-top: 5px;
+            width: 7px;
+        }
+        .ml-favoritos-confirm-warning {
+            background: rgba(234, 179, 8, 0.14);
+            border: 1px solid rgba(250, 204, 21, 0.34);
+            border-radius: 8px;
+            color: #fef3c7;
+            font-size: 11px;
+            line-height: 1.35;
+            padding: 8px 9px;
+        }
         .ml-favoritos-balloon-actions {
             display: flex;
+            flex: 0 0 auto;
             flex-wrap: wrap;
             gap: 7px;
             margin-top: 10px;
@@ -1091,6 +1183,21 @@
         }
         .ml-favoritos-balloon-actions button:hover {
             background: #dbeafe;
+        }
+        .ml-favoritos-balloon-actions button.is-primary {
+            background: #2563eb;
+            color: #ffffff;
+        }
+        .ml-favoritos-balloon-actions button.is-primary:hover {
+            background: #1d4ed8;
+        }
+        .ml-favoritos-balloon-actions button.is-muted {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            color: #e5e7eb;
+        }
+        .ml-favoritos-balloon-actions button.is-muted:hover {
+            background: rgba(255, 255, 255, 0.18);
         }
         .ml-favoritos-balloon-comparison-wrap {
             background: #fff;
@@ -1282,10 +1389,13 @@
                 0 0 18px rgba(14, 165, 233, 0.24);
         }
         .ml-favoritos-balloon.is-over-browser {
-            left: 50%;
+            left: 50vw;
+            max-height: min(640px, calc(100vh - 32px));
+            max-height: min(640px, calc(100dvh - 32px));
             max-width: 620px;
             position: fixed;
-            top: 50%;
+            top: 50vh;
+            top: 50dvh;
             transform: translate(-50%, -50%);
             width: min(620px, calc(100vw - 40px));
             z-index: 90;
@@ -1293,6 +1403,35 @@
         .ml-favoritos-balloon.is-over-browser.is-comparison {
             max-width: 920px;
             width: min(920px, calc(100vw - 40px));
+        }
+        .ml-favoritos-balloon-layer {
+            align-items: center;
+            box-sizing: border-box;
+            display: flex;
+            height: 100vh;
+            height: 100dvh;
+            inset: 0;
+            justify-content: center;
+            overflow: auto;
+            padding: 16px 20px;
+            pointer-events: none;
+            position: fixed;
+            width: 100vw;
+            z-index: 2147483000;
+        }
+        .ml-favoritos-balloon-layer.hidden {
+            display: none;
+        }
+        .ml-favoritos-balloon-layer .ml-favoritos-balloon {
+            left: auto !important;
+            margin: auto;
+            max-height: calc(100vh - 32px);
+            max-height: calc(100dvh - 32px);
+            pointer-events: auto;
+            position: relative !important;
+            top: auto !important;
+            transform: none !important;
+            z-index: 1;
         }
         @media (max-width: 980px) {
             .ml-work-modal {
@@ -2462,6 +2601,93 @@
             display: flex;
             gap: 8px;
         }
+        .favoritos-sheets-panel {
+            display: grid;
+            gap: 16px;
+        }
+        .favoritos-sheets-head {
+            align-items: flex-start;
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+        }
+        .favoritos-sheets-head .section-title {
+            margin: 0;
+        }
+        .favoritos-sheets-current {
+            background: #f8fbff;
+            border: 1px solid #d9e6fb;
+            border-radius: 8px;
+            display: grid;
+            gap: 10px;
+            padding: 14px;
+        }
+        .favoritos-sheets-current-title,
+        .favoritos-sheets-row-name {
+            color: #111827;
+            font-weight: 800;
+        }
+        .favoritos-sheets-current-meta,
+        .favoritos-sheets-row-meta {
+            color: #64748b;
+            font-size: 12px;
+        }
+        .favoritos-sheets-input-row {
+            align-items: center;
+            display: grid;
+            gap: 8px;
+            grid-template-columns: minmax(220px, 1fr) auto auto;
+        }
+        .favoritos-sheets-input-row input {
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            font-size: 13px;
+            min-width: 0;
+            padding: 10px 12px;
+            width: 100%;
+        }
+        .favoritos-sheets-input-row input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+            outline: none;
+        }
+        .favoritos-sheets-list {
+            display: grid;
+            gap: 10px;
+        }
+        .favoritos-sheets-row {
+            align-items: center;
+            background: #fff;
+            border: 1px solid #d9e6fb;
+            border-radius: 8px;
+            display: grid;
+            gap: 10px;
+            grid-template-columns: minmax(160px, 240px) minmax(220px, 1fr) auto auto;
+            padding: 12px 14px;
+        }
+        .favoritos-sheets-open {
+            align-items: center;
+            background: #eef6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            color: #1d4ed8;
+            display: inline-flex;
+            font-size: 12px;
+            font-weight: 800;
+            justify-content: center;
+            min-height: 34px;
+            padding: 8px 12px;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .favoritos-sheets-open:hover {
+            background: #dbeafe;
+        }
+        .favoritos-sheets-open.is-disabled {
+            cursor: default;
+            opacity: 0.45;
+            pointer-events: none;
+        }
         .ml-ignored-sku-group {
             border: 1px solid #d9e6fb;
             border-radius: 8px;
@@ -2821,6 +3047,15 @@
             .browser-search-fields {
                 grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             }
+            .favoritos-sheets-input-row,
+            .favoritos-sheets-row {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .favoritos-sheets-open,
+            .favoritos-sheets-input-row .btn-back,
+            .favoritos-sheets-row .btn-back {
+                width: 100%;
+            }
         }
 
         @media (max-width: 768px) {
@@ -2878,6 +3113,9 @@
             .ml-favoritos-efetivar-actions {
                 justify-content: stretch;
             }
+            .ml-favoritos-confirm-grid {
+                grid-template-columns: 1fr;
+            }
             .ml-favoritos-efetivar-actions > *,
             .ml-favoritos-include-form > * {
                 flex: 1 1 100%;
@@ -2914,6 +3152,7 @@
             <button class="tab-button" onclick="mudarAba('navegador', event)">&#127760; Página de Pesquisa</button>
             <button class="tab-button" onclick="mudarAba('favoritos', event)">&#11088; Favoritos</button>
             <button class="tab-button" onclick="mudarAba('historico', event)">&#128221; Hist&oacute;rico</button>
+            <button class="tab-button" onclick="mudarAba('planilhas', event)">&#128196; Planilhas</button>
             <button class="tab-button" onclick="mudarAba('anuncios-ignorados', event)">&#128683; An&uacute;ncios ignorados</button>
             <button class="tab-button" onclick="mudarAba('vendedores', event)">&#128683; Vendedores ignorados</button>
         </div>
@@ -3082,6 +3321,28 @@
                     <div id="ml-historico-favoritos-empty" class="muted">Selecione um SKU na barra lateral para ver o hist&oacute;rico.</div>
                     <div id="ml-historico-favoritos-list" class="ml-favoritos-historico-list"></div>
                 </div>
+            </div>
+        </div>
+
+        <div id="aba-planilhas" class="aba-conteudo">
+            <div class="panel favoritos-sheets-panel">
+                <div class="favoritos-sheets-head">
+                    <h3 class="section-title">Planilhas por loja</h3>
+                    <span id="favoritos-planilhas-updated" class="muted"></span>
+                </div>
+                <div id="favoritos-planilhas-status" class="status hidden"></div>
+                <div class="favoritos-sheets-current">
+                    <div>
+                        <div id="favoritos-planilha-loja-atual-nome" class="favoritos-sheets-current-title">Loja selecionada</div>
+                        <div class="favoritos-sheets-current-meta">Google Sheets</div>
+                    </div>
+                    <div class="favoritos-sheets-input-row">
+                        <input id="favoritos-planilha-loja-atual-url" type="url" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off">
+                        <button id="favoritos-planilha-loja-atual-salvar" type="button" class="btn-back">Salvar link</button>
+                        <a id="favoritos-planilha-loja-atual-abrir" class="favoritos-sheets-open is-disabled" href="#" target="_blank" rel="noopener">Abrir</a>
+                    </div>
+                </div>
+                <div id="favoritos-planilhas-list" class="favoritos-sheets-list"></div>
             </div>
         </div>
 
@@ -3480,6 +3741,7 @@
         const mlFavoritosBalloonTextEl = document.getElementById('ml-favoritos-status-balloon-text');
         const mlFavoritosBalloonActionsEl = document.getElementById('ml-favoritos-status-balloon-actions');
         const mlFavoritosBalloonOriginalParentEl = mlFavoritosBalloonEl ? mlFavoritosBalloonEl.parentElement : null;
+        let mlFavoritosBalloonLayerEl = null;
         const mlHistoricoFavoritosStatusEl = document.getElementById('ml-historico-favoritos-status');
         const mlHistoricoFavoritosEmptyEl = document.getElementById('ml-historico-favoritos-empty');
         const mlHistoricoFavoritosListEl = document.getElementById('ml-historico-favoritos-list');
@@ -3490,6 +3752,13 @@
         const mlAnunciosIgnoradosStatusEl = document.getElementById('ml-anuncios-ignorados-status');
         const mlAnunciosIgnoradosEmptyEl = document.getElementById('ml-anuncios-ignorados-empty');
         const mlAnunciosIgnoradosListEl = document.getElementById('ml-anuncios-ignorados-list');
+        const favoritosPlanilhasStatusEl = document.getElementById('favoritos-planilhas-status');
+        const favoritosPlanilhasUpdatedEl = document.getElementById('favoritos-planilhas-updated');
+        const favoritosPlanilhaLojaAtualNomeEl = document.getElementById('favoritos-planilha-loja-atual-nome');
+        const favoritosPlanilhaLojaAtualUrlEl = document.getElementById('favoritos-planilha-loja-atual-url');
+        const favoritosPlanilhaLojaAtualSalvarEl = document.getElementById('favoritos-planilha-loja-atual-salvar');
+        const favoritosPlanilhaLojaAtualAbrirEl = document.getElementById('favoritos-planilha-loja-atual-abrir');
+        const favoritosPlanilhasListEl = document.getElementById('favoritos-planilhas-list');
         const mlBrowserBlueFilterEl = document.getElementById('ml-browser-blue-filter');
         const mlBrowserFrameWrapEl = mlBrowserBlueFilterEl ? mlBrowserBlueFilterEl.closest('.browser-frame-wrap') : null;
         const mlWorkModalEl = document.getElementById('ml-work-modal');
@@ -3610,6 +3879,9 @@
         let mlAnunciosIgnoradosSku = null;
         let mlAnunciosIgnoradosServidorCarregado = false;
         let mlAnunciosIgnoradosSaveTimer = null;
+        let favoritosPlanilhasLojas = {};
+        let favoritosPlanilhasServidorCarregado = false;
+        let favoritosPlanilhasCarregando = false;
         const mlAnunciosIgnoradosSkuExpandidos = new Set();
         let mlFavoritosLojasCompartilhadasPorSku = new Map();
         const mlFavoritosAnunciosPropriosIaCache = new Map();
@@ -3733,6 +4005,227 @@
 
         function favoritosNomeLojaExibicao(valor) {
             return favoritosEhTodasLojas(valor) ? FAVORITOS_TODAS_LOJAS_LABEL : String(valor || '').trim();
+        }
+
+        function favoritosChavePlanilhaLoja(valor) {
+            return skuNormalizarLoja(valor).replace(/[^a-z0-9]+/g, '');
+        }
+
+        function favoritosPlanilhasDefinirStatus(texto, erro = false) {
+            if (!favoritosPlanilhasStatusEl) return;
+            favoritosPlanilhasStatusEl.textContent = texto || '';
+            favoritosPlanilhasStatusEl.classList.toggle('hidden', !texto);
+            favoritosPlanilhasStatusEl.classList.toggle('error', !!erro);
+        }
+
+        function favoritosPlanilhasUrlValida(url) {
+            const valor = String(url || '').trim();
+            if (!valor) return true;
+            try {
+                const parsed = new URL(valor);
+                return /^https?:$/i.test(parsed.protocol)
+                    && parsed.hostname.toLowerCase() === 'docs.google.com'
+                    && parsed.pathname.toLowerCase().startsWith('/spreadsheets/');
+            } catch (_err) {
+                return false;
+            }
+        }
+
+        function favoritosPlanilhasNormalizarUrl(url) {
+            return String(url || '').replace(/\s+/g, '').trim();
+        }
+
+        function favoritosPlanilhasLojasDisponiveis() {
+            const mapa = new Map();
+            const adicionar = (valor) => {
+                const nome = String((valor && valor.nome) || valor || '').trim();
+                const chave = favoritosChavePlanilhaLoja(nome);
+                if (!nome || !chave || favoritosEhTodasLojas(nome)) return;
+                if (!mapa.has(chave)) mapa.set(chave, nome);
+            };
+            (Array.isArray(mlSkuLojasDisponiveis) ? mlSkuLojasDisponiveis : []).forEach(adicionar);
+            skuLojasComDados().forEach(loja => adicionar(loja && loja.nome));
+            adicionar(mlSkuLojaSelecionada);
+            adicionar(skuLojaSelecionada);
+            return Array.from(mapa.entries())
+                .map(([chave, nome]) => ({ chave, nome }))
+                .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR', { numeric: true, sensitivity: 'base' }));
+        }
+
+        function favoritosPlanilhasUrlSalva(loja) {
+            const chave = favoritosChavePlanilhaLoja(loja);
+            const item = chave ? favoritosPlanilhasLojas[chave] : null;
+            return String(item && item.url || '').trim();
+        }
+
+        function favoritosPlanilhasAtualizarLinkAbrir(linkEl, url) {
+            if (!linkEl) return;
+            const valor = favoritosPlanilhasNormalizarUrl(url);
+            linkEl.href = valor || '#';
+            linkEl.classList.toggle('is-disabled', !valor);
+            linkEl.setAttribute('aria-disabled', valor ? 'false' : 'true');
+        }
+
+        function favoritosPlanilhasAtualizarTopo() {
+            const lojaAtual = favoritosLojaSelecionadaParaApi(mlSkuLojaSelecionada || skuLojaSelecionada || '');
+            const url = favoritosPlanilhasUrlSalva(lojaAtual);
+            if (favoritosPlanilhaLojaAtualNomeEl) {
+                favoritosPlanilhaLojaAtualNomeEl.textContent = lojaAtual || 'Escolha uma loja';
+            }
+            if (favoritosPlanilhaLojaAtualUrlEl) {
+                favoritosPlanilhaLojaAtualUrlEl.value = url;
+                favoritosPlanilhaLojaAtualUrlEl.disabled = !lojaAtual;
+            }
+            if (favoritosPlanilhaLojaAtualSalvarEl) {
+                favoritosPlanilhaLojaAtualSalvarEl.disabled = !lojaAtual;
+            }
+            favoritosPlanilhasAtualizarLinkAbrir(favoritosPlanilhaLojaAtualAbrirEl, url);
+        }
+
+        function favoritosPlanilhasRenderizarLista() {
+            if (!favoritosPlanilhasListEl) return;
+            const lojas = favoritosPlanilhasLojasDisponiveis();
+            favoritosPlanilhasListEl.innerHTML = '';
+            if (!lojas.length) {
+                favoritosPlanilhasListEl.innerHTML = '<div class="muted">Nenhuma loja disponivel.</div>';
+                return;
+            }
+            lojas.forEach(loja => {
+                const url = favoritosPlanilhasUrlSalva(loja.nome);
+                const row = document.createElement('div');
+                row.className = 'favoritos-sheets-row';
+
+                const info = document.createElement('div');
+                const nome = document.createElement('div');
+                nome.className = 'favoritos-sheets-row-name';
+                nome.textContent = loja.nome;
+                const meta = document.createElement('div');
+                meta.className = 'favoritos-sheets-row-meta';
+                meta.textContent = url ? 'Link cadastrado' : 'Sem link';
+                info.appendChild(nome);
+                info.appendChild(meta);
+
+                const input = document.createElement('input');
+                input.type = 'url';
+                input.placeholder = 'https://docs.google.com/spreadsheets/d/...';
+                input.value = url;
+                input.autocomplete = 'off';
+
+                const salvar = document.createElement('button');
+                salvar.type = 'button';
+                salvar.className = 'btn-back';
+                salvar.textContent = 'Salvar';
+                salvar.addEventListener('click', () => favoritosPlanilhasSalvarLoja(loja.nome, input.value, salvar));
+                input.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') favoritosPlanilhasSalvarLoja(loja.nome, input.value, salvar);
+                });
+
+                const abrir = document.createElement('a');
+                abrir.className = 'favoritos-sheets-open';
+                abrir.target = '_blank';
+                abrir.rel = 'noopener';
+                abrir.textContent = 'Abrir';
+                favoritosPlanilhasAtualizarLinkAbrir(abrir, url);
+
+                row.appendChild(info);
+                row.appendChild(input);
+                row.appendChild(salvar);
+                row.appendChild(abrir);
+                favoritosPlanilhasListEl.appendChild(row);
+            });
+        }
+
+        function favoritosPlanilhasRenderizar() {
+            favoritosPlanilhasAtualizarTopo();
+            favoritosPlanilhasRenderizarLista();
+        }
+
+        async function favoritosPlanilhasCarregarServidor(forcar = false) {
+            if (favoritosPlanilhasCarregando) return;
+            if (favoritosPlanilhasServidorCarregado && !forcar) {
+                favoritosPlanilhasRenderizar();
+                return;
+            }
+            favoritosPlanilhasCarregando = true;
+            favoritosPlanilhasDefinirStatus('Carregando planilhas...');
+            try {
+                const response = await fetch('/api/favoritos/planilhas-lojas', {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                if (!response.ok) {
+                    let detalhe = `HTTP ${response.status}`;
+                    try {
+                        const dataErro = await response.json();
+                        detalhe = dataErro.detail || detalhe;
+                    } catch (_err) {}
+                    throw new Error(detalhe);
+                }
+                const data = await response.json();
+                favoritosPlanilhasLojas = data && typeof data.planilhas === 'object' && data.planilhas ? data.planilhas : {};
+                favoritosPlanilhasServidorCarregado = true;
+                if (favoritosPlanilhasUpdatedEl) {
+                    favoritosPlanilhasUpdatedEl.textContent = data.updated_at ? `Atualizado em ${data.updated_at}` : '';
+                }
+                favoritosPlanilhasDefinirStatus('');
+                favoritosPlanilhasRenderizar();
+            } catch (err) {
+                favoritosPlanilhasDefinirStatus(`Erro ao carregar planilhas: ${err && err.message ? err.message : err}`, true);
+                favoritosPlanilhasRenderizar();
+            } finally {
+                favoritosPlanilhasCarregando = false;
+            }
+        }
+
+        async function favoritosPlanilhasSalvarLoja(loja, url, botao = null) {
+            const nome = String(loja || '').trim();
+            const valor = favoritosPlanilhasNormalizarUrl(url);
+            if (!nome || favoritosEhTodasLojas(nome)) return;
+            if (!favoritosPlanilhasUrlValida(valor)) {
+                favoritosPlanilhasDefinirStatus('Informe um link valido do Google Sheets.', true);
+                return;
+            }
+            const textoOriginal = botao ? botao.textContent : '';
+            if (botao) {
+                botao.disabled = true;
+                botao.textContent = 'Salvando...';
+            }
+            favoritosPlanilhasDefinirStatus(`Salvando link da loja ${nome}...`);
+            try {
+                const response = await fetch('/api/favoritos/planilhas-lojas', {
+                    method: 'PUT',
+                    headers: headersJsonAutenticado(),
+                    body: JSON.stringify({ planilhas: [{ loja: nome, url: valor }] })
+                });
+                if (!response.ok) {
+                    let detalhe = `HTTP ${response.status}`;
+                    try {
+                        const dataErro = await response.json();
+                        detalhe = dataErro.detail || detalhe;
+                    } catch (_err) {}
+                    throw new Error(detalhe);
+                }
+                const data = await response.json();
+                favoritosPlanilhasLojas = data && typeof data.planilhas === 'object' && data.planilhas ? data.planilhas : {};
+                favoritosPlanilhasServidorCarregado = true;
+                if (favoritosPlanilhasUpdatedEl) {
+                    favoritosPlanilhasUpdatedEl.textContent = data.updated_at ? `Atualizado em ${data.updated_at}` : '';
+                }
+                favoritosPlanilhasDefinirStatus(valor ? `Link salvo para ${nome}.` : `Link removido de ${nome}.`);
+                favoritosPlanilhasRenderizar();
+            } catch (err) {
+                favoritosPlanilhasDefinirStatus(`Erro ao salvar planilha: ${err && err.message ? err.message : err}`, true);
+            } finally {
+                if (botao) {
+                    botao.disabled = false;
+                    botao.textContent = textoOriginal || 'Salvar';
+                }
+            }
+        }
+
+        function prepararAbaPlanilhasFavoritos() {
+            favoritosPlanilhasRenderizar();
+            favoritosPlanilhasCarregarServidor();
         }
 
         function favoritosUsarIaRankingAtivo() {
@@ -4477,6 +4970,8 @@
                 prepararAbaFavoritosMl();
             } else if (abaAtual === 'historico') {
                 prepararAbaHistoricoFavoritos();
+            } else if (abaAtual === 'planilhas') {
+                prepararAbaPlanilhasFavoritos();
             } else if (abaAtual === 'vendedores') {
                 renderizarVendedoresIgnoradosRanking();
             } else if (abaAtual === 'anuncios-ignorados') {
@@ -5530,6 +6025,9 @@
             if (nomeAba === 'historico') {
                 prepararAbaHistoricoFavoritos();
             }
+            if (nomeAba === 'planilhas') {
+                prepararAbaPlanilhasFavoritos();
+            }
             if (nomeAba === 'vendedores') {
                 renderizarVendedoresIgnoradosRanking();
             }
@@ -6034,18 +6532,42 @@
             }
         }
 
+        function garantirCamadaBalaoFavoritosStatus() {
+            if (!mlFavoritosBalloonEl) return null;
+            if (mlFavoritosBalloonLayerEl && document.contains(mlFavoritosBalloonLayerEl)) {
+                return mlFavoritosBalloonLayerEl;
+            }
+            mlFavoritosBalloonLayerEl = document.getElementById('ml-favoritos-balloon-layer');
+            if (!mlFavoritosBalloonLayerEl) {
+                mlFavoritosBalloonLayerEl = document.createElement('div');
+                mlFavoritosBalloonLayerEl.id = 'ml-favoritos-balloon-layer';
+                mlFavoritosBalloonLayerEl.className = 'ml-favoritos-balloon-layer hidden';
+                mlFavoritosBalloonLayerEl.setAttribute('aria-hidden', 'true');
+            }
+            return mlFavoritosBalloonLayerEl;
+        }
+
         function posicionarBalaoFavoritosStatus() {
             if (!mlFavoritosBalloonEl) return;
             const sobreNavegador = balaoResultadosMlAberto();
-            const statusVisivel = !mlFavoritosBalloonEl.classList.contains('hidden') || mlFavoritosEmExecucao;
-            const destino = sobreNavegador && mlBrowserFrameWrapEl
-                ? mlBrowserFrameWrapEl
-                : (document.body || mlFavoritosBalloonOriginalParentEl);
+            const balaoVisivel = !mlFavoritosBalloonEl.classList.contains('hidden');
+            const statusVisivel = balaoVisivel || mlFavoritosEmExecucao;
+            const destino = document.body || mlFavoritosBalloonOriginalParentEl;
+            const camadaBalao = garantirCamadaBalaoFavoritosStatus();
             mlFavoritosBalloonEl.classList.toggle('is-over-browser', !!sobreNavegador);
             if (mlBrowserFrameWrapEl) {
                 mlBrowserFrameWrapEl.classList.toggle('has-status-overlay', !!(sobreNavegador && statusVisivel));
             }
-            if (destino && mlFavoritosBalloonEl.parentElement !== destino) {
+            if (camadaBalao) {
+                if (destino && camadaBalao.parentElement !== destino) {
+                    destino.appendChild(camadaBalao);
+                }
+                if (mlFavoritosBalloonEl.parentElement !== camadaBalao) {
+                    camadaBalao.appendChild(mlFavoritosBalloonEl);
+                }
+                camadaBalao.classList.toggle('hidden', !balaoVisivel);
+                camadaBalao.setAttribute('aria-hidden', balaoVisivel ? 'false' : 'true');
+            } else if (destino && mlFavoritosBalloonEl.parentElement !== destino) {
                 destino.appendChild(mlFavoritosBalloonEl);
             }
             const temAcoes = !!(mlFavoritosBalloonActionsEl && mlFavoritosBalloonActionsEl.children.length);
@@ -8809,7 +9331,7 @@
             if (promocaoFavoritosSemPercentualFixo(opcoesPromocao)) {
                 return { ok: false, status: 'Promocao selecionada sem % fixa. Refaca o favorito informando a porcentagem da campanha.' };
             }
-            const ajusteTipoAnuncio = resolverTrocaTipoAnuncioFavoritos(anuncioConta, anuncioRanking);
+            const ajusteTipoAnuncio = resolverTrocaTipoAnuncioFavoritos(anuncioConta, anuncioRanking, opcoes);
             const precoRanking = obterPrecoVigenteAnuncioFavoritos(anuncioRanking);
             if (precoRanking === null || precoRanking <= 0.01) {
                 return { ok: false, status: 'Sem preco do ranking nesta linha.' };
@@ -9292,6 +9814,12 @@
                 || ''
             ).trim();
             if (!atual && !alvo) return '';
+            if (sim.tipoMantidoPorBloqueioMl) {
+                const original = String(sim.tipoAnuncioAlvoOriginal || '').trim();
+                return original
+                    ? `tipo mantido: ${atual || alvo} (ML bloqueou ${atual || '-'} -> ${original})`
+                    : `tipo mantido: ${atual || alvo}`;
+            }
             if (atual && alvo && atual !== alvo) {
                 const status = update.changed === false ? 'ja estava no tipo alvo' : 'tipo alterado';
                 return `${status}: ${atual} -> ${alvo}`;
@@ -9307,6 +9835,9 @@
             if (loja) partes.push(`Loja: ${loja}`);
             const tipo = descreverTipoEfetivacaoFavoritos(registro, data);
             if (tipo) partes.push(tipo);
+            if (sim.tipoMantidoPorBloqueioMl && sim.tipoBloqueioMlMotivo) {
+                partes.push(`motivo tipo: ${sim.tipoBloqueioMlMotivo}`);
+            }
             partes.push(`preco cheio aplicado: ${formatarPrecoFavoritosMl(data.preco_anuncio ?? sim.preco)}`);
             const precoPromocional = data.preco_promocional ?? sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo;
             if (data.fallback_sem_promocao_aplicado) {
@@ -9664,6 +10195,134 @@
             if (semDados) return 'Faltou MLB ou loja em pelo menos um anuncio.';
             return 'Confira os motivos exibidos na coluna Simulador.';
         }
+        function criarCardConfirmacaoFavoritos(rotulo, valor) {
+            const card = document.createElement('div');
+            card.className = 'ml-favoritos-confirm-card';
+            const label = document.createElement('span');
+            label.className = 'ml-favoritos-confirm-label';
+            label.textContent = rotulo || '';
+            const value = document.createElement('span');
+            value.className = 'ml-favoritos-confirm-value';
+            value.textContent = valor || '-';
+            card.appendChild(label);
+            card.appendChild(value);
+            return card;
+        }
+        function perguntarConfirmacaoEfetivarFavoritos(opcoes = {}) {
+            const total = Number(opcoes.total || 0);
+            const incluirOutrasContas = !!opcoes.incluirOutrasContas;
+            const buscouAnunciosAoAprovar = !!opcoes.buscouAnunciosAoAprovar;
+            const nomeCampanha = String(opcoes.nomeCampanha || 'campanha selecionada').trim();
+            const totalTrocaTipo = Number(opcoes.totalTrocaTipo || 0);
+            const totalTipoMantido = Number(opcoes.totalTipoMantido || 0);
+            const totalTrocaAposPromocao = Number(opcoes.totalTrocaAposPromocao || 0);
+            const escopo = incluirOutrasContas
+                ? 'Inclui outras contas com este SKU'
+                : (buscouAnunciosAoAprovar ? 'Somente a loja atual apos buscar o SKU' : 'Somente a loja atual');
+            const trocaTipo = totalTrocaTipo
+                ? `${totalTrocaTipo} anuncio(s) vao mudar Premium/Classico`
+                : (totalTipoMantido ? `${totalTipoMantido} manterao o tipo atual por bloqueio do ML` : 'Sem troca de tipo');
+            const textoFallback = [
+                `Aprovar e alterar ${total} anuncio(s)?`,
+                escopo,
+                `Campanha: ${nomeCampanha}`,
+                totalTrocaTipo ? `${totalTrocaTipo} anuncio(s) tambem terao o tipo alterado para igual ao ranking.` : '',
+                totalTrocaAposPromocao ? `${totalTrocaAposPromocao} anuncio(s) so mostraram downgrade bloqueado antes da limpeza; o sistema vai remover promocoes atuais e tentar de novo.` : '',
+                totalTipoMantido ? `${totalTipoMantido} anuncio(s) serao recalculados mantendo Premium porque o Mercado Livre nao liberou downgrade para Classico.` : '',
+                'O sistema vai sair da promocao atual, ajustar tipo/preco cheio, aplicar a promocao e conferir no Mercado Livre.',
+                'Quando houver mais de um anuncio nosso, os precos finais e cheios nao serao iguais.'
+            ].filter(Boolean).join('\n');
+            if (!mlFavoritosBalloonEl || !mlFavoritosBalloonTextEl || !mlFavoritosBalloonActionsEl) {
+                return Promise.resolve(window.confirm(textoFallback));
+            }
+            if (mlFavoritosPerguntaResolver) {
+                mlFavoritosPerguntaResolver(false);
+                mlFavoritosPerguntaResolver = null;
+            }
+            return new Promise(resolve => {
+                const finalizar = (confirmado) => {
+                    mlFavoritosPerguntaResolver = null;
+                    esconderBalaoFavoritosStatus();
+                    resolve(!!confirmado);
+                };
+                mlFavoritosPerguntaResolver = finalizar;
+                mostrarBalaoFavoritosStatus('', {
+                    manterAcoes: true,
+                    larga: true,
+                    titulo: 'Confirmar alteracoes no Mercado Livre'
+                });
+                mlFavoritosBalloonTextEl.innerHTML = '';
+                mlFavoritosBalloonActionsEl.innerHTML = '';
+
+                const layout = document.createElement('div');
+                layout.className = 'ml-favoritos-confirm-layout';
+
+                const hero = document.createElement('div');
+                hero.className = 'ml-favoritos-confirm-hero';
+                const heroTitle = document.createElement('strong');
+                heroTitle.textContent = `Aprovar e alterar ${total} anuncio(s)?`;
+                const heroText = document.createElement('span');
+                heroText.textContent = 'Revise as acoes antes de enviar. Nada sera enviado ao Mercado Livre se voce cancelar.';
+                hero.appendChild(heroTitle);
+                hero.appendChild(heroText);
+                layout.appendChild(hero);
+
+                const grid = document.createElement('div');
+                grid.className = 'ml-favoritos-confirm-grid';
+                grid.appendChild(criarCardConfirmacaoFavoritos('Anuncios', `${total} pronto(s)`));
+                grid.appendChild(criarCardConfirmacaoFavoritos('Escopo', escopo));
+                grid.appendChild(criarCardConfirmacaoFavoritos('Campanha', nomeCampanha));
+                grid.appendChild(criarCardConfirmacaoFavoritos('Tipo do anuncio', trocaTipo));
+                layout.appendChild(grid);
+
+                const steps = document.createElement('ul');
+                steps.className = 'ml-favoritos-confirm-steps';
+                [
+                    'Remover a promocao atual quando necessario.',
+                    totalTrocaAposPromocao
+                        ? 'Aguardar o Mercado Livre liberar a troca apos remover promocoes e entao alterar Premium/Classico.'
+                        : (totalTipoMantido
+                        ? 'Alterar o tipo quando o Mercado Livre liberar; quando bloquear downgrade, manter o tipo atual e recalcular o preco.'
+                        : 'Alterar o tipo para ficar igual ao anuncio do ranking.'),
+                    'Alterar o preco cheio e aplicar a campanha selecionada.',
+                    'Conferir no Mercado Livre se o preco final promocional ficou correto.'
+                ].forEach(texto => {
+                    const li = document.createElement('li');
+                    li.textContent = texto;
+                    steps.appendChild(li);
+                });
+                layout.appendChild(steps);
+
+                const warning = document.createElement('div');
+                warning.className = 'ml-favoritos-confirm-warning';
+                warning.textContent = totalTrocaAposPromocao
+                    ? 'Alguns anuncios so liberam downgrade depois que a promocao atual sai. O sistema vai limpar as promocoes atuais, esperar a liberacao do Mercado Livre e tentar a troca de modalidade antes de aplicar preco/campanha.'
+                    : (totalTipoMantido
+                    ? 'Alguns anuncios ficarao Premium porque o Mercado Livre nao disponibilizou downgrade para eles agora. Os precos foram recalculados nessa condicao para preservar margem e campanha.'
+                    : 'Quando houver mais de um anuncio nosso, os precos finais e cheios podem ser diferentes para evitar duplicidade e preservar a margem.');
+                layout.appendChild(warning);
+
+                mlFavoritosBalloonTextEl.appendChild(layout);
+
+                const cancelar = document.createElement('button');
+                cancelar.type = 'button';
+                cancelar.className = 'is-muted';
+                cancelar.textContent = 'Cancelar';
+                cancelar.addEventListener('click', () => finalizar(false));
+
+                const confirmar = document.createElement('button');
+                confirmar.type = 'button';
+                confirmar.className = 'is-primary';
+                confirmar.textContent = 'Aprovar e alterar';
+                confirmar.addEventListener('click', () => finalizar(true));
+
+                mlFavoritosBalloonActionsEl.appendChild(cancelar);
+                mlFavoritosBalloonActionsEl.appendChild(confirmar);
+                mlFavoritosBalloonEl.classList.remove('is-error', 'is-comparison');
+                mlFavoritosBalloonEl.classList.add('is-wide');
+                posicionarBalaoFavoritosStatus();
+            });
+        }
         function normalizarNomePromocaoFavoritos(valor) {
             return String(valor || '')
                 .normalize('NFD')
@@ -9687,6 +10346,190 @@
                 throw new Error(data.detail || `HTTP ${response.status}`);
             }
             return Array.isArray(data.anuncios) ? data.anuncios : [];
+        }
+        function registroFavoritosExigeTrocaTipoAnuncio(registro) {
+            const sim = registro && registro.sim;
+            if (!sim) return false;
+            const alvo = String(sim.listingTypeIdAlvo || '').trim();
+            if (!alvo) return false;
+            const atual = String(sim.listingTypeIdAtual || '').trim();
+            return !!sim.trocarTipoAnuncio || !atual || atual !== alvo;
+        }
+        function validacaoPermiteTentativaAposPromocoesFavoritos(registro, validacao) {
+            const sim = registro && registro.sim || {};
+            const atual = listingTypeIdFavoritos((validacao && validacao.current) || sim.listingTypeIdAtual);
+            const alvo = listingTypeIdFavoritos((validacao && validacao.target) || sim.listingTypeIdAlvo);
+            return atual
+                && alvo
+                && atual !== alvo
+                && ['gold_pro', 'gold_special'].includes(atual)
+                && ['gold_pro', 'gold_special'].includes(alvo);
+        }
+        function textoTipoEnvioFavoritos(registro) {
+            const sim = registro && registro.sim;
+            if (!sim) return 'sem troca';
+            if (sim.trocaTipoAposPromocaoMl) {
+                return `${sim.tipoAnuncioAtual || '-'} -> ${sim.tipoAnuncioAlvo || '-'} via API ML`;
+            }
+            if (sim.tipoMantidoPorBloqueioMl) {
+                const atual = sim.tipoAnuncioAtual || nomeTipoPorListingTypeFavoritos(sim.listingTypeIdAtual) || '-';
+                const original = sim.tipoAnuncioAlvoOriginal || sim.tipoAnuncioAlvo || '';
+                return original ? `mantendo ${atual}; ML bloqueou ${atual} -> ${original}` : `mantendo ${atual}`;
+            }
+            return registroFavoritosExigeTrocaTipoAnuncio(registro)
+                ? `${sim.tipoAnuncioAtual || '-'} -> ${sim.tipoAnuncioAlvo || '-'}`
+                : 'sem troca';
+        }
+        async function validarRegistrosEfetivaveisFavoritosMercadoLivre(registros) {
+            const lista = Array.isArray(registros) ? registros : [];
+            const paraValidar = lista.filter(registro => {
+                const sim = registro && registro.sim;
+                return !!(registro && registro.itemId && registro.loja && sim && registroFavoritosExigeTrocaTipoAnuncio(registro));
+            });
+            if (!paraValidar.length) {
+                return { validos: lista, bloqueados: [] };
+            }
+            mostrarBalaoFavoritosStatus('Validando no Mercado Livre se a troca Premium/Classico esta disponivel...', {
+                larga: true
+            });
+            const response = await fetch('/api/favoritos/ml/validar-efetivacao', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({
+                    itens: paraValidar.map(registro => ({
+                        loja: registro.loja || '',
+                        item_id: registro.itemId || '',
+                        listing_type_id_alvo: registro.sim && registro.sim.listingTypeIdAlvo || '',
+                        tipo_anuncio_alvo: registro.sim && registro.sim.tipoAnuncioAlvo || ''
+                    }))
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || `HTTP ${response.status}`);
+            }
+            const respostas = Array.isArray(data.itens) ? data.itens : [];
+            const mapa = new Map();
+            respostas.forEach(item => {
+                const chave = `${skuNormalizarLoja(item && item.loja)}|${String(item && item.item_id || '').trim().toUpperCase()}`;
+                if (chave) mapa.set(chave, item);
+            });
+            const validos = [];
+            const bloqueados = [];
+            lista.forEach(registro => {
+                const sim = registro && registro.sim;
+                if (!sim || !registroFavoritosExigeTrocaTipoAnuncio(registro)) {
+                    validos.push(registro);
+                    return;
+                }
+                const chave = `${skuNormalizarLoja(registro.loja)}|${String(registro.itemId || '').trim().toUpperCase()}`;
+                const validacao = mapa.get(chave);
+                if (!validacao || validacao.ok !== false) {
+                    validos.push(registro);
+                    return;
+                }
+                if (validacaoPermiteTentativaAposPromocoesFavoritos(registro, validacao)) {
+                    sim.trocaTipoAposPromocaoMl = true;
+                    sim.trocaTipoAposPromocaoMotivo = validacao.message || 'Mercado Livre pode liberar downgrade depois de remover as promocoes atuais.';
+                    validos.push(registro);
+                    return;
+                }
+                const motivo = validacao.message || 'Mercado Livre nao disponibiliza essa troca Premium/Classico para o anuncio agora.';
+                bloqueados.push({
+                    itemId: registro.itemId,
+                    erro: motivo,
+                    registro,
+                    validacao
+                });
+            });
+            return { validos, bloqueados };
+        }
+        function criarReservasPrecosEfetivacaoFavoritos(registros) {
+            const precosFinaisReservados = new Set();
+            const precosCheiosReservados = new Set();
+            (Array.isArray(registros) ? registros : []).forEach(registro => {
+                const sim = registro && registro.sim;
+                if (!sim || !sim.ok) return;
+                const chaveFinal = chavePrecoCentavosFavoritos(obterPrecoFinalSimulacaoFavoritos(sim));
+                const chaveCheio = chavePrecoCentavosFavoritos(sim.preco);
+                if (chaveFinal) precosFinaisReservados.add(chaveFinal);
+                if (chaveCheio) precosCheiosReservados.add(chaveCheio);
+            });
+            return { precosFinaisReservados, precosCheiosReservados };
+        }
+        function bloqueioPermiteFallbackTipoAtualFavoritos(bloqueio) {
+            const validacao = bloqueio && bloqueio.validacao || {};
+            const registro = bloqueio && bloqueio.registro || {};
+            const sim = registro.sim || {};
+            const atual = listingTypeIdFavoritos(validacao.current || sim.listingTypeIdAtual);
+            const alvo = listingTypeIdFavoritos(validacao.target || sim.listingTypeIdAlvo);
+            return atual === 'gold_pro' && alvo === 'gold_special';
+        }
+        function recalcularRegistroMantendoTipoAtualFavoritos(bloqueio, opcoesPromocao, reservas) {
+            const registro = bloqueio && bloqueio.registro;
+            if (!registro || !registro.anuncio || !registro.ranking) return null;
+            const simOriginal = registro.sim || {};
+            const sim = calcularSimulacaoPrecoFavoritos(registro.anuncio, registro.ranking, opcoesPromocao, {
+                ...(reservas || {}),
+                manterTipoAtual: true
+            });
+            if (!sim || !sim.ok) {
+                return {
+                    ok: false,
+                    erro: sim && sim.status
+                        ? `Nao foi possivel recalcular mantendo Premium: ${textoCurtoStatusSimuladorFavoritos(sim.status)}`
+                        : 'Nao foi possivel recalcular mantendo Premium.'
+                };
+            }
+            const motivo = bloqueio && bloqueio.erro
+                ? bloqueio.erro
+                : 'Mercado Livre nao liberou a troca Premium -> Classico para este anuncio agora.';
+            sim.tipoMantidoPorBloqueioMl = true;
+            sim.tipoBloqueioMlMotivo = motivo;
+            sim.tipoAnuncioAlvoOriginal = simOriginal.tipoAnuncioAlvo || '';
+            sim.listingTypeIdAlvoOriginal = simOriginal.listingTypeIdAlvo || '';
+            sim.tipoAnuncioAlvo = sim.tipoAnuncioAtual || nomeTipoPorListingTypeFavoritos(sim.listingTypeIdAtual) || 'Premium';
+            sim.listingTypeIdAlvo = sim.listingTypeIdAtual || 'gold_pro';
+            sim.trocarTipoAnuncio = false;
+            return {
+                ok: true,
+                registro: {
+                    ...registro,
+                    sim,
+                    fallbackTipoAtualMl: true,
+                    fallbackTipoAtualMotivo: motivo
+                }
+            };
+        }
+        function resolverFallbackTipoAtualFavoritos(bloqueados, validos, opcoesPromocao) {
+            const saidaValidos = Array.isArray(validos) ? [...validos] : [];
+            const aindaBloqueados = [];
+            const fallbacks = [];
+            const reservas = criarReservasPrecosEfetivacaoFavoritos(saidaValidos);
+            (Array.isArray(bloqueados) ? bloqueados : []).forEach(bloqueio => {
+                if (!bloqueioPermiteFallbackTipoAtualFavoritos(bloqueio)) {
+                    aindaBloqueados.push(bloqueio);
+                    return;
+                }
+                const fallback = recalcularRegistroMantendoTipoAtualFavoritos(bloqueio, opcoesPromocao, reservas);
+                if (!fallback || !fallback.ok || !fallback.registro) {
+                    aindaBloqueados.push({
+                        ...bloqueio,
+                        erro: fallback && fallback.erro || bloqueio.erro || 'Mercado Livre bloqueou a troca de tipo e nao foi possivel recalcular mantendo Premium.'
+                    });
+                    return;
+                }
+                saidaValidos.push(fallback.registro);
+                fallbacks.push({
+                    itemId: fallback.registro.itemId,
+                    motivo: fallback.registro.fallbackTipoAtualMotivo,
+                    registro: fallback.registro
+                });
+            });
+            return { validos: saidaValidos, bloqueados: aindaBloqueados, fallbacks };
         }
         async function resolverOpcoesPromocaoEfetivacaoParaLoja(opcoesPromocao, loja) {
             if (!opcoesPromocao || !opcoesPromocao.usar_promocao) return opcoesPromocao;
@@ -9816,7 +10659,7 @@
             if (!incluirOutrasContas && lojaAtualNorm) {
                 registros = registros.filter(registro => skuNormalizarLoja(registro.loja) === lojaAtualNorm);
             }
-            const validos = filtrarRegistrosEfetivaveisFavoritos(registros);
+            let validos = filtrarRegistrosEfetivaveisFavoritos(registros);
             if (!validos.length) {
                 const motivo = explicarRegistrosNaoEfetivaveisFavoritos(registros, registrosAntesFiltroLoja);
                 mostrarBalaoFavoritosStatus(`Nenhum anuncio com simulacao valida para aprovar. ${motivo}`, {
@@ -9827,20 +10670,46 @@
                 atualizarPainelEfetivarFavoritos();
                 return;
             }
+            let bloqueadosPreEnvio = [];
+            try {
+                const validacaoEnvio = await validarRegistrosEfetivaveisFavoritosMercadoLivre(validos);
+                validos = validacaoEnvio.validos || [];
+                bloqueadosPreEnvio = validacaoEnvio.bloqueados || [];
+            } catch (err) {
+                mostrarBalaoFavoritosStatus(`Erro ao validar anuncios no Mercado Livre antes de alterar: ${err && err.message ? err.message : err}`, {
+                    erro: true,
+                    tempoMs: 8000,
+                    larga: true
+                });
+                atualizarPainelEfetivarFavoritos();
+                return;
+            }
+            if (!validos.length) {
+                const primeiroBloqueio = bloqueadosPreEnvio[0];
+                const motivo = primeiroBloqueio && primeiroBloqueio.erro
+                    ? ` Primeiro bloqueio em ${primeiroBloqueio.itemId}: ${primeiroBloqueio.erro}`
+                    : ' Nenhum MLB passou na validacao final do Mercado Livre.';
+                mostrarBalaoFavoritosStatus(`Nenhum anuncio valido para enviar ao Mercado Livre.${motivo}`, {
+                    erro: true,
+                    tempoMs: 9000,
+                    larga: true
+                });
+                atualizarPainelEfetivarFavoritos();
+                return;
+            }
 
             const nomeCampanha = opcoesPromocao.campanha && (opcoesPromocao.campanha.nome || opcoesPromocao.campanha.id) || 'campanha selecionada';
-            const totalTrocaTipo = validos.filter(registro => registro && registro.sim && registro.sim.trocarTipoAnuncio).length;
-            const pergunta = [
-                `Aprovar e alterar ${validos.length} anuncio(s)?`,
-                incluirOutrasContas
-                    ? 'Inclui outras contas que tenham este SKU.'
-                    : (buscouAnunciosAoAprovar ? 'Somente a conta/loja atual apos buscar os anuncios do SKU.' : 'Somente a conta/loja atual.'),
-                `Campanha: ${nomeCampanha}`,
-                totalTrocaTipo ? `${totalTrocaTipo} anuncio(s) tambem terao o tipo alterado para igual ao ranking.` : '',
-                'O sistema vai sair da promocao atual, ajustar tipo/preco cheio, aplicar a promocao e conferir no Mercado Livre.',
-                'Quando houver mais de um anuncio nosso, os precos finais e cheios nao serao iguais.'
-            ].filter(Boolean).join('\n');
-            if (!window.confirm(pergunta)) return;
+            const totalTrocaTipo = validos.filter(registro => registroFavoritosExigeTrocaTipoAnuncio(registro)).length;
+            const totalTrocaAposPromocao = validos.filter(registro => registro && registro.sim && registro.sim.trocaTipoAposPromocaoMl).length;
+            const confirmouAlteracao = await perguntarConfirmacaoEfetivarFavoritos({
+                total: validos.length,
+                incluirOutrasContas,
+                buscouAnunciosAoAprovar,
+                nomeCampanha,
+                totalTrocaTipo,
+                totalTrocaAposPromocao
+            });
+            if (!confirmouAlteracao) return;
 
             favMlEfetivacaoEmExecucao = true;
             limparLogEfetivarFavoritos();
@@ -9850,9 +10719,27 @@
                 favMlEfetivarBtnEl.textContent = 'Alterando...';
             }
             const sucessos = [];
-            const falhas = [];
+            const falhas = bloqueadosPreEnvio.map(item => ({
+                itemId: item.itemId,
+                erro: item.erro,
+                registro: item.registro
+            }));
             let protecaoElectronAtiva = false;
             try {
+                bloqueadosPreEnvio.forEach(item => {
+                    adicionarStatusEfetivarFavoritos(
+                        'error',
+                        `${item.itemId} nao foi enviado ao Mercado Livre`,
+                        item.erro || 'Mercado Livre nao disponibiliza essa troca Premium/Classico para o anuncio agora.'
+                    );
+                });
+                validos.filter(registro => registro && registro.sim && registro.sim.trocaTipoAposPromocaoMl).forEach(registro => {
+                    adicionarStatusEfetivarFavoritos(
+                        'info',
+                        `${registro.itemId} tentara trocar tipo direto no Mercado Livre`,
+                        `${registro.sim.trocaTipoAposPromocaoMotivo || 'Mercado Livre nao listou a troca em available_*.'} O sistema vai sair apenas da promocao ativa quando existir e tentar a troca Premium/Classico pelo endpoint oficial.`
+                    );
+                });
                 protecaoElectronAtiva = await definirProtecaoAutomacaoMlFavoritos(true, 'favoritos-efetivar-preco');
                 if (protecaoElectronAtiva) {
                     adicionarStatusEfetivarFavoritos('info', 'Protecao ativada', 'Atualizacoes automaticas serao adiadas ate terminar a alteracao no Mercado Livre.');
@@ -9865,7 +10752,7 @@
                     adicionarStatusEfetivarFavoritos(
                         'info',
                         `${i + 1}/${validos.length} - Enviando alteracao para ${itemId}`,
-                        `Conta: ${registro.loja || '-'} | Tipo: ${registro.sim && registro.sim.trocarTipoAnuncio ? `${registro.sim.tipoAnuncioAtual || '-'} -> ${registro.sim.tipoAnuncioAlvo || '-'}` : 'sem troca'} | Preco cheio: ${formatarPrecoFavoritosMl(registro.sim && registro.sim.preco)} | Preco final promocional: ${formatarPrecoFavoritosMl(registro.sim && (registro.sim.precoPromocionalCalculado ?? registro.sim.precoPromocional ?? registro.sim.precoCompetitivo))}${registro.sim && registro.sim.ajustePrecoUnico ? ` | Ajuste preco unico: +${formatarPrecoFavoritosMl(registro.sim.ajustePrecoUnico)}` : ''}`
+                        `Conta: ${registro.loja || '-'} | Tipo: ${textoTipoEnvioFavoritos(registro)} | Preco cheio: ${formatarPrecoFavoritosMl(registro.sim && registro.sim.preco)} | Preco final promocional: ${formatarPrecoFavoritosMl(registro.sim && (registro.sim.precoPromocionalCalculado ?? registro.sim.precoPromocional ?? registro.sim.precoCompetitivo))}${registro.sim && registro.sim.ajustePrecoUnico ? ` | Ajuste preco unico: +${formatarPrecoFavoritosMl(registro.sim.ajustePrecoUnico)}` : ''}`
                     );
                     try {
                         const opcoesLoja = await resolverOpcoesPromocaoEfetivacaoParaLoja(opcoesPromocao, registro.loja);
@@ -10121,12 +11008,23 @@
             }
             return '';
         }
-        function resolverTrocaTipoAnuncioFavoritos(anuncioConta, anuncioRanking) {
+        function resolverTrocaTipoAnuncioFavoritos(anuncioConta, anuncioRanking, opcoes = {}) {
             const listingTypeIdAlvoRaw = obterListingTypeIdAnuncioFavoritos(anuncioRanking);
             const listingTypeIdAlvo = ['gold_pro', 'gold_special'].includes(listingTypeIdAlvoRaw) ? listingTypeIdAlvoRaw : '';
-            const tipoAlvo = nomeTipoPorListingTypeFavoritos(listingTypeIdAlvo) || obterTipoAnuncioFavoritos(anuncioRanking);
             const listingTypeIdAtual = obterListingTypeIdAnuncioFavoritos(anuncioConta);
             const tipoAtual = nomeTipoPorListingTypeFavoritos(listingTypeIdAtual) || obterTipoAnuncioFavoritos(anuncioConta);
+            if (opcoes && opcoes.manterTipoAtual) {
+                return {
+                    tipoAtual,
+                    tipoAlvo: tipoAtual,
+                    listingTypeIdAtual,
+                    listingTypeIdAlvo: listingTypeIdAtual,
+                    trocar: false,
+                    taxaPadraoAlvo: null,
+                    usarTaxaPadraoAlvo: false
+                };
+            }
+            const tipoAlvo = nomeTipoPorListingTypeFavoritos(listingTypeIdAlvo) || obterTipoAnuncioFavoritos(anuncioRanking);
             const taxaPadraoAlvo = taxaPadraoListingTypeFavoritos(listingTypeIdAlvo);
             const trocar = !!listingTypeIdAlvo && (!listingTypeIdAtual || listingTypeIdAtual !== listingTypeIdAlvo);
             return {
@@ -13253,6 +14151,26 @@
 
         async function carregarPromocoesAtivasFavoritos(loja, opcoes = {}) {
             const query = new URLSearchParams({ loja: String(loja || '').trim() });
+            const queryString = query.toString();
+            const montarUrl = (rota) => `${rota}?${queryString}`;
+            const urls = [
+                montarUrl('/api/favoritos/ml/promocoes'),
+                montarUrl('/api/mercadolivre/promocoes')
+            ];
+            try {
+                const origemAtual = new URL(window.location.href);
+                const ehBackendLocal = /^https?:$/i.test(origemAtual.protocol)
+                    && /^(127\.0\.0\.1|localhost)$/i.test(origemAtual.hostname)
+                    && String(origemAtual.port || '80') === '8001';
+                if (!ehBackendLocal) {
+                    urls.push(`http://127.0.0.1:8001${montarUrl('/api/favoritos/ml/promocoes')}`);
+                    urls.push(`http://127.0.0.1:8001${montarUrl('/api/mercadolivre/promocoes')}`);
+                }
+            } catch (_err) {
+                urls.push(`http://127.0.0.1:8001${montarUrl('/api/favoritos/ml/promocoes')}`);
+                urls.push(`http://127.0.0.1:8001${montarUrl('/api/mercadolivre/promocoes')}`);
+            }
+            const urlsUnicas = Array.from(new Set(urls));
             const avisoLentidaoMs = Number(opcoes && opcoes.avisoLentidaoMs) > 0
                 ? Number(opcoes.avisoLentidaoMs)
                 : 6500;
@@ -13266,15 +14184,40 @@
                 }, avisoLentidaoMs);
             }
             try {
-                const response = await fetch(`/api/favoritos/ml/promocoes?${query.toString()}`, {
-                    headers: obterAuthHeaders(),
-                    cache: 'no-store'
-                });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    throw new Error(data.detail || `HTTP ${response.status}`);
+                const erros = [];
+                let erroBloqueante = '';
+                for (const url of urlsUnicas) {
+                    if (erroBloqueante) break;
+                    try {
+                        const response = await fetch(url, {
+                            headers: obterAuthHeaders(),
+                            cache: 'no-store'
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) {
+                            const detalhe = data.detail || data.message || `HTTP ${response.status}`;
+                            if ([401, 403].includes(Number(response.status))) {
+                                erroBloqueante = detalhe;
+                                break;
+                            }
+                            erros.push(`${url}: ${detalhe}`);
+                            continue;
+                        }
+                        return Array.isArray(data.campaigns) ? data.campaigns : [];
+                    } catch (err) {
+                        const mensagem = err && err.message ? err.message : String(err);
+                        erros.push(`${url}: ${mensagem}`);
+                    }
                 }
-                return Array.isArray(data.campaigns) ? data.campaigns : [];
+                if (erroBloqueante) {
+                    throw new Error(erroBloqueante);
+                }
+                const detalheErro = erros.find(txt => !/Failed to fetch/i.test(txt)) || erros[0] || '';
+                throw new Error(
+                    detalheErro
+                        ? `Nao foi possivel conectar ao backend para carregar promocoes. ${detalheErro}`
+                        : 'Nao foi possivel conectar ao backend para carregar promocoes.'
+                );
             } finally {
                 if (avisoTimer) clearTimeout(avisoTimer);
             }
@@ -13437,7 +14380,13 @@
             const usarPromocao = exigirPromocao ? true : await perguntarSimNaoPromocaoFavoritos();
             if (usarPromocao === null) return null;
             if (!usarPromocao) return { usar_promocao: false };
-            const loja = favoritosLojaSelecionadaParaApi();
+            const loja = favoritosLojaSelecionadaParaApi(
+                (opcoes && opcoes.loja)
+                || favMlLojaSelecionada
+                || mlSkuLojaSelecionada
+                || skuLojaSelecionada
+                || ''
+            );
             if (!loja) {
                 mostrarBalaoFavoritosStatus('Escolha uma loja do Mercado Livre antes de selecionar promocao.', {
                     erro: true,
@@ -17503,6 +18452,20 @@
                 if (e.key === 'Enter') rankearAvulsoMercadoLivre();
             });
         });
+
+        if (favoritosPlanilhaLojaAtualSalvarEl) {
+            favoritosPlanilhaLojaAtualSalvarEl.addEventListener('click', () => {
+                const loja = favoritosLojaSelecionadaParaApi(mlSkuLojaSelecionada || skuLojaSelecionada || '');
+                favoritosPlanilhasSalvarLoja(loja, favoritosPlanilhaLojaAtualUrlEl ? favoritosPlanilhaLojaAtualUrlEl.value : '', favoritosPlanilhaLojaAtualSalvarEl);
+            });
+        }
+        if (favoritosPlanilhaLojaAtualUrlEl) {
+            favoritosPlanilhaLojaAtualUrlEl.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter') return;
+                const loja = favoritosLojaSelecionadaParaApi(mlSkuLojaSelecionada || skuLojaSelecionada || '');
+                favoritosPlanilhasSalvarLoja(loja, favoritosPlanilhaLojaAtualUrlEl.value, favoritosPlanilhaLojaAtualSalvarEl);
+            });
+        }
 
         inicializarBalaoResultadosMl();
         inicializarLarguraTabelasFavoritos();

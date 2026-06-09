@@ -1201,6 +1201,9 @@ function getLocalBackendFirebaseEnv(localAppDir) {
         return {
             JK_ACCESS_BACKEND: 'firebase',
             FIREBASE_SERVICE_ACCOUNT_FILE: candidate,
+            JK_FIREBASE_LIVE_FEATURES: 'true',
+            FIREBASE_LIVE_FEATURES: 'true',
+            JK_FIREBASE_CHAT_PRESENCE_ENABLED: 'true',
             ...(account.project_id ? { FIREBASE_PROJECT_ID: String(account.project_id) } : {})
         };
     }
@@ -1349,11 +1352,17 @@ function fetchLocalBackendJson(pathname, timeoutMs = 2500) {
     });
 }
 
-function localBackendHealthCompatible(health) {
+function localBackendHealthCompatible(health, firebaseEnv = null) {
     if (!health || health.ok !== true) return false;
     const backendVersion = String(health.appVersion || '').replace(/^v/i, '').trim();
     const desktopVersion = String(app.getVersion() || '').replace(/^v/i, '').trim();
-    return !!backendVersion && backendVersion === desktopVersion;
+    if (!backendVersion || backendVersion !== desktopVersion) return false;
+    const expectsFirebase = firebaseEnv && String(firebaseEnv.JK_ACCESS_BACKEND || '').toLowerCase() === 'firebase';
+    if (expectsFirebase) {
+        if (health.firebaseActive !== true) return false;
+        if (health.firebaseLiveFeatures !== true) return false;
+    }
+    return true;
 }
 
 function stopProcessListeningOnPort(port) {
@@ -1412,6 +1421,15 @@ function writeLocalBackendLauncher(localAppDir) {
         ] : []),
         ...(firebaseEnv.FIREBASE_PROJECT_ID ? [
             `set "FIREBASE_PROJECT_ID=${cmdValue(firebaseEnv.FIREBASE_PROJECT_ID)}"`
+        ] : []),
+        ...(firebaseEnv.JK_FIREBASE_LIVE_FEATURES ? [
+            `set "JK_FIREBASE_LIVE_FEATURES=${cmdValue(firebaseEnv.JK_FIREBASE_LIVE_FEATURES)}"`
+        ] : []),
+        ...(firebaseEnv.FIREBASE_LIVE_FEATURES ? [
+            `set "FIREBASE_LIVE_FEATURES=${cmdValue(firebaseEnv.FIREBASE_LIVE_FEATURES)}"`
+        ] : []),
+        ...(firebaseEnv.JK_FIREBASE_CHAT_PRESENCE_ENABLED ? [
+            `set "JK_FIREBASE_CHAT_PRESENCE_ENABLED=${cmdValue(firebaseEnv.JK_FIREBASE_CHAT_PRESENCE_ENABLED)}"`
         ] : []),
         'set "PYTHONUNBUFFERED=1"',
         'set "PYTHONUTF8=1"',
@@ -1509,7 +1527,7 @@ function ensureLocalBackendStarted() {
 
         if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
             const health = await fetchLocalBackendJson('/health');
-            if (localBackendHealthCompatible(health)) {
+            if (localBackendHealthCompatible(health, firebaseEnv)) {
                 logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT, health });
                 return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
             }
@@ -1633,6 +1651,55 @@ function getBundledPrivateCredentialsPaths() {
 
 function getPrivateCredentialsImportMarker() {
     return path.join(JK_ELECTRON_USER_DATA_DIR, '.private_credentials_imported');
+}
+
+function readLocalDotEnvValues(envPath) {
+    const values = {};
+    try {
+        if (!fs.existsSync(envPath)) return values;
+        const content = fs.readFileSync(envPath, 'utf8');
+        for (const rawLine of content.split(/\r?\n/)) {
+            const line = String(rawLine || '').trim();
+            if (!line || line.startsWith('#') || !line.includes('=')) continue;
+            const index = line.indexOf('=');
+            const key = line.slice(0, index).trim();
+            let value = line.slice(index + 1).trim();
+            if (!key) continue;
+            if (
+                (value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))
+            ) {
+                value = value.slice(1, -1);
+            }
+            values[key] = value;
+        }
+    } catch (_err) {}
+    return values;
+}
+
+function hasAnyEnvValue(values, keys) {
+    return keys.some((key) => String(values[key] || '').trim());
+}
+
+function hasRequiredPrivateRuntimeConfig(localAppDir) {
+    const values = readLocalDotEnvValues(path.join(localAppDir, '.env'));
+    const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
+    const hasFirebaseAdmin = String(firebaseEnv.JK_ACCESS_BACKEND || '').toLowerCase() === 'firebase'
+        && !!firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE;
+    const hasFirebaseDatabase = hasAnyEnvValue(values, [
+        'FIREBASE_DATABASE_URL',
+        'FIREBASE_REALTIME_DATABASE_URL',
+        'JK_FIREBASE_DATABASE_URL',
+        'JK_FIREBASE_REALTIME_DATABASE_URL'
+    ]);
+    const hasFirebaseWebKey = hasAnyEnvValue(values, [
+        'FIREBASE_WEB_API_KEY',
+        'FIREBASE_API_KEY',
+        'JK_FIREBASE_WEB_API_KEY',
+        'JK_FIREBASE_API_KEY'
+    ]);
+    const hasDailyKey = hasAnyEnvValue(values, ['DAILY_API_KEY', 'JK_DAILY_API_KEY']);
+    return hasFirebaseAdmin && hasFirebaseDatabase && hasFirebaseWebKey && hasDailyKey;
 }
 
 function promptPrivateCredentialsPassword(parentWindow) {
@@ -2097,8 +2164,11 @@ async function maybeImportBundledPrivateCredentials(win) {
         return { imported: false, reason: 'no-package' };
     }
 
+    const localAppDir = syncBundledLocalBackend();
+    const runtimeConfigReady = hasRequiredPrivateRuntimeConfig(localAppDir);
     const markerPath = getPrivateCredentialsImportMarker();
-    if (fs.existsSync(markerPath)) {
+    const markerExists = fs.existsSync(markerPath);
+    if (markerExists && runtimeConfigReady) {
         return { imported: false, reason: 'already-imported' };
     }
 
@@ -2108,8 +2178,12 @@ async function maybeImportBundledPrivateCredentials(win) {
         defaultId: 0,
         cancelId: 1,
         title: 'Credenciais privadas encontradas',
-        message: 'Este instalador privado inclui pacotes criptografados de credenciais e dados locais.',
-        detail: 'Informe a senha na janela que abrir para restaurar os dados antes de entrar no sistema.'
+        message: runtimeConfigReady
+            ? 'Este instalador privado inclui pacotes criptografados de credenciais e dados locais.'
+            : 'As credenciais de chat, presenca e videochamada nao estao completas nesta instalacao.',
+        detail: runtimeConfigReady
+            ? 'Informe a senha na janela que abrir para restaurar os dados antes de entrar no sistema.'
+            : 'Importe o pacote privado para ativar Firebase e Daily antes de entrar no sistema.'
     });
     if (response.response !== 0) {
         return { imported: false, reason: 'skipped' };

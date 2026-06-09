@@ -1,125 +1,281 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Configurações - JK Sistema</title>
     <style>
+        :root {
+            --bg: #101214;
+            --panel: #171a1d;
+            --panel-2: #1e2326;
+            --panel-3: #242a2e;
+            --line: #31383d;
+            --line-soft: #252b2f;
+            --text: #eef2f1;
+            --muted: #a6b0ad;
+            --quiet: #76837f;
+            --teal: #39b8a6;
+            --teal-soft: rgba(57, 184, 166, 0.16);
+            --green-soft: rgba(119, 201, 141, 0.16);
+            --amber: #d9a441;
+            --amber-soft: rgba(217, 164, 65, 0.14);
+            --red: #dc6a5f;
+            --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+        }
         * { box-sizing: border-box; }
         html, body { margin: 0; }
         body {
-            padding: 20px;
-            background: #0e1117;
-            color: #e5e5e5;
+            min-height: 100vh;
+            background: radial-gradient(circle at 18% -10%, rgba(57, 184, 166, 0.12), transparent 26%), linear-gradient(180deg, #111416 0%, #0f1113 100%);
+            color: var(--text);
             font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
             overflow-y: auto;
         }
-        .container { max-width: 1240px; margin: 0 auto; }
-        .header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
-        .back-btn, .tab-btn, button {
-            padding: 8px 14px;
-            background: #4facfe;
-            color: #fff;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            border: none;
-            cursor: pointer;
+        button, input, select { font: inherit; }
+        button { border: 0; cursor: pointer; }
+        h1, h2, h3, p { margin: 0; }
+        .container { width: min(1420px, calc(100% - 32px)); margin: 0 auto; padding: 20px 0 36px; }
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+            padding: 16px 0;
+            background: linear-gradient(180deg, rgba(16, 18, 20, 0.98), rgba(16, 18, 20, 0.88));
+            backdrop-filter: blur(16px);
         }
-        .back-btn:hover, .tab-btn:hover, button:hover { background: #0073e6; }
-        h1 { margin: 0; }
-        .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-        .tab-btn { background: #172233; color: #d7eaff; border: 1px solid #2b4564; }
-        .tab-btn.active { background: #4facfe; color: #06213e; }
-        .tabs .btn-save-top { min-height: 33px; padding: 8px 14px; }
+        .header h1 { font-size: 1.55rem; line-height: 1.15; letter-spacing: 0; }
+        .header h1::before {
+            content: "CF";
+            width: 48px;
+            height: 48px;
+            border-radius: 8px;
+            display: inline-grid;
+            place-items: center;
+            margin-right: 14px;
+            background: linear-gradient(135deg, var(--teal), #207f74);
+            color: #06201d;
+            font-size: 0.82rem;
+            font-weight: 900;
+            vertical-align: middle;
+            box-shadow: 0 14px 28px rgba(57, 184, 166, 0.2);
+        }
+        .header h1::after {
+            content: "Central operacional para estoque, IA, credenciais e usuarios do sistema.";
+            display: block;
+            margin-left: 62px;
+            margin-top: -8px;
+            color: var(--muted);
+            font-size: 0.94rem;
+            font-weight: 400;
+            line-height: 1.35;
+        }
+        .header > div:last-child { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+        .back-btn, .tab-btn, button {
+            min-height: 38px;
+            border-radius: 8px;
+            padding: 8px 14px;
+            display: inline-flex;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+            color: var(--text);
+            border: 1px solid var(--line);
+            background: var(--panel-2);
+            font-weight: 800;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .back-btn:hover, .tab-btn:hover, button:hover { background: #263036; }
+        .tabs {
+            position: sticky;
+            top: 88px;
+            z-index: 12;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 8px;
+            padding: 10px;
+            margin: 8px 0 16px;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: rgba(23, 26, 29, 0.92);
+            box-shadow: var(--shadow);
+        }
+        .tab-btn {
+            min-height: 58px;
+            justify-content: flex-start;
+            text-align: left;
+            background: #15191b;
+            color: var(--text);
+            border-color: var(--line-soft);
+        }
+        .tab-btn::before {
+            min-width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: inline-grid;
+            place-items: center;
+            background: var(--panel-3);
+            color: var(--teal);
+            font-weight: 900;
+        }
+        .tab-btn[data-tab="estoque"]::before { content: "01"; }
+        .tab-btn[data-tab="ia"]::before { content: "02"; }
+        .tab-btn[data-tab="credenciais"]::before { content: "03"; }
+        .tab-btn[data-tab="usuarios"]::before { content: "04"; }
+        .tab-btn.active { background: var(--teal-soft); border-color: rgba(57, 184, 166, 0.34); color: var(--text); }
+        .tabs .btn-save-top { min-height: 58px; background: var(--teal); color: #06201d; border-color: transparent; }
+        .page-layout { display: grid; grid-template-columns: minmax(0, 1fr) 294px; gap: 16px; align-items: start; }
+        .main-content { display: grid; gap: 16px; }
+        .side-summary {
+            position: sticky;
+            top: 172px;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: rgba(23, 26, 29, 0.92);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        .summary-head { padding: 14px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2); }
+        .summary-head h2 { font-size: 1rem; }
+        .summary-body { padding: 14px; display: grid; gap: 12px; }
+        .impact-item { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px; background: #121619; display: grid; gap: 4px; }
+        .impact-item strong { font-size: 0.88rem; }
+        .impact-item span { color: var(--muted); font-size: 0.8rem; line-height: 1.35; }
+        .status {
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--line-soft);
+            background: #121619;
+            min-height: 20px;
+            color: var(--muted);
+        }
+        .status.loading { color: #9bd1ff; border-color: #4facfe; background: #0a1428; }
+        .status.success { color: #b8efc7; border-color: rgba(119, 201, 141, 0.28); background: var(--green-soft); }
+        .status.error { color: #ffd0cc; border-color: rgba(220, 106, 95, 0.34); background: rgba(220, 106, 95, 0.14); }
+        .status:empty { display: none; }
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
         .card {
-            background: #1c1f2b;
-            border: 1px solid #222;
-            border-radius: 10px;
-            padding: 18px;
-            margin-bottom: 14px;
-        }
-        .card h2 { margin-top: 0; color: #9bd1ff; }
-        .row { display: grid; grid-template-columns: 1fr 180px; gap: 12px; align-items: end; }
-        .label { color: #c7ddf5; font-size: 0.95rem; margin-bottom: 6px; display: block; }
-        input[type="number"], input[type="text"], input[type="password"], select {
-            width: 100%;
-            padding: 9px 10px;
-            border-radius: 6px;
-            border: 1px solid #333;
-            background: #11141d;
-            color: #e5e5e5;
-        }
-        select { min-height: 38px; }
-        .actions { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
-        .btn-save { background: #28a745; }
-        .btn-save:hover { background: #218838; }
-        .btn-refresh { background: #6c757d; }
-        .btn-refresh:hover { background: #5b636a; }
-        .btn-danger { background: #ff6b6b; }
-        .btn-danger:hover { background: #d9534f; }
-        .btn-warning { background: #ffb84d; color: #2f2100; }
-        .btn-warning:hover { background: #e3a33f; }
-        .status {
-            margin-top: 12px;
-            padding: 10px 12px;
+            background: rgba(23, 26, 29, 0.86);
+            border: 1px solid var(--line-soft);
             border-radius: 8px;
-            border: 1px solid #222;
-            background: #161925;
-            min-height: 20px;
+            padding: 0;
+            margin-bottom: 14px;
+            overflow: hidden;
+            box-shadow: var(--shadow);
         }
-        .status.loading { color: #9bd1ff; border-color: #4facfe; background: #0a1428; }
-        .status.success { color: #66bb6a; border-color: #1b5e20; background: #0f2e0d; }
-        .status.error { color: #ff6b6b; border-color: #c62828; background: #28010d; }
-        .hint { color: #9fb3c8; font-size: 0.9rem; margin-top: 8px; }
-        .users-layout {
-            display: grid;
-            grid-template-columns: 320px 1fr;
-            gap: 16px;
-            align-items: start;
+        .card h2 {
+            margin: 0;
+            padding: 16px;
+            border-bottom: 1px solid var(--line-soft);
+            background: linear-gradient(180deg, rgba(36, 42, 46, 0.88), rgba(23, 26, 29, 0.88));
+            color: var(--text);
+            font-size: 1.08rem;
         }
-        .user-list {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 12px;
+        .card > .hint:first-of-type { margin: 16px 16px 0; }
+        .row, .grid-2, .ia-grid, .users-layout { padding: 16px; }
+        .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
+        .label { color: #d9e1df; font-size: 0.86rem; font-weight: 800; margin-bottom: 7px; display: block; }
+        .hint { color: var(--muted); font-size: 0.84rem; line-height: 1.35; margin-top: 8px; }
+        input[type="number"], input[type="text"], input[type="password"], input[type="email"], input[type="url"], select {
+            width: 100%;
+            min-height: 40px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: #0f1214;
+            color: var(--text);
+            outline: none;
         }
-        .user-item {
-            border: 1px solid #2a3a4f;
-            border-radius: 10px;
-            padding: 10px 12px;
-            background: #121a28;
-            cursor: pointer;
-            transition: 0.2s ease;
-        }
-        .user-item:hover, .user-item.active {
-            border-color: #4facfe;
-            background: #15263d;
-        }
-        .user-item .name { font-weight: 700; color: #dff0ff; }
-        .user-item .meta { color: #9fb3c8; font-size: 12px; margin-top: 4px; }
-        .detail-box {
-            background: #121a28;
-            border: 1px solid #2a3a4f;
-            border-radius: 10px;
-            padding: 14px;
-        }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(57, 184, 166, 0.14); }
+        select { min-height: 40px; }
+        .actions { margin: 14px 16px 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+        .btn-save, .btn-refresh, .btn-danger, .btn-warning { color: var(--text); }
+        .btn-save { background: var(--teal); color: #06201d; border-color: transparent; }
+        .btn-save:hover { background: #45c6b5; }
+        .btn-refresh { background: var(--panel-2); }
+        .btn-refresh:hover { background: #263036; }
+        .btn-danger { background: var(--red); color: #2f0c08; border-color: transparent; }
+        .btn-danger:hover { background: #e2796f; }
+        .btn-warning { background: var(--amber); color: #2c2109; border-color: transparent; }
+        .btn-warning:hover { background: #e6b351; }
+        .users-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+        .user-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+        .user-item { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; background: #121619; cursor: pointer; transition: 0.2s ease; }
+        .user-item:hover, .user-item.active { border-color: rgba(57, 184, 166, 0.34); background: var(--teal-soft); }
+        .user-item .name { font-weight: 700; color: var(--text); }
+        .user-item .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+        .detail-box { background: #121619; border: 1px solid var(--line-soft); border-radius: 8px; padding: 14px; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0; margin-top: 10px; }
         .ia-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-        .checkbox-grid {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;
+        .setting-card, .api-key-card {
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: var(--panel-2);
+            padding: 12px;
+            display: grid;
+            gap: 10px;
         }
+        .setting-card h3, .api-key-card h3 { font-size: 0.98rem; line-height: 1.2; margin: 0; }
+        .checkbox-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
         .check-item {
-            display: flex; align-items: center; gap: 8px; background: #0c1625; border: 1px solid #22344b;
-            border-radius: 10px; padding: 8px 10px; font-size: 13px;
+            min-height: 42px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #101315;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 13px;
+            color: #dce4e2;
+            font-weight: 700;
         }
-        .check-item input { width: auto; margin: 0; }
+        .check-item input { width: 16px; height: 16px; min-height: 16px; margin: 0; accent-color: var(--teal); }
+        .api-keys-panel {
+            grid-column: 1 / -1;
+            border: 1px solid rgba(217, 164, 65, 0.28);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(217, 164, 65, 0.08), rgba(18, 22, 25, 0.96));
+            padding: 14px;
+            display: grid;
+            gap: 12px;
+        }
+        .api-keys-panel__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+        .api-keys-panel__head h3 { font-size: 1rem; line-height: 1.2; }
+        .api-keys-panel__head p { margin-top: 4px; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
+        .api-key-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .api-key-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+        .api-key-card p { margin-top: 3px; color: var(--muted); font-size: 0.8rem; line-height: 1.35; }
+        .api-key-status {
+            border-radius: 999px;
+            padding: 5px 10px;
+            background: var(--green-soft);
+            color: #b8efc7;
+            border: 1px solid rgba(119, 201, 141, 0.28);
+            font-size: 0.78rem;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        .api-key-status.empty { background: var(--amber-soft); color: #f4d291; border-color: rgba(217, 164, 65, 0.28); }
         .hidden { display: none !important; }
-        .small { color: #9fb3c8; font-size: 12px; }
+        .small { color: var(--muted); font-size: 12px; }
+        @media (max-width: 1180px) {
+            .page-layout { grid-template-columns: 1fr; }
+            .side-summary { position: static; }
+        }
         @media (max-width: 900px) {
-            .users-layout, .row, .grid-2, .ia-grid { grid-template-columns: 1fr; }
+            .container { width: min(100% - 20px, 760px); padding-top: 8px; }
+            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout { grid-template-columns: 1fr; }
+            .tabs { position: static; }
+            .header > div:last-child { justify-content: stretch; }
+            .header > div:last-child .back-btn { flex: 1 1 calc(50% - 8px); }
+            .tabs .btn-save-top { min-height: 44px; }
         }
     </style>
     <script src="/auth.js?v=20260417c"></script>
@@ -127,214 +283,196 @@
 <body>
 <div class="container">
     <div class="header">
-        <h1>⚙️ Configurações</h1>
+        <h1>Configurações</h1>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
-            <a class="back-btn" href="/dashboard.html">⬅️ Voltar</a>
+            <a class="back-btn" href="/dashboard.html">Home</a>
+            <a class="back-btn" href="/dashboard.html">Voltar</a>
         </div>
     </div>
 
-    <div class="tabs">
+    <div class="tabs" role="tablist" aria-label="Áreas de configuração">
         <button class="tab-btn active" data-tab="estoque">Estoque</button>
+        <button id="tabIaBtn" class="tab-btn hidden" data-tab="ia">IA por função</button>
+        <button id="tabCredenciaisBtn" class="tab-btn hidden" data-tab="credenciais">Credenciais</button>
         <button id="tabUsuariosBtn" class="tab-btn hidden" data-tab="usuarios">Usuários</button>
-        <button id="btnSalvarTopo" class="btn-save btn-save-top" type="button">💾 Salvar</button>
+        <button id="btnSalvarTopo" class="btn-save btn-save-top" type="button">Salvar alterações</button>
     </div>
 
-    <div id="tab-estoque" class="tab-panel active">
-        <div class="card">
-            <h2>Estoque</h2>
-            <div class="row">
-                <div>
-                    <label class="label" for="janelaAutoSync">Janela para pular auto-atualização automática ao entrar no módulo (minutos)</label>
-                    <input id="janelaAutoSync" type="number" min="1" max="1440" step="1" value="30">
-                    <div class="hint">Se a última atualização da loja for mais recente que esse valor, o auto-sync não será disparado.</div>
-                </div>
-                <div></div>
-            </div>
-
-            <div class="actions">
-                <button id="btnRecarregar" class="btn-refresh">🔄 Recarregar</button>
-            </div>
-
-            <div id="status" class="status"></div>
-        </div>
-
-        <div id="cardIaPadrao" class="card hidden">
-            <h2>IA padrão por função</h2>
-            <div class="ia-grid">
-                <div>
-                    <label class="label" for="iaModeloPadrao">IA padrão geral</label>
-                    <select id="iaModeloPadrao">
-                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
-                    </select>
-                    <div class="hint">Usada como fallback quando uma função não tiver modelo próprio configurado.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaModeloPerguntas">IA que responde perguntas</label>
-                    <select id="iaModeloPerguntas">
-                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
-                    </select>
-                    <div class="hint">Usada nas respostas de perguntas e pós-venda do Mercado Livre.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaModeloChat">IA do chat lateral</label>
-                    <select id="iaModeloChat">
-                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
-                    </select>
-                    <div class="hint">Usada pelo assistente do sistema e pelas conversas no sidebar.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaModeloFavoritos">IA que ajuda a fazer favoritos</label>
-                    <select id="iaModeloFavoritos">
-                        <option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option>
-                    </select>
-                    <label class="check-item" style="margin-top: 10px;">
-                        <input id="iaFavoritosUsarImagem" type="checkbox">
-                        <span>Usar imagem para comparar os anúncios</span>
-                    </label>
-                    <div class="hint">Quando ativo, essa preferência fica salva para a IA de Favoritos usar imagem na comparação dos anúncios.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaVertexProjectId">Projeto Vertex AI</label>
-                    <input id="iaVertexProjectId" type="text" placeholder="jk-sistema-prod-20260525" autocomplete="off">
-                    <div class="hint">Projeto do Google Cloud usado pelo Vertex AI.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaVertexLocation">Região Vertex AI</label>
-                    <input id="iaVertexLocation" type="text" placeholder="global" autocomplete="off">
-                    <div class="hint">Use global quando o agente/modelo estiver no endpoint global.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaVertexModel">Modelo Vertex</label>
-                    <input id="iaVertexModel" type="text" placeholder="gemini-2.5-flash" autocomplete="off">
-                    <div class="hint">Modelo usado no endpoint Vertex. Ex.: gemini-2.5-flash.</div>
-                </div>
-                <div>
-                    <label class="label" for="iaVertexServiceAccountEmail">Conta de serviço</label>
-                    <input id="iaVertexServiceAccountEmail" type="email" placeholder="opcional - deixe vazio para usar a credencial local" autocomplete="off">
-                    <div class="hint">Opcional. Usada quando houver permissão para autenticar por essa conta.</div>
-                </div>
-                <div style="grid-column: 1 / -1;">
-                    <label class="label" for="iaAgentApiKey">Chave do agente / Vertex</label>
-                    <input id="iaAgentApiKey" type="password" placeholder="Deixe em branco para manter a chave salva" autocomplete="new-password">
-                    <label class="check-item" style="margin-top: 10px;">
-                        <input id="iaAgentApiKeyLimpar" type="checkbox">
-                        <span>Limpar chave salva</span>
-                    </label>
-                    <div id="iaAgentApiKeyStatus" class="hint">A chave nao e exibida depois de salva.</div>
-                </div>
-                <div style="grid-column: 1 / -1;">
-                    <label class="label">IAs ativas no sistema (global)</label>
-                    <div class="checkbox-grid">
-                        <label class="check-item">
-                            <input id="iaOpenaiAtiva" type="checkbox">
-                            <span>OpenAI ativa</span>
-                        </label>
-                        <label class="check-item">
-                            <input id="iaDeepseekAtiva" type="checkbox">
-                            <span>DeepSeek ativa</span>
-                        </label>
-                        <label class="check-item">
-                            <input id="iaVertexAtiva" type="checkbox">
-                            <span>Vertex AI ativa</span>
-                        </label>
+    <div class="page-layout">
+        <main class="main-content">
+            <div id="tab-estoque" class="tab-panel active">
+                <div class="card">
+                    <h2>Rotina de estoque</h2>
+                    <div class="row">
+                        <div>
+                            <label class="label" for="janelaAutoSync">Janela para pular auto-atualização automática ao entrar no módulo (minutos)</label>
+                            <input id="janelaAutoSync" type="number" min="1" max="1440" step="1" value="30">
+                            <div class="hint">Se a última atualização da loja for mais recente que esse valor, o auto-sync não será disparado.</div>
+                        </div>
+                        <div class="impact-item">
+                            <strong>Situação atual</strong>
+                            <span>O módulo consulta a última atualização antes de iniciar uma nova carga.</span>
+                        </div>
                     </div>
-                    <div class="hint">A Gemini API direta fica fora da seleção; Vertex, OpenAI e DeepSeek podem continuar ativos.</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="tab-usuarios" class="tab-panel">
-        <div id="cardAdminUsuarios" class="card hidden">
-            <h2>Usuários cadastrados</h2>
-            <div class="hint">A lista fica à esquerda. Clique em um usuário para abrir as opções de edição, senha, bloqueio e exclusão.</div>
-
-            <div class="users-layout">
-                <div>
                     <div class="actions">
-                        <button id="btnAtualizarUsuarios" class="btn-refresh">🔄 Atualizar lista</button>
-                        <button id="btnNovoUsuario">➕ Novo usuário</button>
-                    </div>
-                    <div id="usersList" class="user-list"></div>
-                </div>
-
-                <div class="detail-box">
-                    <div id="userEmptyState" class="small">Selecione um usuário da lista para visualizar e editar as opções.</div>
-
-                    <div id="userDetailPanel" class="hidden">
-                        <h3 id="formTitle">Editar usuário</h3>
-                        <div id="userNumberBadge" style="display:none; margin-bottom:10px;">
-                            <span id="userNumberDisplay" style="background:#172233; border:1px solid #2b4564; border-radius:6px; padding:4px 12px; color:#9bd1ff; font-weight:bold; font-size:0.95rem; font-family:monospace;"></span>
-                        </div>
-
-                        <label class="label">Usuário</label>
-                        <input id="username" type="text" placeholder="Ex.: admin">
-
-                        <label class="label">Nome</label>
-                        <input id="name" type="text" placeholder="Nome exibido">
-
-                        <label class="label">E-mail Google</label>
-                        <input id="email" type="email" placeholder="email@empresa.com">
-
-                        <div class="grid-2">
-                            <div>
-                                <label class="label">Cliente</label>
-                                <input id="clientId" type="text" value="default">
-                            </div>
-                            <div>
-                                <label class="label">Validade</label>
-                                <input id="validUntil" type="text" placeholder="15/04/2026">
-                            </div>
-                        </div>
-
-                        <div class="grid-2">
-                            <div>
-                                <label class="label">Senha</label>
-                                <input id="password" type="password" placeholder="Informe para criar ou trocar">
-                            </div>
-                            <div>
-                                <label class="label">Máquina principal</label>
-                                <input id="machineId" type="text" placeholder="Gerado no primeiro login">
-                            </div>
-                        </div>
-
-                        <div class="grid-2">
-                            <div>
-                                <label class="label">Limite de máquinas</label>
-                                <input id="maxMachines" type="number" min="0" value="1" placeholder="1">
-                            </div>
-                            <div>
-                                <label class="label">Observação</label>
-                                <input value="0 = ilimitado" disabled>
-                            </div>
-                        </div>
-
-                        <label class="check-item" style="margin: 10px 0;">
-                            <input id="active" type="checkbox" checked>
-                            <span>Usuário ativo</span>
-                        </label>
-
-                        <label class="label">Permissões</label>
-                        <div id="permissionsGrid" class="checkbox-grid"></div>
-
-                        <div class="actions">
-                            <button id="btnSalvarUsuario">💾 Salvar usuário</button>
-                            <button id="btnTrocarSenha" class="btn-warning">🔐 Trocar senha</button>
-                            <button id="btnResetarDispositivos" class="btn-warning">📱 Resetar dispositivos</button>
-                            <button id="btnAlternarStatus" class="btn-refresh">⛔ Desativar</button>
-                            <button id="btnExcluirUsuario" class="btn-danger">🗑️ Excluir</button>
-                            <button id="btnCancelarEdicao" class="btn-refresh">Limpar</button>
-                        </div>
-
-                        <div id="userStatus" class="status"></div>
+                        <button id="btnRecarregar" class="btn-refresh">Recarregar configurações</button>
                     </div>
                 </div>
             </div>
-        </div>
+
+            <div id="tab-ia" class="tab-panel">
+                <div id="cardIaPadrao" class="card hidden">
+                    <h2>IA padrão por função</h2>
+                    <div class="ia-grid">
+                        <div class="setting-card">
+                            <h3>Geral</h3>
+                            <label class="label" for="iaModeloPadrao">IA padrão geral</label>
+                            <select id="iaModeloPadrao"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaModoPadrao">Usar nesta função</label>
+                            <select id="iaModoPadrao"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
+                            <div class="hint">Usada como fallback quando uma função não tiver modelo próprio configurado.</div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Perguntas ML</h3>
+                            <label class="label" for="iaModeloPerguntas">IA que responde perguntas</label>
+                            <select id="iaModeloPerguntas"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaModoPerguntas">Usar nesta função</label>
+                            <select id="iaModoPerguntas"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
+                            <div class="hint">Usada nas respostas de perguntas de anúncio do Mercado Livre. O pós-venda será ligado ao agente depois do piloto.</div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Chat lateral</h3>
+                            <label class="label" for="iaModeloChat">IA do chat lateral</label>
+                            <select id="iaModeloChat"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaModoChat">Usar nesta função</label>
+                            <select id="iaModoChat"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
+                            <div class="hint">Usada pelo assistente do sistema e pelas conversas no sidebar.</div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Favoritos</h3>
+                            <label class="label" for="iaModeloFavoritos">IA que ajuda a fazer favoritos</label>
+                            <select id="iaModeloFavoritos"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaModoFavoritos">Usar nesta função</label>
+                            <select id="iaModoFavoritos"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
+                            <label class="check-item"><input id="iaFavoritosUsarImagem" type="checkbox"><span>Usar imagem para comparar os anúncios</span></label>
+                            <div class="hint">Quando ativo, essa preferência fica salva para a IA de Favoritos usar imagem na comparação dos anúncios.</div>
+                        </div>
+                        <div class="api-keys-panel">
+                            <div class="api-keys-panel__head">
+                                <div><h3>IAs ativas no sistema</h3><p>Controle quais provedores podem ser usados nas funções acima.</p></div>
+                            </div>
+                            <div class="checkbox-grid">
+                                <label class="check-item"><input id="iaOpenaiAtiva" type="checkbox"><span>OpenAI / GPT ativa</span></label>
+                                <label class="check-item"><input id="iaDeepseekAtiva" type="checkbox"><span>DeepSeek ativa</span></label>
+                                <label class="check-item"><input id="iaGeminiAtiva" type="checkbox"><span>Gemini API ativa</span></label>
+                                <label class="check-item"><input id="iaVertexAtiva" type="checkbox"><span>Vertex AI ativa</span></label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-credenciais" class="tab-panel">
+                <div id="cardIaCredenciais" class="card hidden">
+                    <h2>Credenciais e chaves de IA</h2>
+                    <div class="ia-grid">
+                        <div class="setting-card">
+                            <h3>Configuração Vertex</h3>
+                            <label class="label" for="iaVertexProjectId">Projeto Vertex AI</label>
+                            <input id="iaVertexProjectId" type="text" placeholder="jk-sistema-prod-20260525" autocomplete="off">
+                            <label class="label" for="iaVertexLocation">Região Vertex AI</label>
+                            <input id="iaVertexLocation" type="text" placeholder="global" autocomplete="off">
+                            <label class="label" for="iaVertexModel">Modelo Vertex</label>
+                            <input id="iaVertexModel" type="text" placeholder="gemini-2.5-flash" autocomplete="off">
+                            <label class="label" for="iaVertexServiceAccountEmail">Conta de serviço</label>
+                            <input id="iaVertexServiceAccountEmail" type="email" placeholder="opcional - deixe vazio para usar a credencial local" autocomplete="off">
+                        </div>
+                        <div class="setting-card">
+                            <h3>Agente Cloud</h3>
+                            <label class="label" for="iaAgentResourceName">Recurso do Agente Cloud</label>
+                            <input id="iaAgentResourceName" type="text" placeholder="projects/.../locations/.../reasoningEngines/..." autocomplete="off">
+                            <label class="label" for="iaAgentEndpointUrl">Endpoint de ferramentas do agente</label>
+                            <input id="iaAgentEndpointUrl" type="url" placeholder="https://seu-servico.run.app" autocomplete="off">
+                            <div class="hint">Usado para Agent Engine ou ferramentas externas em Cloud Run.</div>
+                        </div>
+                        <div class="api-keys-panel">
+                            <div class="api-keys-panel__head">
+                                <div><h3>Chaves de API por IA</h3><p>Atualize a chave de cada provedor sem expor a chave salva.</p></div>
+                                <span class="api-key-status">Credenciais ocultas</span>
+                            </div>
+                            <div class="api-key-grid">
+                                <div class="api-key-card">
+                                    <div class="api-key-card__head"><div><h3>GPT / OpenAI</h3><p>Usada nas funções configuradas para modelos OpenAI.</p></div><span id="iaOpenaiApiKeyStatus" class="api-key-status empty">Verificando</span></div>
+                                    <label class="label" for="iaOpenaiApiKey">Nova chave OpenAI</label>
+                                    <input id="iaOpenaiApiKey" type="password" placeholder="sk-..." autocomplete="new-password">
+                                    <label class="check-item"><input id="iaOpenaiApiKeyLimpar" type="checkbox"><span>Limpar chave OpenAI</span></label>
+                                </div>
+                                <div class="api-key-card">
+                                    <div class="api-key-card__head"><div><h3>DeepSeek</h3><p>Usada quando o provedor DeepSeek estiver ativo.</p></div><span id="iaDeepseekApiKeyStatus" class="api-key-status empty">Verificando</span></div>
+                                    <label class="label" for="iaDeepseekApiKey">Nova chave DeepSeek</label>
+                                    <input id="iaDeepseekApiKey" type="password" placeholder="sk-..." autocomplete="new-password">
+                                    <label class="check-item"><input id="iaDeepseekApiKeyLimpar" type="checkbox"><span>Limpar chave DeepSeek</span></label>
+                                </div>
+                                <div class="api-key-card">
+                                    <div class="api-key-card__head"><div><h3>Gemini API</h3><p>Usada para Gemini direto, separado do Vertex AI.</p></div><span id="iaGeminiApiKeyStatus" class="api-key-status empty">Verificando</span></div>
+                                    <label class="label" for="iaGeminiApiKey">Nova chave Gemini</label>
+                                    <input id="iaGeminiApiKey" type="password" placeholder="AIza..." autocomplete="new-password">
+                                    <label class="check-item"><input id="iaGeminiApiKeyLimpar" type="checkbox"><span>Limpar chave Gemini</span></label>
+                                </div>
+                                <div class="api-key-card">
+                                    <div class="api-key-card__head"><div><h3>Vertex AI / Agente Cloud</h3><p>Usada para Vertex, Agent Engine ou endpoint do agente.</p></div><span id="iaAgentApiKeyStatus" class="api-key-status empty">Verificando</span></div>
+                                    <label class="label" for="iaAgentApiKey">Nova chave Vertex / agente</label>
+                                    <input id="iaAgentApiKey" type="password" placeholder="Cole a nova chave Vertex ou agente" autocomplete="new-password">
+                                    <label class="check-item"><input id="iaAgentApiKeyLimpar" type="checkbox"><span>Limpar chave Vertex/agente</span></label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-usuarios" class="tab-panel">
+                <div id="cardAdminUsuarios" class="card hidden">
+                    <h2>Usuários cadastrados</h2>
+                    <div class="hint">A lista fica à esquerda. Clique em um usuário para abrir as opções de edição, senha, bloqueio e exclusão.</div>
+                    <div class="users-layout">
+                        <div>
+                            <div class="actions"><button id="btnAtualizarUsuarios" class="btn-refresh">Atualizar lista</button><button id="btnNovoUsuario">Novo usuário</button></div>
+                            <div id="usersList" class="user-list"></div>
+                        </div>
+                        <div class="detail-box">
+                            <div id="userEmptyState" class="small">Selecione um usuário da lista para visualizar e editar as opções.</div>
+                            <div id="userDetailPanel" class="hidden">
+                                <h3 id="formTitle">Editar usuário</h3>
+                                <div id="userNumberBadge" style="display:none; margin-bottom:10px;"><span id="userNumberDisplay" style="background:#172233; border:1px solid #2b4564; border-radius:6px; padding:4px 12px; color:#9bd1ff; font-weight:bold; font-size:0.95rem; font-family:monospace;"></span></div>
+                                <label class="label">Usuário</label><input id="username" type="text" placeholder="Ex.: admin">
+                                <label class="label">Nome</label><input id="name" type="text" placeholder="Nome exibido">
+                                <label class="label">E-mail Google</label><input id="email" type="email" placeholder="email@empresa.com">
+                                <div class="grid-2"><div><label class="label">Cliente</label><input id="clientId" type="text" value="default"></div><div><label class="label">Validade</label><input id="validUntil" type="text" placeholder="15/04/2026"></div></div>
+                                <div class="grid-2"><div><label class="label">Senha</label><input id="password" type="password" placeholder="Informe para criar ou trocar"></div><div><label class="label">Máquina principal</label><input id="machineId" type="text" placeholder="Gerado no primeiro login"></div></div>
+                                <div class="grid-2"><div><label class="label">Limite de máquinas</label><input id="maxMachines" type="number" min="0" value="1" placeholder="1"></div><div><label class="label">Observação</label><input value="0 = ilimitado" disabled></div></div>
+                                <label class="check-item" style="margin: 10px 0;"><input id="active" type="checkbox" checked><span>Usuário ativo</span></label>
+                                <label class="label">Permissões</label><div id="permissionsGrid" class="checkbox-grid"></div>
+                                <div class="actions"><button id="btnSalvarUsuario">Salvar usuário</button><button id="btnTrocarSenha" class="btn-warning">Trocar senha</button><button id="btnResetarDispositivos" class="btn-warning">Resetar dispositivos</button><button id="btnAlternarStatus" class="btn-refresh">Desativar</button><button id="btnExcluirUsuario" class="btn-danger">Excluir</button><button id="btnCancelarEdicao" class="btn-refresh">Limpar</button></div>
+                                <div id="userStatus" class="status"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="side-summary">
+            <div class="summary-head"><h2>Resumo operacional</h2></div>
+            <div class="summary-body">
+                <div class="impact-item"><strong>Estoque</strong><span>Janela de auto-sync e recarregamento das configurações.</span></div>
+                <div class="impact-item"><strong>IA</strong><span>Modelos por função, provedores ativos e uso de imagem em Favoritos.</span></div>
+                <div class="impact-item"><strong>Credenciais</strong><span>Chaves OpenAI, DeepSeek, Gemini e Vertex/agente ficam em cards separados.</span></div>
+                <div id="status" class="status"></div>
+            </div>
+        </aside>
     </div>
 </div>
-
 <script>
     if (!verificarSessao()) {
         // verificarSessao já redireciona quando não há sessão.
@@ -357,10 +495,25 @@
     const selectIaModeloPerguntas = document.getElementById('iaModeloPerguntas');
     const selectIaModeloChat = document.getElementById('iaModeloChat');
     const selectIaModeloFavoritos = document.getElementById('iaModeloFavoritos');
+    const selectIaModo = document.getElementById('iaModoPadrao');
+    const selectIaModoPerguntas = document.getElementById('iaModoPerguntas');
+    const selectIaModoChat = document.getElementById('iaModoChat');
+    const selectIaModoFavoritos = document.getElementById('iaModoFavoritos');
     const inputIaVertexProjectId = document.getElementById('iaVertexProjectId');
     const inputIaVertexLocation = document.getElementById('iaVertexLocation');
     const inputIaVertexModel = document.getElementById('iaVertexModel');
     const inputIaVertexServiceAccountEmail = document.getElementById('iaVertexServiceAccountEmail');
+    const inputIaAgentResourceName = document.getElementById('iaAgentResourceName');
+    const inputIaAgentEndpointUrl = document.getElementById('iaAgentEndpointUrl');
+    const inputIaOpenaiApiKey = document.getElementById('iaOpenaiApiKey');
+    const checkIaOpenaiApiKeyLimpar = document.getElementById('iaOpenaiApiKeyLimpar');
+    const iaOpenaiApiKeyStatus = document.getElementById('iaOpenaiApiKeyStatus');
+    const inputIaDeepseekApiKey = document.getElementById('iaDeepseekApiKey');
+    const checkIaDeepseekApiKeyLimpar = document.getElementById('iaDeepseekApiKeyLimpar');
+    const iaDeepseekApiKeyStatus = document.getElementById('iaDeepseekApiKeyStatus');
+    const inputIaGeminiApiKey = document.getElementById('iaGeminiApiKey');
+    const checkIaGeminiApiKeyLimpar = document.getElementById('iaGeminiApiKeyLimpar');
+    const iaGeminiApiKeyStatus = document.getElementById('iaGeminiApiKeyStatus');
     const inputIaAgentApiKey = document.getElementById('iaAgentApiKey');
     const checkIaAgentApiKeyLimpar = document.getElementById('iaAgentApiKeyLimpar');
     const iaAgentApiKeyStatus = document.getElementById('iaAgentApiKeyStatus');
@@ -370,16 +523,33 @@
     const checkIaGeminiAtiva = document.getElementById('iaGeminiAtiva');
     const checkIaVertexAtiva = document.getElementById('iaVertexAtiva');
     const cardIaPadrao = document.getElementById('cardIaPadrao');
+    const cardIaCredenciais = document.getElementById('cardIaCredenciais');
     const btnSalvarTopo = document.getElementById('btnSalvarTopo');
     const btnRecarregar = document.getElementById('btnRecarregar');
     const statusEl = document.getElementById('status');
 
+    const tabIaBtn = document.getElementById('tabIaBtn');
+    const tabCredenciaisBtn = document.getElementById('tabCredenciaisBtn');
     const tabUsuariosBtn = document.getElementById('tabUsuariosBtn');
     const cardAdminUsuarios = document.getElementById('cardAdminUsuarios');
     const usersList = document.getElementById('usersList');
     const userEmptyState = document.getElementById('userEmptyState');
     const userDetailPanel = document.getElementById('userDetailPanel');
     const userStatus = document.getElementById('userStatus');
+
+    function normalizarIaModo(valor) {
+        return String(valor || '').trim() === 'agente' ? 'agente' : 'modelo';
+    }
+
+    function rotuloIaModo(valor) {
+        return normalizarIaModo(valor) === 'agente' ? 'Agente Cloud' : 'IA normal';
+    }
+
+    function atualizarStatusChave(el, configurada) {
+        if (!el) return;
+        el.textContent = configurada ? 'Salva' : 'Não configurada';
+        el.classList.toggle('empty', !configurada);
+    }
 
     const formTitle = document.getElementById('formTitle');
     const usernameInput = document.getElementById('username');
@@ -413,9 +583,12 @@
     let hiddenPermissionsState = { full: false, configuracoes: false };
 
     if (canManageUsers) {
+        tabIaBtn.classList.remove('hidden');
+        tabCredenciaisBtn.classList.remove('hidden');
         tabUsuariosBtn.classList.remove('hidden');
         cardAdminUsuarios.classList.remove('hidden');
         cardIaPadrao.classList.remove('hidden');
+        cardIaCredenciais.classList.remove('hidden');
     }
 
     function setStatus(texto, tipo = '') {
@@ -465,7 +638,7 @@
             const modeloLower = modeloSelecionado.toLowerCase();
             if (modeloLower.startsWith('gemini-')) {
                 modeloSelecionado = `vertex:${modeloSelecionado}`;
-            } else if (!modeloLower.startsWith('gpt-') && !modeloLower.startsWith('deepseek-')) {
+            } else if (!modeloLower.startsWith('gpt-') && !modeloLower.startsWith('deepseek-') && !modeloLower.startsWith('gemini:')) {
                 modeloSelecionado = fallbackValue;
             }
         }
@@ -509,6 +682,10 @@
                 { name: 'deepseek-v4-flash', display_name: 'DS V4 Flash' },
                 { name: 'deepseek-v4-pro', display_name: 'DS V4 Pro' },
             ]},
+            { label: 'Gemini API', itens: [
+                { name: 'gemini:gemini-2.5-flash', display_name: 'Gemini API 2.5 Flash' },
+                { name: 'gemini:gemini-2.5-pro', display_name: 'Gemini API 2.5 Pro' },
+            ]},
         ];
 
         let grupos = fallback;
@@ -520,6 +697,7 @@
                     { label: 'Vertex AI', itens: data.vertex || [] },
                     { label: 'OpenAI', itens: data.openai || [] },
                     { label: 'DeepSeek', itens: data.deepseek || [] },
+                    { label: 'Gemini API', itens: data.gemini || [] },
                 ];
             }
         } catch (e) {}
@@ -708,22 +886,33 @@
             if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
             if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
             if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
+            if (selectIaModo) selectIaModo.value = normalizarIaModo(cfg?.ia_modo_padrao);
+            if (selectIaModoPerguntas) selectIaModoPerguntas.value = normalizarIaModo(cfg?.ia_modo_perguntas);
+            if (selectIaModoChat) selectIaModoChat.value = normalizarIaModo(cfg?.ia_modo_chat);
+            if (selectIaModoFavoritos) selectIaModoFavoritos.value = normalizarIaModo(cfg?.ia_modo_favoritos);
             if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(cfg?.ia_vertex_project_id || '').trim();
             if (inputIaVertexLocation) inputIaVertexLocation.value = String(cfg?.ia_vertex_location || 'global').trim();
             if (inputIaVertexModel) inputIaVertexModel.value = String(cfg?.ia_vertex_model || modeloChat.replace(/^vertex:/, '') || 'gemini-2.5-flash').trim();
             if (inputIaVertexServiceAccountEmail) inputIaVertexServiceAccountEmail.value = String(cfg?.ia_vertex_service_account_email || '').trim();
+            if (inputIaAgentResourceName) inputIaAgentResourceName.value = String(cfg?.ia_agent_resource_name || '').trim();
+            if (inputIaAgentEndpointUrl) inputIaAgentEndpointUrl.value = String(cfg?.ia_agent_endpoint_url || '').trim();
+            if (inputIaOpenaiApiKey) inputIaOpenaiApiKey.value = '';
+            if (checkIaOpenaiApiKeyLimpar) checkIaOpenaiApiKeyLimpar.checked = false;
+            atualizarStatusChave(iaOpenaiApiKeyStatus, !!cfg?.ia_openai_api_key_configurada);
+            if (inputIaDeepseekApiKey) inputIaDeepseekApiKey.value = '';
+            if (checkIaDeepseekApiKeyLimpar) checkIaDeepseekApiKeyLimpar.checked = false;
+            atualizarStatusChave(iaDeepseekApiKeyStatus, !!cfg?.ia_deepseek_api_key_configurada);
+            if (inputIaGeminiApiKey) inputIaGeminiApiKey.value = '';
+            if (checkIaGeminiApiKeyLimpar) checkIaGeminiApiKeyLimpar.checked = false;
+            atualizarStatusChave(iaGeminiApiKeyStatus, !!cfg?.ia_gemini_api_key_configurada);
             if (inputIaAgentApiKey) inputIaAgentApiKey.value = '';
             if (checkIaAgentApiKeyLimpar) checkIaAgentApiKeyLimpar.checked = false;
-            if (iaAgentApiKeyStatus) {
-                iaAgentApiKeyStatus.textContent = cfg?.ia_agent_api_key_configurada
-                    ? 'Ha uma chave salva. Digite outra apenas se quiser substituir.'
-                    : 'Nenhuma chave salva. Se usar chave de agente/Vertex, informe aqui.';
-            }
+            atualizarStatusChave(iaAgentApiKeyStatus, !!cfg?.ia_agent_api_key_configurada);
             if (checkIaFavoritosUsarImagem) checkIaFavoritosUsarImagem.checked = !!(cfg && cfg.ia_favoritos_usar_imagem);
             if (checkIaOpenaiAtiva) checkIaOpenaiAtiva.checked = (cfg?.ia_openai_ativa !== false);
             if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (cfg?.ia_deepseek_ativa !== false);
-            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = false;
-            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = true;
+            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = !!cfg?.ia_gemini_ativa;
+            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (cfg?.ia_vertex_ativa !== false);
             setStatus('Configurações carregadas.', 'success');
         } catch (e) {
             setStatus(`Erro ao carregar configurações: ${e.message}`, 'error');
@@ -751,17 +940,29 @@
                     ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_chat: selectIaModeloChat ? String(selectIaModeloChat.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_favoritos: selectIaModeloFavoritos ? String(selectIaModeloFavoritos.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_modo_padrao: selectIaModo ? normalizarIaModo(selectIaModo.value) : 'modelo',
+                    ia_modo_perguntas: selectIaModoPerguntas ? normalizarIaModo(selectIaModoPerguntas.value) : 'modelo',
+                    ia_modo_chat: selectIaModoChat ? normalizarIaModo(selectIaModoChat.value) : 'modelo',
+                    ia_modo_favoritos: selectIaModoFavoritos ? normalizarIaModo(selectIaModoFavoritos.value) : 'modelo',
                     ia_vertex_project_id: inputIaVertexProjectId ? String(inputIaVertexProjectId.value || '').trim() : '',
                     ia_vertex_location: inputIaVertexLocation ? String(inputIaVertexLocation.value || 'global').trim() : 'global',
                     ia_vertex_model: inputIaVertexModel ? String(inputIaVertexModel.value || 'gemini-2.5-flash').trim() : 'gemini-2.5-flash',
                     ia_vertex_service_account_email: inputIaVertexServiceAccountEmail ? String(inputIaVertexServiceAccountEmail.value || '').trim() : '',
+                    ia_agent_resource_name: inputIaAgentResourceName ? String(inputIaAgentResourceName.value || '').trim() : '',
+                    ia_agent_endpoint_url: inputIaAgentEndpointUrl ? String(inputIaAgentEndpointUrl.value || '').trim() : '',
+                    ia_openai_api_key: inputIaOpenaiApiKey ? String(inputIaOpenaiApiKey.value || '').trim() : '',
+                    ia_openai_api_key_limpar: checkIaOpenaiApiKeyLimpar ? !!checkIaOpenaiApiKeyLimpar.checked : false,
+                    ia_deepseek_api_key: inputIaDeepseekApiKey ? String(inputIaDeepseekApiKey.value || '').trim() : '',
+                    ia_deepseek_api_key_limpar: checkIaDeepseekApiKeyLimpar ? !!checkIaDeepseekApiKeyLimpar.checked : false,
+                    ia_gemini_api_key: inputIaGeminiApiKey ? String(inputIaGeminiApiKey.value || '').trim() : '',
+                    ia_gemini_api_key_limpar: checkIaGeminiApiKeyLimpar ? !!checkIaGeminiApiKeyLimpar.checked : false,
                     ia_agent_api_key: inputIaAgentApiKey ? String(inputIaAgentApiKey.value || '').trim() : '',
                     ia_agent_api_key_limpar: checkIaAgentApiKeyLimpar ? !!checkIaAgentApiKeyLimpar.checked : false,
                     ia_favoritos_usar_imagem: checkIaFavoritosUsarImagem ? !!checkIaFavoritosUsarImagem.checked : false,
                     ia_openai_ativa: checkIaOpenaiAtiva ? !!checkIaOpenaiAtiva.checked : true,
                     ia_deepseek_ativa: checkIaDeepseekAtiva ? !!checkIaDeepseekAtiva.checked : true,
-                    ia_gemini_ativa: false,
-                    ia_vertex_ativa: true
+                    ia_gemini_ativa: checkIaGeminiAtiva ? !!checkIaGeminiAtiva.checked : false,
+                    ia_vertex_ativa: checkIaVertexAtiva ? !!checkIaVertexAtiva.checked : true
                 })
             });
             const data = await resp.json().catch(() => ({}));
@@ -771,28 +972,43 @@
             const modeloPerguntasSalvo = String(data?.configuracoes?.ia_modelo_perguntas || modeloSalvo).trim();
             const modeloChatSalvo = String(data?.configuracoes?.ia_modelo_chat || modeloSalvo).trim();
             const modeloFavoritosSalvo = String(data?.configuracoes?.ia_modelo_favoritos || modeloSalvo).trim();
+            const modoSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_padrao);
+            const modoPerguntasSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_perguntas);
+            const modoChatSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_chat);
+            const modoFavoritosSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_favoritos);
             inputJanela.value = salvo;
             if (modeloSalvo && selectIaModelo) selectIaModelo.value = modeloSalvo;
             if (modeloPerguntasSalvo && selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntasSalvo;
             if (modeloChatSalvo && selectIaModeloChat) selectIaModeloChat.value = modeloChatSalvo;
             if (modeloFavoritosSalvo && selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritosSalvo;
+            if (selectIaModo) selectIaModo.value = modoSalvo;
+            if (selectIaModoPerguntas) selectIaModoPerguntas.value = modoPerguntasSalvo;
+            if (selectIaModoChat) selectIaModoChat.value = modoChatSalvo;
+            if (selectIaModoFavoritos) selectIaModoFavoritos.value = modoFavoritosSalvo;
             if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(data?.configuracoes?.ia_vertex_project_id || '').trim();
             if (inputIaVertexLocation) inputIaVertexLocation.value = String(data?.configuracoes?.ia_vertex_location || 'global').trim();
             if (inputIaVertexModel) inputIaVertexModel.value = String(data?.configuracoes?.ia_vertex_model || '').trim();
             if (inputIaVertexServiceAccountEmail) inputIaVertexServiceAccountEmail.value = String(data?.configuracoes?.ia_vertex_service_account_email || '').trim();
+            if (inputIaAgentResourceName) inputIaAgentResourceName.value = String(data?.configuracoes?.ia_agent_resource_name || '').trim();
+            if (inputIaAgentEndpointUrl) inputIaAgentEndpointUrl.value = String(data?.configuracoes?.ia_agent_endpoint_url || '').trim();
+            if (inputIaOpenaiApiKey) inputIaOpenaiApiKey.value = '';
+            if (checkIaOpenaiApiKeyLimpar) checkIaOpenaiApiKeyLimpar.checked = false;
+            atualizarStatusChave(iaOpenaiApiKeyStatus, !!data?.configuracoes?.ia_openai_api_key_configurada);
+            if (inputIaDeepseekApiKey) inputIaDeepseekApiKey.value = '';
+            if (checkIaDeepseekApiKeyLimpar) checkIaDeepseekApiKeyLimpar.checked = false;
+            atualizarStatusChave(iaDeepseekApiKeyStatus, !!data?.configuracoes?.ia_deepseek_api_key_configurada);
+            if (inputIaGeminiApiKey) inputIaGeminiApiKey.value = '';
+            if (checkIaGeminiApiKeyLimpar) checkIaGeminiApiKeyLimpar.checked = false;
+            atualizarStatusChave(iaGeminiApiKeyStatus, !!data?.configuracoes?.ia_gemini_api_key_configurada);
             if (inputIaAgentApiKey) inputIaAgentApiKey.value = '';
             if (checkIaAgentApiKeyLimpar) checkIaAgentApiKeyLimpar.checked = false;
-            if (iaAgentApiKeyStatus) {
-                iaAgentApiKeyStatus.textContent = data?.configuracoes?.ia_agent_api_key_configurada
-                    ? 'Chave do agente salva.'
-                    : 'Nenhuma chave do agente salva.';
-            }
+            atualizarStatusChave(iaAgentApiKeyStatus, !!data?.configuracoes?.ia_agent_api_key_configurada);
             if (checkIaFavoritosUsarImagem) checkIaFavoritosUsarImagem.checked = !!data?.configuracoes?.ia_favoritos_usar_imagem;
             if (checkIaOpenaiAtiva) checkIaOpenaiAtiva.checked = (data?.configuracoes?.ia_openai_ativa !== false);
             if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (data?.configuracoes?.ia_deepseek_ativa !== false);
-            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = false;
-            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = true;
-            setStatus(`Configuração salva com sucesso (${salvo} min). IA perguntas: ${modeloPerguntasSalvo || 'padrão'}; chat: ${modeloChatSalvo || 'padrão'}; favoritos: ${modeloFavoritosSalvo || 'padrão'}.`, 'success');
+            if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = !!data?.configuracoes?.ia_gemini_ativa;
+            if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (data?.configuracoes?.ia_vertex_ativa !== false);
+            setStatus(`Configuração salva com sucesso (${salvo} min). Perguntas: ${rotuloIaModo(modoPerguntasSalvo)}; chat: ${rotuloIaModo(modoChatSalvo)}; favoritos: ${rotuloIaModo(modoFavoritosSalvo)}.`, 'success');
         } catch (e) {
             setStatus(`Erro ao salvar configurações: ${e.message}`, 'error');
         } finally {

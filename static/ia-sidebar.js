@@ -649,7 +649,7 @@
   #jk-left-sidebar-hotspot:hover #jk-left-sidebar-menu,
   #jk-left-sidebar-hotspot:focus-within #jk-left-sidebar-menu{transform:translate(0,-50%);opacity:1;pointer-events:auto;}
   .jk-left-module-link{position:relative;width:344px;min-height:46px;display:flex;align-items:center;text-decoration:none;color:#e8fffb;overflow:visible;
-    border:0;background:transparent;outline:none;}
+    border:0;background:transparent;outline:none;padding:0;cursor:pointer;font:inherit;}
   .jk-left-module-icon{position:relative;z-index:2;width:46px;height:46px;border-radius:14px;border:1px solid rgba(120,227,212,.32);
     display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#0f6bbd,#13b99a);box-shadow:0 4px 16px rgba(19,196,160,.34);
     font-size:1.25rem;line-height:1;transform:scale(1);transform-origin:left center;will-change:transform;
@@ -670,6 +670,24 @@
   .jk-left-module-link:hover .jk-left-module-label,
   .jk-left-module-link:focus-visible .jk-left-module-label{transform:translate(0,-50%) scaleX(1);opacity:1;}
   .jk-left-module-link.modulo-atual{display:none;}
+  .jk-left-module-group{position:relative;width:344px;min-height:46px;overflow:visible;}
+  .jk-left-module-group-trigger{width:344px;text-align:left;}
+  .jk-left-module-group:hover .jk-left-module-label,
+  .jk-left-module-group:focus-within .jk-left-module-label,
+  .jk-left-module-group.submenu-aberto .jk-left-module-label{transform:translate(0,-50%) scaleX(1);opacity:1;}
+  .jk-left-module-submenu{position:absolute;left:78px;top:39px;z-index:9;min-width:178px;max-width:244px;display:flex;flex-direction:column;gap:4px;
+    padding:7px;border-radius:13px;border:1px solid rgba(120,227,212,.32);
+    background:linear-gradient(180deg,rgba(8,43,59,.98),rgba(6,71,84,.96));box-shadow:0 12px 28px rgba(0,0,0,.38);
+    transform:translate(-18px,-6px) scale(.96);transform-origin:left top;opacity:0;pointer-events:none;
+    transition:transform .16s cubic-bezier(.2,.9,.2,1),opacity .12s ease;}
+  .jk-left-module-group:hover .jk-left-module-submenu,
+  .jk-left-module-group:focus-within .jk-left-module-submenu,
+  .jk-left-module-group.submenu-aberto .jk-left-module-submenu{transform:translate(0,0) scale(1);opacity:1;pointer-events:auto;}
+  .jk-left-submodule-link{display:flex;align-items:center;gap:8px;min-height:32px;padding:6px 8px;border-radius:9px;color:#e8fffb;text-decoration:none;
+    font-size:.74rem;font-weight:900;line-height:1.12;white-space:nowrap;outline:none;}
+  .jk-left-submodule-link:hover,
+  .jk-left-submodule-link:focus-visible{background:rgba(120,227,212,.14);box-shadow:inset 0 0 0 1px rgba(120,227,212,.22);}
+  .jk-left-submodule-icon{width:23px;height:23px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;background:rgba(255,255,255,.08);font-size:.94rem;flex:0 0 auto;}
   #jk-right-sidebar-hotspot{position:fixed;top:0;right:0;bottom:0;width:18px;z-index:10000;pointer-events:auto;}
   #jk-right-sidebar-hotspot::before{content:"";position:absolute;top:0;right:0;bottom:0;width:8px;background:transparent;}
   #jk-right-sidebar-menu{position:fixed;top:50%;right:3px;display:flex;flex-direction:column;gap:10px;
@@ -1218,16 +1236,30 @@
     let perguntasMonitorRodando = false;
     let perguntasAprovacoesNotificadas = null;
     const MODULOS_LATERAIS = [
-      { key: 'analise_promo', href: 'frontend_promo.html', icon: '&#128200;', label: 'Promocao ML' },
-      { key: 'renovacao_fixa', href: 'renovacao.html', icon: '&#128260;', label: 'Renovacao Fixa' },
-      { key: 'anuncios_ml', href: 'anunciosml.html', icon: '&#128230;', label: 'Anuncios ML' },
+      {
+        key: 'mercado_livre',
+        icon: '&#128722;',
+        label: 'Mercado Livre',
+        children: [
+          { key: 'analise_promo', href: 'frontend_promo.html', icon: '&#128200;', label: 'Promocao ML' },
+          { key: 'renovacao_fixa', href: 'renovacao.html', icon: '&#128260;', label: 'Renovacao Fixa' },
+          { key: 'anuncios_ml', href: 'anunciosml.html', icon: '&#128230;', label: 'Anuncios ML' },
+          { key: 'mercado_full', href: 'full.html', icon: '&#128666;', label: 'Full' },
+          { key: 'favoritos', href: 'favoritos.html', icon: '&#11088;', label: 'Favoritos ML' },
+        ],
+      },
       { key: 'etiquetas', href: 'frontend_etiquetas.html', icon: '&#127991;', label: 'Etiquetas' },
-      { key: 'integracao', href: 'integracoes.html', icon: '&#128279;', label: 'Integracoes' },
-      { key: 'cadastro', href: 'cadastro.html', icon: '&#129534;', label: 'Cadastro' },
-      { key: 'estoque', href: 'estoque.html', icon: '&#128230;', label: 'Estoque' },
-      { key: 'mercado_full', href: 'full.html', icon: '&#128666;', label: 'Full' },
+      {
+        key: 'operacional_grupo',
+        icon: '&#128736;',
+        label: 'Operacional',
+        children: [
+          { key: 'integracao', href: 'integracoes.html', icon: '&#128279;', label: 'Integracoes' },
+          { key: 'estoque', href: 'estoque.html', icon: '&#128230;', label: 'Estoque' },
+          { key: 'cadastro', href: 'cadastro.html', icon: '&#129534;', label: 'Cadastro' },
+        ],
+      },
       { key: 'vendas', href: 'vendas.html', icon: '&#128176;', label: 'Vendas' },
-      { key: 'favoritos', href: 'favoritos.html', icon: '&#11088;', label: 'Favoritos ML' },
       { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', icon: '&#128172;', label: 'Perguntas e pos venda' },
       { key: 'medias_compras', href: 'medias_compras.html', icon: '&#128202;', label: 'Medias e Pedidos' },
       { key: 'impostos', href: 'impostos.html', icon: '&#128184;', label: 'Impostos' },
@@ -1286,7 +1318,21 @@
     function _leftModuloPermitido(mod) {
       const permissions = _leftSafeJson(localStorage.getItem('permissions') || '{}', {});
       if (!permissions || !Object.keys(permissions).length) return true;
+      if (Array.isArray(mod.children)) {
+        return mod.children.some(child => _leftModuloPermitido(child));
+      }
       return permissions.full === true || permissions[mod.key] === true;
+    }
+
+    function _leftFiltrarModulosVisiveis(atual) {
+      return MODULOS_LATERAIS.map(mod => {
+        if (Array.isArray(mod.children)) {
+          const filhosPermitidos = mod.children.filter(child => child.key !== atual && _leftModuloPermitido(child));
+          return filhosPermitidos.length ? { ...mod, children: filhosPermitidos } : null;
+        }
+        if (mod.key === atual || !_leftModuloPermitido(mod)) return null;
+        return mod;
+      }).filter(Boolean);
     }
 
     function _leftRenderModulos() {
@@ -1300,28 +1346,9 @@
       }
       if (hotspot) hotspot.style.display = '';
       const atual = _leftModuloAtualKey();
-      const modulos = MODULOS_LATERAIS.filter(mod => mod.key !== atual && _leftModuloPermitido(mod));
+      const modulos = _leftFiltrarModulosVisiveis(atual);
       menu.innerHTML = '';
-      modulos.forEach(mod => {
-        const link = document.createElement('a');
-        link.className = 'jk-left-module-link';
-        link.href = mod.href;
-        link.title = mod.label;
-        link.setAttribute('aria-label', `Abrir modulo ${mod.label}`);
-        if (mod.key === atual) link.classList.add('modulo-atual');
-
-        const icon = document.createElement('span');
-        icon.className = 'jk-left-module-icon';
-        icon.setAttribute('aria-hidden', 'true');
-        const glyph = document.createElement('span');
-        glyph.className = 'jk-left-module-glyph';
-        glyph.innerHTML = mod.icon;
-        icon.appendChild(glyph);
-
-        const label = document.createElement('span');
-        label.className = 'jk-left-module-label';
-        label.textContent = mod.label;
-
+      const aplicarZoomLink = (link, icon, glyph) => {
         const ativarZoom = () => {
           icon.style.setProperty('transform', 'translateX(8px) scale(1.7)', 'important');
           icon.style.setProperty('border-color', 'rgba(255,255,255,.82)', 'important');
@@ -1340,10 +1367,74 @@
         link.addEventListener('blur', removerZoom);
         icon.addEventListener('mouseenter', ativarZoom);
         icon.addEventListener('mouseleave', removerZoom);
+      };
+      const criarLinkModulo = (mod, options = {}) => {
+        const isButton = options.button === true;
+        const link = document.createElement(isButton ? 'button' : 'a');
+        link.className = options.extraClass ? `jk-left-module-link ${options.extraClass}` : 'jk-left-module-link';
+        if (isButton) {
+          link.type = 'button';
+          link.setAttribute('aria-expanded', 'false');
+        } else {
+          link.href = mod.href;
+        }
+        link.title = mod.label;
+        link.setAttribute('aria-label', options.group ? `Abrir submenu ${mod.label}` : `Abrir modulo ${mod.label}`);
+        if (mod.key === atual) link.classList.add('modulo-atual');
+
+        const icon = document.createElement('span');
+        icon.className = 'jk-left-module-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        const glyph = document.createElement('span');
+        glyph.className = 'jk-left-module-glyph';
+        glyph.innerHTML = mod.icon;
+        icon.appendChild(glyph);
+
+        const label = document.createElement('span');
+        label.className = 'jk-left-module-label';
+        label.textContent = mod.label;
+
+        aplicarZoomLink(link, icon, glyph);
 
         link.appendChild(icon);
         link.appendChild(label);
-        menu.appendChild(link);
+        return link;
+      };
+      const criarLinkSubmodulo = (mod) => {
+        const link = document.createElement('a');
+        link.className = 'jk-left-submodule-link';
+        link.href = mod.href;
+        link.title = mod.label;
+        link.setAttribute('aria-label', `Abrir modulo ${mod.label}`);
+        link.innerHTML = `<span class="jk-left-submodule-icon" aria-hidden="true">${mod.icon}</span><span>${mod.label}</span>`;
+        return link;
+      };
+      modulos.forEach(mod => {
+        if (Array.isArray(mod.children)) {
+          const group = document.createElement('div');
+          group.className = 'jk-left-module-group';
+          const trigger = criarLinkModulo(mod, { button: true, group: true, extraClass: 'jk-left-module-group-trigger' });
+          const submenu = document.createElement('div');
+          submenu.className = 'jk-left-module-submenu';
+          submenu.setAttribute('role', 'menu');
+          submenu.setAttribute('aria-label', mod.label);
+          mod.children.forEach(child => submenu.appendChild(criarLinkSubmodulo(child)));
+          trigger.addEventListener('click', (event) => {
+            event.preventDefault();
+            const aberto = !group.classList.contains('submenu-aberto');
+            group.classList.toggle('submenu-aberto', aberto);
+            trigger.setAttribute('aria-expanded', aberto ? 'true' : 'false');
+          });
+          group.addEventListener('mouseleave', () => {
+            group.classList.remove('submenu-aberto');
+            trigger.setAttribute('aria-expanded', 'false');
+          });
+          group.appendChild(trigger);
+          group.appendChild(submenu);
+          menu.appendChild(group);
+          return;
+        }
+        menu.appendChild(criarLinkModulo(mod));
       });
       _jkAplicarZoomSidebarEsquerdoExistente();
     }
@@ -3246,6 +3337,12 @@
       return pergunta ? [{ from_role: 'buyer', text: pergunta, attachments: [] }] : [];
     }
 
+    function _approvalDescricaoAnuncio(payload) {
+      const texto = String((payload && (payload.descricao_anuncio || payload.descricao || payload.item_description)) || '').trim();
+      if (!texto) return '';
+      return texto.length > 1000 ? `${texto.slice(0, 1000).trim()}...` : texto;
+    }
+
     function _approvalAnexos(msg) {
       const listas = [msg && msg.attachments, msg && msg.anexos, msg && msg.images, msg && msg.pictures];
       const anexos = [];
@@ -3474,6 +3571,20 @@
         ? `Loja ${payload.loja || '-'} - Pack ${payload.pack_id || '-'} - SKU ${payload.sku || '-'}`
         : `Loja ${payload.loja || '-'} - SKU ${payload.sku || '-'} - ${payload.titulo || payload.item_id || '-'}`;
       card.appendChild(meta);
+
+      const descricaoAnuncio = !isPosVenda ? _approvalDescricaoAnuncio(payload) : '';
+      if (descricaoAnuncio) {
+        const descBox = document.createElement('div');
+        descBox.className = 'jk-ia-approval-question';
+        const descLabel = document.createElement('div');
+        descLabel.className = 'jk-ia-approval-label';
+        descLabel.textContent = 'Descricao do anuncio usada pela IA';
+        const descText = document.createElement('div');
+        descText.textContent = descricaoAnuncio;
+        descBox.appendChild(descLabel);
+        descBox.appendChild(descText);
+        card.appendChild(descBox);
+      }
 
       card.appendChild(_approvalCriarConversa(payload));
 

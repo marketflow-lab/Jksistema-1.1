@@ -1674,6 +1674,7 @@
         const FREE_PARTICIPANT_MINUTES = 10000;
         const DEFAULT_BLOCK_PARTICIPANT_MINUTES = 9950;
         const LOGGED_USER_REFRESH_TTL_MS = 60000;
+        const DAILY_JOIN_TIMEOUT_MS = 25000;
         let callFrame = null;
         let currentRoomUrl = '';
         let currentHostToken = '';
@@ -1809,6 +1810,9 @@
         function dailyFriendlyError(message) {
             const text = String(message || '').trim();
             if (!text) return 'Erro na chamada Daily.';
+            if (text.includes('Tempo esgotado ao entrar na sala Daily')) {
+                return text;
+            }
             if (text.includes('account-missing-payment-method')) {
                 return 'A conta Daily precisa de forma de pagamento para usar este recurso. Deixe recursos pagos desligados ou cadastre um metodo de pagamento na Daily.';
             }
@@ -1816,6 +1820,34 @@
                 return 'Configure DAILY_API_KEY ou JK_DAILY_API_KEY no backend e reinicie o app.';
             }
             return text;
+        }
+
+        function waitDailyJoin(frame, joinOptions) {
+            return new Promise((resolve, reject) => {
+                let finished = false;
+                const timer = window.setTimeout(() => {
+                    finish(new Error('Tempo esgotado ao entrar na sala Daily. Verifique a internet e tente atender novamente.'));
+                }, DAILY_JOIN_TIMEOUT_MS);
+
+                function finish(error, result) {
+                    if (finished) return;
+                    finished = true;
+                    window.clearTimeout(timer);
+                    if (error) reject(error);
+                    else resolve(result);
+                }
+
+                try {
+                    const result = frame.join(joinOptions);
+                    if (!result || typeof result.then !== 'function') {
+                        finish(null, result);
+                        return;
+                    }
+                    result.then((joined) => finish(null, joined)).catch((err) => finish(err));
+                } catch (err) {
+                    finish(err);
+                }
+            });
         }
 
         function setBusy(busy) {
@@ -2578,9 +2610,9 @@
                 limitar_participantes: false,
                 max_participantes: null,
                 nome_host: getParticipantName() || 'Anfitriao JK Sistema',
-                iniciar_audio_desligado: true,
-                iniciar_video_desligado: true,
-                habilitar_prejoin: true,
+                iniciar_audio_desligado: false,
+                iniciar_video_desligado: false,
+                habilitar_prejoin: false,
                 habilitar_sala_espera: false,
                 habilitar_compartilhar_tela: true,
                 habilitar_chat: true,
@@ -2787,9 +2819,14 @@
                 });
                 bindDailyEvents(callFrame);
                 const participantName = syncParticipantNameFields();
-                const joinOptions = { url: validUrl, userName: participantName };
+                const joinOptions = {
+                    url: validUrl,
+                    userName: participantName,
+                    startAudioOff: false,
+                    startVideoOff: false,
+                };
                 if (tokenToUse) joinOptions.token = tokenToUse;
-                await callFrame.join(joinOptions);
+                await waitDailyJoin(callFrame, joinOptions);
                 if (typeof callFrame.setUserName === 'function') {
                     callFrame.setUserName(participantName);
                 }
