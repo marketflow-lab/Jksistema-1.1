@@ -18716,6 +18716,7 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
         "Nao invente compatibilidade, prazo, garantia, estoque, medidas, links ou dados tecnicos. "
         "Nao mencione SKU, codigo interno, quantidade em estoque, preco, nome da loja, status do anuncio ou link do proprio anuncio, exceto quando as orientacoes do app pedirem explicitamente. "
         "Se a pergunta for sobre compatibilidade, responda a compatibilidade de forma direta e curta; nao reinicie o atendimento com resumo do produto. "
+        "Quando mencionar compatibilidade, nunca copie a pergunta inteira como se fosse o nome do veiculo; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
         "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca. "
         "Quando houver historico da conversa, responda a ultima pergunta considerando as mensagens anteriores e evite saudacao longa/repetitiva. "
         "Siga as orientacoes do app e do treinamento salvo para tom, estrutura, politica comercial e conteudo permitido. "
@@ -18803,6 +18804,10 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         violacoes.append("usou expressao proibida sobre nao confirmar compatibilidade")
     if "CHASSI" in texto_norm:
         violacoes.append("pediu chassi em pergunta de compatibilidade")
+    if re.search(r"\bCOMPATIVEL\s+COM\s+(?:O|A)?\s*(?:BOA|BOM|OLA|OI)\b", texto_norm):
+        violacoes.append("copiou a pergunta inteira como veiculo")
+    if "COMPATIVEL COM" in texto_norm and ("ESSA PECA" in texto_norm or "ESSA PEÇA" in texto_norm):
+        violacoes.append("copiou trecho da pergunta como veiculo")
     pergunta_compatibilidade = any(
         termo in pergunta_norm
         for termo in ("SERVE", "COMPATIVEL", "COMPATIBILIDADE", "APLICA", "ENCAIXA", "VEICULO", "CARRO", "PEUGEOT", "THP", "308CC")
@@ -18814,6 +18819,35 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
     if pergunta_compatibilidade and not resposta_compatibilidade:
         violacoes.append("nao respondeu a pergunta de compatibilidade")
     return list(dict.fromkeys(violacoes))
+
+
+def _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador: list[str]) -> str:
+    padroes = [
+        re.compile(
+            r"(?:meu|minha)\s+(?:carro|ve[ií]culo|veiculo|moto|camionete|caminhonete)\s+(?:é|e|eh|seria)?\s*(?:um|uma|o|a)?\s*(?P<ref>.+?)(?:[,.;]?\s*(?:essa|esta|a)\s+(?:pe[cç]a|produto).*$|[,.;]?\s*(?:serve|é|e|eh)?\s*compat[ií]vel.*$|\?$|$)",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:serve|compat[ií]vel|aplica|encaixa)\s+(?:no|na|para|com)?\s*(?P<ref>.+?)(?:\?$|$)",
+            flags=re.IGNORECASE,
+        ),
+    ]
+    for texto in reversed([str(t or "") for t in textos_comprador]):
+        texto_limpo = re.sub(r"\s+", " ", texto).strip(" .,!?:;")
+        texto_limpo = re.sub(r"^(?:boa\s+(?:tarde|noite|dia)|bom\s+dia|ol[aá]|oi)[,\s.!:-]*", "", texto_limpo, flags=re.IGNORECASE).strip()
+        for padrao in padroes:
+            match = padrao.search(texto_limpo)
+            if not match:
+                continue
+            ref = re.sub(r"\s+", " ", match.group("ref") or "").strip(" .,!?:;")
+            ref = re.sub(r"\b(?:essa|esta|a)\s+(?:pe[cç]a|produto).*$", "", ref, flags=re.IGNORECASE).strip(" .,!?:;")
+            ref_norm = _normalizar_texto(ref)
+            if not ref or len(ref) > 70:
+                continue
+            if any(ruim in ref_norm for ruim in ("BOA TARDE", "BOM DIA", "ESSA PECA", "ESSA PEÇA", "COMPATIVEL", "COMPATIBILIDADE")):
+                continue
+            return ref
+    return ""
 
 
 def _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input: dict) -> str:
@@ -18836,13 +18870,8 @@ def _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input: dict) -> 
     ):
         return ""
 
-    referencia = ""
-    for texto in reversed(textos_comprador):
-        texto = re.sub(r"\s+", " ", texto).strip(" .,!?:;")
-        if texto and len(texto) <= 90:
-            referencia = texto
-            break
-    alvo = f" com o {referencia}" if referencia else " com o veiculo informado"
+    referencia = _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador)
+    alvo = f" com {referencia}" if referencia else " com o veiculo informado"
     return (
         f"Provavelmente \u00e9 compat\u00edvel{alvo}, mas para ter certeza recomendo confirmar "
         "com seu mec\u00e2nico de confian\u00e7a antes da compra. Caso compre e n\u00e3o sirva, "
@@ -19234,6 +19263,7 @@ def _perguntas_ia_gerar_resposta(
         "Se o comprador perguntar por outra peca, use a busca interna por outra peca quando ela estiver presente no contexto. "
         "Somente quando a pergunta for sobre outra peca, e houver anuncio ativo encontrado dessa outra peca, informe de forma curta que temos a peca e envie o link retornado. "
         "Se a pergunta for apenas sobre compatibilidade do anuncio atual, nao fale que o anuncio esta ativo e nao envie link do proprio anuncio. "
+        "Quando citar o veiculo, nunca copie a pergunta inteira do comprador; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
         "Nunca invente link; use somente links retornados na lista de anuncios ativos quando o link for realmente necessario. "
         "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja na resposta ao comprador, salvo se o comprador perguntar isso diretamente. "
         "Se a pergunta depender de dado ausente, responda pedindo a informacao necessaria de forma educada. "
