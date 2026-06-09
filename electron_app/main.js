@@ -2172,67 +2172,20 @@ async function maybeImportBundledPrivateCredentials(win) {
         return { imported: false, reason: 'already-imported' };
     }
 
-    const response = await dialog.showMessageBox(win, {
-        type: 'question',
-        buttons: ['Importar agora', 'Depois'],
-        defaultId: 0,
-        cancelId: 1,
-        title: 'Credenciais privadas encontradas',
-        message: runtimeConfigReady
-            ? 'Este instalador privado inclui pacotes criptografados de credenciais e dados locais.'
-            : 'As credenciais de chat, presenca e videochamada nao estao completas nesta instalacao.',
-        detail: runtimeConfigReady
-            ? 'Informe a senha na janela que abrir para restaurar os dados antes de entrar no sistema.'
-            : 'Importe o pacote privado para ativar Firebase e Daily antes de entrar no sistema.'
-    });
-    if (response.response !== 0) {
-        return { imported: false, reason: 'skipped' };
-    }
-
-    let password = await promptPrivateCredentialsPassword(win);
-    if (!password) {
-        return { imported: false, reason: 'password-skipped' };
-    }
-
-    while (true) {
-        try {
-            for (let index = 0; index < packagePaths.length; index += 1) {
-                renderLocalBackendStartupScreen(win, {
-                    detail: `Importando pacote privado ${index + 1} de ${packagePaths.length}. Aguarde, isso pode levar alguns minutos.`
-                });
-                await importCredentialPackage(packagePaths[index], password);
-            }
-            fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
-            break;
-        } catch (err) {
-            logElectronLifecycle('private-credentials-import-failed', err);
-            const retry = await dialog.showMessageBox(win, {
-                type: 'warning',
-                buttons: ['Tentar novamente', 'Continuar sem importar'],
-                defaultId: 0,
-                cancelId: 1,
-                title: 'Falha ao importar credenciais',
-                message: 'Nao foi possivel importar o pacote privado.',
-                detail: 'Confira a senha e tente novamente. O log fica na pasta local_app\\logs.'
+    try {
+        for (let index = 0; index < packagePaths.length; index += 1) {
+            renderLocalBackendStartupScreen(win, {
+                detail: `Restaurando dados locais ${index + 1} de ${packagePaths.length}. Aguarde, isso pode levar alguns minutos.`
             });
-            if (retry.response !== 0) {
-                return { imported: false, reason: 'failed' };
-            }
-            password = await promptPrivateCredentialsPassword(win);
-            if (!password) {
-                return { imported: false, reason: 'password-skipped' };
-            }
+            await importCredentialPackage(packagePaths[index], '');
         }
+        fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
+    } catch (err) {
+        logElectronLifecycle('private-credentials-auto-import-failed', err);
+        return { imported: false, reason: 'failed' };
     }
 
     if (!fs.existsSync(markerPath)) {
-        await dialog.showMessageBox(win, {
-            type: 'warning',
-            buttons: ['Continuar'],
-            title: 'Credenciais nao importadas',
-            message: 'A importacao privada nao foi concluida.',
-            detail: 'O sistema vai abrir mesmo assim. Voce tambem pode importar depois pelo botao Importar credenciais no sidebar.'
-        });
         return { imported: false, reason: 'not-finished' };
     }
 

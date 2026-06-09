@@ -76,7 +76,7 @@ const SECRET_NAME_PATTERN = /(api[_-]?key|token|secret|credential|credentials|oa
 function printUsage() {
   console.log(`Uso:
   node scripts/credenciais.js list [--include caminho]
-  node scripts/credenciais.js export [--out arquivo.jkcred] [--pass senha] [--force] [--include-data] [--include-media] [--include caminho]
+  node scripts/credenciais.js export [--out arquivo.jkcred] [--pass senha] [--plain] [--force] [--include-data] [--include-media] [--include caminho]
   node scripts/credenciais.js import --in arquivo.jkcred [--pass senha] [--force] [--no-backup]
 
 Exemplos:
@@ -87,7 +87,8 @@ Exemplos:
 Tambem e possivel definir a senha pela variavel JK_CREDENTIALS_PASSWORD.
 Use JK_CREDENTIALS_ROOT para escolher a pasta raiz de importacao/exportacao.
 Use --include-data para incluir os dados locais da pasta info no pacote privado.
-Use --include-media apenas quando tambem quiser embutir imagens/midias locais.`);
+Use --include-media apenas quando tambem quiser embutir imagens/midias locais.
+Use --plain para criar um pacote sem criptografia e sem senha de importacao.`);
 }
 
 function parseArgs(argv) {
@@ -100,7 +101,7 @@ function parseArgs(argv) {
     }
 
     const key = arg.slice(2);
-    if (key === 'force' || key === 'no-backup' || key === 'dry-run' || key === 'include-data' || key === 'include-media') {
+    if (key === 'force' || key === 'no-backup' || key === 'dry-run' || key === 'include-data' || key === 'include-media' || key === 'plain') {
       result[key] = true;
       continue;
     }
@@ -441,6 +442,33 @@ function decryptPackage(container, password) {
   return JSON.parse(plaintext.toString('utf8'));
 }
 
+function createPlainContainer(payload) {
+  return {
+    format: FORMAT,
+    version: FORMAT_VERSION,
+    createdAt: new Date().toISOString(),
+    encoding: 'plain',
+    payload,
+  };
+}
+
+function isPlainContainer(container) {
+  return !!(
+    container &&
+    container.format === FORMAT &&
+    container.version === FORMAT_VERSION &&
+    container.encoding === 'plain' &&
+    container.payload
+  );
+}
+
+function readPlainPackage(container) {
+  if (!isPlainContainer(container)) {
+    throw new Error('Arquivo de credenciais aberto invalido ou versao nao suportada.');
+  }
+  return container.payload;
+}
+
 function defaultOutFile(rootDir) {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-');
   return path.join(rootDir, `credenciais-jk-${stamp}.jkcred`);
@@ -468,9 +496,13 @@ async function exportCredentials(rootDir, args) {
     return;
   }
 
-  const password = args.pass || (await readSecret('Senha para criptografar: ', true));
-  if (password.length < 8) {
-    throw new Error('Use uma senha com pelo menos 8 caracteres.');
+  const plainPackage = !!args.plain;
+  let password = '';
+  if (!plainPackage) {
+    password = args.pass || (await readSecret('Senha para criptografar: ', true));
+    if (password.length < 8) {
+      throw new Error('Use uma senha com pelo menos 8 caracteres.');
+    }
   }
 
   const payload = {
@@ -494,9 +526,9 @@ async function exportCredentials(rootDir, args) {
     }),
   };
 
-  const container = encryptPayload(payload, password);
+  const container = plainPackage ? createPlainContainer(payload) : encryptPayload(payload, password);
   fs.writeFileSync(outFile, `${JSON.stringify(container, null, 2)}\n`, { mode: 0o600 });
-  console.log(`Pacote criptografado criado: ${outFile}`);
+  console.log(`${plainPackage ? 'Pacote aberto criado' : 'Pacote criptografado criado'}: ${outFile}`);
 }
 
 function backupExisting(rootDir, targetPath, backupRoot) {
@@ -517,12 +549,13 @@ function importCredentials(rootDir, args) {
     throw new Error('Nao encontrei credenciais-jk.jkcred nesta pasta. Copie o pacote para ca ou use --in arquivo.jkcred.');
   }
   const container = JSON.parse(fs.readFileSync(inFile, 'utf8'));
+  const plainPackage = isPlainContainer(container);
   const password = args.pass || process.env.JK_CREDENTIALS_PASSWORD;
-  const needPrompt = !password;
+  const needPrompt = !plainPackage && !password;
 
   const run = async () => {
     const finalPassword = needPrompt ? await readSecret('Senha para descriptografar: ') : password;
-    const payload = decryptPackage(container, finalPassword);
+    const payload = plainPackage ? readPlainPackage(container) : decryptPackage(container, finalPassword);
     if (!payload || payload.format !== FORMAT || !Array.isArray(payload.files)) {
       throw new Error('Conteudo descriptografado invalido.');
     }
