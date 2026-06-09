@@ -3288,7 +3288,8 @@
                     },
                     body: JSON.stringify({
                         loja: lojaResposta,
-                        pergunta
+                        pergunta,
+                        resposta_atual: String(textarea.value || '').trim()
                     })
                 });
                 const data = await response.json().catch(() => ({}));

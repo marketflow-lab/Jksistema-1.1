@@ -1149,6 +1149,7 @@ class PerguntasAprovacaoRequest(BaseModel):
 class PerguntasGerarRespostaRequest(BaseModel):
     loja: str
     pergunta: dict
+    resposta_atual: Optional[str] = ""
 
 class PerguntasEnviarRespostaRequest(BaseModel):
     loja: str
@@ -17329,7 +17330,6 @@ def _perguntas_ia_memoria_bloco_prompt(client_id: str, agent_input: dict) -> str
                 if isinstance(tool, dict) and (tool.get("found") or tool.get("timeout") or tool.get("error")):
                     fontes.append(str(tool.get("function") or "") + (" (timeout)" if tool.get("timeout") else ""))
             rotulo = "Atendimento pos-venda recente" if tipo_evento == "pos_venda_ia" else "Pergunta pesquisada"
-            resposta_ref = str(ev.get("resposta_rascunho") or ev.get("resposta_aprovada") or "").strip()
             perguntas_anuncio = []
             for evento_anuncio in ev.get("perguntas_anuncio") or []:
                 if not isinstance(evento_anuncio, dict):
@@ -17341,7 +17341,7 @@ def _perguntas_ia_memoria_bloco_prompt(client_id: str, agent_input: dict) -> str
                     )
             linhas.append(
                 f"{rotulo}: {str(ev.get('pergunta') or '-')[:280]}\n"
-                f"Resposta usada/sugerida: {resposta_ref[:420] or '-'}\n"
+                "Resposta usada/sugerida: omitida porque rascunhos gerados nao devem ser reaproveitados como exemplo.\n"
                 f"Perguntas anteriores no anuncio: {' | '.join(perguntas_anuncio[:4]) or '-'}\n"
                 f"Fontes/ferramentas: {', '.join([f for f in fontes if f][:6]) or '-'}"
             )
@@ -17696,9 +17696,11 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
 def _perguntas_ia_pergunta_para_agente(pergunta: dict) -> dict:
     pergunta = pergunta if isinstance(pergunta, dict) else {}
     historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
+    resposta_atual = str(pergunta.get("_resposta_atual") or "").strip()
     return {
         "id": pergunta.get("id") or "",
         "text": pergunta.get("text") or "",
+        "current_draft_to_avoid": resposta_atual[:1200],
         "item_id": pergunta.get("item_id") or "",
         "date_created": pergunta.get("date_created") or "",
         "status": pergunta.get("status") or "",
@@ -18696,6 +18698,8 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
     bloco_question = json.dumps(question, ensure_ascii=False, default=str)[:4000]
     bloco_item = json.dumps(item, ensure_ascii=False, default=str)[:5000]
     bloco_memoria = _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
+    rascunho_atual = str(question.get("current_draft_to_avoid") or "").strip()
+    bloco_rascunho_atual = _perguntas_ia_compactar_contexto(rascunho_atual, 1200)
     historico = question.get("history") if isinstance(question.get("history"), list) else []
     linhas_historico = []
     for evento in historico[-10:]:
@@ -18733,6 +18737,7 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
         f"Memoria tecnica local deste SKU:\n{bloco_memoria or '-'}\n\n"
         f"Prompt original do app:\n{base_prompt or '-'}\n\n"
         f"Historico resumido da conversa:\n{bloco_historico or '-'}\n\n"
+        f"Resposta atual no campo, se existir; corrija/substitua e nao repita literalmente:\n{bloco_rascunho_atual or '-'}\n\n"
         f"Pergunta normalizada em JSON:\n{bloco_question or '{}'}\n\n"
         f"Anuncio recebido em JSON:\n{bloco_item or '{}'}\n\n"
         f"Resultados das ferramentas read-only em JSON:\n{bloco_tools or '[]'}"
@@ -18772,6 +18777,7 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
             continue
         textos_comprador.append(str(evento.get("text") or ""))
     pergunta_norm = _normalizar_texto(" ".join(textos_comprador))
+    rascunho_atual_norm = _normalizar_texto(str(question.get("current_draft_to_avoid") or ""))
     loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
     violacoes = []
     if re.search(r"\bSKU\b", texto, flags=re.IGNORECASE):
@@ -18804,10 +18810,15 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         violacoes.append("usou expressao proibida sobre nao confirmar compatibilidade")
     if "CHASSI" in texto_norm:
         violacoes.append("pediu chassi em pergunta de compatibilidade")
-    if re.search(r"\bCOMPATIVEL\s+COM\s+(?:O|A)?\s*(?:BOA|BOM|OLA|OI)\b", texto_norm):
+    if re.search(r"COMPAT\w*\s+COM\s+(?:O|A)?\s*(?:BOA|BOM|OLA|OI)", texto_norm):
         violacoes.append("copiou a pergunta inteira como veiculo")
-    if "COMPATIVEL COM" in texto_norm and ("ESSA PECA" in texto_norm or "ESSA PEÇA" in texto_norm):
+    if "COMPAT" in texto_norm and "COM" in texto_norm and any(t in texto_norm for t in ("ESSA PECA", "ESSA PEÇA", "ESSA PE", "MEU CARRO", "MINHA MOTO")):
         violacoes.append("copiou trecho da pergunta como veiculo")
+    if rascunho_atual_norm and len(rascunho_atual_norm) >= 40:
+        texto_compacto = re.sub(r"\s+", " ", texto_norm).strip()
+        rascunho_compacto = re.sub(r"\s+", " ", rascunho_atual_norm).strip()
+        if texto_compacto == rascunho_compacto or texto_compacto in rascunho_compacto or rascunho_compacto in texto_compacto:
+            violacoes.append("repetiu a resposta atual sem corrigir")
     pergunta_compatibilidade = any(
         termo in pergunta_norm
         for termo in ("SERVE", "COMPATIVEL", "COMPATIBILIDADE", "APLICA", "ENCAIXA", "VEICULO", "CARRO", "PEUGEOT", "THP", "308CC")
@@ -18824,7 +18835,7 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
 def _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador: list[str]) -> str:
     padroes = [
         re.compile(
-            r"(?:meu|minha)\s+(?:carro|ve[ií]culo|veiculo|moto|camionete|caminhonete)\s+(?:é|e|eh|seria)?\s*(?:um|uma|o|a)?\s*(?P<ref>.+?)(?:[,.;]?\s*(?:essa|esta|a)\s+(?:pe[cç]a|produto).*$|[,.;]?\s*(?:serve|é|e|eh)?\s*compat[ií]vel.*$|\?$|$)",
+            r"(?:meu|minha)\s+(?:carro|ve[ií]culo|veiculo|moto|camionete|caminhonete)\s+(?:é|e|eh|seria)?\s*(?:uma|um|o|a)?\s*(?P<ref>.+?)(?:[,.;]?\s*(?:essa|esta|a)\s+(?:pe.{0,3}a|produto).*$|[,.;]?\s*(?:serve|é|e|eh)?\s*compat\S*.*$|\?$|$)",
             flags=re.IGNORECASE,
         ),
         re.compile(
@@ -18840,11 +18851,17 @@ def _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador: lis
             if not match:
                 continue
             ref = re.sub(r"\s+", " ", match.group("ref") or "").strip(" .,!?:;")
-            ref = re.sub(r"\b(?:essa|esta|a)\s+(?:pe[cç]a|produto).*$", "", ref, flags=re.IGNORECASE).strip(" .,!?:;")
+            ref = re.split(
+                r"[,.;]?\s*(?:essa|esta|a)\s+(?:pe.{0,3}a|produto)\b|[,.;]?\s*(?:essa|esta|a)\s+pe|[,.;]?\s*(?:serve|é|e|eh)?\s*compat\S*",
+                ref,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" .,!?:;")
+            ref = re.sub(r"^(?:uma|um|o|a)\s+", "", ref, flags=re.IGNORECASE).strip(" .,!?:;")
             ref_norm = _normalizar_texto(ref)
             if not ref or len(ref) > 70:
                 continue
-            if any(ruim in ref_norm for ruim in ("BOA TARDE", "BOM DIA", "ESSA PECA", "ESSA PEÇA", "COMPATIVEL", "COMPATIBILIDADE")):
+            if any(ruim in ref_norm for ruim in ("BOA TARDE", "BOM DIA", "ESSA PECA", "ESSA PEÇA", "ESSA PE", "MEU CARRO", "MINHA MOTO", "COMPATIVEL", "COMPATIBILIDADE")):
                 continue
             return ref
     return ""
@@ -19255,6 +19272,13 @@ def _perguntas_ia_gerar_resposta(
         linhas_historico.append(f"{rotulo}: {texto_evento[:500]}")
     historico_prompt = _perguntas_ia_compactar_contexto("\n".join(linhas_historico), 1600)
     bloco_historico_prompt = f"Historico da conversa:\n{historico_prompt}\n\n" if historico_prompt else ""
+    resposta_atual = _perguntas_ia_compactar_contexto(str((pergunta or {}).get("_resposta_atual") or ""), 1200)
+    bloco_resposta_atual = (
+        "Resposta atual no campo, que precisa ser corrigida ou substituida; nao repita este texto:\n"
+        f"{resposta_atual}\n\n"
+        if resposta_atual
+        else ""
+    )
     prompt = (
         "Gere uma resposta pronta para uma pergunta recebida no Mercado Livre. "
         "Use as orientacoes salvas no treinamento de perguntas de anuncio. "
@@ -19280,6 +19304,7 @@ def _perguntas_ia_gerar_resposta(
         f"Descricao do anuncio:\n{descricao_prompt or '-'}\n\n"
         f"{contexto_outra_peca_prompt + chr(10) + chr(10) if contexto_outra_peca_prompt else ''}"
         f"{bloco_historico_prompt}"
+        f"{bloco_resposta_atual}"
         f"Pergunta do comprador:\n{texto_pergunta}"
     )
     prompt = _perguntas_ia_limitar_prompt(prompt, texto_pergunta)
@@ -42719,6 +42744,9 @@ def ml_perguntas_aprovacoes_rejeitar(req: PerguntasAprovacaoRequest, client_id: 
 def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
+    resposta_atual = str(req.resposta_atual or "").strip()
+    if resposta_atual:
+        pergunta = {**pergunta, "_resposta_atual": resposta_atual[:1200]}
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
     if not str(pergunta.get("id") or "").strip():
