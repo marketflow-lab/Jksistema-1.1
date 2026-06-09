@@ -8,6 +8,7 @@ info/backend.log
 jkjkjk-*.json
 *service-account*.json
 .env
+firebase-presence.env
 node_modules
 node_modules
 bug-hunter-report/

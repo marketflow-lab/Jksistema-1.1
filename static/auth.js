@@ -1088,6 +1088,21 @@ function obterAuthHeaders(extra) {
         });
     }
 
+    async function assinarFavoritosHistoricoRealtime(onUpdate, onError) {
+        const ctx = await prepararRtdb();
+        if (!ctx || !(ctx.session && ctx.session.rootPath)) {
+            throw new Error('Realtime de historico de favoritos indisponivel.');
+        }
+        const eventRef = ctx.modules.database.ref(ctx.db, `${ctx.session.rootPath}/events/favoritos_historico`);
+        return ctx.modules.database.onValue(eventRef, (snap) => {
+            const payload = snap.val();
+            if (!payload || typeof payload !== 'object' || !payload.event_id) return;
+            if (typeof onUpdate === 'function') onUpdate(payload, ctx.session);
+        }, (error) => {
+            if (typeof onError === 'function') onError(error);
+        });
+    }
+
     function iniciarFallbackHeartbeat() {
         if (!obterToken() || tokenSessaoExpirado()) return;
         enviarHeartbeatBackend('inicio');
@@ -1100,6 +1115,7 @@ function obterAuthHeaders(extra) {
     window.jkBuscarMaquinasOnline = buscarMaquinasOnline;
     window.jkBuscarUsuariosOnline = buscarUsuariosOnline;
     window.jkAssinarPresencaUsuarios = assinarPresencaUsuarios;
+    window.jkAssinarFavoritosHistoricoRealtime = assinarFavoritosHistoricoRealtime;
     window.jkPresencaRealtimeEstado = () => ({
         enabled: !rtdbState.disabled,
         connected: !!rtdbState.started,
@@ -1168,12 +1184,27 @@ function obterAuthHeaders(extra) {
 
     let executandoPull = false;
     let executandoPush = false;
+    let executandoFavoritosHistorico = false;
     let ultimaPull = 0;
     let ultimaPush = 0;
+    let ultimaFavoritosHistorico = 0;
+    let timerFavoritosHistorico = null;
+    let favoritosHistoricoRealtimeUnsubscribe = null;
+    let favoritosHistoricoRealtimeUltimoEvento = '';
+
+    const FAVORITOS_HISTORICO_SCOPE = 'favoritos_historico';
+    const FAVORITOS_HISTORICO_SYNC_STORAGE_KEY = 'favoritosMlHistoricoSyncEvento';
+    const FAVORITOS_HISTORICO_SYNC_CHANNEL = 'jkFavoritosMlHistoricoSync';
+    const FAVORITOS_HISTORICO_SYNC_INTERVAL_MS = 20 * 60 * 1000;
 
     function telaSeguraParaRestaurar() {
         const path = String(window.location.pathname || '').toLowerCase();
         return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$/.test(path);
+    }
+
+    function telaPermiteSyncHistoricoFavoritos() {
+        const path = String(window.location.pathname || '').toLowerCase();
+        return !path || path === '/' || /dashboard\.html$|configuracoes\.html$|admin_usuarios\.html$|favoritos\.html$/.test(path);
     }
 
     function machineIdAtualSync() {
@@ -1182,6 +1213,68 @@ function obterAuthHeaders(extra) {
             return String(data.machine_id || '').trim();
         } catch (_err) {
             return '';
+        }
+    }
+
+    function usuarioAtualSync() {
+        try {
+            return JSON.parse(localStorage.getItem('user_data') || '{}') || {};
+        } catch (_err) {
+            return {};
+        }
+    }
+
+    function chaveCacheHistoricoFavoritosSync() {
+        const user = usuarioAtualSync();
+        const cid = user && user.client_id ? String(user.client_id) : 'default';
+        const usuario = user && (user.username || user.email || user.name || user.nome)
+            ? String(user.username || user.email || user.name || user.nome)
+            : 'usuario';
+        const usuarioKey = usuario.trim().toLowerCase().replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60) || 'usuario';
+        return `favoritos_ml_historico_${cid}_${usuarioKey}`;
+    }
+
+    function resultadosIncluemHistoricoFavoritos(results) {
+        return Array.isArray(results) && results.some(item => item && item.scope === FAVORITOS_HISTORICO_SCOPE);
+    }
+
+    function resultadosReceberamHistoricoFavoritos(results) {
+        return Array.isArray(results) && results.some(item => (
+            item &&
+            item.scope === FAVORITOS_HISTORICO_SCOPE &&
+            item.direction === 'pull' &&
+            item.success !== false
+        ));
+    }
+
+    async function atualizarCacheHistoricoFavoritosSincronizado(results) {
+        if (!resultadosReceberamHistoricoFavoritos(results)) return;
+        try {
+            const resp = await fetch('/api/favoritos/historico', {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recarregar histórico de favoritos.');
+            const historico = Array.isArray(data.historico) ? data.historico.slice(0, 30) : [];
+            const evento = {
+                tipo: 'historico-favoritos-importado',
+                ts: Date.now(),
+                key: chaveCacheHistoricoFavoritosSync()
+            };
+            try {
+                localStorage.setItem(evento.key, JSON.stringify(historico));
+                localStorage.setItem(FAVORITOS_HISTORICO_SYNC_STORAGE_KEY, JSON.stringify(evento));
+            } catch (_err) {}
+            try {
+                if (typeof BroadcastChannel === 'function') {
+                    const canal = new BroadcastChannel(FAVORITOS_HISTORICO_SYNC_CHANNEL);
+                    canal.postMessage(evento);
+                    canal.close();
+                }
+            } catch (_err) {}
+        } catch (error) {
+            console.warn('Histórico de favoritos sincronizado, mas o cache local não foi atualizado:', error);
         }
     }
 
@@ -1239,8 +1332,76 @@ function obterAuthHeaders(extra) {
         }
     }
 
+    async function executarAutoHistoricoFavoritos(motivo) {
+        if (executandoFavoritosHistorico || !obterToken() || tokenSessaoExpirado()) return null;
+        if (!telaPermiteSyncHistoricoFavoritos()) return null;
+        if (motivo !== 'manual' && motivo !== 'realtime' && document.visibilityState === 'hidden') return null;
+        const agora = Date.now();
+        if (motivo !== 'manual' && motivo !== 'realtime' && agora - ultimaFavoritosHistorico < FAVORITOS_HISTORICO_SYNC_INTERVAL_MS) return null;
+        ultimaFavoritosHistorico = agora;
+        executandoFavoritosHistorico = true;
+        try {
+            const resp = await fetch('/api/favoritos/historico/realtime-sync', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ machine_id: machineIdAtualSync(), reason: motivo || '' })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && Array.isArray(data.results) && data.results.length) {
+                if (resultadosIncluemHistoricoFavoritos(data.results)) {
+                    console.info('[Favoritos Sync] Histórico sincronizado entre usuários cadastrados:', data.results);
+                }
+                await atualizarCacheHistoricoFavoritosSincronizado(data.results);
+            }
+            return data;
+        } catch (err) {
+            console.warn('[Favoritos Sync]', err);
+            return null;
+        } finally {
+            executandoFavoritosHistorico = false;
+        }
+    }
+
+    async function iniciarRealtimeHistoricoFavoritos() {
+        if (favoritosHistoricoRealtimeUnsubscribe || typeof window.jkAssinarFavoritosHistoricoRealtime !== 'function') return false;
+        if (!obterToken() || tokenSessaoExpirado()) return false;
+        try {
+            favoritosHistoricoRealtimeUnsubscribe = await window.jkAssinarFavoritosHistoricoRealtime((evento) => {
+                const eventId = String(evento && evento.event_id || '');
+                if (!eventId || eventId === favoritosHistoricoRealtimeUltimoEvento) return;
+                favoritosHistoricoRealtimeUltimoEvento = eventId;
+                executarAutoHistoricoFavoritos('realtime');
+            }, (error) => {
+                favoritosHistoricoRealtimeUnsubscribe = null;
+                console.warn('[Favoritos Sync Realtime]', error);
+            });
+            return true;
+        } catch (err) {
+            favoritosHistoricoRealtimeUnsubscribe = null;
+            console.warn('[Favoritos Sync Realtime]', err);
+            return false;
+        }
+    }
+
+    function agendarAutoHistoricoFavoritos(delayMs) {
+        if (timerFavoritosHistorico) clearTimeout(timerFavoritosHistorico);
+        timerFavoritosHistorico = setTimeout(async () => {
+            timerFavoritosHistorico = null;
+            await executarAutoHistoricoFavoritos('timer');
+            agendarAutoHistoricoFavoritos(FAVORITOS_HISTORICO_SYNC_INTERVAL_MS);
+        }, Math.max(5000, Number(delayMs) || FAVORITOS_HISTORICO_SYNC_INTERVAL_MS));
+    }
+
     window.jkSharedSyncAutoPullNow = () => executarAutoPull('manual');
     window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
+    window.jkFavoritosHistoricoSyncNow = () => executarAutoHistoricoFavoritos('manual');
+
+    agendarAutoHistoricoFavoritos(15000);
+    setTimeout(() => iniciarRealtimeHistoricoFavoritos(), 3500);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) iniciarRealtimeHistoricoFavoritos();
+        if (!document.hidden) setTimeout(() => executarAutoHistoricoFavoritos('visible'), 1200);
+    });
 })();
 
 (function initMachineSharedSyncAuto() {
@@ -2519,7 +2680,7 @@ function verificarSessao() {
             });
             if (!jaExisteScript) {
                 const script = document.createElement('script');
-                script.src = '/ia-sidebar.js?v=20260608-video-call-open-fix';
+                script.src = '/ia-sidebar.js?v=20260609-sidebar-scroll-fix';
                 script.async = true;
                 script.setAttribute('data-jk-ia-loader', '1');
                 document.body.appendChild(script);

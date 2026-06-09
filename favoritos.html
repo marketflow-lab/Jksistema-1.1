@@ -765,12 +765,15 @@
             border-left: 0;
             border-right: 4px solid #4facfe;
             display: none;
+            flex-direction: column;
+            max-height: calc(100vh - 32px);
+            overflow: hidden;
         }
         .favoritos-ml-sidebar {
             display: none !important;
         }
         body.ml-sku-sidebar-active .ml-sku-sidebar {
-            display: block;
+            display: flex;
         }
         .ml-sidebar-resizer {
             display: none;
@@ -1505,10 +1508,13 @@
         .ml-sku-sidebar-list {
             display: flex;
             flex-direction: column;
+            flex: 1 1 auto;
             gap: 8px;
-            max-height: none;
-            overflow-y: visible;
+            max-height: calc(100vh - 230px);
+            min-height: 0;
+            overflow-y: auto;
             padding-right: 2px;
+            scrollbar-gutter: stable;
         }
         .ml-sku-sidebar-more {
             background: #eef6ff;
@@ -2927,8 +2933,8 @@
                 left: 16px;
                 z-index: 30;
                 width: var(--ml-sku-sidebar-width, 300px);
-                max-height: none;
-                overflow-y: visible;
+                max-height: calc(100vh - 36px);
+                overflow: hidden;
                 margin-top: 0;
                 box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
             }
@@ -3126,7 +3132,7 @@
             }
         }
     </style>
-    <script src="/auth.js?v=20260417c"></script>
+    <script src="/auth.js?v=20260609-favhist-rt"></script>
 </head>
 <body class="favoritos-store-pending">
     <div class="container">
@@ -3861,6 +3867,7 @@
         let mlHistoricoFavoritosServidorCarregado = false;
         let mlHistoricoFavoritosSaveTimer = null;
         let mlHistoricoFavoritosSyncBroadcast = null;
+        let mlHistoricoFavoritosSyncVinculosTimer = null;
         let mlHistoricoFavoritosSyncUltimoTs = 0;
         const FAV_ML_RANKING_ATUAL_ID = '__ranking_atual__';
         let favMlSkuSelecionado = '';
@@ -3916,6 +3923,51 @@
         function headersJsonAutenticado() {
             const base = (typeof obterAuthHeaders === 'function') ? obterAuthHeaders() : {};
             return { ...base, 'Content-Type': 'application/json' };
+        }
+
+        function textoLimpoHistoricoFavoritos(valor, limite = 160) {
+            const texto = String(valor || '').replace(/\s+/g, ' ').trim();
+            return texto ? texto.slice(0, limite) : '';
+        }
+
+        function nomeUsuarioHistoricoFavoritosAtual() {
+            const fontes = [
+                userData && (userData.nome || userData.name || userData.displayName || userData.display_name),
+                userData && userData.username,
+                userData && userData.email
+            ];
+            for (const fonte of fontes) {
+                const texto = textoLimpoHistoricoFavoritos(fonte, 160);
+                if (texto) return texto;
+            }
+            return '';
+        }
+
+        function usernameHistoricoFavoritosAtual() {
+            return textoLimpoHistoricoFavoritos(
+                userData && (userData.username || userData.email || userData.nome || userData.name),
+                160
+            );
+        }
+
+        function obterUsuarioHistoricoFavoritos(entrada) {
+            if (!entrada) return '';
+            return textoLimpoHistoricoFavoritos(
+                entrada.nome_usuario
+                || entrada.usuario_nome
+                || entrada.usuario
+                || entrada.created_by_name
+                || entrada.criado_por_nome
+                || entrada.username
+                || entrada.created_by
+                || entrada.criado_por,
+                160
+            );
+        }
+
+        function sufixoUsuarioHistoricoFavoritos(entrada) {
+            const usuario = obterUsuarioHistoricoFavoritos(entrada);
+            return usuario ? ` | Usuario: ${usuario}` : '';
         }
 
         async function copiarTextoAreaFallback(texto) {
@@ -15252,7 +15304,22 @@
         }
 
         function normalizarHistoricoFavoritosFrontend(lista) {
-            return Array.isArray(lista) ? lista.filter(Boolean).slice(0, ML_FAVORITOS_HISTORICO_MAX) : [];
+            if (!Array.isArray(lista)) return [];
+            const usuarioAtual = nomeUsuarioHistoricoFavoritosAtual();
+            const usernameAtual = usernameHistoricoFavoritosAtual();
+            return lista
+                .filter(Boolean)
+                .map(entrada => {
+                    if (!entrada || typeof entrada !== 'object') return entrada;
+                    const usuarioEntrada = obterUsuarioHistoricoFavoritos(entrada) || usuarioAtual;
+                    return {
+                        ...entrada,
+                        usuario: entrada.usuario || usuarioEntrada,
+                        nome_usuario: entrada.nome_usuario || usuarioEntrada,
+                        username: entrada.username || usernameAtual || usuarioEntrada
+                    };
+                })
+                .slice(0, ML_FAVORITOS_HISTORICO_MAX);
         }
 
         function chaveHistoricoFavoritos() {
@@ -15312,6 +15379,7 @@
             mlHistoricoFavoritosCache = remoto;
             mlHistoricoFavoritosServidorCarregado = true;
             salvarHistoricoFavoritosLocal(remoto);
+            agendarSincronizacaoHistoricoFavoritosVinculos();
             return remoto;
         }
 
@@ -15448,6 +15516,20 @@
             });
         }
 
+        function agendarSincronizacaoHistoricoFavoritosVinculos() {
+            if (mlHistoricoFavoritosSyncVinculosTimer) clearTimeout(mlHistoricoFavoritosSyncVinculosTimer);
+            mlHistoricoFavoritosSyncVinculosTimer = setTimeout(() => {
+                mlHistoricoFavoritosSyncVinculosTimer = null;
+                try {
+                    if (typeof window.jkFavoritosHistoricoSyncNow === 'function') {
+                        window.jkFavoritosHistoricoSyncNow();
+                    }
+                } catch (err) {
+                    console.warn('Nao foi possivel iniciar sync do historico de favoritos entre usuarios:', err);
+                }
+            }, 1200);
+        }
+
         function anuncioHistoricoPayload(anuncio) {
             const precos = obterPrecosAnuncioFavoritos(anuncio);
             const id = anuncio && (anuncio.id || extrairItemIdAnuncio(anuncio.url) || '');
@@ -15524,10 +15606,15 @@
                 .filter(grupo => grupo.sku && (grupo.anuncios.length || grupo.removidos_ia.length));
 
             const opcoesEntrada = gruposHistorico.map(grupo => grupo.opcoes_promocao).find(Boolean) || null;
+            const nomeUsuario = nomeUsuarioHistoricoFavoritosAtual();
+            const usernameUsuario = usernameHistoricoFavoritosAtual();
             return {
                 id: `${agora.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
                 data_iso: agora.toISOString(),
                 loja: favoritosLojaSelecionadaParaApi() || '',
+                usuario: nomeUsuario,
+                nome_usuario: nomeUsuario,
+                username: usernameUsuario,
                 opcoes_promocao: opcoesEntrada,
                 total_skus: gruposHistorico.length,
                 total_anuncios: gruposHistorico.reduce((acc, grupo) => acc + grupo.total_anuncios, 0),
@@ -15568,7 +15655,9 @@
                             ...grupo,
                             opcoes_promocao: opcoesPromocao || grupo.opcoes_promocao || null,
                             data_iso: entrada.data_iso,
-                            loja: entrada.loja || grupo.loja || ''
+                            loja: entrada.loja || grupo.loja || '',
+                            usuario: obterUsuarioHistoricoFavoritos(entrada),
+                            nome_usuario: obterUsuarioHistoricoFavoritos(entrada)
                         }
                     };
                 }
@@ -15592,7 +15681,9 @@
                         ...grupo,
                         opcoes_promocao: opcoesPromocao || grupo.opcoes_promocao || null,
                         data_iso: entrada.data_iso,
-                        loja: entrada.loja || grupo.loja || ''
+                        loja: entrada.loja || grupo.loja || '',
+                        usuario: obterUsuarioHistoricoFavoritos(entrada),
+                        nome_usuario: obterUsuarioHistoricoFavoritos(entrada)
                     }
                 };
             }
@@ -15630,12 +15721,16 @@
                             ...grupo,
                             anuncios,
                             data_iso: entrada && entrada.data_iso || grupo.data_iso || '',
-                            loja: entrada && entrada.loja || grupo.loja || ''
+                            loja: entrada && entrada.loja || grupo.loja || '',
+                            usuario: obterUsuarioHistoricoFavoritos(entrada),
+                            nome_usuario: obterUsuarioHistoricoFavoritos(entrada)
                         },
                         sku,
                         titulo: String(grupo && grupo.titulo || '').trim(),
                         data_iso: entrada && entrada.data_iso || grupo.data_iso || '',
                         loja: entrada && entrada.loja || grupo.loja || '',
+                        usuario: obterUsuarioHistoricoFavoritos(entrada),
+                        nome_usuario: obterUsuarioHistoricoFavoritos(entrada),
                         total_anuncios: anuncios.length
                     });
                     if (recentes.length >= limite) return recentes;
@@ -15657,7 +15752,7 @@
             const data = formatarDataHistoricoFavoritos(item.data_iso) || 'data desconhecida';
             const meta = document.createElement('span');
             meta.className = 'ml-favoritos-recente-meta';
-            meta.textContent = `${item.total_anuncios} anuncio(s) rankeado(s) | ${data}${item.loja ? ` | Loja: ${item.loja}` : ''}`;
+            meta.textContent = `${item.total_anuncios} anuncio(s) rankeado(s) | ${data}${item.loja ? ` | Loja: ${item.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(item.entrada || item)}`;
             botao.appendChild(titulo);
             botao.appendChild(meta);
             const termosTexto = formatarTermosPesquisaFavoritos(item && item.grupo && item.grupo.termos);
@@ -16673,7 +16768,7 @@
                 const meta = document.createElement('div');
                 meta.className = 'ml-favoritos-historico-meta';
                 const totalAnunciosSku = (entrada.grupos || []).reduce((acc, grupo) => acc + (Array.isArray(grupo.anuncios) ? grupo.anuncios.length : 0), 0);
-                meta.textContent = `${totalAnunciosSku} anuncio(s) rankeado(s) para o SKU ${skuSelecionado}${entrada.loja ? ` | Loja: ${entrada.loja}` : ''}`;
+                meta.textContent = `${totalAnunciosSku} anuncio(s) rankeado(s) para o SKU ${skuSelecionado}${entrada.loja ? ` | Loja: ${entrada.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(entrada)}`;
                 head.appendChild(titulo);
                 head.appendChild(meta);
                 card.appendChild(head);
@@ -17623,8 +17718,9 @@
             if (favRankingDataEl) {
                 const dataRanking = formatarDataHistoricoFavoritos(resultadoRanking.data_iso || grupo.data_iso || grupo.data_ranking_iso);
                 const lojaRanking = resultadoRanking.loja || grupo.loja || '';
+                const usuarioRanking = obterUsuarioHistoricoFavoritos(resultadoRanking.entrada || resultadoRanking || grupo);
                 favRankingDataEl.textContent = dataRanking
-                    ? `${entradaSelecionada === FAV_ML_RANKING_ATUAL_ID ? 'Ranking atual feito em' : 'Ranking do historico feito em'} ${dataRanking}${lojaRanking ? ` | Loja: ${lojaRanking}` : ''}`
+                    ? `${entradaSelecionada === FAV_ML_RANKING_ATUAL_ID ? 'Ranking atual feito em' : 'Ranking do historico feito em'} ${dataRanking}${lojaRanking ? ` | Loja: ${lojaRanking}` : ''}${usuarioRanking ? ` | Usuario: ${usuarioRanking}` : ''}`
                     : (entradaSelecionada === FAV_ML_RANKING_ATUAL_ID ? 'Ranking atual para este SKU.' : 'Ranking do historico selecionado para este SKU.');
             }
             if (grupo.erro) {

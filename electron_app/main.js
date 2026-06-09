@@ -43,6 +43,7 @@ const JK_PROMO_WORKER_PORT = 8011;
 const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
 const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
 const JK_PRIVATE_CREDENTIALS_FILE_NAME = 'credenciais-jk-private.jkcred';
+const JK_FIREBASE_PRESENCE_ENV_FILE_NAME = 'firebase-presence.env';
 let localBackendProcess = null;
 let localBackendStartupPromise = null;
 
@@ -1193,7 +1194,51 @@ function readFirebaseServiceAccount(filePath) {
     return null;
 }
 
+function getFirebasePresenceEnvCandidates(localAppDir) {
+    return [
+        path.join(localAppDir, JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
+        path.join(localAppDir, 'info', JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
+        path.join(getAppRootDir(), 'private', JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
+        path.join(process.resourcesPath || '', 'private', JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
+        path.join(localAppDir, '.env')
+    ].filter(Boolean);
+}
+
+function readFirebaseRuntimeEnvValues(localAppDir) {
+    const values = {};
+    for (const candidate of getFirebasePresenceEnvCandidates(localAppDir)) {
+        Object.assign(values, readLocalDotEnvValues(candidate));
+    }
+    return values;
+}
+
+function pickFirebaseRuntimeEnv(values) {
+    const allowedKeys = [
+        'FIREBASE_DATABASE_URL',
+        'FIREBASE_REALTIME_DATABASE_URL',
+        'JK_FIREBASE_DATABASE_URL',
+        'JK_FIREBASE_REALTIME_DATABASE_URL',
+        'FIREBASE_WEB_API_KEY',
+        'FIREBASE_API_KEY',
+        'JK_FIREBASE_WEB_API_KEY',
+        'JK_FIREBASE_API_KEY',
+        'FIREBASE_AUTH_DOMAIN',
+        'JK_FIREBASE_AUTH_DOMAIN',
+        'FIREBASE_PROJECT_ID',
+        'JK_FIREBASE_PROJECT_ID',
+        'FIREBASE_WEB_APP_ID',
+        'JK_FIREBASE_WEB_APP_ID'
+    ];
+    const selected = {};
+    for (const key of allowedKeys) {
+        const value = String(values[key] || '').trim();
+        if (value) selected[key] = value;
+    }
+    return selected;
+}
+
 function getLocalBackendFirebaseEnv(localAppDir) {
+    const runtimeEnv = pickFirebaseRuntimeEnv(readFirebaseRuntimeEnvValues(localAppDir));
     for (const candidate of getFirebaseServiceAccountCandidates(localAppDir)) {
         if (!fs.existsSync(candidate)) continue;
         const account = readFirebaseServiceAccount(candidate);
@@ -1204,7 +1249,8 @@ function getLocalBackendFirebaseEnv(localAppDir) {
             JK_FIREBASE_LIVE_FEATURES: 'true',
             FIREBASE_LIVE_FEATURES: 'true',
             JK_FIREBASE_CHAT_PRESENCE_ENABLED: 'true',
-            ...(account.project_id ? { FIREBASE_PROJECT_ID: String(account.project_id) } : {})
+            ...runtimeEnv,
+            ...(account.project_id && !runtimeEnv.FIREBASE_PROJECT_ID ? { FIREBASE_PROJECT_ID: String(account.project_id) } : {})
         };
     }
     return { JK_ACCESS_BACKEND: 'auto' };
@@ -1389,6 +1435,29 @@ function cmdValue(value) {
     return String(value || '').replace(/"/g, '');
 }
 
+function firebaseRuntimeCmdLines(firebaseEnv) {
+    const keys = [
+        'FIREBASE_DATABASE_URL',
+        'FIREBASE_REALTIME_DATABASE_URL',
+        'JK_FIREBASE_DATABASE_URL',
+        'JK_FIREBASE_REALTIME_DATABASE_URL',
+        'FIREBASE_WEB_API_KEY',
+        'FIREBASE_API_KEY',
+        'JK_FIREBASE_WEB_API_KEY',
+        'JK_FIREBASE_API_KEY',
+        'FIREBASE_AUTH_DOMAIN',
+        'JK_FIREBASE_AUTH_DOMAIN',
+        'FIREBASE_WEB_APP_ID',
+        'JK_FIREBASE_WEB_APP_ID',
+        'FIREBASE_LIVE_FEATURES',
+        'JK_FIREBASE_LIVE_FEATURES',
+        'JK_FIREBASE_CHAT_PRESENCE_ENABLED'
+    ];
+    return keys
+        .filter((key) => String(firebaseEnv[key] || '').trim())
+        .map((key) => `set "${key}=${cmdValue(firebaseEnv[key])}"`);
+}
+
 function writeLocalBackendLauncher(localAppDir) {
     const infoDir = path.join(localAppDir, 'info');
     const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
@@ -1422,15 +1491,7 @@ function writeLocalBackendLauncher(localAppDir) {
         ...(firebaseEnv.FIREBASE_PROJECT_ID ? [
             `set "FIREBASE_PROJECT_ID=${cmdValue(firebaseEnv.FIREBASE_PROJECT_ID)}"`
         ] : []),
-        ...(firebaseEnv.JK_FIREBASE_LIVE_FEATURES ? [
-            `set "JK_FIREBASE_LIVE_FEATURES=${cmdValue(firebaseEnv.JK_FIREBASE_LIVE_FEATURES)}"`
-        ] : []),
-        ...(firebaseEnv.FIREBASE_LIVE_FEATURES ? [
-            `set "FIREBASE_LIVE_FEATURES=${cmdValue(firebaseEnv.FIREBASE_LIVE_FEATURES)}"`
-        ] : []),
-        ...(firebaseEnv.JK_FIREBASE_CHAT_PRESENCE_ENABLED ? [
-            `set "JK_FIREBASE_CHAT_PRESENCE_ENABLED=${cmdValue(firebaseEnv.JK_FIREBASE_CHAT_PRESENCE_ENABLED)}"`
-        ] : []),
+        ...firebaseRuntimeCmdLines(firebaseEnv),
         'set "PYTHONUNBUFFERED=1"',
         'set "PYTHONUTF8=1"',
         'echo.>> "%LOG_FILE%"',
@@ -1682,7 +1743,7 @@ function hasAnyEnvValue(values, keys) {
 }
 
 function hasRequiredPrivateRuntimeConfig(localAppDir) {
-    const values = readLocalDotEnvValues(path.join(localAppDir, '.env'));
+    const values = readFirebaseRuntimeEnvValues(localAppDir);
     const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
     const hasFirebaseAdmin = String(firebaseEnv.JK_ACCESS_BACKEND || '').toLowerCase() === 'firebase'
         && !!firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE;
@@ -1698,8 +1759,7 @@ function hasRequiredPrivateRuntimeConfig(localAppDir) {
         'JK_FIREBASE_WEB_API_KEY',
         'JK_FIREBASE_API_KEY'
     ]);
-    const hasDailyKey = hasAnyEnvValue(values, ['DAILY_API_KEY', 'JK_DAILY_API_KEY']);
-    return hasFirebaseAdmin && hasFirebaseDatabase && hasFirebaseWebKey && hasDailyKey;
+    return hasFirebaseAdmin && hasFirebaseDatabase && hasFirebaseWebKey;
 }
 
 function promptPrivateCredentialsPassword(parentWindow) {

@@ -145,38 +145,112 @@ def enviar_para_impressora_local(pdf_bytes, nome_arquivo="temp_print.pdf"):
 # --- 2. LÓGICA TIKTOK ---
 # ==============================================================================
 
+def _eh_pagina_lista_tiktok(texto_pagina):
+    """Identifica paginas de lista/packing do TikTok dentro do PDF principal."""
+    texto_up = (texto_pagina or "").upper()
+    if "PICKING LIST" in texto_up or "PACKING LIST" in texto_up:
+        return True
+
+    indicadores = ("ORDER ID", "PACKAGE ID", "PRODUCT NAME", "SELLER SKU", "QTY")
+    total_indicadores = sum(1 for item in indicadores if item in texto_up)
+    eh_etiqueta = "DESTINAT" in texto_up or "RECEBEDOR" in texto_up or "REMETENTE" in texto_up
+    return total_indicadores >= 4 and not eh_etiqueta
+
+
+def _extrair_order_id_tiktok(texto_pagina):
+    match = re.search(r'\bOrder\s*ID\s*:\s*(\d{10,})', texto_pagina or "", flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _extrair_sku_qtd_tiktok(texto_pagina):
+    linhas = [linha.strip() for linha in (texto_pagina or "").splitlines() if linha.strip()]
+
+    for idx, linha in enumerate(linhas):
+        if not re.search(r'\bQty\s*Total\b', linha, flags=re.IGNORECASE):
+            continue
+
+        inicio_tabela = -1
+        for j in range(idx - 1, -1, -1):
+            if linhas[j].strip().upper() == "QTY":
+                inicio_tabela = j + 1
+                break
+
+        bloco = linhas[inicio_tabela:idx] if inicio_tabela >= 0 else linhas[max(0, idx - 8):idx]
+        qtd_idx = None
+        for j in range(len(bloco) - 1, -1, -1):
+            if re.fullmatch(r'\d{1,4}', bloco[j]):
+                qtd_idx = j
+                break
+
+        if qtd_idx is None:
+            continue
+
+        qtd = bloco[qtd_idx]
+        for j in range(qtd_idx - 1, -1, -1):
+            sku = bloco[j].strip()
+            if sku and not re.fullmatch(r'(?:SKU|SELLER SKU|PRODUCT NAME|QTY)', sku, flags=re.IGNORECASE):
+                return sku, qtd
+
+    texto_compacto = re.sub(r'\s+', ' ', texto_pagina or "").strip()
+    match = re.search(
+        r'Seller\s+SKU\s+Qty\s+.+?\s+([A-Z0-9][A-Z0-9_\-./]{0,59})\s+(\d{1,4})\s+Qty\s+Total',
+        texto_compacto,
+        flags=re.IGNORECASE
+    )
+    if match:
+        return match.group(1), match.group(2)
+
+    termos_bloqueados = (
+        "PICKING", "PACKING", "TIK TOK", "TIKTOK", "ORDER", "PACKAGE", "CREATED",
+        "TRANSIT", "TRACKING", "PRODUCT", "SELLER", "QTY", "TOTAL"
+    )
+    order_id_pattern = re.compile(r'^(?:Order\s*ID\s*:?\s*)?\d{15,}', flags=re.IGNORECASE)
+    for i, linha in enumerate(linhas):
+        if not linha or linha.isdigit() or ":" in linha:
+            continue
+        linha_up = linha.upper()
+        if any(termo in linha_up for termo in termos_bloqueados):
+            continue
+        if len(linha) > 60:
+            continue
+
+        proxima = linhas[i + 1].strip() if i + 1 < len(linhas) else ""
+        if re.fullmatch(r'\d{1,4}', proxima):
+            return linha, proxima
+        if order_id_pattern.search(proxima):
+            return linha, "1"
+
+    return None
+
+
+def _parse_tiktok_picking_doc(doc):
+    mapa_tiktok = {}
+    lista_sequencial = []
+    paginas_lista = []
+
+    for page_index, page in enumerate(doc):
+        texto = page.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        if not _eh_pagina_lista_tiktok(texto):
+            continue
+
+        paginas_lista.append(page_index)
+        dados_sku = _extrair_sku_qtd_tiktok(texto)
+        if not dados_sku:
+            continue
+
+        order_id = _extrair_order_id_tiktok(texto)
+        if order_id:
+            mapa_tiktok[order_id] = dados_sku
+        lista_sequencial.append(dados_sku)
+
+    return mapa_tiktok, lista_sequencial, paginas_lista
+
+
 def parse_tiktok_picking_list(file_obj):
     """Lê o PDF 'Picking List' do TikTok e extrai a relação {Order_ID: (SKU, Qtd)}"""
-    mapa_tiktok = {}
-    lista_sequencial = [] 
-    
     try:
         doc = fitz.open(stream=file_obj.read(), filetype="pdf")
-        current_sku = None
-        full_text = ""
-        for page in doc:
-            full_text += page.get_text() + "\n"
-        
-        lines = full_text.split('\n')
-        order_id_pattern = re.compile(r'^\d{15,}')
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line: continue
-            
-            match_id = order_id_pattern.search(line)
-            if match_id:
-                order_id = match_id.group(0)
-                if current_sku:
-                    mapa_tiktok[order_id] = (current_sku, "1")
-                    lista_sequencial.append((current_sku, "1"))
-            else:
-                if len(line) > 1 and len(line) < 20 and "Picking" not in line and "Tik Tok" not in line and not line.isdigit():
-                    if i + 1 < len(lines) and lines[i+1].strip().isdigit() and len(lines[i+1].strip()) < 4:
-                        current_sku = line
-                    elif i + 1 < len(lines) and order_id_pattern.search(lines[i+1]):
-                         current_sku = line
-
+        mapa_tiktok, lista_sequencial, _ = _parse_tiktok_picking_doc(doc)
         doc.close()
         file_obj.seek(0)
         return mapa_tiktok, lista_sequencial
@@ -197,17 +271,22 @@ def processar_tiktok(uploaded_file, uploaded_list=None):
     
     progress_bar.progress(10, text="Analisando Picking List do TikTok...")
     
-    if not uploaded_list:
-        st.error("Para o TikTok, a 'Picking List' é obrigatória!")
-        progress_bar.empty()
-        return None, 0, None
+    if uploaded_list:
+        mapa_tiktok, lista_seq = parse_tiktok_picking_list(uploaded_list)
+        lista_sequencial_fallback = lista_seq
 
-    mapa_tiktok, lista_seq = parse_tiktok_picking_list(uploaded_list)
-    lista_sequencial_fallback = lista_seq
-    
-    # Salva a lista original para impressão
-    uploaded_list.seek(0)
-    doc_lista.insert_pdf(fitz.open(stream=uploaded_list.read(), filetype="pdf"))
+        # Salva a lista original para impressão
+        uploaded_list.seek(0)
+        doc_lista_origem = fitz.open(stream=uploaded_list.read(), filetype="pdf")
+        doc_lista.insert_pdf(doc_lista_origem)
+        doc_lista_origem.close()
+    else:
+        mapa_tiktok, lista_seq, paginas_lista = _parse_tiktok_picking_doc(doc_origem)
+        lista_sequencial_fallback = lista_seq
+        for pagina_lista in paginas_lista:
+            doc_lista.insert_pdf(doc_origem, from_page=pagina_lista, to_page=pagina_lista)
+        if not lista_sequencial_fallback:
+            st.warning("Lista de picking do TikTok nao foi encontrada; SKUs ficarao como N/D.")
     
     progress_bar.progress(40, text="Separando e formatando etiquetas...")
 
@@ -223,7 +302,10 @@ def processar_tiktok(uploaded_file, uploaded_list=None):
         texto_atual = page_atual.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE).upper()
         
         # Filtros de páginas indesejadas
-        eh_lista = any(s in texto_atual for s in ["MANIFESTO", "RESUMO DO PEDIDO", "RELATÓRIO DE", "PICKING LIST"])
+        eh_lista = (
+            any(s in texto_atual for s in ["MANIFESTO", "RESUMO DO PEDIDO", "RELATÓRIO DE", "PICKING LIST", "PACKING LIST"])
+            or _eh_pagina_lista_tiktok(texto_atual)
+        )
         eh_danfe = any(s in texto_atual for s in ["DANFE", "DOCUMENTO AUXILIAR", "VALOR TOTAL DA NOTA"])
         eh_declaracao_conteudo_solta = "DECLARAÇÃO DE CONTEÚDO" in texto_atual and "REMETENTE" in texto_atual and len(re.findall(r'ETIQUETA', texto_atual)) == 0
         

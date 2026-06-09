@@ -68,7 +68,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, TimeoutError as FuturesTimeoutError
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -87,11 +87,13 @@ try:
     from firebase_admin import auth as firebase_auth
     from firebase_admin import credentials as firebase_credentials
     from firebase_admin import firestore as firebase_firestore
+    from firebase_admin import db as firebase_realtime_db
 except Exception:
     firebase_admin = None
     firebase_auth = None
     firebase_credentials = None
     firebase_firestore = None
+    firebase_realtime_db = None
 try:
     from cryptography.fernet import Fernet, InvalidToken
 except Exception:
@@ -189,6 +191,7 @@ IA_RAG_REINDEX_ACTIVE = {}
 IA_RAG_REINDEX_META = {}
 IA_RAG_REINDEX_LOCK = threading.Lock()
 IA_RAG_SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+IA_PERGUNTAS_TOOLS_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 IA_GEMINI_MODELS_CACHE = {"expires_at": 0.0, "items": []}
 IA_GEMINI_MODELS_CACHE_TTL_S = 900
 IA_GEMINI_MODELS_LOCK = threading.Lock()
@@ -1151,6 +1154,9 @@ class PerguntasEnviarRespostaRequest(BaseModel):
     loja: str
     question_id: str
     resposta: str
+    pergunta: Optional[dict] = None
+    sku: Optional[str] = ""
+    item_id: Optional[str] = ""
 
 class PosVendaMensagemRequest(BaseModel):
     loja: Any
@@ -1159,6 +1165,7 @@ class PosVendaMensagemRequest(BaseModel):
     buyer_id: Optional[Any] = ""
     texto: Any
     max_chars: Optional[int] = 350
+    conversa: Optional[dict] = None
 
 class PosVendaGerarRespostaRequest(BaseModel):
     loja: Any
@@ -1877,6 +1884,11 @@ class FavoritosHistoricoRequest(BaseModel):
     historico: list[dict] | None = None
 
 
+class FavoritosHistoricoRealtimeSyncRequest(BaseModel):
+    machine_id: str | None = ""
+    reason: str | None = ""
+
+
 class FavoritosPlanilhaLojaItem(BaseModel):
     loja: str
     url: str | None = ""
@@ -2586,8 +2598,8 @@ def _ml_parse_error_detail(resp, fallback: str = "Erro na API do Mercado Livre")
 
     if "price" in detail.lower() and ("automat" in detail.lower() or "ignore" in detail.lower() or resp.status_code == 400):
         detail = (
-            "Mercado Livre recusou ou ignorou a atualizaÃƒÂ§ÃƒÂ£o de preÃ§o. "
-            "Verifique automaÃƒÂ§ÃƒÂ£o de preÃ§os, campanhas e se o anuncio ÃƒÂ© de catÃƒÂ¡logo. "
+            "Mercado Livre recusou ou ignorou a atualizacao de preco. "
+            "Verifique automacao de precos, campanhas e se o anuncio e de catalogo. "
             f"Detalhe: {detail}"
         )
     return detail
@@ -4955,6 +4967,7 @@ def _favoritos_lista_texto_historico(valor: Any, limite_item: int = 220, max_ite
 
 
 FAVORITOS_HISTORICO_ANUNCIOS_MAX = 60
+FAVORITOS_HISTORICO_REALTIME_SCOPE = "favoritos_historico"
 
 
 def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
@@ -5091,6 +5104,15 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             "id": _favoritos_limpar_texto_historico(entrada.get("id"), 80) or f"hist_{len(saida) + 1}",
             "data_iso": _favoritos_limpar_texto_historico(entrada.get("data_iso"), 80),
             "loja": _favoritos_limpar_texto_historico(entrada.get("loja"), 180),
+            "usuario": _favoritos_limpar_texto_historico(
+                entrada.get("usuario") or entrada.get("nome_usuario") or entrada.get("usuario_nome") or entrada.get("created_by_name") or entrada.get("criado_por_nome") or entrada.get("username") or entrada.get("created_by") or entrada.get("criado_por"),
+                160,
+            ),
+            "nome_usuario": _favoritos_limpar_texto_historico(
+                entrada.get("nome_usuario") or entrada.get("usuario_nome") or entrada.get("usuario") or entrada.get("created_by_name") or entrada.get("criado_por_nome") or entrada.get("username") or entrada.get("created_by") or entrada.get("criado_por"),
+                160,
+            ),
+            "username": _favoritos_limpar_texto_historico(entrada.get("username") or entrada.get("created_by") or entrada.get("criado_por") or entrada.get("usuario"), 160),
             "total_skus": _favoritos_int_historico(entrada.get("total_skus"), len(grupos_saida)),
             "total_anuncios": _favoritos_int_historico(entrada.get("total_anuncios"), sum(len(g["anuncios"]) for g in grupos_saida)),
             "grupos": grupos_saida,
@@ -5112,22 +5134,43 @@ def _favoritos_carregar_historico(client_id: str, username: str) -> dict:
         with open(caminho, "r", encoding="utf-8") as f:
             dados = json.load(f)
         if isinstance(dados, dict):
+            historico_normalizado = _favoritos_normalizar_historico(dados.get("historico") or [])
+            _favoritos_aplicar_usuario_padrao_historico(historico_normalizado, username)
             return {
-                "historico": _favoritos_normalizar_historico(dados.get("historico") or []),
+                "historico": historico_normalizado,
                 "updated_at": dados.get("updated_at"),
             }
         if isinstance(dados, list):
-            return {"historico": _favoritos_normalizar_historico(dados), "updated_at": None}
+            historico_normalizado = _favoritos_normalizar_historico(dados)
+            _favoritos_aplicar_usuario_padrao_historico(historico_normalizado, username)
+            return {"historico": historico_normalizado, "updated_at": None}
     except Exception as exc:
         logger.warning("[Favoritos ML] Falha ao carregar historico do usuario %s: %s", username, exc)
     return {"historico": [], "updated_at": None}
 
 
+def _favoritos_aplicar_usuario_padrao_historico(historico_normalizado: list[dict], username: str) -> None:
+    usuario_padrao = _favoritos_limpar_texto_historico(username, 160)
+    if not usuario_padrao:
+        return
+    for entrada in historico_normalizado:
+        if not isinstance(entrada, dict):
+            continue
+        if not entrada.get("usuario"):
+            entrada["usuario"] = usuario_padrao
+        if not entrada.get("nome_usuario"):
+            entrada["nome_usuario"] = entrada.get("usuario") or usuario_padrao
+        if not entrada.get("username"):
+            entrada["username"] = usuario_padrao
+
+
 def _favoritos_salvar_historico(client_id: str, username: str, historico: Any) -> dict:
     caminho = _favoritos_arquivo_historico(client_id, username)
     os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    historico_normalizado = _favoritos_normalizar_historico(historico)
+    _favoritos_aplicar_usuario_padrao_historico(historico_normalizado, username)
     payload = {
-        "historico": _favoritos_normalizar_historico(historico),
+        "historico": historico_normalizado,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     tmp = caminho + ".tmp"
@@ -5135,6 +5178,154 @@ def _favoritos_salvar_historico(client_id: str, username: str, historico: Any) -
         json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp, caminho)
     return payload
+
+
+def _favoritos_usuario_pode_sync_historico(usuario: dict, client_id: str) -> bool:
+    if not isinstance(usuario, dict):
+        return False
+    usuario_client = _shared_sync_normalizar_client_id(usuario.get("client_id") or "default")
+    if usuario_client != _shared_sync_normalizar_client_id(client_id):
+        return False
+    if not _login_usuario_ativo(usuario):
+        return False
+    validade_ok, _msg = _login_validade_ok(usuario)
+    if not validade_ok:
+        return False
+    permissoes = _normalizar_permissoes(usuario.get("permissions") or {})
+    return bool(permissoes.get("full") or permissoes.get("favoritos"))
+
+
+def _favoritos_usuarios_sync_historico(client_id: str) -> list[str]:
+    try:
+        usuarios, _ws, _headers = carregar_usuarios_sheets()
+    except Exception as exc:
+        logger.warning("[Favoritos Sync] Falha ao carregar usuarios para sync realtime: %s", exc)
+        usuarios = {}
+    saida = []
+    if isinstance(usuarios, dict):
+        for username, usuario in usuarios.items():
+            user = dict(usuario or {})
+            user["username"] = str(user.get("username") or username or "").strip().lower()
+            if not user["username"]:
+                continue
+            if _favoritos_usuario_pode_sync_historico(user, client_id):
+                saida.append(user["username"])
+    return sorted(set(saida))
+
+
+def _favoritos_historico_payload_bytes(payload: dict) -> bytes:
+    return json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+
+
+def _favoritos_mesclar_historico_usuario_com_fontes(client_id: str, username: str, fontes: list[tuple[str, bytes]]) -> dict:
+    antes = _favoritos_carregar_historico(client_id, username)
+    assinatura_antes = [
+        _shared_sync_historico_key(item)
+        for item in _favoritos_normalizar_historico((antes or {}).get("historico") or [])
+    ]
+    depois = _shared_sync_merge_historico_usuario(client_id, username, fontes)
+    assinatura_depois = [
+        _shared_sync_historico_key(item)
+        for item in _favoritos_normalizar_historico((depois or {}).get("historico") or [])
+    ]
+    return {
+        "payload": depois,
+        "changed": assinatura_depois != assinatura_antes,
+        "item_count": len(assinatura_depois),
+    }
+
+
+def _favoritos_propagar_historico_para_usuarios(client_id: str, source_username: str, payload: dict) -> dict:
+    client_norm = _shared_sync_normalizar_client_id(client_id)
+    source_norm = _shared_sync_normalizar_username(source_username)
+    usuarios = _favoritos_usuarios_sync_historico(client_norm)
+    if source_norm not in usuarios:
+        return {
+            "eligible_users": usuarios,
+            "updated_users": [],
+            "failed": [],
+            "skipped": "source_without_favoritos_permission",
+        }
+    fonte_rel = f"favoritos_historico_{_favoritos_usuario_slug(source_norm)}.json"
+    fonte_bytes = _favoritos_historico_payload_bytes(payload)
+    atualizados = []
+    falhas = []
+    for username in usuarios:
+        if _shared_sync_normalizar_username(username) == source_norm:
+            continue
+        try:
+            resultado = _favoritos_mesclar_historico_usuario_com_fontes(client_norm, username, [(fonte_rel, fonte_bytes)])
+            if resultado.get("changed"):
+                atualizados.append(username)
+        except Exception as exc:
+            logger.warning("[Favoritos Sync] Falha ao propagar historico de %s para %s: %s", source_norm, username, exc)
+            falhas.append({"username": username, "error": str(exc)})
+    return {
+        "eligible_users": usuarios,
+        "updated_users": atualizados,
+        "failed": falhas,
+    }
+
+
+def _favoritos_reconciliar_historico_usuario(client_id: str, username: str) -> dict:
+    client_norm = _shared_sync_normalizar_client_id(client_id)
+    username_norm = _shared_sync_normalizar_username(username)
+    usuarios = _favoritos_usuarios_sync_historico(client_norm)
+    if username_norm not in usuarios:
+        atual = _favoritos_carregar_historico(client_norm, username_norm)
+        return {
+            "payload": atual,
+            "changed": False,
+            "source_count": 0,
+            "item_count": len(atual.get("historico") or []),
+            "skipped": "user_without_favoritos_permission",
+        }
+    fontes = []
+    for origem in usuarios:
+        origem_norm = _shared_sync_normalizar_username(origem)
+        if not origem_norm:
+            continue
+        payload = _favoritos_carregar_historico(client_norm, origem_norm)
+        historico = _favoritos_normalizar_historico((payload or {}).get("historico") or [])
+        if not historico:
+            continue
+        rel = f"favoritos_historico_{_favoritos_usuario_slug(origem_norm)}.json"
+        fontes.append((rel, _favoritos_historico_payload_bytes({"historico": historico, "updated_at": payload.get("updated_at")})))
+    if not fontes:
+        atual = _favoritos_carregar_historico(client_norm, username_norm)
+        return {"payload": atual, "changed": False, "source_count": 0, "item_count": len(atual.get("historico") or [])}
+    resultado = _favoritos_mesclar_historico_usuario_com_fontes(client_norm, username_norm, fontes)
+    resultado["source_count"] = len(fontes)
+    return resultado
+
+
+def _favoritos_historico_realtime_event_path(client_id: str) -> str:
+    client_key = _firebase_presence_client_key(_shared_sync_normalizar_client_id(client_id))
+    return f"{_firebase_presence_root_path()}/clients/{client_key}/events/favoritos_historico"
+
+
+def _favoritos_historico_publicar_evento_realtime(client_id: str, source_username: str, meta: Optional[dict] = None) -> bool:
+    if not _firebase_deve_usar() or firebase_realtime_db is None:
+        return False
+    app_fb = _firebase_app()
+    if app_fb is None:
+        return False
+    try:
+        payload = {
+            "event_id": uuid.uuid4().hex,
+            "scope": FAVORITOS_HISTORICO_REALTIME_SCOPE,
+            "client_id": _shared_sync_normalizar_client_id(client_id),
+            "source_username": _shared_sync_normalizar_username(source_username),
+            "updated_at": _shared_sync_now_iso(),
+            "updated_ts": int(time.time()),
+            "meta": meta or {},
+        }
+        ref = firebase_realtime_db.reference(_favoritos_historico_realtime_event_path(client_id), app=app_fb)
+        ref.set(payload)
+        return True
+    except Exception as exc:
+        logger.warning("[Favoritos Sync] Falha ao publicar evento realtime: %s", exc)
+        return False
 
 
 def _favoritos_carregar_cadastro_por_sku(client_id: str) -> tuple[dict[str, dict], str]:
@@ -16388,6 +16579,9 @@ ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO = 1900
 ML_PERGUNTAS_IA_PROMPT_MAX_CHARS = 3600
 ML_PERGUNTAS_IA_DESCRICAO_PROMPT_MAX_CHARS = 1200
 ML_PERGUNTAS_IA_CONTEXTO_EXTRA_PROMPT_MAX_CHARS = 900
+ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES = 200 * 1024
+ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS = 1000
+ML_PERGUNTAS_IA_MEMORIA_SKU_PROMPT_MAX_CHARS = 4500
 IA_CHAT_MESSAGE_MAX_CHARS = 4000
 IA_CHAT_MESSAGE_COMPACT_TARGET_CHARS = 3900
 ML_POS_VENDA_DEFAULT_MAX_CHARS = 350
@@ -16400,6 +16594,7 @@ PERGUNTAS_AUTOMACAO_BG_THREAD_STARTED = False
 PERGUNTAS_AUTOMACAO_BG_NEXT_CHECKS: dict[str, float] = {}
 PERGUNTAS_AUTOMACAO_BG_RUNNING: set[str] = set()
 PERGUNTAS_AUTOMACAO_BG_LAST_RESULTS: dict[str, dict] = {}
+PERGUNTAS_IA_MEMORIA_SKU_LOCK = threading.RLock()
 
 
 def _perguntas_loja_config_path(client_id: str) -> str:
@@ -16721,6 +16916,670 @@ def _perguntas_ia_limitar_prompt(prompt: str, pergunta: str) -> str:
         + "\n\n[Prompt reduzido automaticamente: descricao/contexto muito longos.]"
         + sufixo
     )[:ML_PERGUNTAS_IA_PROMPT_MAX_CHARS]
+
+
+def _perguntas_ia_memoria_sku_limite_bytes() -> int:
+    bruto = (
+        os.getenv("ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_BYTES")
+        or os.getenv("ML_PERGUNTAS_IA_MEMORIA_SKU_BYTES")
+        or ""
+    )
+    try:
+        valor = int(float(str(bruto or ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES).replace(",", ".")))
+    except Exception:
+        valor = ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES
+    return max(ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES, valor)
+
+
+def _perguntas_ia_memoria_sku_normalizar(valor: object) -> str:
+    texto = _normalizar_sku_mes(str(valor or "").strip())
+    texto = re.sub(r"\s+", " ", texto).strip()[:90]
+    return texto
+
+
+def _perguntas_ia_memoria_sku_de_fontes(
+    *,
+    sku: object = "",
+    agent_input: Optional[dict] = None,
+    pergunta: Optional[dict] = None,
+    item: Optional[dict] = None,
+    contexto: Optional[dict] = None,
+    approval: Optional[dict] = None,
+) -> str:
+    agent_input = agent_input if isinstance(agent_input, dict) else {}
+    pergunta = pergunta if isinstance(pergunta, dict) else {}
+    item = item if isinstance(item, dict) else {}
+    contexto = contexto if isinstance(contexto, dict) else {}
+    approval = approval if isinstance(approval, dict) else {}
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    agent_item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    agent_context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    produto = approval.get("produto") if isinstance(approval.get("produto"), dict) else {}
+    for candidato in (
+        sku,
+        contexto.get("sku"),
+        contexto.get("item_sku"),
+        item.get("seller_sku"),
+        item.get("sku"),
+        pergunta.get("item_sku"),
+        agent_context.get("sku"),
+        agent_context.get("item_sku"),
+        agent_item.get("seller_sku"),
+        agent_item.get("sku"),
+        question.get("item_sku"),
+        approval.get("sku"),
+        approval.get("item_sku"),
+        approval.get("seller_sku"),
+        produto.get("sku"),
+        produto.get("item_sku"),
+    ):
+        sku_norm = _perguntas_ia_memoria_sku_normalizar(candidato)
+        if sku_norm:
+            return sku_norm
+    return ""
+
+
+def _perguntas_ia_memoria_sku_dir(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "perguntas_pos_venda_memoria_sku")
+
+
+def _perguntas_ia_memoria_sku_path(client_id: str, sku: str) -> str:
+    sku_norm = _perguntas_ia_memoria_sku_normalizar(sku) or "sku"
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", sku_norm).strip("_")[:80] or "sku"
+    digest = hashlib.sha1(sku_norm.upper().encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return os.path.join(_perguntas_ia_memoria_sku_dir(client_id), f"{slug}_{digest}.json")
+
+
+def _perguntas_ia_memoria_payload_vazio(sku: str) -> dict:
+    agora = dt.datetime.now().isoformat(timespec="seconds")
+    return {
+        "version": 1,
+        "sku": _perguntas_ia_memoria_sku_normalizar(sku),
+        "created_at": agora,
+        "updated_at": agora,
+        "resumo_compacto": "",
+        "eventos": [],
+        "estatisticas": {"total_eventos": 0, "compactacoes": 0},
+    }
+
+
+def _perguntas_ia_memoria_normalizar(payload: object, sku: str) -> dict:
+    base = _perguntas_ia_memoria_payload_vazio(sku)
+    if not isinstance(payload, dict):
+        return base
+    eventos = payload.get("eventos") if isinstance(payload.get("eventos"), list) else []
+    eventos_norm = [item for item in eventos if isinstance(item, dict)]
+    stats = payload.get("estatisticas") if isinstance(payload.get("estatisticas"), dict) else {}
+    base.update({
+        "version": int(payload.get("version") or 1),
+        "sku": _perguntas_ia_memoria_sku_normalizar(payload.get("sku") or sku),
+        "created_at": payload.get("created_at") or base["created_at"],
+        "updated_at": payload.get("updated_at") or base["updated_at"],
+        "resumo_compacto": str(payload.get("resumo_compacto") or "").strip()[:24000],
+        "eventos": eventos_norm[-ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS:],
+        "estatisticas": {
+            "total_eventos": int(stats.get("total_eventos") or len(eventos_norm)),
+            "compactacoes": int(stats.get("compactacoes") or 0),
+        },
+    })
+    return base
+
+
+def _perguntas_ia_memoria_carregar(client_id: str, sku: str) -> dict:
+    sku_norm = _perguntas_ia_memoria_sku_normalizar(sku)
+    if not sku_norm:
+        return {}
+    caminho = _perguntas_ia_memoria_sku_path(client_id, sku_norm)
+    data = _perguntas_ia_ler_json(caminho, {})
+    return _perguntas_ia_memoria_normalizar(data, sku_norm)
+
+
+def _perguntas_ia_memoria_bytes(payload: dict) -> int:
+    return len(json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8", errors="ignore"))
+
+
+def _perguntas_ia_memoria_salvar(client_id: str, memoria: dict) -> None:
+    sku = _perguntas_ia_memoria_sku_normalizar((memoria or {}).get("sku"))
+    if not sku:
+        return
+    caminho = _perguntas_ia_memoria_sku_path(client_id, sku)
+    _perguntas_ia_salvar_json(caminho, memoria)
+
+
+def _perguntas_ia_memoria_resumir_matches(matches: object) -> list[dict]:
+    saida = []
+    for match in (matches if isinstance(matches, list) else [])[:3]:
+        if not isinstance(match, dict):
+            continue
+        resumo = {}
+        for chave in (
+            "sku", "seller_sku", "id", "item_id", "id_bling", "title", "titulo",
+            "nome", "marca", "categoria", "condition", "loja", "loja_consulta",
+            "url", "link", "permalink",
+        ):
+            valor = match.get(chave)
+            if valor not in (None, "", [], {}):
+                resumo[chave] = str(valor)[:500]
+        for chave in ("price", "preco", "available_quantity", "estoque", "saldo_loja", "saldo_full"):
+            valor = match.get(chave)
+            if valor not in (None, ""):
+                resumo[chave] = valor
+        descricao = str(match.get("description") or match.get("descricao") or "").strip()
+        if descricao:
+            resumo["descricao"] = descricao[:900]
+        if resumo:
+            saida.append(resumo)
+    return saida
+
+
+def _perguntas_ia_memoria_resumir_tool_results(tool_results: object) -> list[dict]:
+    saida = []
+    for tool in (tool_results if isinstance(tool_results, list) else [])[:8]:
+        if not isinstance(tool, dict):
+            continue
+        result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        item = {
+            "function": str(tool.get("function") or "")[:120],
+            "found": bool(result.get("found")),
+            "timeout": bool(result.get("timeout")),
+            "error": str(result.get("error") or "")[:220],
+        }
+        matches = _perguntas_ia_memoria_resumir_matches(result.get("matches"))
+        if matches:
+            item["matches"] = matches
+        contexto = str(result.get("context") or "").strip()
+        if contexto:
+            item["context"] = contexto[:2200]
+        message = str(result.get("message") or "").strip()
+        if message:
+            item["message"] = message[:300]
+        saida.append({k: v for k, v in item.items() if v not in ("", [], {})})
+    return saida
+
+
+def _perguntas_ia_memoria_evento_base(tipo: str, loja: str, sku: str, item_id: str = "", question_id: str = "") -> dict:
+    return {
+        "tipo": str(tipo or "evento").strip()[:80],
+        "at": dt.datetime.now().isoformat(timespec="seconds"),
+        "loja": str(loja or "").strip()[:160],
+        "sku": _perguntas_ia_memoria_sku_normalizar(sku),
+        "item_id": str(item_id or "").strip()[:80],
+        "question_id": str(question_id or "").strip()[:80],
+    }
+
+
+def _perguntas_ia_memoria_compactar_local(memoria: dict, removidos: list[dict]) -> str:
+    resumo_atual = str((memoria or {}).get("resumo_compacto") or "").strip()
+    linhas = [resumo_atual] if resumo_atual else []
+    for evento in removidos[-40:]:
+        tipo = str(evento.get("tipo") or "")
+        pergunta = str(evento.get("pergunta") or "").strip()
+        resposta = str(evento.get("resposta_aprovada") or evento.get("resposta_rascunho") or "").strip()
+        fatos = []
+        for tool in evento.get("tool_results") or []:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("found"):
+                fatos.append(str(tool.get("function") or "ferramenta"))
+        linha = f"- {tipo}"
+        if pergunta:
+            linha += f" | pergunta: {pergunta[:180]}"
+        if resposta:
+            linha += f" | resposta: {resposta[:220]}"
+        if fatos:
+            linha += f" | fontes: {', '.join(fatos[:4])}"
+        linhas.append(linha)
+    return _perguntas_ia_compactar_contexto("\n".join(linhas), 12000)
+
+
+def _perguntas_ia_memoria_compactar_com_ia(client_id: str, memoria: dict, removidos: list[dict]) -> str:
+    if not removidos:
+        return str((memoria or {}).get("resumo_compacto") or "").strip()[:12000]
+    eventos_txt = json.dumps(removidos[-80:], ensure_ascii=False, default=str)[:50000]
+    resumo_atual = str((memoria or {}).get("resumo_compacto") or "").strip()[:12000]
+    prompt = (
+        "Compacte a memoria tecnica deste SKU para uso em respostas do Mercado Livre. "
+        "Preserve fatos uteis do produto, aplicacoes, codigos, compatibilidade, alertas, respostas aprovadas e padroes de atendimento. "
+        "Remova repeticoes, dados fracos, erros de ferramentas e informacoes sem fonte. "
+        "Nao invente nada. Responda em topicos curtos, com no maximo 9000 caracteres.\n\n"
+        f"Resumo atual:\n{resumo_atual or '-'}\n\n"
+        f"Eventos antigos a compactar em JSON:\n{eventos_txt}"
+    )
+    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
+    payload = IAChatRequest(
+        message=prompt,
+        page="Perguntas e pos venda",
+        context={
+            "modulo": "perguntas_pos_venda",
+            "tipo": "compactacao_memoria_sku",
+            "modo_rapido_sidebar": True,
+        },
+        model=model_req,
+    )
+    try:
+        resposta, _model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        resumo = _perguntas_ia_compactar_contexto(resposta, 12000)
+        return resumo or _perguntas_ia_memoria_compactar_local(memoria, removidos)
+    except Exception as exc:
+        logger.warning("[ML PERGUNTAS IA] Falha ao compactar memoria do SKU com IA: %s", exc)
+        return _perguntas_ia_memoria_compactar_local(memoria, removidos)
+
+
+def _perguntas_ia_memoria_garantir_limite(client_id: str, memoria: dict) -> dict:
+    limite = _perguntas_ia_memoria_sku_limite_bytes()
+    eventos = memoria.get("eventos") if isinstance(memoria.get("eventos"), list) else []
+    if _perguntas_ia_memoria_bytes(memoria) <= limite:
+        return memoria
+
+    manter_min = 30
+    removidos: list[dict] = []
+    while len(eventos) > manter_min and _perguntas_ia_memoria_bytes(memoria) > limite:
+        remover_qtd = max(1, min(40, len(eventos) - manter_min))
+        removidos.extend(eventos[:remover_qtd])
+        eventos = eventos[remover_qtd:]
+        memoria["eventos"] = eventos
+
+    if removidos:
+        memoria["resumo_compacto"] = _perguntas_ia_memoria_compactar_com_ia(client_id, memoria, removidos)
+        stats = memoria.setdefault("estatisticas", {})
+        stats["compactacoes"] = int(stats.get("compactacoes") or 0) + 1
+
+    while eventos and _perguntas_ia_memoria_bytes(memoria) > limite:
+        eventos = eventos[1:]
+        memoria["eventos"] = eventos
+
+    if _perguntas_ia_memoria_bytes(memoria) > limite:
+        memoria["resumo_compacto"] = str(memoria.get("resumo_compacto") or "")[:8000]
+    return memoria
+
+
+def _perguntas_ia_memoria_registrar_evento(client_id: str, sku: str, evento: dict) -> dict:
+    sku_norm = _perguntas_ia_memoria_sku_normalizar(sku)
+    if not sku_norm or not isinstance(evento, dict):
+        return {}
+    with PERGUNTAS_IA_MEMORIA_SKU_LOCK:
+        memoria = _perguntas_ia_memoria_carregar(client_id, sku_norm)
+        if not memoria:
+            memoria = _perguntas_ia_memoria_payload_vazio(sku_norm)
+        evento["sku"] = sku_norm
+        memoria.setdefault("eventos", []).append(evento)
+        memoria["eventos"] = [
+            ev for ev in memoria.get("eventos", []) if isinstance(ev, dict)
+        ][-ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS:]
+        memoria["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        stats = memoria.setdefault("estatisticas", {})
+        stats["total_eventos"] = int(stats.get("total_eventos") or 0) + 1
+        memoria = _perguntas_ia_memoria_garantir_limite(client_id, memoria)
+        _perguntas_ia_memoria_salvar(client_id, memoria)
+        return {
+            "sku": sku_norm,
+            "bytes": _perguntas_ia_memoria_bytes(memoria),
+            "limite_bytes": _perguntas_ia_memoria_sku_limite_bytes(),
+            "eventos": len(memoria.get("eventos") or []),
+        }
+
+
+def _perguntas_ia_memoria_registrar_pesquisa(
+    client_id: str,
+    loja: str,
+    agent_input: dict,
+    tool_results: list[dict],
+    resposta_rascunho: str,
+) -> dict:
+    sku = _perguntas_ia_memoria_sku_de_fontes(agent_input=agent_input)
+    if not sku:
+        return {}
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    evento = _perguntas_ia_memoria_evento_base(
+        "pesquisa_ia",
+        loja,
+        sku,
+        item_id=item.get("id") or question.get("item_id") or "",
+        question_id=question.get("id") or "",
+    )
+    evento.update({
+        "titulo": str(item.get("title") or "")[:500],
+        "pergunta": str(question.get("text") or "")[:1200],
+        "resposta_rascunho": str(resposta_rascunho or "")[:1900],
+        "tool_results": _perguntas_ia_memoria_resumir_tool_results(tool_results),
+    })
+    return _perguntas_ia_memoria_registrar_evento(client_id, sku, evento)
+
+
+def _perguntas_ia_memoria_registrar_resposta_aprovada(
+    client_id: str,
+    loja: str,
+    resposta: str,
+    *,
+    approval: Optional[dict] = None,
+    pergunta: Optional[dict] = None,
+    origem: str = "manual",
+    sku: object = "",
+    item_id: object = "",
+    question_id: object = "",
+) -> dict:
+    approval = approval if isinstance(approval, dict) else {}
+    pergunta = pergunta if isinstance(pergunta, dict) else {}
+    produto = approval.get("produto") if isinstance(approval.get("produto"), dict) else {}
+    sku_norm = _perguntas_ia_memoria_sku_de_fontes(
+        sku=sku,
+        pergunta=pergunta,
+        item=produto,
+        approval=approval,
+    )
+    if not sku_norm:
+        return {}
+    qid = str(question_id or approval.get("question_id") or pergunta.get("id") or "").strip()
+    item_id_norm = str(item_id or approval.get("item_id") or pergunta.get("item_id") or produto.get("id") or "").strip()
+    evento = _perguntas_ia_memoria_evento_base("resposta_aprovada", loja, sku_norm, item_id=item_id_norm, question_id=qid)
+    evento.update({
+        "origem": str(origem or "manual")[:80],
+        "titulo": str(approval.get("titulo") or pergunta.get("item_title") or produto.get("title") or "")[:500],
+        "pergunta": str(approval.get("pergunta") or pergunta.get("text") or "")[:1200],
+        "resposta_aprovada": str(resposta or "")[:1900],
+    })
+    return _perguntas_ia_memoria_registrar_evento(client_id, sku_norm, evento)
+
+
+def _perguntas_ia_memoria_bloco_prompt(client_id: str, agent_input: dict) -> str:
+    sku = _perguntas_ia_memoria_sku_de_fontes(agent_input=agent_input)
+    if not sku:
+        return ""
+    memoria = _perguntas_ia_memoria_carregar(client_id, sku)
+    if not memoria:
+        return ""
+    resumo = str(memoria.get("resumo_compacto") or "").strip()
+    eventos = [ev for ev in (memoria.get("eventos") or []) if isinstance(ev, dict)]
+    aprovadas = [ev for ev in eventos if str(ev.get("tipo") or "") == "resposta_aprovada"][-6:]
+    pesquisas = [
+        ev for ev in eventos
+        if str(ev.get("tipo") or "") in {"pesquisa_ia", "pos_venda_ia"}
+    ][-5:]
+    partes = [f"Memoria local do SKU {sku} (capacidade minima por SKU: {ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES // 1024} KB)."]
+    if resumo:
+        partes.append(f"Resumo compacto acumulado:\n{resumo[:12000]}")
+    if aprovadas:
+        linhas = []
+        for ev in aprovadas:
+            perguntas_anuncio = []
+            for evento_anuncio in ev.get("perguntas_anuncio") or []:
+                if not isinstance(evento_anuncio, dict):
+                    continue
+                texto_anuncio = str(evento_anuncio.get("text") or "").strip()
+                if texto_anuncio:
+                    perguntas_anuncio.append(
+                        f"{evento_anuncio.get('label') or evento_anuncio.get('role') or 'Comprador'}: {texto_anuncio[:180]}"
+                    )
+            linhas.append(
+                "Pergunta: "
+                + str(ev.get("pergunta") or "-")[:350]
+                + "\nResposta aprovada: "
+                + str(ev.get("resposta_aprovada") or "-")[:600]
+                + "\nPerguntas anteriores no anuncio: "
+                + (" | ".join(perguntas_anuncio[:4]) or "-")
+            )
+        partes.append("Respostas aprovadas recentes para aprender tom e padrao:\n" + "\n\n".join(linhas))
+    if pesquisas:
+        linhas = []
+        for ev in pesquisas:
+            tipo_evento = str(ev.get("tipo") or "")
+            fontes = []
+            for tool in ev.get("tool_results") or []:
+                if isinstance(tool, dict) and (tool.get("found") or tool.get("timeout") or tool.get("error")):
+                    fontes.append(str(tool.get("function") or "") + (" (timeout)" if tool.get("timeout") else ""))
+            rotulo = "Atendimento pos-venda recente" if tipo_evento == "pos_venda_ia" else "Pergunta pesquisada"
+            resposta_ref = str(ev.get("resposta_rascunho") or ev.get("resposta_aprovada") or "").strip()
+            perguntas_anuncio = []
+            for evento_anuncio in ev.get("perguntas_anuncio") or []:
+                if not isinstance(evento_anuncio, dict):
+                    continue
+                texto_anuncio = str(evento_anuncio.get("text") or "").strip()
+                if texto_anuncio:
+                    perguntas_anuncio.append(
+                        f"{evento_anuncio.get('label') or evento_anuncio.get('role') or 'Comprador'}: {texto_anuncio[:180]}"
+                    )
+            linhas.append(
+                f"{rotulo}: {str(ev.get('pergunta') or '-')[:280]}\n"
+                f"Resposta usada/sugerida: {resposta_ref[:420] or '-'}\n"
+                f"Perguntas anteriores no anuncio: {' | '.join(perguntas_anuncio[:4]) or '-'}\n"
+                f"Fontes/ferramentas: {', '.join([f for f in fontes if f][:6]) or '-'}"
+            )
+        partes.append("Pesquisas e atendimentos recentes ja feitos para este SKU:\n" + "\n\n".join(linhas))
+    bloco = "\n\n".join([p for p in partes if p.strip()])
+    return _perguntas_ia_compactar_contexto(bloco, ML_PERGUNTAS_IA_MEMORIA_SKU_PROMPT_MAX_CHARS)
+
+
+def _ml_pos_venda_memoria_items(conversa: Optional[dict], approval: Optional[dict] = None) -> list[dict]:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    approval = approval if isinstance(approval, dict) else {}
+    conversa_aprovacao = approval.get("conversa") if isinstance(approval.get("conversa"), dict) else {}
+    fontes = []
+    for origem in (conversa, conversa_aprovacao):
+        items = origem.get("items") if isinstance(origem.get("items"), list) else []
+        fontes.extend([item for item in items if isinstance(item, dict)])
+    if approval:
+        fontes.append({
+            "id": approval.get("item_id") or "",
+            "sku": approval.get("sku") or approval.get("item_sku") or "",
+            "title": approval.get("titulo") or "",
+        })
+    saida = []
+    vistos = set()
+    for item in fontes:
+        sku = _perguntas_ia_memoria_sku_normalizar(item.get("sku") or item.get("seller_sku"))
+        if not sku:
+            continue
+        chave = sku.upper()
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        saida.append({
+            "id": str(item.get("id") or item.get("item_id") or "").strip(),
+            "sku": sku,
+            "title": str(item.get("title") or item.get("titulo") or "").strip(),
+            "quantity": item.get("quantity"),
+        })
+    return saida
+
+
+def _ml_pos_venda_memoria_ultima_mensagem(conversa: Optional[dict], approval: Optional[dict] = None) -> str:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    approval = approval if isinstance(approval, dict) else {}
+    texto_aprovacao = str(approval.get("pergunta") or "").strip()
+    if texto_aprovacao:
+        return texto_aprovacao[:1200]
+    texto = str(
+        conversa.get("last_message_text")
+        or ""
+    ).strip()
+    last_role = str(conversa.get("last_message_role") or "").strip().lower()
+    if texto and last_role not in {"loja", "seller", "store"}:
+        return texto[:1200]
+    mensagens = conversa.get("messages") if isinstance(conversa.get("messages"), list) else []
+    for msg in reversed(mensagens):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("from_role") or "").strip().lower() == "seller":
+            continue
+        texto_msg = str(msg.get("text") or "").strip()
+        if texto_msg:
+            return texto_msg[:1200]
+    return texto[:1200] if texto else ""
+
+
+def _ml_pos_venda_memoria_historico(conversa: Optional[dict]) -> list[dict]:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    mensagens = conversa.get("messages") if isinstance(conversa.get("messages"), list) else []
+    historico = []
+    for msg in mensagens[-10:]:
+        if not isinstance(msg, dict):
+            continue
+        texto = str(msg.get("text") or "").strip()
+        if not texto:
+            continue
+        role = str(msg.get("from_role") or "").strip().lower()
+        historico.append({
+            "role": "seller" if role == "seller" else "buyer",
+            "text": texto[:700],
+            "date": str(msg.get("date") or "")[:80],
+        })
+    return historico
+
+
+def _ml_pos_venda_perguntas_anuncio_chat(conversa: Optional[dict]) -> list[dict]:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    chat = conversa.get("buyer_listing_question_chat") if isinstance(conversa.get("buyer_listing_question_chat"), list) else []
+    saida = []
+    for evento in chat[-20:]:
+        if not isinstance(evento, dict):
+            continue
+        texto = str(evento.get("text") or "").strip()
+        if not texto:
+            continue
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        saida.append({
+            "role": "seller" if role in {"seller", "loja", "store"} else "buyer",
+            "label": evento.get("label") or ("Loja" if role in {"seller", "loja", "store"} else "Comprador"),
+            "text": texto[:700],
+            "date": str(evento.get("date") or evento.get("date_created") or "")[:80],
+            "question_id": str(evento.get("question_id") or "")[:80],
+        })
+    return saida
+
+
+def _ml_pos_venda_memoria_question_id(conversa: Optional[dict], approval: Optional[dict] = None) -> str:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    approval = approval if isinstance(approval, dict) else {}
+    if approval.get("question_id"):
+        return str(approval.get("question_id") or "").strip()[:80]
+    pack_id = str(conversa.get("pack_id") or approval.get("pack_id") or "").strip()
+    marcador = str(
+        conversa.get("last_message_id")
+        or conversa.get("last_message_date")
+        or conversa.get("order_id")
+        or approval.get("order_id")
+        or ""
+    ).strip()
+    return f"pos_venda:{pack_id}:{marcador}"[:80] if pack_id else marcador[:80]
+
+
+def _ml_pos_venda_memoria_bloco_prompt(client_id: str, conversa: dict) -> str:
+    partes = []
+    for item in _ml_pos_venda_memoria_items(conversa)[:4]:
+        sku = item.get("sku") or ""
+        if not sku:
+            continue
+        agent_input = {
+            "question": {
+                "item_sku": sku,
+                "text": conversa.get("last_message_text") or "",
+            },
+            "item": {
+                "id": item.get("id") or "",
+                "seller_sku": sku,
+                "sku": sku,
+                "title": item.get("title") or "",
+            },
+        }
+        bloco = _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
+        if bloco:
+            partes.append(bloco)
+    return _perguntas_ia_compactar_contexto(
+        "\n\n".join(partes),
+        ML_PERGUNTAS_IA_MEMORIA_SKU_PROMPT_MAX_CHARS,
+    )
+
+
+def _ml_pos_venda_memoria_registrar_evento(
+    client_id: str,
+    loja: str,
+    conversa: Optional[dict],
+    resposta: str,
+    *,
+    tipo: str,
+    campo_resposta: str,
+    origem: str,
+    model_usado: str = "",
+    approval: Optional[dict] = None,
+) -> list[dict]:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    approval = approval if isinstance(approval, dict) else {}
+    items = _ml_pos_venda_memoria_items(conversa, approval)
+    if not items:
+        return []
+    pergunta = _ml_pos_venda_memoria_ultima_mensagem(conversa, approval)
+    question_id = _ml_pos_venda_memoria_question_id(conversa, approval)
+    pack_id = str(conversa.get("pack_id") or approval.get("pack_id") or "").strip()
+    order_id = str(conversa.get("order_id") or approval.get("order_id") or "").strip()
+    buyer_id = str(conversa.get("buyer_id") or approval.get("buyer_id") or "").strip()
+    historico = _ml_pos_venda_memoria_historico(conversa)
+    perguntas_anuncio = _ml_pos_venda_perguntas_anuncio_chat(conversa)
+    resultados = []
+    for item in items:
+        evento = _perguntas_ia_memoria_evento_base(
+            tipo,
+            loja,
+            item.get("sku") or "",
+            item_id=item.get("id") or "",
+            question_id=question_id,
+        )
+        evento.update({
+            "origem": str(origem or "pos_venda")[:80],
+            "titulo": str(item.get("title") or approval.get("titulo") or conversa.get("item_title") or "")[:500],
+            "pergunta": pergunta,
+            campo_resposta: str(resposta or "")[:1900],
+            "pack_id": pack_id[:80],
+            "order_id": order_id[:80],
+            "buyer_id": buyer_id[:80],
+            "model": str(model_usado or approval.get("model") or "")[:160],
+            "historico": historico,
+            "perguntas_anuncio": perguntas_anuncio,
+        })
+        registrado = _perguntas_ia_memoria_registrar_evento(client_id, item.get("sku") or "", evento)
+        if registrado:
+            resultados.append(registrado)
+    return resultados
+
+
+def _ml_pos_venda_memoria_registrar_geracao(
+    client_id: str,
+    loja: str,
+    conversa: dict,
+    resposta_rascunho: str,
+    model_usado: str = "",
+) -> list[dict]:
+    return _ml_pos_venda_memoria_registrar_evento(
+        client_id,
+        loja,
+        conversa,
+        resposta_rascunho,
+        tipo="pos_venda_ia",
+        campo_resposta="resposta_rascunho",
+        origem="geracao_pos_venda",
+        model_usado=model_usado,
+    )
+
+
+def _ml_pos_venda_memoria_registrar_resposta_enviada(
+    client_id: str,
+    loja: str,
+    conversa: Optional[dict],
+    resposta: str,
+    *,
+    origem: str,
+    approval: Optional[dict] = None,
+) -> list[dict]:
+    return _ml_pos_venda_memoria_registrar_evento(
+        client_id,
+        loja,
+        conversa,
+        resposta,
+        tipo="resposta_aprovada",
+        campo_resposta="resposta_aprovada",
+        origem=origem,
+        approval=approval,
+    )
 
 
 def _ia_agent_extrair_texto(valor: Any) -> str:
@@ -17719,47 +18578,106 @@ def _ia_agent_perguntas_product_identity_web_tool(client_id: str, agent_input: d
     }
 
 
+def _ia_agent_perguntas_tools_timeout_s() -> float:
+    try:
+        valor = float(str(os.getenv("ML_PERGUNTAS_IA_TOOLS_TIMEOUT_S") or "8").replace(",", "."))
+    except Exception:
+        valor = 8.0
+    return max(2.0, min(valor, 20.0))
+
+
+def _ia_agent_perguntas_tool_error(function_name: str, erro: object, timeout: bool = False) -> dict:
+    result: dict[str, Any] = {
+        "found": False,
+        "error": str(erro or "Falha ao consultar ferramenta.")[:180],
+        "read_only": True,
+    }
+    if timeout:
+        result["timeout"] = True
+    if function_name in {"get_product_data", "get_mercado_livre_listing", "get_bling_product"}:
+        result["matches"] = []
+    if function_name in {"web_search_product_identity", "web_search_question_context"}:
+        result["context"] = ""
+    return {
+        "function": function_name,
+        "arguments": {},
+        "result": result,
+    }
+
+
 def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: dict) -> list[dict]:
     consulta = _ia_agent_perguntas_texto_busca(agent_input)
     if not consulta:
         return []
-    resultados = []
-    product_identity_tool = _ia_agent_perguntas_product_identity_web_tool(client_id, agent_input)
-    if product_identity_tool:
-        resultados.append(product_identity_tool)
-    produto_tool = None
-    try:
-        produto_tool = _ia_tool_get_product_data(client_id, consulta, limite=3)
-        if produto_tool:
-            resultados.append(produto_tool)
-    except Exception as exc:
-        logger.warning("[IA AGENT PERGUNTAS] Falha em get_product_data: %s", exc)
-    try:
-        ml_tool = _ia_tool_get_mercado_livre_listing(
+
+    def consultar_identidade_web() -> Optional[dict]:
+        return _ia_agent_perguntas_product_identity_web_tool(client_id, agent_input)
+
+    def consultar_cadastro() -> Optional[dict]:
+        return _ia_tool_get_product_data(client_id, consulta, limite=3)
+
+    def consultar_mercado_livre() -> Optional[dict]:
+        return _ia_tool_get_mercado_livre_listing(
             client_id,
             consulta,
             loja=loja,
-            produto_tool=produto_tool,
+            produto_tool=None,
             limite=5,
             incluir_descricao=str(agent_input.get("task") or "").strip() == "mercado_livre_question_draft",
         )
-        if ml_tool:
-            resultados.append(ml_tool)
-    except Exception as exc:
-        logger.warning("[IA AGENT PERGUNTAS] Falha em get_mercado_livre_listing: %s", exc)
-    try:
-        bling_tool = _ia_tool_get_bling_product(client_id, consulta, loja=loja, produto_tool=produto_tool, limite=3)
-        if bling_tool:
-            resultados.append(bling_tool)
-    except Exception as exc:
-        logger.warning("[IA AGENT PERGUNTAS] Falha em get_bling_product: %s", exc)
-    web_tool = _ia_agent_perguntas_web_tool(client_id, agent_input, resultados)
-    if web_tool:
-        resultados.append(web_tool)
-    return resultados
+
+    def consultar_bling() -> Optional[dict]:
+        return _ia_tool_get_bling_product(client_id, consulta, loja=loja, produto_tool=None, limite=3)
+
+    def consultar_web_pergunta() -> Optional[dict]:
+        return _ia_agent_perguntas_web_tool(client_id, agent_input, [])
+
+    tarefas: list[tuple[int, str, str, Callable[[], Optional[dict]]]] = [
+        (0, "product_identity", "web_search_product_identity", consultar_identidade_web),
+        (1, "product_data", "get_product_data", consultar_cadastro),
+        (2, "mercado_livre", "get_mercado_livre_listing", consultar_mercado_livre),
+        (3, "bling", "get_bling_product", consultar_bling),
+        (4, "web_question", "web_search_question_context", consultar_web_pergunta),
+    ]
+    timeout_s = _ia_agent_perguntas_tools_timeout_s()
+    futuros = {
+        IA_PERGUNTAS_TOOLS_EXECUTOR.submit(func): (ordem, nome, function_name)
+        for ordem, nome, function_name, func in tarefas
+    }
+    done, pending = wait(futuros.keys(), timeout=timeout_s)
+    resultados_por_ordem: dict[int, dict] = {}
+
+    for futuro in done:
+        ordem, nome, function_name = futuros[futuro]
+        try:
+            tool_result = futuro.result()
+        except Exception as exc:
+            logger.warning("[IA AGENT PERGUNTAS] Falha em ferramenta local %s: %s", nome, exc)
+            tool_result = _ia_agent_perguntas_tool_error(function_name, exc)
+        if tool_result:
+            resultados_por_ordem[ordem] = tool_result
+
+    if pending:
+        nomes_pendentes = []
+        for futuro in pending:
+            ordem, nome, function_name = futuros[futuro]
+            nomes_pendentes.append(nome)
+            futuro.cancel()
+            resultados_por_ordem[ordem] = _ia_agent_perguntas_tool_error(
+                function_name,
+                f"Ferramenta excedeu o prazo global de {timeout_s:.1f}s e foi ignorada nesta resposta.",
+                timeout=True,
+            )
+        logger.warning(
+            "[IA AGENT PERGUNTAS] Timeout global das ferramentas locais (%.1fs). Pendentes: %s",
+            timeout_s,
+            ", ".join(nomes_pendentes),
+        )
+
+    return [resultados_por_ordem[idx] for idx in sorted(resultados_por_ordem)]
 
 
-def _ia_agent_perguntas_montar_prompt(agent_input: dict, tool_results: list[dict]) -> str:
+def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_results: list[dict]) -> str:
     base_prompt = str(agent_input.get("prompt") or "").strip()
     app_guidance = str(
         agent_input.get("app_guidance")
@@ -17777,6 +18695,7 @@ def _ia_agent_perguntas_montar_prompt(agent_input: dict, tool_results: list[dict
     bloco_tools = json.dumps(tool_results or [], ensure_ascii=False, default=str)[:24000]
     bloco_question = json.dumps(question, ensure_ascii=False, default=str)[:4000]
     bloco_item = json.dumps(item, ensure_ascii=False, default=str)[:5000]
+    bloco_memoria = _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
     historico = question.get("history") if isinstance(question.get("history"), list) else []
     linhas_historico = []
     for evento in historico[-10:]:
@@ -17810,6 +18729,7 @@ def _ia_agent_perguntas_montar_prompt(agent_input: dict, tool_results: list[dict
         f"Limite de caracteres: {constraints.get('max_chars') or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO}.\n\n"
         f"Pipeline obrigatorio de contexto executado pelo app:\n{bloco_pipeline or '[]'}\n\n"
         f"Orientacoes do app e treinamento salvos:\n{app_guidance or '-'}\n\n"
+        f"Memoria tecnica local deste SKU:\n{bloco_memoria or '-'}\n\n"
         f"Prompt original do app:\n{base_prompt or '-'}\n\n"
         f"Historico resumido da conversa:\n{bloco_historico or '-'}\n\n"
         f"Pergunta normalizada em JSON:\n{bloco_question or '{}'}\n\n"
@@ -17935,7 +18855,7 @@ def _ia_agent_perguntas_gerar_resposta(client_id: str, agent_input: dict) -> tup
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja no input do agente.")
     tool_results = _ia_agent_perguntas_preparar_tools(client_id, loja, agent_input)
-    mensagem = _ia_agent_perguntas_montar_prompt(agent_input, tool_results)
+    mensagem = _ia_agent_perguntas_montar_prompt(client_id, agent_input, tool_results)
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload = IAChatRequest(
         message=mensagem,
@@ -17987,6 +18907,10 @@ def _ia_agent_perguntas_gerar_resposta(client_id: str, agent_input: dict) -> tup
                 raise PerguntasIARespostaIndisponivel(
                     "IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(detalhe)
                 )
+    try:
+        _perguntas_ia_memoria_registrar_pesquisa(client_id, loja, agent_input, tool_results, resposta_limpa)
+    except Exception as exc:
+        logger.warning("[ML PERGUNTAS IA] Falha ao registrar memoria de pesquisa do SKU: %s", exc)
     return resposta_limpa, model_usado, tool_results
 
 
@@ -41705,6 +42629,41 @@ def ml_perguntas_aprovacoes_aprovar(req: PerguntasAprovacaoRequest, client_id: s
     state = _perguntas_ia_state_carregar(client_id)
     _perguntas_ia_marcar_processada(state, loja, question_id, "sent_approved")
     _perguntas_ia_state_salvar(client_id, state)
+    try:
+        if tipo_aprovacao == "pos_venda":
+            conversa_aprovacao = approval.get("conversa") if isinstance(approval.get("conversa"), dict) else {}
+            try:
+                conversa_aprovacao, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, loja, cfg, conversa_aprovacao)
+            except Exception as exc:
+                logger.warning("[ML POS VENDA IA] Falha ao carregar perguntas do anuncio para aprovacao: %s", exc)
+            registrados = _ml_pos_venda_memoria_registrar_resposta_enviada(
+                client_id,
+                loja,
+                conversa_aprovacao,
+                resposta,
+                origem="aprovacao_pos_venda",
+                approval=approval,
+            )
+            if not registrados:
+                _perguntas_ia_memoria_registrar_resposta_aprovada(
+                    client_id,
+                    loja,
+                    resposta,
+                    approval=approval,
+                    origem="aprovacao_pos_venda",
+                    question_id=question_id,
+                )
+        else:
+            _perguntas_ia_memoria_registrar_resposta_aprovada(
+                client_id,
+                loja,
+                resposta,
+                approval=approval,
+                origem="aprovacao",
+                question_id=question_id,
+            )
+    except Exception as exc:
+        logger.warning("[ML PERGUNTAS IA] Falha ao registrar resposta aprovada na memoria do SKU: %s", exc)
     return {"success": True, "approval": approval}
 
 
@@ -41796,7 +42755,7 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
 
     cfg = _obter_cfg_ml(client_id, loja)
     resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
-    _perguntas_ia_resolver_aprovacoes_pendentes(
+    resolvidas = _perguntas_ia_resolver_aprovacoes_pendentes(
         client_id,
         loja,
         question_id=question_id,
@@ -41804,6 +42763,41 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
         motivo="pergunta_respondida_manualmente",
         resposta=resposta,
     )
+    try:
+        if resolvidas:
+            for approval in resolvidas:
+                registrado = _perguntas_ia_memoria_registrar_resposta_aprovada(
+                    client_id,
+                    loja,
+                    resposta,
+                    approval=approval,
+                    origem="manual_com_aprovacao",
+                    question_id=question_id,
+                )
+                if not registrado:
+                    _perguntas_ia_memoria_registrar_resposta_aprovada(
+                        client_id,
+                        loja,
+                        resposta,
+                        pergunta=req.pergunta if isinstance(req.pergunta, dict) else {},
+                        origem="manual_com_aprovacao",
+                        sku=req.sku,
+                        item_id=req.item_id,
+                        question_id=question_id,
+                    )
+        else:
+            _perguntas_ia_memoria_registrar_resposta_aprovada(
+                client_id,
+                loja,
+                resposta,
+                pergunta=req.pergunta if isinstance(req.pergunta, dict) else {},
+                origem="manual",
+                sku=req.sku,
+                item_id=req.item_id,
+                question_id=question_id,
+            )
+    except Exception as exc:
+        logger.warning("[ML PERGUNTAS IA] Falha ao registrar resposta manual na memoria do SKU: %s", exc)
     state = _perguntas_ia_state_carregar(client_id)
     _perguntas_ia_marcar_processada(state, loja, question_id, "sent_manual")
     _perguntas_ia_state_salvar(client_id, state)
@@ -42240,6 +43234,124 @@ def _ml_perguntas_anexar_historico_comprador(
         pergunta["buyer_question_chat"] = _ml_perguntas_montar_chat_historico(historico_final)
         pergunta["buyer_question_history_count"] = len(historico_final)
     return perguntas_norm, cfg
+
+
+def _ml_pos_venda_anexar_perguntas_anuncio_comprador(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    seller_id: str,
+    conversa: dict,
+) -> tuple[dict, dict]:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    buyer_id = str(conversa.get("buyer_id") or "").strip()
+    if not buyer_id:
+        return conversa, cfg
+    itens = [item for item in (conversa.get("items") or []) if isinstance(item, dict)]
+    item_ids = []
+    vistos = set()
+    for item in itens:
+        item_id = str(item.get("id") or item.get("item_id") or "").strip()
+        if item_id and item_id not in vistos:
+            vistos.add(item_id)
+            item_ids.append(item_id)
+        if len(item_ids) >= 3:
+            break
+    if not item_ids:
+        return conversa, cfg
+
+    item_meta = {
+        str(item.get("id") or item.get("item_id") or "").strip(): item
+        for item in itens
+        if str(item.get("id") or item.get("item_id") or "").strip()
+    }
+    historico_por_item: dict[str, list[dict]] = {}
+    todas_perguntas: list[dict] = []
+    for item_id in item_ids:
+        try:
+            resp, cfg = _ml_api_request(
+                client_id,
+                loja,
+                cfg,
+                "GET",
+                "https://api.mercadolibre.com/questions/search",
+                params={
+                    "seller_id": seller_id,
+                    "item_id": item_id,
+                    "api_version": 4,
+                    "limit": 50,
+                    "sort_fields": "date_created",
+                    "sort_types": "DESC",
+                },
+                timeout=6,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "[ML POS VENDA] Falha ao buscar perguntas do anuncio item=%s loja=%s status=%s",
+                    item_id,
+                    loja,
+                    resp.status_code,
+                )
+                continue
+            data = resp.json() or {}
+            lote = data.get("questions") or data.get("results") or []
+            if not isinstance(lote, list):
+                continue
+            meta = item_meta.get(item_id) or {}
+            item_fake = {
+                "id": item_id,
+                "title": meta.get("title") or "",
+                "permalink": meta.get("permalink") or "",
+                "thumbnail": meta.get("thumbnail") or "",
+                "seller_sku": meta.get("sku") or "",
+            }
+            for pergunta_raw in lote:
+                if not isinstance(pergunta_raw, dict):
+                    continue
+                comprador = pergunta_raw.get("from") if isinstance(pergunta_raw.get("from"), dict) else {}
+                if str(comprador.get("id") or "").strip() != buyer_id:
+                    continue
+                pergunta_norm = _ml_perguntas_normalizar(pergunta_raw, {item_id: item_fake}, {})
+                historico = _ml_perguntas_copia_historico(pergunta_norm)
+                historico_por_item.setdefault(item_id, []).append(historico)
+                todas_perguntas.append(historico)
+        except Exception as exc:
+            logger.warning(
+                "[ML POS VENDA] Nao foi possivel buscar perguntas do comprador no anuncio item=%s loja=%s: %s",
+                item_id,
+                loja,
+                exc,
+            )
+
+    if not todas_perguntas:
+        conversa["buyer_listing_question_history"] = []
+        conversa["buyer_listing_question_chat"] = []
+        conversa["buyer_listing_question_history_count"] = 0
+        return conversa, cfg
+
+    por_id = {}
+    sem_id = []
+    for pergunta in todas_perguntas:
+        pergunta_id = str((pergunta or {}).get("id") or "").strip()
+        if pergunta_id:
+            por_id[pergunta_id] = pergunta
+        else:
+            sem_id.append(pergunta)
+    historico_final = sorted(
+        list(por_id.values()) + sem_id,
+        key=lambda item: str((item or {}).get("date_created") or (item or {}).get("last_updated") or ""),
+    )
+    conversa["buyer_listing_question_history"] = historico_final[-30:]
+    conversa["buyer_listing_question_chat"] = _ml_perguntas_montar_chat_historico(historico_final)[-40:]
+    conversa["buyer_listing_question_history_count"] = len(historico_final)
+    conversa["buyer_listing_question_history_by_item"] = {
+        item_id: sorted(
+            perguntas,
+            key=lambda item: str((item or {}).get("date_created") or (item or {}).get("last_updated") or ""),
+        )[-15:]
+        for item_id, perguntas in historico_por_item.items()
+    }
+    return conversa, cfg
 
 
 def _ml_pos_venda_data_iso(data_obj: dt.datetime) -> str:
@@ -42856,6 +43968,12 @@ def _ml_pos_venda_gerar_resposta_ia(
         for msg in mensagens[-12:]
         if isinstance(msg, dict)
     ])
+    perguntas_anuncio_chat = _ml_pos_venda_perguntas_anuncio_chat(conversa)
+    historico_perguntas_anuncio = "\n".join([
+        f"{evento.get('label') or ('Loja' if evento.get('role') == 'seller' else 'Comprador')}: {evento.get('text') or ''}"
+        for evento in perguntas_anuncio_chat[-20:]
+        if isinstance(evento, dict)
+    ])
     itens = conversa.get("items") if isinstance(conversa.get("items"), list) else []
     produtos = "\n".join([
         f"- SKU {item.get('sku') or '-'} | {item.get('title') or '-'} | ID {item.get('id') or '-'}"
@@ -42863,11 +43981,14 @@ def _ml_pos_venda_gerar_resposta_ia(
         if isinstance(item, dict)
     ])
     ultima = str(conversa.get("last_message_text") or (mensagens[-1].get("text") if mensagens else "") or "").strip()
+    memoria_sku = _ml_pos_venda_memoria_bloco_prompt(client_id, conversa)
     mensagem = (
         "Gere uma resposta curta de pÃ³s-venda para o comprador no Mercado Livre. "
         "Use as orientaÃ§Ãµes salvas no treinamento de pÃ³s-venda. "
         "NÃ£o use Markdown, asteriscos, tabelas, emojis ou caracteres especiais desnecessÃ¡rios. "
         "NÃ£o invente prazos, garantia, estoque, compatibilidade ou procedimentos. "
+        "Considere as perguntas anteriores feitas pelo comprador no anuncio como contexto do atendimento. "
+        "Use esse historico para entender o que ja foi perguntado e respondido, sem repetir tudo ao comprador. "
         "Se faltar informaÃ§Ã£o, peÃ§a o dado necessÃ¡rio de forma educada. "
         f"A resposta deve ter no mÃ¡ximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres.\n\n"
         f"Loja: {loja}\n"
@@ -42875,6 +43996,8 @@ def _ml_pos_venda_gerar_resposta_ia(
         f"Pedido: {conversa.get('order_id') or '-'}\n"
         f"Comprador: {conversa.get('buyer_nickname') or conversa.get('buyer_id') or '-'}\n"
         f"Produtos:\n{produtos or '-'}\n\n"
+        f"Memoria tecnica local dos SKUs da venda:\n{memoria_sku or '-'}\n\n"
+        f"Perguntas anteriores do comprador no anuncio:\n{historico_perguntas_anuncio or '-'}\n\n"
         f"HistÃ³rico da conversa:\n{historico or '-'}\n\n"
         f"Ãšltima mensagem do comprador:\n{ultima or '-'}"
     )
@@ -42904,7 +44027,12 @@ def _ml_pos_venda_gerar_resposta_ia(
     else:
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
-    return _pos_venda_ia_limpar_resposta(resposta, limite), model_usado
+    resposta_limpa = _pos_venda_ia_limpar_resposta(resposta, limite)
+    try:
+        _ml_pos_venda_memoria_registrar_geracao(client_id, loja, conversa, resposta_limpa, model_usado)
+    except Exception as exc:
+        logger.warning("[ML POS VENDA IA] Falha ao registrar memoria de geracao do SKU: %s", exc)
+    return resposta_limpa, model_usado
 
 
 def _ml_pos_venda_buscar_pedido(client_id: str, loja: str, cfg: dict, order_id: str) -> tuple[dict, dict]:
@@ -42965,6 +44093,27 @@ def _ml_pos_venda_montar_conversa_normalizada(
     if not conversa.get("buyer_id"):
         conversa["buyer_id"] = _ml_pos_venda_descobrir_buyer_id(mensagens_raw, seller_id, order)
     return conversa, cfg
+
+
+def _ml_pos_venda_preparar_conversa_ia(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    conversa: dict,
+) -> tuple[dict, dict]:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    if isinstance(conversa.get("buyer_listing_question_chat"), list):
+        return conversa, cfg
+    seller_id = str((cfg or {}).get("user_id") or conversa.get("seller_id") or "").strip()
+    if not seller_id:
+        return conversa, cfg
+    return _ml_pos_venda_anexar_perguntas_anuncio_comprador(
+        client_id,
+        loja,
+        cfg,
+        seller_id,
+        conversa,
+    )
 
 
 @app.get("/api/mercadolivre/pos-venda/conversas")
@@ -43399,6 +44548,7 @@ def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, clie
     )
     if req.buyer_id and not conversa.get("buyer_id"):
         conversa["buyer_id"] = str(req.buyer_id or "").strip()
+    conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
     resposta, model_usado = _ml_pos_venda_gerar_resposta_ia(client_id, nome_loja, conversa, max_chars)
     return jsonable_encoder({
         "success": True,
@@ -43422,19 +44572,43 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
     cfg = _obter_cfg_ml(client_id, nome_loja)
     max_chars = int(req.max_chars or ML_POS_VENDA_DEFAULT_MAX_CHARS)
     resposta = _pos_venda_ia_limpar_resposta(req.texto, max_chars)
+    conversa_memoria = req.conversa if isinstance(req.conversa, dict) else {}
+    if conversa_memoria:
+        conversa_memoria.setdefault("pack_id", pack)
+        conversa_memoria.setdefault("order_id", str(req.order_id or "").strip())
+        if buyer:
+            conversa_memoria.setdefault("buyer_id", buyer)
     if not buyer:
         try:
-            conversa, cfg = _ml_pos_venda_montar_conversa_normalizada(
+            conversa_memoria, cfg = _ml_pos_venda_montar_conversa_normalizada(
                 client_id,
                 nome_loja,
                 cfg,
                 pack,
                 str(req.order_id or "").strip(),
             )
-            buyer = str(conversa.get("buyer_id") or "").strip()
+            buyer = str(conversa_memoria.get("buyer_id") or "").strip()
         except Exception as exc:
             logger.warning("[ML POS VENDA] Nao foi possivel resolver buyer_id antes do envio pack=%s loja=%s: %s", pack, nome_loja, exc)
     resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, nome_loja, cfg, pack, buyer, resposta, max_chars)
+    if not conversa_memoria:
+        try:
+            conversa_memoria, cfg = _ml_pos_venda_montar_conversa_normalizada(
+                client_id,
+                nome_loja,
+                cfg,
+                pack,
+                str(req.order_id or "").strip(),
+            )
+            if buyer and isinstance(conversa_memoria, dict):
+                conversa_memoria.setdefault("buyer_id", buyer)
+        except Exception as exc:
+            logger.warning("[ML POS VENDA] Nao foi possivel carregar conversa para memoria pack=%s loja=%s: %s", pack, nome_loja, exc)
+    if conversa_memoria:
+        try:
+            conversa_memoria, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa_memoria)
+        except Exception as exc:
+            logger.warning("[ML POS VENDA IA] Falha ao carregar perguntas do anuncio para memoria pack=%s loja=%s: %s", pack, nome_loja, exc)
     resolvidas = _perguntas_ia_resolver_aprovacoes_pendentes(
         client_id,
         nome_loja,
@@ -43443,6 +44617,35 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
         motivo="pos_venda_respondido_manualmente",
         resposta=resposta,
     )
+    try:
+        if resolvidas:
+            for approval in resolvidas:
+                registrados = _ml_pos_venda_memoria_registrar_resposta_enviada(
+                    client_id,
+                    nome_loja,
+                    conversa_memoria,
+                    resposta,
+                    origem="manual_pos_venda_com_aprovacao",
+                    approval=approval,
+                )
+                if not registrados:
+                    _perguntas_ia_memoria_registrar_resposta_aprovada(
+                        client_id,
+                        nome_loja,
+                        resposta,
+                        approval=approval,
+                        origem="manual_pos_venda_com_aprovacao",
+                    )
+        else:
+            _ml_pos_venda_memoria_registrar_resposta_enviada(
+                client_id,
+                nome_loja,
+                conversa_memoria,
+                resposta,
+                origem="manual_pos_venda",
+            )
+    except Exception as exc:
+        logger.warning("[ML POS VENDA IA] Falha ao registrar resposta enviada na memoria do SKU: %s", exc)
     if resolvidas:
         state = _perguntas_ia_state_carregar(client_id)
         for approval in resolvidas:
@@ -43534,6 +44737,7 @@ def ml_pos_venda_automacao_poll(
                     continue
                 buyer_id = str(conversa.get("buyer_id") or "").strip()
                 max_chars = int(conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
+                conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
                 resposta, model_usado = _ml_pos_venda_gerar_resposta_ia(client_id, nome_loja, conversa, max_chars)
                 if not resposta:
                     continue
@@ -43549,6 +44753,9 @@ def ml_pos_venda_automacao_poll(
                         "messages": conversa.get("messages") or [],
                         "last_message_text": conversa.get("last_message_text") or last_text,
                         "seller_max_message_length": max_chars,
+                        "buyer_listing_question_history": conversa.get("buyer_listing_question_history") or [],
+                        "buyer_listing_question_chat": conversa.get("buyer_listing_question_chat") or [],
+                        "buyer_listing_question_history_count": conversa.get("buyer_listing_question_history_count") or 0,
                     }
                     approval = {
                         "id": _pos_venda_ia_aprovacao_id(nome_loja, pack_id, str(ultima.get("id") or last_message_id or last_message_date)),
@@ -43577,6 +44784,16 @@ def ml_pos_venda_automacao_poll(
                     processadas_loja += 1
                 else:
                     resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, nome_loja, cfg, pack_id, buyer_id, resposta, max_chars)
+                    try:
+                        _ml_pos_venda_memoria_registrar_resposta_enviada(
+                            client_id,
+                            nome_loja,
+                            conversa,
+                            resposta,
+                            origem="auto_pos_venda",
+                        )
+                    except Exception as exc:
+                        logger.warning("[ML POS VENDA IA] Falha ao registrar resposta automatica na memoria do SKU: %s", exc)
                     _perguntas_ia_marcar_processada(state, nome_loja, chave, "sent_auto_pos_venda")
                     mudou_state = True
                     processadas_loja += 1
@@ -44347,8 +45564,51 @@ def favoritos_historico_put(
 ):
     username = _extrair_username_do_request(request)
     payload = _favoritos_salvar_historico(client_id, username, req.historico or [])
+    realtime_sync = _favoritos_propagar_historico_para_usuarios(client_id, username, payload)
+    evento_publicado = False
+    if not realtime_sync.get("skipped"):
+        evento_publicado = _favoritos_historico_publicar_evento_realtime(
+            client_id,
+            username,
+            {
+                "updated_users": realtime_sync.get("updated_users") or [],
+                "eligible_count": len(realtime_sync.get("eligible_users") or []),
+                "item_count": len(payload.get("historico") or []),
+            },
+        )
     return {
         "success": True,
+        "historico": payload.get("historico") or [],
+        "updated_at": payload.get("updated_at"),
+        "realtime_sync": {
+            **realtime_sync,
+            "event_published": bool(evento_publicado),
+        },
+    }
+
+
+@app.post("/api/favoritos/historico/realtime-sync")
+def favoritos_historico_realtime_sync(
+    req: FavoritosHistoricoRealtimeSyncRequest,
+    request: Request,
+    client_id: str = Depends(get_tenant_id),
+):
+    username = _extrair_username_do_request(request)
+    resultado = _favoritos_reconciliar_historico_usuario(client_id, username)
+    payload = resultado.get("payload") or _favoritos_carregar_historico(client_id, username)
+    result_item = {
+        "scope": FAVORITOS_HISTORICO_REALTIME_SCOPE,
+        "success": True,
+        "direction": "pull",
+        "changed": bool(resultado.get("changed")),
+        "source_count": int(resultado.get("source_count") or 0),
+        "item_count": int(resultado.get("item_count") or len(payload.get("historico") or [])),
+        "reason": str(req.reason or ""),
+        "machine_id": str(req.machine_id or ""),
+    }
+    return {
+        "success": True,
+        "results": [result_item],
         "historico": payload.get("historico") or [],
         "updated_at": payload.get("updated_at"),
     }

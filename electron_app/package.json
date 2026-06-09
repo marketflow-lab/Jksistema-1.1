@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.70",
+  "version": "1.0.71",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -68,6 +68,7 @@
           "requirements.txt",
           "*.html",
           "*.js",
+          "firebase-presence.env",
           "jkjkjk-*.json",
           "firebase-service-account.json",
           "firebase_service_account.json",

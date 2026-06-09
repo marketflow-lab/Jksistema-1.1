@@ -105,7 +105,7 @@
             .excel-wrap { overflow-x: auto; overflow-y: visible; }
         }
     </style>
-    <script src="/auth.js"></script>
+    <script src="/auth.js?v=20260609-favhist-rt"></script>
 </head>
 <body>
 
@@ -138,7 +138,7 @@
                 <input type="file" id="file-etiquetas" accept=".pdf">
             </div>
             <div class="file-input-group" id="group-file-2" style="display: none;">
-                <label>Lista de Picking (Obrigatório para TikTok)</label>
+                <label>Lista de Picking (Opcional se ja vier junto no PDF)</label>
                 <input type="file" id="file-lista" accept=".pdf">
             </div>
             <div class="file-input-group" id="group-file-nf" style="display: none;">
@@ -945,7 +945,6 @@
         const resultSection = document.getElementById('result-section');
         errorMsg.style.display = 'none';
         if (loja !== 'Amazon' && !fileEtiquetas) return alert('Selecione o arquivo principal.');
-        if (loja === 'TikTok' && !fileLista) return alert('Para TikTok, a Lista de Picking é obrigatória.');
         if (loja === 'Amazon' && !fileNf) return alert('Para Amazon, o arquivo de Nota Fiscal é obrigatório.');
 
         const formData = new FormData();
