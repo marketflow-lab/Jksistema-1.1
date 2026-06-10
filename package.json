@@ -5,6 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "installer:verify": "node electron_app/scripts/verify-installer-package.js",
+    "installer:verify:built": "node electron_app/scripts/verify-installer-package.js --packaged electron_app/dist-client-setup/win-unpacked/resources",
     "bug-hunter:install": "playwright install chromium",
     "bug-hunter": "playwright test --config=playwright.bug-hunter.config.js",
     "bug-hunter:headed": "playwright test --config=playwright.bug-hunter.config.js --headed",

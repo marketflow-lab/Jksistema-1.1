@@ -1,0 +1,97 @@
+{
+  "requiredSourceFiles": [
+    "backend_api.py",
+    "requirements.txt",
+    "auth.js",
+    "dashboard.html",
+    "static/dashboard.html",
+    "favoritos.html",
+    "static/favoritos.html",
+    "static/anunciosml.html",
+    "static/anunciosml_campanha.html",
+    "electron_shell.html",
+    "electron_tab_preload.js",
+    "NCM.xlsx",
+    "NCM1.xlsx",
+    "openapi_bling.json",
+    "firebase-presence.env"
+  ],
+  "requiredSourceGlobs": [
+    { "pattern": "jkjkjk-*.json", "min": 1 },
+    { "pattern": "python_runtime/python-*.exe", "min": 1 },
+    { "pattern": "python_wheels/*.whl", "min": 20 }
+  ],
+  "requiredSourceDirectories": [
+    { "path": "extensoes_chrome/avant_pro", "minFiles": 10 },
+    { "path": "static", "minFiles": 20 },
+    { "path": "img", "minFiles": 1 }
+  ],
+  "mirrorPairs": [
+    { "source": "dashboard.html", "mirror": "static/dashboard.html" },
+    { "source": "favoritos.html", "mirror": "static/favoritos.html" }
+  ],
+  "requiredExtraResources": [
+    { "from": "../electron_shell.html", "to": "electron_shell.html" },
+    { "from": "../electron_tab_preload.js", "to": "electron_tab_preload.js" },
+    { "from": "../extensoes_chrome", "to": "extensoes_chrome" },
+    { "from": "../", "to": "local_app" }
+  ],
+  "requiredLocalAppFilters": [
+    "*.py",
+    "requirements.txt",
+    "*.html",
+    "*.js",
+    "firebase-presence.env",
+    "jkjkjk-*.json",
+    "firebase-service-account.json",
+    "firebase_service_account.json",
+    "*service-account*.json",
+    "static/**",
+    "img/**",
+    "python_runtime/**",
+    "python_wheels/**",
+    "NCM.xlsx",
+    "NCM1.xlsx",
+    "openapi_bling.json"
+  ],
+  "requiredPackagedFiles": [
+    "electron_shell.html",
+    "electron_tab_preload.js",
+    "local_app/backend_api.py",
+    "local_app/requirements.txt",
+    "local_app/auth.js",
+    "local_app/dashboard.html",
+    "local_app/static/dashboard.html",
+    "local_app/favoritos.html",
+    "local_app/static/favoritos.html",
+    "local_app/static/anunciosml.html",
+    "local_app/static/anunciosml_campanha.html",
+    "local_app/NCM.xlsx",
+    "local_app/NCM1.xlsx",
+    "local_app/openapi_bling.json",
+    "local_app/firebase-presence.env"
+  ],
+  "requiredPackagedGlobs": [
+    { "pattern": "local_app/jkjkjk-*.json", "min": 1 },
+    { "pattern": "local_app/python_runtime/python-*.exe", "min": 1 },
+    { "pattern": "local_app/python_wheels/*.whl", "min": 20 }
+  ],
+  "requiredPackagedDirectories": [
+    { "path": "extensoes_chrome/avant_pro", "minFiles": 10 },
+    { "path": "local_app/static", "minFiles": 20 },
+    { "path": "local_app/img", "minFiles": 1 }
+  ],
+  "forbiddenBuildReferences": [
+    ".jkcred",
+    "resources/private",
+    "ImportarCredenciais.bat"
+  ],
+  "forbiddenPackagedGlobs": [
+    "*.jkcred",
+    "**/*.jkcred",
+    "private/**",
+    "**/private/**",
+    "ImportarCredenciais.bat",
+    "**/ImportarCredenciais.bat"
+  ]
+}

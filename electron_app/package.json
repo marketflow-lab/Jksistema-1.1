@@ -5,7 +5,13 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "verify:package": "node scripts/verify-installer-package.js",
+    "verify:package:built": "node scripts/verify-installer-package.js --packaged dist-client-setup/win-unpacked/resources",
+    "predist": "npm run verify:package",
     "dist": "electron-builder",
+    "postdist": "npm run verify:package:built",
+    "predist:publish": "npm run verify:package",
+    "postdist:publish": "npm run verify:package:built",
     "dist:publish": "electron-builder --publish always"
   },
   "author": "JK",
