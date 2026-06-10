@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.73",
+  "version": "1.0.74",
   "description": "Launcher para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -8,10 +8,7 @@
     "bug-hunter:install": "playwright install chromium",
     "bug-hunter": "playwright test --config=playwright.bug-hunter.config.js",
     "bug-hunter:headed": "playwright test --config=playwright.bug-hunter.config.js --headed",
-    "bug-hunter:report": "node tests/bug-hunter/lib/report.js",
-    "credenciais:listar": "node scripts/credenciais.js list",
-    "credenciais:exportar": "node scripts/credenciais.js export",
-    "credenciais:importar": "node scripts/credenciais.js import"
+    "bug-hunter:report": "node tests/bug-hunter/lib/report.js"
   },
   "author": "JK",
   "license": "ISC",

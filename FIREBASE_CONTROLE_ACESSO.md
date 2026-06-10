@@ -19,9 +19,9 @@ pip install -r requirements.txt
 info/firebase-service-account.json
 ```
 
-No instalador privado, essa chave tambem pode vir dentro do pacote `.jkcred`.
-Quando o importador restaurar a chave, o app local ativa o Firebase
-automaticamente na proxima abertura.
+No instalador padrao, a chave e as variaveis de presenca acompanham o pacote
+normal do aplicativo. O app local ativa o Firebase automaticamente na proxima
+abertura quando encontrar esses arquivos.
 
 Tambem e possivel apontar por variavel de ambiente:
 

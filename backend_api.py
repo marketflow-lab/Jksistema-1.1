@@ -145,6 +145,7 @@ FIREBASE_AUTH_APP = None
 FIREBASE_AUTH_DB = None
 FIREBASE_AUTH_LAST_ERROR = ""
 MACHINE_PRESENCE_LOCK = threading.RLock()
+MACHINE_PRESENCE_AUTO_TOUCH_LAST: dict[str, float] = {}
 ADMIN_MESSAGES_LOCK = threading.RLock()
 USER_CHAT_MESSAGES_LOCK = threading.RLock()
 SHARED_SYNC_USER_LINKS_LOCK = threading.RLock()
@@ -1204,9 +1205,11 @@ JWT_SECRET = _carregar_ou_gerar_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 8
 
-def criar_access_token(username: str, client_id: str) -> str:
+def criar_access_token(username: str, client_id: str, machine_id: Optional[str] = None) -> str:
     expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS)
     payload = {"sub": username, "client_id": client_id, "exp": expire}
+    if machine_id:
+        payload["machine_id"] = str(machine_id).strip()
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 class PromoRequest(BaseModel):
@@ -20296,7 +20299,8 @@ def _payload_sessao_por_authorization(authorization: Optional[str]) -> dict:
     client_id = str(payload.get("client_id") or "").strip()
     if not username or not client_id:
         raise HTTPException(status_code=401, detail="Sessão inválida. Faça o login novamente.")
-    return {"username": username, "client_id": client_id}
+    machine_id = str(payload.get("machine_id") or "").strip()
+    return {"username": username, "client_id": client_id, "machine_id": machine_id}
 
 
 def _require_full_admin_user_management(authorization: Optional[str], client_id: str) -> dict:
@@ -20373,6 +20377,13 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
                     detail=f"Acesso negado: usuÃƒÂ¡rio sem permissÃƒÂ£o para o mÃƒÂ³dulo '{permissoes_rotulo}'."
                 )
 
+        await asyncio.to_thread(
+            _machine_presence_auto_touch,
+            username,
+            client_id,
+            request,
+            str(payload.get("machine_id") or "").strip(),
+        )
         return client_id
     except JWTError:
         raise HTTPException(
@@ -30040,6 +30051,34 @@ def _machine_presence_record(username: str, client_id: str, machine_id: str, req
     }
 
 
+def _machine_presence_auto_touch(username: str, client_id: str, request: Optional[Request], machine_id: str = "") -> None:
+    username_norm = str(username or "").strip().lower()
+    client_norm = str(client_id or "default").strip() or "default"
+    if not username_norm or not client_norm:
+        return
+    try:
+        path = str(getattr(getattr(request, "url", None), "path", "") or "")
+        machine_final, _meta = _montar_machine_id_login(request, machine_id)
+        if not machine_final:
+            return
+        doc_id = _machine_presence_doc_id(username_norm, client_norm, machine_final)
+        now = time.time()
+        min_interval = max(20, min(int(_machine_presence_timeout_seconds() / 2), 45))
+        with MACHINE_PRESENCE_LOCK:
+            last_touch = float(MACHINE_PRESENCE_AUTO_TOUCH_LAST.get(doc_id) or 0)
+            if now - last_touch < min_interval:
+                return
+            MACHINE_PRESENCE_AUTO_TOUCH_LAST[doc_id] = now
+            if len(MACHINE_PRESENCE_AUTO_TOUCH_LAST) > 2000:
+                cutoff = now - max(_machine_presence_timeout_seconds() * 8, 1800)
+                for key, value in list(MACHINE_PRESENCE_AUTO_TOUCH_LAST.items()):
+                    if float(value or 0) < cutoff:
+                        MACHINE_PRESENCE_AUTO_TOUCH_LAST.pop(key, None)
+        _machine_presence_save(_machine_presence_record(username_norm, client_norm, machine_final, request, path))
+    except Exception as exc:
+        logger.debug("[MACHINES] Falha ao renovar presenca autenticada: %s", exc)
+
+
 def _machine_presence_local_read() -> dict:
     with MACHINE_PRESENCE_LOCK:
         try:
@@ -31077,7 +31116,7 @@ def _buscar_usuario_por_email_google(usuarios: dict, email: str) -> tuple[Option
 
 
 def _montar_resposta_login_sucesso(username: str, usuario: dict, permissoes: dict, client_id: str, machine_final: str) -> LoginResponse:
-    token = criar_access_token(username, client_id)
+    token = criar_access_token(username, client_id, machine_final)
     user_data = {
         "username": username,
         "name": str(usuario.get("name") or username),

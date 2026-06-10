@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -516,7 +516,6 @@
         .sidebar-admin-users,
         .sidebar-password,
         .sidebar-update,
-        .sidebar-import-credentials,
         .sidebar-drive-sync,
         .modal-secondary {
             background: rgba(79, 172, 254, 0.12);
@@ -528,7 +527,6 @@
         .sidebar-admin-users:hover,
         .sidebar-password:hover,
         .sidebar-update:hover,
-        .sidebar-import-credentials:hover,
         .sidebar-drive-sync:hover,
         .modal-secondary:hover {
             background: rgba(79, 172, 254, 0.2);
@@ -967,13 +965,13 @@
 <body>
 
 <div class="user-sidebar-trigger" id="user-sidebar-trigger" aria-hidden="true"></div>
-<aside class="user-sidebar" aria-label="Informações do usuário">
-    <div class="user-sidebar-peek">Usuário</div>
+<aside class="user-sidebar" aria-label="InformaÃ§Ãµes do usuÃ¡rio">
+    <div class="user-sidebar-peek">UsuÃ¡rio</div>
     <div class="user-sidebar-brand">JK Sistema</div>
     <div class="user-sidebar-profile">
         <div class="user-avatar" id="user-avatar">U</div>
         <div>
-            <p class="user-name" id="user-name">Usuário</p>
+            <p class="user-name" id="user-name">UsuÃ¡rio</p>
             <p class="user-email" id="user-email"></p>
         </div>
     </div>
@@ -987,7 +985,7 @@
             <span class="user-info-value" id="user-access">-</span>
         </div>
         <div class="user-info-row">
-            <span class="user-info-label">Máquina</span>
+            <span class="user-info-label">MÃ¡quina</span>
             <span class="user-info-value" id="user-machine">-</span>
         </div>
         <div class="user-info-row">
@@ -996,14 +994,13 @@
             <div class="user-machine-online-list" id="user-online-machines" aria-live="polite"></div>
         </div>
         <div class="user-info-row">
-            <span class="user-info-label">Versão</span>
+            <span class="user-info-label">VersÃ£o</span>
             <span class="user-info-value" id="app-version">-</span>
         </div>
     </div>
     <div class="user-sidebar-spacer"></div>
     <div class="user-sidebar-actions">
-        <button id="btn-importar-credenciais" class="sidebar-import-credentials" type="button" onclick="importarCredenciais()">Importar credenciais</button>
-        <button id="btn-admin-usuarios" class="sidebar-admin-users" type="button" onclick="abrirCentralUsuarios()" hidden>Central de usuários</button>
+        <button id="btn-admin-usuarios" class="sidebar-admin-users" type="button" onclick="abrirCentralUsuarios()" hidden>Central de usuÃ¡rios</button>
         <button id="btn-sincronizar-drive" class="sidebar-drive-sync" type="button" onclick="sincronizarDriveBackup(true)">Sincronizar Drive</button>
         <button id="btn-verificar-atualizacao" class="sidebar-update" type="button" onclick="verificarAtualizacao()">Verificar atualizacao</button>
         <button class="sidebar-password" type="button" onclick="abrirTrocaSenha()">Trocar senha</button>
@@ -1013,8 +1010,8 @@
 
 <div class="container">
     <div class="hero">
-        <h1>🚀 JK Sistema de Gestão</h1>
-        <p class="subtitle">Painel central com acesso rápido aos módulos do sistema</p>
+        <h1>ðŸš€ JK Sistema de GestÃ£o</h1>
+        <p class="subtitle">Painel central com acesso rÃ¡pido aos mÃ³dulos do sistema</p>
     </div>
     
     <div id="cards" class="grid"></div>
@@ -1023,8 +1020,8 @@
 <div id="dashboard-status-balloon" class="dashboard-status-balloon hidden is-loading" role="status" aria-live="polite">
     <span class="dashboard-status-icon" aria-hidden="true"></span>
     <div>
-        <strong id="dashboard-status-title" class="dashboard-status-title">Atualização</strong>
-        <span id="dashboard-status-text" class="dashboard-status-text">Verificando versão...</span>
+        <strong id="dashboard-status-title" class="dashboard-status-title">AtualizaÃ§Ã£o</strong>
+        <span id="dashboard-status-text" class="dashboard-status-text">Verificando versÃ£o...</span>
     </div>
 </div>
 
@@ -1081,7 +1078,7 @@
     setTimeout(finalizarEntradaDashboard, 1200);
 
     if (!verificarSessao()) {
-        // verificarSessao já redireciona quando não há token.
+        // verificarSessao jÃ¡ redireciona quando nÃ£o hÃ¡ token.
     }
 
     let userData = safeJsonParse(localStorage.getItem('user_data') || 'null', null);
@@ -1128,24 +1125,24 @@
     document.body.classList.add('dashboard-ready');
 
     const modules = [
-        { key: 'analise_promo', href: 'frontend_promo.html', title: '📈 Promoção ML', desc: 'Análise de campanhas e cálculo de taxas.' },
-        { key: 'renovacao_fixa', href: 'renovacao.html', title: '🔄 Renovação Fixa', desc: 'Comparar e renovar campanhas.' },
-        { key: 'anuncios_ml', href: 'anunciosml.html', title: '📦 Anúncios ML', desc: 'Gestão de anúncios no Mercado Livre.' },
-        { key: 'etiquetas', href: 'frontend_etiquetas.html', title: '🏷️ Etiquetas', desc: 'Gerador de etiquetas (ML, Shopee, TikTok).' },
-        { key: 'integracao', href: 'integracoes.html', title: '🔗 Integrações', desc: 'Gerenciar conexões com Bling, ML, etc.' },
-        { key: 'cadastro', href: 'cadastro.html', title: '🧾 Cadastro', desc: 'Cadastro manual de produtos.' },
-        { key: 'estoque', href: 'estoque.html', title: '📦 Estoque', desc: 'Consulta rápida do estoque consolidado.' },
-        { key: 'mercado_full', href: 'full.html', title: '🚚 Full', desc: 'Controle e acompanhamento do estoque Full.' },
-        { key: 'vendas', href: 'vendas.html', title: '💰 Vendas', desc: 'Histórico de pedidos e itens.' },
-        { key: 'favoritos', href: 'favoritos.html', title: '⭐ Favoritos ML', desc: 'Pesquisa e ranking de anúncios no Mercado Livre.' },
-        { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '💬 Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
-        { key: 'sala_reuniao', href: 'sala_reuniao.html', title: '📹 Sala de Reunião', desc: 'Abra chamadas Daily com câmera, microfone, chat e compartilhamento de tela.' },
-        { key: 'medias_compras', href: 'medias_compras.html', title: '📊 Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
-        { key: 'impostos', href: 'impostos.html', title: '💸 Impostos', desc: 'Regras fiscais por NCM/CEST e simulação tributária.' },
-        { key: 'simulador', href: 'simulador.html', title: '🧮 Simulador', desc: 'Calcule o preço final por NCM, dólar, quantidade e cubagem.' },
-        { key: 'configuracoes', href: 'configuracoes.html', title: '⚙️ Configurações', desc: 'Parâmetros globais do sistema para todos os usuários.' },
-        { key: 'importacoes', href: 'importacoes.html', title: '📥 Importações', desc: 'Central de importação e processamento de planilhas.' },
-        { key: 'admin_usuarios', href: 'admin_usuarios.html', title: '👥 Central de Usuários', desc: 'Usuários online, mensagens e permissões.' }
+        { key: 'analise_promo', href: 'frontend_promo.html', title: 'ðŸ“ˆ PromoÃ§Ã£o ML', desc: 'AnÃ¡lise de campanhas e cÃ¡lculo de taxas.' },
+        { key: 'renovacao_fixa', href: 'renovacao.html', title: 'ðŸ”„ RenovaÃ§Ã£o Fixa', desc: 'Comparar e renovar campanhas.' },
+        { key: 'anuncios_ml', href: 'anunciosml.html', title: 'ðŸ“¦ AnÃºncios ML', desc: 'GestÃ£o de anÃºncios no Mercado Livre.' },
+        { key: 'etiquetas', href: 'frontend_etiquetas.html', title: 'ðŸ·ï¸ Etiquetas', desc: 'Gerador de etiquetas (ML, Shopee, TikTok).' },
+        { key: 'integracao', href: 'integracoes.html', title: 'ðŸ”— IntegraÃ§Ãµes', desc: 'Gerenciar conexÃµes com Bling, ML, etc.' },
+        { key: 'cadastro', href: 'cadastro.html', title: 'ðŸ§¾ Cadastro', desc: 'Cadastro manual de produtos.' },
+        { key: 'estoque', href: 'estoque.html', title: 'ðŸ“¦ Estoque', desc: 'Consulta rÃ¡pida do estoque consolidado.' },
+        { key: 'mercado_full', href: 'full.html', title: 'ðŸšš Full', desc: 'Controle e acompanhamento do estoque Full.' },
+        { key: 'vendas', href: 'vendas.html', title: 'ðŸ’° Vendas', desc: 'HistÃ³rico de pedidos e itens.' },
+        { key: 'favoritos', href: 'favoritos.html', title: 'â­ Favoritos ML', desc: 'Pesquisa e ranking de anÃºncios no Mercado Livre.' },
+        { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: 'ðŸ’¬ Perguntas e pÃ³s venda', desc: 'Central para perguntas dos clientes e atendimentos apÃ³s a venda.' },
+        { key: 'sala_reuniao', href: 'sala_reuniao.html', title: 'ðŸ“¹ Sala de ReuniÃ£o', desc: 'Abra chamadas Daily com cÃ¢mera, microfone, chat e compartilhamento de tela.' },
+        { key: 'medias_compras', href: 'medias_compras.html', title: 'ðŸ“Š MÃ©dias e Pedidos', desc: 'Planejamento e gestÃ£o de pedidos por mÃ©dia de vendas.' },
+        { key: 'impostos', href: 'impostos.html', title: 'ðŸ’¸ Impostos', desc: 'Regras fiscais por NCM/CEST e simulaÃ§Ã£o tributÃ¡ria.' },
+        { key: 'simulador', href: 'simulador.html', title: 'ðŸ§® Simulador', desc: 'Calcule o preÃ§o final por NCM, dÃ³lar, quantidade e cubagem.' },
+        { key: 'configuracoes', href: 'configuracoes.html', title: 'âš™ï¸ ConfiguraÃ§Ãµes', desc: 'ParÃ¢metros globais do sistema para todos os usuÃ¡rios.' },
+        { key: 'importacoes', href: 'importacoes.html', title: 'ðŸ“¥ ImportaÃ§Ãµes', desc: 'Central de importaÃ§Ã£o e processamento de planilhas.' },
+        { key: 'admin_usuarios', href: 'admin_usuarios.html', title: 'ðŸ‘¥ Central de UsuÃ¡rios', desc: 'UsuÃ¡rios online, mensagens e permissÃµes.' }
     ];
 
     let enabled = calcularModulosHabilitados();
@@ -1221,18 +1218,18 @@
         if (!countEl || !listEl) return;
         const maquinas = Array.isArray(payload && payload.machines) ? payload.machines : [];
         const total = Number(payload && payload.online_count !== undefined ? payload.online_count : maquinas.length) || 0;
-        countEl.textContent = total === 1 ? '1 máquina' : `${total} máquinas`;
+        countEl.textContent = total === 1 ? '1 mÃ¡quina' : `${total} mÃ¡quinas`;
         countEl.title = payload && payload.backend === 'firebase'
             ? 'Sincronizado pelo Firebase'
-            : 'Presença local nesta máquina';
+            : 'PresenÃ§a local nesta mÃ¡quina';
 
         if (!maquinas.length) {
-            listEl.innerHTML = '<div class="user-machine-online-item"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">Somente esta sessão</span></div>';
+            listEl.innerHTML = '<div class="user-machine-online-item"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">Somente esta sessÃ£o</span></div>';
             return;
         }
 
         listEl.innerHTML = maquinas.slice(0, 3).map((maquina) => {
-            const nome = escaparHtmlSidebar(maquina.label || maquina.machine_id || 'Máquina');
+            const nome = escaparHtmlSidebar(maquina.label || maquina.machine_id || 'MÃ¡quina');
             const tempo = textoTempoMaquina(maquina.seconds_since_seen);
             const tag = maquina.current ? 'esta' : tempo;
             return `<div class="user-machine-online-item" title="${escaparHtmlSidebar(maquina.machine_id || nome)}"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">${nome}</span><span class="user-machine-online-tag">${escaparHtmlSidebar(tag)}</span></div>`;
@@ -1267,7 +1264,7 @@
 
     function preencherSidebarUsuario() {
         if (!userData) return;
-        const nome = String(userData.name || userData.username || 'Usuário').trim();
+        const nome = String(userData.name || userData.username || 'UsuÃ¡rio').trim();
         const email = String(userData.email || userData.username || '').trim();
         const cliente = String(userData.client_id || 'default').trim();
         const maquina = String(userData.machine_id || '').trim();
@@ -1282,14 +1279,14 @@
         if (nameEl) nameEl.textContent = nome;
         if (emailEl) emailEl.textContent = email;
         if (clientEl) clientEl.textContent = cliente || '-';
-        if (accessEl) accessEl.textContent = usuarioFull() ? 'Completo' : `${enabled.length} módulos`;
+        if (accessEl) accessEl.textContent = usuarioFull() ? 'Completo' : `${enabled.length} mÃ³dulos`;
         if (machineEl) {
             machineEl.textContent = maquina ? maquina.slice(0, 18) : '-';
             machineEl.title = maquina || '';
         }
         if (versionEl) {
             versionEl.textContent = `v${APP_VERSION_FALLBACK}`;
-            versionEl.title = `Versão ${APP_VERSION_FALLBACK}`;
+            versionEl.title = `VersÃ£o ${APP_VERSION_FALLBACK}`;
         }
     }
 
@@ -1312,7 +1309,7 @@
         } catch (_err) {}
         appVersionAtual = String(versao || APP_VERSION_FALLBACK).replace(/^v/i, '').trim() || APP_VERSION_FALLBACK;
         versionEl.textContent = `v${versao}`;
-        versionEl.title = `Versão ${versao}`;
+        versionEl.title = `VersÃ£o ${versao}`;
     }
 
     preencherVersaoApp();
@@ -1330,8 +1327,8 @@
         limparWatchdogAtualizacao();
         updateStatusWatchdogTimer = setTimeout(() => {
             mostrarStatusDashboard(
-                'Falha na atualização',
-                'A consulta não respondeu. Tente novamente ou reinicie o app.',
+                'Falha na atualizaÃ§Ã£o',
+                'A consulta nÃ£o respondeu. Tente novamente ou reinicie o app.',
                 { tipo: 'error', tempoMs: 9000 }
             );
         }, ms);
@@ -1346,7 +1343,7 @@
                 resolve({
                     success: false,
                     timeout: true,
-                    error: 'Tempo esgotado ao consultar atualizações.'
+                    error: 'Tempo esgotado ao consultar atualizaÃ§Ãµes.'
                 });
             }, ms);
 
@@ -1363,7 +1360,7 @@
                     clearTimeout(timer);
                     resolve({
                         success: false,
-                        error: (err && err.message) || 'Não foi possível verificar.'
+                        error: (err && err.message) || 'NÃ£o foi possÃ­vel verificar.'
                     });
                 });
         });
@@ -1385,7 +1382,7 @@
             return data;
         } catch (err) {
             if (err && err.name === 'AbortError') {
-                throw new Error('Tempo esgotado consultando a versão publicada.');
+                throw new Error('Tempo esgotado consultando a versÃ£o publicada.');
             }
             throw err;
         } finally {
@@ -1405,7 +1402,7 @@
         const textEl = document.getElementById('dashboard-status-text');
         const tipo = opcoes.tipo || (opcoes.erro ? 'error' : opcoes.sucesso ? 'success' : opcoes.loading ? 'loading' : 'info');
 
-        if (titleEl) titleEl.textContent = titulo || 'Atualização';
+        if (titleEl) titleEl.textContent = titulo || 'AtualizaÃ§Ã£o';
         if (textEl) textEl.textContent = texto || '';
 
         balloon.classList.remove('hidden', 'is-loading', 'is-success', 'is-error', 'is-info');
@@ -1420,7 +1417,7 @@
 
     function versaoLegivelAtualizacao(valor) {
         const versao = String(valor || '').replace(/^v/i, '').trim();
-        return versao ? `v${versao}` : 'a nova versão';
+        return versao ? `v${versao}` : 'a nova versÃ£o';
     }
 
     function obterVersaoDoStatus(payload) {
@@ -1433,14 +1430,14 @@
         const versao = versaoLegivelAtualizacao(obterVersaoDoStatus(payload));
         if (status === 'checking') {
             iniciarWatchdogAtualizacao();
-            mostrarStatusDashboard('Atualização', 'Verificando versão...', { tipo: 'loading' });
+            mostrarStatusDashboard('AtualizaÃ§Ã£o', 'Verificando versÃ£o...', { tipo: 'loading' });
         } else if (status === 'available' || status === 'manual-update-available') {
             limparWatchdogAtualizacao();
-            mostrarStatusDashboard('Atualização', `${versao} encontrada. Baixando...`, { tipo: 'loading' });
+            mostrarStatusDashboard('AtualizaÃ§Ã£o', `${versao} encontrada. Baixando...`, { tipo: 'loading' });
         } else if (status === 'downloading') {
             limparWatchdogAtualizacao();
             const pct = Number(payload.percent || 0);
-            mostrarStatusDashboard('Baixando', pct > 0 ? `${pct}% concluído.` : 'Download em andamento...', { tipo: 'loading' });
+            mostrarStatusDashboard('Baixando', pct > 0 ? `${pct}% concluÃ­do.` : 'Download em andamento...', { tipo: 'loading' });
         } else if (status === 'downloaded') {
             limparWatchdogAtualizacao();
             mostrarStatusDashboard('Instalando', 'Salvando dados...', { tipo: 'loading' });
@@ -1449,23 +1446,23 @@
             mostrarStatusDashboard('Preparando', 'Salvando abas abertas...', { tipo: 'loading' });
         } else if (status === 'work-saved') {
             limparWatchdogAtualizacao();
-            mostrarStatusDashboard('Salvo', 'Continuando instalação...', { tipo: 'success' });
+            mostrarStatusDashboard('Salvo', 'Continuando instalaÃ§Ã£o...', { tipo: 'success' });
         } else if (status === 'installing') {
             limparWatchdogAtualizacao();
             mostrarStatusDashboard('Instalando', 'Reiniciando em instantes...', { tipo: 'loading' });
         } else if (status === 'not-available' || status === 'up-to-date') {
             limparWatchdogAtualizacao();
             const atual = versaoLegivelAtualizacao(payload.currentVersion || obterVersaoDoStatus(payload) || APP_VERSION_FALLBACK);
-            mostrarStatusDashboard('Atualizado', `Versão ${atual}.`, { tipo: 'success', tempoMs: 4200 });
+            mostrarStatusDashboard('Atualizado', `VersÃ£o ${atual}.`, { tipo: 'success', tempoMs: 4200 });
         } else if (status === 'deferred') {
             limparWatchdogAtualizacao();
             mostrarStatusDashboard('Aguardando', 'Finalizando tarefa atual.', { tipo: 'info', tempoMs: 5200 });
         } else if (status === 'skipped') {
             limparWatchdogAtualizacao();
-            mostrarStatusDashboard('Sem atualização', payload.reason || 'Atualizador indisponível.', { tipo: 'info', tempoMs: 7000 });
+            mostrarStatusDashboard('Sem atualizaÃ§Ã£o', payload.reason || 'Atualizador indisponÃ­vel.', { tipo: 'info', tempoMs: 7000 });
         } else if (status === 'error') {
             limparWatchdogAtualizacao();
-            mostrarStatusDashboard('Falha na atualização', payload.error || 'Não foi possível consultar agora.', { tipo: 'error', tempoMs: 9000 });
+            mostrarStatusDashboard('Falha na atualizaÃ§Ã£o', payload.error || 'NÃ£o foi possÃ­vel consultar agora.', { tipo: 'error', tempoMs: 9000 });
         }
     }
 
@@ -1583,36 +1580,6 @@
 
     setTimeout(() => sincronizarDriveBackup(false), 1800);
 
-    async function importarCredenciais() {
-        const api = window.electronAPI;
-        const botao = document.getElementById('btn-importar-credenciais');
-
-        if (!api || typeof api.importCredentials !== 'function') {
-            alert('Esta opção está disponível no aplicativo desktop. Se estiver no navegador, execute ImportarCredenciais.bat na pasta do sistema.');
-            return;
-        }
-
-        const confirmar = confirm('Vou pedir para você selecionar o arquivo .jkcred e depois abrir o importador local. Informe a senha quando a janela abrir.');
-        if (!confirmar) return;
-
-        try {
-            if (botao) {
-                botao.disabled = true;
-                botao.textContent = 'Abrindo...';
-            }
-            const resultado = await api.importCredentials();
-            const mensagem = (resultado && resultado.message) || 'Importador de credenciais aberto.';
-            alert(`${mensagem}\n\nQuando a importação terminar, saia e entre novamente para recarregar as permissões.`);
-        } catch (err) {
-            alert((err && err.message) || 'Não foi possível abrir o importador de credenciais.');
-        } finally {
-            if (botao) {
-                botao.disabled = false;
-                botao.textContent = 'Importar credenciais';
-            }
-        }
-    }
-
     async function verificarAtualizacao() {
         const api = window.electronAPI;
         const botao = document.getElementById('btn-verificar-atualizacao');
@@ -1622,48 +1589,48 @@
                 botao.disabled = true;
                 botao.textContent = 'Verificando...';
             }
-            mostrarStatusDashboard('Atualização', 'Verificando versão...', { tipo: 'loading' });
+            mostrarStatusDashboard('AtualizaÃ§Ã£o', 'Verificando versÃ£o...', { tipo: 'loading' });
             const resultado = await consultarAtualizacaoBackend();
 
             if (resultado && resultado.skipped) {
-                mostrarStatusDashboard('Sem atualização', resultado.reason || 'Atualizador indisponível.', { tipo: 'info', tempoMs: 7000 });
+                mostrarStatusDashboard('Sem atualizaÃ§Ã£o', resultado.reason || 'Atualizador indisponÃ­vel.', { tipo: 'info', tempoMs: 7000 });
             } else if (resultado && resultado.checking) {
-                mostrarStatusDashboard('Atualização', 'Verificação já está em andamento.', { tipo: 'info', tempoMs: 6500 });
+                mostrarStatusDashboard('AtualizaÃ§Ã£o', 'VerificaÃ§Ã£o jÃ¡ estÃ¡ em andamento.', { tipo: 'info', tempoMs: 6500 });
             } else if (resultado && resultado.upToDate) {
                 const atual = resultado.publishedOlderThanInstalled
                     ? `${versaoLegivelAtualizacao(resultado.currentVersion || APP_VERSION_FALLBACK)} instalada. GitHub em ${versaoLegivelAtualizacao(resultado.latestVersion)}.`
-                    : `Versão ${versaoLegivelAtualizacao(resultado.currentVersion || APP_VERSION_FALLBACK)}.`;
+                    : `VersÃ£o ${versaoLegivelAtualizacao(resultado.currentVersion || APP_VERSION_FALLBACK)}.`;
                 mostrarStatusDashboard('Atualizado', atual, { tipo: 'success', tempoMs: 4500 });
             } else if (resultado && resultado.available) {
-                mostrarStatusDashboard('Atualização', `Baixando ${versaoLegivelAtualizacao(resultado.latestVersion)}...`, { tipo: 'loading' });
+                mostrarStatusDashboard('AtualizaÃ§Ã£o', `Baixando ${versaoLegivelAtualizacao(resultado.latestVersion)}...`, { tipo: 'loading' });
                 if (api && typeof api.checkForUpdates === 'function') {
                     iniciarWatchdogAtualizacao();
                     executarComTimeoutAtualizacao(api.checkForUpdates(), UPDATE_CHECK_UI_TIMEOUT_MS)
                         .then((retorno) => {
                             limparWatchdogAtualizacao();
                             if (retorno && retorno.error) {
-                                mostrarStatusDashboard('Falha na atualização', retorno.error, { tipo: 'error', tempoMs: 9000 });
+                                mostrarStatusDashboard('Falha na atualizaÃ§Ã£o', retorno.error, { tipo: 'error', tempoMs: 9000 });
                             } else if (retorno && retorno.upToDate) {
-                                mostrarStatusDashboard('Atualizado', `Versão ${versaoLegivelAtualizacao(retorno.currentVersion || resultado.currentVersion || APP_VERSION_FALLBACK)}.`, { tipo: 'success', tempoMs: 5000 });
+                                mostrarStatusDashboard('Atualizado', `VersÃ£o ${versaoLegivelAtualizacao(retorno.currentVersion || resultado.currentVersion || APP_VERSION_FALLBACK)}.`, { tipo: 'success', tempoMs: 5000 });
                             }
                         })
                         .catch((err) => {
                             limparWatchdogAtualizacao();
-                            mostrarStatusDashboard('Falha na atualização', (err && err.message) || 'Não foi possível baixar.', { tipo: 'error', tempoMs: 9000 });
+                            mostrarStatusDashboard('Falha na atualizaÃ§Ã£o', (err && err.message) || 'NÃ£o foi possÃ­vel baixar.', { tipo: 'error', tempoMs: 9000 });
                         });
                 } else {
-                    mostrarStatusDashboard('Atualização disponível', `${versaoLegivelAtualizacao(resultado.latestVersion)} publicada. Use o app instalado para baixar.`, { tipo: 'info', tempoMs: 8000 });
+                    mostrarStatusDashboard('AtualizaÃ§Ã£o disponÃ­vel', `${versaoLegivelAtualizacao(resultado.latestVersion)} publicada. Use o app instalado para baixar.`, { tipo: 'info', tempoMs: 8000 });
                 }
             } else if (resultado && resultado.timeout) {
-                mostrarStatusDashboard('Falha na atualização', resultado.error, { tipo: 'error', tempoMs: 9000 });
+                mostrarStatusDashboard('Falha na atualizaÃ§Ã£o', resultado.error, { tipo: 'error', tempoMs: 9000 });
             } else if (resultado && resultado.error) {
-                mostrarStatusDashboard('Falha na atualização', resultado.error, { tipo: 'error', tempoMs: 9000 });
+                mostrarStatusDashboard('Falha na atualizaÃ§Ã£o', resultado.error, { tipo: 'error', tempoMs: 9000 });
             } else {
-                mostrarStatusDashboard('Atualização', 'Consulta finalizada.', { tipo: 'info', tempoMs: 5000 });
+                mostrarStatusDashboard('AtualizaÃ§Ã£o', 'Consulta finalizada.', { tipo: 'info', tempoMs: 5000 });
             }
         } catch (err) {
             limparWatchdogAtualizacao();
-            mostrarStatusDashboard('Falha na atualização', (err && err.message) || 'Não foi possível verificar.', { tipo: 'error', tempoMs: 9000 });
+            mostrarStatusDashboard('Falha na atualizaÃ§Ã£o', (err && err.message) || 'NÃ£o foi possÃ­vel verificar.', { tipo: 'error', tempoMs: 9000 });
         } finally {
             if (botao) {
                 botao.disabled = false;
@@ -1713,7 +1680,7 @@
             return;
         }
         if (nova !== confirmar) {
-            mostrarMensagemSenha('A confirmação da senha não confere.');
+            mostrarMensagemSenha('A confirmaÃ§Ã£o da senha nÃ£o confere.');
             return;
         }
 
@@ -1731,12 +1698,12 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) {
-                throw new Error(data.detail || data.message || 'Não foi possível trocar a senha.');
+                throw new Error(data.detail || data.message || 'NÃ£o foi possÃ­vel trocar a senha.');
             }
             mostrarMensagemSenha(data.message || 'Senha alterada com sucesso.', true);
             setTimeout(fecharTrocaSenha, 900);
         } catch (err) {
-            mostrarMensagemSenha(err.message || 'Não foi possível trocar a senha.');
+            mostrarMensagemSenha(err.message || 'NÃ£o foi possÃ­vel trocar a senha.');
         } finally {
             if (botao) botao.disabled = false;
         }
@@ -1804,9 +1771,8 @@
             const empty = document.createElement('div');
             empty.className = 'dashboard-empty-state';
             empty.innerHTML = `
-                <p>Nenhum módulo habilitado para seu usuário.</p>
+                <p>Nenhum mÃ³dulo habilitado para seu usuÃ¡rio.</p>
                 <div class="dashboard-empty-actions">
-                    <button class="sidebar-import-credentials" type="button" onclick="importarCredenciais()">Importar credenciais</button>
                     <button class="modal-secondary" type="button" onclick="sair()">Sair e entrar novamente</button>
                 </div>
             `;
@@ -1826,8 +1792,8 @@
                 a.href = mod.href;
             }
             const m = String(mod.title || '').match(/^(\S+)\s+(.+)$/);
-            const icon = m ? m[1] : '•';
-            const titleText = m ? m[2] : String(mod.title || 'Módulo');
+            const icon = m ? m[1] : 'â€¢';
+            const titleText = m ? m[2] : String(mod.title || 'MÃ³dulo');
             a.innerHTML =
                 '<div class="card-head">' +
                     '<span class="card-icon" aria-hidden="true">' + icon + '</span>' +

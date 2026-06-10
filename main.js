@@ -1,4 +1,4 @@
-const electron = require('electron');
+﻿const electron = require('electron');
 if (!electron || !electron.app) {
     const { spawn } = require('child_process');
     const env = { ...process.env };
@@ -14,7 +14,7 @@ if (!electron || !electron.app) {
     process.exit(0);
 }
 
-const { app, BrowserWindow, BrowserView, desktopCapturer, ipcMain, session, net, shell, dialog, Notification } = electron;
+const { app, BrowserWindow, BrowserView, desktopCapturer, ipcMain, session, net, shell, Notification } = electron;
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -42,7 +42,6 @@ const JK_LOCAL_BACKEND_PORT = 8001;
 const JK_PROMO_WORKER_PORT = 8011;
 const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
 const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
-const JK_PRIVATE_CREDENTIALS_FILE_NAME = 'credenciais-jk-private.jkcred';
 const JK_FIREBASE_PRESENCE_ENV_FILE_NAME = 'firebase-presence.env';
 let localBackendProcess = null;
 let localBackendStartupPromise = null;
@@ -406,7 +405,7 @@ function getUpdateErrorMessage(err) {
         return 'Atualizacao nao encontrada no GitHub. Confira se a release e o latest.yml foram publicados.';
     }
     if (/401|403|unauthorized|forbidden/i.test(raw)) {
-        return 'GitHub recusou a consulta da atualizacao. Confira o acesso ao repositorio ou token da release privada.';
+        return 'GitHub recusou a consulta da atualizacao. Confira o acesso ao repositorio ou ao canal de releases.';
     }
     if (/net::|ENOTFOUND|ECONN|ETIMEDOUT|network/i.test(raw)) {
         return 'Falha de rede ao consultar atualizacao. Confira a internet e tente novamente.';
@@ -495,7 +494,7 @@ function getUpdateUnavailableReason() {
     if (!getAppUpdateConfigPath()) {
         const feed = getBundledUpdateFeedConfig();
         if (!feed || !feed.provider || !feed.owner || !feed.repo) {
-            return 'Este instalador privado nao possui canal de atualizacao automatica. Use a versao privada mais recente gerada localmente.';
+            return 'Este instalador nao possui canal de atualizacao automatica configurado. Use a versao mais recente publicada.';
         }
     }
     return '';
@@ -1198,8 +1197,6 @@ function getFirebasePresenceEnvCandidates(localAppDir) {
     return [
         path.join(localAppDir, JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
         path.join(localAppDir, 'info', JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
-        path.join(getAppRootDir(), 'private', JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
-        path.join(process.resourcesPath || '', 'private', JK_FIREBASE_PRESENCE_ENV_FILE_NAME),
         path.join(localAppDir, '.env')
     ].filter(Boolean);
 }
@@ -1267,7 +1264,6 @@ function shouldSkipBackendCopyEntry(name, fullPath) {
         lower === 'logs' ||
         lower === 'backups' ||
         lower === '__pycache__' ||
-        lower.endsWith('.jkcred') ||
         lower.startsWith('.env')
     ) {
         return true;
@@ -1398,11 +1394,17 @@ function fetchLocalBackendJson(pathname, timeoutMs = 2500) {
     });
 }
 
-function localBackendHealthCompatible(health) {
+function localBackendHealthCompatible(health, firebaseEnv = null) {
     if (!health || health.ok !== true) return false;
     const backendVersion = String(health.appVersion || '').replace(/^v/i, '').trim();
     const desktopVersion = String(app.getVersion() || '').replace(/^v/i, '').trim();
-    return !!backendVersion && backendVersion === desktopVersion;
+    if (!backendVersion || backendVersion !== desktopVersion) return false;
+    const expectsFirebase = firebaseEnv && String(firebaseEnv.JK_ACCESS_BACKEND || '').toLowerCase() === 'firebase';
+    if (expectsFirebase) {
+        if (health.firebaseActive !== true) return false;
+        if (health.firebaseLiveFeatures !== true) return false;
+    }
+    return true;
 }
 
 function stopProcessListeningOnPort(port) {
@@ -1564,6 +1566,13 @@ function writeLocalBackendLauncher(localAppDir) {
         '  "%PYTHON_EXE%" -m pip uninstall -y fitz >> "%LOG_FILE%" 2>&1',
         `  echo ok> "${depsMarker}"`,
         ')',
+        'set "JK_CA_BUNDLE=%CD%\\.venv\\Lib\\site-packages\\certifi\\cacert.pem"',
+        'if exist "%JK_CA_BUNDLE%" (',
+        '  set "SSL_CERT_FILE=%JK_CA_BUNDLE%"',
+        '  set "REQUESTS_CA_BUNDLE=%JK_CA_BUNDLE%"',
+        '  set "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=%JK_CA_BUNDLE%"',
+        '  echo Usando certificados Python: %JK_CA_BUNDLE%>> "%LOG_FILE%"',
+        ')',
         `"%PYTHON_EXE%" -m uvicorn backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
     ];
     fs.writeFileSync(launcherPath, `${lines.join('\r\n')}\r\n`, 'utf8');
@@ -1582,7 +1591,7 @@ function ensureLocalBackendStarted() {
 
         if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
             const health = await fetchLocalBackendJson('/health');
-            if (localBackendHealthCompatible(health)) {
+            if (localBackendHealthCompatible(health, firebaseEnv)) {
                 logElectronLifecycle('local-backend-already-running', { port: JK_LOCAL_BACKEND_PORT, health });
                 return { success: true, alreadyRunning: true, port: JK_LOCAL_BACKEND_PORT };
             }
@@ -1663,51 +1672,6 @@ function stopLocalBackend() {
     localBackendProcess = null;
 }
 
-function getCredentialsScriptPath() {
-    const candidates = [
-        path.join(getAppRootDir(), 'scripts', 'credenciais.js'),
-        path.join(process.resourcesPath || '', 'scripts', 'credenciais.js'),
-        path.join(path.resolve(__dirname, '..'), 'scripts', 'credenciais.js')
-    ].filter(Boolean);
-    for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) return candidate;
-    }
-    return '';
-}
-
-function getBundledPrivateCredentialsPaths() {
-    const candidates = [
-        process.env.JK_PRIVATE_CREDENTIALS_PACKAGE,
-        path.join(getAppRootDir(), 'private', JK_PRIVATE_CREDENTIALS_FILE_NAME),
-        path.join(getAppRootDir(), JK_PRIVATE_CREDENTIALS_FILE_NAME),
-        path.join(process.resourcesPath || '', 'private', JK_PRIVATE_CREDENTIALS_FILE_NAME)
-    ].filter(Boolean);
-    const packagePaths = [];
-    for (const candidate of candidates) {
-        const resolved = path.resolve(candidate);
-        if (fs.existsSync(resolved)) packagePaths.push(resolved);
-    }
-    const privateDirs = [
-        path.join(getAppRootDir(), 'private'),
-        path.join(process.resourcesPath || '', 'private')
-    ].filter(Boolean);
-    for (const privateDir of privateDirs) {
-        try {
-            const entries = fs.readdirSync(privateDir, { withFileTypes: true });
-            for (const entry of entries) {
-                if (entry.isFile() && entry.name.toLowerCase().endsWith('.jkcred')) {
-                    packagePaths.push(path.join(privateDir, entry.name));
-                }
-            }
-        } catch (_err) {}
-    }
-    return Array.from(new Set(packagePaths.map((item) => path.resolve(item)))).sort((a, b) => a.localeCompare(b));
-}
-
-function getPrivateCredentialsImportMarker() {
-    return path.join(JK_ELECTRON_USER_DATA_DIR, '.private_credentials_imported');
-}
-
 function readLocalDotEnvValues(envPath) {
     const values = {};
     try {
@@ -1730,311 +1694,6 @@ function readLocalDotEnvValues(envPath) {
         }
     } catch (_err) {}
     return values;
-}
-
-function hasAnyEnvValue(values, keys) {
-    return keys.some((key) => String(values[key] || '').trim());
-}
-
-function hasRequiredPrivateRuntimeConfig(localAppDir) {
-    const values = readFirebaseRuntimeEnvValues(localAppDir);
-    const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
-    const hasFirebaseAdmin = String(firebaseEnv.JK_ACCESS_BACKEND || '').toLowerCase() === 'firebase'
-        && !!firebaseEnv.FIREBASE_SERVICE_ACCOUNT_FILE;
-    const hasFirebaseDatabase = hasAnyEnvValue(values, [
-        'FIREBASE_DATABASE_URL',
-        'FIREBASE_REALTIME_DATABASE_URL',
-        'JK_FIREBASE_DATABASE_URL',
-        'JK_FIREBASE_REALTIME_DATABASE_URL'
-    ]);
-    const hasFirebaseWebKey = hasAnyEnvValue(values, [
-        'FIREBASE_WEB_API_KEY',
-        'FIREBASE_API_KEY',
-        'JK_FIREBASE_WEB_API_KEY',
-        'JK_FIREBASE_API_KEY'
-    ]);
-    return hasFirebaseAdmin && hasFirebaseDatabase && hasFirebaseWebKey;
-}
-
-function promptPrivateCredentialsPassword(parentWindow) {
-    return new Promise((resolve) => {
-        const channel = `private-credentials-password-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const modal = new BrowserWindow({
-            width: 440,
-            height: 260,
-            title: 'Credenciais privadas',
-            parent: parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined,
-            modal: !!(parentWindow && !parentWindow.isDestroyed()),
-            resizable: false,
-            minimizable: false,
-            maximizable: false,
-            autoHideMenuBar: true,
-            webPreferences: {
-                nodeIntegration: true,
-                contextIsolation: false
-            }
-        });
-        let settled = false;
-        const finish = (value) => {
-            if (settled) return;
-            settled = true;
-            ipcMain.removeAllListeners(channel);
-            try {
-                if (!modal.isDestroyed()) modal.close();
-            } catch (_err) {}
-            resolve(value);
-        };
-        ipcMain.once(channel, (_event, payload) => {
-            const action = payload && payload.action;
-            if (action === 'ok') {
-                finish(String(payload.password || ''));
-            } else {
-                finish(null);
-            }
-        });
-        modal.on('closed', () => finish(null));
-        const html = `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <title>Credenciais privadas</title>
-    <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; min-height: 100vh; background: #07111f; color: #eef6ff; font-family: Inter, Segoe UI, Arial, sans-serif; display: grid; place-items: center; }
-        main { width: 100%; padding: 24px; }
-        h1 { margin: 0 0 8px; font-size: 20px; }
-        p { margin: 0 0 18px; color: #b8c9dc; line-height: 1.4; }
-        input { width: 100%; border: 1px solid rgba(130, 180, 230, 0.35); border-radius: 8px; padding: 12px; background: rgba(255,255,255,0.08); color: #fff; outline: none; font-size: 15px; }
-        .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
-        button { border: 0; border-radius: 8px; padding: 10px 14px; color: #fff; background: #2387d8; font-weight: 700; cursor: pointer; }
-        button.secondary { background: rgba(255,255,255,0.12); }
-    </style>
-</head>
-<body>
-    <main>
-        <h1>Importar dados privados</h1>
-        <p>Digite a senha do pacote criptografado para restaurar as credenciais e dados locais.</p>
-        <input id="senha" type="password" autocomplete="current-password" autofocus>
-        <div class="actions">
-            <button class="secondary" id="cancelar" type="button">Depois</button>
-            <button id="importar" type="button">Importar</button>
-        </div>
-    </main>
-    <script>
-        const { ipcRenderer } = require('electron');
-        const channel = ${JSON.stringify(channel)};
-        const senha = document.getElementById('senha');
-        document.getElementById('cancelar').addEventListener('click', () => ipcRenderer.send(channel, { action: 'cancel' }));
-        document.getElementById('importar').addEventListener('click', () => ipcRenderer.send(channel, { action: 'ok', password: senha.value || '' }));
-        senha.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') ipcRenderer.send(channel, { action: 'ok', password: senha.value || '' });
-            if (event.key === 'Escape') ipcRenderer.send(channel, { action: 'cancel' });
-        });
-    </script>
-</body>
-</html>`;
-        modal.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => finish(null));
-    });
-}
-
-function importCredentialPackage(importFile, password) {
-    const scriptPath = getCredentialsScriptPath();
-    if (!scriptPath) {
-        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
-    }
-    const localAppDir = syncBundledLocalBackend();
-    const logPath = path.join(localAppDir, 'logs', 'private_credentials_import.log');
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [
-            scriptPath,
-            'import',
-            '--in',
-            importFile,
-            '--force',
-            '--no-backup'
-        ], {
-            cwd: localAppDir,
-            env: {
-                ...process.env,
-                ELECTRON_RUN_AS_NODE: '1',
-                JK_CREDENTIALS_ROOT: localAppDir,
-                JK_CREDENTIALS_PASSWORD: password
-            },
-            windowsHide: true
-        });
-        const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-        logStream.write(`\n==== Importacao privada ${new Date().toISOString()} ====\n`);
-        child.stdout.on('data', (chunk) => logStream.write(chunk));
-        child.stderr.on('data', (chunk) => logStream.write(chunk));
-        child.once('error', (err) => {
-            logStream.end();
-            reject(err);
-        });
-        child.once('exit', (code, signal) => {
-            logStream.end();
-            if (code === 0) {
-                resolve({ success: true });
-            } else {
-                reject(new Error(`Importacao falhou. Codigo: ${code ?? ''} ${signal || ''}`.trim()));
-            }
-        });
-    });
-}
-
-function writeCredentialsImportRunner(importFile, options = {}) {
-    const scriptPath = getCredentialsScriptPath();
-    if (!scriptPath) {
-        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
-    }
-    const localAppDir = syncBundledLocalBackend();
-    const runnerName = options.runnerName || 'importar-credenciais-local.cmd';
-    const runnerPath = path.join(JK_ELECTRON_USER_DATA_DIR, runnerName);
-    const markerPath = options.markerPath || '';
-    const lines = [
-        '@echo off',
-        'setlocal',
-        `cd /d "${cmdValue(localAppDir)}"`,
-        'set "ELECTRON_RUN_AS_NODE=1"',
-        `set "JK_CREDENTIALS_ROOT=${cmdValue(localAppDir)}"`,
-        'echo Importando credenciais para o JK Sistema local.',
-        'echo.',
-        `"${cmdValue(process.execPath)}" "${cmdValue(scriptPath)}" import --in "${cmdValue(importFile)}" --force`,
-        'set "IMPORT_EXIT=%ERRORLEVEL%"',
-        'echo.',
-        'if "%IMPORT_EXIT%"=="0" (',
-        '  echo Importacao concluida.',
-        ...(markerPath ? [`  echo ok> "${cmdValue(markerPath)}"`] : []),
-        ') else (',
-        '  echo Importacao falhou. Confira a senha e tente novamente.',
-        ')',
-        'echo.',
-        'echo Feche esta janela para continuar.',
-        'pause',
-        'exit /b %IMPORT_EXIT%'
-    ];
-    fs.writeFileSync(runnerPath, `${lines.join('\r\n')}\r\n`, 'utf8');
-    return { runnerPath, localAppDir };
-}
-
-function launchCredentialsImportRunner(runnerPath, localAppDir, options = {}) {
-    if (process.platform !== 'win32') {
-        return shell.openPath(runnerPath).then((result) => {
-            if (result) throw new Error(result);
-            return { code: 0 };
-        });
-    }
-
-    const waitFlag = options.wait ? '/wait ' : '';
-    const child = spawn('cmd.exe', ['/d', '/c', `start ${waitFlag}"" "${cmdValue(runnerPath)}"`], {
-        cwd: localAppDir,
-        detached: !options.wait,
-        stdio: 'ignore',
-        windowsHide: !!options.wait
-    });
-
-    if (!options.wait) {
-        child.unref();
-        return Promise.resolve({ code: 0 });
-    }
-
-    return new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (code, signal) => {
-            resolve({ code, signal });
-        });
-    });
-}
-
-async function openLocalCredentialsImporter() {
-    const scriptPath = getCredentialsScriptPath();
-    if (!scriptPath) {
-        throw new Error('scripts/credenciais.js nao foi encontrado no pacote.');
-    }
-
-    const selected = await dialog.showOpenDialog({
-        title: 'Selecionar pacote de credenciais',
-        properties: ['openFile'],
-        filters: [
-            { name: 'Credenciais JK', extensions: ['jkcred'] },
-            { name: 'Todos os arquivos', extensions: ['*'] }
-        ]
-    });
-    if (selected.canceled || !selected.filePaths || !selected.filePaths[0]) {
-        return { success: false, canceled: true };
-    }
-
-    const localAppDir = syncBundledLocalBackend();
-    const importFile = selected.filePaths[0];
-    const runnerPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'importar-credenciais-local.cmd');
-    const lines = [
-        '@echo off',
-        'setlocal',
-        `cd /d "${cmdValue(localAppDir)}"`,
-        'set "ELECTRON_RUN_AS_NODE=1"',
-        `set "JK_CREDENTIALS_ROOT=${cmdValue(localAppDir)}"`,
-        'echo Importando credenciais para o JK Sistema local.',
-        'echo.',
-        `"${cmdValue(process.execPath)}" "${cmdValue(scriptPath)}" import --in "${cmdValue(importFile)}" --force`,
-        'echo.',
-        'echo Se a importacao terminou sem erro, feche esta janela e entre novamente no app.',
-        'pause'
-    ];
-    fs.writeFileSync(runnerPath, `${lines.join('\r\n')}\r\n`, 'utf8');
-
-    if (process.platform !== 'win32') {
-        const result = await shell.openPath(runnerPath);
-        if (result) throw new Error(result);
-        return {
-            success: true,
-            path: runnerPath,
-            message: 'Importador aberto. Informe a senha para restaurar as credenciais locais.'
-        };
-    }
-
-    const child = spawn('cmd.exe', ['/d', '/c', `start "" "${cmdValue(runnerPath)}"`], {
-        cwd: localAppDir,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: false
-    });
-    child.unref();
-    return {
-        success: true,
-        path: runnerPath,
-        message: 'Importador aberto. Informe a senha para restaurar as credenciais locais.'
-    };
-}
-
-async function openCredentialsImporter() {
-    return await openLocalCredentialsImporter();
-    const batPath = getImportCredentialsBatPath();
-    if (!batPath) {
-        throw new Error('ImportarCredenciais.bat não foi encontrado na pasta do sistema.');
-    }
-    if (process.platform === 'win32') {
-        const child = spawn('cmd.exe', ['/d', '/c', 'start', '', batPath], {
-            cwd: path.dirname(batPath),
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: false,
-            env: {
-                ...process.env,
-                JK_NODE_BIN: process.execPath
-            }
-        });
-        child.unref();
-    } else {
-        const result = await shell.openPath(batPath);
-        if (result) {
-            throw new Error(result);
-        }
-    }
-    return {
-        success: true,
-        path: batPath,
-        message: 'Importador aberto. Siga as instruções na janela para restaurar as credenciais.'
-    };
 }
 
 function readJsonFile(filePath) {
@@ -2212,47 +1871,12 @@ function renderLocalBackendStartupScreen(win, options = {}) {
     });
 }
 
-async function maybeImportBundledPrivateCredentials(win) {
-    const packagePaths = getBundledPrivateCredentialsPaths();
-    if (!packagePaths.length) {
-        return { imported: false, reason: 'no-package' };
-    }
-
-    const localAppDir = syncBundledLocalBackend();
-    const runtimeConfigReady = hasRequiredPrivateRuntimeConfig(localAppDir);
-    const markerPath = getPrivateCredentialsImportMarker();
-    const markerExists = fs.existsSync(markerPath);
-    if (markerExists && runtimeConfigReady) {
-        return { imported: false, reason: 'already-imported' };
-    }
-
-    try {
-        for (let index = 0; index < packagePaths.length; index += 1) {
-            renderLocalBackendStartupScreen(win, {
-                detail: `Restaurando dados locais ${index + 1} de ${packagePaths.length}. Aguarde, isso pode levar alguns minutos.`
-            });
-            await importCredentialPackage(packagePaths[index], '');
-        }
-        fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
-    } catch (err) {
-        logElectronLifecycle('private-credentials-auto-import-failed', err);
-        return { imported: false, reason: 'failed' };
-    }
-
-    if (!fs.existsSync(markerPath)) {
-        return { imported: false, reason: 'not-finished' };
-    }
-
-    return { imported: true };
-}
-
 function loadConfiguredApp(win, clientConfig = null) {
     const config = clientConfig || loadClientConfig();
     logElectronLifecycle('client-config-loaded', { appUrl: config.appUrl, configPath: config.configPath });
     if (isLocalBackendAppUrl(config.appUrl)) {
         renderLocalBackendStartupScreen(win);
-        maybeImportBundledPrivateCredentials(win)
-            .then(() => ensureLocalBackendStarted())
+        ensureLocalBackendStarted()
             .then(() => {
                 if (!win || win.isDestroyed()) return;
                 loadElectronTabbedShell(win, appendNoCache(config.appUrl));
@@ -2673,7 +2297,7 @@ function isBlockedAutomationPopupUrl(targetUrl) {
         ) {
             return true;
         }
-        return /suporte|support|ajuda|help|tutorial|introducao|introdução|curso|youtube|whatsapp|wa\.me/.test(text);
+        return /suporte|support|ajuda|help|tutorial|introducao|introduÃ§Ã£o|curso|youtube|whatsapp|wa\.me/.test(text);
     } catch (_err) {
         return false;
     }
@@ -2798,7 +2422,7 @@ function vendedorMlValido(valor) {
         .trim();
     if (!textoBusca || textoBusca.length < 2) return false;
     if (/(^|\b)(anuncio criado|an ncio criado|criado em|catalogo criado|cat logo criado|vendas produto|total vendas|quantidade vendas)(\b|$)/i.test(textoBusca)) return false;
-    return !/^(vendido|vendedor|anuncio|anunci[oÃ´]o|produto|frete|envio|loja|oferta|ofertas|desconto|comprar|comprando|login|entrar|cadastro|email|senha|contato|perfil|busca|filtro|categoria|condi[cÃ§][aÃ£]o|aviso|informa[cÃ§][aÃ£]o|cria[cÃ§][aÃ£]o|valor|pre[cÃ§]o)$/i.test(textoBusca);
+    return !/^(vendido|vendedor|anuncio|anunci[oÃƒÂ´]o|produto|frete|envio|loja|oferta|ofertas|desconto|comprar|comprando|login|entrar|cadastro|email|senha|contato|perfil|busca|filtro|categoria|condi[cÃƒÂ§][aÃƒÂ£]o|aviso|informa[cÃƒÂ§][aÃƒÂ£]o|cria[cÃƒÂ§][aÃƒÂ£]o|valor|pre[cÃƒÂ§]o)$/i.test(textoBusca);
 }
 
 function escolherNomeVendedorMl(candidatos) {
@@ -3680,9 +3304,6 @@ app.whenReady().then(async () => {
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();
     });
-    ipcMain.handle('import-credentials', async () => {
-        return await openCredentialsImporter();
-    });
     ipcMain.handle('check-for-updates', async () => {
         return await checkForUpdates(true);
     });
@@ -3710,7 +3331,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('ml-public-item-info', async (_event, itemId) => {
         const cleanId = String(itemId || '').trim().toUpperCase();
         if (!/^MLB\d+$/.test(cleanId)) {
-            throw new Error('ID de anÃºncio invÃ¡lido.');
+            throw new Error('ID de anÃƒÂºncio invÃƒÂ¡lido.');
         }
         const cached = _cacheGet(mlItemInfoCache, cleanId);
         if (cached) {
@@ -3774,7 +3395,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('ml-browser-item-info', async (_event, itemId, targetUrl) => {
         const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
         if (!/^MLB\d+$/.test(cleanId)) {
-            throw new Error('ID de anÃºncio invÃ¡lido.');
+            throw new Error('ID de anÃƒÂºncio invÃƒÂ¡lido.');
         }
         const cacheKey = `browser:${cleanId}:${String(targetUrl || '').trim()}`;
         const cached = _cacheGet(mlItemInfoCache, cacheKey);
@@ -4033,7 +3654,7 @@ app.whenReady().then(async () => {
         try {
             await internalBrowser.loadURL(normalizeTargetUrl(targetUrl));
 
-            // Aguarda o carregamento completo da pÃ¡gina
+            // Aguarda o carregamento completo da pÃƒÂ¡gina
             await internalBrowser.webContents.executeJavaScript(`
                 new Promise((resolve) => {
                     const observer = new MutationObserver((mutations, observer) => {
@@ -4046,7 +3667,7 @@ app.whenReady().then(async () => {
                 });
             `);
 
-            // Extrai os links apÃ³s o carregamento completo
+            // Extrai os links apÃƒÂ³s o carregamento completo
             const links = await internalBrowser.webContents.executeJavaScript(`
                 Array.from(document.querySelectorAll('a')).map(a => a.href).filter(href => href)
             `);
@@ -4054,7 +3675,7 @@ app.whenReady().then(async () => {
             internalBrowser.close();
             return links;
         } catch (err) {
-            console.error('Erro ao buscar links da pÃ¡gina:', err);
+            console.error('Erro ao buscar links da pÃƒÂ¡gina:', err);
             internalBrowser.close();
             throw err;
         }

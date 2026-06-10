@@ -1052,7 +1052,7 @@ function obterAuthHeaders(extra) {
 
     async function buscarUsuariosOnlineRtdb() {
         const ctx = await prepararRtdb();
-        if (!ctx || !(ctx.session && ctx.session.admin)) return null;
+        if (!ctx) return null;
         if (rtdbState.lastUsersPayload && Array.isArray(rtdbState.lastUsersPayload.users)) {
             return rtdbState.lastUsersPayload;
         }
@@ -1075,8 +1075,8 @@ function obterAuthHeaders(extra) {
 
     async function assinarPresencaUsuarios(onUpdate, onError) {
         const ctx = await prepararRtdb();
-        if (!ctx || !(ctx.session && ctx.session.admin)) {
-            throw new Error('Presenca em tempo real indisponivel para este usuario.');
+        if (!ctx) {
+            throw new Error('Presenca em tempo real indisponivel.');
         }
         const usersRef = ctx.modules.database.ref(ctx.db, `${ctx.session.rootPath}/users`);
         return ctx.modules.database.onValue(usersRef, (snap) => {

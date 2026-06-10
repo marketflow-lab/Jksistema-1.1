@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.73",
+  "version": "1.0.74",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
@@ -47,14 +47,6 @@
       {
         "from": "../electron_tab_preload.js",
         "to": "electron_tab_preload.js"
-      },
-      {
-        "from": "../ImportarCredenciais.bat",
-        "to": "ImportarCredenciais.bat"
-      },
-      {
-        "from": "../scripts/credenciais.js",
-        "to": "scripts/credenciais.js"
       },
       {
         "from": "../extensoes_chrome",
