@@ -546,7 +546,18 @@ function obterAuthHeaders(extra) {
             } catch (_err) {
                 versao = '';
             }
-            appVersionCache = versao || extrairAppVersionUserAgent();
+            let versaoLocal = '';
+            try {
+                versaoLocal = String(localStorage.getItem('jk_app_version') || '').trim();
+            } catch (_err) {
+                versaoLocal = '';
+            }
+            appVersionCache = versao || extrairAppVersionUserAgent() || versaoLocal;
+            if (appVersionCache) {
+                try {
+                    localStorage.setItem('jk_app_version', appVersionCache);
+                } catch (_err) {}
+            }
             appVersionPromise = null;
             return appVersionCache;
         })();

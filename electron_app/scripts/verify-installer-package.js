@@ -132,9 +132,24 @@ function validatePackageConfig(manifest, failures) {
     if (!filters.includes(toPosix(filter))) failures.push(`Filtro local_app obrigatorio ausente: ${filter}`);
   }
 
+  for (const filter of manifest.forbiddenLocalAppFilters || []) {
+    if (filters.includes(toPosix(filter))) failures.push(`Filtro local_app proibido: ${filter}`);
+  }
+
   const packageText = JSON.stringify(build);
   for (const forbidden of manifest.forbiddenBuildReferences || []) {
     if (packageText.includes(forbidden)) failures.push(`Referencia privada proibida no build: ${forbidden}`);
+  }
+}
+
+function validateRuntimeCopyGuards(manifest, failures) {
+  const mainPath = path.join(appDir, 'main.js');
+  const source = fs.readFileSync(mainPath, 'utf8');
+  for (const entry of manifest.requiredRuntimeSkipEntries || []) {
+    const needle = `lower === '${entry}'`;
+    if (!source.includes(needle)) {
+      failures.push(`Protecao runtime ausente contra sobrescrita de dados locais: ${entry}`);
+    }
   }
 }
 
@@ -179,6 +194,7 @@ function main() {
 
   failIfMissingSource(manifest, failures);
   validatePackageConfig(manifest, failures);
+  validateRuntimeCopyGuards(manifest, failures);
   validatePackagedOutput(manifest, failures);
 
   if (failures.length) {

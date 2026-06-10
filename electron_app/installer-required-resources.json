@@ -54,6 +54,24 @@
     "NCM1.xlsx",
     "openapi_bling.json"
   ],
+  "forbiddenLocalAppFilters": [
+    "info/**",
+    "info/*",
+    "logs/**",
+    "logs/*",
+    "backups/**",
+    "backups/*",
+    "electron_user_data/**",
+    "electron_user_data/*"
+  ],
+  "requiredRuntimeSkipEntries": [
+    ".venv",
+    "node_modules",
+    "electron_app",
+    "info",
+    "logs",
+    "backups"
+  ],
   "requiredPackagedFiles": [
     "electron_shell.html",
     "electron_tab_preload.js",
@@ -91,6 +109,10 @@
     "**/*.jkcred",
     "private/**",
     "**/private/**",
+    "local_app/info/**",
+    "local_app/logs/**",
+    "local_app/backups/**",
+    "local_app/electron_user_data/**",
     "ImportarCredenciais.bat",
     "**/ImportarCredenciais.bat"
   ]

@@ -30026,6 +30026,21 @@ def _machine_presence_resolve_app_version(app_version: Optional[Any], user_agent
     )
 
 
+def _machine_presence_preserve_app_version(record: dict, existing: Optional[dict] = None) -> dict:
+    if not isinstance(record, dict):
+        return record
+    out = dict(record)
+    current_version = _machine_presence_resolve_app_version(out.get("app_version"), out.get("user_agent"))
+    if current_version:
+        out["app_version"] = current_version
+        return out
+    if isinstance(existing, dict):
+        existing_version = _machine_presence_resolve_app_version(existing.get("app_version"), existing.get("user_agent"))
+        if existing_version:
+            out["app_version"] = existing_version
+    return out
+
+
 def _machine_presence_record(username: str, client_id: str, machine_id: str, request: Optional[Request], page: str = "", app_version: Optional[str] = None) -> dict:
     machine_final, meta = _montar_machine_id_login(request, machine_id)
     now_ts = int(time.time())
@@ -30122,18 +30137,23 @@ def _machine_presence_save(record: dict) -> dict:
     if not isinstance(record, dict) or not record.get("id"):
         return record
 
+    record_id = str(record["id"])
     local_data = _machine_presence_prune_local(_machine_presence_local_read())
-    local_data[str(record["id"])] = record
+    record_to_save = _machine_presence_preserve_app_version(record, local_data.get(record_id))
+    local_data[record_id] = record_to_save
     _machine_presence_local_write(local_data)
 
     if _firebase_live_features_ativas():
         try:
             db = _firebase_db()
             if db is not None:
-                db.collection(_firebase_presence_collection_name()).document(str(record["id"])).set(record, merge=True)
+                firebase_record = dict(record_to_save)
+                if not _machine_presence_resolve_app_version(firebase_record.get("app_version"), firebase_record.get("user_agent")):
+                    firebase_record.pop("app_version", None)
+                db.collection(_firebase_presence_collection_name()).document(record_id).set(firebase_record, merge=True)
         except Exception as exc:
             logger.warning("[MACHINES] Falha ao salvar presenca no Firebase: %s", exc)
-    return record
+    return record_to_save
 
 
 def _machine_presence_list_firebase(username: str, client_id: str) -> list[dict]:
@@ -30201,6 +30221,8 @@ def _machine_presence_list_from_records(username: str, client_id: str, registros
             last_seen_atual = 0
         if atual and last_seen < last_seen_atual:
             continue
+        if atual:
+            item = _machine_presence_preserve_app_version(item, atual)
         por_chave[chave] = item
 
     for item in por_chave.values():
