@@ -3455,6 +3455,29 @@
       return String((msg && (msg.text || msg.plain || msg.message)) || '').trim();
     }
 
+    function _approvalOrigemTexto(payload) {
+      const isPosVenda = String(payload && (payload.tipo || payload.approval_type) || '').toLowerCase() === 'pos_venda';
+      const origem = String(payload && (payload.ia_origem || payload.ai_origin) || '').trim();
+      if (origem === 'mercado_livre_pos_venda' || isPosVenda) return 'IA de pos-venda do Mercado Livre';
+      if (origem === 'mercado_livre_perguntas') return 'IA de respostas do Mercado Livre';
+      return 'IA de respostas do Mercado Livre';
+    }
+
+    function _approvalHistoricoChat(msg) {
+      const payload = _approvalParseMensagem(msg && msg.text);
+      if (!payload) {
+        return { role: (msg && msg.role) || 'assistant', content: String((msg && msg.text) || '').slice(0, 1200) };
+      }
+      const origem = _approvalOrigemTexto(payload);
+      const modelo = String(payload.model || '').trim();
+      const texto = [
+        `Card de aprovacao do Mercado Livre gerado pela ${origem}.`,
+        modelo ? `Modelo usado na sugestao: ${modelo}.` : '',
+        _approvalTexto(payload),
+      ].filter(Boolean).join('\n');
+      return { role: 'assistant', content: texto.slice(0, 1200) };
+    }
+
     function _approvalPerguntaParaTreinamento(payload) {
       const perguntaDireta = String((payload && payload.pergunta) || '').trim();
       if (perguntaDireta) return perguntaDireta;
@@ -3596,7 +3619,18 @@
 
       const answerBox = document.createElement('div');
       answerBox.className = 'jk-ia-approval-answer';
-      answerBox.innerHTML = '<div class="jk-ia-approval-label">Resposta sugerida pela IA (edite antes de enviar)</div>';
+      const answerLabel = document.createElement('div');
+      answerLabel.className = 'jk-ia-approval-label';
+      answerLabel.textContent = `${_approvalOrigemTexto(payload)} (edite antes de enviar)`;
+      answerBox.appendChild(answerLabel);
+      const origemMeta = document.createElement('div');
+      origemMeta.className = 'jk-ia-approval-meta';
+      origemMeta.textContent = [
+        'Origem: motor de respostas do Mercado Livre',
+        payload.model ? `Modelo: ${payload.model}` : '',
+        payload.ia_modo ? `Modo: ${payload.ia_modo}` : '',
+      ].filter(Boolean).join(' - ');
+      answerBox.appendChild(origemMeta);
       const answerText = document.createElement('textarea');
       answerText.className = 'jk-ia-approval-edit';
       answerText.value = payload.resposta_sugerida || '';
@@ -4086,7 +4120,7 @@
       const aguardando = addMsg('assistant', 'Pensando...', false);
       aguardando.classList.add('loading');
 
-      const historico = mensagensAtuais.slice(-16).map(m => ({ role: m.role, content: m.text.slice(0, 1200) }));
+      const historico = mensagensAtuais.slice(-16).map(_approvalHistoricoChat);
       const contextoTela = _obterContextoTela();
       contextoTela.historico_conversa = historico;
       contextoTela.modulo_atual = _modulo();

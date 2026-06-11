@@ -4,17 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JK Sistema de Gestão</title>
+    <script>
+        (function () {
+            const ua = navigator.userAgent || '';
+            const mobileUa = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(ua);
+            const compactScreen = window.matchMedia('(max-width: 860px)').matches;
+            const touch = (navigator.maxTouchPoints || 0) > 0;
+            window.__JK_MOBILE_LOGIN__ = mobileUa || (touch && compactScreen);
+        })();
+    </script>
     <style>
         :root {
-            --card-bg: rgba(22, 25, 37, 0.9);
-            --card-border: rgba(79, 172, 254, 0.28);
-            --text: #e5e5e5;
-            --muted: #b9c9df;
-            --input-bg: rgba(18, 27, 42, 0.88);
-            --input-border: #2f3d56;
-            --accent: #4facfe;
-            --accent-hover: #3b8de0;
-            --danger: #ff6b6b;
+            --card-bg: rgba(8, 24, 53, 0.82);
+            --card-border: rgba(255, 255, 255, 0.18);
+            --text: #f6f9ff;
+            --muted: #dbe6ff;
+            --input-bg: rgba(255, 255, 255, 0.12);
+            --input-border: rgba(255, 255, 255, 0.26);
+            --accent: #00c2ff;
+            --accent-hover: #00a7db;
+            --danger: #ff9a9a;
         }
 
         * { box-sizing: border-box; }
@@ -27,7 +36,7 @@
             display: grid;
             place-items: center;
             overflow: hidden;
-            background: #0e1117;
+            background: #061125;
         }
 
         .bg-video {
@@ -44,8 +53,8 @@
             position: fixed;
             inset: 0;
             z-index: -1;
-            background: radial-gradient(circle at 22% 18%, rgba(79, 172, 254, 0.22), rgba(14, 17, 23, 0.9) 46%),
-                        linear-gradient(140deg, rgba(18, 27, 42, 0.8), rgba(14, 17, 23, 0.92));
+            background: radial-gradient(circle at 20% 20%, rgba(0, 194, 255, 0.2), rgba(4, 11, 31, 0.86) 45%),
+                        linear-gradient(140deg, rgba(5, 18, 43, 0.72), rgba(1, 8, 21, 0.9));
             transition: opacity 0.45s ease;
         }
 
@@ -55,8 +64,8 @@
             padding: 34px 28px 28px;
             background: var(--card-bg);
             border: 1px solid var(--card-border);
-            box-shadow: 0 20px 58px rgba(0, 0, 0, 0.5);
-            backdrop-filter: blur(10px);
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(8px);
             text-align: left;
             animation: reveal .7s ease-out;
             transition: opacity 0.45s ease, transform 0.45s ease, filter 0.45s ease;
@@ -146,7 +155,6 @@
             font-size: 1.58rem;
             letter-spacing: 0.3px;
             text-align: center;
-            color: #9bd1ff;
         }
 
         .subtitle {
@@ -169,11 +177,11 @@
             transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
-        input::placeholder { color: #9bb0cc; }
+        input::placeholder { color: rgba(232, 240, 255, 0.72); }
 
         input:focus {
             border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.22);
+            box-shadow: 0 0 0 3px rgba(0, 194, 255, 0.22);
         }
 
         .login-container.authenticating input {
@@ -184,8 +192,8 @@
             width: 100%;
             margin-top: 10px;
             padding: 12px;
-            background: linear-gradient(100deg, var(--accent), #79bcff);
-            color: #ffffff;
+            background: linear-gradient(100deg, var(--accent), #32d6ff);
+            color: #04233d;
             border: none;
             border-radius: 11px;
             cursor: pointer;
@@ -200,7 +208,7 @@
         button:hover {
             filter: brightness(0.93);
             transform: translateY(-1px);
-            background: linear-gradient(100deg, var(--accent-hover), #5ca7f5);
+            background: linear-gradient(100deg, var(--accent-hover), #23c9f2);
         }
 
         button:disabled {
@@ -303,15 +311,15 @@
             width: 16px;
             height: 16px;
             border-radius: 50%;
-            border: 2px solid rgba(255, 255, 255, 0.35);
-            border-top-color: #ffffff;
+            border: 2px solid rgba(4, 35, 61, 0.25);
+            border-top-color: #04233d;
             animation: spin 0.8s linear infinite;
         }
 
         .button-loader-text {
             font-size: 0.9rem;
             font-weight: 800;
-            color: #ffffff;
+            color: #04233d;
         }
 
         .login-container.authenticating button .button-label {
@@ -327,7 +335,7 @@
             min-height: 18px;
             text-align: center;
             font-size: 0.88rem;
-            color: #9bb0cc;
+            color: rgba(240, 247, 255, 0.82);
             opacity: 0;
             transform: translateY(4px);
             transition: opacity 0.22s ease, transform 0.22s ease;
@@ -422,24 +430,111 @@
             h1 { font-size: 1.34rem; }
             .brand img { width: 62%; }
         }
+
+        body.modo-mobile {
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 14px 10px;
+            place-items: start center;
+        }
+
+        body.modo-mobile .bg-video {
+            object-fit: contain;
+            object-position: center center;
+            opacity: 0.7;
+            filter: saturate(0.8) brightness(0.78);
+            transform: none !important;
+        }
+
+        body.modo-mobile .login-container {
+            margin-top: 8vh;
+            width: min(96vw, 460px);
+            padding: 24px 16px 18px;
+            border-radius: 16px;
+        }
+
+        body.modo-mobile h1 { font-size: 1.22rem; }
+        body.modo-mobile .subtitle { font-size: 0.9rem; margin-bottom: 14px; }
+        body.modo-mobile input { font-size: 16px; }
+        body.modo-mobile button { min-height: 46px; }
+        body.modo-mobile .intro-skip {
+            top: auto;
+            right: auto;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            padding: 11px 16px;
+            font-size: 0.9rem;
+        }
+
+        /* No celular, mostra o vídeo inteiro da apresentação sem cortar. */
+        body.modo-mobile .intro-screen {
+            display: grid;
+            place-items: center;
+            background: #fff;
+        }
+
+        body.modo-mobile .intro-screen video {
+            width: 100vw;
+            height: 100vh;
+            max-width: 100vw;
+            max-height: 100vh;
+            object-fit: contain;
+            object-position: center center;
+            background: #fff;
+            transform: none !important;
+        }
+
+        body.modo-mobile.transitioning-to-intro .bg-video,
+        body.modo-mobile.transitioning-from-intro .intro-screen video,
+        body.modo-mobile.handoff-to-dashboard .intro-screen video {
+            transform: none !important;
+        }
+
+        /* Retrato (celular): garante quadro completo do vídeo sem cortes,
+           mesmo quando classes de transição alteram scale/filter. */
+        @media (orientation: portrait) and (max-width: 900px) {
+            .bg-video,
+            .intro-screen video {
+                object-fit: contain !important;
+                object-position: center center !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                max-width: 100vw !important;
+                max-height: 100vh !important;
+                transform: none !important;
+            }
+
+            body.transitioning-to-intro .bg-video,
+            body.transitioning-from-intro .intro-screen video,
+            body.handoff-to-dashboard .intro-screen video {
+                transform: none !important;
+                filter: none !important;
+            }
+
+            .intro-screen,
+            .bg-video {
+                background: #fff !important;
+            }
+        }
     </style>
 </head>
 <body>
     <video class="bg-video" autoplay muted loop playsinline>
-        <source src="img/video.mp4" type="video/mp4">
+        <source src="../img/video.mp4" type="video/mp4">
     </video>
     <div class="bg-overlay" aria-hidden="true"></div>
 
     <div class="intro-screen" id="intro-screen" aria-hidden="true">
         <video id="intro-video" playsinline preload="auto" muted>
-            <source src="img/video.mp4" type="video/mp4">
+            <source src="../img/video.mp4" type="video/mp4">
         </video>
         <button class="intro-skip" onclick="pularApresentacao()">Pular apresentação</button>
     </div>
 
     <div class="login-container">
         <div class="brand">
-            <img src="img/Logo Trend.png" alt="Trend Minas">
+            <img src="../img/Logo Trend.png" alt="Trend Minas">
         </div>
         <h1>JK Sistema de Gestão</h1>
         <p class="subtitle">Acesse sua conta para continuar</p>
@@ -466,6 +561,10 @@
     </div>
 
     <script>
+        if (window.__JK_MOBILE_LOGIN__) {
+            document.body.classList.add('modo-mobile');
+        }
+
         (function entrarComSessaoSalva() {
             try {
                 const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
@@ -511,6 +610,7 @@
                 const body = document.body;
                 const introScreen = document.getElementById('intro-screen');
                 const introVideo = document.getElementById('intro-video');
+                const modoMobile = !!window.__JK_MOBILE_LOGIN__;
                 if (!introScreen || !introVideo) {
                     resolve();
                     return;
@@ -519,7 +619,7 @@
                 let finalizado = false;
                 const iniciar = async () => {
                     body.classList.add('transitioning-to-intro');
-                    await esperar(420);
+                    await esperar(modoMobile ? 260 : 420);
                     introScreen.classList.remove('closing');
                     introScreen.classList.add('active');
                     introScreen.setAttribute('aria-hidden', 'false');
@@ -536,16 +636,16 @@
                     finalizado = true;
                     clearTimeout(timeoutId);
                     body.classList.add('transitioning-from-intro');
-                    await esperar(920);
+                    await esperar(modoMobile ? 560 : 920);
                     introScreen.classList.add('closing');
-                    await esperar(320);
+                    await esperar(modoMobile ? 180 : 320);
                     introVideo.pause();
                     introScreen.classList.remove('closing');
                     introScreen.classList.add('active');
                     introScreen.setAttribute('aria-hidden', 'false');
                     body.classList.remove('transitioning-from-intro');
                     body.classList.add('handoff-to-dashboard');
-                    await esperar(120);
+                    await esperar(modoMobile ? 80 : 120);
                     finalizarApresentacao = null;
                     resolve();
                 };
@@ -554,7 +654,7 @@
                 introVideo.addEventListener('ended', concluir, { once: true });
                 introVideo.addEventListener('error', concluir, { once: true });
 
-                const timeoutId = setTimeout(concluir, 19000);
+                const timeoutId = setTimeout(concluir, modoMobile ? 7000 : 19000);
                 iniciar();
             });
         }
@@ -893,30 +993,6 @@
         });
 
         carregarGoogleLogin();
-
-        (function avisarShellLoginPronto() {
-            function enviar() {
-                try {
-                    if (!window.top || window.top === window || typeof window.top.postMessage !== 'function') return;
-                    window.top.postMessage({
-                        channel: 'jk-page-ready',
-                        payload: {
-                            title: document.title || 'Inicio',
-                            url: window.location.href
-                        }
-                    }, '*');
-                } catch (_err) {}
-            }
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', enviar, { once: true });
-            } else {
-                enviar();
-            }
-            window.addEventListener('load', enviar);
-            window.addEventListener('pageshow', enviar);
-            setTimeout(enviar, 250);
-            setTimeout(enviar, 1000);
-        })();
     </script>
 </body>
 </html>

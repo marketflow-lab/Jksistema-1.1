@@ -1,0 +1,2794 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Avant - JK Sistema</title>
+    <style>
+        :root {
+            --bg: #f4f7fb;
+            --panel: #ffffff;
+            --border: #dbe4ef;
+            --text: #172033;
+            --muted: #66758c;
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --soft: #eef4ff;
+            --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: Inter, Segoe UI, Arial, sans-serif;
+        }
+
+        .container {
+            width: min(1500px, calc(100vw - 32px));
+            margin: 0 auto;
+            padding: 6px 0 10px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 5px;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .module-mark {
+            display: inline-grid;
+            place-items: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 7px;
+            background: #10233f;
+            color: #ffffff;
+            font-weight: 800;
+            font-size: 0.78rem;
+            letter-spacing: 0;
+            box-shadow: var(--shadow);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.18rem;
+            line-height: 1.1;
+        }
+
+        .subtitle {
+            margin: 1px 0 0;
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .header-actions,
+        .browser-toolbar,
+        .browser-search-row,
+        .browser-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 8px;
+        }
+
+        .controls {
+            display: grid;
+            gap: 5px;
+            margin-bottom: 6px;
+        }
+
+        .browser-search-row {
+            align-items: stretch;
+        }
+
+        .browser-search-fields {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(180px, 1fr));
+            gap: 6px;
+            flex: 1 1 680px;
+        }
+
+        .browser-toolbar input {
+            flex: 1 1 520px;
+        }
+
+        input {
+            width: 100%;
+            border: 1px solid #cbd6e4;
+            border-radius: 7px;
+            padding: 5px 8px;
+            color: var(--text);
+            background: #ffffff;
+            font: 0.82rem Inter, Segoe UI, Arial, sans-serif;
+            outline: none;
+            min-height: 30px;
+        }
+
+        input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+        }
+
+        button {
+            border: 0;
+            border-radius: 7px;
+            min-height: 30px;
+            padding: 0 10px;
+            font: 700 0.8rem Inter, Segoe UI, Arial, sans-serif;
+            cursor: pointer;
+            transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+            white-space: nowrap;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+        }
+
+        button:disabled {
+            cursor: wait;
+            opacity: 0.72;
+            transform: none;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.18);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-secondary {
+            background: var(--soft);
+            color: #1d4ed8;
+            border: 1px solid #c7d9ff;
+        }
+
+        .btn-back {
+            background: #eef2f7;
+            color: #29364c;
+            border: 1px solid #d5dfec;
+        }
+
+        .status {
+            min-height: 14px;
+            color: var(--muted);
+            font-size: 0.78rem;
+            flex: 1 1 220px;
+        }
+
+        .status.error {
+            color: #b42318;
+        }
+
+        .status.success {
+            color: #067647;
+        }
+
+        .browser-frame-wrap {
+            position: relative;
+            overflow: hidden;
+            min-height: 560px;
+            height: calc(100vh - 170px);
+            border: 1px solid #cbd6e4;
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+
+        .browser-host {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            background: #ffffff;
+        }
+
+        .browser-warning {
+            display: grid;
+            place-items: center;
+            align-content: center;
+            gap: 8px;
+            height: 100%;
+            padding: 24px;
+            text-align: center;
+            color: var(--muted);
+        }
+
+        .browser-warning strong {
+            color: var(--text);
+            font-size: 1rem;
+        }
+
+        .browser-webview {
+            width: 100%;
+            height: 100%;
+            border: 0;
+        }
+
+        .hint {
+            display: none;
+            color: var(--muted);
+            font-size: 0.76rem;
+        }
+
+        .hint.is-visible {
+            display: block;
+        }
+
+        .quick-links {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .quick-link {
+            min-height: 24px;
+            padding: 0 7px;
+            background: #ffffff;
+            color: #31415a;
+            border: 1px solid var(--border);
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+
+        .controls-footer {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 24px;
+        }
+
+        .data-panel {
+            margin-top: 8px;
+            border: 1px solid #dbe4ef;
+            border-radius: 8px;
+            background: #ffffff;
+            overflow: hidden;
+        }
+
+        .data-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 8px 10px;
+            border-bottom: 1px solid #e6edf6;
+            background: #f8fbff;
+        }
+
+        .data-panel-title {
+            margin: 0;
+            font-size: 0.9rem;
+            line-height: 1.25;
+        }
+
+        .data-panel-subtitle {
+            margin: 3px 0 0;
+            color: var(--muted);
+            font-size: 0.76rem;
+        }
+
+        .data-count {
+            min-width: 42px;
+            min-height: 24px;
+            display: inline-grid;
+            place-items: center;
+            border-radius: 999px;
+            background: #eaf2ff;
+            color: #1d4ed8;
+            font-weight: 800;
+            font-size: 0.76rem;
+        }
+
+        .data-status {
+            padding: 6px 10px 0;
+            min-height: 22px;
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .data-status.error {
+            color: #b42318;
+        }
+
+        .data-status.success {
+            color: #067647;
+        }
+
+        .results-empty {
+            padding: 8px 10px;
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+
+        .results-table-wrap {
+            overflow: auto;
+            max-height: 380px;
+            padding: 8px 14px 14px;
+        }
+
+        .results-table {
+            width: 100%;
+            min-width: 940px;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+        }
+
+        .results-table th,
+        .results-table td {
+            padding: 9px 8px;
+            border-bottom: 1px solid #e6edf6;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .results-table th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #f8fbff;
+            color: #43536b;
+            font-size: 0.76rem;
+            text-transform: uppercase;
+        }
+
+        .results-table a {
+            color: #1d4ed8;
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .results-table a:hover {
+            text-decoration: underline;
+        }
+
+        .source-pill {
+            display: inline-block;
+            max-width: 160px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: #eef2f7;
+            color: #42526a;
+            font-size: 0.76rem;
+            font-weight: 800;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        @media (max-width: 820px) {
+            .container {
+                width: min(100vw - 20px, 1500px);
+                padding-top: 10px;
+            }
+
+            .header {
+                align-items: stretch;
+                flex-direction: column;
+            }
+
+            .header-actions,
+            .browser-actions {
+                justify-content: stretch;
+            }
+
+            .header-actions button,
+            .browser-actions button,
+            .browser-toolbar button,
+            .browser-search-row button {
+                flex: 1 1 150px;
+            }
+
+            .browser-search-fields {
+                grid-template-columns: 1fr;
+                flex-basis: 100%;
+            }
+
+            .controls-footer {
+                align-items: stretch;
+                flex-direction: column;
+                gap: 5px;
+            }
+
+            .quick-links {
+                justify-content: stretch;
+            }
+
+            .quick-link {
+                flex: 1 1 110px;
+            }
+
+            .browser-frame-wrap {
+                min-height: 420px;
+                height: calc(100vh - 320px);
+            }
+
+            .data-panel-header {
+                align-items: stretch;
+                flex-direction: column;
+            }
+        }
+    </style>
+    <script src="/auth.js?v=20260610-avant"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-title">
+                <span class="module-mark">AV</span>
+                <div>
+                    <h1>Avant</h1>
+                    <p class="subtitle">Navegador do Mercado Livre com coleta propria, sem depender do AvantPro.</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="btn-back" type="button" id="btn-home">Home</button>
+                <button class="btn-back" type="button" id="btn-voltar">Voltar</button>
+            </div>
+        </header>
+
+        <main class="panel">
+            <section class="controls" aria-label="Controles do navegador Avant">
+                <div class="browser-search-row">
+                    <div class="browser-search-fields">
+                        <input id="avant-search-term" type="text" placeholder="Pesquisa 1 no Mercado Livre" autocomplete="off">
+                        <input id="avant-search-term-2" type="text" placeholder="Pesquisa 2 no Mercado Livre" autocomplete="off">
+                        <input id="avant-search-term-3" type="text" placeholder="Pesquisa 3 no Mercado Livre" autocomplete="off">
+                    </div>
+                    <button class="btn-primary" type="button" id="btn-pesquisar">Pesquisar no ML</button>
+                </div>
+
+                <div class="browser-toolbar">
+                    <input id="avant-url" type="text" value="https://www.mercadolivre.com.br/" placeholder="URL da pagina">
+                    <div class="browser-actions">
+                        <button class="btn-primary" type="button" id="btn-abrir">Abrir no Programa</button>
+                        <button class="btn-secondary" type="button" id="btn-recarregar">Recarregar</button>
+                        <button class="btn-secondary" type="button" id="btn-coletar">Coletar dados</button>
+                        <button class="btn-back" type="button" id="btn-limpar-coleta">Limpar coleta</button>
+                        <button class="btn-back" type="button" id="btn-externo">Abrir Externo</button>
+                    </div>
+                </div>
+
+                <div class="controls-footer">
+                    <div id="avant-status" class="status">Pronto para abrir dentro do programa.</div>
+                    <div class="quick-links" aria-label="Atalhos">
+                        <button class="quick-link" type="button" data-url="https://www.mercadolivre.com.br/">Mercado Livre</button>
+                        <button class="quick-link" type="button" data-url="https://www.mercadolivre.com.br/anuncios/lista">Meus anuncios</button>
+                        <button class="quick-link" type="button" data-url="https://www.mercadolivre.com.br/ajuda">Ajuda ML</button>
+                    </div>
+                </div>
+                <div id="avant-hint" class="hint">No navegador comum do Windows a abertura interna e limitada. Abra pelo app Electron para usar o quadro interno e coletar dados sem AvantPro.</div>
+            </section>
+
+            <section class="browser-frame-wrap" id="avant-browser-frame">
+                <div id="avant-browser-host" class="browser-host">
+                    <div class="browser-warning">
+                        <strong>Aguardando abertura no navegador interno do programa.</strong>
+                        <span>Clique em "Abrir no Programa" ou pesquise um termo.</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="data-panel" aria-label="Dados coletados pelo Avant">
+                <div class="data-panel-header">
+                    <div>
+                        <h2 class="data-panel-title">Coleta independente</h2>
+                        <p class="data-panel-subtitle">Leitura do navegador interno e enriquecimento pelo sistema, sem consultar AvantPro.</p>
+                    </div>
+                    <span id="avant-coleta-count" class="data-count">0</span>
+                </div>
+                <div id="avant-coleta-status" class="data-status">Nenhuma coleta executada ainda.</div>
+                <div id="avant-coleta-empty" class="results-empty">Pesquise ou abra uma pagina do Mercado Livre e clique em "Coletar dados".</div>
+                <div id="avant-coleta-wrap" class="results-table-wrap" hidden>
+                    <table class="results-table">
+                        <thead>
+                            <tr>
+                                <th>Pos.</th>
+                                <th>MLB</th>
+                                <th>Titulo</th>
+                                <th>Vendedor</th>
+                                <th>Criado em</th>
+                                <th>Vendas</th>
+                                <th>Fonte</th>
+                                <th>Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="avant-coleta-body"></tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        (function () {
+            const userData = JSON.parse(localStorage.getItem('user_data') || 'null');
+            const permissions = JSON.parse(localStorage.getItem('permissions') || '{}');
+            const JK_BROWSER_SESSION_PARTITION = 'persist:jk-sistema-browser';
+            const AVANT_LINKS_SIMULTANEOS = 4;
+            const AVANT_COMPLEMENTO_BROWSER_TIMEOUT_MS = 42000;
+            const AVANT_ABRIR_LINKS_PARA_COMPLEMENTO = false;
+            let browserSessionPartition = JK_BROWSER_SESSION_PARTITION;
+            let browserProxy = null;
+            let webviewEl = null;
+            let coletaWebviewsOcultos = [];
+            let positionTimer = null;
+            let requestSerial = 0;
+            let coletaEmExecucao = false;
+            let ultimoDiagnosticoExtensaoLocal = null;
+            const pendingShellRequests = new Map();
+
+            const els = {
+                url: document.getElementById('avant-url'),
+                search1: document.getElementById('avant-search-term'),
+                search2: document.getElementById('avant-search-term-2'),
+                search3: document.getElementById('avant-search-term-3'),
+                host: document.getElementById('avant-browser-host'),
+                frame: document.getElementById('avant-browser-frame'),
+                status: document.getElementById('avant-status'),
+                hint: document.getElementById('avant-hint'),
+                abrir: document.getElementById('btn-abrir'),
+                pesquisar: document.getElementById('btn-pesquisar'),
+                recarregar: document.getElementById('btn-recarregar'),
+                coletar: document.getElementById('btn-coletar'),
+                limparColeta: document.getElementById('btn-limpar-coleta'),
+                externo: document.getElementById('btn-externo'),
+                home: document.getElementById('btn-home'),
+                voltar: document.getElementById('btn-voltar'),
+                coletaStatus: document.getElementById('avant-coleta-status'),
+                coletaEmpty: document.getElementById('avant-coleta-empty'),
+                coletaWrap: document.getElementById('avant-coleta-wrap'),
+                coletaBody: document.getElementById('avant-coleta-body'),
+                coletaCount: document.getElementById('avant-coleta-count')
+            };
+
+            if (!userData) {
+                window.location.href = 'frontend_index.html';
+                return;
+            }
+
+            if (!(permissions.full === true || permissions.avant === true || permissions.favoritos === true)) {
+                alert('Acesso nao autorizado para Avant.');
+                window.location.href = 'dashboard.html';
+                return;
+            }
+
+            function setStatus(message, kind) {
+                els.status.textContent = message || '';
+                els.status.classList.toggle('error', kind === 'error');
+                els.status.classList.toggle('success', kind === 'success');
+            }
+
+            function setBusy(active) {
+                [els.abrir, els.pesquisar, els.recarregar, els.coletar].forEach((button) => {
+                    if (button) button.disabled = !!active;
+                });
+            }
+
+            function mostrarHint(show) {
+                els.hint.classList.toggle('is-visible', !!show);
+            }
+
+            function limparTexto(valor) {
+                return String(valor || '').replace(/\s+/g, ' ').trim();
+            }
+
+            function obterTermosPesquisa() {
+                return [els.search1, els.search2, els.search3]
+                    .map(input => limparTexto(input && input.value))
+                    .filter(Boolean);
+            }
+
+            function construirUrlPesquisaMercadoLivre(termo) {
+                const limpo = limparTexto(termo);
+                if (!limpo) return 'https://www.mercadolivre.com.br/';
+                return `https://lista.mercadolivre.com.br/${encodeURIComponent(limpo).replace(/%20/g, '-')}`;
+            }
+
+            function normalizarUrl(valor) {
+                const texto = limparTexto(valor);
+                if (!texto) return 'https://www.mercadolivre.com.br/';
+                if (/^https?:\/\//i.test(texto)) return texto;
+                if (/^[\w.-]+\.[a-z]{2,}(?:[/:?#].*)?$/i.test(texto)) return `https://${texto}`;
+                return construirUrlPesquisaMercadoLivre(texto);
+            }
+
+            function setColetaStatus(message, kind) {
+                if (!els.coletaStatus) return;
+                els.coletaStatus.textContent = message || '';
+                els.coletaStatus.classList.toggle('error', kind === 'error');
+                els.coletaStatus.classList.toggle('success', kind === 'success');
+            }
+
+            function headersJson() {
+                if (typeof obterAuthHeaders === 'function') {
+                    return obterAuthHeaders({ 'Content-Type': 'application/json' });
+                }
+                const token = localStorage.getItem('access_token') || localStorage.getItem('auth_token') || localStorage.getItem('token') || '';
+                const headers = { 'Content-Type': 'application/json' };
+                if (token) headers.Authorization = `Bearer ${token}`;
+                return headers;
+            }
+
+            function authTokenLocal() {
+                return localStorage.getItem('access_token') || localStorage.getItem('auth_token') || localStorage.getItem('token') || '';
+            }
+
+            function backendBaseLocal() {
+                const origem = String(window.location && window.location.origin || '').trim();
+                if (/^https?:\/\//i.test(origem)) return origem.replace(/\/+$/g, '');
+                return 'http://127.0.0.1:8001';
+            }
+
+            function escapeHtml(valor) {
+                return String(valor == null ? '' : valor)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function parseNumeroVendas(valor) {
+                if (valor === null || valor === undefined || valor === '') return null;
+                if (typeof valor === 'number' && Number.isFinite(valor)) return valor;
+                let texto = String(valor || '').toLowerCase().trim();
+                if (!texto || texto === 'null' || texto === 'undefined') return null;
+                texto = texto
+                    .replace(/\+/g, '')
+                    .replace(/\s+/g, ' ')
+                    .replace(/milhoes?/g, '000000')
+                    .replace(/milhao/g, '000000')
+                    .replace(/mil/g, '000');
+                const match = texto.match(/(\d+(?:[\.,]\d+)?)/);
+                if (!match) return null;
+                let numero = match[1].replace(/\./g, '').replace(',', '.');
+                const parsed = Number(numero);
+                if (!Number.isFinite(parsed)) return null;
+                if (/k\b/.test(texto)) return Math.round(parsed * 1000);
+                return Math.round(parsed);
+            }
+
+            function formatarData(valor) {
+                const texto = limparTexto(valor);
+                if (!texto) return '';
+                if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(texto)) return texto;
+                const isoData = texto.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|$)/);
+                if (isoData) return `${isoData[3]}/${isoData[2]}/${isoData[1]}`;
+                const data = new Date(texto);
+                if (!Number.isNaN(data.getTime())) {
+                    return data.toLocaleDateString('pt-BR');
+                }
+                return texto;
+            }
+
+            function extrairItemId(valor) {
+                const texto = String(valor || '').toUpperCase();
+                let match = texto.match(/[?&](?:WID|ITEM_ID|ITEMID|ID)=?(MLB\d{8,})/i);
+                if (match) return String(match[1] || '').toUpperCase();
+                match = texto.match(/[?&][^=]*(?:ITEM|WID)[^=]*=(MLB\d{8,})/i);
+                if (match) return String(match[1] || '').toUpperCase();
+                match = texto.match(/MLB-\d{8,}/);
+                if (match) return match[0].replace('MLB-', 'MLB');
+                match = texto.match(/\/P\/(MLB\d{8,})/i);
+                if (match) return String(match[1] || '').toUpperCase();
+                match = texto.match(/\bMLB\d{8,}\b/);
+                if (match) return String(match[0] || '').toUpperCase();
+                return '';
+            }
+
+            function itemIdValido(valor) {
+                return /^MLB\d{8,}$/i.test(String(valor || '').trim());
+            }
+
+            function urlCanonicaAnuncio(anuncio) {
+                const id = anuncio && (anuncio.id || extrairItemId(anuncio.url));
+                if (itemIdValido(id)) return `https://produto.mercadolivre.com.br/${String(id).toUpperCase().replace('MLB', 'MLB-')}`;
+                return limparTexto(anuncio && anuncio.url);
+            }
+
+            function anuncioColetavel(anuncio) {
+                if (!anuncio) return false;
+                const id = anuncio.id || extrairItemId(anuncio.url);
+                const titulo = limparTexto(anuncio.titulo || anuncio.title || '');
+                if (!itemIdValido(id)) return false;
+                if (/^publicidade$/i.test(titulo)) return false;
+                return true;
+            }
+
+            function normalizarFonte(valor, fallback) {
+                return limparTexto(valor || fallback || '')
+                    .replace(/_/g, ' ')
+                    .replace(/\s+/g, ' ');
+            }
+
+            function fonteBloqueadaExterna(valor) {
+                return /rotulos visuais|rotulos_visuais|avantpro|avant pro|extensao card visual|extensao_card_visual/i.test(normalizarFonte(valor, ''));
+            }
+
+            function limparFontesBloqueadas(valor) {
+                const vistos = new Set();
+                return String(valor || '')
+                    .split('+')
+                    .map(parte => normalizarFonte(parte, ''))
+                    .filter(parte => parte && !fonteBloqueadaExterna(parte) && !vistos.has(parte) && vistos.add(parte))
+                    .join(' + ');
+            }
+
+            function dataPorDiasCriacao(valor) {
+                const dias = parseNumeroVendas(valor);
+                if (dias === null || dias < 0) return '';
+                const data = new Date();
+                data.setDate(data.getDate() - dias);
+                return data.toISOString();
+            }
+
+            function normalizarAnuncio(raw, posicao, fontePadrao) {
+                const item = raw && typeof raw === 'object' ? raw : {};
+                const seller = item.seller && typeof item.seller === 'object' ? item.seller : {};
+                const officialStore = item.official_store && typeof item.official_store === 'object' ? item.official_store : {};
+                const url = limparTexto(item.url || item.permalink || item.link || item.href || '');
+                const id = limparTexto(item.id || item.item_id || extrairItemId(url));
+                const vendasRaw = item.vendas !== undefined
+                    ? item.vendas
+                    : (item.sales !== undefined
+                        ? item.sales
+                        : (item.soldQuantity !== undefined
+                            ? item.soldQuantity
+                            : (item.soldUnits !== undefined ? item.soldUnits : item.sold_quantity)));
+                const vendasParsed = parseNumeroVendas(vendasRaw);
+                const vendas = vendasParsed === null ? 0 : vendasParsed;
+                const dataRaw = item.data_criacao
+                    || item.dataCriacao
+                    || item.createdAt
+                    || item.createdDate
+                    || item.date_created
+                    || item.start_time
+                    || item.creation_date
+                    || item.creationDate
+                    || item.created_at
+                    || item.dateCreated
+                    || item.startTime
+                    || item.item_date_created
+                    || item.listing_start_time
+                    || item.start_date
+                    || item.listingCreatedAt
+                    || item.listingStartTime
+                    || item.datePosted
+                    || item.firstPublicationDate
+                    || item.availableSince
+                    || item.activeSince
+                    || item.itemStartTime
+                    || '';
+                const dataNormalizada = dataRaw && typeof dataRaw === 'object'
+                    ? limparTexto(dataRaw.value || dataRaw.date || dataRaw.text || dataRaw.label || '')
+                    : limparTexto(dataRaw);
+                const visitasRaw = item.visitas !== undefined
+                    ? item.visitas
+                    : (item.visits !== undefined
+                        ? item.visits
+                        : (item.total_visits !== undefined ? item.total_visits : item.totalVisits));
+                const visitas = parseNumeroVendas(visitasRaw);
+                const vendedor = limparTexto(
+                    item.vendedor
+                    || item.seller_name
+                    || item.sellerName
+                    || item.nickname
+                    || item.official_store_name
+                    || officialStore.name
+                    || officialStore.nickname
+                    || seller.nickname
+                    || seller.name
+                    || ''
+                );
+                const fonte = normalizarFonte(
+                    item.source || item.fonte || item.vendasFonte || item.vendas_fonte || item.fonte_vendas,
+                    fontePadrao
+                );
+                const fonteBloqueada = fonteBloqueadaExterna(fonte);
+                const fonteLimpa = limparFontesBloqueadas(fonte) || normalizarFonte(fontePadrao, '');
+                return {
+                    posicao: Number(item.posicao || item.position || posicao || 0) || 0,
+                    id,
+                    seller_id: limparTexto(item.seller_id || item.sellerId || seller.id || ''),
+                    titulo: limparTexto(item.titulo || item.title || item.nome || ''),
+                    url,
+                    vendedor: fonteBloqueada ? '' : vendedor,
+                    data_criacao: fonteBloqueada ? '' : (dataNormalizada || dataPorDiasCriacao(item.dias_criacao || item.creationTime || '')),
+                    vendas: fonteBloqueada ? '' : vendas,
+                    visitas: fonteBloqueada ? '' : (visitas !== null ? visitas : ''),
+                    marca: limparTexto(item.marca || item.brand || item.brand_name || ''),
+                    localizacao_vendedor: fonteBloqueada ? '' : limparTexto(item.localizacao_vendedor || item.seller_location || item.location || ''),
+                    reputacao_vendedor: fonteBloqueada ? '' : limparTexto(item.reputacao_vendedor || item.seller_reputation || item.power_seller_status || ''),
+                    vendasFonte: limparFontesBloqueadas(normalizarFonte(item.vendasFonte || item.vendas_fonte || item.fonte_vendas, fonte)),
+                    vendedorFonte: fonteBloqueada ? '' : normalizarFonte(item.vendedorFonte || item.vendedor_fonte || item.fonte_vendedor, ''),
+                    fonte: fonteLimpa || 'jk_coleta'
+                };
+            }
+
+            function chaveAnuncio(anuncio) {
+                const id = anuncio && (anuncio.id || extrairItemId(anuncio.url));
+                if (id) return `id:${String(id).toUpperCase()}`;
+                const url = anuncio && limparTexto(anuncio.url).split('#')[0].split('?')[0];
+                if (url) return `url:${url}`;
+                const titulo = anuncio && limparTexto(anuncio.titulo).toLowerCase();
+                return titulo ? `titulo:${titulo}` : '';
+            }
+
+            function fonteConfiavel(anuncio) {
+                return !fonteBloqueadaExterna(anuncio && anuncio.fonte);
+            }
+
+            function escolherPorFonteConfiavel(atual, novo, campo) {
+                const atualValor = limparTexto(atual && atual[campo]);
+                const novoValor = limparTexto(novo && novo[campo]);
+                if (fonteConfiavel(novo) && novoValor) return novoValor;
+                if (fonteConfiavel(atual) && atualValor) return atualValor;
+                return novoValor || atualValor;
+            }
+
+            function mesclarAnuncios(base, adicionais) {
+                const mapa = new Map();
+                const inserir = (item, indice) => {
+                    const normalizado = normalizarAnuncio(item, indice + 1, item && item.fonte);
+                    normalizado.id = normalizado.id || extrairItemId(normalizado.url);
+                    if (!anuncioColetavel(normalizado)) return;
+                    const chave = chaveAnuncio(normalizado);
+                    if (!chave) return;
+                    const atual = mapa.get(chave);
+                    if (!atual) {
+                        mapa.set(chave, normalizado);
+                        return;
+                    }
+                    const vendasAtual = parseNumeroVendas(atual.vendas);
+                    const vendasNova = parseNumeroVendas(normalizado.vendas);
+                    let vendasFinal;
+                    vendasFinal = vendasNova !== null
+                        ? (vendasAtual !== null && vendasNova === 0 && !/backend|api_item|codigo_fonte|sistema_enriquecimento/i.test(normalizarFonte(normalizado.fonte, '')) ? vendasAtual : vendasNova)
+                        : (vendasAtual === null ? 0 : vendasAtual);
+                    mapa.set(chave, {
+                        ...atual,
+                        ...normalizado,
+                        posicao: atual.posicao || normalizado.posicao,
+                        titulo: normalizado.titulo || atual.titulo,
+                        url: normalizado.url || atual.url,
+                        vendedor: escolherPorFonteConfiavel(atual, normalizado, 'vendedor'),
+                        vendedorFonte: normalizado.vendedorFonte || atual.vendedorFonte,
+                        data_criacao: escolherPorFonteConfiavel(atual, normalizado, 'data_criacao'),
+                        vendas: vendasFinal,
+                        visitas: normalizado.visitas || atual.visitas,
+                        marca: normalizado.marca || atual.marca,
+                        localizacao_vendedor: escolherPorFonteConfiavel(atual, normalizado, 'localizacao_vendedor'),
+                        reputacao_vendedor: normalizado.reputacao_vendedor || atual.reputacao_vendedor,
+                        vendasFonte: normalizado.vendasFonte || atual.vendasFonte,
+                        fonte: limparFontesBloqueadas([atual.fonte, normalizado.fonte].filter(Boolean).join(' + ')) || 'jk_coleta'
+                    });
+                };
+                (base || []).forEach(inserir);
+                (adicionais || []).forEach(inserir);
+                return Array.from(mapa.values()).sort((a, b) => (a.posicao || 9999) - (b.posicao || 9999));
+            }
+
+            function obterTermoColeta() {
+                const termos = obterTermosPesquisa();
+                if (termos.length) return termos[0];
+                try {
+                    const url = new URL(els.url.value || window.location.href);
+                    const q = limparTexto(url.searchParams.get('q') || url.searchParams.get('as_word') || '');
+                    if (q) return q;
+                    const path = decodeURIComponent(url.pathname || '')
+                        .replace(/^\/+/, '')
+                        .replace(/_/g, ' ')
+                        .replace(/-/g, ' ')
+                        .replace(/\bMLB\d+\b/gi, '')
+                        .trim();
+                    if (url.hostname.includes('mercadolivre') && path && !/^p\//i.test(path) && !/^MLB/i.test(path)) {
+                        return limparTexto(path);
+                    }
+                } catch (_err) {}
+                return '';
+            }
+
+            function obterNavegadorExecutavel() {
+                if (browserProxy && typeof browserProxy.executeJavaScript === 'function') return browserProxy;
+                if (webviewEl && typeof webviewEl.executeJavaScript === 'function') return webviewEl;
+                return null;
+            }
+
+            function obterOuCriarNavegadorParaColeta() {
+                const atual = obterNavegadorExecutavel();
+                if (atual) return atual;
+                if (usarShellElectron() || hasEmbeddedApi()) return criarProxyNavegador();
+                if (hasWebviewTag()) return criarWebviewFallback();
+                return null;
+            }
+
+            function esperar(ms) {
+                return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+            }
+
+            function promiseComTimeout(promise, timeoutMs, label) {
+                const limite = Math.max(1000, Number(timeoutMs) || 10000);
+                return new Promise((resolve) => {
+                    let done = false;
+                    const timer = setTimeout(() => {
+                        if (done) return;
+                        done = true;
+                        console.warn(`Tempo limite no Avant: ${label || 'operacao'}`);
+                        resolve(null);
+                    }, limite);
+                    Promise.resolve(promise).then((value) => {
+                        if (done) return;
+                        done = true;
+                        clearTimeout(timer);
+                        resolve(value);
+                    }).catch((err) => {
+                        if (done) return;
+                        done = true;
+                        clearTimeout(timer);
+                        console.warn(`Falha no Avant: ${label || 'operacao'}`, err);
+                        resolve(null);
+                    });
+                });
+            }
+
+            async function executarNoNavegadorInterno(code) {
+                const navegador = obterNavegadorExecutavel() || obterOuCriarNavegadorParaColeta();
+                if (!navegador) return null;
+                if (navegador === webviewEl) return navegador.executeJavaScript(code, true);
+                return navegador.executeJavaScript(code);
+            }
+
+            const scriptsColetorLocalCache = {};
+
+            async function carregarScriptColetorLocal(nomeArquivo) {
+                if (scriptsColetorLocalCache[nomeArquivo]) return scriptsColetorLocalCache[nomeArquivo];
+                const caminhos = [
+                    `extensoes_chrome/jk_ml_collector/${nomeArquivo}`,
+                    `/extensoes_chrome/jk_ml_collector/${nomeArquivo}`,
+                    `static/extensoes_chrome/jk_ml_collector/${nomeArquivo}`
+                ];
+                let ultimoErro = null;
+                for (const caminho of caminhos) {
+                    try {
+                        const resposta = await fetch(`${caminho}?v=${Date.now()}`, { cache: 'no-store' });
+                        if (!resposta.ok) {
+                            ultimoErro = new Error(`HTTP ${resposta.status} em ${caminho}`);
+                            continue;
+                        }
+                        const texto = await resposta.text();
+                        if (texto && texto.length > 200) {
+                            scriptsColetorLocalCache[nomeArquivo] = texto;
+                            return texto;
+                        }
+                    } catch (err) {
+                        ultimoErro = err;
+                    }
+                }
+                throw ultimoErro || new Error(`Script local nao encontrado: ${nomeArquivo}`);
+            }
+
+            async function diagnosticarColetorLocalNoNavegador() {
+                return await executarNoNavegadorInterno(`
+                    (function () {
+                        var bridge = document.getElementById('jk-ml-collector-data');
+                        return {
+                            collector: !!window.__JK_ML_COLLECTOR__,
+                            version: window.__JK_ML_COLLECTOR__ && window.__JK_ML_COLLECTOR__.version || document.documentElement.getAttribute('data-jk-ml-collector-version') || '',
+                            bridge: !!bridge,
+                            total: Number(document.documentElement.getAttribute('data-jk-ml-collector-total') || 0) || 0,
+                            cards: document.querySelectorAll('.jk-ml-info-card').length
+                        };
+                    })();
+                `).catch(() => null);
+            }
+
+            async function injetarColetorLocalNoNavegador(forcar = false) {
+                const antes = await diagnosticarColetorLocalNoNavegador();
+                if (!forcar && antes && (antes.collector || antes.bridge || antes.cards)) return antes;
+                const pageCollector = await carregarScriptColetorLocal('page-collector.js');
+                const enricher = await carregarScriptColetorLocal('enricher.js');
+                const configColetor = {
+                    backendBase: backendBaseLocal(),
+                    token: authTokenLocal(),
+                    disableExternalVisualSources: true
+                };
+                await executarNoNavegadorInterno(`window.__JK_ML_COLLECTOR_CONFIG__ = ${JSON.stringify(configColetor)}; true;`).catch((err) => {
+                    console.warn('Falha ao configurar coletor local:', err);
+                });
+                await executarNoNavegadorInterno(`${pageCollector}\n//# sourceURL=jk-ml-page-collector-fallback.js`).catch((err) => {
+                    console.warn('Falha ao injetar page-collector local:', err);
+                });
+                await esperar(120);
+                await executarNoNavegadorInterno(`${enricher}\n//# sourceURL=jk-ml-enricher-fallback.js`).catch((err) => {
+                    console.warn('Falha ao injetar enricher local:', err);
+                });
+                await esperar(180);
+                const depois = await diagnosticarColetorLocalNoNavegador();
+                return depois || antes || null;
+            }
+
+            async function coletarDadosExtensaoLocal() {
+                await injetarColetorLocalNoNavegador(true).catch((err) => {
+                    console.warn('Fallback da extensao local do Avant falhou:', err);
+                });
+                const script = `
+                    (function () {
+                        try {
+                            var collector = window.__JK_ML_COLLECTOR__;
+                            var limpar = function (value) {
+                                return String(value == null ? '' : value).replace(/\\s+/g, ' ').trim();
+                            };
+                            var temValor = function (value) {
+                                var text = limpar(value);
+                                return value !== null && value !== undefined && text !== '' && text !== '-';
+                            };
+                            var extrairId = function (value) {
+                                var text = String(value || '').toUpperCase();
+                                var match = text.match(/MLB-\\d{8,}/i);
+                                if (match) return match[0].replace('MLB-', 'MLB').toUpperCase();
+                                match = text.match(/\\bMLB\\d{8,}\\b/i);
+                                return match ? String(match[0]).toUpperCase() : '';
+                            };
+                            var chave = function (item) {
+                                if (!item || typeof item !== 'object') return '';
+                                var id = extrairId(item.id || item.item_id || item.url || '');
+                                if (id) return 'id:' + id;
+                                var url = limpar(item.url || item.permalink || item.link || '').split('#')[0].split('?')[0];
+                                return url ? 'url:' + url : '';
+                            };
+                            var valorVendas = function (item) {
+                                if (!item || typeof item !== 'object') return null;
+                                if (temValor(item.vendas)) return item.vendas;
+                                if (temValor(item.sales)) return item.sales;
+                                if (temValor(item.sold_quantity)) return item.sold_quantity;
+                                if (temValor(item.soldQuantity)) return item.soldQuantity;
+                                return null;
+                            };
+                            var valorVisitas = function (item) {
+                                if (!item || typeof item !== 'object') return null;
+                                if (temValor(item.visitas)) return item.visitas;
+                                if (temValor(item.visits)) return item.visits;
+                                if (temValor(item.total_visits)) return item.total_visits;
+                                if (temValor(item.totalVisits)) return item.totalVisits;
+                                return null;
+                            };
+                            var valorData = function (item) {
+                                if (!item || typeof item !== 'object') return '';
+                                return limpar(item.data_criacao || item.dataCriacao || item.createdAt || item.createdDate || item.date_created || item.start_time || item.creation_date || item.creationDate || item.created_at || item.dateCreated || item.startTime || item.item_date_created || item.itemDateCreated || item.listing_start_time || item.listingStartTime || item.listingCreatedAt || item.datePosted || item.firstPublicationDate || item.availableSince || item.activeSince || '');
+                            };
+                            var valorVendedor = function (item) {
+                                if (!item || typeof item !== 'object') return '';
+                                return limpar(item.vendedor || item.seller_name || item.sellerName || item.nickname || '');
+                            };
+                            var valorLocalizacao = function (item) {
+                                if (!item || typeof item !== 'object') return '';
+                                return limpar(item.localizacao_vendedor || item.seller_location || item.location || '');
+                            };
+                            var fonteBloqueada = function (item) {
+                                return /rotulos_visuais|rotulos visuais|avantpro|avant pro|extensao_card_visual|extensao card visual/i.test(limpar(item && item.fonte));
+                            };
+                            var limparFonte = function (value) {
+                                var seen = {};
+                                return String(value || '').split('+').map(limpar).filter(function (fonte) {
+                                    if (!fonte || fonteBloqueada({ fonte: fonte }) || seen[fonte]) return false;
+                                    seen[fonte] = true;
+                                    return true;
+                                }).join(' + ');
+                            };
+                            var fonteConfiavel = function (item) {
+                                return !fonteBloqueada(item);
+                            };
+                            var escolherConfiavel = function (atual, item, getter) {
+                                var atualValor = getter(atual);
+                                var itemValor = getter(item);
+                                if (fonteConfiavel(item) && itemValor) return itemValor;
+                                if (fonteConfiavel(atual) && atualValor) return atualValor;
+                                return itemValor || atualValor;
+                            };
+                            var sanitizarItem = function (item) {
+                                if (!item || typeof item !== 'object') return item;
+                                if (!fonteBloqueada(item)) {
+                                    return Object.assign({}, item, { fonte: limparFonte(item.fonte) || item.fonte });
+                                }
+                                return Object.assign({}, item, {
+                                    vendedor: '',
+                                    data_criacao: '',
+                                    vendas: null,
+                                    visitas: null,
+                                    localizacao_vendedor: '',
+                                    fonte: limparFonte(item.fonte)
+                                });
+                            };
+                            var mergeAnuncios = function (base, extra) {
+                                var map = {};
+                                var order = [];
+                                var inserir = function (item) {
+                                    if (!item || typeof item !== 'object') return;
+                                    item = sanitizarItem(item);
+                                    var key = chave(item);
+                                    if (!key) return;
+                                    if (!map[key]) {
+                                        map[key] = Object.assign({}, item);
+                                        order.push(key);
+                                        return;
+                                    }
+                                    var atual = map[key];
+                                    var vendasNova = valorVendas(item);
+                                    var vendasAtual = valorVendas(atual);
+                                    var visitasNova = valorVisitas(item);
+                                    var visitasAtual = valorVisitas(atual);
+                                    var vendasFinal = null;
+                                    vendasFinal = vendasNova !== null ? vendasNova : vendasAtual;
+                                    map[key] = Object.assign({}, atual, item, {
+                                        posicao: atual.posicao || item.posicao,
+                                        titulo: item.titulo || item.title || atual.titulo || atual.title || '',
+                                        url: item.url || item.permalink || atual.url || atual.permalink || '',
+                                        vendedor: escolherConfiavel(atual, item, valorVendedor),
+                                        data_criacao: escolherConfiavel(atual, item, valorData),
+                                        vendas: vendasFinal,
+                                        visitas: visitasNova !== null ? visitasNova : visitasAtual,
+                                        localizacao_vendedor: escolherConfiavel(atual, item, valorLocalizacao),
+                                        fonte: limparFonte([atual.fonte, item.fonte].filter(Boolean).join(' + ')) || 'jk_coleta'
+                                    });
+                                };
+                                (Array.isArray(base) ? base : []).forEach(inserir);
+                                (Array.isArray(extra) ? extra : []).forEach(inserir);
+                                return order.map(function (key) { return map[key]; });
+                            };
+                            var lerBridge = function () {
+                                var node = document.getElementById('jk-ml-collector-data');
+                                if (!node || !node.textContent) return null;
+                                try { return JSON.parse(node.textContent); } catch (_err) { return null; }
+                            };
+                            var bridgeSnapshot = lerBridge();
+                            if (!collector) {
+                                if (bridgeSnapshot && Array.isArray(bridgeSnapshot.anuncios)) {
+                                    var bridgeAnuncios = bridgeSnapshot.anuncios;
+                                    var bridgeCompletos = bridgeAnuncios.filter(function (item) {
+                                        return valorVendedor(item) && valorData(item) && valorVendas(item) !== null;
+                                    }).length;
+                                    return {
+                                        active: true,
+                                        bridge: true,
+                                        version: bridgeSnapshot.version || document.documentElement.getAttribute('data-jk-ml-collector-version') || '',
+                                        updatedAt: bridgeSnapshot.updatedAt || 0,
+                                        total: bridgeSnapshot.total || bridgeSnapshot.anuncios.length || 0,
+                                        url: bridgeSnapshot.url || location.href,
+                                        lastReason: bridgeSnapshot.lastReason || '',
+                                        completeCount: bridgeCompletos,
+                                        pendingCount: Math.max(0, bridgeAnuncios.length - bridgeCompletos),
+                                        hasBackground: /backend_enrichment_done|background_enrichment_done|jk_backend|sistema_enriquecimento|extensao_background|api_item|codigo_fonte/i.test(String(bridgeSnapshot.lastReason || '') + ' ' + JSON.stringify(bridgeAnuncios.map(function (item) { return item && item.fonte || ''; }))),
+                                        backgroundFailed: /background_enrichment_failed/i.test(String(bridgeSnapshot.lastReason || '')),
+                                        anuncios: bridgeAnuncios
+                                    };
+                                }
+                                return { active: false, reason: 'collector_missing' };
+                            }
+                            var snapshot = null;
+                            if (typeof collector.forceCollect === 'function') {
+                                snapshot = collector.forceCollect('avant-read');
+                            } else if (typeof collector.getSnapshot === 'function') {
+                                snapshot = collector.getSnapshot();
+                            } else {
+                                snapshot = collector;
+                            }
+                            snapshot = snapshot || {};
+                            var snapshotAnuncios = Array.isArray(snapshot.anuncios) ? snapshot.anuncios : [];
+                            var bridgeAnuncios = bridgeSnapshot && Array.isArray(bridgeSnapshot.anuncios) ? bridgeSnapshot.anuncios : [];
+                            var anuncios = mergeAnuncios(snapshotAnuncios, bridgeAnuncios);
+                            var completos = anuncios.filter(function (item) {
+                                return valorVendedor(item) && valorData(item) && valorVendas(item) !== null;
+                            }).length;
+                            var fontes = JSON.stringify(anuncios.map(function (item) { return item && item.fonte || ''; }));
+                            var lastReason = (bridgeSnapshot && bridgeSnapshot.lastReason) || snapshot.lastReason || '';
+                            return {
+                                active: true,
+                                bridge: !!bridgeSnapshot,
+                                version: (bridgeSnapshot && bridgeSnapshot.version) || collector.version || snapshot.version || document.documentElement.getAttribute('data-jk-ml-collector-version') || '',
+                                updatedAt: Math.max(Number(snapshot.updatedAt || 0), Number(bridgeSnapshot && bridgeSnapshot.updatedAt || 0)),
+                                total: anuncios.length || snapshot.total || (bridgeSnapshot && bridgeSnapshot.total) || 0,
+                                url: (bridgeSnapshot && bridgeSnapshot.url) || snapshot.url || location.href,
+                                lastReason: lastReason,
+                                completeCount: completos,
+                                pendingCount: Math.max(0, anuncios.length - completos),
+                                hasBackground: /backend_enrichment_done|background_enrichment_done|jk_backend|sistema_enriquecimento|extensao_background|api_item|codigo_fonte/i.test(String(lastReason || '') + ' ' + fontes),
+                                backgroundFailed: /background_enrichment_failed/i.test(String(lastReason || '')),
+                                sources: snapshot.sources || {},
+                                anuncios: anuncios
+                            };
+                        } catch (err) {
+                            return { active: false, reason: err && err.message ? err.message : String(err) };
+                        }
+                    })();
+                `;
+                let result = null;
+                for (let tentativa = 0; tentativa < 24; tentativa += 1) {
+                    if (tentativa > 0) await esperar(500);
+                    result = await executarNoNavegadorInterno(script).catch((err) => {
+                        console.warn('Falha ao ler extensao local do Avant:', err);
+                        return null;
+                    });
+                    if (
+                        result
+                        && result.active
+                        && Array.isArray(result.anuncios)
+                        && result.anuncios.length
+                        && (result.hasBackground || result.backgroundFailed || !result.pendingCount || tentativa >= 23)
+                    ) break;
+                }
+                ultimoDiagnosticoExtensaoLocal = result || { active: false, reason: 'sem_resposta' };
+                if (!result || !result.active || !Array.isArray(result.anuncios)) return [];
+                return result.anuncios.map((item, index) => normalizarAnuncio({
+                    ...item,
+                    fonte: item.fonte || 'extensao_local'
+                }, index + 1, item.fonte || 'extensao_local'));
+            }
+
+            async function atualizarColetorLocalNoNavegador(anuncios, motivo = 'sistema_enriquecimento') {
+                const lista = Array.isArray(anuncios) ? anuncios : [];
+                if (!lista.length) return false;
+                const payload = JSON.stringify(lista.map((item, index) => ({
+                    ...item,
+                    posicao: item.posicao || index + 1,
+                    fonte: limparFontesBloqueadas(item.fonte || motivo) || motivo
+                })));
+                const reason = JSON.stringify(motivo);
+                const script = `
+                    (function () {
+                        var items = ${payload};
+                        var reason = ${reason};
+                        if (window.__JK_ML_ENRICHER__ && typeof window.__JK_ML_ENRICHER__.publish === 'function') {
+                            return window.__JK_ML_ENRICHER__.publish(items, reason);
+                        }
+                        var previous = {};
+                        var node = document.getElementById('jk-ml-collector-data');
+                        if (node && node.textContent) {
+                            try { previous = JSON.parse(node.textContent) || {}; } catch (_err) { previous = {}; }
+                        }
+                        if (!node) {
+                            node = document.createElement('script');
+                            node.id = 'jk-ml-collector-data';
+                            node.type = 'application/json';
+                            (document.head || document.documentElement).appendChild(node);
+                        }
+                        node.textContent = JSON.stringify(Object.assign({}, previous, {
+                            ready: true,
+                            updatedAt: Date.now(),
+                            lastReason: reason,
+                            total: items.length,
+                            anuncios: items
+                        }));
+                        document.documentElement.setAttribute('data-jk-ml-collector-ready', '1');
+                        document.documentElement.setAttribute('data-jk-ml-collector-total', String(items.length || 0));
+                        return true;
+                    })();
+                `;
+                return !!(await executarNoNavegadorInterno(script).catch((err) => {
+                    console.warn('Falha ao atualizar card local JK no navegador:', err);
+                    return false;
+                }));
+            }
+
+            async function coletarDadosBrowser() {
+                const script = `
+                    (function () {
+                        var clean = function (value) {
+                            return String(value || '').replace(/\\s+/g, ' ').trim();
+                        };
+                        var absolutar = function (href) {
+                            try { return new URL(href, location.href).href; } catch (_err) { return ''; }
+                        };
+                        var itemId = function (value) {
+                            var text = String(value || '').toUpperCase();
+                            var match = text.match(/[?&](?:WID|ITEM_ID|ITEMID|ID)=?(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            match = text.match(/[?&][^=]*(?:ITEM|WID)[^=]*=(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            match = text.match(/MLB-\\d{8,}/);
+                            if (match) return match[0].replace('MLB-', 'MLB');
+                            match = text.match(/\\/P\\/(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            match = text.match(/\\bMLB\\d{8,}\\b/);
+                            if (match) return String(match[0] || '').toUpperCase();
+                            return '';
+                        };
+                        var itemIdParam = function (value) {
+                            var text = String(value || '').toUpperCase();
+                            var match = text.match(/[?&](?:WID|ITEM_ID|ITEMID)=?(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            match = text.match(/[?&][^=]*(?:ITEM|WID)[^=]*=(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            return '';
+                        };
+                        var itemIdDoCard = function (card, url) {
+                            var id = itemIdParam(url);
+                            if (id) return id;
+                            var input = card.querySelector('input[name="itemId"], input[name="item_id"], [data-item-id], [data-id], [data-product-id], [data-slot]');
+                            if (input) {
+                                id = itemId(input.value || input.getAttribute('data-item-id') || input.getAttribute('data-id') || input.getAttribute('data-product-id') || input.getAttribute('data-slot'));
+                                if (id) return id;
+                            }
+                            id = itemId(card.getAttribute('data-item-id') || card.getAttribute('data-id') || card.getAttribute('data-product-id') || card.getAttribute('data-slot'));
+                            if (id) return id;
+                            id = itemIdParam(card.innerHTML || card.textContent || '');
+                            if (id) return id;
+                            if (/\\/p\\/MLB\\d{8,}/i.test(String(url || ''))) return '';
+                            return itemId(card.innerHTML || card.textContent || '') || itemId(url);
+                        };
+                        var vendido = function (text) {
+                            text = clean(text).toLowerCase();
+                            var match = text.match(/(?:\\+?\\s*)?(\\d+(?:[\\.,]\\d+)?\\s*(?:mil|k)?)\\s+(?:vendid[oa]s?|ventas?)/i);
+                            if (!match) match = text.match(/(?:vendid[oa]s?|ventas?)\\s*(?:\\+?\\s*)?(\\d+(?:[\\.,]\\d+)?\\s*(?:mil|k)?)/i);
+                            return match ? clean(match[1]) : '';
+                        };
+                        var primeiroTexto = function (root, seletores) {
+                            for (var i = 0; i < seletores.length; i += 1) {
+                                var node = root.querySelector(seletores[i]);
+                                var text = clean(node && (node.innerText || node.textContent));
+                                if (text) return text;
+                            }
+                            return '';
+                        };
+                        var campoJk = function (card, name) {
+                            var panel = card && card.querySelector && card.querySelector('[data-jk-ml-info-card]');
+                            if (!panel) return '';
+                            var attrName = 'data-jk-ml-' + String(name || '').replace(/_/g, '-');
+                            var attr = clean(panel.getAttribute(attrName));
+                            if (attr && attr !== '-') return attr;
+                            var row = panel.querySelector('[data-jk-ml-field="' + name + '"] .jk-ml-info-value')
+                                || panel.querySelector('[data-jk-ml-field="' + name + '"]');
+                            var text = clean(row && (row.innerText || row.textContent));
+                            if (name === 'fonte') text = text.replace(/^Fonte:\s*/i, '').trim();
+                            return text && text !== '-' ? text : '';
+                        };
+                        var anuncioAtual = function () {
+                            var id = itemId(location.href);
+                            if (!id) return null;
+                            return {
+                                posicao: 1,
+                                id: id,
+                                titulo: primeiroTexto(document, ['h1.ui-pdp-title', 'h1', '[data-testid="title"]']) || clean(document.title),
+                                url: location.href,
+                                vendedor: primeiroTexto(document, [
+                                    '.ui-pdp-seller__header__title',
+                                    '.ui-pdp-seller__link-trigger',
+                                    '.ui-pdp-seller__nickname',
+                                    '.ui-pdp-official-store-label',
+                                    '[data-testid="seller-info"]'
+                                ]),
+                                vendas: vendido(document.body && document.body.innerText),
+                                fonte: 'browser_dom'
+                            };
+                        };
+                        var cards = Array.prototype.slice.call(document.querySelectorAll([
+                            'li.ui-search-layout__item',
+                            '.ui-search-result__wrapper',
+                            '.ui-search-result',
+                            '.poly-card',
+                            '[class*="poly-card"]',
+                            '[data-testid*="result"]',
+                            'article'
+                        ].join(',')));
+                        var encontrados = [];
+                        var vistos = {};
+                        var registrar = function (item) {
+                            if (!item) return;
+                            var key = item.id || item.url || item.titulo;
+                            if (!key || vistos[key]) return;
+                            vistos[key] = true;
+                            item.posicao = encontrados.length + 1;
+                            item.fonte = item.fonte || 'browser_dom';
+                            encontrados.push(item);
+                        };
+                        cards.forEach(function (card) {
+                            var links = Array.prototype.slice.call(card.querySelectorAll('a[href]'));
+                            var link = links.find(function (node) {
+                                var href = node.getAttribute('href') || '';
+                                return /MLB-?\\d{5,}|\\/p\\/MLB|[?&](?:wid|item_id)=MLB/i.test(href);
+                            }) || links[0];
+                            var url = absolutar(link && link.getAttribute('href'));
+                            var id = itemIdDoCard(card, url);
+                            var titulo = primeiroTexto(card, [
+                                'a.poly-component__title',
+                                '.poly-component__title',
+                                'h2',
+                                '.ui-search-item__title',
+                                '.ui-search-result__content-title',
+                                '[class*="title"]'
+                            ]) || clean(link && (link.innerText || link.textContent));
+                            if (!id || /^publicidade$/i.test(titulo)) return;
+                            registrar({
+                                id: id,
+                                titulo: titulo,
+                                url: url,
+                                vendedor: campoJk(card, 'vendedor') || primeiroTexto(card, [
+                                    '.poly-component__seller',
+                                    '[class*="seller"]',
+                                    '[class*="official-store"]',
+                                    '.ui-search-official-store-label'
+                                ]),
+                                data_criacao: campoJk(card, 'data_criacao'),
+                                vendas: campoJk(card, 'vendas') || vendido(card.innerText || card.textContent),
+                                visitas: campoJk(card, 'visitas'),
+                                marca: campoJk(card, 'marca'),
+                                localizacao_vendedor: campoJk(card, 'localizacao_vendedor'),
+                                fonte: campoJk(card, 'fonte') || 'browser_dom'
+                            });
+                        });
+                        if (!encontrados.length) {
+                            Array.prototype.slice.call(document.querySelectorAll('a[href]')).forEach(function (link) {
+                                if (encontrados.length >= 80) return;
+                                var url = absolutar(link.getAttribute('href'));
+                                var id = itemIdParam(url) || (/\\/p\\/MLB\\d{8,}/i.test(String(url || '')) ? '' : itemId(url));
+                                var titulo = clean(link.innerText || link.textContent);
+                                if (!id || !titulo || /^publicidade$/i.test(titulo)) return;
+                                registrar({ id: id, titulo: titulo, url: url, vendedor: '', vendas: '', fonte: 'browser_dom_link' });
+                            });
+                        }
+                        var atual = anuncioAtual();
+                        if (atual) registrar(atual);
+                        return {
+                            success: true,
+                            url: location.href,
+                            title: document.title || '',
+                            total: encontrados.length,
+                            anuncios: encontrados
+                        };
+                    })();
+                `;
+                const result = await executarNoNavegadorInterno(script).catch((err) => {
+                    console.warn('Falha ao coletar no navegador Avant:', err);
+                    return null;
+                });
+                if (!result || !Array.isArray(result.anuncios)) return [];
+                return result.anuncios.map((item, index) => normalizarAnuncio(item, index + 1, item.fonte || 'browser_dom'));
+            }
+
+            async function coletarPrimeiraPaginaBackend(termo) {
+                const termoLimpo = limparTexto(termo);
+                if (!termoLimpo) return [];
+                const response = await fetch('/api/favoritos/ml/primeira-pagina', {
+                    method: 'POST',
+                    headers: headersJson(),
+                    body: JSON.stringify({
+                        termo: termoLimpo,
+                        max_anuncios: 60,
+                        usar_automatico: false
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || data.success === false) {
+                    throw new Error(data.detail || data.message || 'Erro ao consultar anuncios pelo sistema.');
+                }
+                return (Array.isArray(data.anuncios) ? data.anuncios : [])
+                    .map((item, index) => normalizarAnuncio({ ...item, fonte: 'sistema_api' }, index + 1, 'sistema_api'));
+            }
+
+            async function enriquecerAnunciosBackend(anuncios) {
+                const lista = (Array.isArray(anuncios) ? anuncios : [])
+                    .map((item) => ({
+                        id: item.id || extrairItemId(item.url),
+                        url: item.url,
+                        titulo: item.titulo,
+                        posicao: item.posicao
+                    }))
+                    .filter((item) => item.id || item.url)
+                    .slice(0, 80);
+                if (!lista.length) return [];
+                const response = await fetch('/api/favoritos/ml/enriquecer-datas', {
+                    method: 'POST',
+                    headers: headersJson(),
+                    body: JSON.stringify({
+                        anuncios: lista,
+                        max_anuncios: lista.length
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || data.success === false) {
+                    throw new Error(data.detail || data.message || 'Erro ao enriquecer anuncios pelo sistema.');
+                }
+                return (Array.isArray(data.resultados) ? data.resultados : [])
+                    .map((item, index) => normalizarAnuncio({
+                        ...item,
+                        fonte: item.fonte || 'sistema_enriquecimento',
+                        vendasFonte: item.fonte_vendas,
+                        vendedorFonte: item.fonte_vendedor
+                    }, index + 1, 'sistema_enriquecimento'));
+            }
+
+            function anuncioPrecisaComplemento(anuncio) {
+                if (!anuncio) return false;
+                const temVendedor = !!limparTexto(anuncio.vendedor);
+                const temData = !!limparTexto(anuncio.data_criacao);
+                const temVendas = parseNumeroVendas(anuncio.vendas) !== null;
+                return !temVendedor || !temData || !temVendas;
+            }
+
+            function anunciosRestantesParaComplementar(originais, complementos) {
+                const lista = Array.isArray(originais) ? originais : [];
+                if (!lista.length) return [];
+                const atualizados = mesclarAnuncios(lista, complementos || []);
+                const porChave = new Map();
+                atualizados.forEach((item) => {
+                    const chave = chaveAnuncio(item);
+                    if (chave) porChave.set(chave, item);
+                });
+                return lista.map((item) => {
+                    const chave = chaveAnuncio(item);
+                    const atualizado = chave ? porChave.get(chave) : null;
+                    return atualizado ? {
+                        ...item,
+                        ...atualizado,
+                        posicao: item.posicao || atualizado.posicao,
+                        titulo: atualizado.titulo || item.titulo,
+                        url: item.url || atualizado.url
+                    } : item;
+                }).filter(anuncioPrecisaComplemento);
+            }
+
+            function resumoComplemento(anuncios) {
+                const lista = Array.isArray(anuncios) ? anuncios : [];
+                return {
+                    total: lista.length,
+                    semVendedor: lista.filter(item => !limparTexto(item && item.vendedor)).length,
+                    semData: lista.filter(item => !limparTexto(item && item.data_criacao)).length,
+                    semVendas: lista.filter(item => parseNumeroVendas(item && item.vendas) === null).length
+                };
+            }
+
+            async function executarComConcorrencia(lista, limite, worker) {
+                const itens = Array.isArray(lista) ? lista : [];
+                const max = Math.max(1, Math.min(Number(limite) || 4, itens.length || 1));
+                let cursor = 0;
+                const saida = [];
+                async function proximo(slot) {
+                    while (cursor < itens.length) {
+                        const index = cursor++;
+                        const item = itens[index];
+                        try {
+                            const result = await worker(item, index, slot);
+                            if (result) saida.push(result);
+                        } catch (err) {
+                            console.warn('Complemento Avant falhou:', err);
+                        }
+                    }
+                }
+                await Promise.all(Array.from({ length: max }, (_item, slot) => proximo(slot)));
+                return saida;
+            }
+
+            async function fetchJsonComTimeout(url, timeoutMs) {
+                const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                const timer = controller ? setTimeout(() => controller.abort(), timeoutMs || 10000) : null;
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        cache: 'no-store',
+                        signal: controller ? controller.signal : undefined
+                    });
+                    if (!response.ok) {
+                        const err = new Error(`HTTP ${response.status}`);
+                        err.status = response.status;
+                        throw err;
+                    }
+                    return await response.json();
+                } finally {
+                    if (timer) clearTimeout(timer);
+                }
+            }
+
+            function normalizarItemApiPublica(itemData, userData, original, index) {
+                if (!itemData || typeof itemData !== 'object') return null;
+                const sellerId = itemData.seller_id || (itemData.seller && itemData.seller.id) || (original && original.seller_id) || '';
+                const officialStore = userData && typeof userData.official_store === 'object' ? userData.official_store : {};
+                const vendedor = limparTexto(
+                    (userData && (userData.nickname || userData.official_store_name))
+                    || officialStore.name
+                    || officialStore.nickname
+                    || itemData.seller_name
+                    || itemData.nickname
+                    || ''
+                );
+                return normalizarAnuncio({
+                    id: itemData.id || (original && original.id),
+                    seller_id: sellerId,
+                    titulo: itemData.title || (original && original.titulo),
+                    url: itemData.permalink || (original && original.url),
+                    vendedor,
+                    data_criacao: itemData.date_created || itemData.start_time || (original && original.data_criacao),
+                    vendas: itemData.sold_quantity,
+                    vendasFonte: 'api_publica_ml',
+                    vendedorFonte: vendedor ? 'api_publica_users' : '',
+                    fonte: 'api_publica_ml'
+                }, original && original.posicao ? original.posicao : index + 1, 'api_publica_ml');
+            }
+
+            async function complementarAnunciosApiPublica(anuncios) {
+                const pendentes = (Array.isArray(anuncios) ? anuncios : [])
+                    .filter(anuncioPrecisaComplemento)
+                    .filter(item => item && (item.id || extrairItemId(item.url)))
+                    .slice(0, 80);
+                if (!pendentes.length) return [];
+
+                let processados = 0;
+                let apiBloqueada = false;
+                let falhasBloqueio = 0;
+                return executarComConcorrencia(pendentes, 6, async (item, index) => {
+                    if (apiBloqueada) return null;
+                    const itemId = item.id || extrairItemId(item.url);
+                    if (!itemId || !/^MLB\d{8,}$/i.test(itemId)) return null;
+                    processados += 1;
+                    if (processados === 1 || processados % 10 === 0 || processados === pendentes.length) {
+                        setColetaStatus(`Complementando ${processados}/${pendentes.length} anuncio(s) pela API publica do Mercado Livre...`);
+                    }
+                    try {
+                        const itemData = await fetchJsonComTimeout(`https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}`, 12000);
+                        let userData = null;
+                        const sellerId = itemData && (itemData.seller_id || (itemData.seller && itemData.seller.id));
+                        if (sellerId) {
+                            userData = await fetchJsonComTimeout(`https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`, 12000).catch(() => null);
+                        }
+                        return normalizarItemApiPublica(itemData, userData, item, index);
+                    } catch (err) {
+                        if (err && (err.status === 401 || err.status === 403 || err.status === 429 || err.name === 'TypeError')) {
+                            falhasBloqueio += 1;
+                            if (falhasBloqueio >= 2) {
+                                apiBloqueada = true;
+                                setColetaStatus('API publica do Mercado Livre bloqueada. Continuando pelo navegador interno do Avant...');
+                            }
+                        }
+                        return null;
+                    }
+                });
+            }
+
+            function scriptExtrairInfoProdutoAtual(itemIdEsperado) {
+                const esperado = itemIdValido(itemIdEsperado) ? String(itemIdEsperado).toUpperCase() : '';
+                return `
+                    (async function () {
+                        var expectedId = ${JSON.stringify(esperado)};
+                        var clean = function (value) {
+                            return String(value || '').replace(/\\s+/g, ' ').trim();
+                        };
+                        var itemId = function (value) {
+                            var text = String(value || '').toUpperCase();
+                            var match = text.match(/[?&](?:WID|ITEM_ID|ITEMID|ID)=?(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            match = text.match(/[?&][^=]*(?:ITEM|WID)[^=]*=(MLB\\d{8,})/i);
+                            if (match) return String(match[1] || '').toUpperCase();
+                            match = text.match(/MLB-\\d{8,}/);
+                            if (match) return match[0].replace('MLB-', 'MLB');
+                            match = text.match(/\\bMLB\\d{8,}\\b/);
+                            if (match) return String(match[0] || '').toUpperCase();
+                            return '';
+                        };
+                        var parseSales = function (text) {
+                            text = clean(text).toLowerCase();
+                            var match = text.match(/(?:\\+?\\s*)?(\\d+(?:[\\.,]\\d+)?\\s*(?:mil|k)?)\\s+(?:vendid[oa]s?|ventas?|sales?)/i);
+                            if (!match) match = text.match(/(?:vendid[oa]s?|ventas?|sales?)\\s*(?:\\+?\\s*)?(\\d+(?:[\\.,]\\d+)?\\s*(?:mil|k)?)/i);
+                            if (!match) match = text.match(/["']sold_quantity["']\\s*:\\s*(\\d+)/i);
+                            if (!match) match = text.match(/["']soldQuantity["']\\s*:\\s*(\\d+)/i);
+                            if (!match) match = text.match(/["']sold["']\\s*:\\s*(\\d+)/i);
+                            if (!match) match = text.match(/["']sales["']\\s*:\\s*(\\d+)/i);
+                            if (!match) match = text.match(/["']total_sold["']\\s*:\\s*(\\d+)/i);
+                            return match ? clean(match[1]) : '';
+                        };
+                        var firstText = function (root, selectors) {
+                            for (var i = 0; i < selectors.length; i += 1) {
+                                var node = root.querySelector(selectors[i]);
+                                var text = clean(node && (node.innerText || node.textContent));
+                                if (text) return text.replace(/^(vendido por|loja oficial)\\s+/i, '').trim();
+                            }
+                            return '';
+                        };
+                        var html = document.documentElement ? document.documentElement.outerHTML : '';
+                        var decodedHtml = html
+                            .replace(/\\\\u002F/g, '/')
+                            .replace(/\\\\\\//g, '/')
+                            .replace(/\\\\n/g, ' ')
+                            .replace(/\\\\t/g, ' ')
+                            .replace(/\\\\r/g, ' ')
+                            .replace(/\\\\&quot;/g, '"')
+                            .replace(/&quot;/g, '"')
+                            .replace(/\\\\'/g, "'")
+                            .replace(/\\\\"/g, '"');
+                        var bodyText = document.body ? document.body.innerText : '';
+                        var normalizarMl = function (value) {
+                            return String(value || '')
+                                .replace(/\\\\u002F/g, '/')
+                                .replace(/\\\\\\//g, '/')
+                                .replace(/\\\\n/g, ' ')
+                                .replace(/\\\\t/g, ' ')
+                                .replace(/\\\\r/g, ' ')
+                                .replace(/\\\\&quot;/g, '"')
+                                .replace(/&quot;/g, '"')
+                                .replace(/\\\\'/g, "'")
+                                .replace(/\\\\"/g, '"')
+                                .trim();
+                        };
+                        var pickDate = function (text) {
+                            text = normalizarMl(text);
+                            var keyGroup = 'date_created|dateCreated|start_time|startTime|creation_date|creationDate|created_at|createdAt|createdDate|item_date_created|listing_start_time|start_date|startDate|itemStartTime|publication_date|publicationDate|published_at|publishedAt|date_published|datePublished';
+                            var patterns = [
+                                new RegExp('["\\'](?:' + keyGroup + ')["\\']\\\\s*:\\\\s*\\\\{[^{}]{0,220}["\\'](?:value|date|text|label|display_value|displayValue|raw)["\\']\\\\s*:\\\\s*["\\']([^"\\']+)["\\']', 'i'),
+                                /["']date_created["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']date_created["']\\s*:\\s*\\{\\s*["']value["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']start_time["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']creation_date["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']creationDate["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']created_at["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']createdAt["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']createdDate["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']item_date_created["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']listing_start_time["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']start_date["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']startDate["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']itemStartTime["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']dateCreated["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']startTime["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']publication_date["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']published_at["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']datePublished["']\\s*:\\s*["']([^"']+)["']/i
+                            ];
+                            for (var i = 0; i < patterns.length; i += 1) {
+                                var match = text.match(patterns[i]);
+                                if (match && match[1]) return clean(match[1]);
+                            }
+                            return '';
+                        };
+                        var limparDataVisivel = function (value) {
+                            var txt = normalizarMl(value)
+                                .replace(/^[^0-9]*(?=\\d)/, '')
+                                .replace(/\\s+/g, ' ')
+                                .trim();
+                            var iso = txt.match(/\\b(?:19|20)\\d{2}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?)?\\b/);
+                            if (iso && iso[0]) return iso[0];
+                            var br = txt.match(/\\b\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}(?:\\s+\\d{1,2}:\\d{2}(?::\\d{2})?)?\\b/);
+                            if (br && br[0]) return br[0];
+                            var extenso = txt.match(/\\b\\d{1,2}\\s+de\\s+[a-zA-Z\\u00c0-\\u017f]+\\s+de\\s+(?:19|20)\\d{2}\\b/i);
+                            if (extenso && extenso[0]) return extenso[0];
+                            return '';
+                        };
+                        var pickDateByLabel = function (text) {
+                            var base = normalizarMl(text);
+                            if (!base) return '';
+                            var normalized = base.normalize ? base.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '') : base;
+                            normalized = normalized.toLowerCase().replace(/\\s+/g, ' ');
+                            var labels = [
+                                'anuncio criado em',
+                                'anuncio ganhador criado em',
+                                'catalogo criado em',
+                                'criado em',
+                                'publicado em',
+                                'publicacao',
+                                'data de criacao',
+                                'criacao do anuncio'
+                            ];
+                            for (var li = 0; li < labels.length; li += 1) {
+                                var idx = normalized.indexOf(labels[li]);
+                                if (idx < 0) continue;
+                                var trecho = base.slice(idx, idx + 180);
+                                var data = limparDataVisivel(trecho);
+                                if (data) return data;
+                            }
+                            return '';
+                        };
+                        var pickSeller = function (text) {
+                            var patterns = [
+                                /["']seller_name["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']sellerName["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']nickname["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']official_store_name["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']officialStoreName["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']seller["']\\s*:\\s*\\{[^{}]*["']nickname["']\\s*:\\s*["']([^"']+)["']/i,
+                                /["']official_store["']\\s*:\\s*\\{[^{}]*["']name["']\\s*:\\s*["']([^"']+)["']/i
+                            ];
+                            for (var i = 0; i < patterns.length; i += 1) {
+                                var match = text.match(patterns[i]);
+                                if (match && clean(match[1])) return clean(match[1]);
+                            }
+                            return '';
+                        };
+                        var aplicarInfoApi = function (api) {
+                            if (!api || typeof api !== 'object') return;
+                            if (!found.data_criacao) {
+                                found.data_criacao = clean(api.date_created || api.start_time || api.creation_date || api.created_at || '');
+                            }
+                            if (!found.vendas && (api.sold_quantity !== undefined || api.soldQuantity !== undefined || api.sold !== undefined)) {
+                                found.vendas = clean(api.sold_quantity !== undefined ? api.sold_quantity : (api.soldQuantity !== undefined ? api.soldQuantity : api.sold));
+                            }
+                            if (!found.vendedor) {
+                                var seller = api.seller && typeof api.seller === 'object' ? api.seller : {};
+                                var store = api.official_store && typeof api.official_store === 'object' ? api.official_store : {};
+                                found.vendedor = clean(api.seller_name || api.sellerName || api.nickname || api.official_store_name || store.name || store.nickname || seller.nickname || seller.name || '');
+                            }
+                        };
+                        var consultarItemApiNaPagina = async function () {
+                            if (!found.id || typeof fetch !== 'function') return;
+                            var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                            var timer = controller ? setTimeout(function () { try { controller.abort(); } catch (_err) {} }, 3500) : null;
+                            try {
+                                var response = await fetch('https://api.mercadolibre.com/items/' + encodeURIComponent(found.id), {
+                                    method: 'GET',
+                                    cache: 'no-store',
+                                    credentials: 'omit',
+                                    signal: controller ? controller.signal : undefined
+                                });
+                                if (response && response.ok) {
+                                    aplicarInfoApi(await response.json());
+                                }
+                            } catch (_err) {
+                            } finally {
+                                if (timer) clearTimeout(timer);
+                            }
+                        };
+                        var found = {
+                            id: expectedId || itemId(location.href || html),
+                            titulo: firstText(document, ['h1.ui-pdp-title', 'h1', '[data-testid="title"]']) || clean(document.title),
+                            url: location.href,
+                            vendedor: firstText(document, [
+                                '.ui-pdp-seller__header__title',
+                                '.ui-pdp-seller__link-trigger',
+                                '.ui-pdp-seller__nickname',
+                                '.ui-pdp-official-store-label',
+                                '[data-testid="seller-info"]',
+                                '[data-testid="official-store-info"]',
+                                '[class*="seller"] [class*="title"]',
+                                '[class*="official-store"]'
+                            ]),
+                            data_criacao: '',
+                            vendas: '',
+                            fonte: 'browser_pagina_produto'
+                        };
+                        found.data_criacao = pickDate(decodedHtml) || pickDate(html) || pickDateByLabel(bodyText) || pickDateByLabel(decodedHtml);
+                        found.vendas = parseSales(bodyText) || parseSales(decodedHtml) || parseSales(html);
+                        if (!found.vendedor) found.vendedor = pickSeller(decodedHtml) || pickSeller(html);
+
+                        var extrairJsonBalanceado = function (text, start) {
+                            var quote = '';
+                            var escape = false;
+                            var depth = 0;
+                            var open = text[start];
+                            var close = open === '[' ? ']' : '}';
+                            for (var i = start; i < text.length; i += 1) {
+                                var ch = text[i];
+                                if (quote) {
+                                    if (escape) {
+                                        escape = false;
+                                    } else if (ch === '\\\\') {
+                                        escape = true;
+                                    } else if (ch === quote) {
+                                        quote = '';
+                                    }
+                                    continue;
+                                }
+                                if (ch === '"' || ch === "'") {
+                                    quote = ch;
+                                    continue;
+                                }
+                                if (ch === open) depth += 1;
+                                if (ch === close) {
+                                    depth -= 1;
+                                    if (depth === 0) return text.slice(start, i + 1);
+                                }
+                            }
+                            return '';
+                        };
+
+                        var jsons = [];
+                        var adicionarJson = function (text) {
+                            text = clean(text);
+                            if (!text) return;
+                            try {
+                                jsons.push(JSON.parse(text));
+                                return;
+                            } catch (_err) {}
+                            [
+                                '__PRELOADED_STATE__',
+                                '__NEXT_DATA__',
+                                '__INITIAL_STATE__',
+                                '__APOLLO_STATE__',
+                                '__MELIDATA__',
+                                '__ML_STATE__',
+                                'initialState',
+                                'initial_state',
+                                'pageState',
+                                'page_state',
+                                'itemState',
+                                'item_state',
+                                'productState',
+                                'product_state',
+                                'state'
+                            ].forEach(function (label) {
+                                var idx = text.indexOf(label);
+                                if (idx < 0) return;
+                                var brace = text.indexOf('{', idx);
+                                var bracket = text.indexOf('[', idx);
+                                var start = brace < 0 ? bracket : (bracket < 0 ? brace : Math.min(brace, bracket));
+                                if (start < 0) return;
+                                var raw = extrairJsonBalanceado(text, start);
+                                if (!raw) return;
+                                try { jsons.push(JSON.parse(raw)); } catch (_err) {}
+                            });
+                        };
+
+                        Array.prototype.slice.call(document.querySelectorAll('script')).forEach(function (script) {
+                            var type = clean(script.getAttribute('type')).toLowerCase();
+                            var text = script.textContent || '';
+                            if (/json/.test(type) || /__PRELOADED_STATE__|__NEXT_DATA__|date_created|dateCreated|start_time|startTime|creation_date|creationDate|listing_start_time|itemStartTime|sold_quantity|seller/i.test(text)) {
+                                adicionarJson(text);
+                            }
+                        });
+
+                        var lerDataObjeto = function (node) {
+                            if (!node || typeof node !== 'object') return '';
+                            var value = node.date_created
+                                || node.start_time
+                                || node.creation_date
+                                || node.creationDate
+                                || node.created_at
+                                || node.createdAt
+                                || node.createdDate
+                                || node.dateCreated
+                                || node.startTime
+                                || node.item_date_created
+                                || node.listing_start_time
+                                || node.start_date
+                                || node.startDate
+                                || node.itemStartTime
+                                || node.publication_date
+                                || node.publicationDate
+                                || node.published_at
+                                || node.publishedAt
+                                || node.date_published
+                                || node.datePublished
+                                || '';
+                            if (value && typeof value === 'object') {
+                                value = value.value || value.date || value.text || value.label || '';
+                            }
+                            return clean(value);
+                        };
+                        var seen = [];
+                        var walk = function (node, depth) {
+                            if (!node || depth > 7 || seen.indexOf(node) >= 0) return;
+                            if (typeof node !== 'object') return;
+                            seen.push(node);
+                            var nodeId = itemId(node.id || node.item_id || node.itemId || node.permalink || node.url || node.share_url || '');
+                            var nodePodeCompletar = !expectedId || !nodeId || nodeId === expectedId;
+                            if (!found.id && nodeId && (!expectedId || nodeId === expectedId)) found.id = nodeId;
+                            if (!nodePodeCompletar) return;
+                            if (!found.data_criacao) {
+                                found.data_criacao = lerDataObjeto(node);
+                            }
+                            if (!found.vendas && (node.sold_quantity !== undefined || node.soldQuantity !== undefined || node.sold !== undefined || node.sales !== undefined || node.total_sold !== undefined || node.totalSold !== undefined)) {
+                                found.vendas = clean(node.sold_quantity !== undefined ? node.sold_quantity : (node.soldQuantity !== undefined ? node.soldQuantity : (node.sold !== undefined ? node.sold : (node.sales !== undefined ? node.sales : (node.total_sold !== undefined ? node.total_sold : node.totalSold)))));
+                            }
+                            if (!found.vendedor) {
+                                if (node.seller && typeof node.seller === 'object') {
+                                    found.vendedor = clean(node.seller.nickname || node.seller.name || node.seller.seller_name || node.sellerName || '');
+                                }
+                                if (!found.vendedor && node.official_store && typeof node.official_store === 'object') {
+                                    found.vendedor = clean(node.official_store.name || node.official_store.nickname || '');
+                                }
+                                if (!found.vendedor && node.officialStore && typeof node.officialStore === 'object') {
+                                    found.vendedor = clean(node.officialStore.name || node.officialStore.nickname || '');
+                                }
+                                if (!found.vendedor) {
+                                    found.vendedor = clean(node.seller_name || node.sellerName || node.nickname || node.official_store_name || node.officialStoreName || '');
+                                }
+                            }
+                            if (found.data_criacao && found.vendedor && found.vendas) return;
+                            if (Array.isArray(node)) {
+                                for (var i = 0; i < Math.min(node.length, 80); i += 1) walk(node[i], depth + 1);
+                            } else {
+                                Object.keys(node).slice(0, 120).forEach(function (key) {
+                                    var value = node[key];
+                                    if (value && typeof value === 'object') walk(value, depth + 1);
+                                });
+                            }
+                        };
+                        [
+                            window.__PRELOADED_STATE__,
+                            window.__NEXT_DATA__,
+                            window.__NUXT__,
+                            window.__APOLLO_STATE__,
+                            window.__MELIDATA__,
+                            window.__ML_STATE__,
+                            window.__INITIAL_STATE__,
+                            window.pageState,
+                            window.__PAGE_STATE__,
+                            window.itemState,
+                            window.__ITEM_STATE__,
+                            window.productState,
+                            window.__PRODUCT_STATE__
+                        ].forEach(function (value) {
+                            try { walk(value, 0); } catch (_err) {}
+                        });
+                        jsons.forEach(function (value) {
+                            try { walk(value, 0); } catch (_err) {}
+                        });
+                        if (!found.data_criacao) {
+                            found.data_criacao = pickDateByLabel(bodyText) || pickDateByLabel(decodedHtml);
+                        }
+                        if (!found.data_criacao) {
+                            await consultarItemApiNaPagina();
+                        }
+                        return found;
+                    })();
+                `;
+            }
+
+            async function complementarUmAnuncioPeloNavegador(item, index, total, navegador) {
+                const itemIdEsperado = item.id || extrairItemId(item.url);
+                const targetUrl = urlCanonicaAnuncio(item) || item.url;
+                setColetaStatus(`Analisando pagina ${index + 1}/${total} para completar vendedor, data e vendas...`);
+                try {
+                    await navegarUmaTentativa(navegador, targetUrl, 18000);
+                    let info = {
+                        vendedor: item.vendedor || '',
+                        data_criacao: item.data_criacao || '',
+                        vendas: item.vendas || ''
+                    };
+                    for (let tentativa = 0; tentativa < 7; tentativa += 1) {
+                        if (tentativa > 0) await esperar(500);
+                        const atual = await navegador.executeJavaScript(scriptExtrairInfoProdutoAtual(itemIdEsperado), true).catch(() => null);
+                        if (!atual) continue;
+                        info = {
+                            ...info,
+                            ...atual,
+                            vendedor: atual.vendedor || info.vendedor || '',
+                            data_criacao: atual.data_criacao || info.data_criacao || '',
+                            vendas: atual.vendas || info.vendas || ''
+                        };
+                        if (info.vendedor && info.data_criacao && parseNumeroVendas(info.vendas) !== null) break;
+                    }
+                    if (!info) return null;
+                    const infoId = info.id || extrairItemId(info.url);
+                    if (itemIdEsperado && infoId && String(infoId).toUpperCase() !== String(itemIdEsperado).toUpperCase()) {
+                        return null;
+                    }
+                    return normalizarAnuncio({
+                        ...info,
+                        id: itemIdEsperado || info.id,
+                        url: item.url || targetUrl || info.url,
+                        titulo: info.titulo || item.titulo,
+                        fonte: 'browser_pagina_produto',
+                        vendasFonte: info.vendas ? 'browser_pagina_produto' : '',
+                        vendedorFonte: info.vendedor ? 'browser_pagina_produto' : ''
+                    }, item.posicao || index + 1, 'browser_pagina_produto');
+                } catch (err) {
+                    console.warn('Nao foi possivel completar anuncio pelo navegador Avant:', item && item.url, err);
+                    return null;
+                }
+            }
+
+            function podeUsarColetaElectronOculta() {
+                return !!(window.electronAPI && typeof window.electronAPI.getMlBrowserItemInfo === 'function');
+            }
+
+            async function complementarUmAnuncioPeloElectronOculto(item, index, total) {
+                const itemIdEsperado = item.id || extrairItemId(item.url);
+                if (!itemIdValido(itemIdEsperado)) return null;
+                const targetUrl = urlCanonicaAnuncio(item) || item.url;
+                setColetaStatus(`Analisando pagina ${index + 1}/${total} em navegador oculto...`);
+                try {
+                    const info = await promiseComTimeout(
+                        window.electronAPI.getMlBrowserItemInfo(itemIdEsperado, targetUrl),
+                        AVANT_COMPLEMENTO_BROWSER_TIMEOUT_MS,
+                        `navegador oculto ${itemIdEsperado}`
+                    );
+                    if (!info) return null;
+                    const infoId = info.id || extrairItemId(info.url);
+                    if (itemIdEsperado && infoId && String(infoId).toUpperCase() !== String(itemIdEsperado).toUpperCase()) {
+                        return null;
+                    }
+                    const vendasEncontradas = parseNumeroVendas(info.vendas) !== null;
+                    return normalizarAnuncio({
+                        ...info,
+                        id: itemIdEsperado || info.id,
+                        url: item.url || targetUrl || info.url,
+                        titulo: info.titulo || item.titulo,
+                        fonte: 'browser_oculto_produto',
+                        vendasFonte: vendasEncontradas ? 'browser_oculto_produto' : '',
+                        vendedorFonte: info.vendedor ? 'browser_oculto_produto' : ''
+                    }, item.posicao || index + 1, 'browser_oculto_produto');
+                } catch (err) {
+                    console.warn('Nao foi possivel completar anuncio pelo navegador oculto do Avant:', item && item.url, err);
+                    return null;
+                }
+            }
+
+            async function complementarAnunciosPeloNavegador(anuncios) {
+                const pendentes = (Array.isArray(anuncios) ? anuncios : [])
+                    .filter(anuncioPrecisaComplemento)
+                    .filter(item => item && item.url)
+                    .slice(0, 40);
+                if (!pendentes.length) return [];
+
+                const urlOriginal = limparTexto(els.url.value);
+                let resultados = [];
+                let pendentesRestantes = pendentes;
+
+                if (podeUsarColetaElectronOculta()) {
+                    setColetaStatus(`Analisando links pendentes em lotes de ${AVANT_LINKS_SIMULTANEOS} navegadores ocultos...`);
+                    resultados = await executarComConcorrencia(pendentes, AVANT_LINKS_SIMULTANEOS, async (item, index) => {
+                        return complementarUmAnuncioPeloElectronOculto(item, index, pendentes.length);
+                    });
+                    pendentesRestantes = anunciosRestantesParaComplementar(pendentes, resultados);
+                }
+
+                if (pendentesRestantes.length && podeUsarColetaParalelaWebview()) {
+                    setColetaStatus(`Analisando links pendentes em lotes de ${AVANT_LINKS_SIMULTANEOS} paginas simultaneas...`);
+                    const resultadosWebview = await executarComConcorrencia(pendentesRestantes, AVANT_LINKS_SIMULTANEOS, async (item, index, slot) => {
+                        const navegadorParalelo = criarWebviewOcultoColeta(slot);
+                        if (!navegadorParalelo) return null;
+                        return complementarUmAnuncioPeloNavegador(item, index, pendentesRestantes.length, navegadorParalelo);
+                    });
+                    resultados = mesclarAnuncios(resultados, resultadosWebview);
+                    pendentesRestantes = anunciosRestantesParaComplementar(pendentes, resultados);
+                }
+
+                if (pendentesRestantes.length) {
+                    const navegador = obterOuCriarNavegadorParaColeta();
+                    if (!navegador) return resultados;
+                    for (let index = 0; index < pendentesRestantes.length; index += 1) {
+                        const resultado = await complementarUmAnuncioPeloNavegador(pendentesRestantes[index], index, pendentesRestantes.length, navegador);
+                        if (resultado) resultados.push(resultado);
+                    }
+                }
+
+                if (urlOriginal && /^https?:\/\//i.test(urlOriginal)) {
+                    const navegador = obterNavegadorExecutavel();
+                    if (navegador) navegarUmaTentativa(navegador, urlOriginal, 12000).catch(() => {});
+                    els.url.value = urlOriginal;
+                }
+                return resultados;
+            }
+
+            function renderizarResultadosColeta(anuncios) {
+                const lista = Array.isArray(anuncios) ? anuncios : [];
+                if (els.coletaCount) els.coletaCount.textContent = String(lista.length);
+                if (!els.coletaBody || !els.coletaWrap || !els.coletaEmpty) return;
+                els.coletaBody.innerHTML = '';
+                els.coletaWrap.hidden = !lista.length;
+                els.coletaEmpty.style.display = lista.length ? 'none' : 'block';
+                if (!lista.length) return;
+                els.coletaBody.innerHTML = lista.map((item, index) => {
+                    const id = item.id || extrairItemId(item.url);
+                    const vendas = parseNumeroVendas(item.vendas);
+                    const link = item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Abrir</a>` : '';
+                    const fonte = item.vendasFonte || item.fonte || '';
+                    return `
+                        <tr>
+                            <td>${escapeHtml(item.posicao || index + 1)}</td>
+                            <td>${escapeHtml(id || '-')}</td>
+                            <td>${escapeHtml(item.titulo || '-')}</td>
+                            <td>${escapeHtml(item.vendedor || '-')}</td>
+                            <td>${escapeHtml(formatarData(item.data_criacao) || '-')}</td>
+                            <td>${escapeHtml(vendas === null ? '-' : vendas)}</td>
+                            <td><span class="source-pill" title="${escapeHtml(fonte || '-')}">${escapeHtml(fonte || '-')}</span></td>
+                            <td>${link}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            function limparColeta() {
+                renderizarResultadosColeta([]);
+                setColetaStatus('Nenhuma coleta executada ainda.');
+            }
+
+            async function coletarDados() {
+                if (coletaEmExecucao) return;
+                coletaEmExecucao = true;
+                setBusy(true);
+                setColetaStatus('Coletando dados pelo Avant, sem AvantPro...');
+                try {
+                    await garantirExtensoesNavegador();
+                    const termo = obterTermoColeta();
+                    let resultados = [];
+                    const extensaoDados = await coletarDadosExtensaoLocal();
+                    resultados = mesclarAnuncios(resultados, extensaoDados);
+                    if (ultimoDiagnosticoExtensaoLocal && ultimoDiagnosticoExtensaoLocal.active) {
+                        const totalExtensao = ultimoDiagnosticoExtensaoLocal.total || extensaoDados.length || 0;
+                        setColetaStatus(`Extensao local ativa: ${totalExtensao} anuncio(s) detectado(s). Cruzando com o navegador interno...`);
+                    } else if (ultimoDiagnosticoExtensaoLocal) {
+                        setColetaStatus(`Extensao local sem dados (${ultimoDiagnosticoExtensaoLocal.reason || 'sem snapshot'}). Usando navegador interno...`);
+                    }
+                    const browserDados = await coletarDadosBrowser();
+                    resultados = mesclarAnuncios(resultados, browserDados);
+
+                    if (termo) {
+                        setColetaStatus(`Consultando sistema para "${termo}" e cruzando com o navegador...`);
+                        try {
+                            const dadosSistema = await coletarPrimeiraPaginaBackend(termo);
+                            resultados = mesclarAnuncios(resultados, dadosSistema);
+                        } catch (err) {
+                            console.warn('Consulta do sistema falhou; mantendo dados do navegador:', err);
+                        }
+                    }
+
+                    if (resultados.length) {
+                        setColetaStatus(`Enriquecendo ${resultados.length} anuncio(s) com dados do sistema...`);
+                        try {
+                            const enriquecidos = await enriquecerAnunciosBackend(resultados);
+                            resultados = mesclarAnuncios(resultados, enriquecidos);
+                            atualizarColetorLocalNoNavegador(resultados, 'sistema_enriquecimento').catch(() => {});
+                        } catch (err) {
+                            console.warn('Enriquecimento do sistema falhou; mantendo dados ja coletados:', err);
+                        }
+                    }
+
+                    if (resultados.some(anuncioPrecisaComplemento)) {
+                        const complementosApi = await complementarAnunciosApiPublica(resultados);
+                        resultados = mesclarAnuncios(resultados, complementosApi);
+                    }
+
+                    if (resultados.some(anuncioPrecisaComplemento) && AVANT_ABRIR_LINKS_PARA_COMPLEMENTO) {
+                        const complementosPagina = await complementarAnunciosPeloNavegador(resultados);
+                        resultados = mesclarAnuncios(resultados, complementosPagina);
+                    } else if (resultados.some(anuncioPrecisaComplemento)) {
+                        setColetaStatus('Coleta por extensao/API concluida; links dos anuncios nao foram abertos.');
+                    }
+
+                    renderizarResultadosColeta(resultados);
+                    atualizarColetorLocalNoNavegador(resultados, 'coleta_final').catch(() => {});
+                    if (resultados.length) {
+                        const resumo = resumoComplemento(resultados);
+                        const pendencias = [
+                            resumo.semVendedor ? `${resumo.semVendedor} sem vendedor` : '',
+                            resumo.semData ? `${resumo.semData} sem data` : '',
+                            resumo.semVendas ? `${resumo.semVendas} sem vendas` : ''
+                        ].filter(Boolean).join(', ');
+                        setColetaStatus(
+                            pendencias
+                                ? `${resultados.length} anuncio(s) coletado(s). Pendencias restantes: ${pendencias}.`
+                                : `${resultados.length} anuncio(s) coletado(s) com vendedor, data e vendas pelo Avant, sem depender do AvantPro.`,
+                            pendencias ? 'error' : 'success'
+                        );
+                    } else {
+                        setColetaStatus('Nenhum anuncio encontrado. Abra uma busca do Mercado Livre ou informe um termo.', 'error');
+                    }
+                } catch (err) {
+                    console.error('Erro na coleta do Avant:', err);
+                    setColetaStatus(err && err.message ? err.message : 'Erro ao coletar dados no Avant.', 'error');
+                } finally {
+                    coletaEmExecucao = false;
+                    setBusy(false);
+                }
+            }
+
+            function obterParticaoNavegadorPersistente() {
+                return browserSessionPartition || JK_BROWSER_SESSION_PARTITION;
+            }
+
+            function usarShellElectron() {
+                try {
+                    return !!(window.top && window.top !== window && typeof window.top.postMessage === 'function');
+                } catch (_err) {
+                    return false;
+                }
+            }
+
+            function hasEmbeddedApi() {
+                const api = window.electronAPI || null;
+                return !!(api
+                    && typeof api.showEmbeddedMlBrowser === 'function'
+                    && typeof api.positionEmbeddedMlBrowser === 'function'
+                    && typeof api.hideEmbeddedMlBrowser === 'function'
+                    && typeof api.executeEmbeddedMlBrowser === 'function');
+            }
+
+            function hasWebviewTag() {
+                return !!(window.electronAPI && !usarShellElectron() && typeof document.createElement('webview').loadURL !== 'undefined');
+            }
+
+            function enviarParaShell(channel, payload = {}) {
+                if (!usarShellElectron()) return;
+                try {
+                    window.top.postMessage({ channel, payload }, '*');
+                } catch (_err) {}
+            }
+
+            function obterBoundsNavegador() {
+                const alvo = els.host || els.frame;
+                if (!alvo || typeof alvo.getBoundingClientRect !== 'function') return null;
+                const rect = alvo.getBoundingClientRect();
+                const width = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+                const height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+                if (width < 20 || height < 20) return null;
+                return {
+                    left: Math.max(0, rect.left),
+                    top: Math.max(0, rect.top),
+                    width,
+                    height
+                };
+            }
+
+            function agendarPosicao() {
+                if (!browserProxy || !browserProxy.__visible) return;
+                if (positionTimer) return;
+                positionTimer = setTimeout(() => {
+                    positionTimer = null;
+                    atualizarPosicao();
+                }, 80);
+            }
+
+            function atualizarPosicao() {
+                if (!browserProxy || !browserProxy.__visible) return;
+                const bounds = obterBoundsNavegador();
+                if (!bounds) return;
+                if (usarShellElectron()) {
+                    enviarParaShell('jk-ml-browser-position', { bounds });
+                } else if (hasEmbeddedApi()) {
+                    window.electronAPI.positionEmbeddedMlBrowser(bounds).catch(() => {});
+                }
+            }
+
+            function esconderNavegadorInterno() {
+                if (browserProxy) browserProxy.__visible = false;
+                if (usarShellElectron()) {
+                    enviarParaShell('jk-ml-browser-hide');
+                } else if (hasEmbeddedApi()) {
+                    window.electronAPI.hideEmbeddedMlBrowser().catch(() => {});
+                }
+            }
+
+            function criarProxyNavegador() {
+                if (browserProxy) return browserProxy;
+                const listeners = new Map();
+                const proxy = {
+                    __visible: false,
+                    currentUrl: '',
+                    parentNode: els.host,
+                    addEventListener(name, handler) {
+                        if (!listeners.has(name)) listeners.set(name, new Set());
+                        listeners.get(name).add(handler);
+                    },
+                    removeEventListener(name, handler) {
+                        if (listeners.has(name)) listeners.get(name).delete(handler);
+                    },
+                    dispatchEvent(name, event = {}) {
+                        const set = listeners.get(name);
+                        if (!set) return;
+                        set.forEach(handler => {
+                            try { handler(event); } catch (err) { console.warn('Falha no navegador Avant:', err); }
+                        });
+                    },
+                    getURL() {
+                        return proxy.currentUrl || '';
+                    },
+                    executeJavaScript(code) {
+                        if (usarShellElectron()) {
+                            const requestId = `avant-shell-${Date.now()}-${++requestSerial}`;
+                            return new Promise((resolve, reject) => {
+                                pendingShellRequests.set(requestId, { resolve, reject });
+                                enviarParaShell('jk-ml-browser-execute', { requestId, code });
+                                setTimeout(() => {
+                                    if (!pendingShellRequests.has(requestId)) return;
+                                    pendingShellRequests.delete(requestId);
+                                    reject(new Error('Tempo limite ao executar script no navegador Avant.'));
+                                }, 20000);
+                            });
+                        }
+                        if (hasEmbeddedApi()) {
+                            return window.electronAPI.executeEmbeddedMlBrowser(code);
+                        }
+                        return Promise.reject(new Error('Navegador interno indisponivel.'));
+                    },
+                    insertCSS(css) {
+                        const code = `
+                            (function () {
+                                var style = document.getElementById('jk-avant-scrollbar-style');
+                                if (!style) {
+                                    style = document.createElement('style');
+                                    style.id = 'jk-avant-scrollbar-style';
+                                    document.head.appendChild(style);
+                                }
+                                style.textContent = ${JSON.stringify(css || '')};
+                                return true;
+                            })();
+                        `;
+                        return proxy.executeJavaScript(code).catch(() => null);
+                    }
+                };
+
+                Object.defineProperty(proxy, 'src', {
+                    get() {
+                        return proxy.currentUrl;
+                    },
+                    set(url) {
+                        proxy.currentUrl = String(url || '');
+                        proxy.__visible = true;
+                        const bounds = obterBoundsNavegador();
+                        if (usarShellElectron()) {
+                            enviarParaShell('jk-ml-browser-show', { url: proxy.currentUrl, bounds });
+                            setTimeout(atualizarPosicao, 120);
+                            return;
+                        }
+                        if (hasEmbeddedApi()) {
+                            window.electronAPI.showEmbeddedMlBrowser(proxy.currentUrl, bounds)
+                                .then((result) => {
+                                    proxy.currentUrl = result && result.url ? result.url : proxy.currentUrl;
+                                    proxy.dispatchEvent('did-finish-load', { url: proxy.currentUrl });
+                                })
+                                .catch((err) => {
+                                    proxy.dispatchEvent('did-fail-load', {
+                                        url: proxy.currentUrl,
+                                        errorDescription: err && err.message ? err.message : String(err)
+                                    });
+                                });
+                            setTimeout(atualizarPosicao, 120);
+                        }
+                    }
+                });
+
+                browserProxy = proxy;
+                return proxy;
+            }
+
+            function criarWebviewFallback() {
+                if (webviewEl && webviewEl.parentNode) return webviewEl;
+                els.host.innerHTML = '';
+                webviewEl = document.createElement('webview');
+                webviewEl.className = 'browser-webview';
+                webviewEl.setAttribute('partition', obterParticaoNavegadorPersistente());
+                webviewEl.setAttribute('allowpopups', 'true');
+                webviewEl.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no');
+                webviewEl.addEventListener('did-navigate', syncWebviewUrl);
+                webviewEl.addEventListener('did-navigate-in-page', syncWebviewUrl);
+                webviewEl.addEventListener('did-finish-load', salvarSessaoNavegadorElectron);
+                webviewEl.addEventListener('did-navigate', salvarSessaoNavegadorElectron);
+                webviewEl.addEventListener('new-window', (event) => {
+                    if (event && event.url && /^https?:\/\//i.test(event.url)) {
+                        event.preventDefault();
+                        navegar(event.url).catch(() => {});
+                    }
+                });
+                els.host.appendChild(webviewEl);
+                return webviewEl;
+            }
+
+            function criarWebviewOcultoColeta(indice) {
+                const slot = Math.max(0, Math.min(AVANT_LINKS_SIMULTANEOS - 1, Number(indice) || 0));
+                const existente = coletaWebviewsOcultos[slot];
+                if (existente && existente.parentNode) return existente;
+                if (!hasWebviewTag()) return null;
+                const webview = document.createElement('webview');
+                webview.id = `avant-hidden-product-webview-${slot}`;
+                webview.setAttribute('partition', obterParticaoNavegadorPersistente());
+                webview.setAttribute('allowpopups', 'true');
+                webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no');
+                webview.style.cssText = [
+                    'position:absolute',
+                    'left:-10000px',
+                    'top:-10000px',
+                    'width:1280px',
+                    'height:900px',
+                    'opacity:0.01',
+                    'pointer-events:none'
+                ].join(';');
+                webview.addEventListener('did-finish-load', salvarSessaoNavegadorElectron);
+                webview.addEventListener('did-navigate', salvarSessaoNavegadorElectron);
+                document.body.appendChild(webview);
+                coletaWebviewsOcultos[slot] = webview;
+                return webview;
+            }
+
+            function podeUsarColetaParalelaWebview() {
+                return hasWebviewTag() && !usarShellElectron();
+            }
+
+            function syncWebviewUrl(event) {
+                const nextUrl = (event && event.url) || (webviewEl && typeof webviewEl.getURL === 'function' ? webviewEl.getURL() : '');
+                if (nextUrl && /^https?:\/\//i.test(nextUrl)) els.url.value = nextUrl;
+            }
+
+            function setBrowserStatus(message) {
+                els.host.innerHTML = `
+                    <div class="browser-warning">
+                        <strong>${message}</strong>
+                        <span>Voce pode ajustar a URL e tentar abrir novamente.</span>
+                    </div>
+                `;
+            }
+
+            function navegarUmaTentativa(alvo, url, timeoutMs) {
+                return new Promise((resolve, reject) => {
+                    let done = false;
+                    const finish = (err) => {
+                        if (done) return;
+                        done = true;
+                        clearTimeout(timer);
+                        alvo.removeEventListener('did-finish-load', onLoad);
+                        alvo.removeEventListener('did-fail-load', onFail);
+                        alvo.removeEventListener('did-navigate', onNavigate);
+                        alvo.removeEventListener('did-navigate-in-page', onNavigate);
+                        if (err) reject(err);
+                        else resolve();
+                    };
+                    const onLoad = (event) => {
+                        if (event && event.url && /^https?:\/\//i.test(event.url)) els.url.value = event.url;
+                        finish();
+                    };
+                    const onFail = (event) => finish(new Error((event && event.errorDescription) || 'Falha ao carregar a pagina.'));
+                    const onNavigate = (event) => {
+                        const nextUrl = String((event && event.url) || '').trim();
+                        if (nextUrl && /^https?:\/\//i.test(nextUrl)) els.url.value = nextUrl;
+                    };
+                    const timer = setTimeout(() => finish(new Error('Tempo limite ao abrir a pagina no quadro interno.')), timeoutMs || 25000);
+                    alvo.addEventListener('did-finish-load', onLoad);
+                    alvo.addEventListener('did-fail-load', onFail);
+                    alvo.addEventListener('did-navigate', onNavigate);
+                    alvo.addEventListener('did-navigate-in-page', onNavigate);
+                    alvo.src = url;
+                });
+            }
+
+            async function navegadorInternoTemPaginaMl() {
+                const info = await executarNoNavegadorInterno(`
+                    (function () {
+                        try {
+                            return {
+                                url: String(location.href || ''),
+                                readyState: String(document.readyState || ''),
+                                title: String(document.title || ''),
+                                bodyTextLength: document.body && document.body.innerText ? document.body.innerText.length : 0,
+                                links: document.links ? document.links.length : 0,
+                                cards: document.querySelectorAll('li.ui-search-layout__item, div.ui-search-result__wrapper, div.ui-search-result, div.poly-card, section.poly-card, .ui-pdp-container').length
+                            };
+                        } catch (err) {
+                            return { error: err && err.message ? err.message : String(err) };
+                        }
+                    })();
+                `).catch(() => null);
+                const url = String(info && info.url || '');
+                if (!/mercadolivre\.com\.br/i.test(url)) return false;
+                return !!(
+                    (info && info.cards > 0) ||
+                    (info && info.links > 20) ||
+                    (info && info.bodyTextLength > 500) ||
+                    /interactive|complete/i.test(String(info && info.readyState || ''))
+                );
+            }
+
+            async function navegarInternoComTolerancia(alvo, url, timeoutMs) {
+                try {
+                    await navegarUmaTentativa(alvo, url, timeoutMs);
+                    return { ok: true, parcial: false };
+                } catch (err) {
+                    const msg = err && err.message ? err.message : String(err || '');
+                    if (/tempo limite|timeout/i.test(msg) && await navegadorInternoTemPaginaMl()) {
+                        console.warn('Navegador Avant continuou apos timeout porque a pagina ja tem conteudo ML:', msg);
+                        return { ok: true, parcial: true, message: msg };
+                    }
+                    throw err;
+                }
+            }
+
+            async function garantirExtensoesNavegador() {
+                if (window.electronAPI && typeof window.electronAPI.getBrowserSessionPartition === 'function') {
+                    try {
+                        const partition = await window.electronAPI.getBrowserSessionPartition();
+                        if (partition) browserSessionPartition = String(partition);
+                    } catch (_err) {}
+                }
+                if (window.electronAPI && typeof window.electronAPI.ensureBrowserExtensions === 'function') {
+                    try {
+                        await window.electronAPI.ensureBrowserExtensions();
+                    } catch (err) {
+                        console.warn('Falha ao preparar extensoes do navegador Avant:', err);
+                    }
+                }
+            }
+
+            function salvarSessaoNavegadorElectron() {
+                if (window.electronAPI && typeof window.electronAPI.flushBrowserSession === 'function') {
+                    window.electronAPI.flushBrowserSession().catch(() => {});
+                }
+            }
+
+            async function navegar(urlRaw) {
+                const url = normalizarUrl(urlRaw || els.url.value);
+                els.url.value = url;
+                mostrarHint(false);
+                setBusy(true);
+                setStatus('Abrindo no navegador interno...');
+                try {
+                    await garantirExtensoesNavegador();
+                    if (usarShellElectron() || hasEmbeddedApi()) {
+                        els.host.innerHTML = `
+                            <div class="browser-warning">
+                                <strong>Carregando Mercado Livre no navegador interno...</strong>
+                                <span>Se a pagina pedir login, conclua no quadro abaixo.</span>
+                            </div>
+                        `;
+                        const proxy = criarProxyNavegador();
+                        const resultadoNavegacao = await navegarInternoComTolerancia(proxy, url, 25000);
+                        const diagnostico = await injetarColetorLocalNoNavegador(true).catch((err) => {
+                            console.warn('Fallback do coletor local apos abrir pagina falhou:', err);
+                            return null;
+                        });
+                        if (diagnostico && (diagnostico.collector || diagnostico.cards || diagnostico.bridge)) {
+                            setStatus('Pagina aberta no navegador interno com coletor JK ativo.', 'success');
+                        } else if (resultadoNavegacao.parcial) {
+                            setStatus('Pagina aberta parcialmente; coletor JK sera tentado ao coletar dados.', 'success');
+                        } else {
+                            setStatus('Pagina aberta no navegador interno.', 'success');
+                        }
+                        agendarPosicao();
+                        return true;
+                    }
+                    if (hasWebviewTag()) {
+                        const webview = criarWebviewFallback();
+                        const resultadoNavegacao = await navegarInternoComTolerancia(webview, url, 25000);
+                        const diagnostico = await injetarColetorLocalNoNavegador(true).catch((err) => {
+                            console.warn('Fallback do coletor local apos abrir webview falhou:', err);
+                            return null;
+                        });
+                        if (diagnostico && (diagnostico.collector || diagnostico.cards || diagnostico.bridge)) {
+                            setStatus('Pagina aberta no navegador interno com coletor JK ativo.', 'success');
+                        } else if (resultadoNavegacao.parcial) {
+                            setStatus('Pagina aberta parcialmente; coletor JK sera tentado ao coletar dados.', 'success');
+                        } else {
+                            setStatus('Pagina aberta no navegador interno.', 'success');
+                        }
+                        return true;
+                    }
+                    setBrowserStatus('Este modo nao consegue abrir o navegador interno.');
+                    mostrarHint(true);
+                    setStatus('Abra pelo app Electron para usar o navegador interno do Avant.', 'error');
+                    return false;
+                } catch (err) {
+                    setBrowserStatus('Falha ao abrir no quadro interno do programa.');
+                    mostrarHint(true);
+                    setStatus(err && err.message ? err.message : 'Nao foi possivel abrir o navegador interno.', 'error');
+                    return false;
+                } finally {
+                    setBusy(false);
+                }
+            }
+
+            async function pesquisar() {
+                const termos = obterTermosPesquisa();
+                if (!termos.length) {
+                    alert('Digite um termo para pesquisar no Mercado Livre.');
+                    els.search1.focus();
+                    return;
+                }
+                const abriu = await navegar(construirUrlPesquisaMercadoLivre(termos[0]));
+                if (abriu) {
+                    setTimeout(() => coletarDados().catch(() => {}), 700);
+                }
+            }
+
+            function abrirExternoFallback(url) {
+                try {
+                    window.open(url, '_blank', 'noopener,noreferrer');
+                    return true;
+                } catch (_err) {
+                    return false;
+                }
+            }
+
+            function abrirExternoViaShell(url) {
+                if (!usarShellElectron()) return Promise.resolve(false);
+                const requestId = `avant-ext-${Date.now()}-${++requestSerial}`;
+                return new Promise((resolve) => {
+                    const handler = (event) => {
+                        const data = event && event.data ? event.data : {};
+                        if (!data || data.channel !== 'jk-open-external-chrome-result' || data.requestId !== requestId) return;
+                        window.removeEventListener('message', handler);
+                        resolve(!!data.success);
+                    };
+                    window.addEventListener('message', handler);
+                    enviarParaShell('jk-open-external-chrome', { requestId, url });
+                    setTimeout(() => {
+                        window.removeEventListener('message', handler);
+                        resolve(false);
+                    }, 5000);
+                });
+            }
+
+            async function abrirExterno() {
+                const url = normalizarUrl(els.url.value);
+                els.url.value = url;
+                if (window.electronAPI && typeof window.electronAPI.openExternalChrome === 'function') {
+                    try {
+                        await window.electronAPI.openExternalChrome(url);
+                        setStatus('Aberto no navegador externo.', 'success');
+                        return;
+                    } catch (err) {
+                        console.warn('Falha ao abrir externo:', err);
+                    }
+                }
+                const abriuShell = await abrirExternoViaShell(url);
+                if (abriuShell || abrirExternoFallback(url)) {
+                    setStatus('Aberto no navegador externo.', 'success');
+                } else {
+                    setStatus('Nao foi possivel abrir o navegador externo.', 'error');
+                }
+            }
+
+            window.addEventListener('message', (event) => {
+                const data = event && event.data ? event.data : {};
+                if (!data || typeof data !== 'object') return;
+                if (data.channel === 'jk-ml-browser-event' && browserProxy) {
+                    if (data.url) {
+                        browserProxy.currentUrl = data.url;
+                        if (/^https?:\/\//i.test(data.url)) els.url.value = data.url;
+                    }
+                    browserProxy.dispatchEvent(data.event, data);
+                    return;
+                }
+                if (data.channel === 'jk-ml-browser-execute-result') {
+                    const pending = pendingShellRequests.get(data.requestId);
+                    if (!pending) return;
+                    pendingShellRequests.delete(data.requestId);
+                    if (data.error) pending.reject(new Error(data.error));
+                    else pending.resolve(data.result);
+                }
+            });
+
+            els.abrir.addEventListener('click', () => navegar());
+            els.pesquisar.addEventListener('click', pesquisar);
+            els.recarregar.addEventListener('click', () => navegar(els.url.value));
+            els.coletar.addEventListener('click', coletarDados);
+            els.limparColeta.addEventListener('click', limparColeta);
+            els.externo.addEventListener('click', abrirExterno);
+            els.home.addEventListener('click', () => { window.location.href = 'dashboard.html'; });
+            els.voltar.addEventListener('click', () => { window.location.href = 'dashboard.html'; });
+
+            [els.url, els.search1, els.search2, els.search3].forEach((input) => {
+                input.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter') return;
+                    if (input === els.url) navegar();
+                    else pesquisar();
+                });
+            });
+
+            document.querySelectorAll('[data-url]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    els.url.value = button.dataset.url || 'https://www.mercadolivre.com.br/';
+                    navegar(els.url.value);
+                });
+            });
+
+            window.addEventListener('resize', agendarPosicao);
+            window.addEventListener('scroll', agendarPosicao, true);
+            window.addEventListener('beforeunload', () => {
+                esconderNavegadorInterno();
+                salvarSessaoNavegadorElectron();
+            });
+
+            garantirExtensoesNavegador();
+        })();
+    </script>
+</body>
+</html>

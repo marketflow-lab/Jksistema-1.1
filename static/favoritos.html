@@ -1208,7 +1208,8 @@
             border-radius: 8px;
             max-height: min(360px, calc(100vh - 220px));
             max-width: 100%;
-            overflow: auto;
+            overflow-x: auto;
+            overflow-y: auto;
         }
         .ml-favoritos-balloon-comparison-table {
             border-collapse: collapse;
@@ -1694,6 +1695,9 @@
             min-width: 0;
             width: 100%;
         }
+        .favoritos-ml-tables > .panel {
+            min-width: 0;
+        }
         .favoritos-ml-split-resizer {
             display: none;
         }
@@ -1705,7 +1709,9 @@
         }
         .favoritos-ml-table-wrap table {
             font-size: 12px;
-            min-width: 900px;
+            min-width: 0;
+            table-layout: fixed;
+            width: 100%;
         }
         .favoritos-editable-table {
             table-layout: fixed;
@@ -1714,8 +1720,12 @@
         .favoritos-ml-table-wrap td {
             box-sizing: border-box;
             line-height: 1.25;
+            min-width: 0;
+            overflow: hidden;
+            overflow-wrap: anywhere;
             padding: 7px 8px;
             vertical-align: top;
+            word-break: normal;
         }
         .favoritos-ml-table-wrap thead tr,
         .favoritos-ml-table-wrap thead th {
@@ -1808,10 +1818,108 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        @media (min-width: 980px) {
+        .ml-favoritos-mlb-cell {
+            min-width: 0;
+        }
+        .ml-favoritos-mlb-main {
+            color: #0f172a;
+            display: block;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ml-favoritos-mlb-loja {
+            color: #64748b;
+            display: block;
+            font-size: 11px;
+            line-height: 1.25;
+            margin-top: 3px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ml-favoritos-mlb-status {
+            color: #475569;
+            display: block;
+            font-size: 11px;
+            line-height: 1.25;
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ml-favoritos-mlb-tipo {
+            color: #334155;
+            display: block;
+            font-size: 11px;
+            line-height: 1.25;
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ml-favoritos-seller-action {
+            margin-top: 6px;
+        }
+        .ml-favoritos-type-cell {
+            min-width: 120px;
+        }
+        .ml-favoritos-type-value {
+            color: #334155;
+            display: block;
+            font-size: 12px;
+            line-height: 1.25;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ml-favoritos-media-cell {
+            min-width: 90px;
+        }
+        .ml-favoritos-media-main {
+            color: #0f172a;
+            display: block;
+            font-weight: 600;
+            line-height: 1.25;
+            white-space: normal;
+        }
+        .ml-favoritos-media-detail {
+            color: #64748b;
+            display: block;
+            font-size: 11px;
+            line-height: 1.25;
+            margin-top: 2px;
+            white-space: normal;
+        }
+        .ml-favoritos-media-price {
+            color: #0f172a;
+            display: block;
+            font-size: 11px;
+            line-height: 1.25;
+            margin-top: 5px;
+            white-space: normal;
+        }
+        .ml-favoritos-media-price.is-original {
+            color: #64748b;
+            text-decoration: line-through;
+        }
+        .ml-favoritos-media-discount {
+            background: #dcfce7;
+            border: 1px solid #86efac;
+            border-radius: 999px;
+            color: #15803d;
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            margin-left: 4px;
+            padding: 1px 5px;
+            vertical-align: 1px;
+        }
+        @media (min-width: 900px) {
             .favoritos-ml-tables.is-resizable {
                 align-items: stretch;
-                grid-template-columns: minmax(280px, var(--favoritos-ml-left-width)) 8px minmax(280px, 1fr);
+                grid-template-columns: minmax(0, var(--favoritos-ml-left-width)) 8px minmax(0, 1fr);
             }
             .favoritos-ml-tables.is-resizable > .panel {
                 display: flex;
@@ -1870,10 +1978,21 @@
             line-height: 1.35;
         }
         .ml-favoritos-table-wrap {
+            max-width: 100%;
             overflow-x: auto;
         }
         .ml-favoritos-table-wrap table {
-            min-width: 980px;
+            min-width: 0;
+            table-layout: fixed;
+            width: 100%;
+        }
+        .ml-favoritos-table-wrap th,
+        .ml-favoritos-table-wrap td {
+            box-sizing: border-box;
+            min-width: 0;
+            overflow: hidden;
+            overflow-wrap: anywhere;
+            word-break: normal;
         }
         .ml-favoritos-foto-cell {
             width: 58px;
@@ -1956,8 +2075,40 @@
             background: #dbeafe;
         }
         .ml-favoritos-preco-cell {
-            min-width: 105px;
+            min-width: 150px;
             white-space: nowrap;
+        }
+        .ml-favoritos-preco-stack {
+            align-items: flex-start;
+            display: inline-flex;
+            flex-direction: row;
+            gap: 8px;
+        }
+        .ml-favoritos-preco-info-group,
+        .ml-favoritos-preco-value-stack {
+            align-items: flex-start;
+            display: inline-flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .ml-favoritos-preco-info-group {
+            flex: 0 0 auto;
+            padding-top: 1px;
+        }
+        .ml-favoritos-preco-value-stack {
+            min-width: 0;
+        }
+        .ml-favoritos-preco-info {
+            color: #475569;
+            display: block;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .ml-favoritos-preco-label {
+            color: #475569;
+            font-size: 11px;
+            font-weight: 600;
         }
         .ml-favoritos-preco-base,
         .ml-favoritos-preco-promo {
@@ -1981,9 +2132,12 @@
             display: inline-block;
             font-size: 10px;
             font-weight: 800;
-            margin-left: 5px;
+            margin-left: 0;
             padding: 1px 5px;
-            vertical-align: 1px;
+        }
+        .ml-favoritos-preco-margem {
+            display: block;
+            margin-top: 2px;
         }
         .ml-favoritos-margem-cell {
             min-width: 92px;
@@ -2020,6 +2174,7 @@
             flex-direction: column;
             gap: 3px;
             line-height: 1.2;
+            max-width: 100%;
         }
         .ml-favoritos-simulador-preco {
             color: #0f172a;
@@ -2027,7 +2182,9 @@
         }
         .ml-favoritos-simulador-meta {
             color: #64748b;
+            display: block;
             font-size: 10px;
+            white-space: normal;
         }
         .ml-favoritos-efetivar-btn {
             align-items: center;
@@ -2204,7 +2361,7 @@
             background: #eff6ff;
             color: #0f172a;
             font-weight: 800;
-            white-space: nowrap;
+            white-space: normal;
         }
         .ml-favoritos-comparacao-table td {
             overflow-wrap: anywhere;
@@ -2354,6 +2511,54 @@
             font-weight: 700;
             margin: 0;
         }
+        .ml-links-alinhados-toolbar {
+            align-items: center;
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .ml-links-alinhados-toolbar .section-title {
+            margin: 0;
+        }
+        .ml-links-alinhados-table-wrap {
+            border: 1px solid #d9e6fb;
+            border-radius: 8px;
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: calc(100vh - 310px);
+        }
+        .ml-links-alinhados-table {
+            border-collapse: collapse;
+            font-size: 12px;
+            min-width: 980px;
+            table-layout: fixed;
+            width: 100%;
+        }
+        .ml-links-alinhados-table th,
+        .ml-links-alinhados-table td {
+            border-bottom: 1px solid #e7eef8;
+            padding: 9px 10px;
+            text-align: left;
+            vertical-align: middle;
+            overflow-wrap: anywhere;
+        }
+        .ml-links-alinhados-table th {
+            background: #eef4fb;
+            color: #0f172a;
+            font-weight: 700;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        .ml-links-alinhados-actions {
+            display: flex;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .ml-links-alinhados-actions .btn-back {
+            padding: 6px 9px;
+        }
         .ml-favoritos-refazer-btn {
             flex: 0 0 auto;
             padding: 7px 12px;
@@ -2489,11 +2694,26 @@
             cursor: default;
         }
         .ml-ranking-actions-cell {
-            text-align: left;
+            text-align: center;
             white-space: nowrap;
-            width: 86px;
+            width: 88px;
+        }
+        .ml-ranking-actions-rank {
+            color: #0f172a;
+            display: block;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 5px;
         }
         .ml-ranking-actions-group {
+            align-items: center;
+            display: inline-flex;
+            flex-direction: column;
+            gap: 5px;
+            justify-content: center;
+        }
+        .ml-ranking-arrows-row {
             align-items: center;
             display: inline-flex;
             gap: 4px;
@@ -3008,7 +3228,7 @@
             }
         }
 
-        @media (max-width: 1399px) {
+        @media (max-width: 899px) {
             .favoritos-ml-tables.is-resizable {
                 grid-template-columns: minmax(0, 1fr);
             }
@@ -3159,6 +3379,7 @@
             <button class="tab-button" onclick="mudarAba('favoritos', event)">&#11088; Favoritos</button>
             <button class="tab-button" onclick="mudarAba('historico', event)">&#128221; Hist&oacute;rico</button>
             <button class="tab-button" onclick="mudarAba('planilhas', event)">&#128196; Planilhas</button>
+            <button class="tab-button" onclick="mudarAba('links-alinhados', event)">&#128279; Links Alinhados</button>
             <button class="tab-button" onclick="mudarAba('anuncios-ignorados', event)">&#128683; An&uacute;ncios ignorados</button>
             <button class="tab-button" onclick="mudarAba('vendedores', event)">&#128683; Vendedores ignorados</button>
         </div>
@@ -3247,14 +3468,8 @@
                                     <tr>
                                         <th data-col-key="foto">Foto</th>
                                         <th data-col-key="mlb">MLB</th>
-                                        <th data-col-key="loja">Loja</th>
                                         <th data-col-key="titulo">Titulo</th>
-                                        <th data-col-key="status">Status</th>
                                         <th data-col-key="preco">Preco</th>
-                                        <th data-col-key="margem">Margem</th>
-                                        <th data-col-key="tipo">Tipo</th>
-                                        <th data-col-key="estoque">Estoque</th>
-                                        <th data-col-key="vendas">Vendas</th>
                                         <th data-col-key="simulador">Simulador</th>
                                     </tr>
                                 </thead>
@@ -3281,16 +3496,9 @@
                                     <tr>
                                         <th data-col-key="acoes">Acoes</th>
                                         <th data-col-key="foto">Foto</th>
-                                        <th data-col-key="rank">Rank</th>
                                         <th data-col-key="mlb">MLB</th>
                                         <th data-col-key="media">Media mensal</th>
-                                        <th data-col-key="vendas">Vendas</th>
-                                        <th data-col-key="dias">Dias</th>
                                         <th data-col-key="titulo">Titulo</th>
-                                        <th data-col-key="vendedor">Vendedor</th>
-                                        <th data-col-key="preco">Preco</th>
-                                        <th data-col-key="margem">Margem</th>
-                                        <th data-col-key="tipo">Tipo</th>
                                     </tr>
                                 </thead>
                                 <tbody id="fav-outros-anuncios-body"></tbody>
@@ -3349,6 +3557,35 @@
                     </div>
                 </div>
                 <div id="favoritos-planilhas-list" class="favoritos-sheets-list"></div>
+            </div>
+        </div>
+
+        <div id="aba-links-alinhados" class="aba-conteudo">
+            <div class="panel">
+                <div class="ml-links-alinhados-toolbar">
+                    <h3 class="section-title">Links Alinhados</h3>
+                    <button id="ml-links-alinhados-atualizar" type="button" class="btn-back">Atualizar</button>
+                </div>
+                <div id="ml-links-alinhados-status" class="status"></div>
+                <div id="ml-links-alinhados-empty" class="muted">Nenhum link alinhado encontrado.</div>
+                <div class="ml-links-alinhados-table-wrap">
+                    <table class="ml-links-alinhados-table">
+                        <thead>
+                            <tr>
+                                <th>Data</th>
+                                <th>Usuario</th>
+                                <th>Loja</th>
+                                <th>SKU</th>
+                                <th>Rank</th>
+                                <th>MLB</th>
+                                <th>Vendedor</th>
+                                <th>Titulo</th>
+                                <th>Acoes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ml-links-alinhados-body"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -3752,6 +3989,10 @@
         const mlHistoricoFavoritosEmptyEl = document.getElementById('ml-historico-favoritos-empty');
         const mlHistoricoFavoritosListEl = document.getElementById('ml-historico-favoritos-list');
         const mlHistoricoFavoritosLimparEl = document.getElementById('ml-historico-favoritos-limpar');
+        const mlLinksAlinhadosStatusEl = document.getElementById('ml-links-alinhados-status');
+        const mlLinksAlinhadosEmptyEl = document.getElementById('ml-links-alinhados-empty');
+        const mlLinksAlinhadosBodyEl = document.getElementById('ml-links-alinhados-body');
+        const mlLinksAlinhadosAtualizarEl = document.getElementById('ml-links-alinhados-atualizar');
         const mlVendedoresIgnoradosStatusEl = document.getElementById('ml-vendedores-ignorados-status');
         const mlVendedoresIgnoradosEmptyEl = document.getElementById('ml-vendedores-ignorados-empty');
         const mlVendedoresIgnoradosListEl = document.getElementById('ml-vendedores-ignorados-list');
@@ -3791,7 +4032,7 @@
         const ML_FAVORITOS_TABLE_LAYOUT_KEY = 'favoritosMlTableLayoutV1';
         const ML_SKU_SIDEBAR_PAGE_SIZE = 50;
         const SKU_API_PAGE_SIZE = 20;
-        const ML_FAVORITOS_HISTORICO_MAX = 30;
+        const ML_FAVORITOS_HISTORICO_MAX = 500;
         const ML_FAVORITOS_HISTORICO_ANUNCIOS_MAX = 60;
         const AVANT_PRO_LOGIN_EMAIL = 'fredyn-lefer@hotmail.com';
         const AVANT_PRO_ESPERA_POS_CLIQUE_MS = 2800;
@@ -3852,6 +4093,12 @@
         let mlSkuBuscaRemotaRunId = 0;
         const mlSkuBuscaRemotaCache = new Set();
         const mlSkuDadosPorLojaCache = new Map();
+        const mlSkuCarregamentoPromises = new Map();
+        const ML_SKU_CACHE_REFRESH_MS = 10 * 60 * 1000;
+        let mlSkuCarregamentoRunId = 0;
+        let mlSkuCarregamentoEmAndamento = false;
+        let mlSkuCarregamentoChave = '';
+        let mlSkuCarregamentoLoja = '';
         const mlSkuEstadoPorLojaCache = new Map();
         let mlFavoritosEmExecucao = false;
         let mlFavoritosExecucaoEmSegundoPlano = false;
@@ -4796,6 +5043,29 @@
             return Array.from(mapa.entries()).map(([chave, valor]) => [chave, favoritosClonarValorCache(valor)]);
         }
 
+        function favoritosCacheSkusTemDados(cache) {
+            if (!cache || typeof cache !== 'object') return false;
+            return (Array.isArray(cache.skus) && cache.skus.length > 0)
+                || (Array.isArray(cache.skuDados) && cache.skuDados.length > 0);
+        }
+
+        function favoritosObterCacheSkusLoja(nomeLoja) {
+            const chave = favoritosChaveCacheLoja(nomeLoja);
+            return chave ? mlSkuDadosPorLojaCache.get(chave) : null;
+        }
+
+        function favoritosCacheSkusRecente(cache) {
+            const salvoEm = Number(cache && cache.salvoEm || 0);
+            return !!salvoEm && (Date.now() - salvoEm) < ML_SKU_CACHE_REFRESH_MS;
+        }
+
+        function favoritosDefinirCarregamentoSkus(nomeLoja, carregando, chaveForcada = '') {
+            mlSkuCarregamentoEmAndamento = !!carregando;
+            mlSkuCarregamentoLoja = carregando ? String(nomeLoja || '').trim() : '';
+            mlSkuCarregamentoChave = carregando ? (chaveForcada || favoritosChaveCacheLoja(nomeLoja)) : '';
+            renderizarSkuSidebarMercadoLivre();
+        }
+
         function favoritosSalvarEstadoLojaAtual(chaveForcada = '') {
             const chave = chaveForcada || favoritosLojaAtualNormalizada();
             if (!chave) return;
@@ -4846,6 +5116,15 @@
         function favoritosSalvarCacheSkusAtual() {
             const chave = favoritosLojaAtualNormalizada();
             if (!chave) return;
+            const temDados = (Array.isArray(mlSkusAnunciosLojaAtual) && mlSkusAnunciosLojaAtual.length > 0)
+                || (Array.isArray(skuDados) && skuDados.length > 0);
+            if (!temDados) {
+                const cacheExistente = mlSkuDadosPorLojaCache.get(chave);
+                if (!favoritosCacheSkusTemDados(cacheExistente)) {
+                    mlSkuDadosPorLojaCache.delete(chave);
+                }
+                return;
+            }
             mlSkuDadosPorLojaCache.set(chave, {
                 lojaSelecionada: favoritosEhTodasLojas(mlSkuLojaSelecionada || skuLojaSelecionada) ? FAVORITOS_TODAS_LOJAS : String(mlSkuLojaSelecionada || skuLojaSelecionada || '').trim(),
                 lojas: favoritosClonarListaObjetos(mlSkuLojasDisponiveis),
@@ -4873,6 +5152,10 @@
             const chave = favoritosChaveCacheLoja(nomeLoja);
             const cache = chave ? mlSkuDadosPorLojaCache.get(chave) : null;
             if (!cache) return false;
+            if (!favoritosCacheSkusTemDados(cache)) {
+                mlSkuDadosPorLojaCache.delete(chave);
+                return false;
+            }
             skuLojasDisponiveis = favoritosClonarListaObjetos(cache.lojas);
             mlSkuLojasDisponiveis = favoritosClonarListaObjetos(cache.lojas);
             mlSkuLojaSelecionada = cache.lojaSelecionada || (favoritosEhTodasLojas(nomeLoja) ? FAVORITOS_TODAS_LOJAS : String(nomeLoja || '').trim());
@@ -5218,9 +5501,20 @@
             if (!mlSkuLojaCardsEl && !mlSkuSidebarListEl) return;
             const preferida = loja || mlSkuLojaSelecionada || mlSkuCarregarPreferenciaLoja();
             const carregarTodas = !preferida || favoritosEhTodasLojas(preferida);
-            if (favoritosAplicarCacheSkusLoja(preferida || FAVORITOS_TODAS_LOJAS)) {
+            const alvoCache = preferida || FAVORITOS_TODAS_LOJAS;
+            const chaveCache = favoritosChaveCacheLoja(alvoCache);
+            const cacheExistente = favoritosObterCacheSkusLoja(alvoCache);
+            const cacheAplicado = favoritosAplicarCacheSkusLoja(alvoCache, { status: false });
+            if (cacheAplicado && favoritosCacheSkusRecente(cacheExistente)) {
                 return;
             }
+            if (cacheAplicado && mlSkuStatusEl) {
+                mlSkuStatusEl.textContent = `Mostrando cache de ${favoritosNomeLojaExibicao(mlSkuLojaSelecionada).toLowerCase()} enquanto atualiza no Mercado Livre...`;
+            }
+            const promiseEmAndamento = chaveCache ? mlSkuCarregamentoPromises.get(chaveCache) : null;
+            if (promiseEmAndamento) return promiseEmAndamento;
+            const runId = ++mlSkuCarregamentoRunId;
+            favoritosDefinirCarregamentoSkus(alvoCache, true, chaveCache);
             if (mlSkuStatusEl) {
                 mlSkuStatusEl.textContent = carregarTodas
                     ? 'Carregando SKUs dos anuncios de todas as lojas...'
@@ -5228,6 +5522,7 @@
                     ? `Carregando SKUs dos anúncios da loja ${preferida}...`
                     : 'Carregando lojas integradas ao Mercado Livre...';
             }
+            const promessa = (async () => {
             try {
                 const params = new URLSearchParams();
                 if (carregarTodas) {
@@ -5248,6 +5543,9 @@
                     throw new Error(detalhe);
                 }
                 const data = await response.json();
+                if (runId !== mlSkuCarregamentoRunId || (chaveCache && favoritosLojaAtualNormalizada() !== chaveCache)) {
+                    return;
+                }
                 mlSkuLojasDisponiveis = Array.isArray(data.lojas) ? data.lojas : [];
                 mlSkuLojaSelecionada = data.todas_lojas ? FAVORITOS_TODAS_LOJAS : String(data.loja || preferida || '').trim();
                 if (mlSkuLojaSelecionada) skuLojaSelecionada = mlSkuLojaSelecionada;
@@ -5258,6 +5556,9 @@
                 skuLojasDisponiveis = mlSkuLojasDisponiveis;
                 skuAtualizarDadosComApiMercadoLivre(mlSkusAnunciosLojaAtual, mlSkuLojaSelecionada);
                 favoritosSalvarCacheSkusAtual();
+                if (!mlSkusAnunciosLojaAtual.length && !skuDados.length && chaveCache) {
+                    mlSkuDadosPorLojaCache.delete(chaveCache);
+                }
                 mlSkuSidebarRenderLimit = ML_SKU_SIDEBAR_PAGE_SIZE;
                 if (mlSkuLojaSelecionada) mlSkuSalvarPreferenciaLoja();
                 favoritosAtualizarCardLojaCabecalho();
@@ -5278,15 +5579,24 @@
                     }
                 }
             } catch (err) {
-                mlSkusAnunciosLojaAtual = [];
-                renderizarSkuSidebarMercadoLivre();
-                renderizarFavoritosSkuSidebar();
-                renderizarHistoricoSkuSidebar();
-                atualizarEstadoSidebarRanking();
+                if (!cacheAplicado) {
+                    renderizarSkuSidebarMercadoLivre();
+                    renderizarFavoritosSkuSidebar();
+                    renderizarHistoricoSkuSidebar();
+                    atualizarEstadoSidebarRanking();
+                }
                 if (mlSkuStatusEl) {
                     mlSkuStatusEl.textContent = `Erro ao carregar SKUs do Mercado Livre: ${err && err.message ? err.message : err}`;
                 }
+            } finally {
+                if (runId === mlSkuCarregamentoRunId) {
+                    favoritosDefinirCarregamentoSkus('', false);
+                }
+                if (chaveCache) mlSkuCarregamentoPromises.delete(chaveCache);
             }
+            })();
+            if (chaveCache) mlSkuCarregamentoPromises.set(chaveCache, promessa);
+            return promessa;
         }
 
         function skuFiltrarDados() {
@@ -5689,14 +5999,26 @@
             if (!skuBodyEl) return;
             const preferida = loja || skuLojaSelecionada || mlSkuLojaSelecionada || mlSkuCarregarPreferenciaLoja() || skuCarregarPreferenciaLoja();
             const carregarTodas = !preferida || favoritosEhTodasLojas(preferida);
-            if (favoritosAplicarCacheSkusLoja(preferida || FAVORITOS_TODAS_LOJAS)) {
+            const alvoCache = preferida || FAVORITOS_TODAS_LOJAS;
+            const chaveCache = favoritosChaveCacheLoja(alvoCache);
+            const cacheExistente = favoritosObterCacheSkusLoja(alvoCache);
+            const cacheAplicado = favoritosAplicarCacheSkusLoja(alvoCache, { status: false });
+            if (cacheAplicado && favoritosCacheSkusRecente(cacheExistente)) {
                 return;
             }
+            if (cacheAplicado && skuStatusEl) {
+                skuStatusEl.textContent = `Mostrando cache de ${favoritosNomeLojaExibicao(mlSkuLojaSelecionada).toLowerCase()} enquanto atualiza no Mercado Livre...`;
+            }
+            const promiseEmAndamento = chaveCache ? mlSkuCarregamentoPromises.get(chaveCache) : null;
+            if (promiseEmAndamento) return promiseEmAndamento;
             if (skuStatusEl) {
                 skuStatusEl.textContent = carregarTodas
                     ? 'Carregando SKUs dos anuncios de todas as contas pela API do Mercado Livre...'
                     : `Carregando SKUs dos anuncios da loja ${preferida} pela API do Mercado Livre...`;
             }
+            const runId = ++mlSkuCarregamentoRunId;
+            favoritosDefinirCarregamentoSkus(alvoCache, true, chaveCache);
+            const promessa = (async () => {
             try {
                 const params = new URLSearchParams();
                 if (carregarTodas) {
@@ -5716,6 +6038,9 @@
                 ]);
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
+                if (runId !== mlSkuCarregamentoRunId || (chaveCache && favoritosLojaAtualNormalizada() !== chaveCache)) {
+                    return;
+                }
                 if (ocultosResponse.ok) {
                     const ocultosData = await ocultosResponse.json();
                     skuSkusOcultos = new Set((ocultosData.skus_ocultos || []).map(skuChaveOculto).filter(Boolean));
@@ -5737,6 +6062,9 @@
                     .filter(item => skuObterSku(item));
                 skuPaginaAtual = 1;
                 favoritosSalvarCacheSkusAtual();
+                if (!mlSkusAnunciosLojaAtual.length && !skuDados.length && chaveCache) {
+                    mlSkuDadosPorLojaCache.delete(chaveCache);
+                }
                 skuRenderizarCardsLojas();
                 skuRenderizarTabela();
                 favoritosAtualizarCardLojaCabecalho();
@@ -5757,7 +6085,15 @@
                 if (skuDados.length) skuAgendarBuscaDescricoesAutomaticas(500);
             } catch (err) {
                 if (skuStatusEl) skuStatusEl.textContent = `Erro ao carregar SKUs: ${err && err.message ? err.message : err}`;
+            } finally {
+                if (runId === mlSkuCarregamentoRunId) {
+                    favoritosDefinirCarregamentoSkus('', false);
+                }
+                if (chaveCache) mlSkuCarregamentoPromises.delete(chaveCache);
             }
+            })();
+            if (chaveCache) mlSkuCarregamentoPromises.set(chaveCache, promessa);
+            return promessa;
         }
 
         if (skuFiltroEl) {
@@ -5868,6 +6204,9 @@
         }
         if (mlHistoricoFavoritosLimparEl) {
             mlHistoricoFavoritosLimparEl.addEventListener('click', limparHistoricoFavoritos);
+        }
+        if (mlLinksAlinhadosAtualizarEl) {
+            mlLinksAlinhadosAtualizarEl.addEventListener('click', renderizarLinksAlinhadosFavoritos);
         }
 
         function garantirSidebarSkuUnico() {
@@ -6079,6 +6418,9 @@
             }
             if (nomeAba === 'planilhas') {
                 prepararAbaPlanilhasFavoritos();
+            }
+            if (nomeAba === 'links-alinhados') {
+                renderizarLinksAlinhadosFavoritos();
             }
             if (nomeAba === 'vendedores') {
                 renderizarVendedoresIgnoradosRanking();
@@ -8733,6 +9075,28 @@
             cell.appendChild(wrap);
         }
 
+        function criarBotaoIgnorarVendedorFavoritos(vendedor) {
+            const nome = normalizarNomeVendedor(vendedor);
+            if (!vendedorValido(nome)) return null;
+            const ignorado = vendedorIgnoradoNoRanking(nome);
+            const botao = document.createElement('button');
+            botao.type = 'button';
+            botao.className = `ml-ignore-seller-btn${ignorado ? ' is-ignored' : ''}`;
+            botao.textContent = ignorado ? 'Vendedor ignorado' : 'Ignorar esse vendedor';
+            botao.title = ignorado
+                ? 'Este vendedor ja esta fora do ranking'
+                : `Ignorar ${nome} nos rankings`;
+            botao.disabled = ignorado;
+            if (!ignorado) {
+                botao.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    adicionarVendedorIgnoradoRanking(nome);
+                });
+            }
+            return botao;
+        }
+
         function parseNumeroVendas(valor) {
             if (valor === null || valor === undefined) return null;
             if (typeof valor === 'number') return Number.isFinite(valor) ? valor : null;
@@ -9045,34 +9409,112 @@
             return parsePrecoAnuncioFavoritos(anuncio && (anuncio.preco_original ?? anuncio.original_price ?? anuncio.standard_price ?? '')) === null
                 && parsePrecoAnuncioFavoritos(anuncio && (anuncio.preco_promocional ?? anuncio.promotional_price ?? anuncio.promotion_price ?? anuncio.sale_price ?? '')) === null;
         }
-        function criarCelulaPrecoAnuncioFavoritos(anuncio) {
+        function criarInfoPrecoFavoritos(rotulo, valor) {
+            if (valor === null || valor === undefined) return null;
+            const titulo = String(rotulo || '').trim();
+            if (!titulo) return null;
+            const texto = String(valor).trim();
+            if (!texto) return null;
+            const info = document.createElement('span');
+            info.className = 'ml-favoritos-preco-info';
+            info.textContent = `${titulo}: ${texto}`;
+            return info;
+        }
+
+        function criarCelulaPrecoAnuncioFavoritos(anuncio, infosPreco = []) {
             const td = document.createElement('td');
             td.className = 'ml-favoritos-preco-cell';
             const precos = obterPrecosAnuncioFavoritos(anuncio);
-            if (precos.preco === null && precos.promocional === null) return td;
-            const base = document.createElement('span');
-            base.className = 'ml-favoritos-preco-base' + (precos.promocional !== null ? ' is-original' : '');
-            base.textContent = formatarPrecoFavoritosMl(precos.preco !== null ? precos.preco : precos.promocional);
-            const descontoTexto = formatarDescontoPrecoFavoritos(precos.desconto);
-            const promoTexto = anuncioEstaEmPromocaoFavoritos(anuncio) ? (descontoTexto || 'Promo') : '';
-            td.appendChild(base);
-            if (precos.promocional !== null && precos.preco !== null) {
-                const promo = document.createElement('span');
-                promo.className = 'ml-favoritos-preco-promo';
-                promo.textContent = formatarPrecoFavoritosMl(precos.promocional);
+            const infosValidas = Array.isArray(infosPreco)
+                ? infosPreco.map(item => criarInfoPrecoFavoritos(item && item.rotulo, item && item.valor)).filter(Boolean)
+                : [];
+            if (precos.preco === null && precos.promocional === null && !infosValidas.length) return td;
+            const stack = document.createElement('div');
+            stack.className = 'ml-favoritos-preco-stack';
+            if (infosValidas.length) {
+                const infoGroup = document.createElement('span');
+                infoGroup.className = 'ml-favoritos-preco-info-group';
+                infosValidas.forEach(info => infoGroup.appendChild(info));
+                stack.appendChild(infoGroup);
+            }
+            if (precos.preco !== null || precos.promocional !== null) {
+                const valueStack = document.createElement('span');
+                valueStack.className = 'ml-favoritos-preco-value-stack';
+                const base = document.createElement('span');
+                base.className = 'ml-favoritos-preco-base' + (precos.promocional !== null ? ' is-original' : '');
+                base.textContent = formatarPrecoFavoritosMl(precos.preco !== null ? precos.preco : precos.promocional);
+                const descontoTexto = formatarDescontoPrecoFavoritos(precos.desconto);
+                const promoTexto = anuncioEstaEmPromocaoFavoritos(anuncio) ? (descontoTexto || 'Promo') : '';
+                valueStack.appendChild(base);
                 if (promoTexto) {
                     const desconto = document.createElement('span');
                     desconto.className = 'ml-favoritos-preco-desconto';
                     desconto.textContent = promoTexto;
-                    promo.appendChild(desconto);
+                    valueStack.appendChild(desconto);
                 }
-                td.appendChild(promo);
-            } else if (promoTexto) {
+                if (precos.promocional !== null && precos.preco !== null) {
+                    const promo = document.createElement('span');
+                    promo.className = 'ml-favoritos-preco-promo';
+                    promo.textContent = formatarPrecoFavoritosMl(precos.promocional);
+                    valueStack.appendChild(promo);
+                }
+                const margemCell = criarCelulaMargemAnuncioFavoritos(anuncio);
+                const margemBadge = margemCell.firstElementChild;
+                if (margemBadge) {
+                    const margemWrap = document.createElement('span');
+                    margemWrap.className = 'ml-favoritos-preco-margem';
+                    margemWrap.title = margemCell.title || '';
+                    margemWrap.appendChild(margemBadge.cloneNode(true));
+                    valueStack.appendChild(margemWrap);
+                }
+                stack.appendChild(valueStack);
+            }
+            td.appendChild(stack);
+            return td;
+        }
+
+        function criarCelulaPrecoHistoricoFavoritos(anuncio) {
+            const td = document.createElement('td');
+            td.className = 'ml-favoritos-preco-cell';
+            const precos = obterPrecosAnuncioFavoritos(anuncio);
+            if (precos.preco === null && precos.promocional === null) return td;
+
+            const stack = document.createElement('span');
+            stack.className = 'ml-favoritos-preco-value-stack';
+            const precoBase = precos.preco !== null ? precos.preco : precos.promocional;
+            const temPromocional = precos.promocional !== null && precos.preco !== null;
+
+            const base = document.createElement('span');
+            base.className = 'ml-favoritos-preco-base' + (temPromocional ? ' is-original' : '');
+            base.innerHTML = `<span class="ml-favoritos-preco-label">Preco:</span> ${formatarPrecoFavoritosMl(precoBase)}`;
+            stack.appendChild(base);
+
+            const descontoTexto = formatarDescontoPrecoFavoritos(precos.desconto);
+            if (descontoTexto) {
                 const desconto = document.createElement('span');
                 desconto.className = 'ml-favoritos-preco-desconto';
-                desconto.textContent = promoTexto;
-                base.appendChild(desconto);
+                desconto.textContent = descontoTexto;
+                stack.appendChild(desconto);
             }
+
+            if (temPromocional) {
+                const promo = document.createElement('span');
+                promo.className = 'ml-favoritos-preco-promo';
+                promo.textContent = formatarPrecoFavoritosMl(precos.promocional);
+                stack.appendChild(promo);
+            }
+
+            const margemCell = criarCelulaMargemAnuncioFavoritos(anuncio);
+            const margemBadge = margemCell.firstElementChild;
+            if (margemBadge) {
+                const margemWrap = document.createElement('span');
+                margemWrap.className = 'ml-favoritos-preco-margem';
+                margemWrap.title = margemCell.title || '';
+                margemWrap.appendChild(margemBadge.cloneNode(true));
+                stack.appendChild(margemWrap);
+            }
+
+            td.appendChild(stack);
             return td;
         }
         function parseMargemAnuncioFavoritos(valor) {
@@ -10122,25 +10564,37 @@
             const badge = document.createElement('span');
             badge.className = 'ml-favoritos-margem-badge ' + (sim.margem >= 0 ? 'is-positive' : 'is-negative');
             badge.textContent = formatarMargemAnuncioFavoritos(sim.margem);
-            const meta = document.createElement('span');
-            meta.className = 'ml-favoritos-simulador-meta';
-            const tipoMeta = sim.trocarTipoAnuncio && sim.tipoAnuncioAlvo
-                ? ` | tipo ${sim.tipoAnuncioAtual || '-'} -> ${sim.tipoAnuncioAlvo}`
-                : '';
+            const linhasMeta = [];
+            const adicionarLinhaMeta = (texto) => {
+                if (!texto) return;
+                linhasMeta.push(texto);
+            };
             if (sim.percentualPromocao !== null) {
                 const pctTxt = `${Number(sim.percentualPromocao).toFixed(1).replace('.', ',').replace(',0', '')}%`;
                 const finalPromo = sim.precoPromocionalCalculado ?? sim.precoPromocional ?? sim.precoCompetitivo;
-                meta.textContent = `${pctTxt} -> ${formatarPrecoFavoritosMl(finalPromo)}${sim.ajustePrecoUnico ? ' | preco unico' : ''}${sim.limiteMargemAplicado ? ' | limite 15%' : ''}${tipoMeta}`;
+                adicionarLinhaMeta(`${pctTxt} -> ${formatarPrecoFavoritosMl(finalPromo)}`);
             } else if (sim.limiteMargemAplicado) {
-                meta.textContent = sim.descontoEfetivo >= 0.01
-                    ? `limite 15% | -${formatarPrecoFavoritosMl(sim.descontoEfetivo)}${sim.ajustePrecoUnico ? ' | preco unico' : ''}${tipoMeta}`
-                    : `limite 15%${tipoMeta}`;
+                if (sim.descontoEfetivo >= 0.01) {
+                    adicionarLinhaMeta(`-${formatarPrecoFavoritosMl(sim.descontoEfetivo)}`);
+                }
+                adicionarLinhaMeta('limite 15%');
             } else {
-                meta.textContent = `-${formatarPrecoFavoritosMl(sim.descontoEfetivo)}${sim.ajustePrecoUnico ? ' | preco unico' : ''}${tipoMeta}`;
+                adicionarLinhaMeta(`-${formatarPrecoFavoritosMl(sim.descontoEfetivo)}`);
             }
             wrap.appendChild(preco);
             wrap.appendChild(badge);
-            wrap.appendChild(meta);
+            if (sim.ajustePrecoUnico) {
+                adicionarLinhaMeta('preco unico');
+            }
+            if (sim.trocarTipoAnuncio && sim.tipoAnuncioAlvo) {
+                adicionarLinhaMeta(`tipo ${sim.tipoAnuncioAtual || '-'} -> ${sim.tipoAnuncioAlvo}`);
+            }
+            linhasMeta.forEach((texto) => {
+                const meta = document.createElement('span');
+                meta.className = 'ml-favoritos-simulador-meta';
+                meta.textContent = texto;
+                wrap.appendChild(meta);
+            });
             td.title = [
                 `Preco ranking: ${formatarPrecoFavoritosMl(sim.precoRanking)}`,
                 `Desconto sorteado: ${formatarPrecoFavoritosMl(sim.descontoSorteado)}`,
@@ -11194,10 +11648,80 @@
             }
             return alterou;
         }
-        function criarCelulaTipoAnuncioFavoritos(anuncio) {
+        function criarCelulaTipoAnuncioFavoritos(anuncio, vendedor = '') {
             const td = document.createElement('td');
-            td.textContent = obterTipoCompletoAnuncioFavoritos(anuncio);
+            td.className = 'ml-favoritos-type-cell';
+            const tipo = document.createElement('span');
+            tipo.className = 'ml-favoritos-type-value';
+            tipo.textContent = obterTipoCompletoAnuncioFavoritos(anuncio);
+            td.appendChild(tipo);
+            const botaoVendedor = criarBotaoIgnorarVendedorFavoritos(vendedor);
+            if (botaoVendedor) {
+                const action = document.createElement('div');
+                action.className = 'ml-favoritos-seller-action';
+                action.appendChild(botaoVendedor);
+                td.appendChild(action);
+            }
             return td;
+        }
+
+        function criarCelulaMediaHistoricoFavoritos(anuncio) {
+            const td = document.createElement('td');
+            td.className = 'ml-favoritos-media-cell';
+
+            const media = document.createElement('span');
+            media.className = 'ml-favoritos-media-main';
+            media.textContent = formatarMediaVendas(anuncio) || '-';
+            td.appendChild(media);
+
+            const vendas = formatarQuantidadeVendidaHistoricoFavoritos(anuncio);
+            if (vendas) {
+                const vendasEl = document.createElement('span');
+                vendasEl.className = 'ml-favoritos-media-detail';
+                vendasEl.textContent = `Vendas: ${vendas}`;
+                td.appendChild(vendasEl);
+            }
+
+            const dias = formatarDiasAnuncio(anuncio);
+            if (dias) {
+                const diasEl = document.createElement('span');
+                diasEl.className = 'ml-favoritos-media-detail';
+                diasEl.textContent = `Dias: ${dias}`;
+                td.appendChild(diasEl);
+            }
+
+            const precos = obterPrecosAnuncioFavoritos(anuncio);
+            if (precos.preco !== null || precos.promocional !== null) {
+                const temPromocional = precos.promocional !== null && precos.preco !== null;
+                const precoBase = precos.preco !== null ? precos.preco : precos.promocional;
+                const precoEl = document.createElement('span');
+                precoEl.className = `ml-favoritos-media-price${temPromocional ? ' is-original' : ''}`;
+                precoEl.textContent = `Preco: ${formatarPrecoFavoritosMl(precoBase)}`;
+                td.appendChild(precoEl);
+
+                if (temPromocional) {
+                    const promoEl = document.createElement('span');
+                    promoEl.className = 'ml-favoritos-media-price';
+                    promoEl.textContent = formatarPrecoFavoritosMl(precos.promocional);
+                    const descontoTexto = formatarDescontoPrecoFavoritos(precos.desconto);
+                    if (descontoTexto) {
+                        const descontoEl = document.createElement('span');
+                        descontoEl.className = 'ml-favoritos-media-discount';
+                        descontoEl.textContent = descontoTexto;
+                        promoEl.appendChild(descontoEl);
+                    }
+                    td.appendChild(promoEl);
+                }
+            }
+
+            return td;
+        }
+
+        function formatarQuantidadeVendidaHistoricoFavoritos(anuncio) {
+            const vendasAvant = parseVendasAvantPro(anuncio);
+            if (vendasAvant !== null) return String(vendasAvant);
+            const vendas = parseNumeroVendas(anuncio && anuncio.vendas);
+            return Number.isFinite(vendas) ? String(vendas) : '';
         }
         const normalizarChaveVendedor = (valor) => normalizarNomeVendedorParaBusca(valor);
         const deveAtualizarVendedor = (atual, fonteAtual, novo, fonteNova) => {
@@ -13879,13 +14403,19 @@
                 ? (itens.length === totalItens.length ? `${totalItens.length} SKU(s)` : `${itens.length} de ${totalItens.length} SKU(s)`)
                 : '';
             atualizarContadorSkuSidebarSelecionados(itens);
-            mlSkuSidebarEmptyEl.textContent = mlSkuSidebarFiltro
+            const chaveAtualCarregamento = favoritosLojaAtualNormalizada();
+            const carregandoEstaLoja = mlSkuCarregamentoEmAndamento
+                && mlSkuCarregamentoChave
+                && mlSkuCarregamentoChave === chaveAtualCarregamento;
+            mlSkuSidebarEmptyEl.textContent = carregandoEstaLoja
+                ? `Carregando SKUs dos anuncios da loja ${favoritosNomeLojaExibicao(mlSkuCarregamentoLoja || mlSkuLojaSelecionada).toLowerCase()}...`
+                : mlSkuSidebarFiltro
                 ? 'Nenhum SKU encontrado para esta busca.'
                 : mlSkuLojaSelecionada
                 ? 'Nenhum SKU encontrado nos anúncios ativos desta loja.'
                 : 'Escolha uma loja integrada para carregar os SKUs dos anúncios ativos.';
             mlSkuSidebarEmptyEl.classList.toggle('hidden', itens.length > 0);
-            if (deveBuscarSkuRemotoParaTermo(itensFiltrados, mlSkuSidebarFiltro)) {
+            if (!carregandoEstaLoja && deveBuscarSkuRemotoParaTermo(itensFiltrados, mlSkuSidebarFiltro)) {
                 agendarBuscaRemotaSkuSidebarMercadoLivre(mlSkuSidebarFiltro);
             }
             agendarAtualizacaoPosicaoNavegadorMlShell();
@@ -15263,10 +15793,8 @@
                             <th>Rank</th>
                             <th>MLB</th>
                             <th>Media mensal</th>
-                            <th>Vendas</th>
                             <th>Dias</th>
                             <th>Titulo</th>
-                            <th>Vendedor</th>
                             <th>Preco</th>
                             <th>Tipo</th>
                         </tr>
@@ -15281,7 +15809,6 @@
                         `#${index + 1}`,
                         anuncio.id || extrairItemIdAnuncio(anuncio.url) || '',
                         formatarMediaVendas(anuncio),
-                        formatarVendasAvantPro(anuncio),
                         formatarDiasAnuncio(anuncio),
                         anuncio.titulo || ''
                     ];
@@ -15290,11 +15817,10 @@
                         td.textContent = valor;
                         tr.appendChild(td);
                     });
-                    const tdVendedor = document.createElement('td');
-                    renderizarCelulaVendedor(tdVendedor, anuncio.vendedor || '');
-                    tr.appendChild(tdVendedor);
-                    tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio));
-                    tr.appendChild(criarCelulaTipoAnuncioFavoritos(anuncio));
+                    tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio, [
+                        { rotulo: 'Vendas', valor: formatarVendasAvantPro(anuncio) }
+                    ]));
+                    tr.appendChild(criarCelulaTipoAnuncioFavoritos(anuncio, anuncio.vendedor || ''));
                     tbody.appendChild(tr);
                 });
                 wrap.appendChild(table);
@@ -15537,7 +16063,11 @@
                 id: id || '',
                 url: anuncio && anuncio.url || '',
                 titulo: anuncio && anuncio.titulo || '',
-                vendedor: anuncio && anuncio.vendedor || '',
+                vendedor: anuncio && (anuncio.vendedor || anuncio.seller_name || anuncio.sellerName || anuncio.seller_nickname || anuncio.sellerNickname || anuncio.nickname || anuncio.official_store_name || anuncio.officialStoreName || '') || '',
+                loja_vendedora: obterNomeLojaVendedoraHistoricoFavoritos(anuncio),
+                seller_name: anuncio && (anuncio.seller_name || anuncio.sellerName || '') || '',
+                seller_nickname: anuncio && (anuncio.seller_nickname || anuncio.sellerNickname || '') || '',
+                official_store_name: anuncio && (anuncio.official_store_name || anuncio.officialStoreName || '') || '',
                 vendas: anuncio && anuncio.vendas,
                 vendasFonte: anuncio && (anuncio.vendasFonte || anuncio.vendas_fonte || ''),
                 vendas_fonte: anuncio && (anuncio.vendasFonte || anuncio.vendas_fonte || ''),
@@ -15630,6 +16160,9 @@
             salvarHistoricoFavoritos(historico.slice(0, ML_FAVORITOS_HISTORICO_MAX), { imediato: true });
             if (document.getElementById('aba-historico')?.classList.contains('active')) {
                 renderizarHistoricoFavoritos();
+            }
+            if (document.getElementById('aba-links-alinhados')?.classList.contains('active')) {
+                renderizarLinksAlinhadosFavoritos();
             }
             return entrada;
         }
@@ -15764,6 +16297,85 @@
             }
             botao.addEventListener('click', () => onClick(item));
             return botao;
+        }
+
+        function montarLinksAlinhadosFavoritos(limite = 500) {
+            const links = [];
+            const historico = filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos());
+            for (const entrada of historico) {
+                const grupos = Array.isArray(entrada && entrada.grupos) ? entrada.grupos : [];
+                for (const grupo of grupos) {
+                    const anuncios = Array.isArray(grupo && grupo.anuncios) ? grupo.anuncios : [];
+                    anuncios.forEach((anuncio, index) => {
+                        const url = String(anuncio && (anuncio.url || anuncio.permalink || anuncio.link) || '').trim();
+                        const mlb = String(anuncio && (anuncio.id || anuncio.mlb || anuncio.item_id) || extrairItemIdAnuncio(url) || '').trim();
+                        if (!url && !mlb) return;
+                        links.push({
+                            data_iso: entrada && entrada.data_iso || '',
+                            usuario: obterUsuarioHistoricoFavoritos(entrada),
+                            loja: entrada && entrada.loja || '',
+                            sku: grupo && grupo.sku || '',
+                            rank: index + 1,
+                            mlb,
+                            url,
+                            vendedor: String(anuncio && anuncio.vendedor || '').trim(),
+                            titulo: String(anuncio && (anuncio.titulo || anuncio.title) || grupo && grupo.titulo || '').trim()
+                        });
+                    });
+                    if (links.length >= limite) return links.slice(0, limite);
+                }
+            }
+            return links.slice(0, limite);
+        }
+
+        function criarCelulaLinksAlinhados(texto, opcoes = {}) {
+            const td = document.createElement('td');
+            if (opcoes.nowrap) td.style.whiteSpace = 'nowrap';
+            td.textContent = texto || '-';
+            return td;
+        }
+
+        function renderizarLinksAlinhadosFavoritos() {
+            if (!mlLinksAlinhadosBodyEl || !mlLinksAlinhadosEmptyEl) return;
+            const links = montarLinksAlinhadosFavoritos();
+            mlLinksAlinhadosBodyEl.innerHTML = '';
+            mlLinksAlinhadosEmptyEl.classList.toggle('hidden', links.length > 0);
+            if (mlLinksAlinhadosStatusEl) {
+                mlLinksAlinhadosStatusEl.textContent = links.length
+                    ? `${links.length} link(s) alinhado(s) no historico de favoritos.`
+                    : 'Nenhum link alinhado encontrado no historico.';
+            }
+            links.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.appendChild(criarCelulaLinksAlinhados(formatarDataHistoricoFavoritos(item.data_iso), { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.usuario, { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.loja, { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.sku, { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.rank ? `#${item.rank}` : '', { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.mlb, { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.vendedor, { nowrap: true }));
+                tr.appendChild(criarCelulaLinksAlinhados(item.titulo));
+                const acoes = document.createElement('td');
+                const wrap = document.createElement('div');
+                wrap.className = 'ml-links-alinhados-actions';
+                const abrir = document.createElement('button');
+                abrir.type = 'button';
+                abrir.className = 'btn-back';
+                abrir.textContent = 'Abrir';
+                abrir.disabled = !item.url;
+                abrir.addEventListener('click', event => abrirAnuncioNoChromeExterno(item.url, event));
+                const copiar = document.createElement('button');
+                copiar.type = 'button';
+                copiar.className = 'btn-back';
+                copiar.textContent = 'Copiar';
+                copiar.disabled = !item.url;
+                copiar.addEventListener('click', () => copiarLinkAnuncio(item.url, copiar));
+                wrap.appendChild(abrir);
+                wrap.appendChild(copiar);
+                acoes.appendChild(wrap);
+                tr.appendChild(acoes);
+                mlLinksAlinhadosBodyEl.appendChild(tr);
+            });
         }
 
         function abrirFavoritoRecenteNaAbaFavoritos(item) {
@@ -16422,6 +17034,13 @@
         function criarCelulaAcoesRankingFavoritos(sku, anuncio, opcoes = {}) {
             const td = document.createElement('td');
             td.className = 'ml-ranking-actions-cell';
+            const rank = Number(opcoes.rank);
+            if (Number.isFinite(rank) && rank > 0) {
+                const rankEl = document.createElement('span');
+                rankEl.className = 'ml-ranking-actions-rank';
+                rankEl.textContent = `${rank}\u00B0`;
+                td.appendChild(rankEl);
+            }
             const wrap = document.createElement('div');
             wrap.className = 'ml-ranking-actions-group';
 
@@ -16441,12 +17060,15 @@
                 return botao;
             };
 
-            wrap.appendChild(criarBotao('&uarr;', 'Mover este anuncio uma posicao para cima', 'ml-ranking-action-btn', () => {
+            const arrows = document.createElement('div');
+            arrows.className = 'ml-ranking-arrows-row';
+            arrows.appendChild(criarBotao('&uarr;', 'Mover este anuncio uma posicao para cima', 'ml-ranking-action-btn', () => {
                 moverAnuncioRankingFavoritos(sku, anuncio, -1, opcoes);
             }, opcoes.primeiro));
-            wrap.appendChild(criarBotao('&darr;', 'Mover este anuncio uma posicao para baixo', 'ml-ranking-action-btn', () => {
+            arrows.appendChild(criarBotao('&darr;', 'Mover este anuncio uma posicao para baixo', 'ml-ranking-action-btn', () => {
                 moverAnuncioRankingFavoritos(sku, anuncio, 1, opcoes);
             }, opcoes.ultimo));
+            wrap.appendChild(arrows);
             wrap.appendChild(criarBotao('&minus;', 'Remover este anuncio do ranking', 'ml-ranking-remove-btn', () => {
                 removerAnuncioRankingFavoritos(sku, anuncio, opcoes);
             }));
@@ -16493,14 +17115,9 @@
                     <tr>
                         <th>Acoes</th>
                         <th>Foto</th>
-                        <th>Rank</th>
                         <th>MLB</th>
                         <th>Media mensal</th>
-                        <th>Vendas</th>
-                        <th>Dias</th>
                         <th>Titulo</th>
-                        <th>Vendedor</th>
-                        <th>Preco</th>
                         <th>Link</th>
                     </tr>
                 </thead>
@@ -16511,7 +17128,7 @@
             if (!lista.length) {
                 const tr = document.createElement('tr');
                 const td = document.createElement('td');
-                td.colSpan = 11;
+                td.colSpan = 6;
                 td.className = 'muted';
                 td.textContent = 'Todos os anuncios deste historico estao na lista de ignorados.';
                 tr.appendChild(td);
@@ -16522,25 +17139,26 @@
                 tr.appendChild(criarCelulaAcoesRankingFavoritos(sku, anuncio, {
                     entradaId: opcoes.entradaId || '',
                     primeiro: index === 0,
+                    rank: index + 1,
                     ultimo: index === lista.length - 1
                 }));
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
-                [
-                    `#${index + 1}`,
+                const lojaVendedora = obterNomeLojaVendedoraHistoricoFavoritos(anuncio);
+                tr.appendChild(criarCelulaMlbLojaFavoritos(
                     anuncio.id || extrairItemIdAnuncio(anuncio.url) || '',
-                    formatarMediaVendas(anuncio),
-                    formatarVendasAvantPro(anuncio),
-                    formatarDiasAnuncio(anuncio),
+                    lojaVendedora,
+                    anuncio.status || '',
+                    obterTipoCompletoAnuncioFavoritos(anuncio),
+                    anuncio.vendedor || lojaVendedora || ''
+                ));
+                tr.appendChild(criarCelulaMediaHistoricoFavoritos(anuncio));
+                [
                     anuncio.titulo || ''
                 ].forEach(valor => {
                     const td = document.createElement('td');
                     td.textContent = valor;
                     tr.appendChild(td);
                 });
-                const tdVendedor = document.createElement('td');
-                renderizarCelulaVendedor(tdVendedor, anuncio.vendedor || '');
-                tr.appendChild(tdVendedor);
-                tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio));
                 const tdLink = document.createElement('td');
                 if (anuncio.url) {
                     const link = document.createElement('a');
@@ -16703,7 +17321,7 @@
             mlHistoricoFavoritosListEl.innerHTML = '';
 
             if (!skuSelecionadoChave) {
-                const recentes = montarUltimosFavoritosRankeados(12, historico);
+                const recentes = montarUltimosFavoritosRankeados(ML_FAVORITOS_HISTORICO_MAX, historico);
                 if (mlHistoricoFavoritosStatusEl) {
                     mlHistoricoFavoritosStatusEl.textContent = recentes.length
                         ? `Ultimos favoritos feitos${lojaAtualTexto ? ` para a loja ${lojaAtualTexto}` : ''}. Clique em um item para abrir os anuncios rankeados.`
@@ -16825,6 +17443,7 @@
             if (!confirm('Deseja apagar o historico de favoritos salvo no servidor para este usuario?')) return;
             salvarHistoricoFavoritos([]);
             renderizarHistoricoFavoritos();
+            renderizarLinksAlinhadosFavoritos();
         }
 
         function guardarResultadoRankingFavorito(grupo) {
@@ -17247,6 +17866,80 @@
             return td;
         }
 
+        function criarCelulaMlbLojaFavoritos(mlb, loja, status = '', tipo = '', vendedor = '') {
+            const td = document.createElement('td');
+            td.className = 'ml-favoritos-mlb-cell';
+            const codigo = document.createElement('span');
+            codigo.className = 'ml-favoritos-mlb-main';
+            codigo.textContent = mlb === null || mlb === undefined ? '' : String(mlb);
+            td.appendChild(codigo);
+            const lojaTexto = String(loja || '').trim();
+            if (lojaTexto) {
+                const lojaEl = document.createElement('span');
+                lojaEl.className = 'ml-favoritos-mlb-loja';
+                lojaEl.textContent = lojaTexto;
+                td.appendChild(lojaEl);
+            }
+            const statusTexto = String(status || '').trim();
+            if (statusTexto) {
+                const statusEl = document.createElement('span');
+                statusEl.className = 'ml-favoritos-mlb-status';
+                statusEl.textContent = statusTexto;
+                td.appendChild(statusEl);
+            }
+            const tipoTexto = String(tipo || '').trim();
+            if (tipoTexto) {
+                const tipoEl = document.createElement('span');
+                tipoEl.className = 'ml-favoritos-mlb-tipo';
+                tipoEl.textContent = tipoTexto;
+                td.appendChild(tipoEl);
+            }
+            const botaoVendedor = criarBotaoIgnorarVendedorFavoritos(vendedor);
+            if (botaoVendedor) {
+                const action = document.createElement('div');
+                action.className = 'ml-favoritos-seller-action';
+                action.appendChild(botaoVendedor);
+                td.appendChild(action);
+            }
+            return td;
+        }
+
+        function obterNomeLojaVendedoraHistoricoFavoritos(anuncio) {
+            if (!anuncio || typeof anuncio !== 'object') return '';
+            const seller = anuncio.seller && typeof anuncio.seller === 'object' ? anuncio.seller : {};
+            const sellerInfo = anuncio.seller_info && typeof anuncio.seller_info === 'object' ? anuncio.seller_info : {};
+            const candidatos = [
+                anuncio.loja_vendedora,
+                anuncio.vendedor,
+                anuncio.seller_name,
+                anuncio.sellerName,
+                anuncio.seller_nickname,
+                anuncio.sellerNickname,
+                anuncio.nickname,
+                anuncio.official_store_name,
+                anuncio.officialStoreName,
+                seller.nickname,
+                seller.name,
+                seller.seller_nickname,
+                sellerInfo.nickname,
+                sellerInfo.name,
+                sellerInfo.seller_nickname
+            ];
+            for (const valor of candidatos) {
+                const nome = limparNomeLojaVendedoraHistoricoFavoritos(valor);
+                if (vendedorValido(nome)) return nome;
+            }
+            return '';
+        }
+
+        function limparNomeLojaVendedoraHistoricoFavoritos(valor) {
+            return String(valor || '')
+                .replace(/^(vendido\s+por|loja\s+oficial|oficial\s+loja)\s*/i, '')
+                .replace(/&quot;|\\\"/g, '"')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
         function carregarLayoutTabelasFavoritos() {
             try {
                 const data = JSON.parse(localStorage.getItem(ML_FAVORITOS_TABLE_LAYOUT_KEY) || '{}');
@@ -17329,14 +18022,91 @@
             });
         }
 
+        const ML_FAVORITOS_COL_WIDTHS_PADRAO = {
+            'fav-ml-anuncios': {
+                foto: 54,
+                mlb: 120,
+                titulo: 150,
+                preco: 130,
+                simulador: 120
+            },
+            'fav-outros-anuncios': {
+                acoes: 58,
+                foto: 54,
+                mlb: 125,
+                media: 130,
+                titulo: 160
+            }
+        };
+
+        const ML_FAVORITOS_COL_WIDTHS_MIN = {
+            acoes: 58,
+            foto: 54,
+            mlb: 110,
+            media: 140,
+            titulo: 130,
+            preco: 140,
+            simulador: 118
+        };
+
+        function obterLarguraDisponivelTabelaFavoritos(table) {
+            const wrap = table && table.closest ? table.closest('.favoritos-ml-table-wrap, .ml-favoritos-table-wrap') : null;
+            const rect = wrap ? wrap.getBoundingClientRect() : null;
+            const largura = rect && Number.isFinite(rect.width) ? Math.floor(rect.width) : 0;
+            return largura > 0 ? Math.max(240, largura - 2) : 0;
+        }
+
+        function obterLarguraColunaFavoritos(table, key, layout) {
+            const salva = Number(layout.widths && layout.widths[key]);
+            if (Number.isFinite(salva) && salva > 0) return salva;
+            const tableId = table.dataset.tableId || table.id || '';
+            const padrao = ML_FAVORITOS_COL_WIDTHS_PADRAO[tableId] && ML_FAVORITOS_COL_WIDTHS_PADRAO[tableId][key];
+            return Number.isFinite(padrao) && padrao > 0 ? padrao : null;
+        }
+
+        function compactarLargurasTabelaFavoritos(table, keys, layout) {
+            const larguras = keys.map(key => obterLarguraColunaFavoritos(table, key, layout));
+            if (larguras.some(width => !Number.isFinite(width) || width <= 0)) return larguras;
+            const disponivel = obterLarguraDisponivelTabelaFavoritos(table);
+            const soma = larguras.reduce((total, width) => total + width, 0);
+            if (!disponivel || soma <= disponivel) return larguras;
+
+            const minimos = keys.map(key => ML_FAVORITOS_COL_WIDTHS_MIN[key] || 54);
+            const somaMinimos = minimos.reduce((total, width) => total + width, 0);
+            if (somaMinimos >= disponivel) {
+                return minimos;
+            }
+
+            const folgaOriginal = larguras.reduce((total, width, idx) => total + Math.max(0, width - minimos[idx]), 0);
+            const folgaDestino = Math.max(0, disponivel - somaMinimos);
+            if (folgaOriginal <= 0) return minimos;
+            return larguras.map((width, idx) => {
+                const extra = Math.max(0, width - minimos[idx]);
+                return Math.round(minimos[idx] + (extra * folgaDestino / folgaOriginal));
+            });
+        }
+
         function aplicarLargurasTabelaFavoritos(table, keys, layout) {
             const colgroup = criarColgroupTabelaFavoritos(table, keys);
+            const largurasCompactadas = compactarLargurasTabelaFavoritos(table, keys, layout);
+            const somaLarguras = largurasCompactadas
+                .map(width => Number(width))
+                .filter(width => Number.isFinite(width) && width > 0)
+                .reduce((total, width) => total + Math.max(44, width), 0);
+            const disponivel = obterLarguraDisponivelTabelaFavoritos(table);
+            if (somaLarguras > 0 && disponivel > 0 && somaLarguras > disponivel) {
+                table.style.minWidth = `${somaLarguras}px`;
+                table.style.width = `${somaLarguras}px`;
+            } else {
+                table.style.minWidth = '';
+                table.style.width = '';
+            }
             keys.forEach((key, idx) => {
-                const width = Number(layout.widths && layout.widths[key]);
+                const width = Number(largurasCompactadas[idx]);
                 const col = colgroup.children[idx];
                 if (!col) return;
                 if (Number.isFinite(width) && width > 0) {
-                    col.style.width = `${Math.max(54, width)}px`;
+                    col.style.width = `${Math.max(44, width)}px`;
                 } else {
                     col.style.width = '';
                 }
@@ -17519,7 +18289,11 @@
             favoritosSyncLinhasRaf = agendar(sincronizarAlturasLinhasFavoritos);
         }
 
-        window.addEventListener('resize', agendarSincronizarLinhasFavoritos);
+        window.addEventListener('resize', () => {
+            prepararTabelaFavoritosEditavel(favMlAnunciosTableEl);
+            prepararTabelaFavoritosEditavel(favOutrosAnunciosTableEl);
+            agendarSincronizarLinhasFavoritos();
+        });
 
         function inicializarLarguraTabelasFavoritos() {
             if (!favMlTablesLayoutEl || favMlTablesLayoutEl.dataset.resizerReady === '1') return;
@@ -17623,17 +18397,18 @@
                 });
                 const tr = document.createElement('tr');
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncio));
-                tr.appendChild(criarCelulaTextoFavoritos(anuncio.mlb || anuncio.id || '', { nowrap: true }));
-                tr.appendChild(criarCelulaTextoFavoritos(anuncio.loja || anuncio.loja_sync || anuncio.loja_conta || '', { nowrap: true }));
+                tr.appendChild(criarCelulaMlbLojaFavoritos(
+                    anuncio.mlb || anuncio.id || '',
+                    anuncio.loja || anuncio.loja_sync || anuncio.loja_conta || '',
+                    anuncio.status || '',
+                    obterTipoCompletoAnuncioFavoritos(anuncio)
+                ));
                 tr.appendChild(criarCelulaTextoFavoritos(anuncio.titulo || '', { long: true }));
-                tr.appendChild(criarCelulaTextoFavoritos(anuncio.status || '', { nowrap: true }));
 
-                tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio));
-                tr.appendChild(criarCelulaMargemAnuncioFavoritos(anuncio));
-                tr.appendChild(criarCelulaTipoAnuncioFavoritos(anuncio));
-                [anuncio.estoque ?? '', anuncio.vendidos ?? ''].forEach(valor => {
-                    tr.appendChild(criarCelulaTextoFavoritos(valor, { nowrap: true }));
-                });
+                tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncio, [
+                    { rotulo: 'Estoque', valor: anuncio.estoque ?? '' },
+                    { rotulo: 'Vendas', valor: anuncio.vendidos ?? '' }
+                ]));
                 tr.appendChild(criarCelulaSimuladorPrecoFavoritos(anuncio, anunciosRanking[index], opcoesPromocaoSku, sim));
                 favMlAnunciosBodyEl.appendChild(tr);
             });
@@ -17645,13 +18420,13 @@
             if (!favOutrosAnunciosBodyEl || !favOutrosAnunciosEmptyEl) return false;
             const skuSelecionado = String(sku || '').trim();
             const chaveSku = skuChaveSku(skuSelecionado);
-            const limiteBusca = chaveSku ? Math.max(200, ML_FAVORITOS_HISTORICO_MAX * 20) : 12;
+            const limiteBusca = chaveSku ? Math.max(200, ML_FAVORITOS_HISTORICO_MAX * 20) : ML_FAVORITOS_HISTORICO_MAX;
             const historicoBase = chaveSku
                 ? filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos(), skuSelecionado)
                 : null;
             const recentes = montarUltimosFavoritosRankeados(limiteBusca, historicoBase)
                 .filter(item => !chaveSku || skuChaveSku(item && item.sku) === chaveSku)
-                .slice(0, chaveSku ? 25 : 12);
+                .slice(0, ML_FAVORITOS_HISTORICO_MAX);
             if (!recentes.length) return false;
 
             favOutrosAnunciosEmptyEl.classList.add('hidden');
@@ -17664,7 +18439,7 @@
             const tr = document.createElement('tr');
             tr.className = 'is-history-list-row';
             const td = document.createElement('td');
-            td.colSpan = 12;
+            td.colSpan = 5;
             const lista = document.createElement('div');
             lista.className = 'ml-favoritos-recentes-list';
             recentes.forEach(item => {
@@ -17738,7 +18513,7 @@
                     const trRemovidos = document.createElement('tr');
                     trRemovidos.className = 'is-history-list-row';
                     const tdRemovidos = document.createElement('td');
-                    tdRemovidos.colSpan = 12;
+                    tdRemovidos.colSpan = 5;
                     tdRemovidos.appendChild(removidosIaVazio);
                     trRemovidos.appendChild(tdRemovidos);
                     favOutrosAnunciosBodyEl.appendChild(trRemovidos);
@@ -17760,26 +18535,25 @@
                 const tr = document.createElement('tr');
                 tr.appendChild(criarCelulaAcoesRankingFavoritos(skuSelecionado, anuncioRender, {
                     primeiro: index === 0,
+                    rank: index + 1,
                     ultimo: index === anuncios.length - 1
                 }));
                 tr.appendChild(criarCelulaFotoAnuncioFavoritos(anuncioRender));
                 const valores = [
-                    { valor: `#${index + 1}`, nowrap: true },
-                    { valor: anuncioRender.id || extrairItemIdAnuncio(anuncioRender.url) || '', nowrap: true },
-                    { valor: formatarMediaVendas(anuncioRender), nowrap: true },
-                    { valor: formatarVendasAvantPro(anuncioRender), nowrap: true },
-                    { valor: formatarDiasAnuncio(anuncioRender), nowrap: true },
                     { valor: anuncioRender.titulo || '', long: true }
                 ];
+                const lojaVendedoraHistorico = obterNomeLojaVendedoraHistoricoFavoritos(anuncioRender);
+                tr.appendChild(criarCelulaMlbLojaFavoritos(
+                    anuncioRender.id || extrairItemIdAnuncio(anuncioRender.url) || '',
+                    lojaVendedoraHistorico,
+                    anuncioRender.status || '',
+                    obterTipoCompletoAnuncioFavoritos(anuncioRender),
+                    anuncioRender.vendedor || lojaVendedoraHistorico || ''
+                ));
+                tr.appendChild(criarCelulaMediaHistoricoFavoritos(anuncioRender));
                 valores.forEach(item => {
                     tr.appendChild(criarCelulaTextoFavoritos(item.valor, item));
                 });
-                const tdVendedor = document.createElement('td');
-                renderizarCelulaVendedor(tdVendedor, anuncioRender.vendedor || '');
-                tr.appendChild(tdVendedor);
-                tr.appendChild(criarCelulaPrecoAnuncioFavoritos(anuncioRender));
-                tr.appendChild(criarCelulaMargemAnuncioFavoritos(anuncioRender));
-                tr.appendChild(criarCelulaTipoAnuncioFavoritos(anuncioRender));
                 favOutrosAnunciosBodyEl.appendChild(tr);
             });
             const removidosIa = criarBlocoRemovidosIaFavoritos(grupo);
@@ -17787,7 +18561,7 @@
                 const trRemovidos = document.createElement('tr');
                 trRemovidos.className = 'is-history-list-row';
                 const tdRemovidos = document.createElement('td');
-                tdRemovidos.colSpan = 12;
+                tdRemovidos.colSpan = 5;
                 tdRemovidos.appendChild(removidosIa);
                 trRemovidos.appendChild(tdRemovidos);
                 favOutrosAnunciosBodyEl.appendChild(trRemovidos);
@@ -17846,7 +18620,7 @@
                 const mlbsSidebar = extrairMlbsItemSkuSidebar(itemSidebar);
                 if (mlbsSidebar.length) params.set('mlbs', mlbsSidebar.join(','));
                 const controller = typeof AbortController === 'function' ? new AbortController() : null;
-                const timeoutId = controller ? window.setTimeout(() => controller.abort(), 45000) : null;
+                const timeoutId = controller ? window.setTimeout(() => controller.abort(), 90000) : null;
                 const response = await fetch(`/api/favoritos/ml/anuncios-sku?${params.toString()}`, {
                     headers: obterAuthHeaders(),
                     cache: 'no-store',

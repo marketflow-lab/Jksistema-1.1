@@ -14,7 +14,7 @@
         .container { max-width:1360px; margin:0 auto; }
         .header { position:relative; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; min-height:44px; flex-wrap:wrap; }
         .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-        body.sidebar-observacoes-aberto .nav-actions { 
+        body.sidebar-observacoes-aberto .nav-actions {
             display: none !important;
             visibility: hidden !important;
             height: 0 !important;
@@ -166,7 +166,7 @@
         .loading { color:#9bd1ff; }
         .error { color:#ff6b6b; }
         .empty { color:#aaa; }
-        
+
         /* Estilos para gráficos */
         .graficos-container { margin: 14px 0; position: relative; padding-right: 360px; }
         .graficos-container.observacoes-fechado { padding-right: 0; }
@@ -880,7 +880,7 @@
         tHead.appendChild(trHead);
 
         const frag = document.createDocumentFragment();
-        
+
         vendasAtivas.forEach(item => {
             const tr = document.createElement('tr');
             const cells = [
@@ -900,7 +900,7 @@
             });
             frag.appendChild(tr);
         });
-        
+
         devs.forEach(dev => {
             const tr = document.createElement('tr');
             const tipoDevolucao = String(dev.unidade_negocio_virtual || dev.unidade_negocio || '').trim() || 'Devolução';
@@ -921,7 +921,7 @@
             });
             frag.appendChild(tr);
         });
-        
+
         tBody.appendChild(frag);
     }
 
@@ -1018,7 +1018,7 @@
         statusEl.textContent = 'Carregando vendas e devolucoes...';
         try {
             clientId = clientId || obterClientId();
-            if (!clientId) { 
+            if (!clientId) {
                 console.warn('ClientId vazio - tentando carregar de localStorage novamente');
                 const userData2 = JSON.parse(localStorage.getItem('user_data') || 'null');
                 if (userData2 && userData2.client_id) {
@@ -1026,18 +1026,18 @@
                     console.log('ClientId recuperado:', clientId);
                 }
             }
-            
-            if (!clientId) { 
+
+            if (!clientId) {
                 statusEl.className = 'status-bar error';
                 statusEl.innerHTML = '⚠️ Sessão expirada. <a href="/frontend_index.html" style="color:white; text-decoration:underline;">Fazer login novamente</a>';
                 console.warn('ClientId ainda vazio');
-                return; 
+                return;
             }
-            if (!skuAlvo) { 
-                statusEl.textContent = 'SKU nao informado.'; 
-                return; 
+            if (!skuAlvo) {
+                statusEl.textContent = 'SKU nao informado.';
+                return;
             }
-            
+
             const iniIso = getDataIniISO();
             const fimIso = getDataFimISO();
             const qs = new URLSearchParams({ sku: skuAlvo, resolver_nf: '0' });
@@ -1051,7 +1051,7 @@
             qsTransfer.set('incluir_ebazar', '1');
 
             const graficoPromise = carregarGrafico();
-            
+
             const url = '/api/vendas?' + qs.toString();
             const urlTransfer = '/api/vendas?' + qsTransfer.toString();
             const qsDev = new URLSearchParams();
@@ -1084,7 +1084,7 @@
                 listaTransferencia = (Array.isArray(dadosComEbazar) ? dadosComEbazar : []).filter(vendaEhTransferenciaFull);
             }
             renderTransferenciaFull(listaTransferencia);
-            
+
             if (paginaEncerrando) return;
 
             // A API de devoluções já recebe os mesmos filtros (loja/unidade/período),
@@ -1348,7 +1348,7 @@
 
     function renderizarGrafico(data) {
         const ctx = document.getElementById('graficoVendas').getContext('2d');
-        
+
         // Destruir gráfico anterior se existir
         if (chartInstance) {
             chartInstance.destroy();
@@ -1504,11 +1504,11 @@
             this.classList.add('active');
             periodoGrafico = this.dataset.periodo;
             salvarPreferenciaGraficoSku();
-            
+
             // Calcular e aplicar datas correspondentes
             const hoje = new Date();
             let dataInicial;
-            
+
             if (periodoGrafico === '3m') {
                 dataInicial = new Date(hoje);
                 dataInicial.setDate(hoje.getDate() - 90);
@@ -1528,12 +1528,12 @@
                 dataInicial = new Date(hoje);
                 dataInicial.setDate(hoje.getDate() - 90);
             }
-            
+
             // Atualizar inputs de data
             dataIni.value = dataInicial.toISOString().split('T')[0];
             dataFimEl.value = hoje.toISOString().split('T')[0];
             atualizarPeriodoTexto();
-            
+
             // Recarregar dados do SKU; o gráfico é carregado dentro do próprio fluxo.
             carregarVendasSku();
         });
@@ -1565,7 +1565,7 @@
             this.classList.add('active');
             intervaloGrafico = this.dataset.intervalo;
             salvarPreferenciaGraficoSku();
-            
+
             // Desabilitar botões de período se intervalo = semana
             const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
             if (intervaloGrafico === 'semana') {
@@ -1581,7 +1581,7 @@
                     btn.style.cursor = 'pointer';
                 });
             }
-            
+
             carregarGrafico();
         });
     });
@@ -1592,7 +1592,7 @@
         console.log('Sidebar SKU carregado, fechado:', fechadoInicial);
         document.body.classList.toggle('sidebar-observacoes-aberto', !fechadoInicial);
         console.log('Classe sidebar-observacoes-aberto adicionada:', document.body.classList.contains('sidebar-observacoes-aberto'));
-        
+
         // Oculta TODOS os botões .back-main-btn diretamente
         document.querySelectorAll('.back-main-btn').forEach(btn => {
             btn.style.display = 'none';
@@ -1606,7 +1606,7 @@
             const temClasse = !fechado;
             document.body.classList.toggle('sidebar-observacoes-aberto', temClasse);
             console.log('Sidebar SKU toggle - fechado:', fechado, 'classe adicionada:', temClasse);
-            
+
             // Oculta/mostra TODOS os .back-main-btn
             document.querySelectorAll('.back-main-btn').forEach(btn => {
                 if (temClasse) {
@@ -1621,7 +1621,7 @@
                     console.log('back-main-btn mostrado');
                 }
             });
-            
+
             btnToggleObservacoes.setAttribute('aria-expanded', String(!fechado));
             btnToggleObservacoes.setAttribute('aria-label', fechado ? 'Abrir observações' : 'Minimizar observações');
             btnToggleObservacoes.textContent = fechado ? '❮' : '❯';

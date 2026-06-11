@@ -542,7 +542,7 @@ CONFIG_GLOBAIS_DEFAULT = {
 
 PERMISSION_KEYS = [
     'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
-    'etiquetas', 'full', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
+    'etiquetas', 'full', 'favoritos', 'avant', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
@@ -2963,9 +2963,35 @@ def _ml_favoritos_buscar_itens_batch(client_id: str, loja: str, cfg: dict, item_
     if not item_ids:
         return itens, cfg
 
+    item_ids = [
+        str(item_id or "").strip().upper()
+        for item_id in item_ids
+        if str(item_id or "").strip().upper().startswith("MLB")
+    ]
+    item_ids = list(dict.fromkeys(item_ids))
+    if not item_ids:
+        return itens, cfg
+
     batch_size = 20
     lotes = [item_ids[inicio:inicio + batch_size] for inicio in range(0, len(item_ids), batch_size)]
-    max_workers = min(6, max(1, len(lotes)))
+    try:
+        max_workers = int(float(str(os.getenv("ML_FAVORITOS_BATCH_WORKERS", "8") or "8").replace(",", ".")))
+    except Exception:
+        max_workers = 8
+    max_workers = min(max(1, max_workers), max(1, len(lotes)))
+
+    def _body_item_valido(body: Any) -> bool:
+        if not isinstance(body, dict):
+            return False
+        item_id = str(body.get("id") or "").strip().upper()
+        if not item_id.startswith("MLB"):
+            return False
+        status_raw = str(body.get("status") or "").strip()
+        if status_raw.isdigit():
+            return False
+        if body.get("error") or body.get("message") == "forbidden":
+            return False
+        return True
 
     def _buscar_lote(lote_ids: list[str]):
         itens_lote = []
@@ -2984,7 +3010,8 @@ def _ml_favoritos_buscar_itens_batch(client_id: str, loja: str, cfg: dict, item_
             if resp.status_code == 200:
                 for entry in resp.json() or []:
                     body = (entry or {}).get("body") or {}
-                    if isinstance(body, dict) and body.get("id"):
+                    code = int((entry or {}).get("code") or 0) if isinstance(entry, dict) else 0
+                    if code == 200 and _body_item_valido(body):
                         body = _ml_favoritos_completar_variacoes_item(client_id, loja, cfg_local, body)
                         itens_lote.append(body)
                         encontrados.add(str(body.get("id") or "").strip())
@@ -2992,25 +3019,53 @@ def _ml_favoritos_buscar_itens_batch(client_id: str, loja: str, cfg: dict, item_
             logger.warning(f"[Favoritos ML] Falha no lote de itens {lote_ids[:2]}...: {e}")
 
         faltantes = [item_id for item_id in lote_ids if item_id not in encontrados]
-        for item_id in faltantes:
+
+        def _buscar_item_direto(item_id: str):
+            cfg_item = dict(cfg_local or {})
             try:
                 det_url = f"https://api.mercadolibre.com/items/{item_id}"
-                det_resp, cfg_local = _ml_favoritos_api_request(
+                det_resp, cfg_item = _ml_favoritos_api_request(
                     client_id,
                     loja,
-                    cfg_local,
+                    cfg_item,
                     "GET",
                     det_url,
                     params={"include_attributes": "all"},
-                    timeout=10,
+                    timeout=14,
                 )
                 if det_resp.status_code == 200:
                     body = det_resp.json() or {}
-                    if isinstance(body, dict) and body.get("id"):
+                    if _body_item_valido(body):
                         body = _ml_favoritos_completar_variacoes_item(client_id, loja, cfg_local, body)
-                        itens_lote.append(body)
+                        return body
+                else:
+                    logger.warning(
+                        "[Favoritos ML] Item %s nao carregou na consulta direta da loja %s: HTTP %s %s",
+                        item_id,
+                        loja,
+                        det_resp.status_code,
+                        _ml_parse_error_detail(det_resp, "Erro ao buscar item"),
+                    )
             except Exception as e:
                 logger.warning(f"[Favoritos ML] Falha ao buscar item {item_id}: {e}")
+            return None
+
+        if len(faltantes) <= 1:
+            for item_id in faltantes:
+                body = _buscar_item_direto(item_id)
+                if body:
+                    itens_lote.append(body)
+        else:
+            max_workers_direto = min(6, len(faltantes))
+            with ThreadPoolExecutor(max_workers=max_workers_direto) as executor:
+                futuros_diretos = [executor.submit(_buscar_item_direto, item_id) for item_id in faltantes]
+                for futuro in as_completed(futuros_diretos):
+                    try:
+                        body = futuro.result()
+                        if body:
+                            itens_lote.append(body)
+                    except Exception as exc:
+                        logger.warning("[Favoritos ML] Falha em busca direta paralela de item: %s", exc)
 
         return itens_lote
 
@@ -4970,6 +5025,7 @@ def _favoritos_lista_texto_historico(valor: Any, limite_item: int = 220, max_ite
     return saida
 
 
+FAVORITOS_HISTORICO_MAX = 500
 FAVORITOS_HISTORICO_ANUNCIOS_MAX = 60
 FAVORITOS_HISTORICO_REALTIME_SCOPE = "favoritos_historico"
 
@@ -5121,7 +5177,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             "total_anuncios": _favoritos_int_historico(entrada.get("total_anuncios"), sum(len(g["anuncios"]) for g in grupos_saida)),
             "grupos": grupos_saida,
         })
-        if len(saida) >= 30:
+        if len(saida) >= FAVORITOS_HISTORICO_MAX:
             break
     return saida
 
@@ -15634,6 +15690,17 @@ def _ia_chat_tem_imagem(anexos: Optional[list[dict]] = None) -> bool:
     return False
 
 
+def _ia_contexto_desativa_recursos_chat(contexto: Optional[dict]) -> bool:
+    if not isinstance(contexto, dict):
+        return False
+    if bool(contexto.get("desativar_recursos_chat")):
+        return True
+    if bool(contexto.get("desativar_busca_web_chat")):
+        return True
+    tipo = str(contexto.get("tipo") or contexto.get("origem_ia") or "").strip().lower()
+    return tipo in {"agente_cloud_perguntas_ml_sem_chat", "mercado_livre_perguntas_sem_chat"}
+
+
 def _ia_web_busca_ativa() -> bool:
     valor = str(os.getenv("IA_WEB_SEARCH_ENABLED") or "true").strip().lower()
     return valor not in {"0", "false", "nao", "nÃ£o", "off"}
@@ -15642,10 +15709,12 @@ def _ia_web_busca_ativa() -> bool:
 def _vertex_google_search_grounding_ativo(payload: Optional[IAChatRequest] = None) -> bool:
     if not _ia_web_busca_ativa():
         return False
+    ctx = payload.context if payload and isinstance(payload.context, dict) else {}
+    if _ia_contexto_desativa_recursos_chat(ctx):
+        return False
     valor = str(os.getenv("VERTEX_GOOGLE_SEARCH_GROUNDING_ENABLED") or "true").strip().lower()
     if valor in {"0", "false", "nao", "nÃ£o", "off"}:
         return False
-    ctx = payload.context if payload and isinstance(payload.context, dict) else {}
     tipo = str(ctx.get("tipo") or "").strip()
     return tipo in {"agente_cloud_perguntas_ml", "resposta_automatica_ml"}
 
@@ -15719,6 +15788,8 @@ def _ia_chat_pede_noticias(mensagem: str) -> bool:
 
 
 def _ia_chat_precisa_busca_web(mensagem: str, page: Optional[str] = None, contexto: Optional[dict] = None) -> bool:
+    if _ia_contexto_desativa_recursos_chat(contexto):
+        return False
     if not _ia_web_busca_ativa():
         return False
     texto = _normalizar_texto(mensagem or "")
@@ -16890,6 +16961,348 @@ def _perguntas_ia_resposta_fallback_invalida(texto: str) -> bool:
     return any(sinais_fallback)
 
 
+ML_PERGUNTAS_IA_INTENCOES = {
+    "duvida_produto",
+    "compatibilidade",
+    "outra_peca",
+    "preco_estoque",
+    "pos_venda_defeito",
+    "troca_garantia",
+    "entrega",
+    "cancelamento",
+    "reclamacao",
+    "nao_entendi",
+}
+ML_PERGUNTAS_IA_INTENCOES_POS_VENDA = {
+    "pos_venda_defeito",
+    "troca_garantia",
+    "entrega",
+    "cancelamento",
+    "reclamacao",
+}
+
+
+def _perguntas_ia_intencao_fluxo(intencao: str) -> str:
+    return "pos_venda" if str(intencao or "").strip() in ML_PERGUNTAS_IA_INTENCOES_POS_VENDA else "perguntas_anuncio"
+
+
+def _perguntas_ia_intencao_heuristica(pergunta: dict, item: dict | None = None) -> dict:
+    pergunta = pergunta if isinstance(pergunta, dict) else {}
+    item = item if isinstance(item, dict) else {}
+    historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
+    textos = [str(pergunta.get("text") or "")]
+    for evento in historico[-6:]:
+        if not isinstance(evento, dict):
+            continue
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        if role in {"seller", "loja", "store"}:
+            continue
+        textos.append(str(evento.get("text") or ""))
+    texto = _favoritos_normalizar_sem_acentos(" ".join(textos))
+
+    sinais_compra = (
+        "comprei", "compre", "minha compra", "pedido", "recebi", "chegou", "produto chegou",
+        "efetuei a compra", "numero da compra", "n da compra", "número da compra",
+    )
+    sinais_defeito = (
+        "defeito", "problema", "nao funciona", "nao funcionou", "parou", "apagando", "apaga",
+        "queimou", "falhando", "mal funcionamento", "nao acende", "nao liga", "quebrou",
+        "veio ruim", "veio com defeito", "uma fica", "uma nao", "um fica",
+    )
+    sinais_troca = (
+        "trocar", "troca", "garantia", "devolver", "devolucao", "reembolso", "assistencia",
+        "quero devolver", "quero trocar", "acionar garantia",
+    )
+    sinais_entrega = (
+        "entrega", "rastreio", "rastreamento", "correio", "transportadora", "nao chegou",
+        "atrasou", "rota de entrega",
+    )
+    sinais_compat = (
+        "serve", "servi", "compativel", "compatibilidade", "aplica", "encaixa", "da certo",
+        "ano", "motor", "modelo", "veiculo", "corolla", "civic", "focus", "hilux",
+    )
+    sinais_outra = (
+        "voces tem", "voce tem", "tem essa peca", "tem o", "tem a", "manda link", "envia link",
+        "outro lado", "lado esquerdo", "lado direito", "outra peca", "acabamento", "complemento",
+    )
+    sinais_preco_estoque = ("valor", "preco", "quanto", "tem estoque", "disponivel", "pronta entrega")
+
+    tem_compra = any(s in texto for s in sinais_compra)
+    tem_defeito = any(s in texto for s in sinais_defeito)
+    tem_troca = any(s in texto for s in sinais_troca)
+    if tem_compra and (tem_defeito or tem_troca):
+        intencao = "pos_venda_defeito" if tem_defeito else "troca_garantia"
+        return {
+            "intencao": intencao,
+            "fluxo": "pos_venda",
+            "confianca": 0.96,
+            "motivo": "mensagem indica compra ja realizada com defeito/troca",
+            "acao": "responder como pos-venda, pedir dados/fotos e orientar atendimento pela compra",
+            "usar_busca_web": False,
+            "usar_mercado_livre_anuncio": False,
+            "usar_bling": False,
+            "source": "heuristica",
+        }
+    if tem_compra and any(s in texto for s in sinais_entrega):
+        return {
+            "intencao": "entrega",
+            "fluxo": "pos_venda",
+            "confianca": 0.92,
+            "motivo": "mensagem indica compra/pedido com assunto de entrega",
+            "acao": "responder como pos-venda de entrega",
+            "usar_busca_web": False,
+            "usar_mercado_livre_anuncio": False,
+            "usar_bling": False,
+            "source": "heuristica",
+        }
+    if tem_troca and not any(s in texto for s in sinais_compat):
+        return {
+            "intencao": "troca_garantia",
+            "fluxo": "pos_venda",
+            "confianca": 0.88,
+            "motivo": "mensagem pede troca, garantia ou devolucao",
+            "acao": "responder como pos-venda",
+            "usar_busca_web": False,
+            "usar_mercado_livre_anuncio": False,
+            "usar_bling": False,
+            "source": "heuristica",
+        }
+    if any(s in texto for s in sinais_outra):
+        return {
+            "intencao": "outra_peca",
+            "fluxo": "perguntas_anuncio",
+            "confianca": 0.80,
+            "motivo": "comprador parece procurar outra peca ou variacao",
+            "acao": "buscar somente outra peca quando necessario",
+            "usar_busca_web": True,
+            "usar_mercado_livre_anuncio": True,
+            "usar_bling": True,
+            "source": "heuristica",
+        }
+    if any(s in texto for s in sinais_compat):
+        return {
+            "intencao": "compatibilidade",
+            "fluxo": "perguntas_anuncio",
+            "confianca": 0.78,
+            "motivo": "mensagem pergunta compatibilidade/aplicacao",
+            "acao": "responder compatibilidade com cautela",
+            "usar_busca_web": True,
+            "usar_mercado_livre_anuncio": True,
+            "usar_bling": True,
+            "source": "heuristica",
+        }
+    if any(s in texto for s in sinais_preco_estoque):
+        return {
+            "intencao": "preco_estoque",
+            "fluxo": "perguntas_anuncio",
+            "confianca": 0.72,
+            "motivo": "mensagem pergunta preco/estoque/disponibilidade",
+            "acao": "responder somente se houver dado seguro",
+            "usar_busca_web": False,
+            "usar_mercado_livre_anuncio": True,
+            "usar_bling": True,
+            "source": "heuristica",
+        }
+    return {
+        "intencao": "duvida_produto",
+        "fluxo": "perguntas_anuncio",
+        "confianca": 0.55,
+        "motivo": "sem sinais fortes de pos-venda ou compatibilidade",
+        "acao": "responder a duvida do produto com os dados disponiveis",
+        "usar_busca_web": True,
+        "usar_mercado_livre_anuncio": True,
+        "usar_bling": True,
+        "source": "heuristica",
+    }
+
+
+def _perguntas_ia_json_obj(texto: str) -> dict:
+    bruto = str(texto or "").strip()
+    if not bruto:
+        return {}
+    blocos = re.findall(r"```(?:json)?\s*(.*?)\s*```", bruto, flags=re.DOTALL | re.IGNORECASE)
+    candidatos = [item.strip() for item in blocos if item.strip()]
+    candidatos.append(bruto)
+    for candidato in candidatos:
+        inicio = candidato.find("{")
+        fim = candidato.rfind("}")
+        if inicio < 0 or fim <= inicio:
+            continue
+        trecho = candidato[inicio:fim + 1]
+        try:
+            data = json.loads(trecho)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _perguntas_ia_intencao_normalizar(data: object, fallback: Optional[dict] = None) -> dict:
+    fallback = fallback if isinstance(fallback, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    intencao = str(data.get("intencao") or data.get("intent") or fallback.get("intencao") or "duvida_produto").strip().lower()
+    intencao = intencao.replace("-", "_").replace(" ", "_")
+    aliases = {
+        "defeito": "pos_venda_defeito",
+        "problema_produto": "pos_venda_defeito",
+        "mal_funcionamento": "pos_venda_defeito",
+        "garantia": "troca_garantia",
+        "troca": "troca_garantia",
+        "devolucao": "troca_garantia",
+        "devolução": "troca_garantia",
+        "prazo_entrega": "entrega",
+        "duvida": "duvida_produto",
+        "produto": "duvida_produto",
+    }
+    intencao = aliases.get(intencao, intencao)
+    if intencao not in ML_PERGUNTAS_IA_INTENCOES:
+        intencao = str(fallback.get("intencao") or "duvida_produto")
+    fluxo = str(data.get("fluxo") or fallback.get("fluxo") or _perguntas_ia_intencao_fluxo(intencao)).strip().lower()
+    if intencao in ML_PERGUNTAS_IA_INTENCOES_POS_VENDA:
+        fluxo = "pos_venda"
+    elif fluxo not in {"pos_venda", "perguntas_anuncio"}:
+        fluxo = "perguntas_anuncio"
+    try:
+        confianca = float(str(data.get("confianca") or data.get("confidence") or fallback.get("confianca") or 0).replace(",", "."))
+    except Exception:
+        confianca = 0.0
+    confianca = max(0.0, min(confianca, 1.0))
+
+    def _bool_campo(chave: str, default: bool) -> bool:
+        valor = data[chave] if chave in data else fallback.get(chave, default)
+        if isinstance(valor, bool):
+            return valor
+        texto = str(valor or "").strip().lower()
+        if texto in {"0", "false", "nao", "não", "off", "no"}:
+            return False
+        if texto in {"1", "true", "sim", "on", "yes"}:
+            return True
+        return bool(default)
+
+    return {
+        "intencao": intencao,
+        "fluxo": fluxo,
+        "confianca": confianca,
+        "motivo": str(data.get("motivo") or data.get("reason") or fallback.get("motivo") or "").strip()[:500],
+        "acao": str(data.get("acao") or data.get("action") or fallback.get("acao") or "").strip()[:500],
+        "usar_busca_web": _bool_campo("usar_busca_web", fluxo != "pos_venda"),
+        "usar_mercado_livre_anuncio": _bool_campo("usar_mercado_livre_anuncio", fluxo != "pos_venda"),
+        "usar_bling": _bool_campo("usar_bling", fluxo != "pos_venda"),
+        "source": str(data.get("source") or fallback.get("source") or "").strip()[:80],
+    }
+
+
+def _perguntas_ia_classificar_intencao(client_id: str, loja: str, pergunta: dict, item: dict) -> dict:
+    heuristica = _perguntas_ia_intencao_heuristica(pergunta, item)
+    historico = pergunta.get("buyer_question_chat") if isinstance(pergunta.get("buyer_question_chat"), list) else []
+    mensagens = []
+    for evento in historico[-8:]:
+        if not isinstance(evento, dict):
+            continue
+        texto = str(evento.get("text") or "").strip()
+        if not texto:
+            continue
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        mensagens.append({
+            "role": "seller" if role in {"seller", "loja", "store"} else "buyer",
+            "text": texto[:500],
+        })
+    entrada = {
+        "loja": loja,
+        "question_id": pergunta.get("id") or "",
+        "item_id": pergunta.get("item_id") or "",
+        "pergunta_atual": pergunta.get("text") or "",
+        "historico": mensagens,
+        "titulo_anuncio": (item or {}).get("title") or pergunta.get("item_title") or "",
+        "sku": _ml_extrair_sku(item or {}) or pergunta.get("item_sku") or "",
+        "heuristica": heuristica,
+    }
+    prompt = (
+        "Classifique a intencao da ultima mensagem do comprador do Mercado Livre. "
+        "Use o historico apenas para entender continuidade, mas classifique a ultima mensagem. "
+        "Se o comprador diz que ja comprou, recebeu, quer trocar, relata defeito, problema, item apagando, quebrado, nao funciona, entrega ou garantia, classifique como pos-venda. "
+        "Nao confunda relato de defeito pos-compra com compatibilidade do produto. "
+        "Retorne somente JSON valido, sem markdown, com estes campos: "
+        "intencao, fluxo, confianca, motivo, acao, usar_busca_web, usar_mercado_livre_anuncio, usar_bling. "
+        "intencao deve ser uma de: duvida_produto, compatibilidade, outra_peca, preco_estoque, pos_venda_defeito, troca_garantia, entrega, cancelamento, reclamacao, nao_entendi. "
+        "fluxo deve ser perguntas_anuncio ou pos_venda.\n\n"
+        f"Dados:\n{json.dumps(entrada, ensure_ascii=False, default=str)[:6000]}"
+    )
+    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
+    payload = IAChatRequest(
+        message=prompt,
+        page="Perguntas e pós venda",
+        context={
+            "modulo": "perguntas_pos_venda",
+            "tipo": "classificacao_intencao_perguntas_ml",
+            "desativar_recursos_chat": True,
+            "desativar_busca_web_chat": True,
+            "modo_rapido_sidebar": True,
+            "loja": loja,
+        },
+        model=model_req,
+    )
+    perf_t0 = time.perf_counter()
+    try:
+        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        data = _perguntas_ia_json_obj(resposta)
+        classificada = _perguntas_ia_intencao_normalizar(data, heuristica)
+        classificada["model"] = model_usado
+        classificada["source"] = "ia"
+        if heuristica.get("fluxo") == "pos_venda" and float(heuristica.get("confianca") or 0) >= 0.90 and classificada.get("fluxo") != "pos_venda":
+            classificada = {**heuristica, "source": "heuristica_sobrepos_ia", "model": model_usado}
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            {
+                "question": {"id": pergunta.get("id") or "", "item_id": pergunta.get("item_id") or ""},
+                "item": {"id": (item or {}).get("id") or pergunta.get("item_id") or "", "seller_sku": _ml_extrair_sku(item or {})},
+            },
+            "classificacao_intencao",
+            time.perf_counter() - perf_t0,
+            status="ok",
+            intencao=classificada.get("intencao"),
+            fluxo=classificada.get("fluxo"),
+            confianca=classificada.get("confianca"),
+            source=classificada.get("source"),
+            modelo=classificada.get("model"),
+        )
+        return classificada
+    except Exception as exc:
+        fallback = _perguntas_ia_intencao_normalizar(heuristica)
+        fallback["source"] = "heuristica_fallback"
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            {
+                "question": {"id": pergunta.get("id") or "", "item_id": pergunta.get("item_id") or ""},
+                "item": {"id": (item or {}).get("id") or pergunta.get("item_id") or "", "seller_sku": _ml_extrair_sku(item or {})},
+            },
+            "classificacao_intencao",
+            time.perf_counter() - perf_t0,
+            status="erro",
+            erro=type(exc).__name__,
+            intencao=fallback.get("intencao"),
+            fluxo=fallback.get("fluxo"),
+            source=fallback.get("source"),
+        )
+        return fallback
+
+
+def _perguntas_ia_intencao_agent(agent_input: dict) -> dict:
+    agent_input = agent_input if isinstance(agent_input, dict) else {}
+    intent = agent_input.get("intent") if isinstance(agent_input.get("intent"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    if not intent and isinstance(context.get("intencao_atendimento"), dict):
+        intent = context.get("intencao_atendimento")
+    return _perguntas_ia_intencao_normalizar(intent)
+
+
+def _perguntas_ia_fluxo_pos_venda(agent_input: dict) -> bool:
+    return _perguntas_ia_intencao_agent(agent_input).get("fluxo") == "pos_venda"
+
+
 def _perguntas_ia_compactar_contexto(texto: str, limite: int) -> str:
     texto = str(texto or "").strip()
     if not texto:
@@ -17296,10 +17709,6 @@ def _perguntas_ia_memoria_bloco_prompt(client_id: str, agent_input: dict) -> str
     resumo = str(memoria.get("resumo_compacto") or "").strip()
     eventos = [ev for ev in (memoria.get("eventos") or []) if isinstance(ev, dict)]
     aprovadas = [ev for ev in eventos if str(ev.get("tipo") or "") == "resposta_aprovada"][-6:]
-    pesquisas = [
-        ev for ev in eventos
-        if str(ev.get("tipo") or "") in {"pesquisa_ia", "pos_venda_ia"}
-    ][-5:]
     partes = [f"Memoria local do SKU {sku} (capacidade minima por SKU: {ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES // 1024} KB)."]
     if resumo:
         partes.append(f"Resumo compacto acumulado:\n{resumo[:12000]}")
@@ -17324,31 +17733,6 @@ def _perguntas_ia_memoria_bloco_prompt(client_id: str, agent_input: dict) -> str
                 + (" | ".join(perguntas_anuncio[:4]) or "-")
             )
         partes.append("Respostas aprovadas recentes para aprender tom e padrao:\n" + "\n\n".join(linhas))
-    if pesquisas:
-        linhas = []
-        for ev in pesquisas:
-            tipo_evento = str(ev.get("tipo") or "")
-            fontes = []
-            for tool in ev.get("tool_results") or []:
-                if isinstance(tool, dict) and (tool.get("found") or tool.get("timeout") or tool.get("error")):
-                    fontes.append(str(tool.get("function") or "") + (" (timeout)" if tool.get("timeout") else ""))
-            rotulo = "Atendimento pos-venda recente" if tipo_evento == "pos_venda_ia" else "Pergunta pesquisada"
-            perguntas_anuncio = []
-            for evento_anuncio in ev.get("perguntas_anuncio") or []:
-                if not isinstance(evento_anuncio, dict):
-                    continue
-                texto_anuncio = str(evento_anuncio.get("text") or "").strip()
-                if texto_anuncio:
-                    perguntas_anuncio.append(
-                        f"{evento_anuncio.get('label') or evento_anuncio.get('role') or 'Comprador'}: {texto_anuncio[:180]}"
-                    )
-            linhas.append(
-                f"{rotulo}: {str(ev.get('pergunta') or '-')[:280]}\n"
-                "Resposta usada/sugerida: omitida porque rascunhos gerados nao devem ser reaproveitados como exemplo.\n"
-                f"Perguntas anteriores no anuncio: {' | '.join(perguntas_anuncio[:4]) or '-'}\n"
-                f"Fontes/ferramentas: {', '.join([f for f in fontes if f][:6]) or '-'}"
-            )
-        partes.append("Pesquisas e atendimentos recentes ja feitos para este SKU:\n" + "\n\n".join(linhas))
     bloco = "\n\n".join([p for p in partes if p.strip()])
     return _perguntas_ia_compactar_contexto(bloco, ML_PERGUNTAS_IA_MEMORIA_SKU_PROMPT_MAX_CHARS)
 
@@ -17751,10 +18135,40 @@ def _perguntas_ia_agent_input(
     prompt: str,
 ) -> dict:
     contexto_dict = contexto if isinstance(contexto, dict) else {}
+    intencao_atendimento = contexto_dict.get("intencao_atendimento") if isinstance(contexto_dict.get("intencao_atendimento"), dict) else {}
+    fluxo_intencao = str(intencao_atendimento.get("fluxo") or "perguntas_anuncio").strip()
+    tipo_treinamento = "pos_venda" if fluxo_intencao == "pos_venda" else "perguntas_anuncio"
+    def _intencao_flag(chave: str, default: bool) -> bool:
+        valor = intencao_atendimento.get(chave, default)
+        if isinstance(valor, bool):
+            return valor
+        texto = str(valor or "").strip().lower()
+        if texto in {"0", "false", "nao", "não", "off", "no"}:
+            return False
+        if texto in {"1", "true", "sim", "on", "yes"}:
+            return True
+        return bool(default)
+
+    if fluxo_intencao == "pos_venda":
+        allowed_tools: list[str] = []
+        usar_busca_web = False
+    else:
+        usar_busca_web = _intencao_flag("usar_busca_web", True)
+        allowed_tools = []
+        if _intencao_flag("usar_mercado_livre_anuncio", True):
+            allowed_tools.append("get_mercado_livre_listing")
+        if _intencao_flag("usar_bling", True):
+            allowed_tools.append("get_bling_product")
+        if usar_busca_web:
+            allowed_tools.extend([
+                "web_search",
+                "web_search_product_identity",
+                "web_search_question_context",
+            ])
     contexto_treinamento = {
         "modulo": "perguntas_pos_venda",
-        "tipo": "resposta_automatica_ml",
-        "tipo_treinamento": "perguntas_anuncio",
+        "tipo": "resposta_pos_venda" if tipo_treinamento == "pos_venda" else "resposta_automatica_ml",
+        "tipo_treinamento": tipo_treinamento,
         "loja": str(loja or "").strip(),
         "produto": contexto_dict,
     }
@@ -17774,11 +18188,12 @@ def _perguntas_ia_agent_input(
         "question": _perguntas_ia_pergunta_para_agente(pergunta),
         "item": _perguntas_ia_item_para_agente(item, contexto_dict.get("descricao") or ""),
         "context": contexto_dict,
+        "intent": intencao_atendimento,
         "context_collection_pipeline": [
             {
                 "step": 1,
-                "name": "product_link_research",
-                "description": "Pesquisar pelo link/titulo do nosso anuncio para identificar produto, codigos, aplicacao e compatibilidade provavel.",
+                "name": "intent_classification",
+                "description": "Classificar a intencao da ultima mensagem antes de escolher o fluxo de resposta.",
             },
             {
                 "step": 2,
@@ -17793,7 +18208,7 @@ def _perguntas_ia_agent_input(
             {
                 "step": 4,
                 "name": "internal_history_and_response_rules",
-                "description": "Aplicar historico do app, cadastro, Bling e regras/orientacoes de resposta salvas.",
+                "description": "Aplicar historico do app, Bling e regras/orientacoes de resposta salvas.",
             },
             {
                 "step": 5,
@@ -17803,28 +18218,25 @@ def _perguntas_ia_agent_input(
             {
                 "step": 6,
                 "name": "vertex_gemini_answer",
-                "description": "Somente depois das etapas anteriores enviar tudo ao modelo Vertex Gemini para gerar o rascunho.",
+                "description": "Somente depois das etapas anteriores enviar tudo ao modelo configurado para gerar o rascunho.",
             },
         ],
-        "use_web_search": True,
-        "web_search_required": True,
+        "use_web_search": usar_busca_web,
+        "web_search_required": usar_busca_web,
         "constraints": {
             "read_only": True,
             "do_not_send_to_mercado_livre": True,
             "max_chars": ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO,
             "no_markdown": True,
             "do_not_invent_links_or_compatibility": True,
-            "internet_product_research_required": True,
+            "internet_product_research_required": usar_busca_web,
         },
-        "allowed_tools": [
-            "get_mercado_livre_listing",
-            "get_bling_product",
-            "get_product_registry_info",
-            "get_product_data",
-            "web_search",
-            "web_search_product_identity",
-            "web_search_question_context",
-        ],
+        "allowed_tools": allowed_tools,
+        "tool_policy": {
+            "usar_busca_web": usar_busca_web,
+            "usar_mercado_livre_anuncio": "get_mercado_livre_listing" in allowed_tools,
+            "usar_bling": "get_bling_product" in allowed_tools,
+        },
     }
 
 
@@ -18610,16 +19022,123 @@ def _ia_agent_perguntas_tool_error(function_name: str, erro: object, timeout: bo
     }
 
 
+def _ia_agent_perguntas_perf_meta(client_id: str, loja: str, agent_input: Optional[dict]) -> dict[str, str]:
+    entrada = agent_input if isinstance(agent_input, dict) else {}
+    question = entrada.get("question") if isinstance(entrada.get("question"), dict) else {}
+    item = entrada.get("item") if isinstance(entrada.get("item"), dict) else {}
+    context = entrada.get("context") if isinstance(entrada.get("context"), dict) else {}
+    pergunta_id = (
+        question.get("id")
+        or question.get("question_id")
+        or question.get("pergunta_id")
+        or entrada.get("question_id")
+        or ""
+    )
+    item_id = (
+        item.get("id")
+        or question.get("item_id")
+        or context.get("item_id")
+        or entrada.get("item_id")
+        or ""
+    )
+    sku = (
+        item.get("seller_sku")
+        or item.get("sku")
+        or context.get("sku")
+        or context.get("seller_sku")
+        or ""
+    )
+    return {
+        "tenant": str(client_id or entrada.get("tenant_id") or "").strip()[:80],
+        "loja": str(loja or entrada.get("store") or entrada.get("loja") or "").strip()[:160],
+        "pergunta": str(pergunta_id or "").strip()[:80],
+        "item": str(item_id or "").strip()[:80],
+        "sku": str(sku or "").strip()[:120],
+    }
+
+
+def _ia_agent_perguntas_log_perf(
+    client_id: str,
+    loja: str,
+    agent_input: Optional[dict],
+    etapa: str,
+    tempo_s: float,
+    **detalhes: Any,
+) -> None:
+    meta = _ia_agent_perguntas_perf_meta(client_id, loja, agent_input)
+    partes = []
+    for chave, valor in detalhes.items():
+        if valor is None:
+            continue
+        if isinstance(valor, bool):
+            valor_txt = "true" if valor else "false"
+        elif isinstance(valor, float):
+            valor_txt = f"{valor:.3f}"
+        else:
+            valor_txt = str(valor)
+        valor_txt = re.sub(r"\s+", " ", valor_txt).strip()[:220]
+        if valor_txt:
+            partes.append(f"{chave}={valor_txt}")
+    sufixo = f" {' '.join(partes)}" if partes else ""
+    logger.info(
+        "[ML PERGUNTAS PERF] tenant=%s loja=%s pergunta=%s item=%s sku=%s etapa=%s tempo=%.3fs%s",
+        meta["tenant"] or "-",
+        meta["loja"] or "-",
+        meta["pergunta"] or "-",
+        meta["item"] or "-",
+        meta["sku"] or "-",
+        str(etapa or "-"),
+        max(0.0, float(tempo_s or 0.0)),
+        sufixo,
+    )
+
+
+def _ia_agent_perguntas_perf_etapa_tool(nome: str) -> str:
+    nome = str(nome or "").strip()
+    if nome == "product_data":
+        return "cadastro_interno"
+    if nome == "mercado_livre":
+        return "mercado_livre"
+    if nome == "bling":
+        return "bling"
+    if nome in {"product_identity", "web_question"}:
+        return "busca_web"
+    return nome or "ferramenta"
+
+
 def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: dict) -> list[dict]:
+    perf_total_t0 = time.perf_counter()
     consulta = _ia_agent_perguntas_texto_busca(agent_input)
     if not consulta:
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "ferramentas_total",
+            time.perf_counter() - perf_total_t0,
+            status="sem_consulta",
+        )
+        return []
+    allowed_raw = agent_input.get("allowed_tools") if isinstance(agent_input, dict) else None
+    allowed_definido = isinstance(allowed_raw, list)
+    allowed_set = {str(item or "").strip() for item in (allowed_raw or []) if str(item or "").strip()} if allowed_definido else set()
+
+    def ferramenta_permitida(function_name: str) -> bool:
+        return not allowed_definido or str(function_name or "").strip() in allowed_set
+
+    if allowed_definido and not allowed_set:
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "ferramentas_total",
+            time.perf_counter() - perf_total_t0,
+            status="sem_ferramentas_permitidas",
+        )
         return []
 
     def consultar_identidade_web() -> Optional[dict]:
         return _ia_agent_perguntas_product_identity_web_tool(client_id, agent_input)
-
-    def consultar_cadastro() -> Optional[dict]:
-        return _ia_tool_get_product_data(client_id, consulta, limite=3)
 
     def consultar_mercado_livre() -> Optional[dict]:
         return _ia_tool_get_mercado_livre_listing(
@@ -18637,16 +19156,42 @@ def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: d
     def consultar_web_pergunta() -> Optional[dict]:
         return _ia_agent_perguntas_web_tool(client_id, agent_input, [])
 
-    tarefas: list[tuple[int, str, str, Callable[[], Optional[dict]]]] = [
+    tarefas_base: list[tuple[int, str, str, Callable[[], Optional[dict]]]] = [
         (0, "product_identity", "web_search_product_identity", consultar_identidade_web),
-        (1, "product_data", "get_product_data", consultar_cadastro),
         (2, "mercado_livre", "get_mercado_livre_listing", consultar_mercado_livre),
         (3, "bling", "get_bling_product", consultar_bling),
         (4, "web_question", "web_search_question_context", consultar_web_pergunta),
     ]
+    tarefas = [tarefa for tarefa in tarefas_base if ferramenta_permitida(tarefa[2])]
+    if not tarefas:
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "ferramentas_total",
+            time.perf_counter() - perf_total_t0,
+            status="sem_ferramentas_permitidas",
+        )
+        return []
     timeout_s = _ia_agent_perguntas_tools_timeout_s()
+
+    def executar_tool(func: Callable[[], Optional[dict]]) -> dict:
+        perf_tool_t0 = time.perf_counter()
+        try:
+            return {
+                "tool_result": func(),
+                "tempo_s": time.perf_counter() - perf_tool_t0,
+                "erro": None,
+            }
+        except Exception as exc:
+            return {
+                "tool_result": None,
+                "tempo_s": time.perf_counter() - perf_tool_t0,
+                "erro": exc,
+            }
+
     futuros = {
-        IA_PERGUNTAS_TOOLS_EXECUTOR.submit(func): (ordem, nome, function_name)
+        IA_PERGUNTAS_TOOLS_EXECUTOR.submit(executar_tool, func): (ordem, nome, function_name)
         for ordem, nome, function_name, func in tarefas
     }
     done, pending = wait(futuros.keys(), timeout=timeout_s)
@@ -18654,16 +19199,50 @@ def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: d
 
     for futuro in done:
         ordem, nome, function_name = futuros[futuro]
+        tempo_tool = 0.0
         try:
-            tool_result = futuro.result()
+            exec_result = futuro.result()
+            tempo_tool = float(exec_result.get("tempo_s") or 0.0) if isinstance(exec_result, dict) else 0.0
+            erro = exec_result.get("erro") if isinstance(exec_result, dict) else None
+            tool_result = exec_result.get("tool_result") if isinstance(exec_result, dict) else None
+            if erro:
+                raise erro
         except Exception as exc:
             logger.warning("[IA AGENT PERGUNTAS] Falha em ferramenta local %s: %s", nome, exc)
             tool_result = _ia_agent_perguntas_tool_error(function_name, exc)
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                _ia_agent_perguntas_perf_etapa_tool(nome),
+                tempo_tool,
+                ferramenta=function_name,
+                status="erro",
+                erro=type(exc).__name__,
+            )
+        else:
+            result = tool_result.get("result") if isinstance(tool_result, dict) and isinstance(tool_result.get("result"), dict) else {}
+            matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+            contexto = str(result.get("context") or "")
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                _ia_agent_perguntas_perf_etapa_tool(nome),
+                tempo_tool,
+                ferramenta=function_name,
+                status="ok" if tool_result else "vazio",
+                found=bool(result.get("found")),
+                matches=len(matches),
+                context_chars=len(contexto),
+                timeout=bool(result.get("timeout")),
+            )
         if tool_result:
             resultados_por_ordem[ordem] = tool_result
 
     if pending:
         nomes_pendentes = []
+        tempo_ate_timeout = time.perf_counter() - perf_total_t0
         for futuro in pending:
             ordem, nome, function_name = futuros[futuro]
             nomes_pendentes.append(nome)
@@ -18673,13 +19252,34 @@ def _ia_agent_perguntas_preparar_tools(client_id: str, loja: str, agent_input: d
                 f"Ferramenta excedeu o prazo global de {timeout_s:.1f}s e foi ignorada nesta resposta.",
                 timeout=True,
             )
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                _ia_agent_perguntas_perf_etapa_tool(nome),
+                tempo_ate_timeout,
+                ferramenta=function_name,
+                status="timeout",
+                limite_s=timeout_s,
+            )
         logger.warning(
             "[IA AGENT PERGUNTAS] Timeout global das ferramentas locais (%.1fs). Pendentes: %s",
             timeout_s,
             ", ".join(nomes_pendentes),
         )
 
-    return [resultados_por_ordem[idx] for idx in sorted(resultados_por_ordem)]
+    resultados = [resultados_por_ordem[idx] for idx in sorted(resultados_por_ordem)]
+    _ia_agent_perguntas_log_perf(
+        client_id,
+        loja,
+        agent_input,
+        "ferramentas_total",
+        time.perf_counter() - perf_total_t0,
+        status="ok",
+        ferramentas=len(resultados),
+        timeout_count=len(pending),
+    )
+    return resultados
 
 
 def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_results: list[dict]) -> str:
@@ -18694,13 +19294,27 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
     ).strip()[:24000]
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    intent = _perguntas_ia_intencao_agent(agent_input)
+    fluxo_pos_venda = intent.get("fluxo") == "pos_venda"
     constraints = agent_input.get("constraints") if isinstance(agent_input.get("constraints"), dict) else {}
     pipeline = agent_input.get("context_collection_pipeline") if isinstance(agent_input.get("context_collection_pipeline"), list) else []
     bloco_pipeline = json.dumps(pipeline or [], ensure_ascii=False, default=str)[:4000]
     bloco_tools = json.dumps(tool_results or [], ensure_ascii=False, default=str)[:24000]
     bloco_question = json.dumps(question, ensure_ascii=False, default=str)[:4000]
     bloco_item = json.dumps(item, ensure_ascii=False, default=str)[:5000]
-    bloco_memoria = _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
+    bloco_intencao = json.dumps(intent or {}, ensure_ascii=False, default=str)[:3000]
+    loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
+    perf_memoria_t0 = time.perf_counter()
+    bloco_memoria = "" if fluxo_pos_venda else _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
+    _ia_agent_perguntas_log_perf(
+        client_id,
+        loja,
+        agent_input,
+        "memoria_sku",
+        time.perf_counter() - perf_memoria_t0,
+        status="desativada_pos_venda" if fluxo_pos_venda else ("ok" if bloco_memoria else "vazio"),
+        chars=len(bloco_memoria or ""),
+    )
     rascunho_atual = str(question.get("current_draft_to_avoid") or "").strip()
     bloco_rascunho_atual = _perguntas_ia_compactar_contexto(rascunho_atual, 1200)
     historico = question.get("history") if isinstance(question.get("history"), list) else []
@@ -18715,11 +19329,35 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
         rotulo = "Loja" if role in {"seller", "loja", "store"} else "Comprador"
         linhas_historico.append(f"{rotulo}: {texto_evento[:500]}")
     bloco_historico = "\n".join(linhas_historico)[:2000]
+    if fluxo_pos_venda:
+        return (
+            "Voce e o agente de pos-venda do Mercado Livre do JK Sistema. "
+            "Gere somente um rascunho de resposta ao comprador. "
+            "Nao envie, nao publique e nao altere nada no Mercado Livre, Bling ou cadastro. "
+            "A mensagem foi classificada como pos-venda, entao NAO responda como compatibilidade, aplicacao, serve ou venda do produto. "
+            "Se o comprador relata defeito, mau funcionamento, item apagando, quebrado, troca ou garantia, reconheca o problema e oriente o proximo passo de atendimento. "
+            "Quando houver relato de mau funcionamento, peca foto do item/problema e oriente a chamar pelo detalhe da compra ou informar os dados necessarios, conforme as regras salvas. "
+            "Nao invente causa tecnica, prazo, garantia, compatibilidade, estoque ou procedimento que nao esteja nas orientacoes. "
+            "Nao mencione SKU, codigo interno, preco, nome da loja ou link do proprio anuncio. "
+            "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas. "
+            f"Limite de caracteres: {constraints.get('max_chars') or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO}.\n\n"
+            f"Intencao classificada em JSON:\n{bloco_intencao or '{}'}\n\n"
+            f"Orientacoes do app e treinamento salvos:\n{app_guidance or '-'}\n\n"
+            f"Historico resumido da conversa:\n{bloco_historico or '-'}\n\n"
+            f"Resposta atual no campo, se existir; corrija/substitua e nao repita literalmente:\n{bloco_rascunho_atual or '-'}\n\n"
+            f"Pergunta normalizada em JSON:\n{bloco_question or '{}'}\n\n"
+            f"Anuncio recebido em JSON somente para identificar a compra/produto, nao para responder compatibilidade:\n{bloco_item or '{}'}"
+        )
     return (
         "Voce e o agente Cloud de perguntas do Mercado Livre do JK Sistema. "
         "Gere somente um rascunho de resposta ao comprador. "
         "Nao envie, nao publique e nao altere nada no Mercado Livre, Bling ou cadastro. "
         "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas. "
+        "Responda estritamente a ultima pergunta do comprador; nao troque o assunto para outro produto, veiculo, ano ou compatibilidade. "
+        "Antes de finalizar, confirme que todo produto, modelo, veiculo, ano ou codigo citado na resposta aparece na pergunta, no anuncio atual ou no contexto tecnico confiavel do anuncio atual. "
+        "Se a intencao classificada nao for compatibilidade, nao responda dizendo que serve ou que e compativel. "
+        "Se o comprador perguntar sobre conector, entrada, cabo, USB-C/tipo C, Lightning/iPhone ou Micro USB, responda primeiro exatamente esse conector ou diga que nao ha informacao segura; nao substitua por outro conector ou aparelho. "
+        "Se o comprador perguntar sobre material, itens inclusos, lado, quantidade ou variacao, responda primeiro esse atributo especifico. "
         "Nao invente compatibilidade, prazo, garantia, estoque, medidas, links ou dados tecnicos. "
         "Nao mencione SKU, codigo interno, quantidade em estoque, preco, nome da loja, status do anuncio ou link do proprio anuncio, exceto quando as orientacoes do app pedirem explicitamente. "
         "Se a pergunta for sobre compatibilidade, responda a compatibilidade de forma direta e curta; nao reinicie o atendimento com resumo do produto. "
@@ -18729,13 +19367,14 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
         "Siga as orientacoes do app e do treinamento salvo para tom, estrutura, politica comercial e conteudo permitido. "
         "Use resultados das ferramentas e contexto recebido como fonte principal de fatos, respeitando a ordem do pipeline. "
         "Primeiro considere web_search_product_identity para entender qual e a peca do nosso anuncio, codigos, uso e compatibilidade provavel. "
-        "Depois considere cadastro, Mercado Livre, Bling, historico e regras do app. "
+        "Depois considere Mercado Livre, Bling, historico e regras do app. "
         "Por ultimo use web_search_question_context para responder a pergunta atual com comparacao de codigos, titulos e descricoes de anuncios similares, manuais, catalogos ou fontes publicas disponiveis. "
         "Nao invente detalhes quando a internet nao trouxer evidencias suficientes; responda com cautela e recomende confirmacao tecnica. "
         "Se os dados externos divergirem do cadastro, Mercado Livre ou Bling, prefira os dados internos para dados comerciais e use a web apenas como apoio tecnico. "
         "Se o dado estiver ausente, peça a informacao necessaria com cordialidade. "
         f"Limite de caracteres: {constraints.get('max_chars') or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO}.\n\n"
         f"Pipeline obrigatorio de contexto executado pelo app:\n{bloco_pipeline or '[]'}\n\n"
+        f"Intencao classificada em JSON:\n{bloco_intencao or '{}'}\n\n"
         f"Orientacoes do app e treinamento salvos:\n{app_guidance or '-'}\n\n"
         f"Memoria tecnica local deste SKU:\n{bloco_memoria or '-'}\n\n"
         f"Prompt original do app:\n{base_prompt or '-'}\n\n"
@@ -18763,11 +19402,110 @@ def _ia_agent_perguntas_chamar_modelo(client_id: str, payload: IAChatRequest, mo
     return resposta, model_usado
 
 
+ML_PERGUNTAS_IA_TERMOS_VEICULO = (
+    "corolla", "passat", "peugeot", "fusion", "tiguan", "jetta", "mercedes",
+    "c180", "c200", "c250", "c300", "c350", "slk", "hilux", "polo", "fiesta",
+    "palio", "tucson", "pajero", "bmw", "320i", "golf", "fox", "gol", "voyage",
+    "saveiro", "onix", "civic", "fit", "city", "focus", "ranger", "ecosport",
+    "cruze", "s10", "spin", "astra", "vectra", "clio", "sandero", "logan",
+    "duster", "compass", "renegade", "toro", "strada", "uno", "mobi", "argo",
+    "hb20", "creta", "ix35", "azera", "santa fe", "cerato", "sportage",
+    "audi", "volkswagen", "volvo", "toyota", "honda", "hyundai", "kia",
+    "chevrolet", "gm", "ford", "fiat", "renault", "citroen", "nissan",
+    "mitsubishi", "jeep",
+)
+
+
+def _ia_agent_perguntas_termos_contexto(texto: str, termos: tuple[str, ...] = ML_PERGUNTAS_IA_TERMOS_VEICULO) -> set[str]:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
+    encontrados: set[str] = set()
+    if not texto_norm:
+        return encontrados
+    for termo in termos:
+        termo_norm = _favoritos_normalizar_sem_acentos(termo)
+        if not termo_norm:
+            continue
+        padrao = r"(?<![a-z0-9])" + re.escape(termo_norm) + r"(?![a-z0-9])"
+        if re.search(padrao, texto_norm):
+            encontrados.add(termo_norm)
+    return encontrados
+
+
+def _ia_agent_perguntas_texto_fonte(agent_input: dict) -> str:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    partes = [
+        str(question.get("text") or ""),
+        str(item.get("title") or ""),
+        str(item.get("description") or ""),
+        str(context.get("titulo") or ""),
+        str(context.get("descricao") or ""),
+    ]
+    historico = question.get("history") if isinstance(question.get("history"), list) else []
+    for evento in historico[-10:]:
+        if not isinstance(evento, dict):
+            continue
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        if role in {"seller", "loja", "store"}:
+            continue
+        partes.append(str(evento.get("text") or ""))
+    return "\n".join(partes)
+
+
+def _ia_agent_perguntas_codigos_modelo(texto: str) -> set[str]:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "").upper()
+    codigos: set[str] = set()
+    for match in re.finditer(r"\b[A-Z]{1,6}[\s\-]?\d{2,5}[A-Z]?\b|\b\d{3,4}[A-Z]{1,3}\b", texto_norm):
+        codigo = re.sub(r"[\s\-]+", "", match.group(0) or "").strip()
+        if not codigo:
+            continue
+        if codigo.startswith("MLB") or codigo in {"2022", "2023", "2024", "2025", "2026"}:
+            continue
+        codigos.add(codigo)
+    return codigos
+
+
+def _ia_agent_perguntas_conectores(texto: str) -> set[str]:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
+    compacto = re.sub(r"[^a-z0-9]+", "", texto_norm)
+    encontrados: set[str] = set()
+    if (
+        "tipo c" in texto_norm
+        or "type c" in texto_norm
+        or "usb c" in texto_norm
+        or "usb-c" in texto_norm
+        or "usbc" in compacto
+    ):
+        encontrados.add("usb-c/tipo c")
+    if "lightning" in texto_norm or "iphone" in texto_norm:
+        encontrados.add("lightning/iphone")
+    if "micro usb" in texto_norm or "micro-usb" in texto_norm or "microusb" in compacto:
+        encontrados.add("micro usb")
+    if "v8" in texto_norm and any(sinal in texto_norm for sinal in ("conector", "cabo", "entrada", "usb")):
+        encontrados.add("micro usb")
+    return encontrados
+
+
+def _ia_agent_perguntas_pede_conector(texto: str) -> bool:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
+    if _ia_agent_perguntas_conectores(texto_norm):
+        return True
+    return any(
+        termo in texto_norm
+        for termo in (
+            "conector", "entrada", "plug", "cabo", "carregador", "carregamento",
+            "tipo de ponta", "ponta do cabo", "porta usb", "usb",
+        )
+    )
+
+
 def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> list[str]:
     texto = str(resposta or "").strip()
     if not texto:
         return []
     texto_norm = _normalizar_texto(texto)
+    texto_sem_acentos = _favoritos_normalizar_sem_acentos(texto)
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
     historico = question.get("history") if isinstance(question.get("history"), list) else []
@@ -18780,9 +19518,29 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
             continue
         textos_comprador.append(str(evento.get("text") or ""))
     pergunta_norm = _normalizar_texto(" ".join(textos_comprador))
+    pergunta_sem_acentos = _favoritos_normalizar_sem_acentos(" ".join(textos_comprador))
     rascunho_atual_norm = _normalizar_texto(str(question.get("current_draft_to_avoid") or ""))
     loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
     violacoes = []
+    intent = _perguntas_ia_intencao_agent(agent_input)
+    intencao_nome = str(intent.get("intencao") or "").strip()
+    if intent.get("fluxo") == "pos_venda":
+        termos_compat = (
+            "serve", "servi", "compativel", "compatibilidade", "aplicacao", "veiculo informado",
+            "mecanico de confianca", "aguardamos sua compra",
+        )
+        if any(termo in texto_sem_acentos for termo in termos_compat):
+            violacoes.append("tratou pos-venda como compatibilidade/venda")
+        sinais_defeito = (
+            "defeito", "problema", "apagando", "apaga", "nao funciona", "parou", "queimou",
+            "mal funcionamento", "fica apagando", "trocar", "troca", "garantia",
+        )
+        respostas_esperadas = (
+            "foto", "fotos", "compra", "pedido", "mensagem", "detalhe da compra",
+            "verificar", "ajudar", "atendimento", "problema", "troca", "garantia",
+        )
+        if any(sinal in pergunta_sem_acentos for sinal in sinais_defeito) and not any(sinal in texto_sem_acentos for sinal in respostas_esperadas):
+            violacoes.append("nao tratou o defeito/troca relatado pelo comprador")
     if re.search(r"\bSKU\b", texto, flags=re.IGNORECASE):
         violacoes.append("mencionou SKU/codigo interno")
     seller_sku = str(item.get("seller_sku") or item.get("sku") or "").strip()
@@ -18823,15 +19581,76 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         if texto_compacto == rascunho_compacto or texto_compacto in rascunho_compacto or rascunho_compacto in texto_compacto:
             violacoes.append("repetiu a resposta atual sem corrigir")
     pergunta_compatibilidade = any(
-        termo in pergunta_norm
-        for termo in ("SERVE", "COMPATIVEL", "COMPATIBILIDADE", "APLICA", "ENCAIXA", "VEICULO", "CARRO", "PEUGEOT", "THP", "308CC")
+        termo in pergunta_sem_acentos
+        for termo in ("serve", "servi", "compat", "aplica", "encaixa", "veiculo", "carro", "peugeot", "thp", "308cc")
     )
     resposta_compatibilidade = any(
-        termo in texto_norm
-        for termo in ("SERVE", "COMPATIVEL", "COMPATIBILIDADE", "PODE SER COMPATIVEL", "PROVAVELMENTE", "MECANICO", "CONFIRMAR")
+        termo in texto_sem_acentos
+        for termo in ("serve", "compat", "pode ser compat", "provavelmente", "mecanico", "confirmar")
     )
+    if resposta_compatibilidade and not pergunta_compatibilidade and intencao_nome not in {"compatibilidade", "outra_peca"}:
+        violacoes.append("respondeu compatibilidade sem a pergunta pedir")
     if pergunta_compatibilidade and not resposta_compatibilidade:
         violacoes.append("nao respondeu a pergunta de compatibilidade")
+    termos_resposta = _ia_agent_perguntas_termos_contexto(texto)
+    if termos_resposta:
+        termos_fonte = _ia_agent_perguntas_termos_contexto(_ia_agent_perguntas_texto_fonte(agent_input))
+        termos_fora = sorted(termos_resposta - termos_fonte)
+        if termos_fora:
+            violacoes.append("mencionou veiculo/produto fora do contexto: " + ", ".join(termos_fora[:4]))
+    codigos_pergunta = _ia_agent_perguntas_codigos_modelo(" ".join(textos_comprador))
+    codigos_resposta = _ia_agent_perguntas_codigos_modelo(texto)
+    if codigos_pergunta and codigos_resposta and not (codigos_pergunta & codigos_resposta):
+        violacoes.append(
+            "nao respondeu ao modelo/codigo perguntado: "
+            + ", ".join(sorted(codigos_pergunta)[:4])
+        )
+    texto_comprador_completo = " ".join(textos_comprador)
+    conectores_pergunta = _ia_agent_perguntas_conectores(texto_comprador_completo)
+    conectores_resposta = _ia_agent_perguntas_conectores(texto)
+    if conectores_pergunta and not (conectores_pergunta & conectores_resposta):
+        violacoes.append(
+            "nao respondeu ao conector/variacao perguntado: "
+            + ", ".join(sorted(conectores_pergunta))
+        )
+    elif conectores_pergunta and conectores_resposta and not (conectores_pergunta & conectores_resposta):
+        violacoes.append("respondeu outro conector/variacao")
+    elif _ia_agent_perguntas_pede_conector(texto_comprador_completo) and not any(
+        termo in texto_sem_acentos
+        for termo in ("conector", "entrada", "plug", "cabo", "usb", "tipo c", "type c", "lightning", "iphone", "micro usb")
+    ):
+        violacoes.append("nao respondeu a pergunta sobre conector")
+    pergunta_quantidade = any(
+        termo in pergunta_norm
+        for termo in (
+            "PAR", "UNIDADE", "LADO DIREITO", "LADO ESQUERDO", "PECA LADO", "PEÇA LADO",
+            "DUAS PECAS", "DUAS PEÇAS", "2 PECAS", "2 PEÇAS", "QUANTIDADE",
+        )
+    )
+    if pergunta_quantidade and not any(
+        termo in texto_norm
+        for termo in (
+            "PAR", "UNIDADE", "DIREITO", "ESQUERDO", "LADO", "PECA", "PEÇA",
+            "DUAS", "2", "VARIACAO", "VARIAÇÃO", "DESCRICAO", "DESCRIÇÃO",
+            "ANUNCIO", "ANÚNCIO",
+        )
+    ):
+        violacoes.append("nao respondeu a duvida de quantidade/variacao")
+    pergunta_caracteristica = any(
+        termo in pergunta_norm
+        for termo in (
+            "PLASTICO", "PLÁSTICO", "ALUMINIO", "ALUMÍNIO", "JUNTA", "PARAFUSO",
+            "VEM COM", "ACOMPANHA", "INCLUSO", "INCLUI",
+        )
+    )
+    if pergunta_caracteristica and not any(
+        termo in texto_norm
+        for termo in (
+            "PLASTICO", "PLÁSTICO", "ALUMINIO", "ALUMÍNIO", "JUNTA", "PARAFUSO",
+            "ACOMPANHA", "INCLUSO", "INCLUI", "VEM COM",
+        )
+    ):
+        violacoes.append("nao respondeu itens/material perguntados")
     return list(dict.fromkeys(violacoes))
 
 
@@ -18893,74 +19712,428 @@ def _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input: dict) -> 
     referencia = _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador)
     alvo = f" com {referencia}" if referencia else " com o veiculo informado"
     return (
-        f"Provavelmente \u00e9 compat\u00edvel{alvo}, mas para ter certeza recomendo confirmar "
-        "com seu mec\u00e2nico de confian\u00e7a antes da compra. Caso compre e n\u00e3o sirva, "
-        "voc\u00ea pode solicitar a devolu\u00e7\u00e3o pelo Mercado Livre."
+        f"Provavelmente pode ser compat\u00edvel{alvo}, mas recomendo confirmar "
+        "com seu mec\u00e2nico de confian\u00e7a antes da compra."
     )
 
 
-def _ia_agent_perguntas_gerar_resposta(client_id: str, agent_input: dict) -> tuple[str, str, list[dict]]:
+ML_PERGUNTAS_IA_V2_MODO = "novo_fluxo_perguntas_v2"
+
+
+def _perguntas_ia_v2_exigir_aprovacao() -> bool:
+    valor = str(os.getenv("ML_PERGUNTAS_IA_V2_PERMITIR_ENVIO_DIRETO") or "").strip().lower()
+    return valor not in {"1", "true", "sim", "yes", "on"}
+
+
+def _perguntas_ia_v2_prompt(
+    client_id: str,
+    agent_input: dict,
+    *,
+    resposta_bloqueada: str = "",
+    violacoes: Optional[list[str]] = None,
+) -> str:
+    agent_input = agent_input if isinstance(agent_input, dict) else {}
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    intent = _perguntas_ia_intencao_agent(agent_input)
+    fluxo_pos_venda = intent.get("fluxo") == "pos_venda"
+    app_guidance = str(agent_input.get("app_guidance") or "").strip()
+    memoria_sku = "" if fluxo_pos_venda else _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
+    dados = {
+        "loja": agent_input.get("store") or agent_input.get("loja") or "",
+        "pergunta": question,
+        "anuncio": {
+            "id": item.get("id") or "",
+            "title": item.get("title") or "",
+            "description": item.get("description") or "",
+            "attributes": item.get("attributes") or [],
+        },
+        "intencao": intent,
+        "contexto_produto": {
+            "titulo": context.get("titulo") or "",
+            "descricao": context.get("descricao") or "",
+            "busca_outra_peca": context.get("busca_outra_peca") or {},
+        },
+    }
+    partes = [
+        "Voce e a nova IA V2 de respostas do Mercado Livre do JK Sistema.",
+        "Gere somente UM rascunho de resposta ao comprador, pronto para revisao humana.",
+        "Nao envie, nao publique, nao altere anuncio, nao altere estoque e nao chame ferramentas externas.",
+        "Use somente os dados deste prompt: pergunta, historico, anuncio, regras salvas, memoria do SKU e contexto interno.",
+        "Nao use web, nao use Bling ao vivo e nao invente dados ausentes.",
+        "Responda em portugues do Brasil, sem markdown, sem tabela, sem emoji e sem aspas externas.",
+        f"Limite maximo: {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres.",
+    ]
+    if fluxo_pos_venda:
+        partes.extend([
+            "A intencao foi classificada como POS-VENDA.",
+            "Nao responda como venda, compatibilidade, aplicacao ou convite de compra.",
+            "Se houver defeito, troca, garantia ou mau funcionamento, reconheca o problema e peca o proximo dado necessario.",
+            "Quando adequado, peca foto do item/problema e oriente continuar pelo detalhe da compra.",
+        ])
+    else:
+        partes.extend([
+            "A intencao foi classificada como PERGUNTA DE ANUNCIO.",
+            "Responda diretamente a ultima pergunta do comprador; nao reinicie o atendimento.",
+            "Nao mencione SKU, codigo interno, quantidade em estoque, status do anuncio, nome da loja ou link do proprio anuncio.",
+            "Se faltar dado tecnico ou compatibilidade segura, responda com cautela e peca a informacao necessaria.",
+            "Em compatibilidade automotiva sem confirmacao objetiva, recomende confirmar com mecanico de confianca e nao peca chassi.",
+            "Se a pergunta for sobre outra peca, so informe link quando o contexto interno trouxer anuncio ativo e link.",
+        ])
+    if app_guidance:
+        partes.append("Regras e treinamento salvos pelo usuario:\n" + app_guidance[:18000])
+    if memoria_sku:
+        partes.append("Memoria tecnica local aprovada deste SKU:\n" + memoria_sku[:6000])
+    partes.append("Dados normalizados para a resposta:\n" + json.dumps(dados, ensure_ascii=False, default=str)[:18000])
+    resposta_bloqueada = str(resposta_bloqueada or "").strip()
+    if resposta_bloqueada or violacoes:
+        partes.append(
+            "A tentativa anterior foi bloqueada e nao pode ser reaproveitada literalmente.\n"
+            f"Resposta bloqueada:\n{resposta_bloqueada or '-'}\n\n"
+            f"Problemas detectados: {', '.join(violacoes or []) or '-'}\n"
+            "Reescreva corrigindo todos os problemas, com resposta curta e objetiva."
+        )
+    return _perguntas_ia_compactar_contexto("\n\n".join(partes), 32000)
+
+
+def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[str, str, list[dict]]:
+    perf_total_t0 = time.perf_counter()
+    loja = str((agent_input or {}).get("store") or (agent_input or {}).get("loja") or "").strip()
+    if not loja:
+        raise HTTPException(status_code=400, detail="Informe a loja no input da nova IA.")
+    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
+    tipo_treinamento_payload = "pos_venda" if _perguntas_ia_fluxo_pos_venda(agent_input) else "perguntas_anuncio"
+    diagnostico = [{
+        "function": ML_PERGUNTAS_IA_V2_MODO,
+        "result": {
+            "found": True,
+            "message": "Fluxo local legado removido; V2 usa contexto fechado e validacao antes de liberar rascunho.",
+            "read_only": True,
+        },
+    }]
+    try:
+        payload = IAChatRequest(
+            message=_perguntas_ia_v2_prompt(client_id, agent_input),
+            page="Perguntas e pos venda",
+            context={
+                "modulo": "perguntas_pos_venda",
+                "tipo": ML_PERGUNTAS_IA_V2_MODO,
+                "tipo_treinamento": tipo_treinamento_payload,
+                "origem_ia": "mercado_livre_perguntas_v2",
+                "desativar_recursos_chat": True,
+                "desativar_busca_web_chat": True,
+                "loja": loja,
+            },
+            model=model_req,
+            tool_results=[],
+        )
+        perf_ia_t0 = time.perf_counter()
+        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "v2_chamada_ia",
+            time.perf_counter() - perf_ia_t0,
+            tentativa=1,
+            modelo=model_usado,
+            status="ok",
+            prompt_chars=len(payload.message or ""),
+            resposta_chars=len(resposta or ""),
+        )
+        resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+        if not resposta_limpa:
+            raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta.")
+        if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
+            raise PerguntasIARespostaIndisponivel("Resposta de fallback da nova IA de perguntas bloqueada.")
+        violacoes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "v2_validacao_resposta",
+            0.0,
+            tentativa=1,
+            status="violacao" if violacoes else "ok",
+            violacoes="|".join(violacoes[:5]) if violacoes else "",
+        )
+        if violacoes:
+            payload.message = _perguntas_ia_v2_prompt(
+                client_id,
+                agent_input,
+                resposta_bloqueada=resposta_limpa,
+                violacoes=violacoes,
+            )
+            perf_ia_corr_t0 = time.perf_counter()
+            resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                "v2_chamada_ia",
+                time.perf_counter() - perf_ia_corr_t0,
+                tentativa=2,
+                modelo=model_usado,
+                status="ok",
+                prompt_chars=len(payload.message or ""),
+                resposta_chars=len(resposta or ""),
+            )
+            resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+            if not resposta_limpa:
+                raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta corrigida.")
+            if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
+                raise PerguntasIARespostaIndisponivel("Resposta corrigida da nova IA de perguntas bloqueada.")
+            violacoes_restantes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                "v2_validacao_resposta",
+                0.0,
+                tentativa=2,
+                status="violacao" if violacoes_restantes else "ok",
+                violacoes="|".join(violacoes_restantes[:5]) if violacoes_restantes else "",
+            )
+            if violacoes_restantes:
+                fallback = ""
+                if _perguntas_ia_intencao_agent(agent_input).get("fluxo") != "pos_venda":
+                    fallback = _perguntas_ia_limpar_resposta(_ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input))
+                violacoes_fallback = _ia_agent_perguntas_violacoes_resposta(agent_input, fallback) if fallback else []
+                if fallback and not _perguntas_ia_resposta_fallback_invalida(fallback) and not violacoes_fallback:
+                    resposta_limpa = fallback
+                    diagnostico[0]["result"]["fallback"] = "compatibilidade_segura"
+                else:
+                    raise PerguntasIARespostaIndisponivel(
+                        "Nova IA de perguntas gerou resposta fora das orientacoes: "
+                        + ", ".join((violacoes_fallback or violacoes_restantes)[:6])
+                    )
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "total",
+            time.perf_counter() - perf_total_t0,
+            status="ok",
+            modelo=model_usado,
+            modo=ML_PERGUNTAS_IA_V2_MODO,
+        )
+        return resposta_limpa, model_usado, diagnostico
+    except Exception as exc:
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "total",
+            time.perf_counter() - perf_total_t0,
+            status="erro",
+            erro=type(exc).__name__,
+            modo=ML_PERGUNTAS_IA_V2_MODO,
+        )
+        raise
+
+
+def _ia_agent_perguntas_gerar_resposta_legado_desativado(client_id: str, agent_input: dict) -> tuple[str, str, list[dict]]:
+    perf_total_t0 = time.perf_counter()
     loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja no input do agente.")
-    tool_results = _ia_agent_perguntas_preparar_tools(client_id, loja, agent_input)
-    mensagem = _ia_agent_perguntas_montar_prompt(client_id, agent_input, tool_results)
-    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
-    payload = IAChatRequest(
-        message=mensagem,
-        page="Perguntas e pós venda",
-        context={
-            "modulo": "perguntas_pos_venda",
-            "tipo": "agente_cloud_perguntas_ml",
-            "tipo_treinamento": "perguntas_anuncio",
-            "loja": loja,
-            "tool_results": tool_results,
-        },
-        model=model_req,
-        tool_results=tool_results,
-    )
-    resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
-
-    resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
-    if not resposta_limpa:
-        raise PerguntasIARespostaIndisponivel("IA de perguntas nao gerou resposta.")
-    if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
-        raise PerguntasIARespostaIndisponivel("Resposta de fallback da IA de perguntas bloqueada.")
-    violacoes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
-    if violacoes:
-        payload.message = (
-            f"{mensagem}\n\n"
-            "A resposta abaixo violou orientacoes do app e NAO pode ser usada:\n"
-            f"{resposta_limpa}\n\n"
-            f"Violacoes detectadas: {', '.join(violacoes)}.\n"
-            "Reescreva a resposta agora, mantendo apenas o que responde a ultima pergunta do comprador. "
-            "Nao mencione SKU, codigo interno, quantidade em estoque, preco, nome da loja, status do anuncio, ID do anuncio ou link do proprio anuncio. "
-            "Se for pergunta de compatibilidade sem confirmacao objetiva, responda de forma curta que provavelmente pode ser compativel, mas recomenda confirmar com mecanico de confianca, sem usar expressoes proibidas."
+    try:
+        tool_results = _ia_agent_perguntas_preparar_tools(client_id, loja, agent_input)
+        perf_prompt_t0 = time.perf_counter()
+        mensagem = _ia_agent_perguntas_montar_prompt(client_id, agent_input, tool_results)
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "montagem_prompt",
+            time.perf_counter() - perf_prompt_t0,
+            chars=len(mensagem or ""),
+            ferramentas=len(tool_results or []),
         )
-        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
+        tipo_treinamento_payload = "pos_venda" if _perguntas_ia_fluxo_pos_venda(agent_input) else "perguntas_anuncio"
+        payload = IAChatRequest(
+            message=mensagem,
+            page="Perguntas e pós venda",
+            context={
+                "modulo": "perguntas_pos_venda",
+                "tipo": "agente_cloud_perguntas_ml",
+                "tipo_treinamento": tipo_treinamento_payload,
+                "origem_ia": "mercado_livre_perguntas_sem_chat",
+                "desativar_recursos_chat": True,
+                "desativar_busca_web_chat": True,
+                "loja": loja,
+                "tool_results": tool_results,
+            },
+            model=model_req,
+            tool_results=tool_results,
+        )
+        perf_ia_t0 = time.perf_counter()
+        try:
+            resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        except Exception as exc:
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                "chamada_ia",
+                time.perf_counter() - perf_ia_t0,
+                tentativa=1,
+                modelo=model_req,
+                status="erro",
+                erro=type(exc).__name__,
+            )
+            raise
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "chamada_ia",
+            time.perf_counter() - perf_ia_t0,
+            tentativa=1,
+            modelo=model_usado,
+            status="ok",
+            prompt_chars=len(payload.message or ""),
+            resposta_chars=len(resposta or ""),
+        )
+
         resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
         if not resposta_limpa:
-            raise PerguntasIARespostaIndisponivel("IA de perguntas nao gerou resposta corrigida.")
+            raise PerguntasIARespostaIndisponivel("IA de perguntas nao gerou resposta.")
         if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
             raise PerguntasIARespostaIndisponivel("Resposta de fallback da IA de perguntas bloqueada.")
-        violacoes_restantes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
-        if violacoes_restantes:
-            fallback = _perguntas_ia_limpar_resposta(
-                _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input)
-            )
-            violacoes_fallback = _ia_agent_perguntas_violacoes_resposta(agent_input, fallback) if fallback else []
-            if fallback and not _perguntas_ia_resposta_fallback_invalida(fallback) and not violacoes_fallback:
-                resposta_limpa = fallback
-            else:
-                detalhe = violacoes_fallback or violacoes_restantes
-                raise PerguntasIARespostaIndisponivel(
-                    "IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(detalhe)
+        perf_validacao_t0 = time.perf_counter()
+        violacoes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "validacao_resposta",
+            time.perf_counter() - perf_validacao_t0,
+            status="violacao" if violacoes else "ok",
+            violacoes="|".join(violacoes[:5]) if violacoes else "",
+        )
+        if violacoes:
+            intent = _perguntas_ia_intencao_agent(agent_input)
+            if intent.get("fluxo") == "pos_venda":
+                orientacao_correcao = (
+                    "Reescreva a resposta agora como atendimento de POS-VENDA. "
+                    "Nao diga que serve, nao diga que e compativel, nao recomende mecanico e nao tente vender o produto. "
+                    "Responda a ultima mensagem do comprador reconhecendo o problema/troca/garantia e pedindo o proximo dado necessario. "
+                    "Se houver relato de mau funcionamento, peça foto do item/problema e oriente a chamar pelo detalhe da compra quando adequado. "
+                    "Seja curto, cordial e objetivo."
                 )
-    try:
-        _perguntas_ia_memoria_registrar_pesquisa(client_id, loja, agent_input, tool_results, resposta_limpa)
+            else:
+                orientacao_correcao = (
+                    "Reescreva a resposta agora, mantendo apenas o que responde a ultima pergunta do comprador. "
+                    "Nao troque para outro produto, outro veiculo, outro ano ou outro assunto. "
+                    "Nao cite modelo, veiculo ou produto que nao apareca na pergunta, no titulo, na descricao ou no contexto confiavel do anuncio atual. "
+                    "Se a intencao nao for compatibilidade, nao responda dizendo que serve ou que e compativel. "
+                    "Se o comprador perguntou conector, entrada, cabo, USB-C/tipo C, Lightning/iPhone ou Micro USB, responda exatamente esse conector ou diga que nao ha informacao segura; nao responda sobre outro conector/aparelho. "
+                    "Se o comprador perguntou quantidade, variacao, material ou itens inclusos, responda exatamente esse ponto. "
+                    "Nao mencione SKU, codigo interno, quantidade em estoque, preco, nome da loja, status do anuncio, ID do anuncio ou link do proprio anuncio. "
+                    "Se for pergunta de compatibilidade sem confirmacao objetiva, responda de forma curta que provavelmente pode ser compativel, mas recomenda confirmar com mecanico de confianca, sem usar expressoes proibidas."
+                )
+            payload.message = (
+                f"{mensagem}\n\n"
+                "A resposta abaixo violou orientacoes do app e NAO pode ser usada:\n"
+                f"{resposta_limpa}\n\n"
+                f"Violacoes detectadas: {', '.join(violacoes)}.\n"
+                f"{orientacao_correcao}"
+            )
+            perf_ia_corr_t0 = time.perf_counter()
+            try:
+                resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+            except Exception as exc:
+                _ia_agent_perguntas_log_perf(
+                    client_id,
+                    loja,
+                    agent_input,
+                    "chamada_ia",
+                    time.perf_counter() - perf_ia_corr_t0,
+                    tentativa=2,
+                    modelo=model_req,
+                    status="erro",
+                    erro=type(exc).__name__,
+                )
+                raise
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                "chamada_ia",
+                time.perf_counter() - perf_ia_corr_t0,
+                tentativa=2,
+                modelo=model_usado,
+                status="ok",
+                prompt_chars=len(payload.message or ""),
+                resposta_chars=len(resposta or ""),
+            )
+            resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+            if not resposta_limpa:
+                raise PerguntasIARespostaIndisponivel("IA de perguntas nao gerou resposta corrigida.")
+            if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
+                raise PerguntasIARespostaIndisponivel("Resposta de fallback da IA de perguntas bloqueada.")
+            perf_validacao2_t0 = time.perf_counter()
+            violacoes_restantes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
+            _ia_agent_perguntas_log_perf(
+                client_id,
+                loja,
+                agent_input,
+                "validacao_resposta",
+                time.perf_counter() - perf_validacao2_t0,
+                tentativa=2,
+                status="violacao" if violacoes_restantes else "ok",
+                violacoes="|".join(violacoes_restantes[:5]) if violacoes_restantes else "",
+            )
+            if violacoes_restantes:
+                intent_restante = _perguntas_ia_intencao_agent(agent_input)
+                if intent_restante.get("fluxo") == "pos_venda":
+                    raise PerguntasIARespostaIndisponivel(
+                        "IA de perguntas nao conseguiu responder como pos-venda: " + ", ".join(violacoes_restantes)
+                    )
+                fallback = _perguntas_ia_limpar_resposta(
+                    _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input)
+                )
+                violacoes_fallback = _ia_agent_perguntas_violacoes_resposta(agent_input, fallback) if fallback else []
+                if fallback and not _perguntas_ia_resposta_fallback_invalida(fallback) and not violacoes_fallback:
+                    resposta_limpa = fallback
+                else:
+                    detalhe = violacoes_fallback or violacoes_restantes
+                    raise PerguntasIARespostaIndisponivel(
+                        "IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(detalhe)
+                    )
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "memoria_sku_registro",
+            0.0,
+            status="ignorado",
+            motivo="rascunho_nao_aprovado",
+        )
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "total",
+            time.perf_counter() - perf_total_t0,
+            status="ok",
+            modelo=model_usado,
+        )
+        return resposta_limpa, model_usado, tool_results
     except Exception as exc:
-        logger.warning("[ML PERGUNTAS IA] Falha ao registrar memoria de pesquisa do SKU: %s", exc)
-    return resposta_limpa, model_usado, tool_results
+        _ia_agent_perguntas_log_perf(
+            client_id,
+            loja,
+            agent_input,
+            "total",
+            time.perf_counter() - perf_total_t0,
+            status="erro",
+            erro=type(exc).__name__,
+        )
+        raise
 
 
 def _pos_venda_ia_limpar_resposta(texto: str, limite: int | None = None) -> str:
@@ -19237,13 +20410,6 @@ def _perguntas_ia_gerar_resposta(
     titulo = str((item or {}).get("title") or "").strip()
     sku = _ml_extrair_sku(item or {})
     descricao, cfg = _perguntas_ia_descricao_item(client_id, loja, cfg, item_id)
-    contexto_outra_peca_txt, cfg, contexto_outra_peca = _perguntas_ia_contexto_outra_peca(
-        client_id,
-        loja,
-        cfg,
-        texto_pergunta,
-        titulo,
-    )
     contexto = {
         "loja": loja,
         "question_id": question_id,
@@ -19252,8 +20418,20 @@ def _perguntas_ia_gerar_resposta(
         "sku": sku,
         "descricao": descricao,
         "pergunta": texto_pergunta,
-        "busca_outra_peca": contexto_outra_peca,
     }
+    intencao_atendimento = _perguntas_ia_classificar_intencao(client_id, loja, pergunta, item)
+    contexto["intencao_atendimento"] = intencao_atendimento
+    if intencao_atendimento.get("intencao") == "outra_peca":
+        contexto_outra_peca_txt, cfg, contexto_outra_peca = _perguntas_ia_contexto_outra_peca(
+            client_id,
+            loja,
+            cfg,
+            texto_pergunta,
+            titulo,
+        )
+    else:
+        contexto_outra_peca_txt, contexto_outra_peca = "", {}
+    contexto["busca_outra_peca"] = contexto_outra_peca
     descricao_prompt = _perguntas_ia_compactar_contexto(
         descricao,
         ML_PERGUNTAS_IA_DESCRICAO_PROMPT_MAX_CHARS,
@@ -19282,68 +20460,81 @@ def _perguntas_ia_gerar_resposta(
         if resposta_atual
         else ""
     )
-    prompt = (
-        "Gere uma resposta pronta para uma pergunta recebida no Mercado Livre. "
-        "Use as orientacoes salvas no treinamento de perguntas de anuncio. "
-        "Use o titulo e a descricao do anuncio como contexto interno, sem repetir dados desnecessarios ao comprador. "
-        "Nao invente compatibilidade, medidas, estoque, prazo, garantia ou informacoes tecnicas que nao estejam no contexto. "
-        "Se o comprador perguntar por outra peca, use a busca interna por outra peca quando ela estiver presente no contexto. "
-        "Somente quando a pergunta for sobre outra peca, e houver anuncio ativo encontrado dessa outra peca, informe de forma curta que temos a peca e envie o link retornado. "
-        "Se a pergunta for apenas sobre compatibilidade do anuncio atual, nao fale que o anuncio esta ativo e nao envie link do proprio anuncio. "
-        "Quando citar o veiculo, nunca copie a pergunta inteira do comprador; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
-        "Nunca invente link; use somente links retornados na lista de anuncios ativos quando o link for realmente necessario. "
-        "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja na resposta ao comprador, salvo se o comprador perguntar isso diretamente. "
-        "Se a pergunta depender de dado ausente, responda pedindo a informacao necessaria de forma educada. "
-        "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca. "
-        "Quando houver historico da conversa, responda considerando a ultima pergunta no contexto das mensagens anteriores, sem reiniciar o atendimento. "
-        "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
-        f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres "
-        f"(o Mercado Livre aceita {ML_RESPOSTA_PERGUNTA_MAX_CHARS}; deixe margem de seguranca para evitar falha no envio).\n\n"
-        f"Loja: {loja}\n"
-        f"ID da pergunta: {question_id}\n"
-        f"ID do anuncio: {item_id}\n"
-        f"SKU interno (nao mencionar ao comprador): {sku or '-'}\n"
-        f"Titulo do anuncio: {titulo or '-'}\n"
-        f"Descricao do anuncio:\n{descricao_prompt or '-'}\n\n"
-        f"{contexto_outra_peca_prompt + chr(10) + chr(10) if contexto_outra_peca_prompt else ''}"
-        f"{bloco_historico_prompt}"
-        f"{bloco_resposta_atual}"
-        f"Pergunta do comprador:\n{texto_pergunta}"
-    )
+    if intencao_atendimento.get("fluxo") == "pos_venda":
+        prompt = (
+            "Gere uma resposta pronta de pos-venda para uma mensagem recebida no Mercado Livre. "
+            "Use as orientacoes salvas no treinamento de pos-venda. "
+            "Nao responda como venda, compatibilidade ou aplicacao do produto. "
+            "Se o comprador relata defeito, mau funcionamento, troca ou garantia, reconheca o problema e peça o proximo dado necessario. "
+            "Quando houver mau funcionamento, peça foto do item/problema e oriente o atendimento pelo detalhe da compra quando adequado. "
+            "Nao invente causa tecnica, prazo, garantia, estoque ou procedimento. "
+            "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja. "
+            "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
+            f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres.\n\n"
+            f"Loja: {loja}\n"
+            f"ID da pergunta: {question_id}\n"
+            f"ID do anuncio: {item_id}\n"
+            f"Titulo do anuncio: {titulo or '-'}\n"
+            f"Intencao classificada:\n{json.dumps(intencao_atendimento, ensure_ascii=False, default=str)}\n\n"
+            f"{bloco_historico_prompt}"
+            f"{bloco_resposta_atual}"
+            f"Pergunta do comprador:\n{texto_pergunta}"
+        )
+    else:
+        prompt = (
+            "Gere uma resposta pronta para uma pergunta recebida no Mercado Livre. "
+            "Use as orientacoes salvas no treinamento de perguntas de anuncio. "
+            "Use o titulo e a descricao do anuncio como contexto interno, sem repetir dados desnecessarios ao comprador. "
+            "Nao invente compatibilidade, medidas, estoque, prazo, garantia ou informacoes tecnicas que nao estejam no contexto. "
+            "Se o comprador perguntar por outra peca, use a busca interna por outra peca quando ela estiver presente no contexto. "
+            "Somente quando a pergunta for sobre outra peca, e houver anuncio ativo encontrado dessa outra peca, informe de forma curta que temos a peca e envie o link retornado. "
+            "Se a pergunta for apenas sobre compatibilidade do anuncio atual, nao fale que o anuncio esta ativo e nao envie link do proprio anuncio. "
+            "Quando citar o veiculo, nunca copie a pergunta inteira do comprador; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
+            "Nunca invente link; use somente links retornados na lista de anuncios ativos quando o link for realmente necessario. "
+            "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja na resposta ao comprador, salvo se o comprador perguntar isso diretamente. "
+            "Se a pergunta depender de dado ausente, responda pedindo a informacao necessaria de forma educada. "
+            "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca. "
+            "Quando houver historico da conversa, responda considerando a ultima pergunta no contexto das mensagens anteriores, sem reiniciar o atendimento. "
+            "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
+            f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres "
+            f"(o Mercado Livre aceita {ML_RESPOSTA_PERGUNTA_MAX_CHARS}; deixe margem de seguranca para evitar falha no envio).\n\n"
+            f"Loja: {loja}\n"
+            f"ID da pergunta: {question_id}\n"
+            f"ID do anuncio: {item_id}\n"
+            f"SKU interno (nao mencionar ao comprador): {sku or '-'}\n"
+            f"Titulo do anuncio: {titulo or '-'}\n"
+            f"Intencao classificada:\n{json.dumps(intencao_atendimento, ensure_ascii=False, default=str)}\n\n"
+            f"Descricao do anuncio:\n{descricao_prompt or '-'}\n\n"
+            f"{contexto_outra_peca_prompt + chr(10) + chr(10) if contexto_outra_peca_prompt else ''}"
+            f"{bloco_historico_prompt}"
+            f"{bloco_resposta_atual}"
+            f"Pergunta do comprador:\n{texto_pergunta}"
+        )
+    tipo_treinamento = "pos_venda" if intencao_atendimento.get("fluxo") == "pos_venda" else "perguntas_anuncio"
     prompt = _perguntas_ia_limitar_prompt(prompt, texto_pergunta)
     payload = IAChatRequest(
         message=prompt,
         page="Perguntas e pÃ³s venda",
-        context={"modulo": "perguntas_pos_venda", "tipo": "resposta_automatica_ml", "loja": loja, "produto": contexto},
+        context={
+            "modulo": "perguntas_pos_venda",
+            "tipo": "resposta_pos_venda" if tipo_treinamento == "pos_venda" else "resposta_automatica_ml",
+            "tipo_treinamento": tipo_treinamento,
+            "loja": loja,
+            "produto": contexto,
+        },
         model=None,
     )
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
     agent_input = _perguntas_ia_agent_input(client_id, loja, pergunta, item, contexto, prompt)
-    if _ia_modo_perguntas_configurado() == "agente":
-        resposta, model_usado = _perguntas_ia_chamar_agente_cloud(
-            client_id,
-            loja,
-            pergunta,
-            item,
-            contexto,
-            prompt,
-        )
-    else:
-        resposta, model_usado, tool_results = _ia_agent_perguntas_gerar_resposta(client_id, agent_input)
-        resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
-        return resposta_limpa, cfg, {
-            **contexto,
-            "model": model_usado,
-            "modo_ia": "modelo_com_ferramentas_locais",
-            "tool_results": tool_results,
-        }
+    resposta, model_usado, diagnostico_ia = _perguntas_ia_v2_gerar_resposta(client_id, agent_input)
     resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
-    if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
-        raise PerguntasIARespostaIndisponivel(
-            "IA indisponivel para responder esta pergunta. Resposta automatica bloqueada para nao enviar mensagem de erro ao comprador."
-        )
-    return resposta_limpa, cfg, {**contexto, "model": model_usado}
+    return resposta_limpa, cfg, {
+        **contexto,
+        "model": model_usado,
+        "modo_ia": ML_PERGUNTAS_IA_V2_MODO,
+        "diagnostico_ia": diagnostico_ia,
+    }
 
 
 def _perguntas_ia_enviar_resposta_ml(
@@ -19528,8 +20719,9 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    usa_contexto = False if modo_rapido else _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if not modo_rapido and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
+    desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
+    usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
+    if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
         usa_contexto = True
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
@@ -19582,16 +20774,17 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
             "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
             "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
         )
-        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-            mensagem,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
-        system_prompt += _ia_treinamento_ppv_bloco_prompt(
-            client_id,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
+        if not desativa_recursos_chat:
+            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+                mensagem,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
+            system_prompt += _ia_treinamento_ppv_bloco_prompt(
+                client_id,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
 
     input_messages = [{"role": "system", "content": system_prompt}]
     input_messages.extend(historico)
@@ -19628,7 +20821,7 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    if not modo_rapido:
+    if not modo_rapido and not desativa_recursos_chat:
         try:
             texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
             bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
@@ -19746,8 +20939,9 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    usa_contexto = False if modo_rapido else _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if not modo_rapido and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
+    desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
+    usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
+    if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
         usa_contexto = True
 
     if _ia_chat_tem_imagem(anexos):
@@ -19805,16 +20999,17 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
             "Quando fizer sentido, finalize com uma sugestÃƒÂ£o curta de prÃƒÂ³ximo passo. "
             "Evite texto longo e repetitivo; seja claro, acionÃƒÂ¡vel e focado no que o usuÃƒÂ¡rio pediu."
         )
-        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-            mensagem,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
-        system_prompt += _ia_treinamento_ppv_bloco_prompt(
-            client_id,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
+        if not desativa_recursos_chat:
+            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+                mensagem,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
+            system_prompt += _ia_treinamento_ppv_bloco_prompt(
+                client_id,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(historico)
@@ -19853,7 +21048,7 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    if not modo_rapido:
+    if not modo_rapido and not desativa_recursos_chat:
         try:
             texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
             bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
@@ -19932,6 +21127,7 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
         return _ia_chat_resposta_saudacao(payload)
@@ -19952,16 +21148,17 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
             "com tom simpatico, cordial, humano e profissional. "
             "Responda exatamente ao que foi pedido e nao invente totais, SKUs, precos ou datas."
         )
-        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-            mensagem,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
-        system_prompt += _ia_treinamento_ppv_bloco_prompt(
-            client_id,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
+        if not desativa_recursos_chat:
+            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+                mensagem,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
+            system_prompt += _ia_treinamento_ppv_bloco_prompt(
+                client_id,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
 
     historico = []
     for item in (payload.history or [])[-8:]:
@@ -19970,7 +21167,7 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "parts": [{"text": content[:1500]}]})
 
-    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if not modo_rapido else ""
+    contexto_tela = f"Contexto da tela em JSON:\n{_montar_contexto_ia(payload, client_id)}" if not modo_rapido and not desativa_recursos_chat else ""
     pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
     user_text = (
         (f"{contexto_tela}\n\n" if contexto_tela else "")
@@ -20027,8 +21224,9 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
-    usa_contexto = False if modo_rapido else _ia_chat_usa_contexto_tela(mensagem, anexos)
-    if not modo_rapido and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
+    desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
+    usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
+    if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
         usa_contexto = True
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
@@ -20085,16 +21283,17 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
             "Quando comparar meses, periodos, lojas ou SKUs com duas ou mais colunas de valores, responda preferencialmente em tabela Markdown. "
             "Se houver anexos, considere o conteudo deles. Seja claro, acionavel e focado."
         )
-        system_prompt += _ia_chat_bloco_prompt_analise_especialista(
-            mensagem,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
-        system_prompt += _ia_treinamento_ppv_bloco_prompt(
-            client_id,
-            payload.page,
-            payload.context if isinstance(payload.context, dict) else None,
-        )
+        if not desativa_recursos_chat:
+            system_prompt += _ia_chat_bloco_prompt_analise_especialista(
+                mensagem,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
+            system_prompt += _ia_treinamento_ppv_bloco_prompt(
+                client_id,
+                payload.page,
+                payload.context if isinstance(payload.context, dict) else None,
+            )
 
     pergunta_usuario = mensagem or "Analise os anexos enviados e responda de forma objetiva."
     resumo_anexos = ""
@@ -20130,7 +21329,7 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    if not modo_rapido:
+    if not modo_rapido and not desativa_recursos_chat:
         try:
             texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
             bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
@@ -20409,10 +21608,10 @@ def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
     if not client_id:
         raise HTTPException(status_code=400, detail="Informe tenant_id no input do agente.")
     task = str(agent_input.get("task") or "").strip()
-    if task and task != "mercado_livre_question_draft":
+    if task and task not in {"mercado_livre_question_draft", "mercado_livre_question_draft_v2"}:
         raise HTTPException(status_code=400, detail="Tarefa do agente nao suportada neste endpoint.")
     try:
-        resposta, model_usado, tool_results = _ia_agent_perguntas_gerar_resposta(client_id, agent_input)
+        resposta, model_usado, diagnostico_ia = _perguntas_ia_v2_gerar_resposta(client_id, agent_input)
     except PerguntasIARespostaIndisponivel as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
@@ -20421,7 +21620,9 @@ def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
             "resposta": resposta,
             "answer": resposta,
             "model": model_usado,
-            "tool_results": tool_results,
+            "tool_results": [],
+            "diagnostico_ia": diagnostico_ia,
+            "modo_ia": ML_PERGUNTAS_IA_V2_MODO,
             "read_only": True,
         }
     }
@@ -23254,6 +24455,8 @@ def _normalizar_permissoes(permissoes=None) -> dict:
             else:
                 valor = bool(valor)
             base[chave] = valor
+        if "avant" not in permissoes:
+            base["avant"] = bool(base.get("favoritos"))
     if base.get("full"):
         for chave in PERMISSION_KEYS:
             base[chave] = True
@@ -30739,6 +31942,7 @@ def extrair_permissoes(row, headers):
         'etiquetas': ['etiquetas'],
         'full': ['full', 'admin total', 'administrador'],
         'favoritos': ['favoritos'],
+        'avant': ['avant', 'avant pro', 'avantpro', 'navegador avant', 'modulo avant'],
         'perguntas_pos_venda': ['perguntas e pos venda', 'perguntas e pÃ³s venda', 'perguntas pos venda', 'pos venda', 'pÃ³s venda'],
         'anuncios_ml': ['anuncios mercado livre', 'anuncios mercado livre', 'anuncios ml'],
         'medias_compras': ['mÃƒÂ©dias e compras', 'medias e compras', 'media e compras', 'medias compras'],
@@ -30754,7 +31958,7 @@ def extrair_permissoes(row, headers):
     fallback_map = {
         'analise_promo': 10, 'renovacao_fixa': 11, 'vendas': 12, 'estoque': 13,
         'integracao': 14, 'etiquetas': 15, 'full': 16, 'favoritos': 17,
-        'perguntas_pos_venda': -1, 'anuncios_ml': 18, 'medias_compras': 19, 'mercado_full': -1,
+        'avant': -1, 'perguntas_pos_venda': -1, 'anuncios_ml': 18, 'medias_compras': 19, 'mercado_full': -1,
         'cadastro': -1, 'impostos': -1, 'configuracoes': -1, 'importacoes': -1,
         'simulador': -1, 'sala_reuniao': -1,
     }
@@ -30773,6 +31977,10 @@ def extrair_permissoes(row, headers):
             val = str(row[idx]).upper().strip()
             if val in ['VERDADEIRO', 'TRUE', 'SIM', '1', 'X', 'OK']:
                 permissoes[mod_name] = True
+
+    avant_tem_coluna = any(_norm_header(cand) in headers_norm for cand in map_headers.get('avant', []))
+    if not avant_tem_coluna:
+        permissoes['avant'] = bool(permissoes.get('favoritos'))
 
     return _normalizar_permissoes(permissoes)
 
@@ -42581,7 +43789,8 @@ def ml_perguntas_automacao_poll(
                 if not resposta:
                     continue
 
-                if config.get("solicitar_aprovacao"):
+                if config.get("solicitar_aprovacao") or _perguntas_ia_v2_exigir_aprovacao():
+                    intencao_ctx = contexto.get("intencao_atendimento") if isinstance(contexto.get("intencao_atendimento"), dict) else {}
                     approval = {
                         "id": _perguntas_ia_aprovacao_id(nome_loja, question_id),
                         "status": "pending",
@@ -42595,6 +43804,11 @@ def ml_perguntas_automacao_poll(
                         "mensagens": _perguntas_ia_mensagens_aprovacao(pergunta, nome_loja),
                         "resposta_sugerida": resposta,
                         "model": contexto.get("model") or "",
+                        "ia_origem": "mercado_livre_perguntas",
+                        "ia_finalidade": intencao_ctx.get("fluxo") or "perguntas_anuncio",
+                        "ia_intencao": intencao_ctx,
+                        "ia_modo": contexto.get("modo_ia") or _ia_modo_perguntas_configurado(),
+                        "aprovacao_obrigatoria_ia": _perguntas_ia_v2_exigir_aprovacao(),
                         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
                     }
                     aprovacoes.append(approval)
@@ -42648,6 +43862,17 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
         tipo = str(approval.get("tipo") or approval.get("approval_type") or "").strip().lower()
         loja = str(approval.get("loja") or "").strip()
         question_id = str(approval.get("question_id") or "").strip()
+        origem_padrao = "mercado_livre_pos_venda" if tipo == "pos_venda" else "mercado_livre_perguntas"
+        finalidade_padrao = "pos_venda" if tipo == "pos_venda" else "perguntas_anuncio"
+        if not approval.get("ia_origem"):
+            approval["ia_origem"] = origem_padrao
+            mudou = True
+        if not approval.get("ia_finalidade"):
+            approval["ia_finalidade"] = finalidade_padrao
+            mudou = True
+        if not approval.get("ia_modo"):
+            approval["ia_modo"] = "modelo" if tipo == "pos_venda" else _ia_modo_perguntas_configurado()
+            mudou = True
         if tipo == "pos_venda":
             pack_id = str(approval.get("pack_id") or "").strip()
             order_id = str(approval.get("order_id") or "").strip()
@@ -44895,6 +46120,9 @@ def ml_pos_venda_automacao_poll(
                         "resposta_sugerida": resposta,
                         "max_chars": max_chars,
                         "model": model_usado,
+                        "ia_origem": "mercado_livre_pos_venda",
+                        "ia_finalidade": "pos_venda",
+                        "ia_modo": "modelo",
                         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
                     }
                     aprovacoes.append(approval)
@@ -45795,6 +47023,51 @@ def favoritos_ml_listar_skus_anuncios(
 
     username = _extrair_username_do_request(request)
     sku_busca = str(sku or "").strip()
+    inicio_endpoint = time.perf_counter()
+    cache_key_endpoint = ""
+    if not sku_busca:
+        cache_key_endpoint = (
+            f"favoritos:skus_anuncios:v1:{client_id}:{username}:"
+            f"{int(bool(todas_lojas))}:{_chave_loja_favoritos(loja) or 'auto'}"
+        )
+        cached_endpoint = _ml_cache_get(cache_key_endpoint, ttl=600)
+        if isinstance(cached_endpoint, dict) and cached_endpoint.get("skus"):
+            logger.info(
+                "[Favoritos ML] skus-anuncios cache hit loja=%s todas=%s skus=%s ms=%d",
+                loja or "",
+                bool(todas_lojas),
+                len(cached_endpoint.get("skus") or []),
+                int((time.perf_counter() - inicio_endpoint) * 1000),
+            )
+            return cached_endpoint
+
+    def _finalizar_payload_skus_anuncios(payload: dict, etapa: str) -> dict:
+        if cache_key_endpoint and isinstance(payload, dict) and payload.get("skus"):
+            _ml_cache_set(cache_key_endpoint, payload)
+        logger.info(
+            "[Favoritos ML] skus-anuncios %s loja=%s todas=%s skus=%s anuncios=%s ms=%d",
+            etapa,
+            payload.get("loja") if isinstance(payload, dict) else "",
+            bool(payload.get("todas_lojas")) if isinstance(payload, dict) else bool(todas_lojas),
+            len(payload.get("skus") or []) if isinstance(payload, dict) else 0,
+            payload.get("total_anuncios") if isinstance(payload, dict) else 0,
+            int((time.perf_counter() - inicio_endpoint) * 1000),
+        )
+        return payload
+
+    def _payload_stale_skus_anuncios(motivo: str) -> dict | None:
+        if not cache_key_endpoint:
+            return None
+        stale = _ml_cache_get_stale(cache_key_endpoint, 6 * 60 * 60)
+        if not isinstance(stale, dict) or not stale.get("skus"):
+            return None
+        payload = dict(stale)
+        aviso = f"Mostrando SKUs em cache porque o Mercado Livre nao respondeu agora: {motivo}"
+        warning_atual = str(payload.get("warning") or "").strip()
+        payload["warning"] = f"{warning_atual} | {aviso}" if warning_atual else aviso
+        payload["stale_cache"] = True
+        logger.warning("[Favoritos ML] skus-anuncios usando cache stale loja=%s motivo=%s", payload.get("loja"), motivo)
+        return payload
 
     if todas_lojas and not sku_busca:
         todos_skus: list[dict] = []
@@ -45802,22 +47075,39 @@ def favoritos_ml_listar_skus_anuncios(
         avisos: list[str] = []
 
         def _carregar_loja_favoritos(loja_info_item: dict) -> dict:
+            inicio_loja = time.perf_counter()
             nome_loja_item = str(loja_info_item.get("nome") or "").strip()
             if not nome_loja_item:
                 return {"loja": "", "skus": [], "total_anuncios": 0, "warning": ""}
             cfg = _obter_cfg_ml(client_id, nome_loja_item)
+            t0 = time.perf_counter()
             itens, _cfg = _ml_favoritos_listar_todos_itens_ativos_loja(client_id, nome_loja_item, cfg)
+            ms_itens = int((time.perf_counter() - t0) * 1000)
+            t0 = time.perf_counter()
             skus_loja = _favoritos_ml_skus_unicos_itens(itens)
+            ms_skus = int((time.perf_counter() - t0) * 1000)
             for item_sku in skus_loja:
                 if isinstance(item_sku, dict):
                     item_sku["loja"] = nome_loja_item
                     item_sku["loja_sync"] = nome_loja_item
+            t0 = time.perf_counter()
             skus_loja = _favoritos_ml_enriquecer_estoque_cadastro(client_id, nome_loja_item, skus_loja)
             skus_loja = _favoritos_enriquecer_pesquisas_usuario(
                 client_id,
                 username,
                 nome_loja_item,
                 skus_loja,
+            )
+            ms_enriq = int((time.perf_counter() - t0) * 1000)
+            logger.info(
+                "[Favoritos ML] skus-anuncios loja=%s anuncios=%s skus=%s ms_itens=%s ms_skus=%s ms_enriq=%s ms_total=%s",
+                nome_loja_item,
+                len(itens),
+                len(skus_loja),
+                ms_itens,
+                ms_skus,
+                ms_enriq,
+                int((time.perf_counter() - inicio_loja) * 1000),
             )
             return {"loja": nome_loja_item, "skus": skus_loja, "total_anuncios": len(itens), "warning": ""}
 
@@ -45843,7 +47133,7 @@ def favoritos_ml_listar_skus_anuncios(
             str(item.get("loja") or item.get("loja_sync") or "").lower(),
             str(item.get("sku") or "").lower(),
         ))
-        return {
+        return _finalizar_payload_skus_anuncios({
             "success": True,
             "lojas": lojas_payload,
             "loja": "__todas",
@@ -45853,7 +47143,7 @@ def favoritos_ml_listar_skus_anuncios(
             "total_anuncios": total_anuncios,
             "warnings": avisos,
             "warning": " | ".join(avisos[:3]) if avisos else "",
-        }
+        }, "ok")
 
     loja_chave = _chave_loja_favoritos(loja)
     loja_info = None
@@ -45868,11 +47158,15 @@ def favoritos_ml_listar_skus_anuncios(
     nome_loja = str(loja_info.get("nome") or "").strip()
     try:
         cfg = _obter_cfg_ml(client_id, nome_loja)
+        t0 = time.perf_counter()
         if sku_busca:
             itens, _cfg = _ml_favoritos_buscar_itens_por_sku(client_id, nome_loja, cfg, sku_busca)
         else:
             itens, _cfg = _ml_favoritos_listar_todos_itens_ativos_loja(client_id, nome_loja, cfg)
+        ms_itens = int((time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
         skus = _favoritos_ml_skus_unicos_itens(itens)
+        ms_skus = int((time.perf_counter() - t0) * 1000)
         for item_sku in skus:
             if isinstance(item_sku, dict):
                 item_sku["loja"] = nome_loja
@@ -45883,6 +47177,7 @@ def favoritos_ml_listar_skus_anuncios(
                 if isinstance(item_sku, dict):
                     item_sku["loja"] = nome_loja
                     item_sku["loja_sync"] = nome_loja
+        t0 = time.perf_counter()
         skus = _favoritos_ml_enriquecer_estoque_cadastro(client_id, nome_loja, skus)
         skus = _favoritos_enriquecer_pesquisas_usuario(
             client_id,
@@ -45890,7 +47185,18 @@ def favoritos_ml_listar_skus_anuncios(
             nome_loja,
             skus,
         )
-        return {
+        ms_enriq = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "[Favoritos ML] skus-anuncios loja=%s busca_sku=%s anuncios=%s skus=%s ms_itens=%s ms_skus=%s ms_enriq=%s",
+            nome_loja,
+            bool(sku_busca),
+            len(itens),
+            len(skus),
+            ms_itens,
+            ms_skus,
+            ms_enriq,
+        )
+        return _finalizar_payload_skus_anuncios({
             "success": True,
             "lojas": lojas_payload,
             "loja": nome_loja,
@@ -45898,10 +47204,16 @@ def favoritos_ml_listar_skus_anuncios(
             "total": len(skus),
             "total_anuncios": len(itens),
             "busca_sku": sku_busca,
-        }
-    except HTTPException:
+        }, "ok")
+    except HTTPException as exc:
+        stale = _payload_stale_skus_anuncios(str(getattr(exc, "detail", "") or exc))
+        if stale is not None:
+            return _finalizar_payload_skus_anuncios(stale, "stale")
         raise
     except Exception as exc:
+        stale = _payload_stale_skus_anuncios(str(exc))
+        if stale is not None:
+            return _finalizar_payload_skus_anuncios(stale, "stale")
         logger.exception("[Favoritos ML] Falha ao listar SKUs de anuncios da loja %s: %s", nome_loja, exc)
         raise HTTPException(status_code=500, detail=f"Erro ao listar SKUs do Mercado Livre: {exc}")
 
@@ -47148,6 +48460,7 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
     preco_num = round(float(preco), 2)
     ultimo_resp = None
     erro_api_precos = None
+    ultima_conferencia_apos_erro = None
 
     def _json_response(resp) -> Any:
         try:
@@ -47192,6 +48505,105 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
         if any(t in texto_norm for t in termos_preco) and any(t in texto_norm for t in termos_ignorado):
             return True
         return False
+
+    def _erro_preco_transitorio(resp, detalhe: str = "") -> bool:
+        status = getattr(resp, "status_code", None)
+        texto = f"{detalhe or ''} {getattr(resp, 'text', '') or ''}"
+        texto_norm = normalizar_texto(texto)
+        gatilhos = (
+            "oops",
+            "something went wrong",
+            "temporarily unavailable",
+            "temporary unavailable",
+            "temporarily overloaded",
+            "service temporarily overloaded",
+            "internal error",
+            "internal server error",
+            "bad gateway",
+            "gateway timeout",
+            "read timed out",
+            "request timeout",
+            "try again",
+        )
+        return bool(
+            status in (408, 409, 423, 425, 429, 500, 502, 503, 504)
+            or any(gatilho in texto_norm for gatilho in gatilhos)
+        )
+
+    def _erro_api_precos_amigavel(detalhe: str) -> str:
+        texto_norm = normalizar_texto(detalhe or "")
+        if "resource not found" in texto_norm:
+            return "API de precos padrao nao disponivel para este anuncio/contexto."
+        if not detalhe:
+            return ""
+        return detalhe
+
+    def _resumir_conferencia_preco(conferencia: Any) -> str:
+        if not isinstance(conferencia, dict):
+            return ""
+        partes = []
+        if conferencia.get("preco_alvo") not in (None, ""):
+            partes.append(f"preco esperado {conferencia.get('preco_alvo')}")
+        for label, chave in (
+            ("price", "item_price"),
+            ("base_price", "base_price"),
+            ("standard_price", "standard_price"),
+            ("original_price", "original_price"),
+        ):
+            valor = conferencia.get(chave)
+            if valor not in (None, ""):
+                partes.append(f"{label} {valor}")
+        if conferencia.get("attempt"):
+            partes.append(f"tentativa de conferencia {conferencia.get('attempt')}")
+        return ", ".join(partes)
+
+    def _confirmar_preco_apos_erro(motivo: str, tentativas: int = 3) -> tuple[dict, dict]:
+        try:
+            conferencia, cfg_conf = _favoritos_ml_aguardar_preco_anuncio(
+                client_id,
+                loja,
+                cfg,
+                item_id,
+                float(preco_num),
+                tentativas=tentativas,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Favoritos ML] Falha ao conferir preco de %s/%s apos erro da API de preco: %s",
+                loja,
+                item_id,
+                exc,
+            )
+            return {
+                "success": False,
+                "preco_alvo": preco_num,
+                "error": f"Falha ao conferir preco apos erro: {exc}",
+            }, cfg
+        if conferencia.get("success"):
+            logger.info(
+                "[Favoritos ML] Preco de %s/%s confirmado apos erro da API de preco. Motivo anterior: %s",
+                loja,
+                item_id,
+                motivo,
+            )
+        return conferencia, cfg_conf
+
+    def _montar_erro_preco_final(detalhe_principal: str, conferencia: Optional[dict] = None) -> str:
+        partes = [
+            (
+                "Mercado Livre nao confirmou a atualizacao do preco cheio. "
+                "O sistema tentou atualizar o preco e conferiu o anuncio depois do erro."
+            )
+        ]
+        if detalhe_principal:
+            partes.append(f"Resposta do Mercado Livre: {detalhe_principal}")
+        erro_precos = _erro_api_precos_amigavel(erro_api_precos or "")
+        if erro_precos:
+            partes.append(f"API de precos: {erro_precos}")
+        resumo_conf = _resumir_conferencia_preco(conferencia or ultima_conferencia_apos_erro)
+        if resumo_conf:
+            partes.append(f"Conferencia pos-erro: {resumo_conf}.")
+        return " ".join(partes)
 
     def _normalizar_contextos_standard(contextos: Any) -> list[str]:
         if isinstance(contextos, str):
@@ -47296,9 +48708,13 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
             }, cfg
         erro_api_precos = _ml_parse_error_detail(resp_standard, "Erro ao atualizar preco pela API de precos")
 
-    for tentativa in range(3):
+    max_tentativas_put = 5
+    for tentativa in range(max_tentativas_put):
         if tentativa:
-            time.sleep(1.2 * tentativa)
+            espera = min(8.0, 1.5 * tentativa)
+            if ultimo_resp is not None:
+                espera = _ml_retry_after_seconds(ultimo_resp, padrao=espera)
+            time.sleep(espera)
         resp, cfg = _ml_api_request(
             client_id,
             loja,
@@ -47312,26 +48728,50 @@ def _favoritos_ml_atualizar_preco_item(client_id: str, loja: str, cfg: dict, ite
         if resp.status_code in (200, 201):
             data = _json_response(resp)
             if _resposta_indica_preco_ignorado(resp, data):
-                detalhe = (
+                detalhe_ignorado = (
                     "Mercado Livre respondeu ao PUT /items, mas o retorno nao refletiu o preco cheio simulado. "
                     f"Preco esperado: {preco_num}. Retorno: {data}"
                 )
-                if erro_api_precos:
-                    detalhe = f"{detalhe} | API de precos: {erro_api_precos}"
-                raise HTTPException(status_code=409, detail=detalhe)
+                conferencia, cfg = _confirmar_preco_apos_erro(detalhe_ignorado, tentativas=3)
+                ultima_conferencia_apos_erro = conferencia
+                if conferencia.get("success"):
+                    return {
+                        "method": "items_put_confirmed_after_warning",
+                        "payload": {"price": preco_num},
+                        "response": data,
+                        "warning": detalhe_ignorado,
+                        "preco_confirmacao_apos_erro": conferencia,
+                        "prices_standard_error": erro_api_precos,
+                    }, cfg
+                raise HTTPException(status_code=409, detail=_montar_erro_preco_final(detalhe_ignorado, conferencia))
             return {
                 "method": "items_put",
                 "payload": {"price": preco_num},
                 "response": data,
                 "prices_standard_error": erro_api_precos,
             }, cfg
-        if resp.status_code != 409:
+
+        detalhe_tentativa = _ml_parse_error_detail(resp, "Erro ao atualizar preco do anuncio no Mercado Livre")
+        conferencia, cfg = _confirmar_preco_apos_erro(detalhe_tentativa, tentativas=2)
+        ultima_conferencia_apos_erro = conferencia
+        if conferencia.get("success"):
+            return {
+                "method": "items_put_confirmed_after_error",
+                "payload": {"price": preco_num},
+                "response_error": _json_response(resp),
+                "error_status_code": resp.status_code,
+                "error_detail": detalhe_tentativa,
+                "preco_confirmacao_apos_erro": conferencia,
+                "prices_standard_error": erro_api_precos,
+            }, cfg
+        if not _erro_preco_transitorio(resp, detalhe_tentativa):
             break
 
     detalhe = _ml_parse_error_detail(ultimo_resp, "Erro ao atualizar preco do anuncio no Mercado Livre")
-    if erro_api_precos:
-        detalhe = f"{detalhe} | API de precos: {erro_api_precos}"
-    raise HTTPException(status_code=getattr(ultimo_resp, "status_code", 500) or 500, detail=detalhe)
+    raise HTTPException(
+        status_code=getattr(ultimo_resp, "status_code", 500) or 500,
+        detail=_montar_erro_preco_final(detalhe, ultima_conferencia_apos_erro),
+    )
 
 
 def _favoritos_ml_aguardar_preco_anuncio(
@@ -48306,29 +49746,40 @@ def favoritos_ml_listar_anuncios_sku(
             fee_data = {}
             cfg_item = dict(cfg or {})
             if item_id:
-                try:
-                    price_info, cfg_item = _ml_obter_preco_detalhado(
+                def _buscar_preco_item():
+                    cfg_preco = dict(cfg_item or {})
+                    return _ml_obter_preco_detalhado(
                         client_id,
                         nome_loja_consulta,
-                        cfg_item,
+                        cfg_preco,
                         item_id,
                         fallback_price=item.get("price"),
                         request_fn=_ml_favoritos_api_request,
                         consultar_sale_price_sempre=True,
                     )
-                except Exception as exc:
-                    logger.warning("[Favoritos ML] Falha ao buscar preco detalhado do item %s: %s", item_id, exc)
-                try:
-                    shipping_data, cfg_item = _ml_obter_frete_detalhado(
+
+                def _buscar_frete_item():
+                    cfg_frete = dict(cfg_item or {})
+                    return _ml_obter_frete_detalhado(
                         client_id,
                         nome_loja_consulta,
-                        cfg_item,
+                        cfg_frete,
                         item_id,
                         item.get("shipping") or {},
                         request_fn=_ml_favoritos_api_request,
                     )
-                except Exception as exc:
-                    logger.warning("[Favoritos ML] Falha ao buscar frete detalhado do item %s: %s", item_id, exc)
+
+                with ThreadPoolExecutor(max_workers=2) as executor_detalhes:
+                    futuro_preco = executor_detalhes.submit(_buscar_preco_item)
+                    futuro_frete = executor_detalhes.submit(_buscar_frete_item)
+                    try:
+                        price_info, _cfg_preco = futuro_preco.result(timeout=18)
+                    except Exception as exc:
+                        logger.warning("[Favoritos ML] Falha ao buscar preco detalhado do item %s: %s", item_id, exc)
+                    try:
+                        shipping_data, _cfg_frete = futuro_frete.result(timeout=18)
+                    except Exception as exc:
+                        logger.warning("[Favoritos ML] Falha ao buscar frete detalhado do item %s: %s", item_id, exc)
                 try:
                     item_fee = dict(item)
                     if price_info.get("price") not in (None, ""):
@@ -48362,7 +49813,11 @@ def favoritos_ml_listar_anuncios_sku(
 
         anuncios = []
         if len(itens) > 1:
-            max_workers_itens = min(8, len(itens))
+            try:
+                max_workers_itens = int(float(str(os.getenv("ML_FAVORITOS_ITEM_DETAIL_WORKERS", "8") or "8").replace(",", ".")))
+            except Exception:
+                max_workers_itens = 8
+            max_workers_itens = min(max(1, max_workers_itens), len(itens))
             with ThreadPoolExecutor(max_workers=max_workers_itens) as executor:
                 futuros_itens = [executor.submit(_montar_anuncio_item, item) for item in itens]
                 for futuro in as_completed(futuros_itens):
@@ -49153,6 +50608,71 @@ def _ml_api_user_com_oauth_tenant(client_id: str | None, user_id: str | None):
             logger.warning("[Favoritos][Vendedor] Falha OAuth loja=%s user=%s: %s", nome_loja, user_id, exc)
     return None
 
+def _ml_total_visitas_payload(data: dict | None):
+    if not isinstance(data, dict):
+        return None
+    for campo in ("total_visits", "totalVisits", "total", "visits"):
+        if campo in data:
+            valor = _parse_vendas_ml(data.get(campo))
+            if valor is not None:
+                return valor
+    total = 0
+    encontrou = False
+    for entry in data.get("results") or []:
+        if not isinstance(entry, dict):
+            continue
+        valor = _parse_vendas_ml(entry.get("total") or entry.get("visits") or entry.get("total_visits"))
+        if valor is None:
+            continue
+        encontrou = True
+        total += max(0, int(valor))
+    return total if encontrou else None
+
+def _ml_api_visitas_com_oauth_tenant(client_id: str | None, item_id: str | None, dias: int = 30):
+    item_id = _extrair_item_id(item_id or "") or str(item_id or "").strip().upper().replace("-", "")
+    if not client_id or not item_id:
+        return None
+    dias = max(1, min(int(dias or 30), 150))
+    ending = dt.datetime.now().strftime("%Y-%m-%d")
+    chave_cache = f"favoritos_visitas:{client_id}:{item_id}:{dias}:{ending}"
+    cached = _ml_cache_get(chave_cache, 900)
+    if cached is not None:
+        return cached
+    try:
+        lojas = carregar_lojas(client_id)
+    except Exception:
+        lojas = []
+
+    for loja in lojas or []:
+        nome_loja = str((loja or {}).get("nome") or "").strip()
+        integracoes = (loja or {}).get("integracoes") or {}
+        cfg = dict(integracoes.get("mercadolivre") or {})
+        if not nome_loja or not cfg.get("access_token"):
+            continue
+        cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
+        cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        try:
+            resp, _cfg = _ml_api_request(
+                client_id,
+                nome_loja,
+                cfg,
+                "GET",
+                f"https://api.mercadolibre.com/items/{item_id}/visits/time_window",
+                params={"last": dias, "unit": "day", "ending": ending},
+                timeout=12,
+            )
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                total = _ml_total_visitas_payload(data)
+                if total is not None:
+                    payload = {"visitas": int(total), "fonte": "api_visitas", "loja": nome_loja}
+                    _ml_cache_set(chave_cache, payload)
+                    return payload
+            logger.info("[Favoritos][Visitas] ML OAuth loja=%s item=%s status=%s", nome_loja, item_id, resp.status_code)
+        except Exception as exc:
+            logger.warning("[Favoritos][Visitas] Falha OAuth loja=%s item=%s: %s", nome_loja, item_id, exc)
+    return None
+
 def _ml_api_search(termo: str, limit: int = 50, offset: int = 0):
     params = {
         "q": termo,
@@ -49388,6 +50908,8 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
         "fonte_vendedor": None,
         "vendas": None,
         "fonte_vendas": None,
+        "visitas": None,
+        "fonte_visitas": None,
         "sku": None,
         "listing_type_id": None,
         "listing_type_name": None,
@@ -49474,9 +50996,19 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
             if vendas_api is not None:
                 info["vendas"] = vendas_api
                 info["fonte_vendas"] = "api_item_vendas"
+            visitas_api = _ml_api_visitas_com_oauth_tenant(client_id, item_id)
+            if isinstance(visitas_api, dict) and visitas_api.get("visitas") is not None:
+                info["visitas"] = visitas_api.get("visitas")
+                info["fonte_visitas"] = visitas_api.get("fonte") or "api_visitas"
 
             if info["data_criacao"] and info["vendedor"] and info["vendas"] is not None and info["parcelamento_sem_juros"] is not None:
                 return info
+
+    if item_id and info["visitas"] is None:
+        visitas_api = _ml_api_visitas_com_oauth_tenant(client_id, item_id)
+        if isinstance(visitas_api, dict) and visitas_api.get("visitas") is not None:
+            info["visitas"] = visitas_api.get("visitas")
+            info["fonte_visitas"] = visitas_api.get("fonte") or "api_visitas"
 
     if not url:
         return info
@@ -49567,6 +51099,11 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
                     if vendas_api is not None:
                         info["vendas"] = vendas_api
                         info["fonte_vendas"] = "api_item_redirect"
+                if info["visitas"] is None:
+                    visitas_api = _ml_api_visitas_com_oauth_tenant(client_id, redirected_id)
+                    if isinstance(visitas_api, dict) and visitas_api.get("visitas") is not None:
+                        info["visitas"] = visitas_api.get("visitas")
+                        info["fonte_visitas"] = visitas_api.get("fonte") or "api_visitas"
     except Exception:
         logger.exception("[Favoritos][Datas] Erro ao consultar codigo-fonte de %s", url)
 
@@ -49704,6 +51241,8 @@ async def favoritos_ml_enriquecer_datas(req: FavoritosEnriquecerDatasRequest, cl
             "fonte_vendedor": info.get("fonte_vendedor"),
             "vendas": info.get("vendas"),
             "fonte_vendas": info.get("fonte_vendas"),
+            "visitas": info.get("visitas"),
+            "fonte_visitas": info.get("fonte_visitas"),
             "listing_type_id": info.get("listing_type_id"),
             "listing_type_name": info.get("listing_type_name"),
             "tipo_anuncio": info.get("tipo_anuncio"),
@@ -66098,6 +67637,27 @@ async def servir_ia_sidebar_js():
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
+
+
+@app.get("/extensoes_chrome/jk_ml_collector/{filename:path}")
+async def servir_jk_ml_collector(filename: str):
+    nome = str(filename or "").replace("\\", "/").strip("/")
+    if not nome or ".." in nome.split("/"):
+        raise HTTPException(status_code=404, detail="Arquivo da extensao invalido")
+
+    base_extensao = os.path.abspath(os.path.join(BASE_DIR, "extensoes_chrome", "jk_ml_collector"))
+    caminho = os.path.abspath(os.path.join(base_extensao, nome))
+    if not caminho.startswith(base_extensao + os.sep) or not os.path.isfile(caminho):
+        raise HTTPException(status_code=404, detail="Arquivo da extensao nao encontrado")
+
+    extensao = os.path.splitext(caminho)[1].lower()
+    media_type = "application/javascript; charset=utf-8" if extensao == ".js" else "application/json; charset=utf-8"
+    response = FileResponse(caminho, media_type=media_type)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
 
 # --- ARQUIVOS ESTÃƒÆ’Ã‚ÂTICOS (FRONTEND) ---
 if not os.path.exists("static"):

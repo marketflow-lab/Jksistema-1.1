@@ -918,7 +918,7 @@
 
     const permissionKeys = [
         'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
-        'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras',
+        'etiquetas', 'favoritos', 'avant', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras',
         'cadastro', 'impostos', 'configuracoes', 'importacoes', 'sala_reuniao', 'admin_usuarios', 'full'
     ];
 
@@ -953,6 +953,7 @@
             etiquetas: 'Etiquetas',
             full: 'Administrador',
             favoritos: 'Favoritos',
+            avant: 'Avant',
             perguntas_pos_venda: 'Perguntas e pós venda',
             anuncios_ml: 'Anúncios ML',
             medias_compras: 'Médias/Compras',
@@ -1069,7 +1070,7 @@
 
     function aplicarPresetPermissoes(tipo) {
         const presets = {
-            operacao: ['vendas', 'estoque', 'etiquetas', 'favoritos', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'sala_reuniao'],
+            operacao: ['vendas', 'estoque', 'etiquetas', 'favoritos', 'avant', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'sala_reuniao'],
             gestao: ['vendas', 'estoque', 'integracao', 'cadastro', 'impostos', 'importacoes', 'configuracoes'],
             admin: permissionKeys,
             limpar: []

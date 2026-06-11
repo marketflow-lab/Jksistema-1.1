@@ -951,6 +951,7 @@
         .card[data-key="mercado_full"] { --module: #2fd3ff; --module-alt: #c9f6ff; --module-soft: rgba(47, 211, 255, 0.32); --module-glow: rgba(47, 211, 255, 0.22); }
         .card[data-key="vendas"] { --module: #f5a84b; --module-alt: #ffe2ad; --module-soft: rgba(245, 168, 75, 0.32); --module-glow: rgba(245, 168, 75, 0.22); }
         .card[data-key="favoritos"] { --module: #f2c94c; --module-alt: #fff0b7; --module-soft: rgba(242, 201, 76, 0.32); --module-glow: rgba(242, 201, 76, 0.22); }
+        .card[data-key="avant"] { --module: #10233f; --module-alt: #93c5fd; --module-soft: rgba(16, 35, 63, 0.22); --module-glow: rgba(37, 99, 235, 0.18); }
         .card[data-key="perguntas_pos_venda"] { --module: #38d4ff; --module-alt: #bff4ff; --module-soft: rgba(56, 212, 255, 0.32); --module-glow: rgba(56, 212, 255, 0.22); }
         .card[data-key="sala_reuniao"] { --module: #4fd1a5; --module-alt: #c5f5e4; --module-soft: rgba(79, 209, 165, 0.32); --module-glow: rgba(79, 209, 165, 0.22); }
         .card[data-key="medias_compras"] { --module: #7bd36b; --module-alt: #c8f4bf; --module-soft: rgba(123, 211, 107, 0.32); --module-glow: rgba(123, 211, 107, 0.22); }
@@ -1083,7 +1084,7 @@
 
     let userData = safeJsonParse(localStorage.getItem('user_data') || 'null', null);
     let permissions = safeJsonParse(localStorage.getItem('permissions') || '{}', {});
-    const APP_VERSION_FALLBACK = '1.0.77';
+    const APP_VERSION_FALLBACK = '1.0.78';
     let appVersionAtual = APP_VERSION_FALLBACK;
 
     if (!userData) {
@@ -1135,6 +1136,7 @@
         { key: 'mercado_full', href: 'full.html', title: '🚚 Full', desc: 'Controle e acompanhamento do estoque Full.' },
         { key: 'vendas', href: 'vendas.html', title: '💰 Vendas', desc: 'Histórico de pedidos e itens.' },
         { key: 'favoritos', href: 'favoritos.html', title: '⭐ Favoritos ML', desc: 'Pesquisa e ranking de anúncios no Mercado Livre.' },
+        { key: 'avant', href: 'avant.html', title: 'AV Avant', desc: 'Navegador AvantPro para pesquisas no Mercado Livre.' },
         { key: 'perguntas_pos_venda', href: 'perguntas_pos_venda.html', title: '💬 Perguntas e pós venda', desc: 'Central para perguntas dos clientes e atendimentos após a venda.' },
         { key: 'sala_reuniao', href: 'sala_reuniao.html', title: '📹 Sala de Reunião', desc: 'Abra chamadas Daily com câmera, microfone, chat e compartilhamento de tela.' },
         { key: 'medias_compras', href: 'medias_compras.html', title: '📊 Médias e Pedidos', desc: 'Planejamento e gestão de pedidos por média de vendas.' },
@@ -1155,10 +1157,15 @@
         return usuarioFull() || (permissions && permissions.admin_usuarios === true);
     }
 
+    function usuarioPodeModulo(modulo) {
+        if (!permissions || !modulo) return false;
+        return permissions[modulo.key] === true || (modulo.key === 'avant' && permissions.favoritos === true);
+    }
+
     function calcularModulosHabilitados() {
         const enabledBase = usuarioFull()
             ? modules.slice()
-            : modules.filter(m => permissions && permissions[m.key] === true);
+            : modules.filter(usuarioPodeModulo);
         const centralUsuarios = modules.find(m => m.key === 'admin_usuarios');
         if (centralUsuarios && !enabledBase.some(m => m.key === 'admin_usuarios')) {
             enabledBase.push(centralUsuarios);

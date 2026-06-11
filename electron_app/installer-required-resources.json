@@ -27,8 +27,30 @@
     { "path": "img", "minFiles": 1 }
   ],
   "mirrorPairs": [
+    { "source": "admin_usuarios.html", "mirror": "static/admin_usuarios.html" },
+    { "source": "avant.html", "mirror": "static/avant.html" },
+    { "source": "cadastro.html", "mirror": "static/cadastro.html" },
+    { "source": "configuracoes.html", "mirror": "static/configuracoes.html" },
     { "source": "dashboard.html", "mirror": "static/dashboard.html" },
-    { "source": "favoritos.html", "mirror": "static/favoritos.html" }
+    { "source": "debug_vendas.html", "mirror": "static/debug_vendas.html" },
+    { "source": "devolucoes.html", "mirror": "static/devolucoes.html" },
+    { "source": "devolucoes_sku.html", "mirror": "static/devolucoes_sku.html" },
+    { "source": "estoque.html", "mirror": "static/estoque.html" },
+    { "source": "favoritos.html", "mirror": "static/favoritos.html" },
+    { "source": "frontend_etiquetas.html", "mirror": "static/frontend_etiquetas.html" },
+    { "source": "frontend_index.html", "mirror": "static/frontend_index.html" },
+    { "source": "frontend_promo.html", "mirror": "static/frontend_promo.html" },
+    { "source": "full.html", "mirror": "static/full.html" },
+    { "source": "integracoes.html", "mirror": "static/integracoes.html" },
+    { "source": "medias_compras.html", "mirror": "static/medias_compras.html" },
+    { "source": "perguntas_pos_venda.html", "mirror": "static/perguntas_pos_venda.html" },
+    { "source": "pesquisa_ml.html", "mirror": "static/pesquisa_ml.html" },
+    { "source": "produtos_sem_venda.html", "mirror": "static/produtos_sem_venda.html" },
+    { "source": "promo.html", "mirror": "static/promo.html" },
+    { "source": "renovacao.html", "mirror": "static/renovacao.html" },
+    { "source": "sala_reuniao.html", "mirror": "static/sala_reuniao.html" },
+    { "source": "vendas.html", "mirror": "static/vendas.html" },
+    { "source": "vendas_sku.html", "mirror": "static/vendas_sku.html" }
   ],
   "requiredExtraResources": [
     { "from": "../electron_shell.html", "to": "electron_shell.html" },

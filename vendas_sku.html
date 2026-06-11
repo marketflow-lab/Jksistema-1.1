@@ -14,6 +14,13 @@
         .container { max-width:1360px; margin:0 auto; }
         .header { position:relative; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; min-height:44px; flex-wrap:wrap; }
         .nav-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        body.sidebar-observacoes-aberto .nav-actions {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+        }
         .back-btn { padding:7px 12px; background:#4facfe; color:#fff; text-decoration:none; border-radius:6px; font-weight:bold; }
         .back-btn:hover { background:#0073e6; }
         .header .back-btn { position:absolute; left:0; top:50%; transform:translateY(-50%); }
@@ -31,10 +38,8 @@
             border: 1px solid rgba(255, 255, 255, 0.35);
             box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
             transition: transform 0.18s ease, filter 0.18s ease;
-            position: fixed;
-            top: 16px;
-            right: 18px;
-            z-index: 1200;
+            position: relative;
+            z-index: 2;
             cursor: pointer;
         }
         .back-main-btn:hover {
@@ -45,6 +50,7 @@
             position: static;
             top: auto;
             right: auto;
+            z-index: auto;
         }
         h1 { margin:0; }
         .filters {
@@ -116,6 +122,41 @@
         .card { background:#151d2c; border:1px solid #324762; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding:8px 10px; border-radius:8px; min-height:78px; min-width:0; display:flex; flex-direction:column; justify-content:space-between; }
         .card h3 { margin:0 0 5px 0; font-size:0.87rem; color:#c6e3ff; font-weight:700; }
         .card .val { font-size:1.02rem; font-weight:bold; color:#f3f8ff; }
+        .transferencia-box {
+            margin: 8px 0 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .transferencia-btn {
+            align-self: flex-start;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #3c516f;
+            background: linear-gradient(160deg, #173962, #102b4a);
+            color: #d8ebff;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .transferencia-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .transferencia-panel {
+            background: #101826;
+            border: 1px solid #22344d;
+            border-radius: 8px;
+            padding: 10px;
+            display: none;
+        }
+        .transferencia-panel.active {
+            display: block;
+        }
+        .transferencia-resumo {
+            color: #9fd0ff;
+            font-size: 0.92rem;
+            margin-bottom: 8px;
+        }
         .table-wrapper { max-height:none; overflow:visible; }
         table { width:100%; border-collapse:collapse; background:#1c1f2b; border:1px solid #222; }
         th, td { padding:10px; border-bottom:1px solid #222; text-align:left; font-size:0.95rem; }
@@ -125,9 +166,35 @@
         .loading { color:#9bd1ff; }
         .error { color:#ff6b6b; }
         .empty { color:#aaa; }
-        
+
         /* Estilos para gráficos */
-        .graficos-container { margin: 14px 0; }
+        .graficos-container { margin: 14px 0; position: relative; padding-right: 360px; }
+        .graficos-container.observacoes-fechado { padding-right: 0; }
+        .sidebar-toggle-btn {
+            position: fixed;
+            right: 320px;
+            top: 50vh;
+            transform: translateY(-50%);
+            z-index: 10002;
+            width: 42px;
+            height: 82px;
+            border-radius: 12px;
+            border: 1px solid #7bcfff;
+            background: linear-gradient(165deg, #4facfe, #2e8be6);
+            color: #061523;
+            font-size: 20px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 1 !important;
+            visibility: visible !important;
+        }
+        .sidebar-toggle-btn:hover {
+            filter: brightness(1.04);
+        }
         .grafico-controles {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -163,11 +230,145 @@
         .grafico-btn { padding: 6px 11px; border-radius: 6px; border: 1px solid #333; background: #1c1f2b; color: #e5e5e5; cursor: pointer; font-size: 13px; }
         .grafico-btn.active { background: #4facfe; color: #0e1117; border-color: #4facfe; font-weight: bold; }
         .grafico-btn:hover:not(.active) { background: #2a2e3b; }
+        .grafico-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 10px;
+            align-items: start;
+        }
         .grafico-wrapper { background: #1c1f2b; border: 1px solid #222; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
         .grafico-wrapper canvas { max-height: 400px; }
+        .grafico-sidebar {
+            position: fixed;
+            right: 0;
+            top: 0;
+            transform: none;
+            width: 320px;
+            height: 100vh;
+            max-height: 100vh;
+            overflow: auto;
+            z-index: 10001;
+            background: linear-gradient(165deg, #2d1a07, #1f1205);
+            border: 1px solid #6e4a1c;
+            border-radius: 10px 0 0 10px;
+            padding: 12px;
+            box-shadow: 0 18px 30px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.05);
+            opacity: 1;
+            visibility: visible;
+            backdrop-filter: blur(8px);
+            transition: transform 0.2s ease, opacity 0.2s ease;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 215, 154, 0.35) rgba(255, 255, 255, 0.05);
+        }
+        .grafico-sidebar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .grafico-sidebar::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+        }
+        .grafico-sidebar::-webkit-scrollbar-thumb {
+            background: rgba(255, 215, 154, 0.28);
+            border-radius: 8px;
+        }
+        .grafico-sidebar::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 215, 154, 0.45);
+        }
+        .grafico-sidebar h3 {
+            margin: 0 0 10px;
+            color: #ffd79a;
+            font-size: 0.95rem;
+        }
+        .grafico-sidebar ul {
+            margin: 0;
+            padding-left: 16px;
+            color: #ffeccc;
+            font-size: 0.88rem;
+            line-height: 1.5;
+            display: grid;
+            gap: 7px;
+        }
+        #graficoObservacoes {
+            display: grid;
+            gap: 8px;
+        }
+        .sidebar-obs-card {
+            border-radius: 10px;
+            padding: 10px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .sidebar-obs-vendas {
+            background: linear-gradient(165deg, rgba(34, 197, 94, 0.15), rgba(22, 163, 74, 0.12));
+            border-color: rgba(34, 197, 94, 0.3);
+        }
+        .sidebar-obs-devolucao {
+            background: linear-gradient(165deg, rgba(220, 38, 38, 0.15), rgba(185, 28, 28, 0.12));
+            border-color: rgba(220, 38, 38, 0.3);
+        }
+        .sidebar-obs-neutro {
+            background: linear-gradient(165deg, rgba(249, 115, 22, 0.15), rgba(217, 119, 6, 0.12));
+            border-color: rgba(249, 115, 22, 0.3);
+        }
+        .sidebar-obs-label {
+            font-weight: 700;
+            font-size: 0.78rem;
+            color: #ffd79a;
+        }
+        .sidebar-obs-vendas .sidebar-obs-label,
+        .sidebar-obs-vendas .sidebar-obs-valor { color: #86efac; }
+        .sidebar-obs-devolucao .sidebar-obs-label,
+        .sidebar-obs-devolucao .sidebar-obs-valor { color: #fca5a5; }
+        .sidebar-obs-neutro .sidebar-obs-label,
+        .sidebar-obs-neutro .sidebar-obs-valor { color: #fdba74; }
+        .sidebar-obs-valor {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: #fff;
+        }
+        .sidebar-obs-detalhe {
+            font-size: 0.72rem;
+            color: #e5e7eb;
+            opacity: 0.85;
+        }
+        .graficos-container.observacoes-fechado .grafico-sidebar {
+            opacity: 0;
+            transform: translate(calc(100% + 16px), -50%);
+            pointer-events: none;
+        }
+        .graficos-container.observacoes-fechado .sidebar-toggle-btn {
+            right: 0;
+        }
         @media (max-width: 980px) {
             .periodo-linha {
                 align-items: stretch;
+            }
+            .grafico-layout {
+                grid-template-columns: 1fr;
+            }
+            .graficos-container {
+                padding-right: 0;
+            }
+            .grafico-sidebar {
+                right: 10px;
+                left: 10px;
+                width: auto;
+                top: 124px;
+                transform: none;
+                max-height: calc(100vh - 150px);
+            }
+            .sidebar-toggle-btn {
+                right: 8px;
+                top: 82px;
+                transform: none;
+                width: auto;
+                height: 34px;
+                border-radius: 8px;
+                padding: 0 10px;
+                font-size: 14px;
+                z-index: 1201;
             }
             .back-main-btn {
                 top: 12px;
@@ -234,8 +435,31 @@
 
     <div class="summary" id="resumo"></div>
 
+    <div class="transferencia-box">
+        <button id="btnTransferenciaFull" class="transferencia-btn" type="button">Trasnferencia Full (0)</button>
+        <div id="panelTransferenciaFull" class="transferencia-panel">
+            <div id="resumoTransferenciaFull" class="transferencia-resumo">Sem vendas de transferência full no período.</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Data</th>
+                            <th>Pedido</th>
+                            <th>NF</th>
+                            <th>Comprador</th>
+                            <th>Qtd</th>
+                            <th>Valor</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tBodyTransferenciaFull"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <!-- Seção de Gráficos -->
     <div class="graficos-container">
+        <button id="btnToggleObservacoes" class="sidebar-toggle-btn" type="button" aria-label="Minimizar observações" aria-expanded="true">❯</button>
         <div class="grafico-controles">
             <div class="grafico-grupo">
                 <span class="grafico-label">📊 Visualização:</span>
@@ -270,8 +494,18 @@
                 </div>
             </div>
         </div>
-        <div class="grafico-wrapper">
-            <canvas id="graficoVendas"></canvas>
+        <div class="grafico-layout">
+            <div class="grafico-wrapper">
+                <canvas id="graficoVendas"></canvas>
+            </div>
+            <aside class="grafico-sidebar" aria-label="Observações do gráfico">
+                <h3 id="graficoSidebarTitulo">Observações do gráfico</h3>
+                <div id="graficoObservacoes">
+                    <div class="sidebar-obs-card sidebar-obs-vendas">
+                        <div class="sidebar-obs-label">Carregando...</div>
+                    </div>
+                </div>
+            </aside>
         </div>
     </div>
 
@@ -289,6 +523,7 @@
     const dataInicio = params.get('data_inicio') || '';
     const dataFim_param = params.get('data_fim') || '';
     const lojaAlvo = params.get('loja') || '';
+    const unidadeNegocioAlvo = params.get('unidade_negocio') || '';
     const veioDeVendas = document.referrer && document.referrer.includes('/vendas.html');
 
     const tHead = document.getElementById('tHead');
@@ -302,15 +537,43 @@
     const btnReload = document.getElementById('btnReload');
     const titulo = document.getElementById('titulo');
     const unidadeNegocioSelect = document.getElementById('unidadeNegocioSelect');
+    const btnTransferenciaFull = document.getElementById('btnTransferenciaFull');
+    const panelTransferenciaFull = document.getElementById('panelTransferenciaFull');
+    const resumoTransferenciaFull = document.getElementById('resumoTransferenciaFull');
+    const tBodyTransferenciaFull = document.getElementById('tBodyTransferenciaFull');
+    const graficoObservacoes = document.getElementById('graficoObservacoes');
+    const graficoSidebarTitulo = document.getElementById('graficoSidebarTitulo');
+    const btnToggleObservacoes = document.getElementById('btnToggleObservacoes');
+    const graficosContainer = document.querySelector('.graficos-container');
+    const graficoSidebar = document.querySelector('.grafico-sidebar');
+    const navActionsSKU = document.querySelector('.nav-actions');
 
     let clientId = null;
     let dados = [];
     let devolucoes = [];
+    let vendasTransferenciaFull = [];
     let paginaEncerrando = false;
     let dateRangePicker = null;
     let dateFimPicker = null;
+    let unidadeNegocioInicialAplicada = false;
     const controladoresFetchAtivos = new Set();
     const timeoutsAtivos = new Set();
+
+    // Estado inicial: sidebar de observacoes sempre visivel ao abrir a pagina.
+    if (graficosContainer) {
+        graficosContainer.classList.remove('observacoes-fechado');
+    }
+    if (graficoSidebar) {
+        graficoSidebar.style.display = 'block';
+        graficoSidebar.style.visibility = 'visible';
+        graficoSidebar.style.opacity = '1';
+    }
+    if (btnToggleObservacoes) {
+        btnToggleObservacoes.style.display = 'inline-flex';
+        btnToggleObservacoes.style.visibility = 'visible';
+        btnToggleObservacoes.setAttribute('aria-expanded', 'true');
+        btnToggleObservacoes.textContent = '❯';
+    }
 
     // --- Funções de data (mesmo padrão de vendas.html) ---
     function toIsoDateFromInput(value) {
@@ -492,10 +755,68 @@
         return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     }
 
+    function vendaEhTransferenciaFull(venda) {
+        const devolucao = Number(venda?.devolucao || 0) === 1;
+        if (devolucao) return false;
+        const comprador = String(venda?.comprador || '').toUpperCase();
+        const canal = String(venda?.canal || '').toUpperCase();
+        return comprador.includes('EBAZAR') || canal.includes('EBAZAR');
+    }
+
+    function renderTransferenciaFull(lista) {
+        vendasTransferenciaFull = Array.isArray(lista) ? lista.slice() : [];
+        const totalItens = vendasTransferenciaFull.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const totalValor = vendasTransferenciaFull.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
+        btnTransferenciaFull.textContent = `Trasnferencia Full (${vendasTransferenciaFull.length})`;
+        btnTransferenciaFull.disabled = vendasTransferenciaFull.length === 0;
+
+        if (!vendasTransferenciaFull.length) {
+            resumoTransferenciaFull.textContent = 'Sem vendas de transferência full no período.';
+            tBodyTransferenciaFull.innerHTML = '';
+            panelTransferenciaFull.classList.remove('active');
+            return;
+        }
+
+        resumoTransferenciaFull.textContent = `Pedidos: ${vendasTransferenciaFull.length} | Itens: ${totalItens} | Valor: ${formatCurrency(totalValor)}`;
+
+        const frag = document.createDocumentFragment();
+        tBodyTransferenciaFull.innerHTML = '';
+        vendasTransferenciaFull
+            .slice()
+            .sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')))
+            .forEach(item => {
+                const tr = document.createElement('tr');
+                const cells = [
+                    (item.data || '').slice(0, 10),
+                    item.numero || '',
+                    item.numero_nf || '-',
+                    item.comprador || '-',
+                    item.quantidade || '',
+                    formatCurrency(item.valor || 0),
+                ];
+                cells.forEach(val => {
+                    const td = document.createElement('td');
+                    td.textContent = val;
+                    tr.appendChild(td);
+                });
+                frag.appendChild(tr);
+            });
+        tBodyTransferenciaFull.appendChild(frag);
+    }
+
+    function vendaEhEbazarSomatorio(venda) {
+        const devolucao = Number(venda?.devolucao || 0) === 1;
+        if (devolucao) return true;
+        const comprador = String(venda?.comprador || '').toUpperCase();
+        const canal = String(venda?.canal || '').toUpperCase();
+        return comprador.includes('EBAZAR') || canal.includes('EBAZAR');
+    }
+
     function renderResumo(lista, dev) {
-        const totalPedidos = lista.length;
-        const totalItens = lista.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
-        const totalValor = lista.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
+        const listaSomatorio = (lista || []).filter(item => !vendaEhEbazarSomatorio(item));
+        const totalPedidos = listaSomatorio.length;
+        const totalItens = listaSomatorio.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
+        const totalValor = listaSomatorio.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
         const totalDevolucoes = dev.length;
         const itensDevolucao = dev.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
         const valorDevolucao = dev.reduce((acc, cur) => acc + Number(cur.valor_total || 0), 0);
@@ -539,9 +860,10 @@
     }
 
     function renderTabela(vendas, devs) {
+        const vendasAtivas = (Array.isArray(vendas) ? vendas : []).filter(item => Number(item?.devolucao || 0) !== 1);
         tHead.innerHTML = '';
         tBody.innerHTML = '';
-        if (!vendas.length && !devs.length) {
+        if (!vendasAtivas.length && !devs.length) {
             statusEl.className = 'status-bar empty';
             statusEl.textContent = 'Nenhum registro encontrado.';
             return;
@@ -552,14 +874,14 @@
         const labels = { data: 'Data', numero: 'Pedido', numero_nf: 'NF', comprador: 'Comprador', quantidade: 'Qtd', valor: 'Valor', tipo: 'Tipo' };
         cols.forEach(col => {
             const th = document.createElement('th');
-            th.textContent = labels[col] || col;
+            th.textContent = String(labels[col] || col).toUpperCase();
             trHead.appendChild(th);
         });
         tHead.appendChild(trHead);
 
         const frag = document.createDocumentFragment();
-        
-        vendas.forEach(item => {
+
+        vendasAtivas.forEach(item => {
             const tr = document.createElement('tr');
             const cells = [
                 (item.data || '').slice(0, 10),
@@ -578,7 +900,7 @@
             });
             frag.appendChild(tr);
         });
-        
+
         devs.forEach(dev => {
             const tr = document.createElement('tr');
             const tipoDevolucao = String(dev.unidade_negocio_virtual || dev.unidade_negocio || '').trim() || 'Devolução';
@@ -599,7 +921,7 @@
             });
             frag.appendChild(tr);
         });
-        
+
         tBody.appendChild(frag);
     }
 
@@ -619,6 +941,15 @@
         };
     }
 
+    function normalizarTextoUnidade(valor) {
+        return String(valor || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
     async function carregarUnidadesNegocioSku() {
         try {
             const qsUn = new URLSearchParams();
@@ -636,18 +967,46 @@
                 .map(u => String(u?.nome || '').trim())
                 .filter(Boolean);
 
-            const atual = unidadeNegocioSelect.value || '__todos';
+            const atual = (!unidadeNegocioInicialAplicada && unidadeNegocioAlvo)
+                ? unidadeNegocioAlvo
+                : (unidadeNegocioSelect.value || '__todos');
             unidadeNegocioSelect.innerHTML = '<option value="__todos">Todas as lojas virtuais</option>';
 
-            nomes.sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(nome => {
+            const nomesUnicos = [];
+            const nomesNorm = new Set();
+            nomes.forEach(nome => {
+                const norm = normalizarTextoUnidade(nome);
+                if (!norm || nomesNorm.has(norm)) return;
+                nomesNorm.add(norm);
+                nomesUnicos.push(nome);
+            });
+
+            nomesUnicos.sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(nome => {
                 const opt = document.createElement('option');
                 opt.value = nome;
                 opt.textContent = String(nome || '').replace(/^\s*Unidade\s+/i, '').trim() || nome;
                 unidadeNegocioSelect.appendChild(opt);
             });
 
-            const valores = Array.from(unidadeNegocioSelect.options).map(o => o.value);
-            unidadeNegocioSelect.value = valores.includes(atual) ? atual : '__todos';
+            // Se veio unidade na URL e ela não estiver na lista, mantém como opção para preservar o filtro no drill-down.
+            if (unidadeNegocioAlvo) {
+                const alvoNorm = normalizarTextoUnidade(unidadeNegocioAlvo);
+                const existeAlvo = Array.from(unidadeNegocioSelect.options)
+                    .some(o => normalizarTextoUnidade(o.value) === alvoNorm);
+                if (!existeAlvo) {
+                    const opt = document.createElement('option');
+                    opt.value = unidadeNegocioAlvo;
+                    opt.textContent = unidadeNegocioAlvo;
+                    unidadeNegocioSelect.appendChild(opt);
+                }
+            }
+
+            const opcoes = Array.from(unidadeNegocioSelect.options);
+            const atualNorm = normalizarTextoUnidade(atual);
+            const opcaoExata = opcoes.find(o => o.value === atual);
+            const opcaoNormalizada = opcaoExata || opcoes.find(o => normalizarTextoUnidade(o.value) === atualNorm);
+            unidadeNegocioSelect.value = opcaoNormalizada ? opcaoNormalizada.value : '__todos';
+            unidadeNegocioInicialAplicada = true;
         } catch (_e) {
             // Se falhar, mantém apenas "Todas as lojas virtuais".
         }
@@ -659,7 +1018,7 @@
         statusEl.textContent = 'Carregando vendas e devolucoes...';
         try {
             clientId = clientId || obterClientId();
-            if (!clientId) { 
+            if (!clientId) {
                 console.warn('ClientId vazio - tentando carregar de localStorage novamente');
                 const userData2 = JSON.parse(localStorage.getItem('user_data') || 'null');
                 if (userData2 && userData2.client_id) {
@@ -667,18 +1026,18 @@
                     console.log('ClientId recuperado:', clientId);
                 }
             }
-            
-            if (!clientId) { 
+
+            if (!clientId) {
                 statusEl.className = 'status-bar error';
                 statusEl.innerHTML = '⚠️ Sessão expirada. <a href="/frontend_index.html" style="color:white; text-decoration:underline;">Fazer login novamente</a>';
                 console.warn('ClientId ainda vazio');
-                return; 
+                return;
             }
-            if (!skuAlvo) { 
-                statusEl.textContent = 'SKU nao informado.'; 
-                return; 
+            if (!skuAlvo) {
+                statusEl.textContent = 'SKU nao informado.';
+                return;
             }
-            
+
             const iniIso = getDataIniISO();
             const fimIso = getDataFimISO();
             const qs = new URLSearchParams({ sku: skuAlvo, resolver_nf: '0' });
@@ -688,10 +1047,13 @@
             if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
                 qs.append('unidade_negocio', unidadeNegocioSelect.value);
             }
+            const qsTransfer = new URLSearchParams(qs);
+            qsTransfer.set('incluir_ebazar', '1');
 
             const graficoPromise = carregarGrafico();
-            
+
             const url = '/api/vendas?' + qs.toString();
+            const urlTransfer = '/api/vendas?' + qsTransfer.toString();
             const qsDev = new URLSearchParams();
             if (iniIso) qsDev.append('data_inicio', iniIso);
             if (fimIso) qsDev.append('data_fim', fimIso);
@@ -701,25 +1063,34 @@
             }
             const urlDev = '/api/notas-entrada/sku/' + encodeURIComponent(skuAlvo) + '?' + qsDev.toString();
 
-            const [resp, respDev] = await Promise.all([
+            const [resp, respDev, respTransfer] = await Promise.all([
                 fetchCancelable(url, { headers: obterHeadersProtegidos() }),
-                fetchCancelable(urlDev, { headers: obterHeadersProtegidos() })
+                fetchCancelable(urlDev, { headers: obterHeadersProtegidos() }),
+                fetchCancelable(urlTransfer, { headers: obterHeadersProtegidos() })
             ]);
 
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            dados = await resp.json();
+            const dadosApi = await resp.json();
+            dados = (Array.isArray(dadosApi) ? dadosApi : []).filter(item => Number(item?.devolucao || 0) !== 1);
             if (respDev.ok) {
                 devolucoes = await respDev.json();
             } else {
                 devolucoes = [];
             }
-            
+
+            let listaTransferencia = [];
+            if (respTransfer.ok) {
+                const dadosComEbazar = await respTransfer.json();
+                listaTransferencia = (Array.isArray(dadosComEbazar) ? dadosComEbazar : []).filter(vendaEhTransferenciaFull);
+            }
+            renderTransferenciaFull(listaTransferencia);
+
             if (paginaEncerrando) return;
 
-            const mostrarDevolucoes = !unidadeNegocioSelect.value || unidadeNegocioSelect.value === '__todos';
-            const devolucoesAtivas = mostrarDevolucoes ? devolucoes : [];
-            renderResumo(dados, devolucoesAtivas);
-            renderTabela(dados, devolucoesAtivas);
+            // A API de devoluções já recebe os mesmos filtros (loja/unidade/período),
+            // então devemos sempre contabilizar o retorno para manter o resumo consistente.
+            renderResumo(dados, devolucoes);
+            renderTabela(dados, devolucoes);
             statusEl.className = 'status-bar';
             statusEl.textContent = '';
             await graficoPromise;
@@ -856,6 +1227,82 @@
         return label;
     }
 
+    function atualizarObservacoesGrafico(data) {
+        if (!graficoObservacoes) return;
+        if (graficoSidebarTitulo) {
+            graficoSidebarTitulo.textContent = `Observações do SKU ${skuAlvo || '-'}`;
+        }
+        const labels = Array.isArray(data?.labels) ? data.labels : [];
+        const qtdVendas = Array.isArray(data?.quantidades_vendas) ? data.quantidades_vendas : [];
+        const qtdDevol = Array.isArray(data?.quantidades_devolucoes) ? data.quantidades_devolucoes : [];
+        const valVendas = Array.isArray(data?.valores_vendas) ? data.valores_vendas : [];
+        const valDevol = Array.isArray(data?.valores_devolucoes) ? data.valores_devolucoes : [];
+
+        const totalQtdVendas = qtdVendas.reduce((acc, v) => acc + Number(v || 0), 0);
+        const totalQtdDevol = qtdDevol.reduce((acc, v) => acc + Number(v || 0), 0);
+        const totalValVendas = valVendas.reduce((acc, v) => acc + Number(v || 0), 0);
+        const totalValDevol = valDevol.reduce((acc, v) => acc + Number(v || 0), 0);
+
+        let picoVendaIdx = -1;
+        let picoDevolIdx = -1;
+        let picoVendaValor = -1;
+        let picoDevolValor = -1;
+        const seriePicoVenda = metricaGrafico === 'quantidade' ? qtdVendas : valVendas;
+        const seriePicoDevol = metricaGrafico === 'quantidade' ? qtdDevol : valDevol;
+
+        seriePicoVenda.forEach((v, idx) => {
+            const n = Number(v || 0);
+            if (n > picoVendaValor) {
+                picoVendaValor = n;
+                picoVendaIdx = idx;
+            }
+        });
+        seriePicoDevol.forEach((v, idx) => {
+            const n = Number(v || 0);
+            if (n > picoDevolValor) {
+                picoDevolValor = n;
+                picoDevolIdx = idx;
+            }
+        });
+
+        const taxaDevol = totalQtdVendas > 0 ? (totalQtdDevol / totalQtdVendas) * 100 : 0;
+        const periodoPicoVenda = picoVendaIdx >= 0 ? formatarLabelDataGrafico(labels[picoVendaIdx] || '-') : '-';
+        const periodoPicoDevol = picoDevolIdx >= 0 ? formatarLabelDataGrafico(labels[picoDevolIdx] || '-') : '-';
+
+        graficoObservacoes.innerHTML = `
+            <div class="sidebar-obs-card sidebar-obs-neutro">
+                <div class="sidebar-obs-label">🔎 SKU analisado</div>
+                <div class="sidebar-obs-valor">${skuAlvo || '-'}</div>
+                <div class="sidebar-obs-detalhe">resumo do período selecionado</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-vendas">
+                <div class="sidebar-obs-label">💰 Total vendido</div>
+                <div class="sidebar-obs-valor">${Math.round(totalQtdVendas).toLocaleString('pt-BR')} item(ns)</div>
+                <div class="sidebar-obs-detalhe">${formatCurrency(totalValVendas)}</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-devolucao">
+                <div class="sidebar-obs-label">📦 Total devolvido</div>
+                <div class="sidebar-obs-valor">${Math.round(totalQtdDevol).toLocaleString('pt-BR')} item(ns)</div>
+                <div class="sidebar-obs-detalhe">${formatCurrency(totalValDevol)}</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-devolucao">
+                <div class="sidebar-obs-label">📊 Taxa de devolução</div>
+                <div class="sidebar-obs-valor">${taxaDevol.toFixed(1).replace('.', ',')}%</div>
+                <div class="sidebar-obs-detalhe">sobre itens vendidos</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-vendas">
+                <div class="sidebar-obs-label">📈 Pico de vendas</div>
+                <div class="sidebar-obs-valor">${periodoPicoVenda}</div>
+                <div class="sidebar-obs-detalhe">${metricaGrafico === 'quantidade' ? 'por quantidade' : 'por valor'}</div>
+            </div>
+            <div class="sidebar-obs-card sidebar-obs-devolucao">
+                <div class="sidebar-obs-label">📉 Pico de devoluções</div>
+                <div class="sidebar-obs-valor">${periodoPicoDevol}</div>
+                <div class="sidebar-obs-detalhe">${metricaGrafico === 'quantidade' ? 'por quantidade' : 'por valor'}</div>
+            </div>
+        `;
+    }
+
     async function carregarGrafico() {
         if (paginaEncerrando) return;
         try {
@@ -882,17 +1329,26 @@
 
             if (paginaEncerrando) return;
             renderizarGrafico(data);
+            atualizarObservacoesGrafico(data);
         } catch (error) {
             if (paginaEncerrando || error.name === 'AbortError') {
                 return;
             }
             console.error('Erro ao carregar gráfico:', error);
+            if (graficoObservacoes) {
+                graficoObservacoes.innerHTML = `
+                    <div class="sidebar-obs-card sidebar-obs-devolucao">
+                        <div class="sidebar-obs-label">Erro ao carregar</div>
+                        <div class="sidebar-obs-detalhe">Não foi possível carregar observações do gráfico.</div>
+                    </div>
+                `;
+            }
         }
     }
 
     function renderizarGrafico(data) {
         const ctx = document.getElementById('graficoVendas').getContext('2d');
-        
+
         // Destruir gráfico anterior se existir
         if (chartInstance) {
             chartInstance.destroy();
@@ -1048,11 +1504,11 @@
             this.classList.add('active');
             periodoGrafico = this.dataset.periodo;
             salvarPreferenciaGraficoSku();
-            
+
             // Calcular e aplicar datas correspondentes
             const hoje = new Date();
             let dataInicial;
-            
+
             if (periodoGrafico === '3m') {
                 dataInicial = new Date(hoje);
                 dataInicial.setDate(hoje.getDate() - 90);
@@ -1072,12 +1528,12 @@
                 dataInicial = new Date(hoje);
                 dataInicial.setDate(hoje.getDate() - 90);
             }
-            
+
             // Atualizar inputs de data
             dataIni.value = dataInicial.toISOString().split('T')[0];
             dataFimEl.value = hoje.toISOString().split('T')[0];
             atualizarPeriodoTexto();
-            
+
             // Recarregar dados do SKU; o gráfico é carregado dentro do próprio fluxo.
             carregarVendasSku();
         });
@@ -1109,7 +1565,7 @@
             this.classList.add('active');
             intervaloGrafico = this.dataset.intervalo;
             salvarPreferenciaGraficoSku();
-            
+
             // Desabilitar botões de período se intervalo = semana
             const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
             if (intervaloGrafico === 'semana') {
@@ -1125,12 +1581,58 @@
                     btn.style.cursor = 'pointer';
                 });
             }
-            
+
             carregarGrafico();
         });
     });
 
+    if (btnToggleObservacoes && graficosContainer && navActionsSKU) {
+        // Inicializa estado dos botões no carregamento
+        const fechadoInicial = graficosContainer.classList.contains('observacoes-fechado');
+        console.log('Sidebar SKU carregado, fechado:', fechadoInicial);
+        document.body.classList.toggle('sidebar-observacoes-aberto', !fechadoInicial);
+        console.log('Classe sidebar-observacoes-aberto adicionada:', document.body.classList.contains('sidebar-observacoes-aberto'));
+
+        // Oculta TODOS os botões .back-main-btn diretamente
+        document.querySelectorAll('.back-main-btn').forEach(btn => {
+            btn.style.display = 'none';
+            btn.style.visibility = 'hidden';
+            btn.style.pointerEvents = 'none';
+        });
+        console.log('Todos os .back-main-btn ocultados');
+
+        btnToggleObservacoes.addEventListener('click', () => {
+            const fechado = graficosContainer.classList.toggle('observacoes-fechado');
+            const temClasse = !fechado;
+            document.body.classList.toggle('sidebar-observacoes-aberto', temClasse);
+            console.log('Sidebar SKU toggle - fechado:', fechado, 'classe adicionada:', temClasse);
+
+            // Oculta/mostra TODOS os .back-main-btn
+            document.querySelectorAll('.back-main-btn').forEach(btn => {
+                if (temClasse) {
+                    btn.style.display = 'none';
+                    btn.style.visibility = 'hidden';
+                    btn.style.pointerEvents = 'none';
+                    console.log('back-main-btn ocultado');
+                } else {
+                    btn.style.display = '';
+                    btn.style.visibility = '';
+                    btn.style.pointerEvents = '';
+                    console.log('back-main-btn mostrado');
+                }
+            });
+
+            btnToggleObservacoes.setAttribute('aria-expanded', String(!fechado));
+            btnToggleObservacoes.setAttribute('aria-label', fechado ? 'Abrir observações' : 'Minimizar observações');
+            btnToggleObservacoes.textContent = fechado ? '❮' : '❯';
+        });
+    }
+
     btnReload.addEventListener('click', () => { carregarUnidadesNegocioSku(); carregarVendasSku(); });
+    btnTransferenciaFull.addEventListener('click', () => {
+        if (!vendasTransferenciaFull.length) return;
+        panelTransferenciaFull.classList.toggle('active');
+    });
     unidadeNegocioSelect.addEventListener('change', () => { carregarVendasSku(); });
 
     const btnVoltarVendas = document.getElementById('btnVoltarVendas');
@@ -1152,6 +1654,9 @@
             if (iniIso) qs.append('data_inicio', iniIso);
             if (fimIso) qs.append('data_fim', fimIso);
             if (lojaAlvo) qs.append('loja', lojaAlvo);
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                qs.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
             qs.append('from_sku', '1');
             qs.append('_ts', String(Date.now()));
             const destino = '/vendas.html' + (qs.toString() ? `?${qs.toString()}` : '');
@@ -1162,12 +1667,12 @@
     carregarPreferenciaGraficoSku();
     aplicarPreferenciaGraficoUI();
     carregarLojasBotoes();
-    carregarUnidadesNegocioSku();
-
-    // Carregar automaticamente se houver período selecionado e SKU
-    if (skuAlvo && (getDataIniISO() || dataInicio)) {
-        carregarVendasSku();
-    }
+    carregarUnidadesNegocioSku().finally(() => {
+        // Carregar automaticamente se houver período selecionado e SKU
+        if (skuAlvo && (getDataIniISO() || dataInicio)) {
+            carregarVendasSku();
+        }
+    });
     const lojaBotoes = document.getElementById('lojaBotoes');
     let lojaSelecionadaSku = lojaAlvo || '__todas';
 
@@ -1210,7 +1715,6 @@
             lojaBotoes.innerHTML = '<button class="loja-btn active">Todas as lojas</button>';
         }
     }
-
 
 </script>
 <script src="/ia-sidebar.js"></script>
