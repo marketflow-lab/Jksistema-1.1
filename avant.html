@@ -256,6 +256,74 @@
             font-weight: 700;
         }
 
+        .extension-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-height: 24px;
+            padding: 0 7px;
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: #ffffff;
+            color: #31415a;
+            font-size: 0.72rem;
+            font-weight: 800;
+            white-space: nowrap;
+            user-select: none;
+        }
+
+        .extension-switch[hidden] {
+            display: none;
+        }
+
+        .extension-switch input {
+            position: absolute;
+            opacity: 0;
+            width: 1px;
+            height: 1px;
+            pointer-events: none;
+        }
+
+        .extension-switch-track {
+            width: 26px;
+            height: 14px;
+            border-radius: 999px;
+            background: #cbd5e1;
+            position: relative;
+            transition: background 0.12s ease;
+        }
+
+        .extension-switch-track::after {
+            content: "";
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            top: 2px;
+            left: 2px;
+            border-radius: 50%;
+            background: #ffffff;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
+            transition: transform 0.12s ease;
+        }
+
+        .extension-switch input:checked + .extension-switch-track {
+            background: #2563eb;
+        }
+
+        .extension-switch input:checked + .extension-switch-track::after {
+            transform: translateX(12px);
+        }
+
+        .extension-switch input:disabled + .extension-switch-track {
+            background: #cbd5e1;
+        }
+
+        .extension-switch:has(input:disabled) {
+            color: #64748b;
+            cursor: default;
+            opacity: 0.88;
+        }
+
         .controls-footer {
             display: flex;
             align-items: center;
@@ -443,7 +511,7 @@
                 <span class="module-mark">AV</span>
                 <div>
                     <h1>Avant</h1>
-                    <p class="subtitle">Navegador do Mercado Livre com coleta propria, sem depender do AvantPro.</p>
+                    <p class="subtitle">Navegador do Mercado Livre com coleta propria e suporte ao AvantPro.</p>
                 </div>
             </div>
             <div class="header-actions">
@@ -477,12 +545,17 @@
                 <div class="controls-footer">
                     <div id="avant-status" class="status">Pronto para abrir dentro do programa.</div>
                     <div class="quick-links" aria-label="Atalhos">
+                        <label class="extension-switch" id="avantpro-extension-wrap" title="Ativar ou desativar a extensao AvantPro no navegador interno">
+                            <input id="avantpro-extension-toggle" type="checkbox">
+                            <span class="extension-switch-track" aria-hidden="true"></span>
+                            <span id="avantpro-extension-label">AvantPro desligado</span>
+                        </label>
                         <button class="quick-link" type="button" data-url="https://www.mercadolivre.com.br/">Mercado Livre</button>
                         <button class="quick-link" type="button" data-url="https://www.mercadolivre.com.br/anuncios/lista">Meus anuncios</button>
                         <button class="quick-link" type="button" data-url="https://www.mercadolivre.com.br/ajuda">Ajuda ML</button>
                     </div>
                 </div>
-                <div id="avant-hint" class="hint">No navegador comum do Windows a abertura interna e limitada. Abra pelo app Electron para usar o quadro interno e coletar dados sem AvantPro.</div>
+                <div id="avant-hint" class="hint">No navegador comum do Windows a abertura interna e limitada. Abra pelo app Electron para usar o quadro interno e coletar dados.</div>
             </section>
 
             <section class="browser-frame-wrap" id="avant-browser-frame">
@@ -498,7 +571,7 @@
                 <div class="data-panel-header">
                     <div>
                         <h2 class="data-panel-title">Coleta independente</h2>
-                        <p class="data-panel-subtitle">Leitura do navegador interno e enriquecimento pelo sistema, sem consultar AvantPro.</p>
+                        <p class="data-panel-subtitle">Leitura do navegador interno e enriquecimento pelo sistema.</p>
                     </div>
                     <span id="avant-coleta-count" class="data-count">0</span>
                 </div>
@@ -540,7 +613,6 @@
             let positionTimer = null;
             let requestSerial = 0;
             let coletaEmExecucao = false;
-            let ultimoDiagnosticoExtensaoLocal = null;
             const pendingShellRequests = new Map();
 
             const els = {
@@ -560,6 +632,9 @@
                 externo: document.getElementById('btn-externo'),
                 home: document.getElementById('btn-home'),
                 voltar: document.getElementById('btn-voltar'),
+                avantproWrap: document.getElementById('avantpro-extension-wrap'),
+                avantproToggle: document.getElementById('avantpro-extension-toggle'),
+                avantproLabel: document.getElementById('avantpro-extension-label'),
                 coletaStatus: document.getElementById('avant-coleta-status'),
                 coletaEmpty: document.getElementById('avant-coleta-empty'),
                 coletaWrap: document.getElementById('avant-coleta-wrap'),
@@ -588,6 +663,61 @@
                 [els.abrir, els.pesquisar, els.recarregar, els.coletar].forEach((button) => {
                     if (button) button.disabled = !!active;
                 });
+            }
+
+            function atualizarControleAvantPro(ativo) {
+                if (!els.avantproToggle || !els.avantproLabel) return;
+                els.avantproToggle.checked = !!ativo;
+                els.avantproToggle.disabled = false;
+                els.avantproLabel.textContent = ativo ? 'AvantPro ligado' : 'AvantPro desligado';
+            }
+
+            function marcarControleAvantProIndisponivel() {
+                if (els.avantproWrap) els.avantproWrap.hidden = false;
+                if (els.avantproToggle) {
+                    els.avantproToggle.checked = false;
+                    els.avantproToggle.disabled = true;
+                }
+                if (els.avantproLabel) {
+                    els.avantproLabel.textContent = 'AvantPro indisponivel - reinicie o app';
+                }
+            }
+
+            async function carregarControleAvantPro() {
+                if (!window.electronAPI || typeof window.electronAPI.getBrowserExtensionSettings !== 'function') {
+                    marcarControleAvantProIndisponivel();
+                    return;
+                }
+                try {
+                    const estado = await window.electronAPI.getBrowserExtensionSettings();
+                    if (els.avantproWrap) els.avantproWrap.hidden = false;
+                    atualizarControleAvantPro(!!(estado && estado.avantProEnabled));
+                } catch (err) {
+                    console.warn('Falha ao consultar estado do AvantPro:', err);
+                    marcarControleAvantProIndisponivel();
+                }
+            }
+
+            async function alternarAvantPro() {
+                if (!els.avantproToggle || !window.electronAPI || typeof window.electronAPI.setAvantProExtensionEnabled !== 'function') {
+                    marcarControleAvantProIndisponivel();
+                    setStatus('Reinicie o app para carregar o controle do AvantPro.', 'error');
+                    return;
+                }
+                const novoEstado = !!els.avantproToggle.checked;
+                els.avantproToggle.disabled = true;
+                setStatus(novoEstado ? 'Ativando AvantPro...' : 'Desativando AvantPro...');
+                try {
+                    const estado = await window.electronAPI.setAvantProExtensionEnabled(novoEstado);
+                    atualizarControleAvantPro(!!(estado && estado.avantProEnabled));
+                    setStatus(estado && estado.avantProEnabled ? 'AvantPro ativado no navegador interno.' : 'AvantPro desativado no navegador interno.', 'success');
+                } catch (err) {
+                    console.warn('Falha ao alternar AvantPro:', err);
+                    atualizarControleAvantPro(!novoEstado);
+                    setStatus(err && err.message ? err.message : 'Nao foi possivel alterar o AvantPro.', 'error');
+                } finally {
+                    els.avantproToggle.disabled = false;
+                }
             }
 
             function mostrarHint(show) {
@@ -962,337 +1092,6 @@
                 if (!navegador) return null;
                 if (navegador === webviewEl) return navegador.executeJavaScript(code, true);
                 return navegador.executeJavaScript(code);
-            }
-
-            const scriptsColetorLocalCache = {};
-
-            async function carregarScriptColetorLocal(nomeArquivo) {
-                if (scriptsColetorLocalCache[nomeArquivo]) return scriptsColetorLocalCache[nomeArquivo];
-                const caminhos = [
-                    `extensoes_chrome/jk_ml_collector/${nomeArquivo}`,
-                    `/extensoes_chrome/jk_ml_collector/${nomeArquivo}`,
-                    `static/extensoes_chrome/jk_ml_collector/${nomeArquivo}`
-                ];
-                let ultimoErro = null;
-                for (const caminho of caminhos) {
-                    try {
-                        const resposta = await fetch(`${caminho}?v=${Date.now()}`, { cache: 'no-store' });
-                        if (!resposta.ok) {
-                            ultimoErro = new Error(`HTTP ${resposta.status} em ${caminho}`);
-                            continue;
-                        }
-                        const texto = await resposta.text();
-                        if (texto && texto.length > 200) {
-                            scriptsColetorLocalCache[nomeArquivo] = texto;
-                            return texto;
-                        }
-                    } catch (err) {
-                        ultimoErro = err;
-                    }
-                }
-                throw ultimoErro || new Error(`Script local nao encontrado: ${nomeArquivo}`);
-            }
-
-            async function diagnosticarColetorLocalNoNavegador() {
-                return await executarNoNavegadorInterno(`
-                    (function () {
-                        var bridge = document.getElementById('jk-ml-collector-data');
-                        return {
-                            collector: !!window.__JK_ML_COLLECTOR__,
-                            version: window.__JK_ML_COLLECTOR__ && window.__JK_ML_COLLECTOR__.version || document.documentElement.getAttribute('data-jk-ml-collector-version') || '',
-                            bridge: !!bridge,
-                            total: Number(document.documentElement.getAttribute('data-jk-ml-collector-total') || 0) || 0,
-                            cards: document.querySelectorAll('.jk-ml-info-card').length
-                        };
-                    })();
-                `).catch(() => null);
-            }
-
-            async function injetarColetorLocalNoNavegador(forcar = false) {
-                const antes = await diagnosticarColetorLocalNoNavegador();
-                if (!forcar && antes && (antes.collector || antes.bridge || antes.cards)) return antes;
-                const pageCollector = await carregarScriptColetorLocal('page-collector.js');
-                const enricher = await carregarScriptColetorLocal('enricher.js');
-                const configColetor = {
-                    backendBase: backendBaseLocal(),
-                    token: authTokenLocal(),
-                    disableExternalVisualSources: true
-                };
-                await executarNoNavegadorInterno(`window.__JK_ML_COLLECTOR_CONFIG__ = ${JSON.stringify(configColetor)}; true;`).catch((err) => {
-                    console.warn('Falha ao configurar coletor local:', err);
-                });
-                await executarNoNavegadorInterno(`${pageCollector}\n//# sourceURL=jk-ml-page-collector-fallback.js`).catch((err) => {
-                    console.warn('Falha ao injetar page-collector local:', err);
-                });
-                await esperar(120);
-                await executarNoNavegadorInterno(`${enricher}\n//# sourceURL=jk-ml-enricher-fallback.js`).catch((err) => {
-                    console.warn('Falha ao injetar enricher local:', err);
-                });
-                await esperar(180);
-                const depois = await diagnosticarColetorLocalNoNavegador();
-                return depois || antes || null;
-            }
-
-            async function coletarDadosExtensaoLocal() {
-                await injetarColetorLocalNoNavegador(true).catch((err) => {
-                    console.warn('Fallback da extensao local do Avant falhou:', err);
-                });
-                const script = `
-                    (function () {
-                        try {
-                            var collector = window.__JK_ML_COLLECTOR__;
-                            var limpar = function (value) {
-                                return String(value == null ? '' : value).replace(/\\s+/g, ' ').trim();
-                            };
-                            var temValor = function (value) {
-                                var text = limpar(value);
-                                return value !== null && value !== undefined && text !== '' && text !== '-';
-                            };
-                            var extrairId = function (value) {
-                                var text = String(value || '').toUpperCase();
-                                var match = text.match(/MLB-\\d{8,}/i);
-                                if (match) return match[0].replace('MLB-', 'MLB').toUpperCase();
-                                match = text.match(/\\bMLB\\d{8,}\\b/i);
-                                return match ? String(match[0]).toUpperCase() : '';
-                            };
-                            var chave = function (item) {
-                                if (!item || typeof item !== 'object') return '';
-                                var id = extrairId(item.id || item.item_id || item.url || '');
-                                if (id) return 'id:' + id;
-                                var url = limpar(item.url || item.permalink || item.link || '').split('#')[0].split('?')[0];
-                                return url ? 'url:' + url : '';
-                            };
-                            var valorVendas = function (item) {
-                                if (!item || typeof item !== 'object') return null;
-                                if (temValor(item.vendas)) return item.vendas;
-                                if (temValor(item.sales)) return item.sales;
-                                if (temValor(item.sold_quantity)) return item.sold_quantity;
-                                if (temValor(item.soldQuantity)) return item.soldQuantity;
-                                return null;
-                            };
-                            var valorVisitas = function (item) {
-                                if (!item || typeof item !== 'object') return null;
-                                if (temValor(item.visitas)) return item.visitas;
-                                if (temValor(item.visits)) return item.visits;
-                                if (temValor(item.total_visits)) return item.total_visits;
-                                if (temValor(item.totalVisits)) return item.totalVisits;
-                                return null;
-                            };
-                            var valorData = function (item) {
-                                if (!item || typeof item !== 'object') return '';
-                                return limpar(item.data_criacao || item.dataCriacao || item.createdAt || item.createdDate || item.date_created || item.start_time || item.creation_date || item.creationDate || item.created_at || item.dateCreated || item.startTime || item.item_date_created || item.itemDateCreated || item.listing_start_time || item.listingStartTime || item.listingCreatedAt || item.datePosted || item.firstPublicationDate || item.availableSince || item.activeSince || '');
-                            };
-                            var valorVendedor = function (item) {
-                                if (!item || typeof item !== 'object') return '';
-                                return limpar(item.vendedor || item.seller_name || item.sellerName || item.nickname || '');
-                            };
-                            var valorLocalizacao = function (item) {
-                                if (!item || typeof item !== 'object') return '';
-                                return limpar(item.localizacao_vendedor || item.seller_location || item.location || '');
-                            };
-                            var fonteBloqueada = function (item) {
-                                return /rotulos_visuais|rotulos visuais|avantpro|avant pro|extensao_card_visual|extensao card visual/i.test(limpar(item && item.fonte));
-                            };
-                            var limparFonte = function (value) {
-                                var seen = {};
-                                return String(value || '').split('+').map(limpar).filter(function (fonte) {
-                                    if (!fonte || fonteBloqueada({ fonte: fonte }) || seen[fonte]) return false;
-                                    seen[fonte] = true;
-                                    return true;
-                                }).join(' + ');
-                            };
-                            var fonteConfiavel = function (item) {
-                                return !fonteBloqueada(item);
-                            };
-                            var escolherConfiavel = function (atual, item, getter) {
-                                var atualValor = getter(atual);
-                                var itemValor = getter(item);
-                                if (fonteConfiavel(item) && itemValor) return itemValor;
-                                if (fonteConfiavel(atual) && atualValor) return atualValor;
-                                return itemValor || atualValor;
-                            };
-                            var sanitizarItem = function (item) {
-                                if (!item || typeof item !== 'object') return item;
-                                if (!fonteBloqueada(item)) {
-                                    return Object.assign({}, item, { fonte: limparFonte(item.fonte) || item.fonte });
-                                }
-                                return Object.assign({}, item, {
-                                    vendedor: '',
-                                    data_criacao: '',
-                                    vendas: null,
-                                    visitas: null,
-                                    localizacao_vendedor: '',
-                                    fonte: limparFonte(item.fonte)
-                                });
-                            };
-                            var mergeAnuncios = function (base, extra) {
-                                var map = {};
-                                var order = [];
-                                var inserir = function (item) {
-                                    if (!item || typeof item !== 'object') return;
-                                    item = sanitizarItem(item);
-                                    var key = chave(item);
-                                    if (!key) return;
-                                    if (!map[key]) {
-                                        map[key] = Object.assign({}, item);
-                                        order.push(key);
-                                        return;
-                                    }
-                                    var atual = map[key];
-                                    var vendasNova = valorVendas(item);
-                                    var vendasAtual = valorVendas(atual);
-                                    var visitasNova = valorVisitas(item);
-                                    var visitasAtual = valorVisitas(atual);
-                                    var vendasFinal = null;
-                                    vendasFinal = vendasNova !== null ? vendasNova : vendasAtual;
-                                    map[key] = Object.assign({}, atual, item, {
-                                        posicao: atual.posicao || item.posicao,
-                                        titulo: item.titulo || item.title || atual.titulo || atual.title || '',
-                                        url: item.url || item.permalink || atual.url || atual.permalink || '',
-                                        vendedor: escolherConfiavel(atual, item, valorVendedor),
-                                        data_criacao: escolherConfiavel(atual, item, valorData),
-                                        vendas: vendasFinal,
-                                        visitas: visitasNova !== null ? visitasNova : visitasAtual,
-                                        localizacao_vendedor: escolherConfiavel(atual, item, valorLocalizacao),
-                                        fonte: limparFonte([atual.fonte, item.fonte].filter(Boolean).join(' + ')) || 'jk_coleta'
-                                    });
-                                };
-                                (Array.isArray(base) ? base : []).forEach(inserir);
-                                (Array.isArray(extra) ? extra : []).forEach(inserir);
-                                return order.map(function (key) { return map[key]; });
-                            };
-                            var lerBridge = function () {
-                                var node = document.getElementById('jk-ml-collector-data');
-                                if (!node || !node.textContent) return null;
-                                try { return JSON.parse(node.textContent); } catch (_err) { return null; }
-                            };
-                            var bridgeSnapshot = lerBridge();
-                            if (!collector) {
-                                if (bridgeSnapshot && Array.isArray(bridgeSnapshot.anuncios)) {
-                                    var bridgeAnuncios = bridgeSnapshot.anuncios;
-                                    var bridgeCompletos = bridgeAnuncios.filter(function (item) {
-                                        return valorVendedor(item) && valorData(item) && valorVendas(item) !== null;
-                                    }).length;
-                                    return {
-                                        active: true,
-                                        bridge: true,
-                                        version: bridgeSnapshot.version || document.documentElement.getAttribute('data-jk-ml-collector-version') || '',
-                                        updatedAt: bridgeSnapshot.updatedAt || 0,
-                                        total: bridgeSnapshot.total || bridgeSnapshot.anuncios.length || 0,
-                                        url: bridgeSnapshot.url || location.href,
-                                        lastReason: bridgeSnapshot.lastReason || '',
-                                        completeCount: bridgeCompletos,
-                                        pendingCount: Math.max(0, bridgeAnuncios.length - bridgeCompletos),
-                                        hasBackground: /backend_enrichment_done|background_enrichment_done|jk_backend|sistema_enriquecimento|extensao_background|api_item|codigo_fonte/i.test(String(bridgeSnapshot.lastReason || '') + ' ' + JSON.stringify(bridgeAnuncios.map(function (item) { return item && item.fonte || ''; }))),
-                                        backgroundFailed: /background_enrichment_failed/i.test(String(bridgeSnapshot.lastReason || '')),
-                                        anuncios: bridgeAnuncios
-                                    };
-                                }
-                                return { active: false, reason: 'collector_missing' };
-                            }
-                            var snapshot = null;
-                            if (typeof collector.forceCollect === 'function') {
-                                snapshot = collector.forceCollect('avant-read');
-                            } else if (typeof collector.getSnapshot === 'function') {
-                                snapshot = collector.getSnapshot();
-                            } else {
-                                snapshot = collector;
-                            }
-                            snapshot = snapshot || {};
-                            var snapshotAnuncios = Array.isArray(snapshot.anuncios) ? snapshot.anuncios : [];
-                            var bridgeAnuncios = bridgeSnapshot && Array.isArray(bridgeSnapshot.anuncios) ? bridgeSnapshot.anuncios : [];
-                            var anuncios = mergeAnuncios(snapshotAnuncios, bridgeAnuncios);
-                            var completos = anuncios.filter(function (item) {
-                                return valorVendedor(item) && valorData(item) && valorVendas(item) !== null;
-                            }).length;
-                            var fontes = JSON.stringify(anuncios.map(function (item) { return item && item.fonte || ''; }));
-                            var lastReason = (bridgeSnapshot && bridgeSnapshot.lastReason) || snapshot.lastReason || '';
-                            return {
-                                active: true,
-                                bridge: !!bridgeSnapshot,
-                                version: (bridgeSnapshot && bridgeSnapshot.version) || collector.version || snapshot.version || document.documentElement.getAttribute('data-jk-ml-collector-version') || '',
-                                updatedAt: Math.max(Number(snapshot.updatedAt || 0), Number(bridgeSnapshot && bridgeSnapshot.updatedAt || 0)),
-                                total: anuncios.length || snapshot.total || (bridgeSnapshot && bridgeSnapshot.total) || 0,
-                                url: (bridgeSnapshot && bridgeSnapshot.url) || snapshot.url || location.href,
-                                lastReason: lastReason,
-                                completeCount: completos,
-                                pendingCount: Math.max(0, anuncios.length - completos),
-                                hasBackground: /backend_enrichment_done|background_enrichment_done|jk_backend|sistema_enriquecimento|extensao_background|api_item|codigo_fonte/i.test(String(lastReason || '') + ' ' + fontes),
-                                backgroundFailed: /background_enrichment_failed/i.test(String(lastReason || '')),
-                                sources: snapshot.sources || {},
-                                anuncios: anuncios
-                            };
-                        } catch (err) {
-                            return { active: false, reason: err && err.message ? err.message : String(err) };
-                        }
-                    })();
-                `;
-                let result = null;
-                for (let tentativa = 0; tentativa < 24; tentativa += 1) {
-                    if (tentativa > 0) await esperar(500);
-                    result = await executarNoNavegadorInterno(script).catch((err) => {
-                        console.warn('Falha ao ler extensao local do Avant:', err);
-                        return null;
-                    });
-                    if (
-                        result
-                        && result.active
-                        && Array.isArray(result.anuncios)
-                        && result.anuncios.length
-                        && (result.hasBackground || result.backgroundFailed || !result.pendingCount || tentativa >= 23)
-                    ) break;
-                }
-                ultimoDiagnosticoExtensaoLocal = result || { active: false, reason: 'sem_resposta' };
-                if (!result || !result.active || !Array.isArray(result.anuncios)) return [];
-                return result.anuncios.map((item, index) => normalizarAnuncio({
-                    ...item,
-                    fonte: item.fonte || 'extensao_local'
-                }, index + 1, item.fonte || 'extensao_local'));
-            }
-
-            async function atualizarColetorLocalNoNavegador(anuncios, motivo = 'sistema_enriquecimento') {
-                const lista = Array.isArray(anuncios) ? anuncios : [];
-                if (!lista.length) return false;
-                const payload = JSON.stringify(lista.map((item, index) => ({
-                    ...item,
-                    posicao: item.posicao || index + 1,
-                    fonte: limparFontesBloqueadas(item.fonte || motivo) || motivo
-                })));
-                const reason = JSON.stringify(motivo);
-                const script = `
-                    (function () {
-                        var items = ${payload};
-                        var reason = ${reason};
-                        if (window.__JK_ML_ENRICHER__ && typeof window.__JK_ML_ENRICHER__.publish === 'function') {
-                            return window.__JK_ML_ENRICHER__.publish(items, reason);
-                        }
-                        var previous = {};
-                        var node = document.getElementById('jk-ml-collector-data');
-                        if (node && node.textContent) {
-                            try { previous = JSON.parse(node.textContent) || {}; } catch (_err) { previous = {}; }
-                        }
-                        if (!node) {
-                            node = document.createElement('script');
-                            node.id = 'jk-ml-collector-data';
-                            node.type = 'application/json';
-                            (document.head || document.documentElement).appendChild(node);
-                        }
-                        node.textContent = JSON.stringify(Object.assign({}, previous, {
-                            ready: true,
-                            updatedAt: Date.now(),
-                            lastReason: reason,
-                            total: items.length,
-                            anuncios: items
-                        }));
-                        document.documentElement.setAttribute('data-jk-ml-collector-ready', '1');
-                        document.documentElement.setAttribute('data-jk-ml-collector-total', String(items.length || 0));
-                        return true;
-                    })();
-                `;
-                return !!(await executarNoNavegadorInterno(script).catch((err) => {
-                    console.warn('Falha ao atualizar card local JK no navegador:', err);
-                    return false;
-                }));
             }
 
             async function coletarDadosBrowser() {
@@ -2208,19 +2007,11 @@
                 if (coletaEmExecucao) return;
                 coletaEmExecucao = true;
                 setBusy(true);
-                setColetaStatus('Coletando dados pelo Avant, sem AvantPro...');
+                setColetaStatus('Coletando dados pelo Avant...');
                 try {
                     await garantirExtensoesNavegador();
                     const termo = obterTermoColeta();
                     let resultados = [];
-                    const extensaoDados = await coletarDadosExtensaoLocal();
-                    resultados = mesclarAnuncios(resultados, extensaoDados);
-                    if (ultimoDiagnosticoExtensaoLocal && ultimoDiagnosticoExtensaoLocal.active) {
-                        const totalExtensao = ultimoDiagnosticoExtensaoLocal.total || extensaoDados.length || 0;
-                        setColetaStatus(`Extensao local ativa: ${totalExtensao} anuncio(s) detectado(s). Cruzando com o navegador interno...`);
-                    } else if (ultimoDiagnosticoExtensaoLocal) {
-                        setColetaStatus(`Extensao local sem dados (${ultimoDiagnosticoExtensaoLocal.reason || 'sem snapshot'}). Usando navegador interno...`);
-                    }
                     const browserDados = await coletarDadosBrowser();
                     resultados = mesclarAnuncios(resultados, browserDados);
 
@@ -2239,7 +2030,6 @@
                         try {
                             const enriquecidos = await enriquecerAnunciosBackend(resultados);
                             resultados = mesclarAnuncios(resultados, enriquecidos);
-                            atualizarColetorLocalNoNavegador(resultados, 'sistema_enriquecimento').catch(() => {});
                         } catch (err) {
                             console.warn('Enriquecimento do sistema falhou; mantendo dados ja coletados:', err);
                         }
@@ -2254,11 +2044,10 @@
                         const complementosPagina = await complementarAnunciosPeloNavegador(resultados);
                         resultados = mesclarAnuncios(resultados, complementosPagina);
                     } else if (resultados.some(anuncioPrecisaComplemento)) {
-                        setColetaStatus('Coleta por extensao/API concluida; links dos anuncios nao foram abertos.');
+                        setColetaStatus('Coleta por navegador/API concluida; links dos anuncios nao foram abertos.');
                     }
 
                     renderizarResultadosColeta(resultados);
-                    atualizarColetorLocalNoNavegador(resultados, 'coleta_final').catch(() => {});
                     if (resultados.length) {
                         const resumo = resumoComplemento(resultados);
                         const pendencias = [
@@ -2269,7 +2058,7 @@
                         setColetaStatus(
                             pendencias
                                 ? `${resultados.length} anuncio(s) coletado(s). Pendencias restantes: ${pendencias}.`
-                                : `${resultados.length} anuncio(s) coletado(s) com vendedor, data e vendas pelo Avant, sem depender do AvantPro.`,
+                                : `${resultados.length} anuncio(s) coletado(s) com vendedor, data e vendas pelo Avant.`,
                             pendencias ? 'error' : 'success'
                         );
                     } else {
@@ -2631,34 +2420,14 @@
                         `;
                         const proxy = criarProxyNavegador();
                         const resultadoNavegacao = await navegarInternoComTolerancia(proxy, url, 25000);
-                        const diagnostico = await injetarColetorLocalNoNavegador(true).catch((err) => {
-                            console.warn('Fallback do coletor local apos abrir pagina falhou:', err);
-                            return null;
-                        });
-                        if (diagnostico && (diagnostico.collector || diagnostico.cards || diagnostico.bridge)) {
-                            setStatus('Pagina aberta no navegador interno com coletor JK ativo.', 'success');
-                        } else if (resultadoNavegacao.parcial) {
-                            setStatus('Pagina aberta parcialmente; coletor JK sera tentado ao coletar dados.', 'success');
-                        } else {
-                            setStatus('Pagina aberta no navegador interno.', 'success');
-                        }
+                        setStatus(resultadoNavegacao.parcial ? 'Pagina aberta parcialmente no navegador interno.' : 'Pagina aberta no navegador interno.', 'success');
                         agendarPosicao();
                         return true;
                     }
                     if (hasWebviewTag()) {
                         const webview = criarWebviewFallback();
                         const resultadoNavegacao = await navegarInternoComTolerancia(webview, url, 25000);
-                        const diagnostico = await injetarColetorLocalNoNavegador(true).catch((err) => {
-                            console.warn('Fallback do coletor local apos abrir webview falhou:', err);
-                            return null;
-                        });
-                        if (diagnostico && (diagnostico.collector || diagnostico.cards || diagnostico.bridge)) {
-                            setStatus('Pagina aberta no navegador interno com coletor JK ativo.', 'success');
-                        } else if (resultadoNavegacao.parcial) {
-                            setStatus('Pagina aberta parcialmente; coletor JK sera tentado ao coletar dados.', 'success');
-                        } else {
-                            setStatus('Pagina aberta no navegador interno.', 'success');
-                        }
+                        setStatus(resultadoNavegacao.parcial ? 'Pagina aberta parcialmente no navegador interno.' : 'Pagina aberta no navegador interno.', 'success');
                         return true;
                     }
                     setBrowserStatus('Este modo nao consegue abrir o navegador interno.');
@@ -2764,6 +2533,9 @@
             els.externo.addEventListener('click', abrirExterno);
             els.home.addEventListener('click', () => { window.location.href = 'dashboard.html'; });
             els.voltar.addEventListener('click', () => { window.location.href = 'dashboard.html'; });
+            if (els.avantproToggle) {
+                els.avantproToggle.addEventListener('change', alternarAvantPro);
+            }
 
             [els.url, els.search1, els.search2, els.search3].forEach((input) => {
                 input.addEventListener('keydown', (event) => {
@@ -2788,6 +2560,7 @@
             });
 
             garantirExtensoesNavegador();
+            carregarControleAvantPro();
         })();
     </script>
 </body>

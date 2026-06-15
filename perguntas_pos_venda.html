@@ -153,6 +153,10 @@
 
         .tab-button {
             appearance: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
             border: 0;
             border-bottom: 3px solid transparent;
             background: transparent;
@@ -175,6 +179,33 @@
             color: #fff;
             border-bottom-color: var(--accent);
             background: rgba(56, 212, 255, 0.08);
+        }
+
+        .notification-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 24px;
+            height: 22px;
+            padding: 0 7px;
+            border: 1px solid rgba(255, 118, 118, 0.45);
+            border-radius: 999px;
+            background: rgba(255, 118, 118, 0.18);
+            color: #ffd7d7;
+            font-size: 0.72rem;
+            font-weight: 950;
+            line-height: 1;
+        }
+
+        .notification-pill.pos-sale {
+            border-color: rgba(255, 211, 107, 0.45);
+            background: rgba(255, 211, 107, 0.16);
+            color: #fff0bc;
+        }
+
+        .tab-notification.hidden,
+        .notification-pill.hidden {
+            display: none;
         }
 
         .automation-controls {
@@ -314,6 +345,17 @@
             font-size: 0.86rem;
         }
 
+        .store-notifications {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .store-notifications:empty {
+            display: none;
+        }
+
         .store-options {
             display: flex;
             flex-wrap: wrap;
@@ -437,6 +479,23 @@
             align-items: center;
             gap: 10px;
             flex-wrap: wrap;
+        }
+
+        .filter-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            min-height: 30px;
+            color: #dbeeff;
+            cursor: pointer;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .filter-check input {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
         }
 
         .toolbar select {
@@ -1082,6 +1141,17 @@
             border-color: rgba(56, 212, 255, 0.72);
             background: rgba(56, 212, 255, 0.08);
             transform: translateY(-1px);
+        }
+
+        .conversation-card.unread {
+            border-color: rgba(255, 211, 107, 0.58);
+            background: rgba(255, 211, 107, 0.08);
+        }
+
+        .conversation-card.unread:hover,
+        .conversation-card.unread.active {
+            border-color: rgba(255, 211, 107, 0.78);
+            background: rgba(255, 211, 107, 0.12);
         }
 
         .pos-sale-detail {
@@ -1757,8 +1827,8 @@
 
             <div class="tab-control-row">
             <div class="tabs" role="tablist" aria-label="Perguntas e pós venda">
-                <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas</button>
-                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda</button>
+                <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas <span id="tab-perguntas-notificacao" class="notification-pill tab-notification hidden" title="Perguntas não respondidas">0</span></button>
+                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda <span id="tab-pos-venda-notificacao" class="notification-pill tab-notification pos-sale hidden" title="Conversas de pós-venda não lidas">0</span></button>
                 <button id="tab-mediacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-mediacao" data-tab="mediacao">Mediação</button>
                 <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar AI</button>
             </div>
@@ -1816,6 +1886,10 @@
                         </select>
                         <label for="pos-venda-busca">Buscar</label>
                         <input id="pos-venda-busca" type="search" placeholder="Venda, pedido, pack, SKU ou MLB">
+                        <label class="filter-check" for="pos-venda-nao-lidas">
+                            <input id="pos-venda-nao-lidas" type="checkbox">
+                            <span>Somente não lidas</span>
+                        </label>
                         <button id="btn-pos-venda-buscar" class="action-btn secondary" type="button">Buscar</button>
                         <button id="btn-pos-venda-limpar-busca" class="action-btn secondary" type="button">Limpar</button>
                     </div>
@@ -2023,6 +2097,13 @@
             automacaoPerguntasNextChecks: {},
             automacaoPerguntasRodando: false,
             automacaoPosVendaRodando: false,
+            notificacoes: {
+                carregando: false,
+                atualizadoEm: 0,
+                lojas: {},
+                totais: { perguntas: 0, posVenda: 0 },
+                erros: {}
+            },
             aprovacoesNotificadas: new Set()
         };
         const TODAS_LOJAS_VALUE = '__todas_contas__';
@@ -2030,6 +2111,8 @@
         const lojasGrid = document.getElementById('lojas-grid');
         const lojasStatus = document.getElementById('lojas-status');
         const perguntasAutomationControls = document.getElementById('perguntas-automation-controls');
+        const tabPerguntasNotificacao = document.getElementById('tab-perguntas-notificacao');
+        const tabPosVendaNotificacao = document.getElementById('tab-pos-venda-notificacao');
         const perguntasStatus = document.getElementById('perguntas-status');
         const perguntasSummary = document.getElementById('perguntas-summary');
         const perguntasList = document.getElementById('perguntas-list');
@@ -2040,6 +2123,7 @@
         const posVendaLojaStatus = document.getElementById('pos-venda-loja-status');
         const posVendaDias = document.getElementById('pos-venda-dias');
         const posVendaBusca = document.getElementById('pos-venda-busca');
+        const posVendaNaoLidas = document.getElementById('pos-venda-nao-lidas');
         const btnPosVendaBuscar = document.getElementById('btn-pos-venda-buscar');
         const btnPosVendaLimparBusca = document.getElementById('btn-pos-venda-limpar-busca');
         const btnPosVendaRecarregar = document.getElementById('btn-pos-venda-recarregar');
@@ -2216,6 +2300,68 @@
             });
         }
 
+        function dadosNotificacaoVazios() {
+            return {
+                perguntas: 0,
+                perguntasParcial: false,
+                posVenda: 0,
+                posVendaParcial: false,
+                erro: ''
+            };
+        }
+
+        function dadosNotificacaoLoja(nome) {
+            if (nome === TODAS_LOJAS_VALUE) {
+                const totais = state.notificacoes.totais || {};
+                return {
+                    perguntas: Number(totais.perguntas || 0),
+                    perguntasParcial: Boolean(totais.perguntasParcial),
+                    posVenda: Number(totais.posVenda || 0),
+                    posVendaParcial: Boolean(totais.posVendaParcial),
+                    erro: ''
+                };
+            }
+            return state.notificacoes.lojas[chaveLojaCronometro(nome)] || dadosNotificacaoVazios();
+        }
+
+        function formatarContadorNotificacao(valor, parcial = false) {
+            const numero = Math.max(0, Number(valor || 0));
+            if (numero <= 0) return '';
+            const base = numero > 999 ? '999+' : String(numero);
+            return parcial && !base.endsWith('+') ? `${base}+` : base;
+        }
+
+        function htmlNotificacoesLoja(nome) {
+            const dados = dadosNotificacaoLoja(nome);
+            const perguntas = formatarContadorNotificacao(dados.perguntas, dados.perguntasParcial);
+            const posVenda = formatarContadorNotificacao(dados.posVenda, dados.posVendaParcial);
+            const partes = [];
+            if (perguntas) {
+                partes.push(`<span class="notification-pill" title="Perguntas não respondidas">${escapeHtml(perguntas)} perguntas</span>`);
+            }
+            if (posVenda) {
+                partes.push(`<span class="notification-pill pos-sale" title="Conversas de pós-venda não lidas">${escapeHtml(posVenda)} pós-venda</span>`);
+            }
+            return partes.join('');
+        }
+
+        function atualizarBadgeAba(elemento, valor, parcial = false) {
+            if (!elemento) return;
+            const texto = formatarContadorNotificacao(valor, parcial);
+            elemento.textContent = texto || '0';
+            elemento.classList.toggle('hidden', !texto);
+        }
+
+        function renderizarNotificacoes() {
+            const totais = state.notificacoes.totais || {};
+            atualizarBadgeAba(tabPerguntasNotificacao, totais.perguntas, totais.perguntasParcial);
+            atualizarBadgeAba(tabPosVendaNotificacao, totais.posVenda, totais.posVendaParcial);
+            document.querySelectorAll('[data-store-notifications]').forEach((elemento) => {
+                const nome = elemento.dataset.storeNotifications || '';
+                elemento.innerHTML = htmlNotificacoesLoja(nome);
+            });
+        }
+
         function todasAsLojasSelecionadas() {
             return state.lojaSelecionada === TODAS_LOJAS_VALUE;
         }
@@ -2380,6 +2526,115 @@
             }
         }
 
+        async function buscarContadorPerguntasNaoRespondidas(nomeLoja) {
+            const params = new URLSearchParams({
+                loja: nomeLoja,
+                status: 'UNANSWERED',
+                carregar_todas: 'false',
+                offset: '0',
+                limit: '1'
+            });
+            const response = await fetch(`/api/mercadolivre/perguntas?${params.toString()}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || `Erro ao contar perguntas de ${nomeLoja}.`);
+            return {
+                total: Number(data.total || data.status_resumo?.UNANSWERED || data.retornadas || 0),
+                parcial: false
+            };
+        }
+
+        async function buscarContadorPosVendaNaoLidas(nomeLoja) {
+            const params = new URLSearchParams({
+                loja: nomeLoja,
+                dias: posVendaDias?.value || '365',
+                offset: '0',
+                limit: '20',
+                max_orders: '10000',
+                nao_lidas: 'true'
+            });
+            const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || `Erro ao contar pós-venda de ${nomeLoja}.`);
+            const conversas = Array.isArray(data.conversas) ? data.conversas.length : 0;
+            return {
+                total: Number(data.conversas_total || data.conversas_nao_lidas_total || conversas || 0),
+                parcial: data.has_next === true || data.next_offset !== null && data.next_offset !== undefined
+            };
+        }
+
+        async function carregarContadoresNotificacoes(forcar = false) {
+            const lojas = lojasMercadoLivreConectadas();
+            if (!lojas.length) {
+                state.notificacoes = {
+                    carregando: false,
+                    atualizadoEm: Date.now(),
+                    lojas: {},
+                    totais: { perguntas: 0, posVenda: 0 },
+                    erros: {}
+                };
+                renderizarNotificacoes();
+                return;
+            }
+            const agora = Date.now();
+            if (!forcar && state.notificacoes.atualizadoEm && agora - state.notificacoes.atualizadoEm < 60000) {
+                renderizarNotificacoes();
+                return;
+            }
+            if (state.notificacoes.carregando) return;
+            state.notificacoes.carregando = true;
+            renderizarNotificacoes();
+            const resultados = await Promise.all(lojas.map(async (loja) => {
+                const nomeLoja = String(loja.nome || '').trim();
+                try {
+                    const [perguntas, posVenda] = await Promise.all([
+                        buscarContadorPerguntasNaoRespondidas(nomeLoja),
+                        buscarContadorPosVendaNaoLidas(nomeLoja)
+                    ]);
+                    return { nomeLoja, perguntas, posVenda };
+                } catch (error) {
+                    return { nomeLoja, error };
+                }
+            }));
+            const porLoja = {};
+            const erros = {};
+            const totais = { perguntas: 0, perguntasParcial: false, posVenda: 0, posVendaParcial: false };
+            resultados.forEach((resultado) => {
+                const chave = chaveLojaCronometro(resultado.nomeLoja);
+                if (!chave) return;
+                if (resultado.error) {
+                    erros[chave] = mensagemErro(resultado.error);
+                    porLoja[chave] = dadosNotificacaoVazios();
+                    return;
+                }
+                const dados = {
+                    perguntas: Number(resultado.perguntas?.total || 0),
+                    perguntasParcial: Boolean(resultado.perguntas?.parcial),
+                    posVenda: Number(resultado.posVenda?.total || 0),
+                    posVendaParcial: Boolean(resultado.posVenda?.parcial),
+                    erro: ''
+                };
+                porLoja[chave] = dados;
+                totais.perguntas += dados.perguntas;
+                totais.posVenda += dados.posVenda;
+                totais.perguntasParcial = totais.perguntasParcial || dados.perguntasParcial;
+                totais.posVendaParcial = totais.posVendaParcial || dados.posVendaParcial;
+            });
+            state.notificacoes = {
+                carregando: false,
+                atualizadoEm: Date.now(),
+                lojas: porLoja,
+                totais,
+                erros
+            };
+            renderizarNotificacoes();
+        }
+
         function renderizarLojas() {
             if (!state.lojas.length) {
                 const vazio = '<div class="empty-state"><div><h2>Nenhuma loja encontrada</h2><p>Cadastre uma loja em Integrações para começar.</p></div></div>';
@@ -2401,6 +2656,7 @@
                         <span class="badge ok">${lojasConectadas.length} conta(s)</span>
                         <span>Perguntas e pos-venda juntos</span>
                     </span>
+                    <span class="store-notifications" data-store-notifications="${TODAS_LOJAS_VALUE}">${htmlNotificacoesLoja(TODAS_LOJAS_VALUE)}</span>
                 </div>
             ` : '';
             const lojasHtml = state.lojas.map((loja) => {
@@ -2422,6 +2678,7 @@
                             <span class="badge ${badgeClasse}" title="${escapeHtml(mlMotivo)}">${badgeTexto}</span>
                             <span>${seller}</span>
                         </span>
+                        <span class="store-notifications" data-store-notifications="${escapeHtml(nome)}">${htmlNotificacoesLoja(nome)}</span>
                         <span class="store-options">
                             <label class="store-option">
                                 <input class="store-config-checkbox" type="checkbox" data-config="responder_automaticamente" ${config.responder_automaticamente ? 'checked' : ''}>
@@ -2452,6 +2709,7 @@
             vincularEventosLojas(lojasGrid);
             vincularEventosLojas(posVendaLojasGrid);
             renderizarControlesAutomacaoSelecionada();
+            renderizarNotificacoes();
         }
 
         function vincularEventosLojas(container) {
@@ -3351,6 +3609,7 @@
                     ? `Resposta enviada ao Mercado Livre pela loja ${lojaResposta} e salva como exemplo da IA.`
                     : `Resposta enviada ao Mercado Livre pela loja ${lojaResposta}.`;
                 renderizarPerguntas();
+                carregarContadoresNotificacoes(true);
             } catch (error) {
                 setStatusRespostaPergunta(status, `Erro ao enviar: ${mensagemErro(error)}`, 'error');
                 btnEnviar.disabled = !textarea.value.trim();
@@ -3389,6 +3648,7 @@
                 atualizarCabecalhoMediacao();
                 iniciarAutomacaoPerguntas();
                 if (state.lojaSelecionada) await carregarPerguntas();
+                carregarContadoresNotificacoes(true);
             } catch (error) {
                 lojasStatus.textContent = 'Erro ao carregar lojas.';
                 lojasGrid.innerHTML = `<div class="empty-state"><div><h2>Falha ao carregar lojas</h2><p>${escapeHtml(mensagemErro(error))}</p></div></div>`;
@@ -3571,6 +3831,14 @@
             return String(posVendaBusca?.value || '').trim();
         }
 
+        function filtroPosVendaNaoLidasAtivo() {
+            return Boolean(posVendaNaoLidas?.checked);
+        }
+
+        function rotuloFiltroPosVenda() {
+            return filtroPosVendaNaoLidasAtivo() ? 'não lidas' : 'com conversa';
+        }
+
         function atualizarCabecalhoMediacao() {
             mediacaoLojaStatus.textContent = todasAsLojasSelecionadas()
                 ? 'Selecione uma loja específica'
@@ -3608,11 +3876,41 @@
             return origem ? 'Comprador' : '';
         }
 
-        function chaveCachePosVenda() {
-            if (todasAsLojasSelecionadas()) {
-                return `jk_pos_venda_cache:${TODAS_LOJAS_VALUE}:${posVendaDias.value}:pagina-${state.posVendaPagina}:${obterBuscaPosVenda().toLowerCase()}`;
+        function conversaPosVendaNaoLida(venda) {
+            if (!venda || typeof venda !== 'object') return false;
+            const direto = [
+                venda.nao_lida,
+                venda.unread,
+                venda.is_unread,
+                venda.has_unread,
+                venda.has_unread_messages
+            ];
+            if (direto.some((valor) => valor === true || Number(valor || 0) > 0)) return true;
+            if (Number(venda.unread_count || venda.mensagens_nao_lidas || 0) > 0) return true;
+            const conversa = venda.conversation_status || {};
+            if (conversa && typeof conversa === 'object') {
+                const statusDireto = [
+                    conversa.nao_lida,
+                    conversa.unread,
+                    conversa.is_unread,
+                    conversa.has_unread,
+                    conversa.has_unread_messages,
+                    conversa.unread_count,
+                    conversa.unread_messages
+                ];
+                if (statusDireto.some((valor) => valor === true || Number(valor || 0) > 0)) return true;
             }
-            return `jk_pos_venda_cache:${state.lojaSelecionada || 'sem-loja'}:${posVendaDias.value}:${state.posVendaOffset}:${obterBuscaPosVenda().toLowerCase()}`;
+            const papel = String(venda.last_message_role || '').trim().toLowerCase();
+            const rotulo = String(venda.last_message_sender_label || '').trim().toLowerCase();
+            return papel === 'comprador' || papel === 'buyer' || rotulo === 'comprador';
+        }
+
+        function chaveCachePosVenda() {
+            const filtro = filtroPosVendaNaoLidasAtivo() ? 'nao-lidas' : 'todas';
+            if (todasAsLojasSelecionadas()) {
+                return `jk_pos_venda_cache:${TODAS_LOJAS_VALUE}:${posVendaDias.value}:pagina-${state.posVendaPagina}:${filtro}:${obterBuscaPosVenda().toLowerCase()}`;
+            }
+            return `jk_pos_venda_cache:${state.lojaSelecionada || 'sem-loja'}:${posVendaDias.value}:${state.posVendaOffset}:${filtro}:${obterBuscaPosVenda().toLowerCase()}`;
         }
 
         function salvarCachePosVenda(data) {
@@ -3646,6 +3944,7 @@
         }
 
         async function carregarPosVendaLojaAgregada(nomeLoja, quantidadeNecessaria, busca) {
+            const filtroNaoLidas = filtroPosVendaNaoLidasAtivo();
             let offset = 0;
             let nextOffset = 0;
             let chamadas = 0;
@@ -3668,6 +3967,7 @@
                     max_orders: '10000'
                 });
                 if (busca) params.set('busca', busca);
+                if (filtroNaoLidas) params.set('nao_lidas', 'true');
                 const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
                     headers: obterAuthHeaders(),
                     cache: 'no-store'
@@ -3734,6 +4034,7 @@
                 orders_total: sucessos.reduce((acc, resultado) => acc + Number(resultado.resumo?.orders_total || 0), 0),
                 orders_avaliadas: sucessos.reduce((acc, resultado) => acc + Number(resultado.resumo?.orders_avaliadas || 0), 0),
                 conversas_total: todasConversas.length,
+                nao_lidas: filtroPosVendaNaoLidasAtivo(),
                 has_next: hasNext,
                 next_offset: hasNext ? fim : null,
                 conversas: pagina
@@ -3741,11 +4042,12 @@
         }
 
         function renderizarResumoPosVenda(data) {
+            const rotuloFiltro = filtroPosVendaNaoLidasAtivo() ? 'Vendas não lidas' : 'Vendas com conversa';
             if (data && data.modo_todas) {
                 const erros = Array.isArray(data.erros) ? data.erros.length : 0;
                 posVendaSummary.classList.remove('hidden');
                 posVendaSummary.innerHTML = `
-                    <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>Vendas com conversa</span></div>
+                    <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>${rotuloFiltro}</span></div>
                     <div class="metric"><strong>${Number(data.orders_avaliadas || 0)}</strong><span>Vendas avaliadas</span></div>
                     <div class="metric"><strong>${Number(data.lojas_consultadas || 0)}</strong><span>Contas consultadas</span></div>
                     <div class="metric"><strong>${Number(data.dias || 0)}</strong><span>Dias consultados</span></div>
@@ -3755,7 +4057,7 @@
             }
             posVendaSummary.classList.remove('hidden');
             posVendaSummary.innerHTML = `
-                <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>Vendas com conversa</span></div>
+                <div class="metric"><strong>${Number(data.conversas_total || 0)}</strong><span>${rotuloFiltro}</span></div>
                 <div class="metric"><strong>${Number(data.orders_avaliadas || 0)}</strong><span>Vendas avaliadas</span></div>
                 <div class="metric"><strong>${Number(data.orders_total || 0)}</strong><span>Vendas no período</span></div>
                 <div class="metric"><strong>${Number(data.dias || 0)}</strong><span>Dias consultados</span></div>
@@ -3940,6 +4242,7 @@
         function renderizarPosVenda(conversas) {
             if (!conversas.length) {
                 const busca = obterBuscaPosVenda();
+                const somenteNaoLidas = filtroPosVendaNaoLidasAtivo();
                 state.posVendaConversas = [];
                 state.posVendaConversaSelecionada = null;
                 state.posVendaModoDetalhe = false;
@@ -3948,6 +4251,8 @@
                 posVendaList.classList.remove('hidden');
                 posVendaList.innerHTML = busca
                     ? `<div class="empty-state"><div><h2>Nenhuma venda encontrada</h2><p>Nenhuma conversa foi encontrada para "${escapeHtml(busca)}".</p></div></div>`
+                    : somenteNaoLidas
+                    ? `<div class="empty-state"><div><h2>Nenhuma conversa não lida</h2><p>${escapeHtml(todasAsLojasSelecionadas() ? 'Não há conversas não lidas nas contas conectadas neste período.' : 'Não há conversas não lidas no período selecionado.')}</p></div></div>`
                     : `<div class="empty-state"><div><h2>Nenhuma conversa encontrada</h2><p>${escapeHtml(todasAsLojasSelecionadas() ? 'Não há vendas com conversa iniciada nas contas conectadas neste período.' : 'Não há vendas com conversa iniciada no período selecionado.')}</p></div></div>`;
                 return;
             }
@@ -3972,6 +4277,10 @@
                     : escapeHtml(venda.item_title || 'Produtos da venda');
                 const conversa = venda.conversation_status || {};
                 const conversaBadge = conversa.status === 'active' ? 'ok' : (conversa.status ? 'warn' : 'danger');
+                const naoLida = conversaPosVendaNaoLida(venda);
+                const naoLidaBadge = naoLida
+                    ? `<span class="badge warn">${Number(venda.unread_count || venda.mensagens_nao_lidas || 0) > 1 ? `${Number(venda.unread_count || venda.mensagens_nao_lidas || 0)} não lidas` : 'Não lida'}</span>`
+                    : '';
                 const active = state.posVendaConversaSelecionada
                     && String(state.posVendaConversaSelecionada.pack_id || '') === String(venda.pack_id || '')
                     && (!lojaOrigem || lojaOrigemItem(state.posVendaConversaSelecionada) === lojaOrigem);
@@ -3979,7 +4288,7 @@
                 const ultimaMensagemRotulo = venda.last_message_text ? rotuloUltimaMensagem(venda) : '';
                 const ultimaMensagemCabecalho = ultimaMensagemRotulo ? `<span class="last-message-sender">Última mensagem: ${escapeHtml(ultimaMensagemRotulo)}</span>` : '';
                 return `
-                    <article class="question-card conversation-card ${active ? 'active' : ''}" data-index="${index}">
+                    <article class="question-card conversation-card ${active ? 'active' : ''} ${naoLida ? 'unread' : ''}" data-index="${index}">
                         <div class="question-body">
                             <div class="question-thumb">${foto}</div>
                             <div>
@@ -3997,6 +4306,7 @@
                         </div>
                         <div class="sale-items">${itensTexto}</div>
                         <div class="sale-meta">
+                            ${naoLidaBadge}
                             <span class="badge ${conversaBadge}">${escapeHtml(conversa.status || 'com conversa')}</span>
                             <span>${Number(venda.messages_count || 0)} mensagem(ns)</span>
                             <span>Venda: ${escapeHtml(formatarData(venda.date_created))}</span>
@@ -4038,8 +4348,8 @@
                 posVendaSummary.classList.remove('hidden');
                 if (posVendaPagination.innerHTML.trim()) posVendaPagination.classList.remove('hidden');
                 posVendaStatus.textContent = todasAsLojasSelecionadas()
-                    ? `${state.posVendaConversas.length} venda(s) com conversa iniciada nas contas conectadas.`
-                    : `${state.posVendaConversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`;
+                    ? `${state.posVendaConversas.length} venda(s) ${rotuloFiltroPosVenda()} nas contas conectadas.`
+                    : `${state.posVendaConversas.length} venda(s) ${rotuloFiltroPosVenda()} em ${state.lojaSelecionada}.`;
                 renderizarPosVenda(state.posVendaConversas);
             }
         }
@@ -4246,6 +4556,7 @@
                 status.textContent = 'Resposta enviada. Atualizando conversa...';
                 await abrirConversaPosVenda(anexarLojaOrigem(conversa, lojaConversa));
                 carregarPosVenda(true);
+                carregarContadoresNotificacoes(true);
             } catch (error) {
                 status.textContent = `Erro ao enviar resposta: ${mensagemErro(error)}`;
                 botao.disabled = false;
@@ -4256,17 +4567,19 @@
             const conversas = Array.isArray(data.conversas) ? data.conversas : [];
             const busca = obterBuscaPosVenda();
             const rotuloEscopo = rotuloEscopoSelecionado();
+            const rotuloFiltro = rotuloFiltroPosVenda();
+            const rotuloTotalFiltro = filtroPosVendaNaoLidasAtivo() ? 'conversa(s) não lida(s)' : 'conversa(s)';
             posVendaStatus.textContent = origemCache
                 ? `Exibindo informações salvas de ${rotuloEscopo}. Atualizando pela API...`
                 : data.modo_todas
                     ? (busca
                         ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em todas as contas.`
-                        : `${conversas.length} venda(s) nesta página, de ${Number(data.conversas_total || conversas.length || 0)} conversa(s) carregada(s) em ${Number(data.lojas_consultadas || 0)} conta(s).`)
+                        : `${conversas.length} venda(s) nesta página, de ${Number(data.conversas_total || conversas.length || 0)} ${rotuloTotalFiltro} carregada(s) em ${Number(data.lojas_consultadas || 0)} conta(s).`)
                     : (busca
                         ? `${Number(data.conversas_total || conversas.length || 0)} resultado(s) para "${busca}" em ${state.lojaSelecionada}.`
                         : data.interrompido
-                        ? `${conversas.length} venda(s) com conversa. A consulta foi limitada às vendas mais recentes.`
-                        : `${conversas.length} venda(s) com conversa iniciada em ${state.lojaSelecionada}.`);
+                        ? `${conversas.length} venda(s) ${rotuloFiltro}. A consulta foi limitada às vendas mais recentes.`
+                        : `${conversas.length} venda(s) ${rotuloFiltro} em ${state.lojaSelecionada}.`);
             renderizarResumoPosVenda(data);
             renderizarPosVenda(conversas);
             renderizarPaginacaoPosVenda(data, conversas);
@@ -4279,9 +4592,11 @@
         async function carregarPosVenda(forcar = false) {
             if (!state.lojaSelecionada || state.carregandoPosVenda) return;
             const busca = obterBuscaPosVenda();
+            const filtroNaoLidas = filtroPosVendaNaoLidasAtivo();
+            const filtroChave = filtroNaoLidas ? 'nao-lidas' : 'todas';
             const chave = todasAsLojasSelecionadas()
-                ? `${TODAS_LOJAS_VALUE}:${posVendaDias.value}:${state.posVendaPagina}:${busca.toLowerCase()}`
-                : `${state.lojaSelecionada}:${posVendaDias.value}:${state.posVendaOffset}:${busca.toLowerCase()}`;
+                ? `${TODAS_LOJAS_VALUE}:${posVendaDias.value}:${state.posVendaPagina}:${filtroChave}:${busca.toLowerCase()}`
+                : `${state.lojaSelecionada}:${posVendaDias.value}:${state.posVendaOffset}:${filtroChave}:${busca.toLowerCase()}`;
             const cacheLocal = carregarCachePosVenda();
             if (!forcar && state.posVendaCarregadoPara === chave && !cacheLocal) return;
 
@@ -4295,8 +4610,8 @@
                 posVendaPagination.classList.add('hidden');
                 posVendaPagination.innerHTML = '';
                 posVendaStatus.textContent = busca
-                    ? `Buscando "${busca}" nas vendas com conversa de ${rotuloEscopoSelecionado()}...`
-                    : `Carregando página ${state.posVendaPagina} de vendas com conversa de ${rotuloEscopoSelecionado()}...`;
+                    ? `Buscando "${busca}" nas vendas ${rotuloFiltroPosVenda()} de ${rotuloEscopoSelecionado()}...`
+                    : `Carregando página ${state.posVendaPagina} de vendas ${rotuloFiltroPosVenda()} de ${rotuloEscopoSelecionado()}...`;
             }
 
             try {
@@ -4315,6 +4630,7 @@
                     max_orders: '10000'
                 });
                 if (busca) params.set('busca', busca);
+                if (filtroNaoLidas) params.set('nao_lidas', 'true');
                 const response = await fetch(`/api/mercadolivre/pos-venda/conversas?${params.toString()}`, {
                     headers: obterAuthHeaders(),
                     cache: 'no-store'
@@ -4820,10 +5136,14 @@
             button.addEventListener('click', () => ativarAba(button.dataset.tab));
         });
         statusFiltro.addEventListener('change', carregarPerguntas);
-        btnRecarregar.addEventListener('click', carregarPerguntas);
+        btnRecarregar.addEventListener('click', async () => {
+            await carregarPerguntas();
+            carregarContadoresNotificacoes(true);
+        });
         posVendaDias.addEventListener('change', () => {
             resetarPaginacaoPosVenda();
             carregarPosVenda(true);
+            carregarContadoresNotificacoes(true);
         });
         btnPosVendaBuscar.addEventListener('click', () => {
             resetarPaginacaoPosVenda();
@@ -4841,9 +5161,14 @@
                 carregarPosVenda(true);
             }
         });
+        posVendaNaoLidas.addEventListener('change', () => {
+            resetarPaginacaoPosVenda();
+            carregarPosVenda(true);
+        });
         btnPosVendaRecarregar.addEventListener('click', () => {
             resetarPaginacaoPosVenda();
             carregarPosVenda(true);
+            carregarContadoresNotificacoes(true);
         });
         mediacaoDias.addEventListener('change', () => {
             resetarMediacoes();

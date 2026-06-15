@@ -105,6 +105,7 @@ const AUTO_UPDATE_CHECK_TIMEOUT_MS = 45000;
 const AUTO_UPDATE_START_DELAY_MS = 1500;
 const JK_BROWSER_SESSION_PARTITION = process.env.JK_BROWSER_SESSION_PARTITION || 'persist:jk-sistema-browser';
 const AVANTPRO_CHROME_EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
+const AVANTPRO_EXTENSION_DEFAULT_ENABLED = !/^(0|false|nao|não|off)$/i.test(String(process.env.JK_ENABLE_AVANTPRO_EXTENSION || 'true'));
 
 function logElectronLifecycle(...args) {
     const logDir = path.join(JK_ELECTRON_USER_DATA_DIR, 'logs');
@@ -202,6 +203,9 @@ async function unloadAvantProExtensionForRecovery() {
 }
 
 async function recoverAvantProExtensionStorage(reason = 'avantpro-not-detected', details = {}) {
+    if (!isAvantProExtensionEnabled()) {
+        return { success: false, skipped: true, reason: 'avantpro-disabled' };
+    }
     if (avantProStorageRecoveryPromise) return avantProStorageRecoveryPromise;
     if (avantProStorageRecoveryAttempted) {
         return { success: false, skipped: true, reason: 'already-attempted' };
@@ -238,6 +242,7 @@ function isAvantProStorageConsoleMessage(message, sourceId) {
 }
 
 function registerAvantProConsoleDiagnostics(webContents) {
+    if (!isAvantProExtensionEnabled()) return;
     if (!webContents || webContents.__jkAvantProConsoleDiagnosticsRegistered) return;
     webContents.__jkAvantProConsoleDiagnosticsRegistered = true;
     webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -1717,6 +1722,41 @@ function writeJsonFile(filePath, data) {
     }
 }
 
+function getBrowserExtensionsConfigPath() {
+    return path.join(JK_ELECTRON_USER_DATA_DIR, 'browser-extensions-config.json');
+}
+
+function normalizeBrowserExtensionsConfig(raw) {
+    const data = raw && typeof raw === 'object' ? raw : {};
+    return {
+        avantProEnabled: data.avantProEnabled === undefined
+            ? AVANTPRO_EXTENSION_DEFAULT_ENABLED
+            : data.avantProEnabled === true
+    };
+}
+
+function loadBrowserExtensionsConfig() {
+    return normalizeBrowserExtensionsConfig(readJsonFile(getBrowserExtensionsConfigPath()));
+}
+
+function saveBrowserExtensionsConfig(nextConfig) {
+    const current = loadBrowserExtensionsConfig();
+    const payload = {
+        ...current,
+        ...(nextConfig && typeof nextConfig === 'object' ? nextConfig : {}),
+        updatedAt: new Date().toISOString()
+    };
+    payload.avantProEnabled = payload.avantProEnabled === true;
+    if (!writeJsonFile(getBrowserExtensionsConfigPath(), payload)) {
+        throw new Error('Nao foi possivel salvar a configuracao das extensoes.');
+    }
+    return normalizeBrowserExtensionsConfig(payload);
+}
+
+function isAvantProExtensionEnabled() {
+    return loadBrowserExtensionsConfig().avantProEnabled === true;
+}
+
 function normalizeAppUrl(value) {
     const raw = String(value || '').trim();
     if (!raw) return '';
@@ -2060,11 +2100,38 @@ function getChromeExtensionManifestIdentity(extensionDir) {
     }
 }
 
+function readChromeExtensionManifest(extensionDir) {
+    try {
+        return JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
+    } catch (_err) {
+        return null;
+    }
+}
+
+function isAvantProExtensionCandidate(extensionDir) {
+    const normalizedPath = String(extensionDir || '').replace(/\\/g, '/').toLowerCase();
+    if (normalizedPath.includes(AVANTPRO_CHROME_EXTENSION_ID.toLowerCase())) return true;
+    if (/(^|\/)avant[_-]?pro(\/|$)/i.test(normalizedPath)) return true;
+    const manifest = readChromeExtensionManifest(extensionDir);
+    if (!manifest) return false;
+    const manifestText = [
+        manifest.name,
+        manifest.short_name,
+        manifest.description,
+        manifest.homepage_url
+    ].filter(Boolean).join(' ');
+    return /avant\s*pro|avantpro/i.test(manifestText);
+}
+
 function findUnpackedChromeExtensions() {
     const candidates = [];
     const explicitRoots = process.env.JK_CHROME_EXTENSIONS_DIR ? [path.resolve(process.env.JK_CHROME_EXTENSIONS_DIR)] : [];
     const bundledRoots = getChromeExtensionsRoots();
-    const chromeInstalledExtensions = findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID);
+    const avantProEnabled = isAvantProExtensionEnabled();
+    if (!avantProEnabled) {
+        return [];
+    }
+    const chromeInstalledExtensions = avantProEnabled ? findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID) : [];
     const preferInstalled = /^(1|true|sim|yes)$/i.test(String(process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS || ''));
     const searchRoots = preferInstalled
         ? [...explicitRoots, ...chromeInstalledExtensions, ...bundledRoots]
@@ -2075,6 +2142,7 @@ function findUnpackedChromeExtensions() {
 
         const rootManifest = path.join(root, 'manifest.json');
         if (fs.existsSync(rootManifest)) {
+            if (!isAvantProExtensionCandidate(root)) continue;
             candidates.push(root);
             continue;
         }
@@ -2083,6 +2151,7 @@ function findUnpackedChromeExtensions() {
             if (!entry.isDirectory()) continue;
             const dir = path.join(root, entry.name);
             if (fs.existsSync(path.join(dir, 'manifest.json'))) {
+                if (!isAvantProExtensionCandidate(dir)) continue;
                 candidates.push(dir);
             }
         }
@@ -2091,6 +2160,7 @@ function findUnpackedChromeExtensions() {
     const seen = new Set();
     const unique = [];
     for (const candidate of Array.from(new Set(candidates.map(item => path.resolve(item))))) {
+        if (!isAvantProExtensionCandidate(candidate)) continue;
         const identity = getChromeExtensionManifestIdentity(candidate);
         if (seen.has(identity)) continue;
         seen.add(identity);
@@ -2181,6 +2251,39 @@ function getLoadedChromeExtensionsForMlSession() {
         path: ext && ext.path,
         url: ext && ext.url
     }));
+}
+
+function getBrowserExtensionSettingsSnapshot() {
+    return {
+        ...loadBrowserExtensionsConfig(),
+        configPath: getBrowserExtensionsConfigPath(),
+        loadedExtensions: getLoadedChromeExtensionsForMlSession()
+    };
+}
+
+async function applyAvantProExtensionSetting(enabled) {
+    const config = saveBrowserExtensionsConfig({ avantProEnabled: !!enabled });
+    const ses = getMlSession();
+    chromeExtensionsLoadPromise = null;
+
+    if (!config.avantProEnabled && ses && typeof ses.removeExtension === 'function') {
+        try {
+            await Promise.resolve(ses.removeExtension(AVANTPRO_CHROME_EXTENSION_ID));
+            logElectronLifecycle('avantpro-extension-disabled-by-user', { id: AVANTPRO_CHROME_EXTENSION_ID });
+        } catch (err) {
+            logElectronLifecycle('avantpro-extension-disable-remove-failed', {
+                id: AVANTPRO_CHROME_EXTENSION_ID,
+                error: err && err.message ? err.message : String(err)
+            });
+        }
+    }
+
+    if (config.avantProEnabled) {
+        await ensureChromeExtensionsForMlSession();
+        logElectronLifecycle('avantpro-extension-enabled-by-user', { id: AVANTPRO_CHROME_EXTENSION_ID });
+    }
+
+    return getBrowserExtensionSettingsSnapshot();
 }
 
 function getMachineInfo() {
@@ -3261,7 +3364,20 @@ app.whenReady().then(async () => {
         await ensureChromeExtensionsForMlSession();
         return {
             success: true,
-            extensions: getLoadedChromeExtensionsForMlSession()
+            extensions: getLoadedChromeExtensionsForMlSession(),
+            settings: loadBrowserExtensionsConfig()
+        };
+    });
+    ipcMain.handle('get-browser-extension-settings', async () => {
+        return {
+            success: true,
+            ...getBrowserExtensionSettingsSnapshot()
+        };
+    });
+    ipcMain.handle('set-avantpro-extension-enabled', async (_event, enabled) => {
+        return {
+            success: true,
+            ...(await applyAvantProExtensionSetting(!!enabled))
         };
     });
     ipcMain.handle('flush-browser-session', async () => {

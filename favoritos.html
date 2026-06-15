@@ -3769,11 +3769,29 @@
 
         let mlBrowserExtensionsReadyPromise = null;
         function garantirExtensoesNavegadorMl() {
-            if (!(window.electronAPI && typeof window.electronAPI.ensureBrowserExtensions === 'function')) {
+            const api = window.electronAPI;
+            if (!(api && typeof api.ensureBrowserExtensions === 'function')) {
                 return Promise.resolve(null);
             }
             if (!mlBrowserExtensionsReadyPromise) {
-                mlBrowserExtensionsReadyPromise = window.electronAPI.ensureBrowserExtensions()
+                mlBrowserExtensionsReadyPromise = (async () => {
+                    if (typeof api.getBrowserExtensionSettings === 'function' && typeof api.setAvantProExtensionEnabled === 'function') {
+                        const estado = await api.getBrowserExtensionSettings().catch(() => null);
+                        if (estado && estado.avantProEnabled === false) {
+                            await api.setAvantProExtensionEnabled(true);
+                        }
+                    }
+                    const resultado = await api.ensureBrowserExtensions();
+                    const extensoes = Array.isArray(resultado && resultado.extensions) ? resultado.extensions : [];
+                    const avantCarregado = extensoes.some((ext) => {
+                        const texto = [ext && ext.id, ext && ext.name, ext && ext.path, ext && ext.url].filter(Boolean).join(' ');
+                        return /jdefnfmbnchmnjkcknaadaddgjbgephh|avant\s*pro|avantpro/i.test(texto);
+                    });
+                    if (!avantCarregado) {
+                        mlBrowserExtensionsReadyPromise = null;
+                    }
+                    return resultado;
+                })()
                     .catch((err) => {
                         mlBrowserExtensionsReadyPromise = null;
                         console.warn('Falha ao preparar extensoes do navegador ML:', err && err.message ? err.message : err);
@@ -18942,7 +18960,8 @@
             abrirBalaoResultadosMl({
                 titulo: opcoes.titulo || 'Navegador do Mercado Livre',
                 subtitulo: opcoes.subtitulo || url,
-                mostrarFavoritos: !!opcoes.mostrarFavoritos
+                mostrarFavoritos: !!opcoes.mostrarFavoritos,
+                browserCompleto: opcoes.browserCompleto === undefined ? !opcoes.mostrarFavoritos : !!opcoes.browserCompleto
             });
 
             if (hasInternalBrowserApi || usarNavegadorMlNoShellElectron()) {
@@ -18980,7 +18999,8 @@
             mlUrlInput.value = construirUrlPesquisaMercadoLivre(termo);
             const abriu = await abrirMercadoLivreNoPrograma({
                 titulo: 'Resultados da pesquisa no Mercado Livre',
-                subtitulo: termo
+                subtitulo: termo,
+                browserCompleto: false
             });
             if (!abriu) {
                 mlPrimeiraPaginaStatusEl.textContent = 'Não foi possível abrir o Mercado Livre no quadro interno. Abra pelo app Electron, faça login/verificação se necessário e pesquise novamente.';

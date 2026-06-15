@@ -338,7 +338,15 @@
                             <select id="iaModeloPerguntas"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
                             <label class="label" for="iaModoPerguntas">Usar nesta função</label>
                             <select id="iaModoPerguntas"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
-                            <div class="hint">Usada nas respostas de perguntas de anúncio do Mercado Livre. O pós-venda será ligado ao agente depois do piloto.</div>
+                            <div class="hint">Usada apenas nas respostas publicas feitas no anuncio do Mercado Livre.</div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Pos-venda ML</h3>
+                            <label class="label" for="iaModeloPosVenda">IA que responde pos-venda</label>
+                            <select id="iaModeloPosVenda"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaModoPosVenda">Usar nesta função</label>
+                            <select id="iaModoPosVenda"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
+                            <div class="hint">Usada nas respostas privadas de atendimento apos a venda.</div>
                         </div>
                         <div class="setting-card">
                             <h3>Chat lateral</h3>
@@ -493,10 +501,12 @@
     const inputJanela = document.getElementById('janelaAutoSync');
     const selectIaModelo = document.getElementById('iaModeloPadrao');
     const selectIaModeloPerguntas = document.getElementById('iaModeloPerguntas');
+    const selectIaModeloPosVenda = document.getElementById('iaModeloPosVenda');
     const selectIaModeloChat = document.getElementById('iaModeloChat');
     const selectIaModeloFavoritos = document.getElementById('iaModeloFavoritos');
     const selectIaModo = document.getElementById('iaModoPadrao');
     const selectIaModoPerguntas = document.getElementById('iaModoPerguntas');
+    const selectIaModoPosVenda = document.getElementById('iaModoPosVenda');
     const selectIaModoChat = document.getElementById('iaModoChat');
     const selectIaModoFavoritos = document.getElementById('iaModoFavoritos');
     const inputIaVertexProjectId = document.getElementById('iaVertexProjectId');
@@ -612,8 +622,8 @@
             'gpt-5.4-mini': 'Mini',
             'gpt-5.4': 'GPT-5.4',
             'gpt-5.5': 'GPT-5.5',
-            'deepseek-v4-flash': 'DS V4 Flash',
-            'deepseek-v4-pro': 'DS V4 Pro',
+            'deepseek-v4-flash': 'DeepSeek V4 Flash',
+            'deepseek-v4-pro': 'DeepSeek V4 Pro',
         };
         const nome = String(modelo?.name || '').trim();
         if (nomesFixos[nome]) return nomesFixos[nome];
@@ -679,8 +689,8 @@
                 { name: 'gpt-5.5', display_name: 'GPT-5.5' },
             ]},
             { label: 'DeepSeek', itens: [
-                { name: 'deepseek-v4-flash', display_name: 'DS V4 Flash' },
-                { name: 'deepseek-v4-pro', display_name: 'DS V4 Pro' },
+                { name: 'deepseek-v4-flash', display_name: 'DeepSeek V4 Flash' },
+                { name: 'deepseek-v4-pro', display_name: 'DeepSeek V4 Pro' },
             ]},
             { label: 'Gemini API', itens: [
                 { name: 'gemini:gemini-2.5-flash', display_name: 'Gemini API 2.5 Flash' },
@@ -705,6 +715,7 @@
         const cfg = typeof selecionados === 'string' ? { padrao: selecionados } : (selecionados || {});
         preencherSelectModeloIA(selectIaModelo, grupos, cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
         preencherSelectModeloIA(selectIaModeloPerguntas, grupos, cfg.perguntas || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
+        preencherSelectModeloIA(selectIaModeloPosVenda, grupos, cfg.pos_venda || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
         preencherSelectModeloIA(selectIaModeloChat, grupos, cfg.chat || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
         preencherSelectModeloIA(selectIaModeloFavoritos, grupos, cfg.favoritos || cfg.padrao || 'vertex:gemini-2.5-flash', 'vertex:gemini-2.5-flash');
     }
@@ -874,20 +885,24 @@
             inputJanela.value = (Number.isFinite(janela) && janela >= 1) ? Math.round(janela) : 30;
             const modeloIA = String(cfg && cfg.ia_modelo_padrao || 'vertex:gemini-2.5-flash').trim();
             const modeloPerguntas = String(cfg && cfg.ia_modelo_perguntas || modeloIA).trim();
+            const modeloPosVenda = String(cfg && cfg.ia_modelo_pos_venda || modeloIA || 'vertex:gemini-2.5-flash').trim();
             const modeloChat = String(cfg && cfg.ia_modelo_chat || modeloIA || 'vertex:gemini-2.5-flash').trim();
             const modeloFavoritos = String(cfg && cfg.ia_modelo_favoritos || modeloIA).trim();
             await carregarModelosIA({
                 padrao: modeloIA,
                 perguntas: modeloPerguntas,
+                pos_venda: modeloPosVenda,
                 chat: modeloChat,
                 favoritos: modeloFavoritos
             });
             if (selectIaModelo) selectIaModelo.value = modeloIA;
             if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
+            if (selectIaModeloPosVenda) selectIaModeloPosVenda.value = modeloPosVenda;
             if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
             if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
             if (selectIaModo) selectIaModo.value = normalizarIaModo(cfg?.ia_modo_padrao);
             if (selectIaModoPerguntas) selectIaModoPerguntas.value = normalizarIaModo(cfg?.ia_modo_perguntas);
+            if (selectIaModoPosVenda) selectIaModoPosVenda.value = normalizarIaModo(cfg?.ia_modo_pos_venda);
             if (selectIaModoChat) selectIaModoChat.value = normalizarIaModo(cfg?.ia_modo_chat);
             if (selectIaModoFavoritos) selectIaModoFavoritos.value = normalizarIaModo(cfg?.ia_modo_favoritos);
             if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(cfg?.ia_vertex_project_id || '').trim();
@@ -938,10 +953,12 @@
                     auto_sync_estoque_janela_minutos: Math.round(valor),
                     ia_modelo_padrao: selectIaModelo ? String(selectIaModelo.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_modelo_pos_venda: selectIaModeloPosVenda ? String(selectIaModeloPosVenda.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_chat: selectIaModeloChat ? String(selectIaModeloChat.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_favoritos: selectIaModeloFavoritos ? String(selectIaModeloFavoritos.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modo_padrao: selectIaModo ? normalizarIaModo(selectIaModo.value) : 'modelo',
                     ia_modo_perguntas: selectIaModoPerguntas ? normalizarIaModo(selectIaModoPerguntas.value) : 'modelo',
+                    ia_modo_pos_venda: selectIaModoPosVenda ? normalizarIaModo(selectIaModoPosVenda.value) : 'modelo',
                     ia_modo_chat: selectIaModoChat ? normalizarIaModo(selectIaModoChat.value) : 'modelo',
                     ia_modo_favoritos: selectIaModoFavoritos ? normalizarIaModo(selectIaModoFavoritos.value) : 'modelo',
                     ia_vertex_project_id: inputIaVertexProjectId ? String(inputIaVertexProjectId.value || '').trim() : '',
@@ -970,19 +987,23 @@
             const salvo = Number(data?.configuracoes?.auto_sync_estoque_janela_minutos || Math.round(valor));
             const modeloSalvo = String(data?.configuracoes?.ia_modelo_padrao || '').trim();
             const modeloPerguntasSalvo = String(data?.configuracoes?.ia_modelo_perguntas || modeloSalvo).trim();
+            const modeloPosVendaSalvo = String(data?.configuracoes?.ia_modelo_pos_venda || modeloSalvo).trim();
             const modeloChatSalvo = String(data?.configuracoes?.ia_modelo_chat || modeloSalvo).trim();
             const modeloFavoritosSalvo = String(data?.configuracoes?.ia_modelo_favoritos || modeloSalvo).trim();
             const modoSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_padrao);
             const modoPerguntasSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_perguntas);
+            const modoPosVendaSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_pos_venda);
             const modoChatSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_chat);
             const modoFavoritosSalvo = normalizarIaModo(data?.configuracoes?.ia_modo_favoritos);
             inputJanela.value = salvo;
             if (modeloSalvo && selectIaModelo) selectIaModelo.value = modeloSalvo;
             if (modeloPerguntasSalvo && selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntasSalvo;
+            if (modeloPosVendaSalvo && selectIaModeloPosVenda) selectIaModeloPosVenda.value = modeloPosVendaSalvo;
             if (modeloChatSalvo && selectIaModeloChat) selectIaModeloChat.value = modeloChatSalvo;
             if (modeloFavoritosSalvo && selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritosSalvo;
             if (selectIaModo) selectIaModo.value = modoSalvo;
             if (selectIaModoPerguntas) selectIaModoPerguntas.value = modoPerguntasSalvo;
+            if (selectIaModoPosVenda) selectIaModoPosVenda.value = modoPosVendaSalvo;
             if (selectIaModoChat) selectIaModoChat.value = modoChatSalvo;
             if (selectIaModoFavoritos) selectIaModoFavoritos.value = modoFavoritosSalvo;
             if (inputIaVertexProjectId) inputIaVertexProjectId.value = String(data?.configuracoes?.ia_vertex_project_id || '').trim();
@@ -1008,7 +1029,7 @@
             if (checkIaDeepseekAtiva) checkIaDeepseekAtiva.checked = (data?.configuracoes?.ia_deepseek_ativa !== false);
             if (checkIaGeminiAtiva) checkIaGeminiAtiva.checked = !!data?.configuracoes?.ia_gemini_ativa;
             if (checkIaVertexAtiva) checkIaVertexAtiva.checked = (data?.configuracoes?.ia_vertex_ativa !== false);
-            setStatus(`Configuração salva com sucesso (${salvo} min). Perguntas: ${rotuloIaModo(modoPerguntasSalvo)}; chat: ${rotuloIaModo(modoChatSalvo)}; favoritos: ${rotuloIaModo(modoFavoritosSalvo)}.`, 'success');
+            setStatus(`Configuração salva com sucesso (${salvo} min). Perguntas: ${rotuloIaModo(modoPerguntasSalvo)}; pos-venda: ${rotuloIaModo(modoPosVendaSalvo)}; chat: ${rotuloIaModo(modoChatSalvo)}; favoritos: ${rotuloIaModo(modoFavoritosSalvo)}.`, 'success');
         } catch (e) {
             setStatus(`Erro ao salvar configurações: ${e.message}`, 'error');
         } finally {

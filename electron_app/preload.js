@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
     ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
+    getBrowserExtensionSettings: () => ipcRenderer.invoke('get-browser-extension-settings'),
+    setAvantProExtensionEnabled: (enabled) => ipcRenderer.invoke('set-avantpro-extension-enabled', !!enabled),
     flushBrowserSession: () => ipcRenderer.invoke('flush-browser-session'),
     setMlAutomationActive: (active, reason) => ipcRenderer.invoke('set-ml-automation-active', !!active, reason || ''),
     getMlPublicItemInfo: (itemId) => ipcRenderer.invoke('ml-public-item-info', itemId),

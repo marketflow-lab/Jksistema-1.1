@@ -992,8 +992,8 @@
           <option value="gpt-5.5">GPT-5.5</option>
         </optgroup>
         <optgroup label="DeepSeek">
-          <option value="deepseek-v4-flash">DS V4 Flash</option>
-          <option value="deepseek-v4-pro">DS V4 Pro</option>
+          <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+          <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
         </optgroup>
         <optgroup label="Gemini API">
           <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
@@ -1113,8 +1113,8 @@
       'gpt-5.4-mini': 'Mini',
       'gpt-5.4': 'GPT-5.4',
       'gpt-5.5': 'GPT-5.5',
-      'deepseek-v4-flash': 'DS V4 Flash',
-      'deepseek-v4-pro': 'DS V4 Pro',
+      'deepseek-v4-flash': 'DeepSeek V4 Flash',
+      'deepseek-v4-pro': 'DeepSeek V4 Pro',
     };
     const nome = String(item?.name || '').trim();
     if (nomesFixos[nome]) return nomesFixos[nome];

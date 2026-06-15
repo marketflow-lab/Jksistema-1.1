@@ -1559,8 +1559,8 @@
                                                             <option value="gpt-5.5">GPT-5.5</option>
                                                         </optgroup>
                                                         <optgroup label="DeepSeek">
-                                                            <option value="deepseek-v4-flash">DS V4 Flash</option>
-                                                            <option value="deepseek-v4-pro">DS V4 Pro</option>
+                                                            <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+                                                            <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
                                                         </optgroup>
                                                         <optgroup label="Gemini API">
                                                             <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
@@ -2597,6 +2597,13 @@
         });
     }
 
+    function obterValorExibicaoSku(item) {
+        const valorVendido = Number(item?.valor || 0);
+        if (valorVendido > 0) return valorVendido;
+        const valorDevolucao = Number(item?.valorDevolucao || 0);
+        return valorDevolucao > 0 ? valorDevolucao : 0;
+    }
+
     function renderTabelaAgrupada(lista) {
         tabelaRenderToken += 1;
         const tokenAtual = tabelaRenderToken;
@@ -2637,7 +2644,7 @@
                 cols.forEach(col => {
                     const td = document.createElement('td');
                     let val = item[col];
-                    if (col === 'valor') val = formatCurrency(val);
+                    if (col === 'valor') val = formatCurrency(obterValorExibicaoSku(item));
                     td.textContent = val;
 
                     if (col === 'devolucoes' && Number(item.devolucoes || 0) > 0) {
@@ -2645,9 +2652,17 @@
                         td.style.fontWeight = '700';
                     }
 
-                    if (col === 'valor' && Number(item.valor || 0) > 0) {
-                        td.style.color = '#6fe6b0';
-                        td.style.fontWeight = '700';
+                    if (col === 'valor') {
+                        const valorVendido = Number(item.valor || 0);
+                        const valorDevolucao = Number(item.valorDevolucao || 0);
+                        if (valorVendido > 0) {
+                            td.style.color = '#6fe6b0';
+                            td.style.fontWeight = '700';
+                        } else if (valorDevolucao > 0) {
+                            td.style.color = '#ff6b6b';
+                            td.style.fontWeight = '700';
+                            td.title = 'Valor devolvido';
+                        }
                     }
 
                     tr.appendChild(td);
@@ -3166,10 +3181,10 @@
             if (metricaGrafico === 'quantidade') {
                 const diffQtd = (Number(b.itens) || 0) - (Number(a.itens) || 0);
                 if (diffQtd !== 0) return diffQtd;
-                const diffValor = (Number(b.valor) || 0) - (Number(a.valor) || 0);
+                const diffValor = obterValorExibicaoSku(b) - obterValorExibicaoSku(a);
                 if (diffValor !== 0) return diffValor;
             } else {
-                const diffValor = (Number(b.valor) || 0) - (Number(a.valor) || 0);
+                const diffValor = obterValorExibicaoSku(b) - obterValorExibicaoSku(a);
                 if (diffValor !== 0) return diffValor;
                 const diffQtd = (Number(b.itens) || 0) - (Number(a.itens) || 0);
                 if (diffQtd !== 0) return diffQtd;

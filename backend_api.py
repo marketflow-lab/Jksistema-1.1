@@ -82,6 +82,14 @@ from jose import JWTError, jwt
 import secrets
 import hashlib
 from typing import Any, Optional, Callable
+from ml_questions_gemini import (
+    AIAnswer,
+    GeminiQuestionsSettings,
+    MercadoLivreWebhookReceiver,
+    QuestionAnswerOrchestrator,
+    context_from_agent_input,
+)
+from ml_questions_gemini.parser import AIResponseParser
 try:
     import firebase_admin
     from firebase_admin import auth as firebase_auth
@@ -521,10 +529,12 @@ CONFIG_GLOBAIS_DEFAULT = {
     "auto_sync_estoque_janela_minutos": 30,
     "ia_modelo_padrao": "vertex:gemini-2.5-flash",
     "ia_modelo_perguntas": "vertex:gemini-2.5-flash",
+    "ia_modelo_pos_venda": "vertex:gemini-2.5-flash",
     "ia_modelo_chat": "vertex:gemini-2.5-flash",
     "ia_modelo_favoritos": "vertex:gemini-2.5-flash",
     "ia_modo_padrao": "modelo",
     "ia_modo_perguntas": "modelo",
+    "ia_modo_pos_venda": "modelo",
     "ia_modo_chat": "modelo",
     "ia_modo_favoritos": "modelo",
     "ia_vertex_project_id": "",
@@ -558,7 +568,7 @@ def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
     dados = dict(CONFIG_GLOBAIS_DEFAULT)
     if isinstance(payload, dict):
         dados.update(payload)
-    for chave in ("ia_modo_padrao", "ia_modo_perguntas", "ia_modo_chat", "ia_modo_favoritos"):
+    for chave in ("ia_modo_padrao", "ia_modo_perguntas", "ia_modo_pos_venda", "ia_modo_chat", "ia_modo_favoritos"):
         dados[chave] = _normalizar_ia_modo(dados.get(chave))
     for chave in ("ia_agent_resource_name", "ia_agent_endpoint_url"):
         dados[chave] = str(dados.get(chave) or "").strip()
@@ -1160,6 +1170,16 @@ class PerguntasEnviarRespostaRequest(BaseModel):
     sku: Optional[str] = ""
     item_id: Optional[str] = ""
 
+class MLQuestionsV2ProcessRequest(BaseModel):
+    loja: str
+    pergunta: Optional[dict] = None
+    item: Optional[dict] = None
+    resposta_atual: Optional[str] = ""
+
+class MLQuestionsV2ReviewActionRequest(BaseModel):
+    resposta: Optional[Any] = None
+    texto: Optional[Any] = None
+
 class PosVendaMensagemRequest(BaseModel):
     loja: Any
     pack_id: Any
@@ -1594,10 +1614,12 @@ class ConfiguracoesGlobaisRequest(BaseModel):
     auto_sync_estoque_janela_minutos: int
     ia_modelo_padrao: str | None = None
     ia_modelo_perguntas: str | None = None
+    ia_modelo_pos_venda: str | None = None
     ia_modelo_chat: str | None = None
     ia_modelo_favoritos: str | None = None
     ia_modo_padrao: str | None = None
     ia_modo_perguntas: str | None = None
+    ia_modo_pos_venda: str | None = None
     ia_modo_chat: str | None = None
     ia_modo_favoritos: str | None = None
     ia_vertex_project_id: str | None = None
@@ -15370,6 +15392,8 @@ def _ia_modelo_padrao_configurado() -> str:
 def _ia_modelo_finalidade_configurado(finalidade: str) -> str:
     chave_por_finalidade = {
         "perguntas": "ia_modelo_perguntas",
+        "pos_venda": "ia_modelo_pos_venda",
+        "pos-venda": "ia_modelo_pos_venda",
         "chat": "ia_modelo_chat",
         "favoritos": "ia_modelo_favoritos",
     }
@@ -15387,6 +15411,10 @@ def _ia_modelo_perguntas_configurado() -> str:
     return _ia_modelo_finalidade_configurado("perguntas")
 
 
+def _ia_modelo_pos_venda_configurado() -> str:
+    return _ia_modelo_finalidade_configurado("pos_venda")
+
+
 def _ia_modelo_chat_configurado() -> str:
     return _ia_modelo_finalidade_configurado("chat")
 
@@ -15398,6 +15426,8 @@ def _ia_modelo_favoritos_configurado() -> str:
 def _ia_modo_finalidade_configurado(finalidade: str) -> str:
     chave_por_finalidade = {
         "perguntas": "ia_modo_perguntas",
+        "pos_venda": "ia_modo_pos_venda",
+        "pos-venda": "ia_modo_pos_venda",
         "chat": "ia_modo_chat",
         "favoritos": "ia_modo_favoritos",
     }
@@ -15413,6 +15443,10 @@ def _ia_modo_finalidade_configurado(finalidade: str) -> str:
 
 def _ia_modo_perguntas_configurado() -> str:
     return _ia_modo_finalidade_configurado("perguntas")
+
+
+def _ia_modo_pos_venda_configurado() -> str:
+    return _ia_modo_finalidade_configurado("pos_venda")
 
 
 def _ia_agent_resource_name_configurado() -> str:
@@ -15712,11 +15746,13 @@ def _vertex_google_search_grounding_ativo(payload: Optional[IAChatRequest] = Non
     ctx = payload.context if payload and isinstance(payload.context, dict) else {}
     if _ia_contexto_desativa_recursos_chat(ctx):
         return False
+    if bool(ctx.get("ativar_google_search_grounding")):
+        return True
     valor = str(os.getenv("VERTEX_GOOGLE_SEARCH_GROUNDING_ENABLED") or "true").strip().lower()
     if valor in {"0", "false", "nao", "nÃ£o", "off"}:
         return False
     tipo = str(ctx.get("tipo") or "").strip()
-    return tipo in {"agente_cloud_perguntas_ml", "resposta_automatica_ml"}
+    return tipo in {"agente_cloud_perguntas_ml", "resposta_automatica_ml", "novo_fluxo_perguntas_v2"}
 
 
 IA_WEB_CACHE_LOCK = threading.Lock()
@@ -15792,6 +15828,9 @@ def _ia_chat_precisa_busca_web(mensagem: str, page: Optional[str] = None, contex
         return False
     if not _ia_web_busca_ativa():
         return False
+    ctx = contexto if isinstance(contexto, dict) else {}
+    if bool(ctx.get("forcar_busca_web_chat") or ctx.get("web_search_required")):
+        return True
     texto = _normalizar_texto(mensagem or "")
     if not texto:
         return False
@@ -16652,7 +16691,8 @@ def _ia_treinamento_ppv_bloco_prompt(client_id: str, page: Optional[str], contex
 ML_RESPOSTA_PERGUNTA_MAX_CHARS = 2000
 ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO = 1900
 ML_PERGUNTAS_IA_PROMPT_MAX_CHARS = 3600
-ML_PERGUNTAS_IA_DESCRICAO_PROMPT_MAX_CHARS = 1200
+ML_PERGUNTAS_IA_DESCRICAO_PROMPT_MAX_CHARS = 8000
+ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS = 12000
 ML_PERGUNTAS_IA_CONTEXTO_EXTRA_PROMPT_MAX_CHARS = 900
 ML_PERGUNTAS_IA_MEMORIA_SKU_MIN_BYTES = 200 * 1024
 ML_PERGUNTAS_IA_MEMORIA_SKU_MAX_EVENTOS = 1000
@@ -16766,6 +16806,10 @@ def _perguntas_ia_state_path(client_id: str) -> str:
 
 def _perguntas_ia_aprovacoes_path(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "perguntas_pos_venda_ia_aprovacoes.json")
+
+
+def _ml_questions_v2_webhook_events_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "ml_questions_v2_webhook_events.json")
 
 
 def _perguntas_ia_ler_json(caminho: str, fallback):
@@ -16942,6 +16986,57 @@ def _perguntas_ia_limpar_resposta(texto: str) -> str:
     if len(resposta) > limite:
         resposta = resposta[: max(0, limite - 3)].rstrip() + "..."
     return resposta
+
+
+def _perguntas_ia_assinatura_loja(loja: str) -> str:
+    nome_loja = re.sub(r"\s+", " ", str(loja or "").strip())
+    if nome_loja:
+        return f"Equipe {nome_loja} agradece o seu contato."
+    return "Equipe da loja agradece o seu contato."
+
+
+def _perguntas_ia_remover_apresentacao_sistema(texto: str) -> str:
+    resposta = str(texto or "").strip()
+    if not resposta:
+        return ""
+    resposta = re.sub(
+        r"(?is)^\s*(?:ol[aá][!,.\s]*)?(?:eu\s+)?sou\s+(?:o|a|um|uma)?\s*(?:assistente|ia|intelig[êe]ncia\s+artificial)[^.!?\n]*(?:jk\s*sistema|sistema)?[.!?]?\s*",
+        "",
+        resposta,
+    ).strip()
+    resposta = re.sub(
+        r"(?is)^\s*(?:ol[aá][!,.\s]*)?estou\s+(?:aqui\s+)?(?:para|pra)\s+ajudar[.!?]?\s*",
+        "",
+        resposta,
+    ).strip()
+    linhas = []
+    for linha in resposta.splitlines():
+        linha_norm = _favoritos_normalizar_sem_acentos(linha)
+        if "jk sistema" in linha_norm and any(termo in linha_norm for termo in ("assistente", " ia ", "inteligencia artificial", "sistema")):
+            continue
+        if any(termo in linha_norm for termo in ("sou o assistente", "sou a assistente", "sou uma ia", "sou um assistente")):
+            continue
+        linhas.append(linha)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
+
+
+def _perguntas_ia_resposta_final_loja(resposta: str, loja: str) -> str:
+    assinatura = _perguntas_ia_assinatura_loja(loja)
+    corpo = _perguntas_ia_limpar_resposta(_perguntas_ia_remover_apresentacao_sistema(resposta))
+    corpo = re.sub(
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        "",
+        corpo,
+    ).strip()
+    if not corpo:
+        return ""
+    limite = min(ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO, ML_RESPOSTA_PERGUNTA_MAX_CHARS)
+    separador = "\n\n"
+    total = len(corpo) + len(separador) + len(assinatura)
+    if total > limite:
+        limite_corpo = max(40, limite - len(separador) - len(assinatura) - 3)
+        corpo = corpo[:limite_corpo].rstrip() + "..."
+    return _perguntas_ia_limpar_resposta(f"{corpo}{separador}{assinatura}")
 
 
 class PerguntasIARespostaIndisponivel(RuntimeError):
@@ -18049,6 +18144,10 @@ def _ia_agent_http_post(url: str, body: dict, headers: dict, *, timeout: int = 7
 
 def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
     item = item if isinstance(item, dict) else {}
+    item_id = str(item.get("id") or "").strip()
+    permalink = str(item.get("permalink") or item.get("url") or item.get("link") or "").strip()
+    if not permalink and item_id:
+        permalink = _favoritos_ml_url_item_id(item_id)
     descricao = str(
         descricao
         or item.get("description")
@@ -18065,18 +18164,49 @@ def _perguntas_ia_item_para_agente(item: dict, descricao: str = "") -> dict:
             "name": attr.get("name") or "",
             "value_name": attr.get("value_name") or attr.get("value_id") or "",
         })
+    sale_terms = []
+    for term in (item.get("sale_terms") or [])[:20]:
+        if not isinstance(term, dict):
+            continue
+        sale_terms.append({
+            "id": term.get("id") or "",
+            "name": term.get("name") or "",
+            "value_name": term.get("value_name") or term.get("value_id") or "",
+        })
+    variations = []
+    for variation in (item.get("variations") or [])[:20]:
+        if not isinstance(variation, dict):
+            continue
+        variations.append({
+            "id": variation.get("id") or "",
+            "available_quantity": variation.get("available_quantity"),
+            "price": variation.get("price"),
+            "attribute_combinations": variation.get("attribute_combinations") or [],
+        })
     return {
-        "id": item.get("id") or "",
+        "id": item_id,
         "title": item.get("title") or "",
-        "permalink": item.get("permalink") or "",
+        "permalink": permalink,
+        "link": permalink,
+        "url": permalink,
         "thumbnail": item.get("thumbnail") or "",
         "price": item.get("price"),
         "currency_id": item.get("currency_id") or "",
         "available_quantity": item.get("available_quantity"),
         "status": item.get("status") or "",
+        "condition": item.get("condition") or "",
+        "category_id": item.get("category_id") or "",
+        "catalog_product_id": item.get("catalog_product_id") or "",
+        "listing_type_id": item.get("listing_type_id") or "",
+        "buying_mode": item.get("buying_mode") or "",
         "seller_sku": _ml_extrair_sku(item),
-        "description": descricao[:3000],
+        "description": descricao[:ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS],
         "attributes": atributos,
+        "sale_terms": sale_terms,
+        "shipping": item.get("shipping") if isinstance(item.get("shipping"), dict) else {},
+        "variations": variations,
+        "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
+        "pictures_count": len(item.get("pictures") or []) if isinstance(item.get("pictures"), list) else 0,
     }
 
 
@@ -19415,6 +19545,12 @@ ML_PERGUNTAS_IA_TERMOS_VEICULO = (
     "mitsubishi", "jeep",
 )
 
+ML_PERGUNTAS_IA_PREFIXOS_CODIGO_IGNORADOS = {
+    "A", "AS", "O", "OS", "UM", "UMA", "UNS", "UMAS",
+    "DE", "DA", "DO", "DAS", "DOS", "NO", "NA", "NOS", "NAS",
+    "EM", "PARA", "PRA", "COM", "SEM", "MEU", "MINHA", "ANO", "ANOS",
+}
+
 
 def _ia_agent_perguntas_termos_contexto(texto: str, termos: tuple[str, ...] = ML_PERGUNTAS_IA_TERMOS_VEICULO) -> set[str]:
     texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
@@ -19457,13 +19593,36 @@ def _ia_agent_perguntas_codigos_modelo(texto: str) -> set[str]:
     texto_norm = _favoritos_normalizar_sem_acentos(texto or "").upper()
     codigos: set[str] = set()
     for match in re.finditer(r"\b[A-Z]{1,6}[\s\-]?\d{2,5}[A-Z]?\b|\b\d{3,4}[A-Z]{1,3}\b", texto_norm):
-        codigo = re.sub(r"[\s\-]+", "", match.group(0) or "").strip()
+        bruto = (match.group(0) or "").strip()
+        partes = re.match(r"^([A-Z]{1,6})[\s\-]+(\d{2,5})([A-Z]?)$", bruto)
+        prefixo = partes.group(1) if partes else ""
+        numero = partes.group(2) if partes else ""
+        sufixo = partes.group(3) if partes else ""
+        if prefixo in ML_PERGUNTAS_IA_PREFIXOS_CODIGO_IGNORADOS:
+            if numero and numero.isdigit() and 1900 <= int(numero) <= 2099:
+                continue
+            codigo = f"{numero}{sufixo}".strip()
+        else:
+            codigo = re.sub(r"[\s\-]+", "", bruto).strip()
+            if prefixo and numero and (sufixo or len(numero) == 3 or int(numero) > 2099):
+                codigos.add(f"{numero}{sufixo}".strip())
         if not codigo:
             continue
         if codigo.startswith("MLB") or codigo in {"2022", "2023", "2024", "2025", "2026"}:
             continue
         codigos.add(codigo)
     return codigos
+
+
+def _ia_agent_perguntas_codigos_modelo_tem_match(codigos_pergunta: set[str], codigos_resposta: set[str]) -> bool:
+    for perguntado in codigos_pergunta or set():
+        for respondido in codigos_resposta or set():
+            if perguntado == respondido:
+                return True
+            menor, maior = sorted((perguntado, respondido), key=len)
+            if len(menor) >= 3 and maior.endswith(menor):
+                return True
+    return False
 
 
 def _ia_agent_perguntas_conectores(texto: str) -> set[str]:
@@ -19561,7 +19720,13 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
     pergunta_pede_preco = any(termo in pergunta_norm for termo in ("PRECO", "VALOR", "CUSTA", "QUANTO"))
     if not pergunta_pede_preco and (re.search(r"\bR\$\s*\d", texto) or "O VALOR E" in texto_norm or "O PRECO E" in texto_norm):
         violacoes.append("respondeu preco sem o comprador perguntar")
-    if loja and _normalizar_texto(loja) and _normalizar_texto(loja) in texto_norm:
+    texto_norm_sem_assinatura = re.sub(
+        r"EQUIPE\s+.+?\s+AGRADECE\s+(?:O\s+)?SEU\s+CONTATO\.?\s*$",
+        "",
+        texto_norm,
+        flags=re.IGNORECASE,
+    ).strip()
+    if loja and _normalizar_texto(loja) and _normalizar_texto(loja) in texto_norm_sem_assinatura:
         violacoes.append("mencionou nome da loja")
     if "ANUNCIO ATIVO" in texto_norm or "ANUNCIO DESSE PRODUTO ESTA ATIVO" in texto_norm:
         violacoes.append("mencionou status do anuncio")
@@ -19600,7 +19765,12 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
             violacoes.append("mencionou veiculo/produto fora do contexto: " + ", ".join(termos_fora[:4]))
     codigos_pergunta = _ia_agent_perguntas_codigos_modelo(" ".join(textos_comprador))
     codigos_resposta = _ia_agent_perguntas_codigos_modelo(texto)
-    if codigos_pergunta and codigos_resposta and not (codigos_pergunta & codigos_resposta):
+    if (
+        not pergunta_compatibilidade
+        and codigos_pergunta
+        and codigos_resposta
+        and not _ia_agent_perguntas_codigos_modelo_tem_match(codigos_pergunta, codigos_resposta)
+    ):
         violacoes.append(
             "nao respondeu ao modelo/codigo perguntado: "
             + ", ".join(sorted(codigos_pergunta)[:4])
@@ -19654,75 +19824,76 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
     return list(dict.fromkeys(violacoes))
 
 
-def _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador: list[str]) -> str:
-    padroes = [
-        re.compile(
-            r"(?:meu|minha)\s+(?:carro|ve[ií]culo|veiculo|moto|camionete|caminhonete)\s+(?:é|e|eh|seria)?\s*(?:uma|um|o|a)?\s*(?P<ref>.+?)(?:[,.;]?\s*(?:essa|esta|a)\s+(?:pe.{0,3}a|produto).*$|[,.;]?\s*(?:serve|é|e|eh)?\s*compat\S*.*$|\?$|$)",
-            flags=re.IGNORECASE,
-        ),
-        re.compile(
-            r"(?:serve|compat[ií]vel|aplica|encaixa)\s+(?:no|na|para|com)?\s*(?P<ref>.+?)(?:\?$|$)",
-            flags=re.IGNORECASE,
-        ),
-    ]
-    for texto in reversed([str(t or "") for t in textos_comprador]):
-        texto_limpo = re.sub(r"\s+", " ", texto).strip(" .,!?:;")
-        texto_limpo = re.sub(r"^(?:boa\s+(?:tarde|noite|dia)|bom\s+dia|ol[aá]|oi)[,\s.!:-]*", "", texto_limpo, flags=re.IGNORECASE).strip()
-        for padrao in padroes:
-            match = padrao.search(texto_limpo)
-            if not match:
-                continue
-            ref = re.sub(r"\s+", " ", match.group("ref") or "").strip(" .,!?:;")
-            ref = re.split(
-                r"[,.;]?\s*(?:essa|esta|a)\s+(?:pe.{0,3}a|produto)\b|[,.;]?\s*(?:essa|esta|a)\s+pe|[,.;]?\s*(?:serve|é|e|eh)?\s*compat\S*",
-                ref,
-                maxsplit=1,
-                flags=re.IGNORECASE,
-            )[0].strip(" .,!?:;")
-            ref = re.sub(r"^(?:uma|um|o|a)\s+", "", ref, flags=re.IGNORECASE).strip(" .,!?:;")
-            ref_norm = _normalizar_texto(ref)
-            if not ref or len(ref) > 70:
-                continue
-            if any(ruim in ref_norm for ruim in ("BOA TARDE", "BOM DIA", "ESSA PECA", "ESSA PEÇA", "ESSA PE", "MEU CARRO", "MINHA MOTO", "COMPATIVEL", "COMPATIBILIDADE")):
-                continue
-            return ref
-    return ""
-
-
-def _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input: dict) -> str:
-    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
-    historico = question.get("history") if isinstance(question.get("history"), list) else []
-    textos_comprador = [str(question.get("text") or "").strip()]
-    for evento in historico[-10:]:
-        if not isinstance(evento, dict):
-            continue
-        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
-        if role in {"seller", "loja", "store"}:
-            continue
-        texto = str(evento.get("text") or "").strip()
-        if texto:
-            textos_comprador.append(texto)
-    pergunta_norm = _normalizar_texto(" ".join(textos_comprador))
-    if not any(
-        termo in pergunta_norm
-        for termo in ("SERVE", "COMPATIVEL", "COMPATIBILIDADE", "APLICA", "ENCAIXA", "VEICULO", "CARRO", "PEUGEOT", "THP", "308CC")
-    ):
-        return ""
-
-    referencia = _ia_agent_perguntas_referencia_veiculo_compatibilidade(textos_comprador)
-    alvo = f" com {referencia}" if referencia else " com o veiculo informado"
-    return (
-        f"Provavelmente pode ser compat\u00edvel{alvo}, mas recomendo confirmar "
-        "com seu mec\u00e2nico de confian\u00e7a antes da compra."
-    )
-
-
 ML_PERGUNTAS_IA_V2_MODO = "novo_fluxo_perguntas_v2"
+ML_POS_VENDA_IA_V2_MODO = "novo_fluxo_pos_venda_v2"
 
 
 def _perguntas_ia_v2_exigir_aprovacao() -> bool:
     valor = str(os.getenv("ML_PERGUNTAS_IA_V2_PERMITIR_ENVIO_DIRETO") or "").strip().lower()
     return valor not in {"1", "true", "sim", "yes", "on"}
+
+
+def _pos_venda_ia_v2_exigir_aprovacao() -> bool:
+    valor = str(os.getenv("ML_POS_VENDA_IA_V2_PERMITIR_ENVIO_DIRETO") or "").strip().lower()
+    return valor not in {"1", "true", "sim", "yes", "on"}
+
+
+def _perguntas_ia_v2_query_pesquisa(metadata: Optional[dict[str, Any]]) -> str:
+    meta = metadata if isinstance(metadata, dict) else {}
+    pergunta = re.sub(r"\s+", " ", str(meta.get("question_text") or "").strip())
+    link = str(meta.get("listing_link") or "").strip()
+    item_id = str(meta.get("item_id") or "").strip()
+    if not link and item_id:
+        link = _favoritos_ml_url_item_id(item_id)
+    partes = [parte for parte in (pergunta, link) if parte]
+    if not partes:
+        return ""
+    return " ".join(partes)[:600]
+
+
+class _PerguntasVertexGeminiV2Client:
+    def __init__(self, client_id: str, loja: str, model_req: str):
+        self.client_id = client_id
+        self.loja = loja
+        self.model_req = model_req
+        self.model_usado = model_req
+        self.parser = AIResponseParser()
+
+    def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
+        web_search_query = _perguntas_ia_v2_query_pesquisa(metadata)
+        payload = IAChatRequest(
+            message=prompt,
+            page="Perguntas e pos venda",
+            context={
+                "modulo": "perguntas_pos_venda",
+                "tipo": ML_PERGUNTAS_IA_V2_MODO,
+                "tipo_treinamento": "perguntas_anuncio",
+                "origem_ia": "mercado_livre_perguntas_v2_vertex_gemini",
+                "forcar_busca_web_chat": True,
+                "web_search_required": True,
+                "web_search_query": web_search_query,
+                "ativar_google_search_grounding": True,
+                "loja": self.loja,
+                "metadata": metadata or {},
+            },
+            model=self.model_req,
+            tool_results=[],
+        )
+        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(self.client_id, payload, self.model_req)
+        self.model_usado = model_usado
+        parsed = self.parser.parse(resposta)
+        if parsed.answer:
+            return parsed
+        resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+        if resposta_limpa:
+            return AIAnswer(
+                answer=resposta_limpa,
+                confidence=0.70,
+                requires_human_review=True,
+                reason="gemini_plain_text_fallback",
+                raw=resposta,
+            )
+        return parsed
 
 
 def _perguntas_ia_v2_prompt(
@@ -19742,6 +19913,7 @@ def _perguntas_ia_v2_prompt(
     memoria_sku = "" if fluxo_pos_venda else _perguntas_ia_memoria_bloco_prompt(client_id, agent_input)
     dados = {
         "loja": agent_input.get("store") or agent_input.get("loja") or "",
+        "assinatura_obrigatoria": _perguntas_ia_assinatura_loja(str(agent_input.get("store") or agent_input.get("loja") or "")),
         "pergunta": question,
         "anuncio": {
             "id": item.get("id") or "",
@@ -19758,6 +19930,9 @@ def _perguntas_ia_v2_prompt(
     }
     partes = [
         "Voce e a nova IA V2 de respostas do Mercado Livre do JK Sistema.",
+        "Nunca se apresente como IA, assistente, Gemini, Vertex ou JK Sistema.",
+        "Responda como a equipe da loja, sem mencionar sistema interno, app, prompt ou treinamento.",
+        f"A resposta deve terminar exatamente com: {_perguntas_ia_assinatura_loja(str(agent_input.get('store') or agent_input.get('loja') or ''))}",
         "Gere somente UM rascunho de resposta ao comprador, pronto para revisao humana.",
         "Nao envie, nao publique, nao altere anuncio, nao altere estoque e nao chame ferramentas externas.",
         "Use somente os dados deste prompt: pergunta, historico, anuncio, regras salvas, memoria do SKU e contexto interno.",
@@ -19802,112 +19977,87 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
     loja = str((agent_input or {}).get("store") or (agent_input or {}).get("loja") or "").strip()
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja no input da nova IA.")
-    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
-    tipo_treinamento_payload = "pos_venda" if _perguntas_ia_fluxo_pos_venda(agent_input) else "perguntas_anuncio"
+    settings = GeminiQuestionsSettings.from_env()
+    settings.max_chars = min(int(settings.max_chars or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO), ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO)
+    settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not _perguntas_ia_v2_exigir_aprovacao())
+    model_req = _normalizar_ia_modelo_padrao(settings.model or _ia_modelo_perguntas_configurado())
+    if not _modelo_eh_vertex_ai(model_req):
+        model_req = IA_MODELO_PADRAO_SISTEMA
+    settings.model = model_req
     diagnostico = [{
         "function": ML_PERGUNTAS_IA_V2_MODO,
         "result": {
             "found": True,
-            "message": "Fluxo local legado removido; V2 usa contexto fechado e validacao antes de liberar rascunho.",
+            "message": "Fluxo local legado removido; V2 usa Vertex Gemini com validacao antes de qualquer envio.",
             "read_only": True,
+            "gemini_model": model_req,
+            "vertex_gemini": True,
+            "auto_publish_enabled": settings.auto_publish_enabled,
         },
     }]
     try:
-        payload = IAChatRequest(
-            message=_perguntas_ia_v2_prompt(client_id, agent_input),
-            page="Perguntas e pos venda",
-            context={
-                "modulo": "perguntas_pos_venda",
-                "tipo": ML_PERGUNTAS_IA_V2_MODO,
-                "tipo_treinamento": tipo_treinamento_payload,
-                "origem_ia": "mercado_livre_perguntas_v2",
-                "desativar_recursos_chat": True,
-                "desativar_busca_web_chat": True,
-                "loja": loja,
-            },
-            model=model_req,
-            tool_results=[],
+        question_ctx, listing_snapshot, previous_questions, seller_rules = context_from_agent_input(
+            agent_input,
+            auto_publish_enabled=settings.auto_publish_enabled,
         )
-        perf_ia_t0 = time.perf_counter()
-        resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+        seller_rules.min_confidence = settings.min_confidence
+        seller_rules.max_chars = settings.max_chars
+        seller_rules.max_sentences = settings.max_sentences
+        seller_rules.whitelisted_domains = list(settings.whitelisted_domains)
+        gemini_client = _PerguntasVertexGeminiV2Client(client_id, loja, model_req)
+        orchestrator = QuestionAnswerOrchestrator(settings=settings, gemini_client=gemini_client)
+        perf_orq_t0 = time.perf_counter()
+        resultado = orchestrator.process(
+            question=question_ctx,
+            listing=listing_snapshot,
+            previous_questions=previous_questions,
+            rules=seller_rules,
+        )
+        resposta_limpa = _perguntas_ia_limpar_resposta(resultado.answer)
+        if not resposta_limpa:
+            raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta.")
+        resposta_limpa = _perguntas_ia_resposta_final_loja(resposta_limpa, loja)
+        model_usado = gemini_client.model_usado or model_req
+        diagnostico[0]["result"].update({
+            "category": resultado.category.value,
+            "route": resultado.route.value,
+            "decision": resultado.decision.value,
+            "needs_human_review": resultado.needs_human,
+            "confidence": resultado.confidence,
+            "source": resultado.source,
+            "reason": resultado.reason,
+            "validation_ok": resultado.validation.ok,
+            "validation_issues": list(resultado.validation.issues),
+            "prompt_chars": len(resultado.prompt or ""),
+            "audit": resultado.audit,
+        })
         _ia_agent_perguntas_log_perf(
             client_id,
             loja,
             agent_input,
-            "v2_chamada_ia",
-            time.perf_counter() - perf_ia_t0,
+            "v2_orquestrador_gemini",
+            time.perf_counter() - perf_orq_t0,
             tentativa=1,
             modelo=model_usado,
-            status="ok",
-            prompt_chars=len(payload.message or ""),
-            resposta_chars=len(resposta or ""),
+            status="revisao" if resultado.needs_human else "ok",
+            prompt_chars=len(resultado.prompt or ""),
+            resposta_chars=len(resposta_limpa or ""),
+            categoria=resultado.category.value,
+            rota=resultado.route.value,
+            decisao=resultado.decision.value,
         )
-        resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
-        if not resposta_limpa:
-            raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta.")
         if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
             raise PerguntasIARespostaIndisponivel("Resposta de fallback da nova IA de perguntas bloqueada.")
         violacoes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
-        _ia_agent_perguntas_log_perf(
-            client_id,
-            loja,
-            agent_input,
-            "v2_validacao_resposta",
-            0.0,
-            tentativa=1,
-            status="violacao" if violacoes else "ok",
-            violacoes="|".join(violacoes[:5]) if violacoes else "",
-        )
-        if violacoes:
-            payload.message = _perguntas_ia_v2_prompt(
-                client_id,
-                agent_input,
-                resposta_bloqueada=resposta_limpa,
-                violacoes=violacoes,
+        if violacoes and resultado.source == "gemini":
+            diagnostico[0]["result"]["app_validation_issues"] = violacoes[:8]
+            raise PerguntasIARespostaIndisponivel(
+                "Nova IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(violacoes[:6])
             )
-            perf_ia_corr_t0 = time.perf_counter()
-            resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
-            _ia_agent_perguntas_log_perf(
-                client_id,
-                loja,
-                agent_input,
-                "v2_chamada_ia",
-                time.perf_counter() - perf_ia_corr_t0,
-                tentativa=2,
-                modelo=model_usado,
-                status="ok",
-                prompt_chars=len(payload.message or ""),
-                resposta_chars=len(resposta or ""),
+        elif violacoes:
+            raise PerguntasIARespostaIndisponivel(
+                "Nova IA de perguntas gerou resposta fora das orientacoes: " + ", ".join(violacoes[:6])
             )
-            resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
-            if not resposta_limpa:
-                raise PerguntasIARespostaIndisponivel("Nova IA de perguntas nao gerou resposta corrigida.")
-            if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
-                raise PerguntasIARespostaIndisponivel("Resposta corrigida da nova IA de perguntas bloqueada.")
-            violacoes_restantes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
-            _ia_agent_perguntas_log_perf(
-                client_id,
-                loja,
-                agent_input,
-                "v2_validacao_resposta",
-                0.0,
-                tentativa=2,
-                status="violacao" if violacoes_restantes else "ok",
-                violacoes="|".join(violacoes_restantes[:5]) if violacoes_restantes else "",
-            )
-            if violacoes_restantes:
-                fallback = ""
-                if _perguntas_ia_intencao_agent(agent_input).get("fluxo") != "pos_venda":
-                    fallback = _perguntas_ia_limpar_resposta(_ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input))
-                violacoes_fallback = _ia_agent_perguntas_violacoes_resposta(agent_input, fallback) if fallback else []
-                if fallback and not _perguntas_ia_resposta_fallback_invalida(fallback) and not violacoes_fallback:
-                    resposta_limpa = fallback
-                    diagnostico[0]["result"]["fallback"] = "compatibilidade_segura"
-                else:
-                    raise PerguntasIARespostaIndisponivel(
-                        "Nova IA de perguntas gerou resposta fora das orientacoes: "
-                        + ", ".join((violacoes_fallback or violacoes_restantes)[:6])
-                    )
         _ia_agent_perguntas_log_perf(
             client_id,
             loja,
@@ -19934,6 +20084,9 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
 
 
 def _ia_agent_perguntas_gerar_resposta_legado_desativado(client_id: str, agent_input: dict) -> tuple[str, str, list[dict]]:
+    raise PerguntasIARespostaIndisponivel(
+        "Fluxo local legado de perguntas removido. Use a nova IA Vertex Gemini V2."
+    )
     perf_total_t0 = time.perf_counter()
     loja = str(agent_input.get("store") or agent_input.get("loja") or "").strip()
     if not loja:
@@ -19971,7 +20124,7 @@ def _ia_agent_perguntas_gerar_resposta_legado_desativado(client_id: str, agent_i
         )
         perf_ia_t0 = time.perf_counter()
         try:
-            resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+            resposta, model_usado = _ia_agent_perguntas_chamar_modelo_legado_removido(client_id, payload, model_req)
         except Exception as exc:
             _ia_agent_perguntas_log_perf(
                 client_id,
@@ -20044,7 +20197,7 @@ def _ia_agent_perguntas_gerar_resposta_legado_desativado(client_id: str, agent_i
             )
             perf_ia_corr_t0 = time.perf_counter()
             try:
-                resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+                resposta, model_usado = _ia_agent_perguntas_chamar_modelo_legado_removido(client_id, payload, model_req)
             except Exception as exc:
                 _ia_agent_perguntas_log_perf(
                     client_id,
@@ -20093,17 +20246,9 @@ def _ia_agent_perguntas_gerar_resposta_legado_desativado(client_id: str, agent_i
                     raise PerguntasIARespostaIndisponivel(
                         "IA de perguntas nao conseguiu responder como pos-venda: " + ", ".join(violacoes_restantes)
                     )
-                fallback = _perguntas_ia_limpar_resposta(
-                    _ia_agent_perguntas_resposta_fallback_compatibilidade(agent_input)
+                raise PerguntasIARespostaIndisponivel(
+                    "IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(violacoes_restantes)
                 )
-                violacoes_fallback = _ia_agent_perguntas_violacoes_resposta(agent_input, fallback) if fallback else []
-                if fallback and not _perguntas_ia_resposta_fallback_invalida(fallback) and not violacoes_fallback:
-                    resposta_limpa = fallback
-                else:
-                    detalhe = violacoes_fallback or violacoes_restantes
-                    raise PerguntasIARespostaIndisponivel(
-                        "IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(detalhe)
-                    )
         _ia_agent_perguntas_log_perf(
             client_id,
             loja,
@@ -20150,10 +20295,631 @@ def _pos_venda_ia_limpar_resposta(texto: str, limite: int | None = None) -> str:
     return resposta
 
 
-def _perguntas_ia_descricao_item(client_id: str, loja: str, cfg: dict, item_id: str) -> tuple[str, dict]:
+def _pos_venda_ia_resposta_final_loja(texto: str, loja: str, limite: int | None = None) -> str:
+    limite_num = int(limite or ML_POS_VENDA_DEFAULT_MAX_CHARS)
+    limite_num = max(1, min(limite_num, ML_POS_VENDA_DEFAULT_MAX_CHARS))
+    limite_seguro = min(limite_num, ML_POS_VENDA_LIMITE_SEGURO)
+    assinatura = _perguntas_ia_assinatura_loja(loja)
+    assinatura_curta = _perguntas_ia_assinatura_loja("")
+    separador = "\n\n"
+    corpo = _perguntas_ia_remover_apresentacao_sistema(texto)
+    corpo = re.sub(
+        r"(?is)\s*Equipe\s+.+?\s+agradece\s+(?:o\s+)?seu\s+contato\.?\s*$",
+        "",
+        corpo,
+    ).strip()
+    corpo = _pos_venda_ia_limpar_resposta(corpo, limite_num)
+    if not corpo:
+        return ""
+    if len(assinatura) + len(separador) + 20 > limite_seguro and len(assinatura_curta) < len(assinatura):
+        assinatura = assinatura_curta
+    limite_corpo = limite_seguro - len(separador) - len(assinatura)
+    if limite_corpo <= 0:
+        return _pos_venda_ia_limpar_resposta(assinatura, limite_num)
+    if len(corpo) > limite_corpo:
+        corte = max(1, limite_corpo - 3)
+        corpo = corpo[:corte].rstrip() + "..."
+    return f"{corpo}{separador}{assinatura}".strip()
+
+
+ML_POS_VENDA_PIPELINE_V2_MODO = "pipeline_pos_venda_v2"
+ML_POS_VENDA_PIPELINE_ETAPAS = (
+    (1, "receber_mensagem_e_conferir_historico"),
+    (2, "buscar_dados_do_pedido"),
+    (3, "buscar_dados_do_anuncio"),
+    (4, "buscar_status_do_envio"),
+    (5, "buscar_status_de_pagamento"),
+    (6, "buscar_nota_fiscal"),
+    (7, "buscar_reclamacao_ou_mediacao"),
+    (8, "classificar_motivo_da_mensagem"),
+    (9, "decidir_se_pode_responder_automaticamente"),
+    (10, "decidir_se_precisa_consultar_regras_oficiais"),
+    (11, "montar_contexto_para_ia"),
+    (12, "ia_gera_resposta"),
+    (13, "validador_revisa_resposta"),
+    (14, "envia_resposta_ou_manda_para_humano"),
+    (15, "salva_auditoria"),
+)
+
+
+def _ml_pos_venda_pipeline_base() -> list[dict]:
+    return [{"ordem": ordem, "etapa": etapa, "status": "pendente", "detalhe": ""} for ordem, etapa in ML_POS_VENDA_PIPELINE_ETAPAS]
+
+
+def _ml_pos_venda_pipeline_marcar(contexto: dict, ordem: int, status: str, detalhe: str = "", dados: Optional[dict] = None) -> None:
+    etapas = contexto.setdefault("etapas_pipeline", _ml_pos_venda_pipeline_base())
+    for etapa in etapas:
+        if int(etapa.get("ordem") or 0) == int(ordem):
+            etapa["status"] = str(status or "").strip() or "ok"
+            etapa["detalhe"] = str(detalhe or "").strip()[:500]
+            if dados:
+                etapa["dados"] = dados
+            return
+
+
+def _ml_pos_venda_auditoria_path(client_id: str) -> str:
+    return os.path.join(get_tenant_path(client_id), "ml_pos_venda_ia_auditoria.jsonl")
+
+
+def _ml_pos_venda_auditoria_compactar(valor: Any, limite_texto: int = 1600):
+    if isinstance(valor, dict):
+        return {str(k)[:80]: _ml_pos_venda_auditoria_compactar(v, limite_texto) for k, v in list(valor.items())[:80]}
+    if isinstance(valor, list):
+        return [_ml_pos_venda_auditoria_compactar(item, limite_texto) for item in valor[:60]]
+    if isinstance(valor, str):
+        return valor[:limite_texto]
+    return valor
+
+
+def _ml_pos_venda_auditoria_registrar(client_id: str, evento: dict) -> str:
+    audit_id = hashlib.sha1(
+        f"{time.time()}:{random.random()}:{evento.get('loja')}:{evento.get('pack_id')}:{evento.get('order_id')}".encode("utf-8", errors="ignore")
+    ).hexdigest()[:16]
+    payload = _ml_pos_venda_auditoria_compactar(evento)
+    payload["audit_id"] = audit_id
+    payload["created_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    caminho = _ml_pos_venda_auditoria_path(client_id)
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    with open(caminho, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    return audit_id
+
+
+def _ml_pos_venda_texto_norm(valor: Any) -> str:
+    texto = str(valor or "").strip().lower()
+    if not texto:
+        return ""
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", texto)
+
+
+def _ml_pos_venda_ultima_mensagem_comprador(conversa: dict) -> dict:
+    conversa = conversa if isinstance(conversa, dict) else {}
+    mensagens = conversa.get("messages") if isinstance(conversa.get("messages"), list) else []
+    for msg in reversed(mensagens):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("from_role") or "").strip().lower() == "seller":
+            continue
+        texto = str(msg.get("text") or "").strip()
+        if texto:
+            return msg
+    texto = str(conversa.get("last_message_text") or "").strip()
+    return {"text": texto, "date": conversa.get("last_message_date") or "", "from_role": "buyer"} if texto else {}
+
+
+def _ml_pos_venda_resumir_pagamento(order: dict) -> dict:
+    pagamentos = order.get("payments") if isinstance(order.get("payments"), list) else []
+    resumo = []
+    for pagamento in pagamentos[:8]:
+        if not isinstance(pagamento, dict):
+            continue
+        resumo.append({
+            "id": str(pagamento.get("id") or "").strip(),
+            "status": str(pagamento.get("status") or "").strip(),
+            "status_detail": str(pagamento.get("status_detail") or "").strip(),
+            "payment_type": str(pagamento.get("payment_type") or pagamento.get("payment_type_id") or "").strip(),
+            "transaction_amount": pagamento.get("transaction_amount"),
+            "date_approved": pagamento.get("date_approved") or "",
+        })
+    statuses = {str(p.get("status") or "").strip().lower() for p in resumo if p.get("status")}
+    return {
+        "pagamentos": resumo,
+        "status_geral": "approved" if statuses and statuses <= {"approved"} else (", ".join(sorted(statuses)) if statuses else ""),
+        "todos_aprovados": bool(statuses and statuses <= {"approved"}),
+    }
+
+
+def _ml_pos_venda_shipping_id(order: dict) -> str:
+    shipping = order.get("shipping") if isinstance(order.get("shipping"), dict) else {}
+    return str(
+        shipping.get("id")
+        or shipping.get("shipment_id")
+        or order.get("shipping_id")
+        or order.get("shipment_id")
+        or ""
+    ).strip()
+
+
+def _ml_pos_venda_status_envio_base(order: dict) -> dict:
+    shipping = order.get("shipping") if isinstance(order.get("shipping"), dict) else {}
+    return {
+        "shipment_id": _ml_pos_venda_shipping_id(order),
+        "status": str(shipping.get("status") or order.get("shipping_status") or "").strip(),
+        "substatus": str(shipping.get("substatus") or "").strip(),
+        "logistic_type": str(shipping.get("logistic_type") or "").strip(),
+        "mode": str(shipping.get("mode") or "").strip(),
+        "fonte": "order",
+    }
+
+
+def _ml_pos_venda_buscar_status_envio(client_id: str, loja: str, cfg: dict, order: dict) -> tuple[dict, dict]:
+    resumo = _ml_pos_venda_status_envio_base(order)
+    shipment_id = resumo.get("shipment_id") or ""
+    if not shipment_id:
+        resumo["available"] = False
+        resumo["erro"] = "Pedido sem shipment_id."
+        return resumo, cfg
+    try:
+        resp, cfg = _ml_api_request(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/shipments/{quote_plus(shipment_id)}",
+            timeout=18,
+        )
+        if resp.status_code != 200:
+            resumo["available"] = False
+            resumo["erro"] = _ml_parse_error_detail(resp, "Nao foi possivel consultar o envio.")
+            return resumo, cfg
+        data = resp.json() or {}
+        etd = data.get("estimated_delivery_time") if isinstance(data.get("estimated_delivery_time"), dict) else {}
+        tracking = data.get("tracking") if isinstance(data.get("tracking"), dict) else {}
+        resumo.update({
+            "available": True,
+            "fonte": "shipments_api",
+            "status": str(data.get("status") or resumo.get("status") or "").strip(),
+            "substatus": str(data.get("substatus") or resumo.get("substatus") or "").strip(),
+            "logistic_type": str(data.get("logistic_type") or resumo.get("logistic_type") or "").strip(),
+            "mode": str(data.get("mode") or resumo.get("mode") or "").strip(),
+            "tracking_number": str(data.get("tracking_number") or tracking.get("number") or "").strip(),
+            "tracking_method": str(data.get("tracking_method") or tracking.get("method") or "").strip(),
+            "date_delivered": data.get("date_delivered") or "",
+            "estimated_delivery": etd.get("date") or etd.get("estimated_delivery_time") or "",
+        })
+    except Exception as exc:
+        resumo["available"] = False
+        resumo["erro"] = str(exc)[:300]
+    return resumo, cfg
+
+
+def _ml_pos_venda_resumir_anuncio_para_ia(item: dict, descricao: str = "") -> dict:
+    item = item if isinstance(item, dict) else {}
+    atributos = []
+    for attr in (item.get("attributes") or [])[:25]:
+        if not isinstance(attr, dict):
+            continue
+        atributos.append({
+            "name": str(attr.get("name") or "").strip(),
+            "value": str(attr.get("value_name") or attr.get("value_id") or "").strip(),
+        })
+    return {
+        "id": str(item.get("id") or "").strip(),
+        "title": str(item.get("title") or "").strip(),
+        "sku": _ml_extrair_sku(item),
+        "status": str(item.get("status") or "").strip(),
+        "condition": str(item.get("condition") or "").strip(),
+        "price": item.get("price"),
+        "currency_id": item.get("currency_id") or "",
+        "permalink": str(item.get("permalink") or "").strip(),
+        "category_id": str(item.get("category_id") or "").strip(),
+        "shipping": item.get("shipping") if isinstance(item.get("shipping"), dict) else {},
+        "attributes": atributos,
+        "description": _perguntas_ia_compactar_contexto(descricao, 2500),
+    }
+
+
+def _ml_pos_venda_buscar_dados_anuncios(client_id: str, loja: str, cfg: dict, order: dict, conversa: dict) -> tuple[list[dict], dict]:
+    item_ids = _ml_pos_venda_item_ids_pedido(order)
+    if not item_ids:
+        for item in conversa.get("items") or []:
+            if isinstance(item, dict) and str(item.get("id") or "").strip():
+                item_ids.append(str(item.get("id") or "").strip())
+    item_ids = list(dict.fromkeys([item_id for item_id in item_ids if item_id]))[:8]
+    itens, cfg = _ml_buscar_itens_batch(client_id, loja, cfg, item_ids)
+    anuncios = []
+    for item in itens[:8]:
+        if not isinstance(item, dict):
+            continue
+        descricao, cfg = _perguntas_ia_descricao_item(client_id, loja, cfg, str(item.get("id") or ""), item)
+        anuncios.append(_ml_pos_venda_resumir_anuncio_para_ia(item, descricao))
+    return anuncios, cfg
+
+
+def _ml_pos_venda_buscar_nota_fiscal_local(client_id: str, loja: str, order_id: str, pack_id: str) -> dict:
+    chaves = [str(v or "").strip() for v in (order_id, pack_id) if str(v or "").strip()]
+    if not chaves:
+        return {"available": False, "fonte": "local", "motivo": "pedido_sem_numero"}
+    for db_path in _listar_bancos_vendas_tenant(client_id, loja):
+        if not os.path.exists(db_path):
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(vendas)").fetchall()}
+            if not cols:
+                conn.close()
+                continue
+            colunas = [c for c in ("id_unico", "numero", "numero_nf", "nota_fiscal_id", "situacao", "devolucao", "comprador", "loja_conta") if c in cols]
+            if not colunas:
+                conn.close()
+                continue
+            termos = []
+            params = []
+            for col in ("numero", "id_unico"):
+                if col not in cols:
+                    continue
+                for chave in chaves:
+                    termos.append(f"CAST({col} AS TEXT) LIKE ?")
+                    params.append(f"%{chave}%")
+            if not termos:
+                conn.close()
+                continue
+            sql = f"SELECT {', '.join(colunas)} FROM vendas WHERE {' OR '.join(termos)} LIMIT 10"
+            rows = cur.execute(sql, params).fetchall()
+            conn.close()
+            for row in rows:
+                data = {col: row[col] for col in colunas}
+                if str(data.get("numero_nf") or data.get("nota_fiscal_id") or "").strip():
+                    return {
+                        "available": True,
+                        "fonte": os.path.basename(db_path),
+                        "numero_nf": str(data.get("numero_nf") or "").strip(),
+                        "nota_fiscal_id": str(data.get("nota_fiscal_id") or "").strip(),
+                        "situacao": str(data.get("situacao") or "").strip(),
+                        "devolucao": str(data.get("devolucao") or "").strip(),
+                    }
+        except Exception as exc:
+            logger.warning("[ML POS VENDA IA] Falha ao buscar NF local em %s: %s", os.path.basename(db_path), exc)
+    return {"available": False, "fonte": "local", "motivo": "nao_encontrada"}
+
+
+def _ml_pos_venda_buscar_reclamacao_pedido(client_id: str, loja: str, cfg: dict, order: dict, seller_id: str) -> tuple[dict, dict]:
+    order_id = str(order.get("id") or "").strip()
+    if not order_id:
+        return {"available": False, "claims": [], "motivo": "pedido_sem_id"}, cfg
+    claims = []
+    consultas = [
+        {"tipo": "mediacao", "label": "Mediacao", "params": {"type": "mediations", "status": "opened"}},
+        {"tipo": "devolucao", "label": "Devolucao", "params": {"type": "return", "status": "opened"}},
+    ]
+    for consulta in consultas:
+        params = {
+            **consulta["params"],
+            "resource": "order",
+            "resource_id": order_id,
+            "limit": 10,
+            "offset": 0,
+            "sort": "last_updated:desc",
+        }
+        try:
+            resp, cfg = _ml_api_request(
+                client_id,
+                loja,
+                cfg,
+                "GET",
+                "https://api.mercadolibre.com/post-purchase/v1/claims/search",
+                params=params,
+                timeout=18,
+            )
+            if resp.status_code != 200:
+                logger.warning("[ML POS VENDA IA] Falha ao buscar %s do pedido %s: %s", consulta["label"], order_id, _ml_parse_error_detail(resp, "erro"))
+                continue
+            data = resp.json() or {}
+            lote = data.get("data") or data.get("results") or []
+            lote_claims = lote if isinstance(lote, list) else []
+            for claim in lote_claims:
+                if not isinstance(claim, dict):
+                    continue
+                claim = dict(claim)
+                claim["_jk_claim_tipo"] = consulta["tipo"]
+                claim["_jk_claim_tipo_label"] = consulta["label"]
+                claims.append(claim)
+        except Exception as exc:
+            logger.warning("[ML POS VENDA IA] Erro ao buscar %s do pedido %s: %s", consulta["label"], order_id, exc)
+    reason_ids = [str(claim.get("reason_id") or "").strip() for claim in claims if isinstance(claim, dict)]
+    motivos, cfg = _ml_mediacao_buscar_motivos_claims(client_id, loja, cfg, reason_ids)
+    normalizadas = []
+    for claim in claims[:10]:
+        reason_id = str(claim.get("reason_id") or "").strip()
+        if reason_id and motivos.get(reason_id):
+            claim = dict(claim)
+            claim["reason"] = motivos[reason_id]
+        normalizada = _ml_mediacao_normalizar_claim(claim, order, seller_id)
+        normalizadas.append({
+            "claim_id": normalizada.get("claim_id") or "",
+            "claim_kind": normalizada.get("claim_kind") or "",
+            "claim_status": normalizada.get("claim_status") or "",
+            "claim_stage": normalizada.get("claim_stage") or "",
+            "claim_reason_id": normalizada.get("claim_reason_id") or "",
+            "claim_reason_name": normalizada.get("claim_reason_name") or "",
+            "claim_reason_detail": normalizada.get("claim_reason_detail") or "",
+            "claim_last_updated": normalizada.get("claim_last_updated") or "",
+        })
+    return {"available": bool(normalizadas), "claims": normalizadas}, cfg
+
+
+def _ml_pos_venda_classificar_motivo(conversa: dict, reclamacao: dict) -> dict:
+    ultima = _ml_pos_venda_ultima_mensagem_comprador(conversa)
+    texto = _ml_pos_venda_texto_norm(ultima.get("text") or conversa.get("last_message_text") or "")
+    if reclamacao.get("available"):
+        return {"motivo": "reclamacao_mediacao", "confianca": 0.98, "evidencia": "ha reclamacao ou mediacao aberta"}
+    regras = [
+        ("entrega", ("entrega", "envio", "rastreio", "rastrear", "chega", "chegou", "recebi", "recebido", "atraso", "transportadora")),
+        ("nota_fiscal", ("nota fiscal", "nf", "nfe", "danfe", "xml", "cupom fiscal")),
+        ("pagamento", ("pagamento", "paguei", "pago", "boleto", "pix", "cartao", "estorno", "cobrado", "cobranca")),
+        ("cancelamento", ("cancelar", "cancelamento", "cancelei", "desistir", "desistencia")),
+        ("troca_devolucao", ("troca", "trocar", "devolver", "devolucao", "arrependimento", "reembolso")),
+        ("defeito_garantia", ("defeito", "quebrado", "nao funciona", "parou", "garantia", "avaria", "danificado", "problema")),
+        ("duvida_produto", ("como usa", "como funciona", "manual", "instalar", "instalacao", "compativel", "serve", "medida")),
+        ("agradecimento", ("obrigado", "obrigada", "valeu", "perfeito", "ok", "certo")),
+    ]
+    for motivo, termos in regras:
+        if any(termo in texto for termo in termos):
+            return {"motivo": motivo, "confianca": 0.86, "evidencia": f"termos: {', '.join([t for t in termos if t in texto][:4])}"}
+    if not texto:
+        return {"motivo": "sem_texto", "confianca": 0.4, "evidencia": "mensagem vazia ou apenas anexo"}
+    return {"motivo": "outro", "confianca": 0.55, "evidencia": "sem gatilho claro"}
+
+
+def _ml_pos_venda_decidir_regras_oficiais(classificacao: dict, envio: dict, pagamento: dict, reclamacao: dict) -> dict:
+    motivo = str(classificacao.get("motivo") or "").strip()
+    precisa = False
+    razoes = []
+    if motivo in {"cancelamento", "troca_devolucao", "defeito_garantia", "reclamacao_mediacao"}:
+        precisa = True
+        razoes.append("motivo envolve politica de Mercado Livre/pos-compra")
+    if motivo == "entrega" and not str(envio.get("status") or "").strip():
+        precisa = True
+        razoes.append("status de envio indisponivel")
+    if motivo == "pagamento" and not pagamento.get("todos_aprovados"):
+        precisa = True
+        razoes.append("pagamento nao confirmado como aprovado")
+    if reclamacao.get("available"):
+        precisa = True
+        razoes.append("ha reclamacao/mediacao aberta")
+    return {"precisa_consultar": precisa, "razoes": razoes}
+
+
+def _ml_pos_venda_decidir_automatizacao(classificacao: dict, regras: dict, order: dict, envio: dict, pagamento: dict, reclamacao: dict) -> dict:
+    motivos_humano = []
+    motivo = str(classificacao.get("motivo") or "").strip()
+    if not order:
+        motivos_humano.append("pedido_nao_encontrado")
+    if float(classificacao.get("confianca") or 0) < 0.70:
+        motivos_humano.append("classificacao_baixa_confianca")
+    if regras.get("precisa_consultar"):
+        motivos_humano.append("precisa_regras_oficiais")
+    if reclamacao.get("available"):
+        motivos_humano.append("reclamacao_ou_mediacao_aberta")
+    if motivo in {"cancelamento", "troca_devolucao", "defeito_garantia", "reclamacao_mediacao"}:
+        motivos_humano.append(f"motivo_sensivel_{motivo}")
+    if motivo == "pagamento" and not pagamento.get("todos_aprovados"):
+        motivos_humano.append("pagamento_nao_aprovado")
+    if motivo == "entrega" and not envio.get("status"):
+        motivos_humano.append("envio_sem_status")
+    pode = not motivos_humano
+    return {
+        "pode_responder_automaticamente": pode,
+        "destino_sugerido": "auto" if pode else "humano",
+        "motivos_humano": list(dict.fromkeys(motivos_humano)),
+    }
+
+
+def _ml_pos_venda_montar_contexto_pipeline(client_id: str, loja: str, cfg: dict, conversa: dict, max_chars: int | None = None) -> tuple[dict, dict]:
+    contexto = {
+        "pipeline_modo": ML_POS_VENDA_PIPELINE_V2_MODO,
+        "etapas_pipeline": _ml_pos_venda_pipeline_base(),
+        "loja": loja,
+        "pack_id": conversa.get("pack_id") or "",
+        "order_id": conversa.get("order_id") or "",
+        "buyer_id": conversa.get("buyer_id") or "",
+        "max_chars": int(max_chars or conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS),
+    }
+    mensagens = conversa.get("messages") if isinstance(conversa.get("messages"), list) else []
+    ultima = _ml_pos_venda_ultima_mensagem_comprador(conversa)
+    contexto["mensagem"] = {
+        "ultima_mensagem_comprador": str(ultima.get("text") or "")[:1200],
+        "data": ultima.get("date") or conversa.get("last_message_date") or "",
+        "historico_mensagens": _ml_pos_venda_memoria_historico(conversa),
+        "total_mensagens": len(mensagens),
+    }
+    _ml_pos_venda_pipeline_marcar(contexto, 1, "ok", f"{len(mensagens)} mensagens carregadas")
+
+    order, cfg = _ml_pos_venda_buscar_pedido(client_id, loja, cfg, str(conversa.get("order_id") or ""))
+    contexto["pedido"] = {
+        "id": str(order.get("id") or conversa.get("order_id") or "").strip(),
+        "pack_id": str(order.get("pack_id") or conversa.get("pack_id") or "").strip(),
+        "status": str(order.get("status") or "").strip(),
+        "date_created": order.get("date_created") or "",
+        "date_closed": order.get("date_closed") or "",
+        "total_amount": order.get("total_amount") or order.get("paid_amount") or 0,
+        "tags": order.get("tags") if isinstance(order.get("tags"), list) else [],
+    }
+    _ml_pos_venda_pipeline_marcar(contexto, 2, "ok" if order else "aviso", "pedido carregado" if order else "pedido nao encontrado")
+
+    anuncios, cfg = _ml_pos_venda_buscar_dados_anuncios(client_id, loja, cfg, order, conversa)
+    contexto["anuncios"] = anuncios
+    _ml_pos_venda_pipeline_marcar(contexto, 3, "ok" if anuncios else "aviso", f"{len(anuncios)} anuncio(s) carregado(s)")
+
+    envio, cfg = _ml_pos_venda_buscar_status_envio(client_id, loja, cfg, order)
+    contexto["envio"] = envio
+    _ml_pos_venda_pipeline_marcar(contexto, 4, "ok" if envio.get("status") else "aviso", envio.get("status") or envio.get("erro") or "sem status")
+
+    pagamento = _ml_pos_venda_resumir_pagamento(order)
+    contexto["pagamento"] = pagamento
+    _ml_pos_venda_pipeline_marcar(contexto, 5, "ok" if pagamento.get("pagamentos") else "aviso", pagamento.get("status_geral") or "pagamento nao identificado")
+
+    nota_fiscal = _ml_pos_venda_buscar_nota_fiscal_local(client_id, loja, contexto["pedido"].get("id") or "", contexto["pedido"].get("pack_id") or "")
+    contexto["nota_fiscal"] = nota_fiscal
+    _ml_pos_venda_pipeline_marcar(contexto, 6, "ok" if nota_fiscal.get("available") else "aviso", nota_fiscal.get("numero_nf") or nota_fiscal.get("motivo") or "nao encontrada")
+
+    seller_id = str((cfg or {}).get("user_id") or conversa.get("seller_id") or "").strip()
+    reclamacao, cfg = _ml_pos_venda_buscar_reclamacao_pedido(client_id, loja, cfg, order, seller_id)
+    contexto["reclamacao_mediacao"] = reclamacao
+    _ml_pos_venda_pipeline_marcar(contexto, 7, "ok" if reclamacao.get("available") else "ok", "com ocorrencia" if reclamacao.get("available") else "sem ocorrencia aberta")
+
+    classificacao = _ml_pos_venda_classificar_motivo(conversa, reclamacao)
+    contexto["classificacao"] = classificacao
+    _ml_pos_venda_pipeline_marcar(contexto, 8, "ok", classificacao.get("motivo") or "")
+
+    regras = _ml_pos_venda_decidir_regras_oficiais(classificacao, envio, pagamento, reclamacao)
+    contexto["regras_oficiais"] = regras
+    _ml_pos_venda_pipeline_marcar(contexto, 10, "aviso" if regras.get("precisa_consultar") else "ok", "; ".join(regras.get("razoes") or []) or "sem consulta obrigatoria")
+
+    decisao = _ml_pos_venda_decidir_automatizacao(classificacao, regras, order, envio, pagamento, reclamacao)
+    contexto["decisao_automacao"] = decisao
+    _ml_pos_venda_pipeline_marcar(contexto, 9, "ok" if decisao.get("pode_responder_automaticamente") else "humano", "; ".join(decisao.get("motivos_humano") or []) or "auto permitido")
+
+    contexto["memoria_sku"] = _ml_pos_venda_memoria_bloco_prompt(client_id, conversa)
+    contexto["perguntas_anteriores_anuncio"] = _ml_pos_venda_perguntas_anuncio_chat(conversa)
+    _ml_pos_venda_pipeline_marcar(contexto, 11, "ok", "contexto estruturado montado")
+    return contexto, cfg
+
+
+def _ml_pos_venda_contexto_prompt(contexto: Optional[dict]) -> str:
+    if not isinstance(contexto, dict):
+        return ""
+    prompt_context = {
+        "pipeline": contexto.get("etapas_pipeline") or [],
+        "loja": contexto.get("loja") or "",
+        "pedido": contexto.get("pedido") or {},
+        "mensagem": contexto.get("mensagem") or {},
+        "anuncios": contexto.get("anuncios") or [],
+        "envio": contexto.get("envio") or {},
+        "pagamento": contexto.get("pagamento") or {},
+        "nota_fiscal": contexto.get("nota_fiscal") or {},
+        "reclamacao_mediacao": contexto.get("reclamacao_mediacao") or {},
+        "classificacao": contexto.get("classificacao") or {},
+        "decisao_automacao": contexto.get("decisao_automacao") or {},
+        "regras_oficiais": contexto.get("regras_oficiais") or {},
+        "perguntas_anteriores_anuncio": contexto.get("perguntas_anteriores_anuncio") or [],
+        "memoria_sku": contexto.get("memoria_sku") or "",
+    }
+    bruto = json.dumps(prompt_context, ensure_ascii=False, default=str)
+    return _perguntas_ia_compactar_contexto(bruto, 6500)
+
+
+def _ml_pos_venda_validar_resposta(resposta: str, contexto: dict, limite: int | None = None) -> dict:
+    limite_num = int(limite or contexto.get("max_chars") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
+    limite_num = max(1, min(limite_num, ML_POS_VENDA_DEFAULT_MAX_CHARS))
+    limite_seguro = min(limite_num, ML_POS_VENDA_LIMITE_SEGURO)
+    texto = str(resposta or "").strip()
+    norm = _ml_pos_venda_texto_norm(texto)
+    issues = []
+    if not texto:
+        issues.append("resposta_vazia")
+    if len(texto) > limite_seguro:
+        issues.append("resposta_acima_do_limite")
+    if any(term in norm for term in ("jk sistema", "sou assistente", "sou uma ia", "gemini", "vertex")):
+        issues.append("identidade_incorreta")
+    if any(term in norm for term in ("whatsapp", "telefone", "email", "e-mail", "fora do mercado livre")):
+        issues.append("contato_externo")
+    assinatura = _ml_pos_venda_texto_norm(_perguntas_ia_assinatura_loja(str(contexto.get("loja") or "")))
+    assinatura_curta = _ml_pos_venda_texto_norm(_perguntas_ia_assinatura_loja(""))
+    if assinatura and assinatura not in norm and assinatura_curta not in norm:
+        issues.append("sem_assinatura_loja")
+    regras = contexto.get("regras_oficiais") if isinstance(contexto.get("regras_oficiais"), dict) else {}
+    decisao = contexto.get("decisao_automacao") if isinstance(contexto.get("decisao_automacao"), dict) else {}
+    requires_human = bool(regras.get("precisa_consultar") or not decisao.get("pode_responder_automaticamente"))
+    if requires_human:
+        issues.append("requer_revisao_humana")
+    return {
+        "ok": not [issue for issue in issues if issue not in {"requer_revisao_humana"}],
+        "requires_human_review": requires_human or bool([issue for issue in issues if issue != "requer_revisao_humana"]),
+        "issues": list(dict.fromkeys(issues)),
+    }
+
+
+def _ml_pos_venda_pipeline_resumo(contexto: Optional[dict]) -> dict:
+    contexto = contexto if isinstance(contexto, dict) else {}
+    return {
+        "pipeline_modo": contexto.get("pipeline_modo") or ML_POS_VENDA_PIPELINE_V2_MODO,
+        "audit_id": contexto.get("audit_id") or "",
+        "etapas_pipeline": contexto.get("etapas_pipeline") or [],
+        "classificacao": contexto.get("classificacao") or {},
+        "decisao_automacao": contexto.get("decisao_automacao") or {},
+        "decisao_final": contexto.get("decisao_final") or {},
+        "validacao": contexto.get("validacao") or {},
+        "regras_oficiais": contexto.get("regras_oficiais") or {},
+        "envio": contexto.get("envio") or {},
+        "pagamento": contexto.get("pagamento") or {},
+        "nota_fiscal": contexto.get("nota_fiscal") or {},
+        "reclamacao_mediacao": contexto.get("reclamacao_mediacao") or {},
+    }
+
+
+def _ml_pos_venda_executar_pipeline_ia(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    conversa: dict,
+    max_chars: int | None = None,
+) -> tuple[dict, dict]:
+    contexto, cfg = _ml_pos_venda_montar_contexto_pipeline(client_id, loja, cfg, conversa, max_chars)
+    resposta, model_usado = _ml_pos_venda_gerar_resposta_ia(client_id, loja, conversa, max_chars, contexto_pipeline=contexto)
+    _ml_pos_venda_pipeline_marcar(contexto, 12, "ok", model_usado)
+    validacao = _ml_pos_venda_validar_resposta(resposta, contexto, max_chars)
+    contexto["validacao"] = validacao
+    _ml_pos_venda_pipeline_marcar(contexto, 13, "ok" if validacao.get("ok") else "humano", "; ".join(validacao.get("issues") or []) or "validada")
+    pode_auto = bool(validacao.get("ok") and not validacao.get("requires_human_review") and (contexto.get("decisao_automacao") or {}).get("pode_responder_automaticamente"))
+    motivos_decisao = list((contexto.get("decisao_automacao") or {}).get("motivos_humano") or [])
+    motivos_decisao.extend(validacao.get("issues") or [])
+    decisao_final = {
+        "pode_enviar_automaticamente": pode_auto,
+        "destino": "auto" if pode_auto else "humano",
+        "motivos": list(dict.fromkeys(motivos_decisao)),
+    }
+    contexto["decisao_final"] = decisao_final
+    _ml_pos_venda_pipeline_marcar(contexto, 14, decisao_final["destino"], "; ".join(decisao_final.get("motivos") or []) or "auto permitido")
+    audit_id = _ml_pos_venda_auditoria_registrar(client_id, {
+        "evento": "pos_venda_ia_pipeline",
+        "loja": loja,
+        "pack_id": contexto.get("pack_id") or "",
+        "order_id": contexto.get("order_id") or "",
+        "buyer_id": contexto.get("buyer_id") or "",
+        "model": model_usado,
+        "resposta": resposta,
+        "contexto": contexto,
+    })
+    contexto["audit_id"] = audit_id
+    _ml_pos_venda_pipeline_marcar(contexto, 15, "ok", audit_id)
+    return {
+        "resposta": resposta,
+        "model": model_usado,
+        "contexto_ia": contexto,
+        "validacao": validacao,
+        "decisao": decisao_final,
+        "audit_id": audit_id,
+        "pode_enviar_automaticamente": pode_auto,
+    }, cfg
+
+
+def _perguntas_ia_descricao_item(client_id: str, loja: str, cfg: dict, item_id: str, item: Optional[dict] = None) -> tuple[str, dict]:
     item_id = str(item_id or "").strip()
+    item = item if isinstance(item, dict) else {}
+    fallback = str(
+        item.get("description")
+        or item.get("descricao")
+        or item.get("plain_text")
+        or item.get("text")
+        or ""
+    ).strip()
     if not item_id:
-        return "", cfg
+        return fallback[:ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS], cfg
     try:
         resp, cfg = _ml_api_request(
             client_id,
@@ -20164,10 +20930,12 @@ def _perguntas_ia_descricao_item(client_id: str, loja: str, cfg: dict, item_id: 
             timeout=12,
         )
         if resp.status_code == 200:
-            return _ml_favoritos_extrair_texto_descricao(resp.json() or {})[:5000], cfg
+            descricao_api = _ml_favoritos_extrair_texto_descricao(resp.json() or {})
+            if descricao_api:
+                return descricao_api[:ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS], cfg
     except Exception as exc:
         logger.warning("[ML PERGUNTAS IA] Falha ao buscar descricao do item %s: %s", item_id, exc)
-    return "", cfg
+    return fallback[:ML_PERGUNTAS_IA_DESCRICAO_AGENT_MAX_CHARS], cfg
 
 
 def _perguntas_ia_indica_busca_outra_peca(texto: str) -> bool:
@@ -20409,7 +21177,7 @@ def _perguntas_ia_gerar_resposta(
     texto_pergunta = str((pergunta or {}).get("text") or "").strip()
     titulo = str((item or {}).get("title") or "").strip()
     sku = _ml_extrair_sku(item or {})
-    descricao, cfg = _perguntas_ia_descricao_item(client_id, loja, cfg, item_id)
+    descricao, cfg = _perguntas_ia_descricao_item(client_id, loja, cfg, item_id, item)
     contexto = {
         "loja": loja,
         "question_id": question_id,
@@ -20417,7 +21185,10 @@ def _perguntas_ia_gerar_resposta(
         "titulo": titulo,
         "sku": sku,
         "descricao": descricao,
+        "descricao_chars": len(descricao or ""),
+        "descricao_disponivel": bool(descricao),
         "pergunta": texto_pergunta,
+        "assinatura_obrigatoria": _perguntas_ia_assinatura_loja(loja),
     }
     intencao_atendimento = _perguntas_ia_classificar_intencao(client_id, loja, pergunta, item)
     contexto["intencao_atendimento"] = intencao_atendimento
@@ -20462,7 +21233,7 @@ def _perguntas_ia_gerar_resposta(
     )
     if intencao_atendimento.get("fluxo") == "pos_venda":
         prompt = (
-            "Gere uma resposta pronta de pos-venda para uma mensagem recebida no Mercado Livre. "
+            "Gere um rascunho via IA de pos-venda para uma mensagem recebida no Mercado Livre. "
             "Use as orientacoes salvas no treinamento de pos-venda. "
             "Nao responda como venda, compatibilidade ou aplicacao do produto. "
             "Se o comprador relata defeito, mau funcionamento, troca ou garantia, reconheca o problema e peça o proximo dado necessario. "
@@ -20470,6 +21241,8 @@ def _perguntas_ia_gerar_resposta(
             "Nao invente causa tecnica, prazo, garantia, estoque ou procedimento. "
             "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja. "
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
+            "Nunca se apresente como IA, assistente ou JK Sistema. "
+            f"Finalize exatamente com: {_perguntas_ia_assinatura_loja(loja)} "
             f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres.\n\n"
             f"Loja: {loja}\n"
             f"ID da pergunta: {question_id}\n"
@@ -20482,7 +21255,7 @@ def _perguntas_ia_gerar_resposta(
         )
     else:
         prompt = (
-            "Gere uma resposta pronta para uma pergunta recebida no Mercado Livre. "
+            "Gere um rascunho via IA para uma pergunta recebida no Mercado Livre. "
             "Use as orientacoes salvas no treinamento de perguntas de anuncio. "
             "Use o titulo e a descricao do anuncio como contexto interno, sem repetir dados desnecessarios ao comprador. "
             "Nao invente compatibilidade, medidas, estoque, prazo, garantia ou informacoes tecnicas que nao estejam no contexto. "
@@ -20496,6 +21269,8 @@ def _perguntas_ia_gerar_resposta(
             "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca. "
             "Quando houver historico da conversa, responda considerando a ultima pergunta no contexto das mensagens anteriores, sem reiniciar o atendimento. "
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
+            "Nunca se apresente como IA, assistente ou JK Sistema. "
+            f"Finalize exatamente com: {_perguntas_ia_assinatura_loja(loja)} "
             f"Nao use markdown. A resposta deve ter no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres "
             f"(o Mercado Livre aceita {ML_RESPOSTA_PERGUNTA_MAX_CHARS}; deixe margem de seguranca para evitar falha no envio).\n\n"
             f"Loja: {loja}\n"
@@ -20528,12 +21303,20 @@ def _perguntas_ia_gerar_resposta(
     payload.model = model_req
     agent_input = _perguntas_ia_agent_input(client_id, loja, pergunta, item, contexto, prompt)
     resposta, model_usado, diagnostico_ia = _perguntas_ia_v2_gerar_resposta(client_id, agent_input)
-    resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+    resposta_limpa = _perguntas_ia_resposta_final_loja(resposta, loja)
+    diagnostico_v2 = {}
+    if diagnostico_ia and isinstance(diagnostico_ia[0], dict) and isinstance(diagnostico_ia[0].get("result"), dict):
+        diagnostico_v2 = diagnostico_ia[0].get("result") or {}
     return resposta_limpa, cfg, {
         **contexto,
         "model": model_usado,
         "modo_ia": ML_PERGUNTAS_IA_V2_MODO,
         "diagnostico_ia": diagnostico_ia,
+        "ia_requer_revisao_humana": bool(diagnostico_v2.get("needs_human_review")),
+        "ia_decision": diagnostico_v2.get("decision") or "",
+        "ia_categoria": diagnostico_v2.get("category") or "",
+        "ia_validacao_ok": diagnostico_v2.get("validation_ok"),
+        "ia_validacao_issues": diagnostico_v2.get("validation_issues") or [],
     }
 
 
@@ -20719,6 +21502,7 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
     usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
     if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
@@ -20743,7 +21527,15 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "content": content[:1500]})
 
-    if modo_rapido:
+    if fluxo_perguntas_publicas_v2:
+        system_prompt = (
+            "Voce responde perguntas publicas de pre-venda do Mercado Livre como a equipe da loja. "
+            "Nunca se apresente como IA, assistente, Vertex, Gemini ou JK Sistema. "
+            "Use a busca web e o grounding apenas para entender o link do anuncio e a pergunta do comprador. "
+            "Nao ofereca contato externo e nao invente informacao ausente. "
+            "Responda somente no formato solicitado pelo prompt do app."
+        )
+    elif modo_rapido:
         system_prompt = (
             "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
             "de forma curta, humana e direta. Use o historico recente somente quando for necessario "
@@ -20817,11 +21609,12 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
             bloco_vendas_exato = ""
     if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
         try:
-            texto_web = _ia_web_contexto(mensagem, client_id)
+            query_web = str(ctx_payload.get("web_search_query") or mensagem).strip()
+            texto_web = _ia_web_contexto(query_web, client_id)
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    if not modo_rapido and not desativa_recursos_chat:
+    if not modo_rapido and not desativa_recursos_chat and not fluxo_perguntas_publicas_v2:
         try:
             texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
             bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
@@ -20939,6 +21732,7 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
     usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
     if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
@@ -20970,7 +21764,15 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "content": content[:1500]})
 
-    if modo_rapido:
+    if fluxo_perguntas_publicas_v2:
+        system_prompt = (
+            "Voce responde perguntas publicas de pre-venda do Mercado Livre como a equipe da loja. "
+            "Nunca se apresente como IA, assistente, Vertex, Gemini ou JK Sistema. "
+            "Use a busca web e o grounding apenas para entender o link do anuncio e a pergunta do comprador. "
+            "Nao ofereca contato externo e nao invente informacao ausente. "
+            "Responda somente no formato solicitado pelo prompt do app."
+        )
+    elif modo_rapido:
         system_prompt = (
             "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
             "de forma curta, humana e direta. Use o historico recente somente quando for necessario "
@@ -21044,11 +21846,12 @@ def _chamar_deepseek_chat(payload: IAChatRequest, client_id: str) -> str:
             bloco_vendas_exato = ""
     if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
         try:
-            texto_web = _ia_web_contexto(mensagem, client_id)
+            query_web = str(ctx_payload.get("web_search_query") or mensagem).strip()
+            texto_web = _ia_web_contexto(query_web, client_id)
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    if not modo_rapido and not desativa_recursos_chat:
+    if not modo_rapido and not desativa_recursos_chat and not fluxo_perguntas_publicas_v2:
         try:
             texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
             bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
@@ -21127,6 +21930,7 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
 
     if _ia_chat_eh_saudacao_curta(mensagem) and not anexos:
@@ -21137,7 +21941,15 @@ def _chamar_gemini_chat(payload: IAChatRequest, client_id: str) -> str:
         logger.warning("[IA] Mensagem longa (%s chars) compactada antes da Gemini API.", len(mensagem))
         mensagem = _ia_compactar_mensagem_chat(mensagem)
 
-    if modo_rapido:
+    if fluxo_perguntas_publicas_v2:
+        system_prompt = (
+            "Voce responde perguntas publicas de pre-venda do Mercado Livre como a equipe da loja. "
+            "Nunca se apresente como IA, assistente, Vertex, Gemini ou JK Sistema. "
+            "Use a busca web e o grounding apenas para entender o link do anuncio e a pergunta do comprador. "
+            "Nao ofereca contato externo e nao invente informacao ausente. "
+            "Responda somente no formato solicitado pelo prompt do app."
+        )
+    elif modo_rapido:
         system_prompt = (
             "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
             "de forma curta, humana e direta."
@@ -21224,6 +22036,7 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
     modo_rapido = bool(ctx_payload.get("modo_rapido_sidebar"))
+    fluxo_perguntas_publicas_v2 = str(ctx_payload.get("tipo") or "").strip() == "novo_fluxo_perguntas_v2"
     desativa_recursos_chat = _ia_contexto_desativa_recursos_chat(ctx_payload)
     usa_contexto = False if (modo_rapido or desativa_recursos_chat) else _ia_chat_usa_contexto_tela(mensagem, anexos)
     if not modo_rapido and not desativa_recursos_chat and isinstance(payload.context, dict) and (payload.context.get("usuario_atual") or payload.context.get("memoria_conversas_usuario")):
@@ -21265,7 +22078,15 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
         if content:
             historico.append({"role": role, "parts": [{"text": content[:1500]}]})
 
-    if modo_rapido:
+    if fluxo_perguntas_publicas_v2:
+        system_prompt = (
+            "Voce responde perguntas publicas de pre-venda do Mercado Livre como a equipe da loja. "
+            "Nunca se apresente como IA, assistente, Vertex, Gemini ou JK Sistema. "
+            "Use a busca web e o grounding apenas para entender o link do anuncio e a pergunta do comprador. "
+            "Nao ofereca contato externo e nao invente informacao ausente. "
+            "Responda somente no formato solicitado pelo prompt do app."
+        )
+    elif modo_rapido:
         system_prompt = (
             "Voce e o assistente IA do JK Sistema. Responda em portugues do Brasil, "
             "de forma curta, humana e direta. Use o historico recente somente quando for necessario "
@@ -21325,11 +22146,12 @@ def _chamar_vertex_ai_chat(payload: IAChatRequest, client_id: str) -> str:
             bloco_vendas_exato = ""
     if not modo_rapido and _ia_chat_precisa_busca_web(mensagem, payload.page, payload.context if isinstance(payload.context, dict) else None):
         try:
-            texto_web = _ia_web_contexto(mensagem, client_id)
+            query_web = str(ctx_payload.get("web_search_query") or mensagem).strip()
+            texto_web = _ia_web_contexto(query_web, client_id)
             bloco_web = f"\n\n{texto_web}" if texto_web else ""
         except Exception:
             bloco_web = ""
-    if not modo_rapido and not desativa_recursos_chat:
+    if not modo_rapido and not desativa_recursos_chat and not fluxo_perguntas_publicas_v2:
         try:
             texto_funcoes = _ia_chat_contexto_funcoes(payload, client_id)
             bloco_funcoes = f"\n\n{texto_funcoes}" if texto_funcoes else ""
@@ -21773,14 +22595,15 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             {"name": "gpt-5.5", "display_name": "GPT-5.5"},
         ] if pode_escolher_modelo else [],
         "deepseek": [
-            {"name": "deepseek-v4-flash", "display_name": "DS V4 Flash"},
-            {"name": "deepseek-v4-pro", "display_name": "DS V4 Pro"},
+            {"name": "deepseek-v4-flash", "display_name": "DeepSeek V4 Flash"},
+            {"name": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro"},
         ] if pode_escolher_modelo else [],
         "gemini": _listar_modelos_gemini_api() if pode_escolher_modelo else [],
         "vertex": _listar_modelos_vertex_ai() if pode_escolher_modelo else [],
         "defaults": {
             "sistema": _ia_modelo_padrao_configurado(),
             "perguntas": _ia_modelo_perguntas_configurado(),
+            "pos_venda": _ia_modelo_pos_venda_configurado(),
             "chat": _ia_modelo_chat_configurado(),
             "favoritos": _ia_modelo_favoritos_configurado(),
             "favoritos_usar_imagem": _ia_favoritos_usar_imagem_configurado(),
@@ -28282,8 +29105,8 @@ def _shared_sync_validar_push_lojas_integracoes(bundle_id: str, bundle: bytes) -
 
     perda_lojas = len(lojas_remotas - lojas_locais)
     perda_conectadas = len(conectadas_remotas - conectadas_locais)
-    regressao_lojas = len(lojas_remotas) >= 3 and len(lojas_locais) <= 1 and perda_lojas >= 2
-    regressao_conexoes = len(conectadas_remotas) >= 3 and len(conectadas_locais) <= 1 and perda_conectadas >= 2
+    regressao_lojas = len(lojas_remotas) >= 3 and len(lojas_locais) < len(lojas_remotas) and perda_lojas >= 2
+    regressao_conexoes = len(conectadas_remotas) >= 3 and len(conectadas_locais) < len(conectadas_remotas) and perda_conectadas >= 2
     if regressao_lojas or regressao_conexoes:
         raise HTTPException(
             status_code=409,
@@ -29136,6 +29959,14 @@ def _shared_sync_link_reverse_direction(direction_key: str) -> str:
     return "source_to_target" if direction_key == "target_to_source" else "target_to_source"
 
 
+def _shared_sync_lojas_integracoes_cross_client_volta_bloqueada(link: dict, scope: str, direction_key: str) -> bool:
+    if scope != "lojas_integracoes" or direction_key == "source_to_target":
+        return False
+    source_client = _shared_sync_normalizar_client_id((link or {}).get("source_client_id"))
+    target_client = _shared_sync_normalizar_client_id((link or {}).get("target_client_id"))
+    return bool(source_client and target_client and source_client != target_client)
+
+
 def _shared_sync_link_bundle_id_for_direction(link: dict, scope: str, direction_key: str) -> str:
     directional = link.get("directional_bundles") if isinstance(link.get("directional_bundles"), dict) else {}
     direction_map = directional.get(direction_key) if isinstance(directional.get(direction_key), dict) else {}
@@ -29806,6 +30637,8 @@ def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) ->
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser importadas entre clientes diferentes.")
     my_direction = _shared_sync_link_direction_for_session(target_sessao, link)
     receive_direction = _shared_sync_link_reverse_direction(my_direction)
+    if _shared_sync_lojas_integracoes_cross_client_volta_bloqueada(link, scope, receive_direction):
+        raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem voltar do cliente compartilhado para o cliente de origem.")
     bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, receive_direction)
     bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id)
     manifest = _shared_sync_manifest_from_bundle(bundle)
@@ -29847,6 +30680,8 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
         link = link_marcado
     if not _shared_sync_scope_permitido_entre_clientes(link, scope, source_sessao):
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem ser compartilhadas entre clientes diferentes.")
+    if _shared_sync_lojas_integracoes_cross_client_volta_bloqueada(link, scope, direction_key):
+        raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem voltar do cliente compartilhado para o cliente de origem.")
     from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
     bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, direction_key)
     known_keys = None if scope == "lojas_integracoes" else _shared_sync_user_share_known_keys(
@@ -43789,7 +44624,7 @@ def ml_perguntas_automacao_poll(
                 if not resposta:
                     continue
 
-                if config.get("solicitar_aprovacao") or _perguntas_ia_v2_exigir_aprovacao():
+                if config.get("solicitar_aprovacao") or contexto.get("ia_requer_revisao_humana") or _perguntas_ia_v2_exigir_aprovacao():
                     intencao_ctx = contexto.get("intencao_atendimento") if isinstance(contexto.get("intencao_atendimento"), dict) else {}
                     approval = {
                         "id": _perguntas_ia_aprovacao_id(nome_loja, question_id),
@@ -43809,6 +44644,11 @@ def ml_perguntas_automacao_poll(
                         "ia_intencao": intencao_ctx,
                         "ia_modo": contexto.get("modo_ia") or _ia_modo_perguntas_configurado(),
                         "aprovacao_obrigatoria_ia": _perguntas_ia_v2_exigir_aprovacao(),
+                        "ia_decision": contexto.get("ia_decision") or "",
+                        "ia_categoria": contexto.get("ia_categoria") or "",
+                        "ia_validacao_ok": contexto.get("ia_validacao_ok"),
+                        "ia_validacao_issues": contexto.get("ia_validacao_issues") or [],
+                        "ia_requer_revisao_humana": bool(contexto.get("ia_requer_revisao_humana")),
                         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
                     }
                     aprovacoes.append(approval)
@@ -43871,7 +44711,7 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
             approval["ia_finalidade"] = finalidade_padrao
             mudou = True
         if not approval.get("ia_modo"):
-            approval["ia_modo"] = "modelo" if tipo == "pos_venda" else _ia_modo_perguntas_configurado()
+            approval["ia_modo"] = _ia_modo_pos_venda_configurado() if tipo == "pos_venda" else _ia_modo_perguntas_configurado()
             mudou = True
         if tipo == "pos_venda":
             pack_id = str(approval.get("pack_id") or "").strip()
@@ -44024,6 +44864,133 @@ def ml_perguntas_aprovacoes_rejeitar(req: PerguntasAprovacaoRequest, client_id: 
     _perguntas_ia_marcar_processada(state, str(approval.get("loja") or ""), str(approval.get("question_id") or ""), "rejected")
     _perguntas_ia_state_salvar(client_id, state)
     return {"success": True, "approval": approval}
+
+
+@app.post("/webhooks/mercadolivre")
+async def ml_questions_v2_webhook(request: Request, client_id: str = Depends(get_tenant_id)):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Payload JSON invalido.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload JSON precisa ser um objeto.")
+    receiver = MercadoLivreWebhookReceiver()
+    event = receiver.normalize_event(payload)
+    event["id"] = str(uuid.uuid4())
+    event["received_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    event["status"] = "received"
+    caminho = _ml_questions_v2_webhook_events_path(client_id)
+    events = _perguntas_ia_ler_json(caminho, [])
+    if not isinstance(events, list):
+        events = []
+    events.append(event)
+    _perguntas_ia_salvar_json(caminho, events[-1000:])
+    return {"success": True, "event": event, "processed": False}
+
+
+@app.post("/questions/{question_id}/process")
+def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, client_id: str = Depends(get_tenant_id)):
+    loja = str(req.loja or "").strip()
+    if not loja:
+        raise HTTPException(status_code=400, detail="Informe a loja.")
+    pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
+    pergunta = {**pergunta, "id": str(question_id or pergunta.get("id") or "").strip()}
+    if req.resposta_atual:
+        pergunta["_resposta_atual"] = str(req.resposta_atual or "")[:1200]
+    if not pergunta.get("id"):
+        raise HTTPException(status_code=400, detail="Informe a pergunta.")
+    if not str(pergunta.get("text") or "").strip() and not pergunta.get("buyer_question_chat"):
+        raise HTTPException(status_code=400, detail="Informe o texto da pergunta.")
+    item = req.item if isinstance(req.item, dict) else {}
+    cfg = _obter_cfg_ml(client_id, loja)
+    try:
+        resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
+    except PerguntasIARespostaIndisponivel as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "question_id": pergunta.get("id"),
+        "answer": resposta,
+        "context": contexto,
+        "publish_attempted": False,
+    }
+
+
+@app.get("/questions/pending-review")
+def ml_questions_v2_pending_review(client_id: str = Depends(get_tenant_id)):
+    return ml_perguntas_aprovacoes_listar(client_id)
+
+
+@app.post("/reviews/{approval_id}/approve")
+def ml_questions_v2_review_approve(
+    approval_id: str,
+    req: MLQuestionsV2ReviewActionRequest,
+    client_id: str = Depends(get_tenant_id),
+):
+    return ml_perguntas_aprovacoes_aprovar(
+        PerguntasAprovacaoRequest(approval_id=approval_id, resposta=req.resposta, texto=req.texto),
+        client_id,
+    )
+
+
+@app.post("/reviews/{approval_id}/reject")
+def ml_questions_v2_review_reject(
+    approval_id: str,
+    req: MLQuestionsV2ReviewActionRequest,
+    client_id: str = Depends(get_tenant_id),
+):
+    return ml_perguntas_aprovacoes_rejeitar(
+        PerguntasAprovacaoRequest(approval_id=approval_id, resposta=req.resposta, texto=req.texto),
+        client_id,
+    )
+
+
+@app.get("/audit/questions/{question_id}")
+def ml_questions_v2_audit_question(question_id: str, client_id: str = Depends(get_tenant_id)):
+    qid = str(question_id or "").strip()
+    aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
+    eventos = _perguntas_ia_ler_json(_ml_questions_v2_webhook_events_path(client_id), [])
+    if not isinstance(eventos, list):
+        eventos = []
+    eventos_match = [
+        event for event in eventos
+        if isinstance(event, dict) and qid and qid in json.dumps(event, ensure_ascii=False, default=str)
+    ]
+    aprovacoes_match = [
+        item for item in aprovacoes
+        if isinstance(item, dict) and str(item.get("question_id") or "") == qid
+    ]
+    return {
+        "success": True,
+        "question_id": qid,
+        "approvals": aprovacoes_match,
+        "webhook_events": eventos_match[-50:],
+    }
+
+
+@app.get("/metrics/ai-questions")
+def ml_questions_v2_metrics(client_id: str = Depends(get_tenant_id)):
+    aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
+    metrics = {
+        "total_reviews": 0,
+        "pending": 0,
+        "sent": 0,
+        "rejected": 0,
+        "by_category": {},
+        "by_decision": {},
+    }
+    for item in aprovacoes:
+        if not isinstance(item, dict):
+            continue
+        metrics["total_reviews"] += 1
+        status = str(item.get("status") or "pending").strip() or "pending"
+        if status in metrics:
+            metrics[status] += 1
+        category = str(item.get("ia_categoria") or item.get("ia_finalidade") or "unknown").strip() or "unknown"
+        decision = str(item.get("ia_decision") or "human_review").strip() or "human_review"
+        metrics["by_category"][category] = metrics["by_category"].get(category, 0) + 1
+        metrics["by_decision"][decision] = metrics["by_decision"].get(decision, 0) + 1
+    return {"success": True, "metrics": metrics}
 
 
 @app.post("/api/mercadolivre/perguntas/resposta/gerar")
@@ -44193,9 +45160,12 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     contexto_extra = str(req.contexto or "").strip()
     loja = str(req.loja or "").strip()
     mensagem = (
-        f"Simule uma resposta pronta de {contexto_tipo} para enviar a um comprador do Mercado Livre. "
+        f"Simule um rascunho via IA de {contexto_tipo} para enviar a um comprador do Mercado Livre. "
         f"Use as orientacoes salvas no treinamento de {_ia_treinamento_ppv_tipo_label(tipo_treinamento)}. "
         "A resposta deve ser cordial, objetiva e comercial, sem inventar dados tecnicos, prazo, estoque, garantia ou compatibilidade. "
+        "Nunca se apresente como IA, assistente, Gemini, Vertex ou JK Sistema. "
+        "Responda como a equipe da loja, sem mencionar sistema interno, app, prompt, JSON, modelo ou treinamento. "
+        f"Finalize exatamente com: {_perguntas_ia_assinatura_loja(loja)} "
         f"Se faltar informacao essencial, peÃ§a a informacao de forma educada. "
         f"Mantenha a resposta com no maximo {ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO} caracteres para evitar falha no Mercado Livre.\n\n"
         f"Pergunta do comprador:\n{pergunta}"
@@ -44237,7 +45207,10 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
 
-    return {"success": True, "model": model_usado, "resposta": _perguntas_ia_limpar_resposta(resposta)}
+    resposta_final = _perguntas_ia_resposta_final_loja(resposta, loja)
+    if not resposta_final:
+        raise HTTPException(status_code=502, detail="IA nao gerou resposta para a simulacao.")
+    return {"success": True, "model": model_usado, "resposta": resposta_final}
 
 
 def _ml_perguntas_resumir_status(perguntas: list[dict]) -> dict:
@@ -44734,6 +45707,157 @@ def _ml_pos_venda_from_id(mensagem: dict) -> str:
     return str(remetente.get("user_id") or remetente.get("id") or "").strip()
 
 
+def _ml_pos_venda_flag_verdadeira(valor: Any) -> bool:
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return valor > 0
+    texto = str(valor or "").strip().lower()
+    return texto in {"1", "true", "yes", "sim", "s", "unread", "not_read", "nao_lida", "nao-lida", "nao lida"}
+
+
+def _ml_pos_venda_flag_falsa(valor: Any) -> bool:
+    if isinstance(valor, bool):
+        return not valor
+    if isinstance(valor, (int, float)):
+        return valor <= 0
+    texto = str(valor or "").strip().lower()
+    return texto in {"0", "false", "no", "nao", "n", "read", "lida", "lido", "seen", "viewed"}
+
+
+def _ml_pos_venda_inteiro_positivo(valor: Any) -> int:
+    try:
+        numero = int(float(valor or 0))
+        return max(0, numero)
+    except Exception:
+        return 0
+
+
+def _ml_pos_venda_campo_numero_nao_lidas(dados: Any) -> int:
+    if not isinstance(dados, dict):
+        return 0
+    for campo in (
+        "unread_count", "unread_messages", "unread_messages_count", "messages_unread",
+        "messages_unread_count", "nao_lidas", "mensagens_nao_lidas", "unanswered_messages",
+    ):
+        if campo in dados:
+            total = _ml_pos_venda_inteiro_positivo(dados.get(campo))
+            if total > 0:
+                return total
+    for campo in ("conversation_status", "message_status", "status_detail", "metadata", "flags"):
+        total = _ml_pos_venda_campo_numero_nao_lidas(dados.get(campo))
+        if total > 0:
+            return total
+    return 0
+
+
+def _ml_pos_venda_dados_indicam_nao_lida(dados: Any) -> bool:
+    if not isinstance(dados, dict):
+        return False
+    if _ml_pos_venda_campo_numero_nao_lidas(dados) > 0:
+        return True
+    for campo in (
+        "unread", "has_unread", "has_unread_messages", "nao_lida", "mensagem_nao_lida",
+        "mensagens_nao_lidas", "pending_unread",
+    ):
+        if campo in dados and _ml_pos_venda_flag_verdadeira(dados.get(campo)):
+            return True
+    for campo in ("read", "is_read", "message_read", "viewed", "seen"):
+        if campo in dados and _ml_pos_venda_flag_falsa(dados.get(campo)):
+            return True
+    for campo in ("status", "substatus", "message_status"):
+        valor = dados.get(campo)
+        if isinstance(valor, dict):
+            if _ml_pos_venda_dados_indicam_nao_lida(valor):
+                return True
+            continue
+        texto = str(valor or "").strip().lower()
+        if texto in {"unread", "not_read", "nao_lida", "nao-lida", "nao lida"}:
+            return True
+    for campo in ("conversation_status", "status_detail", "metadata", "flags"):
+        if _ml_pos_venda_dados_indicam_nao_lida(dados.get(campo)):
+            return True
+    return False
+
+
+def _ml_pos_venda_mensagem_indica_lida(mensagem: dict) -> bool:
+    if not isinstance(mensagem, dict):
+        return False
+    for campo in ("read", "is_read", "message_read", "viewed", "seen"):
+        if campo in mensagem and _ml_pos_venda_flag_verdadeira(mensagem.get(campo)):
+            return True
+    for campo in ("status", "substatus", "message_status"):
+        valor = mensagem.get(campo)
+        if isinstance(valor, dict):
+            if _ml_pos_venda_mensagem_indica_lida(valor):
+                return True
+            continue
+        texto = str(valor or "").strip().lower()
+        if texto in {"read", "lida", "lido", "seen", "viewed"}:
+            return True
+    return False
+
+
+def _ml_pos_venda_mensagem_eh_comprador(mensagem: dict, seller_id: str) -> bool:
+    if not isinstance(mensagem, dict):
+        return False
+    seller = str(seller_id or "").strip()
+    from_id = _ml_pos_venda_from_id(mensagem)
+    if seller and from_id and from_id == seller:
+        return False
+    papel = str(
+        mensagem.get("from_role")
+        or mensagem.get("sender_role")
+        or mensagem.get("role")
+        or ""
+    ).strip().lower()
+    if papel in {"seller", "vendedor", "loja"}:
+        return False
+    if papel in {"buyer", "comprador", "cliente"}:
+        return True
+    return bool(from_id)
+
+
+def _ml_pos_venda_mensagem_nao_lida(mensagem: dict, seller_id: str) -> bool:
+    if not _ml_pos_venda_mensagem_eh_comprador(mensagem, seller_id):
+        return False
+    return _ml_pos_venda_dados_indicam_nao_lida(mensagem)
+
+
+def _ml_pos_venda_conversa_nao_lida(mensagens_data: dict, seller_id: str) -> bool:
+    if not isinstance(mensagens_data, dict):
+        return False
+    if _ml_pos_venda_dados_indicam_nao_lida(mensagens_data):
+        return True
+    conversation_status = mensagens_data.get("conversation_status")
+    if _ml_pos_venda_dados_indicam_nao_lida(conversation_status):
+        return True
+    mensagens = mensagens_data.get("messages") if isinstance(mensagens_data.get("messages"), list) else []
+    mensagens_validas = [m for m in mensagens if isinstance(m, dict)]
+    if any(_ml_pos_venda_mensagem_nao_lida(mensagem, seller_id) for mensagem in mensagens_validas):
+        return True
+    mensagens_validas.sort(key=_ml_pos_venda_mensagem_data)
+    ultima = mensagens_validas[-1] if mensagens_validas else {}
+    return bool(
+        ultima
+        and _ml_pos_venda_mensagem_eh_comprador(ultima, seller_id)
+        and not _ml_pos_venda_mensagem_indica_lida(ultima)
+    )
+
+
+def _ml_pos_venda_contar_nao_lidas(mensagens_data: dict, seller_id: str) -> int:
+    if not isinstance(mensagens_data, dict):
+        return 0
+    total_direto = _ml_pos_venda_campo_numero_nao_lidas(mensagens_data)
+    if total_direto > 0:
+        return total_direto
+    mensagens = mensagens_data.get("messages") if isinstance(mensagens_data.get("messages"), list) else []
+    total = sum(1 for mensagem in mensagens if _ml_pos_venda_mensagem_nao_lida(mensagem, seller_id))
+    if total <= 0 and _ml_pos_venda_conversa_nao_lida(mensagens_data, seller_id):
+        return 1
+    return total
+
+
 def _ml_pos_venda_anexo_url(item: dict) -> str:
     if not isinstance(item, dict):
         return ""
@@ -44874,6 +45998,8 @@ def _ml_pos_venda_normalizar_pedido(order: dict, mensagens_data: dict, seller_id
     buyer_name = _ml_perguntas_nome_comprador(buyer)
     conversation_status = mensagens_data.get("conversation_status") if isinstance(mensagens_data.get("conversation_status"), dict) else {}
     mensagens = mensagens_data.get("messages") if isinstance(mensagens_data.get("messages"), list) else []
+    nao_lida = _ml_pos_venda_conversa_nao_lida(mensagens_data, seller_id)
+    mensagens_nao_lidas = _ml_pos_venda_contar_nao_lidas(mensagens_data, seller_id)
     mensagens_ordenadas = sorted(
         [m for m in mensagens if isinstance(m, dict)],
         key=_ml_pos_venda_mensagem_data,
@@ -44920,6 +46046,11 @@ def _ml_pos_venda_normalizar_pedido(order: dict, mensagens_data: dict, seller_id
         "items": itens,
         "item_title": " / ".join([item.get("title") for item in itens if item.get("title")][:3]),
         "messages_count": len(mensagens_ordenadas),
+        "unread": bool(nao_lida),
+        "is_unread": bool(nao_lida),
+        "nao_lida": bool(nao_lida),
+        "unread_count": int(mensagens_nao_lidas or 0),
+        "mensagens_nao_lidas": int(mensagens_nao_lidas or 0),
         "seller_max_message_length": int(mensagens_data.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS),
         "last_message_date": _ml_pos_venda_mensagem_data(ultima),
         "last_message_id": _ml_pos_venda_id_mensagem(ultima),
@@ -45303,6 +46434,7 @@ def _ml_pos_venda_gerar_resposta_ia(
     loja: str,
     conversa: dict,
     max_chars: int | None = None,
+    contexto_pipeline: Optional[dict] = None,
 ) -> tuple[str, str]:
     limite = int(max_chars or conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
     limite = max(1, min(limite, ML_POS_VENDA_DEFAULT_MAX_CHARS))
@@ -45326,15 +46458,22 @@ def _ml_pos_venda_gerar_resposta_ia(
     ])
     ultima = str(conversa.get("last_message_text") or (mensagens[-1].get("text") if mensagens else "") or "").strip()
     memoria_sku = _ml_pos_venda_memoria_bloco_prompt(client_id, conversa)
+    assinatura_loja = _perguntas_ia_assinatura_loja(loja)
+    contexto_estruturado = _ml_pos_venda_contexto_prompt(contexto_pipeline)
     mensagem = (
-        "Gere uma resposta curta de pÃ³s-venda para o comprador no Mercado Livre. "
-        "Use as orientaÃ§Ãµes salvas no treinamento de pÃ³s-venda. "
-        "NÃ£o use Markdown, asteriscos, tabelas, emojis ou caracteres especiais desnecessÃ¡rios. "
-        "NÃ£o invente prazos, garantia, estoque, compatibilidade ou procedimentos. "
-        "Considere as perguntas anteriores feitas pelo comprador no anuncio como contexto do atendimento. "
+        "Fluxo: IA de POS-VENDA do Mercado Livre. "
+        "Responda somente como equipe da loja, sem se apresentar como assistente, IA, Gemini, Vertex ou JK Sistema. "
+        "Use as orientacoes salvas no treinamento de pos-venda e o contexto estruturado como fonte de verdade. "
+        "Nao reaproveite o tom de perguntas publicas do anuncio e nao chame o comprador para comprar novamente. "
+        "Nao use Markdown, asteriscos, tabelas, emojis ou caracteres especiais desnecessarios. "
+        "Nao invente prazos, garantia, estoque, compatibilidade, devolucao, troca ou procedimentos. "
+        "Se o contexto indicar que precisa consultar regras oficiais ou humano, nao prometa solucao final; responda que a equipe vai verificar o caso e retornar pelo Mercado Livre. "
+        "Considere as perguntas anteriores feitas pelo comprador no anuncio apenas como contexto do atendimento. "
         "Use esse historico para entender o que ja foi perguntado e respondido, sem repetir tudo ao comprador. "
-        "Se faltar informaÃ§Ã£o, peÃ§a o dado necessÃ¡rio de forma educada. "
-        f"A resposta deve ter no mÃ¡ximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres.\n\n"
+        "Se faltar informacao para resolver o atendimento, peca o dado necessario de forma educada. "
+        f"A resposta final completa deve ter no maximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres. "
+        f"Finalize exatamente com: {assinatura_loja}\n\n"
+        f"Contexto estruturado do pipeline:\n{contexto_estruturado or '-'}\n\n"
         f"Loja: {loja}\n"
         f"Pack: {conversa.get('pack_id') or '-'}\n"
         f"Pedido: {conversa.get('order_id') or '-'}\n"
@@ -45347,17 +46486,21 @@ def _ml_pos_venda_gerar_resposta_ia(
     )
     payload = IAChatRequest(
         message=mensagem,
-        page="Perguntas e pÃ³s venda",
+        page="Perguntas e pos venda",
         context={
             "modulo": "perguntas_pos_venda",
-            "tipo": "resposta_pos_venda",
+            "tipo": ML_POS_VENDA_IA_V2_MODO,
             "tipo_treinamento": "pos_venda",
+            "ia_finalidade": "pos_venda",
+            "origem_ia": "mercado_livre_pos_venda_ia_v2",
+            "desativar_recursos_chat": True,
+            "desativar_busca_web_chat": True,
             "loja": loja,
             "conversa": conversa,
         },
         model=None,
     )
-    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
+    model_req = _normalizar_ia_modelo_padrao(_ia_modelo_pos_venda_configurado())
     payload.model = model_req
     if _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
@@ -45371,7 +46514,9 @@ def _ml_pos_venda_gerar_resposta_ia(
     else:
         resposta = _chamar_openai_responses(payload, client_id)
         model_usado = model_req or (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
-    resposta_limpa = _pos_venda_ia_limpar_resposta(resposta, limite)
+    resposta_limpa = _pos_venda_ia_resposta_final_loja(resposta, loja, limite)
+    if not resposta_limpa:
+        raise PerguntasIARespostaIndisponivel("IA de pos-venda nao gerou resposta.")
     try:
         _ml_pos_venda_memoria_registrar_geracao(client_id, loja, conversa, resposta_limpa, model_usado)
     except Exception as exc:
@@ -45468,6 +46613,7 @@ def ml_pos_venda_listar_conversas(
     limit: int = 20,
     max_orders: int = 10000,
     busca: Optional[str] = None,
+    nao_lidas: bool = False,
     client_id: str = Depends(get_tenant_id),
 ):
     try:
@@ -45486,6 +46632,7 @@ def ml_pos_venda_listar_conversas(
         max_orders = max(limit, min(int(max_orders or 10000), 10000))
         busca_texto = str(busca or "").strip()
         busca_ativa = bool(_ml_pos_venda_normalizar_termo_busca(busca_texto))
+        filtro_nao_lidas = bool(nao_lidas)
         agora = dt.datetime.now()
         data_inicio = agora - dt.timedelta(days=dias)
         orders_url = "https://api.mercadolibre.com/orders/search"
@@ -45524,6 +46671,8 @@ def ml_pos_venda_listar_conversas(
                     paging = mensagens_data.get("paging") if isinstance(mensagens_data.get("paging"), dict) else {}
                     if int(paging.get("total") or 0) <= 0:
                         return None
+                if filtro_nao_lidas and not _ml_pos_venda_conversa_nao_lida(mensagens_data, seller_id):
+                    return None
                 return {"order": order, "mensagens_data": mensagens_data}
             except Exception as exc:
                 erros.append({"order_id": order_id, "erro": str(exc)})
@@ -45613,6 +46762,8 @@ def ml_pos_venda_listar_conversas(
                 for conversa in conversas
                 if _ml_pos_venda_conversa_corresponde_busca(conversa, busca_texto)
             ]
+        if filtro_nao_lidas:
+            conversas = [conversa for conversa in conversas if bool(conversa.get("nao_lida") or conversa.get("unread"))]
 
         conversas.sort(key=lambda item: item.get("last_message_date") or item.get("date_created") or "", reverse=True)
         conversas_total = len(conversas)
@@ -45628,11 +46779,13 @@ def ml_pos_venda_listar_conversas(
             "offset": offset_inicial,
             "limit": limit,
             "busca": busca_texto,
+            "nao_lidas": filtro_nao_lidas,
             "next_offset": next_offset,
             "has_next": bool(next_offset is not None),
             "orders_total": total,
             "orders_avaliadas": orders_avaliadas,
             "conversas_total": conversas_total,
+            "conversas_nao_lidas_total": sum(1 for conversa in conversas if conversa.get("nao_lida") or conversa.get("unread")),
             "interrompido": offset < total,
             "erros": erros[:10],
             "conversas": conversas,
@@ -45893,13 +47046,18 @@ def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, clie
     if req.buyer_id and not conversa.get("buyer_id"):
         conversa["buyer_id"] = str(req.buyer_id or "").strip()
     conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
-    resposta, model_usado = _ml_pos_venda_gerar_resposta_ia(client_id, nome_loja, conversa, max_chars)
+    resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
     return jsonable_encoder({
         "success": True,
         "loja": nome_loja,
         "pack_id": pack,
-        "resposta": resposta,
-        "model": model_usado,
+        "resposta": resultado_ia.get("resposta") or "",
+        "model": resultado_ia.get("model") or "",
+        "pode_enviar_automaticamente": bool(resultado_ia.get("pode_enviar_automaticamente")),
+        "decisao": resultado_ia.get("decisao") or {},
+        "validacao": resultado_ia.get("validacao") or {},
+        "ia_pipeline": _ml_pos_venda_pipeline_resumo(resultado_ia.get("contexto_ia")),
+        "audit_id": resultado_ia.get("audit_id") or "",
         "seller_max_message_length": conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS,
     })
 
@@ -46082,12 +47240,15 @@ def ml_pos_venda_automacao_poll(
                 buyer_id = str(conversa.get("buyer_id") or "").strip()
                 max_chars = int(conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
                 conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
-                resposta, model_usado = _ml_pos_venda_gerar_resposta_ia(client_id, nome_loja, conversa, max_chars)
+                resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
+                resposta = str(resultado_ia.get("resposta") or "").strip()
+                model_usado = str(resultado_ia.get("model") or "").strip()
+                contexto_ia = resultado_ia.get("contexto_ia") if isinstance(resultado_ia.get("contexto_ia"), dict) else {}
                 if not resposta:
                     continue
                 item = (conversa.get("items") or [{}])[0] if isinstance(conversa.get("items"), list) else {}
 
-                if config.get("solicitar_aprovacao"):
+                if config.get("solicitar_aprovacao") or _pos_venda_ia_v2_exigir_aprovacao() or not resultado_ia.get("pode_enviar_automaticamente"):
                     conversa_aprovacao = {
                         "pack_id": conversa.get("pack_id") or pack_id,
                         "order_id": conversa.get("order_id") or order_id,
@@ -46101,6 +47262,7 @@ def ml_pos_venda_automacao_poll(
                         "buyer_listing_question_chat": conversa.get("buyer_listing_question_chat") or [],
                         "buyer_listing_question_history_count": conversa.get("buyer_listing_question_history_count") or 0,
                     }
+                    pipeline_resumo = _ml_pos_venda_pipeline_resumo(contexto_ia)
                     approval = {
                         "id": _pos_venda_ia_aprovacao_id(nome_loja, pack_id, str(ultima.get("id") or last_message_id or last_message_date)),
                         "tipo": "pos_venda",
@@ -46122,13 +47284,32 @@ def ml_pos_venda_automacao_poll(
                         "model": model_usado,
                         "ia_origem": "mercado_livre_pos_venda",
                         "ia_finalidade": "pos_venda",
-                        "ia_modo": "modelo",
+                        "ia_modo": _ia_modo_pos_venda_configurado(),
+                        "aprovacao_obrigatoria_ia": _pos_venda_ia_v2_exigir_aprovacao(),
+                        "ia_pipeline": pipeline_resumo,
+                        "ia_decisao": resultado_ia.get("decisao") or {},
+                        "ia_validacao": resultado_ia.get("validacao") or {},
+                        "audit_id": resultado_ia.get("audit_id") or "",
                         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
                     }
                     aprovacoes.append(approval)
                     novas_pendentes.append(approval)
                     mudou_aprovacoes = True
                     processadas_loja += 1
+                    try:
+                        _ml_pos_venda_auditoria_registrar(client_id, {
+                            "evento": "pos_venda_ia_enviada_para_humano",
+                            "loja": nome_loja,
+                            "pack_id": pack_id,
+                            "order_id": order_id,
+                            "buyer_id": buyer_id,
+                            "approval_id": approval.get("id") or "",
+                            "audit_pipeline_id": resultado_ia.get("audit_id") or "",
+                            "decisao": resultado_ia.get("decisao") or {},
+                            "validacao": resultado_ia.get("validacao") or {},
+                        })
+                    except Exception as exc:
+                        logger.warning("[ML POS VENDA IA] Falha ao auditar envio para humano: %s", exc)
                 else:
                     resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, nome_loja, cfg, pack_id, buyer_id, resposta, max_chars)
                     try:
@@ -46144,6 +47325,20 @@ def ml_pos_venda_automacao_poll(
                     _perguntas_ia_marcar_processada(state, nome_loja, chave, "sent_auto_pos_venda")
                     mudou_state = True
                     processadas_loja += 1
+                    try:
+                        _ml_pos_venda_auditoria_registrar(client_id, {
+                            "evento": "pos_venda_ia_enviada_auto",
+                            "loja": nome_loja,
+                            "pack_id": pack_id,
+                            "order_id": order_id,
+                            "buyer_id": buyer_id,
+                            "audit_pipeline_id": resultado_ia.get("audit_id") or "",
+                            "decisao": resultado_ia.get("decisao") or {},
+                            "validacao": resultado_ia.get("validacao") or {},
+                            "mercadolivre": resposta_ml,
+                        })
+                    except Exception as exc:
+                        logger.warning("[ML POS VENDA IA] Falha ao auditar envio automatico: %s", exc)
                     enviadas.append({
                         "tipo": "pos_venda",
                         "loja": nome_loja,
@@ -46154,6 +47349,7 @@ def ml_pos_venda_automacao_poll(
                         "titulo": item.get("title") or conversa.get("item_title") or "",
                         "resposta": resposta,
                         "mercadolivre": resposta_ml,
+                        "audit_id": resultado_ia.get("audit_id") or "",
                     })
         except HTTPException as exc:
             erros.append({"loja": nome_loja, "erro": exc.detail})
@@ -50501,6 +51697,11 @@ def _termos_busca_ml(termo: str, extras: list[str] | None = None) -> list[str]:
 def _extrair_item_id(url: str) -> str | None:
     texto = unquote(str(url or ""))
     match = re.search(r"MLB-?(\d+)", texto, re.IGNORECASE)
+    if match:
+        return f"MLB{match.group(1)}"
+    normalizado = unicodedata.normalize("NFD", texto)
+    normalizado = "".join(ch for ch in normalizado if unicodedata.category(ch) != "Mn")
+    match = re.search(r"\ban.?ncio\s*#?\s*(\d{8,})\b", normalizado, re.IGNORECASE)
     return f"MLB{match.group(1)}" if match else None
 
 def _extrair_catalog_id(url: str) -> str | None:
@@ -50856,6 +52057,233 @@ def _extrair_data_criacao_codigo_fonte(html_text: str):
 
     return None
 
+def _ml_data_sort_key(valor):
+    texto = str(valor or "").strip()
+    if not texto:
+        return float("inf")
+    try:
+        return datetime.fromisoformat(texto.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return texto
+
+@functools.lru_cache(maxsize=1000)
+def _ml_primeira_pergunta_publica_data(item_id: str):
+    item_id = _extrair_item_id(item_id) or str(item_id or "").strip().upper().replace("-", "")
+    if not item_id:
+        return None
+    payload = _ml_api_get(
+        "https://api.mercadolibre.com/questions/search",
+        params={
+            "item": item_id,
+            "api_version": 4,
+            "sort_fields": "date_created",
+            "sort_types": "ASC",
+            "limit": 50,
+            "offset": 0,
+        },
+        max_retries=1,
+        delay=0,
+    )
+    perguntas = []
+    if isinstance(payload, dict):
+        for key in ("questions", "results"):
+            valores = payload.get(key)
+            if isinstance(valores, list):
+                perguntas.extend(v for v in valores if isinstance(v, dict))
+    elif isinstance(payload, list):
+        perguntas = [v for v in payload if isinstance(v, dict)]
+
+    datas = []
+    for pergunta in perguntas:
+        data = _normalizar_data_ml(
+            pergunta.get("date_created")
+            or pergunta.get("dateCreated")
+            or pergunta.get("created_at")
+            or pergunta.get("createdAt")
+            or pergunta.get("creation_date")
+        )
+        if data:
+            datas.append(data)
+    if not datas:
+        return None
+    datas.sort(key=_ml_data_sort_key)
+    return datas[0]
+
+def _ml_wayback_timestamp_iso(timestamp: str):
+    digits = re.sub(r"\D+", "", str(timestamp or ""))
+    if not re.fullmatch(r"\d{14}", digits):
+        return None
+    try:
+        data = datetime.strptime(digits, "%Y%m%d%H%M%S")
+        return data.replace(tzinfo=dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return None
+
+@functools.lru_cache(maxsize=1000)
+def _ml_wayback_primeira_captura_data(item_id: str | None, url: str | None = None):
+    item_id = _extrair_item_id(item_id or "") or _extrair_item_id(url or "")
+    if item_id:
+        url_pattern = f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-')}-*"
+    else:
+        url_pattern = str(url or "").split("#", 1)[0].split("?", 1)[0].strip()
+    if not url_pattern:
+        return None
+    try:
+        resp = requests.get(
+            "https://web.archive.org/cdx/search/cdx",
+            params={
+                "url": url_pattern,
+                "output": "json",
+                "fl": "timestamp,original,statuscode,mimetype",
+                "filter": "statuscode:200",
+                "limit": 1,
+                "sort": "ascending",
+            },
+            headers={
+                **_ml_headers(),
+                "Accept": "application/json, text/plain, */*",
+            },
+            timeout=8,
+            verify=False,
+        )
+        if resp.status_code != 200:
+            return None
+        payload = resp.json()
+    except Exception:
+        logger.debug("[Favoritos][Datas] Falha ao consultar Wayback para %s", item_id or url, exc_info=True)
+        return None
+
+    if not isinstance(payload, list):
+        return None
+    for row in payload:
+        if not isinstance(row, list) or not row:
+            continue
+        if re.search(r"timestamp", str(row[0] or ""), flags=re.IGNORECASE):
+            continue
+        data = _ml_wayback_timestamp_iso(str(row[0] or ""))
+        if data:
+            return data
+    return None
+
+def _ml_normalizar_data_cache_local(valor):
+    texto = str(valor or "").strip()
+    if not texto or texto in {"-", "null", "None"}:
+        return None
+    match_br = re.search(r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b", texto)
+    if match_br:
+        try:
+            dia = int(match_br.group(1))
+            mes = int(match_br.group(2))
+            ano = int(match_br.group(3))
+            if ano < 100:
+                ano += 2000
+            return dt.datetime(ano, mes, dia, 12, 0, 0).isoformat()
+        except Exception:
+            return None
+    return _normalizar_data_ml(texto)
+
+def _ml_data_criacao_por_imagem(valor):
+    texto = str(valor or "")
+    if not texto:
+        return None
+    patterns = [
+        r"[_-]([01]\d)((?:20)\d{2})(?=[^0-9]|$)",
+        r"[_-]((?:20)\d{2})([01]\d)(?=[^0-9]|$)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, texto):
+            if pattern.startswith("[_-]([01]"):
+                mes = int(match.group(1))
+                ano = int(match.group(2))
+            else:
+                ano = int(match.group(1))
+                mes = int(match.group(2))
+            if 1 <= mes <= 12:
+                try:
+                    return dt.datetime(ano, mes, 15, 12, 0, 0).isoformat()
+                except Exception:
+                    continue
+    return None
+
+@functools.lru_cache(maxsize=64)
+def _ml_datas_cache_local(client_id: str | None):
+    client = str(client_id or "").strip()
+    if not client:
+        return {}
+    tenant_path = get_tenant_path(client)
+    datas = {}
+    patterns = [
+        "favoritos_historico_*.json",
+        "favoritos_*.json",
+        "favoritos_anuncios_*.json",
+        "favoritos_anuncios_ignorados_*.json",
+    ]
+
+    def _registrar(item_id, data):
+        item_id = _extrair_item_id(item_id or "")
+        data = _ml_normalizar_data_cache_local(data)
+        if not item_id or not data:
+            return
+        atual = datas.get(item_id)
+        if not atual or _ml_data_sort_key(data) < _ml_data_sort_key(atual):
+            datas[item_id] = data
+
+    def _walk(obj, contador):
+        if contador[0] > 80000:
+            return
+        contador[0] += 1
+        if isinstance(obj, list):
+            for value in obj:
+                _walk(value, contador)
+            return
+        if not isinstance(obj, dict):
+            return
+        raw_id = (
+            obj.get("id")
+            or obj.get("item_id")
+            or obj.get("itemId")
+            or obj.get("mlb")
+            or obj.get("codigo_ml")
+            or obj.get("url")
+        )
+        data = (
+            obj.get("data_criacao")
+            or obj.get("dataCriacao")
+            or obj.get("date_created")
+            or obj.get("dateCreated")
+            or obj.get("created_at")
+            or obj.get("createdAt")
+            or obj.get("createdDate")
+            or obj.get("creation_date")
+            or obj.get("listing_start_time")
+            or obj.get("start_time")
+        )
+        _registrar(raw_id, data)
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
+                _walk(value, contador)
+
+    try:
+        for pattern in patterns:
+            for filename in fnmatch.filter(os.listdir(tenant_path), pattern):
+                caminho = os.path.join(tenant_path, filename)
+                if not os.path.isfile(caminho):
+                    continue
+                try:
+                    with open(caminho, "r", encoding="utf-8") as f:
+                        _walk(json.load(f), [0])
+                except Exception:
+                    logger.debug("[Favoritos][Datas] Falha ao ler cache local %s", caminho, exc_info=True)
+    except Exception:
+        logger.debug("[Favoritos][Datas] Falha ao varrer cache local tenant=%s", client, exc_info=True)
+    return datas
+
+def _ml_data_criacao_cache_local(client_id: str | None, item_id: str | None):
+    item_id = _extrair_item_id(item_id or "")
+    if not item_id:
+        return None
+    return _ml_datas_cache_local(client_id).get(item_id)
+
 def _extrair_vendedor_codigo_fonte(html_text: str):
     if not html_text:
         return None
@@ -50899,7 +52327,13 @@ def _extrair_vendedor_codigo_fonte(html_text: str):
 
     return None
 
-def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str | None = None):
+def _extrair_info_anuncio(
+    url: str,
+    item_id: str | None = None,
+    client_id: str | None = None,
+    imagem: str | None = None,
+    dados_base: dict | None = None,
+):
     item_id = _extrair_item_id(item_id or "") or _extrair_item_id(url) or item_id
     info = {
         "data_criacao": None,
@@ -50910,6 +52344,8 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
         "fonte_vendas": None,
         "visitas": None,
         "fonte_visitas": None,
+        "fonte_data_criacao": None,
+        "data_criacao_confianca": None,
         "sku": None,
         "listing_type_id": None,
         "listing_type_name": None,
@@ -50923,6 +52359,26 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
         "condition": None,
         "item_condition": None,
     }
+
+    if isinstance(dados_base, dict):
+        vendedor_base = str(dados_base.get("vendedor") or dados_base.get("seller") or "").strip()
+        if vendedor_base and vendedor_base != "-":
+            info["vendedor"] = vendedor_base
+            info["fonte_vendedor"] = str(dados_base.get("fonte_vendedor") or "entrada_extensao").strip()
+        vendas_base = _parse_vendas_ml(dados_base.get("vendas"))
+        if vendas_base is not None:
+            info["vendas"] = vendas_base
+            info["fonte_vendas"] = str(dados_base.get("fonte_vendas") or "entrada_extensao").strip()
+        visitas_base = _parse_vendas_ml(dados_base.get("visitas"))
+        if visitas_base is not None:
+            info["visitas"] = visitas_base
+            info["fonte_visitas"] = str(dados_base.get("fonte_visitas") or "entrada_extensao").strip()
+        data_base = _normalizar_data_ml(dados_base.get("data_criacao") or dados_base.get("dataCriacao"))
+        if data_base:
+            info["data_criacao"] = data_base
+            info["fonte"] = str(dados_base.get("fonte_data_criacao") or dados_base.get("fonte") or "entrada_extensao").strip()
+            info["fonte_data_criacao"] = info["fonte"]
+            info["data_criacao_confianca"] = str(dados_base.get("data_criacao_confianca") or "media").strip()
 
     def _vendas_da_api(dados: dict | None):
         if not isinstance(dados, dict):
@@ -50954,6 +52410,42 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
                 if nome:
                     return str(nome).strip(), seller_id
         return None, seller_id
+
+    def _aplicar_data_criacao_aproximada():
+        if info["data_criacao"] or not item_id:
+            return
+        data_cache = _ml_data_criacao_cache_local(client_id, item_id)
+        if data_cache:
+            info["data_criacao"] = data_cache
+            info["fonte"] = "cache_local_item"
+            info["fonte_data_criacao"] = "cache_local_item"
+            info["data_criacao_confianca"] = "alta"
+            return
+        data_imagem = _ml_data_criacao_por_imagem(imagem or url)
+        if data_imagem:
+            info["data_criacao"] = data_imagem
+            info["fonte"] = "imagem_ml_mes"
+            info["fonte_data_criacao"] = "imagem_ml_mes"
+            info["data_criacao_confianca"] = "baixa"
+            return
+        candidatos = []
+        data_wayback = _ml_wayback_primeira_captura_data(item_id, url)
+        if data_wayback:
+            candidatos.append(("wayback_primeira_captura", data_wayback, "media_baixa", 1))
+        data_pergunta = _ml_primeira_pergunta_publica_data(item_id)
+        if data_pergunta:
+            candidatos.append(("primeira_pergunta_publica", data_pergunta, "baixa", 1))
+        if not candidatos:
+            return
+        fonte, data, confianca, _prioridade = sorted(candidatos, key=lambda item: (item[3], _ml_data_sort_key(item[1])))[0]
+        info["data_criacao"] = data
+        info["fonte"] = fonte
+        info["fonte_data_criacao"] = fonte
+        info["data_criacao_confianca"] = confianca
+
+    _aplicar_data_criacao_aproximada()
+    if info["data_criacao"] and info["vendedor"] and info["vendas"] is not None:
+        return info
 
     if item_id:
         api_data = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id)
@@ -51011,6 +52503,7 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
             info["fonte_visitas"] = visitas_api.get("fonte") or "api_visitas"
 
     if not url:
+        _aplicar_data_criacao_aproximada()
         return info
 
     try:
@@ -51022,6 +52515,7 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
         resp = requests.get(url, headers=headers, timeout=12, allow_redirects=True, verify=False)
         if resp.status_code != 200:
             logger.warning("[Favoritos][Datas] Erro ao abrir %s: status %s", url, resp.status_code)
+            _aplicar_data_criacao_aproximada()
             return info
 
         if not info["data_criacao"]:
@@ -51107,6 +52601,7 @@ def _extrair_info_anuncio(url: str, item_id: str | None = None, client_id: str |
     except Exception:
         logger.exception("[Favoritos][Datas] Erro ao consultar codigo-fonte de %s", url)
 
+    _aplicar_data_criacao_aproximada()
     return info
 
 @app.post("/api/favoritos/ml/primeira-pagina")
@@ -51222,21 +52717,41 @@ async def favoritos_ml_enriquecer_datas(req: FavoritosEnriquecerDatasRequest, cl
         url = str(anuncio.get("url") or "").strip()
         raw_item_id = str(anuncio.get("id") or "").strip()
         item_id = _extrair_item_id(raw_item_id) or _extrair_item_id(url) or raw_item_id.upper().replace("-", "")
+        imagem = str(
+            anuncio.get("imagem")
+            or anuncio.get("thumbnail")
+            or anuncio.get("image")
+            or anuncio.get("picture")
+            or ""
+        ).strip()
         chave = item_id or url
         if not chave or chave in vistos:
             continue
         vistos.add(chave)
-        tarefas.append({"url": url, "item_id": item_id})
+        tarefas.append({
+            "url": url,
+            "item_id": item_id,
+            "imagem": imagem,
+            "vendedor": anuncio.get("vendedor"),
+            "vendas": anuncio.get("vendas"),
+            "visitas": anuncio.get("visitas"),
+            "data_criacao": anuncio.get("data_criacao"),
+            "fonte": anuncio.get("fonte"),
+            "fonte_data_criacao": anuncio.get("fonte_data_criacao"),
+            "data_criacao_confianca": anuncio.get("data_criacao_confianca"),
+        })
 
     def _processar(tarefa: dict):
         url = tarefa.get("url") or ""
         item_id = tarefa.get("item_id") or None
-        info = _extrair_info_anuncio(url, item_id, client_id=client_id)
+        info = _extrair_info_anuncio(url, item_id, client_id=client_id, imagem=tarefa.get("imagem"), dados_base=tarefa)
         return {
             "url": url,
             "id": item_id,
             "data_criacao": info.get("data_criacao"),
             "fonte": info.get("fonte"),
+            "fonte_data_criacao": info.get("fonte_data_criacao"),
+            "data_criacao_confianca": info.get("data_criacao_confianca"),
             "vendedor": info.get("vendedor"),
             "fonte_vendedor": info.get("fonte_vendedor"),
             "vendas": info.get("vendas"),
@@ -53680,6 +55195,7 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
         for valor_modelo in (
             req.ia_modelo_padrao,
             req.ia_modelo_perguntas,
+            req.ia_modelo_pos_venda,
             req.ia_modelo_chat,
             req.ia_modelo_favoritos,
         )
@@ -53687,6 +55203,9 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     atuais["ia_modelo_padrao"] = _normalizar_ia_modelo_padrao(req.ia_modelo_padrao or atuais.get("ia_modelo_padrao"))
     atuais["ia_modelo_perguntas"] = _normalizar_ia_modelo_padrao(
         req.ia_modelo_perguntas or atuais.get("ia_modelo_perguntas") or atuais["ia_modelo_padrao"]
+    )
+    atuais["ia_modelo_pos_venda"] = _normalizar_ia_modelo_padrao(
+        req.ia_modelo_pos_venda or atuais.get("ia_modelo_pos_venda") or atuais["ia_modelo_padrao"]
     )
     atuais["ia_modelo_chat"] = _normalizar_ia_modelo_padrao(
         req.ia_modelo_chat or atuais.get("ia_modelo_chat") or atuais["ia_modelo_padrao"]
@@ -53697,6 +55216,7 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     for campo, valor_modo in (
         ("ia_modo_padrao", req.ia_modo_padrao),
         ("ia_modo_perguntas", req.ia_modo_perguntas),
+        ("ia_modo_pos_venda", req.ia_modo_pos_venda),
         ("ia_modo_chat", req.ia_modo_chat),
         ("ia_modo_favoritos", req.ia_modo_favoritos),
     ):
@@ -53715,6 +55235,7 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
             modelo_vertex = f"vertex:{modelo_vertex_curto}"
             atuais["ia_modelo_padrao"] = modelo_vertex
             atuais["ia_modelo_perguntas"] = modelo_vertex
+            atuais["ia_modelo_pos_venda"] = modelo_vertex
             atuais["ia_modelo_chat"] = modelo_vertex
             atuais["ia_modelo_favoritos"] = modelo_vertex
     if req.ia_vertex_service_account_email is not None:
