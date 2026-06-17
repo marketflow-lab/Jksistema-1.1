@@ -37,8 +37,6 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from datetime import datetime, timedelta
 import requests
 import urllib3
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from dotenv import load_dotenv, dotenv_values
 import fitz  # PyMuPDF
 from bs4 import BeautifulSoup
@@ -78,6 +76,319 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+
+from backend.routers import (
+    FrontendRouterConfig,
+    create_admin_usuarios_router,
+    create_cadastro_router,
+    create_configuracoes_router,
+    create_estoque_router,
+    create_etiquetas_router,
+    create_favoritos_router,
+    create_frontend_router,
+    create_full_router,
+    create_ia_router,
+    create_impostos_router,
+    create_importacoes_router,
+    create_infra_router,
+    create_integracoes_router,
+    create_mercado_livre_router,
+    create_medias_compras_router,
+    create_perguntas_pos_venda_router,
+    create_promocoes_router,
+    create_renovacao_router,
+    create_sala_reuniao_router,
+    create_shared_sync_router,
+    create_vendas_router,
+    include_feature_routers,
+    mount_static_assets,
+)
+from backend.lifecycle import register_startup_events
+from backend.services.bling import BLING_SESSION, _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
+from backend.services.configuracoes import (
+    CONFIG_GLOBAIS_DEFAULT,
+    _carregar_configuracoes_globais,
+    _carregar_configuracoes_globais_firebase,
+    _carregar_configuracoes_globais_local,
+    _configuracoes_chaves_sensiveis,
+    _configuracoes_globais_ler_firebase,
+    _configuracoes_globais_salvar_firebase_bloqueante,
+    _firebase_configuracoes_globais_collection_name,
+    _firebase_configuracoes_globais_db,
+    _firebase_configuracoes_globais_doc_id,
+    _normalizar_configuracoes_globais,
+    _normalizar_ia_modo,
+    _salvar_configuracoes_globais,
+    _salvar_configuracoes_globais_firebase,
+    _salvar_configuracoes_globais_firebase_background,
+    _salvar_configuracoes_globais_local,
+    configure_configuracoes_context,
+)
+from backend.services.env_config import (
+    _agent_service_only,
+    _env_bool,
+    _env_config_bool,
+    _env_config_value,
+    _request_eh_local,
+    _resolver_redirect_uri_bling,
+    _resolver_redirect_uri_publica,
+    configure_env_context,
+)
+from backend.services.favoritos import (
+    _favoritos_arquivo_planilhas_lojas,
+    _favoritos_arquivo_skus_ocultos,
+    _favoritos_carregar_planilhas_lojas,
+    _favoritos_ml_persist_cache_apply,
+    _favoritos_ml_persist_cache_clean_payload,
+    _favoritos_ml_persist_cache_meta,
+    _favoritos_ml_persist_cache_path,
+    _favoritos_ml_persist_cache_read,
+    _favoritos_ml_persist_cache_slug,
+    _favoritos_ml_persist_cache_write,
+    _favoritos_normalizar_planilha_loja_item,
+    _favoritos_normalizar_skus_ocultos,
+    _favoritos_normalizar_url_planilha_google,
+    _favoritos_salvar_planilhas_lojas,
+    _favoritos_usuario_slug,
+    configure_favoritos_context,
+)
+from backend.services.full import (
+    _full_envio_row_to_dict,
+    _full_envios_agrupar_itens,
+    _full_envios_data_iso,
+    _full_envios_db_path,
+    _full_envios_files_dir,
+    _full_envios_inserir_registro,
+    _full_envios_parse_pdf,
+    _full_envios_status_norm,
+    _full_numero,
+    _garantir_tabela_full_envios_transito,
+    configure_full_context,
+)
+from backend.services.infra import build_health_payload, check_app_update, check_mobile_update
+from backend.services.impostos import (
+    SISCOMEX_AMBIENTES,
+    _ajustar_pis_cofins_monofasico_revenda,
+    _aliquotas_pis_cofins_por_regime,
+    _formatar_ncm_pontos,
+    _normalizar_aliquota_percentual,
+    _normalizar_auth_header_type_siscomex,
+    _normalizar_coluna_ncm_excel,
+    _normalizar_loja_siscomex,
+    _normalizar_perfil_siscomex,
+    _normalizar_role_type_siscomex,
+    _normalizar_siscomex_ambiente,
+    _normalizar_tipo_operacao_siscomex,
+    _siscomex_scope_key,
+    _siscomex_scope_payload,
+)
+from backend.services.ia import (
+    _extrair_b64_openai_image_response,
+    _extrair_texto_openai_response,
+    _ia_chat_extrair_limite_top,
+    _ia_chat_extrair_opcoes_top_dias_sem_venda,
+    _ia_chat_bloco_prompt_analise_especialista,
+    _ia_chat_deve_anexar_vendas_db_contexto,
+    _ia_chat_extrair_texto_anexo,
+    _ia_chat_mensagem_contextual,
+    _ia_chat_normalizar_anexos,
+    _ia_chat_pede_analise_especialista_vendas,
+    _ia_chat_pede_anomalia,
+    _ia_chat_pede_comparativo_periodo,
+    _ia_chat_pede_consulta_bling,
+    _ia_chat_pede_consulta_devolucoes,
+    _ia_chat_pede_consulta_estoque,
+    _ia_chat_pede_consulta_margem,
+    _ia_chat_pede_consulta_mercado_livre,
+    _ia_chat_pede_consulta_produto,
+    _ia_chat_pede_consulta_vendas,
+    _ia_chat_pede_dias_sem_venda,
+    _ia_chat_pede_geracao_imagem,
+    _ia_chat_pede_imagem_produto,
+    _ia_chat_pede_info_cadastro_produto,
+    _ia_chat_pede_lucro_periodo,
+    _ia_chat_pede_noticias,
+    _ia_chat_pede_previsao_ruptura_estoque,
+    _ia_chat_pede_recorte_mensal,
+    _ia_chat_pede_serie_temporal,
+    _ia_chat_pede_status_integracoes,
+    _ia_chat_pede_taxa_devolucao,
+    _ia_chat_pede_ticket_medio,
+    _ia_chat_pede_top_dias_sem_venda,
+    _ia_chat_pede_vendas_por_loja_virtual,
+    _ia_chat_resumo_historico,
+    _ia_chat_tem_imagem,
+    _ia_contexto_desativa_recursos_chat,
+    _ia_normalizar_data_iso_chat,
+    _ia_normalizar_periodo_chat,
+    _ia_parse_data_iso_flex,
+    _ia_periodo_do_mes,
+    _ia_subtrair_meses,
+    _ia_ultimo_dia_mes,
+)
+from backend.services.mercadolivre import (
+    _ML_CACHE_TTL_CAMPANHA,
+    _ML_CACHE_TTL_CAMPANHA_STALE,
+    _ML_CACHE_TTL_CONTAGENS,
+    _cache_invalidar_loja,
+    _ml_cache_get,
+    _ml_cache_get_stale,
+    _ml_cache_set,
+    _ml_http_invalidar_session,
+    _ml_http_request,
+)
+from backend.services.shared_sync import (
+    _shared_sync_bytes_sha256,
+    _shared_sync_config_doc_id,
+    _shared_sync_doc_id,
+    _shared_sync_docs_cache_get,
+    _shared_sync_docs_cache_invalidate,
+    _shared_sync_docs_cache_set,
+    _shared_sync_json_clone,
+    _shared_sync_local_backup_retention,
+    _shared_sync_machine_doc_id,
+    _shared_sync_max_bundle_bytes,
+    _shared_sync_max_file_bytes,
+    _shared_sync_now_iso,
+    _shared_sync_pair_doc_id,
+    _shared_sync_relativo_seguro,
+    _shared_sync_safe_doc_id,
+    _shared_sync_safe_filename,
+    _shared_sync_sha256_file,
+)
+from backend.services.vendas import (
+    _vendas_sync_dias_periodo,
+    _vendas_sync_job_key,
+    _vendas_sync_load_state,
+    _vendas_sync_parse_date,
+    _vendas_sync_prepare_job,
+    _vendas_sync_save_state,
+    _vendas_sync_state_path,
+    _vendas_sync_update_job,
+    configure_vendas_context,
+)
+from backend.services.renovacao import (
+    analisar_renovacao_logic,
+    find_col,
+    find_common_key,
+    find_sheet_name,
+    gerar_excel_renovacao,
+    processar_renovacao_logic,
+)
+from backend.schemas import (
+    LoginRequest,
+    GoogleLoginRequest,
+    LoginResponse,
+    AdminUserUpsertRequest,
+    AdminUserPasswordRequest,
+    UserChangePasswordRequest,
+    AdminUserMaxMachinesRequest,
+    AdminUserPermissionsRequest,
+    AdminUserStatusRequest,
+    AdminUserMessageRequest,
+    UserChatAttachment,
+    UserChatMessageRequest,
+    UserChatTypingRequest,
+    MachinePresenceHeartbeatRequest,
+    SharedSyncScopeConfigRequest,
+    SharedSyncConfigRequest,
+    SharedSyncRunRequest,
+    SharedSyncMachineConfigRequest,
+    SharedSyncUserInviteCreateRequest,
+    SharedSyncUserInviteActionRequest,
+    SharedSyncUserLinkUpdateRequest,
+    SharedSyncUserLinkRunRequest,
+    IAChatAttachment,
+    IAChatRequest,
+    IAAgentQueryRequest,
+    IATreinamentoPerguntasPosVendaRequest,
+    IATreinamentoPerguntasPosVendaSimularRequest,
+    PerguntasLojaConfigRequest,
+    PerguntasLojasConfigLoteRequest,
+    PerguntasAprovacaoRequest,
+    PerguntasGerarRespostaRequest,
+    PerguntasEnviarRespostaRequest,
+    MLQuestionsV2ProcessRequest,
+    MLQuestionsV2ReviewActionRequest,
+    PosVendaMensagemRequest,
+    PosVendaGerarRespostaRequest,
+    IARagDocumento,
+    IARagIndexRequest,
+    IARagReindexRequest,
+    PromoRequest,
+    StoreRequest,
+    AuthRequest,
+    TokenRequest,
+    MLPrecoRequest,
+    MLEstoqueRequest,
+    MLStatusRequest,
+    MLPromocaoRequest,
+    MLPromocoesItensRequest,
+    FavoritosEfetivarPromocaoRequest,
+    FavoritosValidarEfetivacaoItemRequest,
+    FavoritosValidarEfetivacaoRequest,
+    PromoAnaliseApiRequest,
+    PromoAplicarParticipacaoRequest,
+    PromoAutomacaoConfigRequest,
+    RenovacaoCampanhaCriarRequest,
+    RenovacaoCampanhaSincronizarRequest,
+    RenovacaoCampanhaPeriodoRequest,
+    RenovacaoCampanhaExcluirRequest,
+    RenovacaoAgendamentoRequest,
+    MLDescricaoRequest,
+    MLRespostaPerguntaRequest,
+    EstoqueSyncRequest,
+    EstoqueLancamentosSyncRequest,
+    EstoqueLancamentosSyncLoteRequest,
+    ConfiguracoesGlobaisRequest,
+    SalaReuniaoCriarSalaRequest,
+    SalaReuniaoUsoAdicionarRequest,
+    SalaReuniaoEncerrarLocalRequest,
+    SalaReuniaoEncerrarTodasRequest,
+    SiscomexConfigRequest,
+    CadastroProdutoRequest,
+    ImpostoRegraRequest,
+    ImpostosSimulacaoRequest,
+    SimuladorCalculoRequest,
+    SiscomexFundamentoOpcionalRequest,
+    SiscomexConsultaRequest,
+    VendasQuery,
+    VendasSyncRequest,
+    MediasComprasItem,
+    MediasComprasRequest,
+    ListaCompraRequest,
+    ListaPedidoUpdateRequest,
+    ListaPedidoStatusRequest,
+    ListaPedidoAddSkuRequest,
+    ListaPedidoPreferenciasColunasRequest,
+    MediasComprasSkusOcultosRequest,
+    EstoquePreferenciasColunasRequest,
+    PromoPreferenciasColunasRequest,
+    FavoritosSearchRequest,
+    FavoritosPrimeiraPaginaRequest,
+    FavoritosEnriquecerDatasRequest,
+    FavoritosSkuDescricoesRequest,
+    FavoritosSkuPesquisaRequest,
+    FavoritosSkuPesquisaIAItem,
+    FavoritosSkusPesquisaIARequest,
+    FavoritosRankingIARequest,
+    FavoritosSkusOcultosRequest,
+    FavoritosVendedoresIgnoradosRequest,
+    FavoritosAnunciosIgnoradosRequest,
+    FavoritosHistoricoRequest,
+    FavoritosHistoricoRealtimeSyncRequest,
+    FavoritosPlanilhaLojaItem,
+    FavoritosPlanilhasLojasRequest,
+    IASalvarConversaRequest,
+    EtiquetaAvulsaItem,
+    ImpressaoAvulsaPayload,
+    ImpressaoEditorPayload,
+    EtiquetaQrCodePayload,
+    SiscomexAliquotasRequest,
+    FullEnvioTransitoItem,
+    FullEnvioTransitoPayload,
+    FullEnvioTransitoUpdate,
+)
 from jose import JWTError, jwt
 import secrets
 import hashlib
@@ -157,8 +468,6 @@ MACHINE_PRESENCE_AUTO_TOUCH_LAST: dict[str, float] = {}
 ADMIN_MESSAGES_LOCK = threading.RLock()
 USER_CHAT_MESSAGES_LOCK = threading.RLock()
 SHARED_SYNC_USER_LINKS_LOCK = threading.RLock()
-SHARED_SYNC_DOCS_CACHE_LOCK = threading.RLock()
-SHARED_SYNC_DOCS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 SHARED_SYNC_SQLITE_FILE_LOCKS_LOCK = threading.RLock()
 SHARED_SYNC_SQLITE_FILE_LOCKS: dict[str, Any] = {}
 SHARED_SYNC_SQLITE_BUSY_TIMEOUT_MS = 15000
@@ -217,132 +526,6 @@ logging.basicConfig(
 logger = logging.getLogger("jk_sistema")
 load_dotenv()
 
-def _env_bool(nome: str, padrao: bool = True) -> bool:
-    valor = str(os.getenv(nome, "") or "").strip().lower()
-    if not valor:
-        return padrao
-    return valor in {"1", "true", "sim", "yes", "on"}
-
-def _get_bling_session():
-    session = requests.Session()
-    session.verify = _env_bool("BLING_VERIFY_SSL", True)
-    retry = Retry(
-        total=3,
-        backoff_factor=0.8,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-BLING_SESSION = _get_bling_session()
-
-
-def _bling_retry_after_seconds(resp) -> float:
-    """LÃƒÂª Retry-After quando disponÃƒÂ­vel e retorna segundos validos."""
-    if not resp:
-        return 0.0
-    raw = (resp.headers or {}).get("Retry-After")
-    if not raw:
-        return 0.0
-    try:
-        val = float(str(raw).strip())
-        return max(0.0, min(val, 60.0))
-    except Exception:
-        return 0.0
-
-
-class _BlingAdaptiveLimiter:
-    """Rate limiter adaptativo para reduzir 429 e acelerar quando a API estÃƒÂ¡ saudÃƒÂ¡vel."""
-
-    def __init__(self, min_interval: float = 0.03, max_interval: float = 3.0, start_interval: float = 0.08):
-        self.min_interval = max(0.0, float(min_interval))
-        self.max_interval = max(self.min_interval, float(max_interval))
-        self.interval = min(self.max_interval, max(self.min_interval, float(start_interval)))
-        self.last_call_ts = 0.0
-        self.ok_streak = 0
-        self.err_streak = 0
-
-    def wait_turn(self):
-        now = time.time()
-        elapsed = now - self.last_call_ts
-        if elapsed < self.interval:
-            # Jitter pequeno para evitar rajadas sincronizadas.
-            jitter = random.uniform(0, min(0.05, self.interval * 0.25))
-            time.sleep((self.interval - elapsed) + jitter)
-        self.last_call_ts = time.time()
-
-    def on_success(self):
-        self.ok_streak += 1
-        self.err_streak = 0
-        # Acelera gradualmente apÃƒÂ³s sequÃƒÂªncia de sucesso.
-        if self.ok_streak >= 4:
-            self.interval = max(self.min_interval, self.interval * 0.9)
-            self.ok_streak = 0
-
-    def on_throttle(self, retry_after: float = 0.0) -> float:
-        self.err_streak += 1
-        self.ok_streak = 0
-        expo = min(4, self.err_streak)
-        base = max(self.interval * 1.8, 0.4 * (2 ** (expo - 1)))
-        if retry_after and retry_after > 0:
-            base = max(base, retry_after)
-        self.interval = min(self.max_interval, max(self.interval, base))
-        return self.interval + random.uniform(0.05, min(0.6, self.interval * 0.35))
-
-    def on_transient_error(self) -> float:
-        self.err_streak += 1
-        self.ok_streak = 0
-        expo = min(3, self.err_streak)
-        self.interval = min(self.max_interval, max(self.interval, 0.25 * (2 ** expo)))
-        return self.interval + random.uniform(0.05, min(0.5, self.interval * 0.3))
-
-
-def _bling_get_with_adaptive_limit(
-    url: str,
-    *,
-    headers: dict,
-    params: dict = None,
-    timeout: int = 25,
-    limiter: _BlingAdaptiveLimiter = None,
-    max_attempts: int = 6,
-):
-    """GET com controle adaptativo de ritmo e retry inteligente para 429/5xx."""
-    limiter = limiter or _BlingAdaptiveLimiter()
-    last_resp = None
-
-    for tentativa in range(max(1, int(max_attempts))):
-        limiter.wait_turn()
-        try:
-            resp = BLING_SESSION.get(url, headers=headers, params=params, timeout=timeout)
-            last_resp = resp
-        except requests.RequestException:
-            if tentativa >= max_attempts - 1:
-                return None
-            time.sleep(limiter.on_transient_error())
-            continue
-
-        status = resp.status_code
-        if status == 429:
-            if tentativa >= max_attempts - 1:
-                return resp
-            retry_after = _bling_retry_after_seconds(resp)
-            time.sleep(limiter.on_throttle(retry_after))
-            continue
-
-        if status in (500, 502, 503, 504):
-            if tentativa >= max_attempts - 1:
-                return resp
-            time.sleep(limiter.on_transient_error())
-            continue
-
-        limiter.on_success()
-        return resp
-
-    return last_resp
-
 # --- CONFIGURAÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã¢â‚¬Â¢ES ---
 PASTA_IMG = os.path.join(BASE_DIR, "img")
 CREDENTIALS_FILE = os.path.join(PASTA_INFO, 'credentials.json')
@@ -397,158 +580,11 @@ ARQUIVO_TEMP_AUTH = os.path.join(PASTA_INFO, "temp_integracao.json")
 # Pode ser sobrescrito por variÃƒÂ¡vel de ambiente JK_REDIRECT_URI.
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8001/auth/callback"
 REDIRECT_URI = os.getenv("JK_REDIRECT_URI", DEFAULT_REDIRECT_URI).strip()
-
-
-def _env_paths_programa() -> list[str]:
-    paths = []
-    for base in (BASE_DIR, os.getcwd()):
-        try:
-            caminho = os.path.join(base, ".env")
-        except Exception:
-            continue
-        if caminho and caminho not in paths:
-            paths.append(caminho)
-    return paths
-
-
-def _env_config_value(*keys: str, cache_as: str | None = None) -> str:
-    normalized_keys = [str(key or "").replace("\ufeff", "").strip().upper() for key in keys if str(key or "").strip()]
-    if not normalized_keys:
-        return ""
-
-    for key in normalized_keys:
-        value = str(os.getenv(key) or "").strip()
-        if value:
-            return value
-
-    wanted = set(normalized_keys)
-    for env_path in _env_paths_programa():
-        if not os.path.exists(env_path):
-            continue
-        try:
-            values = dotenv_values(env_path)
-        except Exception:
-            continue
-        if not isinstance(values, dict):
-            continue
-        for raw_key, raw_value in values.items():
-            key_norm = str(raw_key or "").replace("\ufeff", "").strip().upper()
-            if key_norm not in wanted:
-                continue
-            value = str(raw_value or "").strip()
-            if value:
-                os.environ[cache_as or normalized_keys[0]] = value
-                return value
-    return ""
-
-
-def _env_config_bool(keys: tuple[str, ...] | list[str], default: bool = False) -> bool:
-    value = _env_config_value(*keys)
-    if not value:
-        return default
-    return str(value).strip().lower() in {"1", "true", "sim", "yes", "on"}
-
-
-def _agent_service_only() -> bool:
-    return _env_config_bool(("JK_AGENT_SERVICE_ONLY", "IA_AGENT_SERVICE_ONLY"), default=False)
-
-
-def _redirect_uri_eh_local(uri: Optional[str]) -> bool:
-    valor = str(uri or "").strip().lower()
-    if not valor:
-        return True
-    return "127.0.0.1" in valor or "localhost" in valor
-
-
-def _request_eh_local(request: Optional[Request]) -> bool:
-    if request is None:
-        return False
-    try:
-        host = str(request.headers.get("host") or request.url.netloc or "").split(",")[0].strip().lower()
-        return "127.0.0.1" in host or "localhost" in host
-    except Exception:
-        return False
-
-
-def _descobrir_redirect_uri_ngrok() -> Optional[str]:
-    try:
-        resp = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
-        if resp.status_code != 200:
-            return None
-        payload = resp.json() or {}
-        for tunnel in payload.get("tunnels", []):
-            public_url = str((tunnel or {}).get("public_url") or "").strip()
-            proto = str((tunnel or {}).get("proto") or "").strip().lower()
-            if public_url and proto == "https":
-                return public_url.rstrip("/") + "/auth/callback"
-    except Exception:
-        pass
-    return None
-
-
-def _resolver_redirect_uri_publica(request: Optional[Request] = None, saved_redirect_uri: Optional[str] = None) -> str:
-    for valor in [saved_redirect_uri, os.getenv("JK_REDIRECT_URI", "").strip()]:
-        texto = str(valor or "").strip()
-        if texto:
-            return texto.rstrip("/")
-
-    if request is not None:
-        try:
-            proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip() or "https"
-            host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc or "").split(",")[0].strip()
-            if host and "127.0.0.1" not in host and "localhost" not in host:
-                return f"{proto}://{host}/auth/callback"
-        except Exception:
-            pass
-
-    usar_ngrok = str(os.getenv("JK_AUTO_NGROK_REDIRECT", "") or "").strip().lower() in {"1", "true", "sim", "yes"}
-    if usar_ngrok:
-        ngrok_uri = _descobrir_redirect_uri_ngrok()
-        if ngrok_uri:
-            return ngrok_uri
-
-    valor_final = str(saved_redirect_uri or REDIRECT_URI or DEFAULT_REDIRECT_URI).strip() or DEFAULT_REDIRECT_URI
-    return valor_final.rstrip("/")
-
-
-def _resolver_redirect_uri_bling(request: Optional[Request] = None, saved_redirect_uri: Optional[str] = None) -> str:
-    bling_uri = str(os.getenv("JK_BLING_REDIRECT_URI", "") or "").strip()
-    if bling_uri:
-        return bling_uri.rstrip("/")
-
-    if saved_redirect_uri:
-        return str(saved_redirect_uri).strip().rstrip("/")
-
-    auto_ngrok = str(os.getenv("JK_AUTO_NGROK_REDIRECT", "") or "").strip().lower() in {"1", "true", "sim", "yes"}
-    if _request_eh_local(request) and not auto_ngrok:
-        return DEFAULT_REDIRECT_URI.rstrip("/")
-
-    return _resolver_redirect_uri_publica(request=request)
-
-CONFIG_GLOBAIS_DEFAULT = {
-    "auto_sync_estoque_janela_minutos": 30,
-    "ia_modelo_padrao": "vertex:gemini-2.5-flash",
-    "ia_modelo_perguntas": "vertex:gemini-2.5-flash",
-    "ia_modelo_pos_venda": "vertex:gemini-2.5-flash",
-    "ia_modelo_chat": "vertex:gemini-2.5-flash",
-    "ia_modelo_favoritos": "vertex:gemini-2.5-flash",
-    "ia_modo_padrao": "modelo",
-    "ia_modo_perguntas": "modelo",
-    "ia_modo_pos_venda": "modelo",
-    "ia_modo_chat": "modelo",
-    "ia_modo_favoritos": "modelo",
-    "ia_vertex_project_id": "",
-    "ia_vertex_location": "global",
-    "ia_vertex_model": "gemini-2.5-flash",
-    "ia_vertex_service_account_email": "",
-    "ia_agent_resource_name": "",
-    "ia_agent_endpoint_url": "",
-    "ia_favoritos_usar_imagem": False,
-    "ia_openai_ativa": True,
-    "ia_deepseek_ativa": True,
-    "ia_gemini_ativa": False,
-    "ia_vertex_ativa": True,
-}
+configure_env_context(
+    base_dir=BASE_DIR,
+    default_redirect_uri=DEFAULT_REDIRECT_URI,
+    redirect_uri=REDIRECT_URI,
+)
 
 PERMISSION_KEYS = [
     'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
@@ -557,225 +593,8 @@ PERMISSION_KEYS = [
 ]
 
 
-def _normalizar_ia_modo(valor: object) -> str:
-    texto = str(valor or "").strip().lower()
-    if texto in {"agente", "agent", "cloud_agent", "agente_cloud", "agent_cloud", "vertex_agent", "agent_engine"}:
-        return "agente"
-    return "modelo"
-
-
-def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
-    dados = dict(CONFIG_GLOBAIS_DEFAULT)
-    if isinstance(payload, dict):
-        dados.update(payload)
-    for chave in ("ia_modo_padrao", "ia_modo_perguntas", "ia_modo_pos_venda", "ia_modo_chat", "ia_modo_favoritos"):
-        dados[chave] = _normalizar_ia_modo(dados.get(chave))
-    for chave in ("ia_agent_resource_name", "ia_agent_endpoint_url"):
-        dados[chave] = str(dados.get(chave) or "").strip()
-    dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))
-    dados["ia_deepseek_ativa"] = bool(dados.get("ia_deepseek_ativa", True))
-    dados["ia_gemini_ativa"] = bool(dados.get("ia_gemini_ativa", False))
-    dados["ia_vertex_ativa"] = bool(dados.get("ia_vertex_ativa", True))
-    dados["ia_openai_api_key_configurada"] = bool(_obter_openai_api_key())
-    dados["ia_deepseek_api_key_configurada"] = bool(_obter_deepseek_api_key())
-    dados["ia_gemini_api_key_configurada"] = bool(_obter_gemini_api_key())
-    dados["ia_agent_api_key_configurada"] = bool(_vertex_ai_agent_api_key())
-    return dados
-
-
-def _carregar_configuracoes_globais_local() -> dict:
-    dados = dict(CONFIG_GLOBAIS_DEFAULT)
-    if not os.path.exists(ARQUIVO_CONFIG_GLOBAIS):
-        return _normalizar_configuracoes_globais(dados)
-    try:
-        with open(ARQUIVO_CONFIG_GLOBAIS, "r", encoding="utf-8-sig") as f:
-            payload = json.load(f)
-        if isinstance(payload, dict):
-            dados.update(payload)
-    except Exception:
-        logger.exception("Erro ao carregar configuracoes globais")
-    return _normalizar_configuracoes_globais(dados)
-
-
-def _configuracoes_chaves_sensiveis() -> tuple[str, ...]:
-    return (
-        "ia_openai_api_key", "ia_openai_api_key_limpar", "ia_openai_api_key_configurada",
-        "ia_deepseek_api_key", "ia_deepseek_api_key_limpar", "ia_deepseek_api_key_configurada",
-        "ia_gemini_api_key", "ia_gemini_api_key_limpar", "ia_gemini_api_key_configurada",
-        "ia_agent_api_key", "ia_agent_api_key_limpar", "ia_agent_api_key_configurada",
-    )
-
-
-def _salvar_configuracoes_globais_local(payload: dict) -> None:
-    for chave in _configuracoes_chaves_sensiveis():
-        payload.pop(chave, None)
-    with open(ARQUIVO_CONFIG_GLOBAIS, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
-
-def _firebase_configuracoes_globais_collection_name() -> str:
-    return _env_texto("FIREBASE_CONFIG_COLLECTION", "JK_FIREBASE_CONFIG_COLLECTION") or "jk_sistema_configuracoes"
-
-
-def _firebase_configuracoes_globais_doc_id() -> str:
-    return _env_texto("FIREBASE_CONFIG_DOC_ID", "JK_FIREBASE_CONFIG_DOC_ID") or "configuracoes_globais"
-
-
-def _firebase_configuracoes_globais_db():
-    deve_usar = globals().get("_firebase_deve_usar")
-    firebase_db = globals().get("_firebase_db")
-    if not callable(deve_usar) or not callable(firebase_db):
-        return None
-    if not deve_usar():
-        return None
-    return firebase_db()
-
-
-def _carregar_configuracoes_globais_firebase() -> Optional[dict]:
-    try:
-        db = _firebase_configuracoes_globais_db()
-        if db is None:
-            return None
-        snap = db.collection(_firebase_configuracoes_globais_collection_name()).document(_firebase_configuracoes_globais_doc_id()).get(timeout=5)
-        if not snap.exists:
-            return None
-        payload = snap.to_dict() or {}
-        if not isinstance(payload, dict):
-            return None
-        dados = _normalizar_configuracoes_globais(payload)
-        _salvar_configuracoes_globais_local(dict(dados))
-        return dados
-    except Exception as exc:
-        logger.warning("[CONFIG] Falha ao carregar configuracoes globais no Firebase: %s", exc)
-        return None
-
-
-def _salvar_configuracoes_globais_firebase(payload: dict) -> bool:
-    try:
-        db = _firebase_configuracoes_globais_db()
-        if db is None:
-            return False
-        data = dict(payload)
-        for chave in _configuracoes_chaves_sensiveis():
-            data.pop(chave, None)
-        data["updated_at"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-        db.collection(_firebase_configuracoes_globais_collection_name()).document(_firebase_configuracoes_globais_doc_id()).set(data, merge=True, timeout=5)
-        return True
-    except Exception as exc:
-        logger.warning("[CONFIG] Falha ao salvar configuracoes globais no Firebase: %s", exc)
-        if callable(globals().get("_firebase_access_obrigatorio")) and _firebase_access_obrigatorio():
-            raise HTTPException(status_code=503, detail=f"Firebase indisponivel para salvar configuracoes: {exc}")
-        return False
-
-
-def _configuracoes_globais_ler_firebase() -> bool:
-    return _env_config_bool(
-        (
-            "JK_CONFIG_FIREBASE_READ_ON_GET",
-            "JK_CONFIG_FIREBASE_READ",
-            "FIREBASE_CONFIG_READ_ON_GET",
-        ),
-        default=False,
-    )
-
-
-def _configuracoes_globais_salvar_firebase_bloqueante() -> bool:
-    return _env_config_bool(
-        (
-            "JK_CONFIG_FIREBASE_SYNC_BLOCKING",
-            "FIREBASE_CONFIG_SYNC_BLOCKING",
-        ),
-        default=False,
-    )
-
-
-def _salvar_configuracoes_globais_firebase_background(payload: dict) -> None:
-    data = dict(payload or {})
-    threading.Thread(
-        target=_salvar_configuracoes_globais_firebase,
-        args=(data,),
-        name="configuracoes-globais-firebase-sync",
-        daemon=True,
-    ).start()
-
-
-def _carregar_configuracoes_globais() -> dict:
-    local = _carregar_configuracoes_globais_local()
-    if os.path.exists(ARQUIVO_CONFIG_GLOBAIS) and not _configuracoes_globais_ler_firebase():
-        return local
-    remoto = _carregar_configuracoes_globais_firebase()
-    if remoto:
-        local_updated = str(local.get("updated_at") or "").strip()
-        remoto_updated = str(remoto.get("updated_at") or "").strip()
-        if local_updated and (not remoto_updated or local_updated >= remoto_updated):
-            return local
-        return remoto
-    return local
-
-
-def _salvar_configuracoes_globais(dados: dict) -> None:
-    payload = _normalizar_configuracoes_globais(dados)
-    _salvar_configuracoes_globais_local(dict(payload))
-    if _configuracoes_globais_salvar_firebase_bloqueante():
-        _salvar_configuracoes_globais_firebase(dict(payload))
-    else:
-        _salvar_configuracoes_globais_firebase_background(dict(payload))
-
-
 app = FastAPI(title="JK Sistema API")
-
-# Ã¢â€â‚¬Ã¢â€â‚¬ Cache leve em memÃƒÂ³ria com TTL para requisiÃƒÂ§ÃƒÂµes pesadas do ML Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-_ml_cache: dict = {}  # chave -> (timestamp, dados)
-_ML_CACHE_TTL = 120        # 2 min: anuncios paginados
-_ML_CACHE_TTL_CAMPANHA = 1800   # 30 min: lista de campanhas/promocoes (favoritos)
-_ML_CACHE_TTL_CAMPANHA_STALE = 21600  # 6h: fallback stale quando ML estiver lento/instavel
-_ML_CACHE_TTL_CONTAGENS = 900  # 15 min: contagens (opÃƒÂ§ÃƒÂ£o muito pesada)
-
-def _ml_cache_get(chave: str, ttl: int = None):
-    entry = _ml_cache.get(chave)
-    ttl_usado = ttl if ttl is not None else _ML_CACHE_TTL
-    if entry and (time.time() - entry[0]) < ttl_usado:
-        return entry[1]
-    return None
-
-
-def _ml_cache_get_stale(chave: str, max_age: int):
-    """Retorna cache mesmo expirado pelo TTL normal, respeitando idade maxima."""
-    entry = _ml_cache.get(chave)
-    if not entry:
-        return None
-    try:
-        ts, dados = entry
-    except Exception:
-        return None
-    if max_age is not None and max_age > 0 and (time.time() - float(ts)) > float(max_age):
-        return None
-    return dados
-
-def _ml_cache_set(chave: str, dados):
-    _ml_cache[chave] = (time.time(), dados)
-    # Limpeza simples: remove entradas expiradas se cache ficar grande
-    if len(_ml_cache) > 200:
-        agora = time.time()
-        expiradas = [k for k, (ts, _) in _ml_cache.items() if (agora - ts) >= _ML_CACHE_TTL]
-        for k in expiradas:
-            _ml_cache.pop(k, None)
-
-
-def _cache_invalidar_loja(client_id: str, loja: str):
-    """Remove todas as entradas de cache de uma loja especÃƒÂ­fica."""
-    prefixos = (
-        f"anuncios:{client_id}:{loja}:",
-        f"visitas:{client_id}:{loja}:",
-        f"promocoes:{client_id}:{loja}",
-        f"campanha_itens:{client_id}:{loja}:",
-        f"camp_contagens:{client_id}:{loja}",
-    )
-    chaves = [k for k in list(_ml_cache.keys()) if any(k.startswith(p) for p in prefixos)]
-    for k in chaves:
-        _ml_cache.pop(k, None)
-    return len(chaves)
-
+include_feature_routers(app)
 
 # ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o CORS (Permite que o Frontend acesse o Backend)
 app.add_middleware(
@@ -787,426 +606,78 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
 async def health():
-    return {
-        "ok": True,
-        "appVersion": os.getenv("JK_APP_VERSION", ""),
-        "firebaseConfigured": bool(_firebase_tem_configuracao()),
-        "firebaseActive": bool(_firebase_deve_usar()),
-        "firebaseLiveFeatures": bool(_firebase_live_features_ativas()),
-        "firebaseLastError": FIREBASE_AUTH_LAST_ERROR,
-    }
+    return build_health_payload(
+        app_version=os.getenv("JK_APP_VERSION", ""),
+        firebase_configured=bool(_firebase_tem_configuracao()),
+        firebase_active=bool(_firebase_deve_usar()),
+        firebase_live_features=bool(_firebase_live_features_ativas()),
+        firebase_last_error=FIREBASE_AUTH_LAST_ERROR,
+    )
 
 
-JK_UPDATE_OWNER = os.getenv("JK_UPDATE_OWNER", "marketflow-lab").strip() or "marketflow-lab"
-JK_UPDATE_REPO = os.getenv("JK_UPDATE_REPO", "Jksistema-1.1").strip() or "Jksistema-1.1"
-JK_UPDATE_LATEST_YML_URL = (
-    os.getenv("JK_UPDATE_LATEST_YML_URL", "").strip()
-    or f"https://github.com/{JK_UPDATE_OWNER}/{JK_UPDATE_REPO}/releases/latest/download/latest.yml"
-)
-JK_ANDROID_UPDATE_MANIFEST = os.getenv("JK_ANDROID_UPDATE_MANIFEST", "").strip()
-JK_ANDROID_APK_URL = os.getenv("JK_ANDROID_APK_URL", "").strip()
-
-
-def _normalizar_versao_app(valor: Any) -> str:
-    texto = str(valor or "").strip()
-    texto = re.sub(r"^[vV]\s*", "", texto)
-    match = re.search(r"\d+(?:\.\d+){0,3}", texto)
-    return match.group(0) if match else ""
-
-
-def _chave_comparacao_versao(valor: Any) -> tuple:
-    versao = _normalizar_versao_app(valor)
-    partes = []
-    for pedaco in versao.split("."):
-        try:
-            partes.append(int(pedaco))
-        except Exception:
-            partes.append(0)
-    while len(partes) < 4:
-        partes.append(0)
-    return tuple(partes[:4])
-
-
-def _parse_latest_yml_simples(texto: str) -> dict:
-    dados: dict[str, Any] = {}
-    for linha in str(texto or "").splitlines():
-        match = re.match(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*$", linha)
-        if not match:
-            continue
-        chave, valor = match.group(1), match.group(2).strip()
-        if valor.startswith(("'", '"')) and valor.endswith(("'", '"')) and len(valor) >= 2:
-            valor = valor[1:-1]
-        if chave in {"version", "path", "sha512", "releaseDate", "url", "size"}:
-            dados[chave] = valor
-    if not dados.get("version"):
-        match = re.search(r"(?im)^\s*version\s*:\s*['\"]?([^'\"\r\n]+)", texto or "")
-        if match:
-            dados["version"] = match.group(1).strip()
-    return dados
-
-
-def _buscar_latest_yml_update() -> dict:
-    headers = {
-        "User-Agent": "JK-Sistema-Updater/1.0",
-        "Accept": "text/yaml,text/plain,*/*",
-        "Cache-Control": "no-cache",
-    }
-    resp = requests.get(JK_UPDATE_LATEST_YML_URL, headers=headers, timeout=10, allow_redirects=True)
-    resp.raise_for_status()
-    dados = _parse_latest_yml_simples(resp.text)
-    if not dados.get("version"):
-        raise RuntimeError("latest.yml publicado nao informou a versao.")
-    dados["source_url"] = JK_UPDATE_LATEST_YML_URL
-    return dados
-
-
-def _carregar_manifesto_android_update() -> tuple[dict, str]:
-    candidatos = [
-        JK_ANDROID_UPDATE_MANIFEST,
-        os.path.join(PASTA_INFO, "android_update.json"),
-        os.path.join(BASE_DIR, "android_app", "update-manifest.json"),
-    ]
-    for caminho in candidatos:
-        caminho = str(caminho or "").strip()
-        if not caminho or not os.path.exists(caminho):
-            continue
-        try:
-            with open(caminho, "r", encoding="utf-8") as arquivo:
-                dados = json.load(arquivo)
-            if isinstance(dados, dict):
-                return dados, caminho
-        except Exception:
-            continue
-    return {}, ""
-
-
-def _inteiro_update(valor: Any, padrao: int = 0) -> int:
-    try:
-        return int(valor)
-    except Exception:
-        return padrao
-
-
-@app.get("/api/app-update/check")
 def api_app_update_check(current_version: Optional[str] = None):
-    """Verificacao rapida pelo backend local para a UI nunca ficar presa no Electron."""
-    atual = _normalizar_versao_app(current_version) or "0.0.0"
-    try:
-        latest = _buscar_latest_yml_update()
-        ultima = _normalizar_versao_app(latest.get("version")) or "0.0.0"
-        disponivel = _chave_comparacao_versao(ultima) > _chave_comparacao_versao(atual)
-        return {
-            "success": True,
-            "currentVersion": atual,
-            "latestVersion": ultima,
-            "available": disponivel,
-            "upToDate": not disponivel,
-            "publishedOlderThanInstalled": _chave_comparacao_versao(ultima) < _chave_comparacao_versao(atual),
-            "file": latest.get("path") or latest.get("url") or "",
-            "releaseDate": latest.get("releaseDate") or "",
-            "source": latest.get("source_url") or JK_UPDATE_LATEST_YML_URL,
-            "checkedAt": datetime.utcnow().isoformat() + "Z",
-        }
-    except requests.exceptions.Timeout:
-        return {
-            "success": False,
-            "currentVersion": atual,
-            "message": "Tempo esgotado consultando o GitHub.",
-        }
-    except requests.exceptions.RequestException as exc:
-        return {
-            "success": False,
-            "currentVersion": atual,
-            "message": f"Falha ao consultar o GitHub: {exc}",
-        }
-    except Exception as exc:
-        return {
-            "success": False,
-            "currentVersion": atual,
-            "message": str(exc) or "Nao foi possivel verificar a atualizacao.",
-        }
+    return check_app_update(current_version)
 
 
-@app.get("/api/mobile-update/check")
 def api_mobile_update_check(
     platform: str = "android",
     version: Optional[str] = None,
     versionCode: Optional[int] = None,
 ):
-    """Manifesto simples para o app Android privado consultar novas versoes."""
-    plataforma = str(platform or "android").strip().lower()
-    if plataforma not in {"android", "mobile"}:
-        return {
-            "success": False,
-            "updateAvailable": False,
-            "message": "Plataforma nao suportada.",
-        }
-
-    manifesto, origem = _carregar_manifesto_android_update()
-    ultima_versao = _normalizar_versao_app(
-        manifesto.get("version") or os.getenv("JK_ANDROID_VERSION", "")
+    return check_mobile_update(
+        platform=platform,
+        version=version,
+        version_code=versionCode,
+        base_dir=BASE_DIR,
+        pasta_info=PASTA_INFO,
     )
-    codigo_remoto = _inteiro_update(
-        manifesto.get("versionCode") or os.getenv("JK_ANDROID_VERSION_CODE", 0)
-    )
-    apk_url = str(manifesto.get("apkUrl") or manifesto.get("url") or JK_ANDROID_APK_URL or "").strip()
-    versao_atual = _normalizar_versao_app(version) or "0.0.0"
-    codigo_atual = _inteiro_update(versionCode, 0)
 
-    disponivel = False
-    if codigo_remoto and codigo_atual:
-        disponivel = codigo_remoto > codigo_atual
-    elif ultima_versao:
-        disponivel = _chave_comparacao_versao(ultima_versao) > _chave_comparacao_versao(versao_atual)
-    if not apk_url:
-        disponivel = False
 
-    return {
-        "success": True,
-        "platform": "android",
-        "currentVersion": versao_atual,
-        "currentVersionCode": codigo_atual,
-        "version": ultima_versao,
-        "versionCode": codigo_remoto,
-        "latestVersion": ultima_versao,
-        "latestVersionCode": codigo_remoto,
-        "updateAvailable": disponivel,
-        "available": disponivel,
-        "upToDate": not disponivel,
-        "apkUrl": apk_url,
-        "notes": str(manifesto.get("notes") or ""),
-        "required": bool(manifesto.get("required", False)),
-        "source": origem or "env",
-        "checkedAt": datetime.utcnow().isoformat() + "Z",
-    }
+app.include_router(create_infra_router(sys.modules[__name__]))
 
 
 # --- MODELOS DE DADOS (Pydantic) ---
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-    client_id: str = None
-    machine_id: str = None
-    app_version: Optional[str] = None
-
-class GoogleLoginRequest(BaseModel):
-    credential: str
-    machine_id: str = None
-    app_version: Optional[str] = None
-
-class LoginResponse(BaseModel):
-    success: bool
-    message: str
-    user_data: dict = None
-    permissions: dict = None
-    access_token: Optional[str] = None
-
-class AdminUserUpsertRequest(BaseModel):
-    username: str
-    original_username: Optional[str] = None
-    password: Optional[str] = None
-    name: str = ""
-    email: str = ""
-    client_id: str = "default"
-    permissions: dict = {}
-    active: bool = True
-    valid_until: Optional[str] = None
-    machine_id: Optional[str] = None
-    max_machines: Optional[int] = 1
-
-class AdminUserPasswordRequest(BaseModel):
-    password: str
-
-class UserChangePasswordRequest(BaseModel):
-    current_password: str = ""
-    new_password: str = ""
-    confirm_password: Optional[str] = None
-
-class AdminUserMaxMachinesRequest(BaseModel):
-    max_machines: int
-
-class AdminUserPermissionsRequest(BaseModel):
-    permissions: dict = {}
-
-class AdminUserStatusRequest(BaseModel):
-    active: bool
-
-class AdminUserMessageRequest(BaseModel):
-    username: str
-    client_id: Optional[str] = None
-    title: Optional[str] = ""
-    message: str
-
-class UserChatAttachment(BaseModel):
-    name: str = ""
-    mime_type: Optional[str] = "application/octet-stream"
-    data_base64: str = ""
-    size: Optional[int] = 0
-
-class UserChatMessageRequest(BaseModel):
-    username: str
-    client_id: Optional[str] = None
-    message: str
-    attachments: Optional[list[UserChatAttachment]] = None
-    call: Optional[dict[str, Any]] = None
-
-class UserChatTypingRequest(BaseModel):
-    username: str
-    client_id: Optional[str] = None
-    typing: bool = True
-
-class MachinePresenceHeartbeatRequest(BaseModel):
-    machine_id: Optional[str] = None
-    page: Optional[str] = ""
-    app_version: Optional[str] = None
-
-class SharedSyncScopeConfigRequest(BaseModel):
-    enabled: bool = False
-    allowed_users: Optional[list[str]] = None
-    auto_pull: bool = True
-    auto_push: bool = False
-    share_between_users: bool = False
-    conflict: Optional[str] = "latest_wins"
-
-class SharedSyncConfigRequest(BaseModel):
-    scopes: dict = {}
-
-class SharedSyncRunRequest(BaseModel):
-    scopes: Optional[list[str]] = None
-    machine_id: Optional[str] = None
-
-class SharedSyncMachineConfigRequest(BaseModel):
-    enabled: bool = False
-    scopes: Optional[list[str]] = None
-    auto_pull: bool = True
-    auto_push: bool = True
-
-class SharedSyncUserInviteCreateRequest(BaseModel):
-    target_username: str = ""
-    target_client_id: Optional[str] = None
-    scopes: Optional[list[str]] = None
-    keep_synced: bool = False
-    message: Optional[str] = ""
-    machine_id: Optional[str] = None
-
-class SharedSyncUserInviteActionRequest(BaseModel):
-    keep_synced: bool = False
-    machine_id: Optional[str] = None
-
-class SharedSyncUserLinkUpdateRequest(BaseModel):
-    keep_synced: Optional[bool] = None
-    active: Optional[bool] = None
-
-class SharedSyncUserLinkRunRequest(BaseModel):
-    scopes: Optional[list[str]] = None
-    machine_id: Optional[str] = None
-
-class IAChatAttachment(BaseModel):
-    name: str
-    mime_type: Optional[str] = "application/octet-stream"
-    data_base64: str
-
-class IAChatRequest(BaseModel):
-    message: str
-    page: Optional[str] = ""
-    context: Optional[dict] = None
-    history: Optional[list[dict]] = None
-    attachments: Optional[list[IAChatAttachment]] = None
-    model: Optional[str] = None  # Modelo de IA solicitado pelo chat
-    tool_results: Optional[list[dict]] = None
-    conversa_id: Optional[str] = None
-    modulo: Optional[str] = None
-    conversa_mensagens: Optional[list[dict]] = None
 
 
-class IAAgentQueryRequest(BaseModel):
-    input: Optional[Any] = None
-    classMethod: Optional[str] = "query"
 
 
-class IATreinamentoPerguntasPosVendaRequest(BaseModel):
-    orientacoes: str = ""
-    tipo: Optional[str] = "perguntas_anuncio"
-    loja: Optional[str] = ""
-    contexto_loja: Optional[str] = ""
-    compatibilidade_autopecas: Optional[str] = ""
-    proibicoes: Optional[str] = ""
-    sku: Optional[str] = ""
-    notas_sku: Optional[str] = ""
-    exemplos: Optional[list[dict]] = None
 
-class IATreinamentoPerguntasPosVendaSimularRequest(BaseModel):
-    pergunta: str
-    contexto: Optional[str] = ""
-    sku: Optional[str] = ""
-    tipo: Optional[str] = "perguntas_anuncio"
-    loja: Optional[str] = ""
-    model: Optional[str] = None
 
-class PerguntasLojaConfigRequest(BaseModel):
-    loja: str
-    responder_automaticamente: bool = False
-    solicitar_aprovacao: bool = False
-    habilitar_pos_venda_automatico: bool = False
-    intervalo_minutos: Optional[float] = 10
 
-class PerguntasAprovacaoRequest(BaseModel):
-    approval_id: str
-    resposta: Optional[Any] = None
-    texto: Optional[Any] = None
 
-class PerguntasGerarRespostaRequest(BaseModel):
-    loja: str
-    pergunta: dict
-    resposta_atual: Optional[str] = ""
 
-class PerguntasEnviarRespostaRequest(BaseModel):
-    loja: str
-    question_id: str
-    resposta: str
-    pergunta: Optional[dict] = None
-    sku: Optional[str] = ""
-    item_id: Optional[str] = ""
 
-class MLQuestionsV2ProcessRequest(BaseModel):
-    loja: str
-    pergunta: Optional[dict] = None
-    item: Optional[dict] = None
-    resposta_atual: Optional[str] = ""
 
-class MLQuestionsV2ReviewActionRequest(BaseModel):
-    resposta: Optional[Any] = None
-    texto: Optional[Any] = None
 
-class PosVendaMensagemRequest(BaseModel):
-    loja: Any
-    pack_id: Any
-    order_id: Optional[Any] = ""
-    buyer_id: Optional[Any] = ""
-    texto: Any
-    max_chars: Optional[int] = 350
-    conversa: Optional[dict] = None
 
-class PosVendaGerarRespostaRequest(BaseModel):
-    loja: Any
-    pack_id: Any
-    order_id: Optional[Any] = ""
-    buyer_id: Optional[Any] = ""
-    max_chars: Optional[int] = 350
 
-class IARagDocumento(BaseModel):
-    content: str
-    title: Optional[str] = ""
-    source: Optional[str] = "manual"
-    metadata: Optional[dict] = None
 
-class IARagIndexRequest(BaseModel):
-    documents: list[IARagDocumento]
 
-class IARagReindexRequest(BaseModel):
-    force: bool = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # --- JWT ---
 def _carregar_ou_gerar_jwt_secret() -> str:
@@ -1232,140 +703,32 @@ def criar_access_token(username: str, client_id: str, machine_id: Optional[str] 
         payload["machine_id"] = str(machine_id).strip()
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-class PromoRequest(BaseModel):
-    decisoes: list
-    filename: str
     
-class StoreRequest(BaseModel):
-    nome: str
-
-class AuthRequest(BaseModel):
-    loja: str
-    client_id: str
-    client_secret: str
-
-class TokenRequest(BaseModel):
-    token: str
-
-class MLPrecoRequest(BaseModel):
-    loja: str
-    item_id: str
-    novo_preco: float
-
-class MLEstoqueRequest(BaseModel):
-    loja: str
-    item_id: str
-    quantidade: int
-
-class MLStatusRequest(BaseModel):
-    loja: str
-    item_id: str
-    status: str
-
-class MLPromocaoRequest(BaseModel):
-    loja: str
-    item_id: str
-    tipo_desconto: str  # "percentual" ou "preco_final"
-    valor: float  # Se percentual: 10 = 10%, se preco_final: valor em reais
-    deal_id: str = None  # ID da campanha ML (opcional)
-
-class MLPromocoesItensRequest(BaseModel):
-    loja: str
-    item_ids: list[str]
-
-class FavoritosEfetivarPromocaoRequest(BaseModel):
-    loja: str
-    item_id: str
-    sku: Optional[str] = ""
-    preco_anuncio: float
-    preco_promocional: Optional[float] = None
-    preco_competitivo: Optional[float] = None
-    percentual_promocao: Optional[float] = None
-    campanha_id: str
-    campanha_nome: Optional[str] = ""
-    promotion_type: Optional[str] = "SELLER_CAMPAIGN"
-    listing_type_id_alvo: Optional[str] = ""
-    tipo_anuncio_alvo: Optional[str] = ""
-    tipo_anuncio_atual: Optional[str] = ""
-    simulacao: Optional[dict] = None
-    anuncio: Optional[dict] = None
-
-class FavoritosValidarEfetivacaoItemRequest(BaseModel):
-    loja: str
-    item_id: str
-    listing_type_id_alvo: Optional[str] = ""
-    tipo_anuncio_alvo: Optional[str] = ""
-
-class FavoritosValidarEfetivacaoRequest(BaseModel):
-    itens: list[FavoritosValidarEfetivacaoItemRequest]
-
-class PromoAnaliseApiRequest(BaseModel):
-    loja: str
-    promocao_a_id: str
-    promocao_b_id: str | None = None
-    promocao_b_ids: list[str] | None = None
-    promocao_a_type: str | None = None
-    promocao_b_type: str | None = None
-    promocao_b_types: list[str] | None = None
-    promocao_b_files: list[str] | None = None
-    margem_minima: float = 15.0
 
 
-class PromoAplicarParticipacaoRequest(BaseModel):
-    loja: str
-    promocoes: list[dict]
 
 
-class PromoAutomacaoConfigRequest(BaseModel):
-    enabled: bool = False
-    approval_required: bool = True
-    interval_unit: str = "minutes"
-    interval_value: int = 60
-    interval_minutes: Optional[int] = None
-    next_run_at: Optional[float] = None
-    loja: str = ""
-    promocao_a_id: str = ""
-    promocao_a_type: Optional[str] = ""
-    margem_minima: float = 15.0
-    promocoes_b_meta: Optional[list[dict]] = None
 
 
-class RenovacaoCampanhaCriarRequest(BaseModel):
-    loja: str
-    campanha_id: str
-    nome: str = ""
-    promotion_type: str | None = None
 
 
-class RenovacaoCampanhaSincronizarRequest(BaseModel):
-    loja: str
-    campanha_origem_id: str
-    campanha_destino_id: str
-    promotion_type_origem: str | None = None
-    promotion_type_destino: str | None = None
 
 
-class RenovacaoCampanhaPeriodoRequest(BaseModel):
-    loja: str
-    campanha_id: str
-    start_date: str | None = None
-    finish_date: str | None = None
-    promotion_type: str | None = None
-    nome: str | None = None
 
 
-class RenovacaoCampanhaExcluirRequest(BaseModel):
-    loja: str
-    campanha_id: str
-    promotion_type: str | None = None
 
 
-class RenovacaoAgendamentoRequest(BaseModel):
-    loja: str
-    campanha_id: str | None = None
-    nome: str | None = None
-    promotion_type: str | None = None
-    enabled: bool = False
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _promo_txt_clean(valor: Any) -> str:
@@ -1583,345 +946,82 @@ def _ler_arquivo_original_promo_job(client_id: str, job_id: str, arquivo_nome: s
             return fh.read(), filename
     return None, None
 
-class MLDescricaoRequest(BaseModel):
-    loja: str
-    item_id: str
-    plain_text: str
-
-class MLRespostaPerguntaRequest(BaseModel):
-    loja: str
-    question_id: int
-    text: str
-
-class EstoqueSyncRequest(BaseModel):
-    loja: str
-
-
-class EstoqueLancamentosSyncRequest(BaseModel):
-    loja: str
-    sku: str
-    data_inicio: str | None = None
-    data_fim: str | None = None
-
-
-class EstoqueLancamentosSyncLoteRequest(BaseModel):
-    loja: str
-    data_inicio: str | None = None
-    data_fim: str | None = None
-
-
-class ConfiguracoesGlobaisRequest(BaseModel):
-    auto_sync_estoque_janela_minutos: int
-    ia_modelo_padrao: str | None = None
-    ia_modelo_perguntas: str | None = None
-    ia_modelo_pos_venda: str | None = None
-    ia_modelo_chat: str | None = None
-    ia_modelo_favoritos: str | None = None
-    ia_modo_padrao: str | None = None
-    ia_modo_perguntas: str | None = None
-    ia_modo_pos_venda: str | None = None
-    ia_modo_chat: str | None = None
-    ia_modo_favoritos: str | None = None
-    ia_vertex_project_id: str | None = None
-    ia_vertex_location: str | None = None
-    ia_vertex_model: str | None = None
-    ia_vertex_service_account_email: str | None = None
-    ia_agent_resource_name: str | None = None
-    ia_agent_endpoint_url: str | None = None
-    ia_openai_api_key: str | None = None
-    ia_openai_api_key_limpar: bool | None = None
-    ia_deepseek_api_key: str | None = None
-    ia_deepseek_api_key_limpar: bool | None = None
-    ia_gemini_api_key: str | None = None
-    ia_gemini_api_key_limpar: bool | None = None
-    ia_agent_api_key: str | None = None
-    ia_agent_api_key_limpar: bool | None = None
-    ia_favoritos_usar_imagem: bool | None = None
-    ia_openai_ativa: bool | None = None
-    ia_deepseek_ativa: bool | None = None
-    ia_gemini_ativa: bool | None = None
-    ia_vertex_ativa: bool | None = None
-
-
-class SalaReuniaoCriarSalaRequest(BaseModel):
-    nome: str | None = None
-    privacidade: str | None = "public"
-    expira_em_minutos: int | None = None
-    duracao_maxima_minutos: int | None = None
-    limitar_participantes: bool | None = False
-    max_participantes: int | None = 12
-    idioma: str | None = "pt-BR"
-    iniciar_audio_desligado: bool | None = True
-    iniciar_video_desligado: bool | None = True
-    habilitar_prejoin: bool | None = True
-    habilitar_sala_espera: bool | None = False
-    habilitar_compartilhar_tela: bool | None = True
-    habilitar_chat: bool | None = True
-    habilitar_historico_chat: bool | None = True
-    habilitar_chat_avancado: bool | None = True
-    habilitar_pessoas: bool | None = True
-    habilitar_mao_levantada: bool | None = True
-    habilitar_reacoes: bool | None = True
-    habilitar_rede: bool | None = True
-    habilitar_pip: bool | None = True
-    habilitar_legendas: bool | None = True
-    habilitar_cancelamento_ruido: bool | None = True
-    habilitar_fundo_virtual: bool | None = True
-    habilitar_salas_grupo: bool | None = False
-    habilitar_alerta_cpu: bool | None = True
-    habilitar_participantes_ocultos: bool | None = False
-    habilitar_chamadas_grandes: bool | None = False
-    habilitar_simulcast_adaptativo: bool | None = False
-    exigir_user_id_unico: bool | None = False
-    habilitar_log_reduzido: bool | None = False
-    habilitar_dialout: bool | None = False
-    ejetar_na_expiracao: bool | None = False
-    modo_gravacao: str | None = ""
-    criar_token_host: bool | None = True
-    nome_host: str | None = "Anfitriao JK Sistema"
-    auto_iniciar_gravacao: bool | None = False
-    auto_iniciar_transcricao: bool | None = False
-
-
-class SalaReuniaoUsoAdicionarRequest(BaseModel):
-    room_name: str | None = None
-    room_url: str | None = None
-    participant_seconds: float | None = 0
-    participant_count: int | None = None
-    reason: str | None = None
-
-
-class SalaReuniaoEncerrarLocalRequest(BaseModel):
-    room_name: str | None = None
-    room_url: str | None = None
-    participant_count: int | None = 1
-    suppress_seconds: int | None = 300
-
-
-class SalaReuniaoEncerrarTodasRequest(BaseModel):
-    suppress_seconds: int | None = 1800
-
-
-class SiscomexConfigRequest(BaseModel):
-    ambiente: str = "prod"
-    client_id: str = ""
-    client_secret: str = ""
-    role_type: str = "IMPEXP"
-    authorization_header_type: str = "raw"
-    codigo_pais_padrao: int = 0
-    tipo_operacao_padrao: str = "I"
-    regime_tributario: str = "simples"  # simples | presumido | real
-    persistir_secret: bool = True
-    loja_vinculada: str = ""
-    perfil_usuario: str = ""
-
-class CadastroProdutoRequest(BaseModel):
-    sku: str
-    nome: str
-    categoria: str = ""
-    marca: str = ""
-    custo: float | None = None
-    preco: float | None = None
-    descricao: str = ""
-
-class ImpostoRegraRequest(BaseModel):
-    id: str | None = None
-    ncm: str = ""
-    cest: str = ""
-    descricao: str = ""
-    aliquota_federal: float = 0.0
-    aliquota_estadual: float = 0.0
-    aliquota_municipal: float = 0.0
-    observacoes: str = ""
-
-class ImpostosSimulacaoRequest(BaseModel):
-    reserva_percentual: float = 0.0
-
-
-class SimuladorCalculoRequest(BaseModel):
-    ncm: str = ""
-    valor_dolar: float
-    quantidade: float
-    cubagem: float
-    cotacao_dolar: float = 5.0
-    frete_por_m3: float = 0.0
-
-
-class SiscomexFundamentoOpcionalRequest(BaseModel):
-    codigoTributo: int
-    codigoRegime: int
-    codigoFundamentoLegal: int
-    codigoNomenclaturaAlternativa: str = ""
-
-
-class SiscomexConsultaRequest(BaseModel):
-    ncm: str
-    codigoPais: int
-    dataFatoGerador: str = ""
-    tipoOperacao: str = "I"
-    fundamentosOpcionais: list[SiscomexFundamentoOpcionalRequest] = []
-    loja_vinculada: str = ""
-    perfil_usuario: str = ""
-
-class VendasQuery(BaseModel):
-    data_inicio: str | None = None
-    data_fim: str | None = None
 
-class VendasSyncRequest(BaseModel):
-    loja: str
-    data_inicio: str
-    data_fim: str
-    forcar_resync: bool = False
-
-class MediasComprasItem(BaseModel):
-    sku: str = ""
-    descricao: str = ""
-    media_mensal: float = 0
-    estoque_atual: float = 0
-    custo_unitario: float = 0
-    lead_time_dias: int = 15
-
-class MediasComprasRequest(BaseModel):
-    meses_cobertura: float = 2
-    itens: list[MediasComprasItem]
-
-class ListaCompraRequest(BaseModel):
-    opcao: str
-    crescimento_percent: float | None = None
-    hidden_skus: list[str] | None = None
-    nome_lista: str | None = None
-    loja: str | None = None
-    periodo_meses: int | None = None
-
-
-class ListaPedidoUpdateRequest(BaseModel):
-    nome_lista: str | None = None
-    status: str | None = None
-    itens: list[dict] = []
 
 
-class ListaPedidoStatusRequest(BaseModel):
-    status: str
 
 
-class ListaPedidoAddSkuRequest(BaseModel):
-    sku: str
-    quantidade: float
-    valor_unitario: float
 
 
-class ListaPedidoPreferenciasColunasRequest(BaseModel):
-    ordem_colunas: list[str] | None = None
-    larguras_colunas: dict[str, int] | None = None
 
 
-class MediasComprasSkusOcultosRequest(BaseModel):
-    skus_ocultos: list[str] | None = None
 
 
-class EstoquePreferenciasColunasRequest(BaseModel):
-    ordem_colunas: list[str] | None = None
-    larguras_colunas: dict[str, int] | None = None
 
 
-class PromoPreferenciasColunasRequest(BaseModel):
-    ordem_colunas: list[str] | None = None
-    colunas_visiveis: list[str] | None = None
-    larguras_colunas: dict[str, int] | None = None
-    versao: str | None = None
 
 
-class FavoritosSearchRequest(BaseModel):
-    termo: str
-    max_anuncios: int | None = 60
 
 
-class FavoritosPrimeiraPaginaRequest(BaseModel):
-    termo: str
-    max_anuncios: int | None = 60
-    usar_automatico: bool | None = False
-    termo_original: str | None = None
-    termos_busca: list[str] | None = None
 
 
-class FavoritosEnriquecerDatasRequest(BaseModel):
-    anuncios: list[dict] | None = None
-    max_anuncios: int | None = 60
 
 
-class FavoritosSkuDescricoesRequest(BaseModel):
-    skus: list[str]
-    loja: str | None = None
-    item_ids_por_sku: dict[str, list[str]] | None = None
 
 
-class FavoritosSkuPesquisaRequest(BaseModel):
-    sku: str
-    produto: str | None = ""
-    loja: str | None = ""
-    pesquisa_1: str | None = ""
-    pesquisa_2: str | None = ""
-    pesquisa_3: str | None = ""
 
 
-class FavoritosSkuPesquisaIAItem(BaseModel):
-    sku: str
-    titulo: str | None = ""
-    produto: str | None = ""
-    descricao: str | None = ""
-    pesquisa_1: str | None = ""
-    pesquisa_2: str | None = ""
-    pesquisa_3: str | None = ""
 
 
-class FavoritosSkusPesquisaIARequest(BaseModel):
-    itens: list[FavoritosSkuPesquisaIAItem]
-    loja: str | None = None
-    model: str | None = None
-    sobrescrever: bool = False
-    chunk_tamanho: int | None = 24
 
 
-class FavoritosRankingIARequest(BaseModel):
-    sku: str
-    titulo: str | None = ""
-    descricao: str | None = ""
-    pesquisas: list[str] | None = None
-    meus_anuncios: list[dict] | None = None
-    anuncios: list[dict] | None = None
-    max_anuncios: int | None = 160
-    max_confirmados: int | None = None
-    usar_imagem: bool | None = None
 
 
-class FavoritosSkusOcultosRequest(BaseModel):
-    skus_ocultos: list[str] | None = None
 
 
-class FavoritosVendedoresIgnoradosRequest(BaseModel):
-    vendedores_ignorados: list[str] | None = None
 
 
-class FavoritosAnunciosIgnoradosRequest(BaseModel):
-    anuncios_ignorados: dict[str, list[dict]] | None = None
 
 
-class FavoritosHistoricoRequest(BaseModel):
-    historico: list[dict] | None = None
 
 
-class FavoritosHistoricoRealtimeSyncRequest(BaseModel):
-    machine_id: str | None = ""
-    reason: str | None = ""
 
 
-class FavoritosPlanilhaLojaItem(BaseModel):
-    loja: str
-    url: str | None = ""
 
 
-class FavoritosPlanilhasLojasRequest(BaseModel):
-    planilhas: list[FavoritosPlanilhaLojaItem] | None = None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # --- CONSTANTES PROMO ---
@@ -2340,14 +1440,29 @@ def _ml_refresh_token(client_id: str, nome_loja: str, cfg: dict):
         "refresh_token": refresh_token,
     }
 
+    verify_ssl = _env_bool("ML_VERIFY_SSL", True)
+    session_token = f"oauth:{refresh_token}"
     try:
-        resp = requests.post(url, headers=headers, data=payload, timeout=15, verify=_env_bool("ML_VERIFY_SSL", True))
+        resp = _ml_http_request(
+            client_id,
+            nome_loja,
+            session_token,
+            "POST",
+            url,
+            headers=headers,
+            data=payload,
+            timeout=15,
+            verify_ssl=verify_ssl,
+        )
         if resp.status_code == 200:
             result = resp.json()
+            novo_refresh_token = result.get("refresh_token", refresh_token)
             cfg["access_token"] = result.get("access_token", cfg.get("access_token"))
-            cfg["refresh_token"] = result.get("refresh_token", refresh_token)
+            cfg["refresh_token"] = novo_refresh_token
             cfg["updated_at"] = str(time.time())
             atualizar_api_loja(client_id, nome_loja, 'mercadolivre', cfg)
+            if str(novo_refresh_token or "") != str(refresh_token or ""):
+                _ml_http_invalidar_session(client_id, nome_loja, session_token, verify_ssl)
             logger.info(f"[ML REFRESH] Ã¢Å“â€¦ Token renovado com sucesso para {nome_loja}")
             return cfg
 
@@ -2444,49 +1559,45 @@ def _ml_descobrir_user_id_oauth(client_id: str, nome_loja: str, cfg: dict) -> di
     if str(cfg.get("user_id") or "").strip() or not str(cfg.get("access_token") or "").strip():
         return cfg
 
-    for tentativa in range(2):
-        try:
-            resp = requests.get(
-                "https://api.mercadolibre.com/users/me",
-                headers=_headers_ml(cfg["access_token"]),
-                timeout=15,
-                verify=_env_bool("ML_VERIFY_SSL", True),
-            )
-        except Exception as exc:
-            logger.warning("[ML OAUTH] Falha ao descobrir user_id da loja %s: %s", nome_loja, exc)
-            return cfg
-
-        if resp.status_code == 401 and tentativa == 0 and str(cfg.get("refresh_token") or "").strip():
-            cfg = _ml_refresh_token(client_id, nome_loja, cfg)
-            continue
-        if resp.status_code != 200:
-            logger.warning("[ML OAUTH] users/me retornou HTTP %s para loja %s", resp.status_code, nome_loja)
-            return cfg
-
-        try:
-            data = resp.json() or {}
-        except Exception:
-            data = {}
-        user_id = str(data.get("id") or data.get("user_id") or "").strip()
-        if not user_id:
-            logger.warning("[ML OAUTH] users/me sem id para loja %s", nome_loja)
-            return cfg
-
-        cfg["user_id"] = user_id
-        if data.get("site_id"):
-            cfg["site_id"] = data.get("site_id")
-        if data.get("nickname"):
-            cfg["nickname"] = data.get("nickname")
-        cfg["connected"] = True
-        cfg["status"] = "conectado"
-        cfg["motivo"] = ""
-        cfg["shared_without_oauth_tokens"] = False
-        cfg["updated_at"] = str(time.time())
-        atualizar_api_loja(client_id, nome_loja, "mercadolivre", cfg)
-        _cache_invalidar_loja(client_id, nome_loja)
-        logger.info("[ML OAUTH] user_id %s recuperado automaticamente para loja %s", user_id, nome_loja)
+    try:
+        resp, cfg = _ml_api_request(
+            client_id,
+            nome_loja,
+            cfg,
+            "GET",
+            "https://api.mercadolibre.com/users/me",
+            timeout=15,
+        )
+    except Exception as exc:
+        logger.warning("[ML OAUTH] Falha ao descobrir user_id da loja %s: %s", nome_loja, exc)
         return cfg
 
+    if resp.status_code != 200:
+        logger.warning("[ML OAUTH] users/me retornou HTTP %s para loja %s", resp.status_code, nome_loja)
+        return cfg
+
+    try:
+        data = resp.json() or {}
+    except Exception:
+        data = {}
+    user_id = str(data.get("id") or data.get("user_id") or "").strip()
+    if not user_id:
+        logger.warning("[ML OAUTH] users/me sem id para loja %s", nome_loja)
+        return cfg
+
+    cfg["user_id"] = user_id
+    if data.get("site_id"):
+        cfg["site_id"] = data.get("site_id")
+    if data.get("nickname"):
+        cfg["nickname"] = data.get("nickname")
+    cfg["connected"] = True
+    cfg["status"] = "conectado"
+    cfg["motivo"] = ""
+    cfg["shared_without_oauth_tokens"] = False
+    cfg["updated_at"] = str(time.time())
+    atualizar_api_loja(client_id, nome_loja, "mercadolivre", cfg)
+    _cache_invalidar_loja(client_id, nome_loja)
+    logger.info("[ML OAUTH] user_id %s recuperado automaticamente para loja %s", user_id, nome_loja)
     return cfg
 
 
@@ -2512,9 +1623,26 @@ def _obter_cfg_ml(client_id: str, nome_loja: str) -> dict:
     return cfg
 
 
-def _ml_api_request(client_id: str, loja: str, cfg: dict, method: str, url: str, *, params=None, json=None, data=None, timeout: int = 15):
+def _ml_api_request(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    method: str,
+    url: str,
+    *,
+    params=None,
+    json=None,
+    data=None,
+    timeout: int = 15,
+    verify_ssl: bool | None = None,
+):
     """Executa chamada autenticada na API do Mercado Livre com refresh automÃƒÂ¡tico do token."""
-    resp = requests.request(
+    verify = _env_bool("ML_VERIFY_SSL", True) if verify_ssl is None else bool(verify_ssl)
+    access_token = str((cfg or {}).get("access_token") or "").strip()
+    resp = _ml_http_request(
+        client_id,
+        loja,
+        access_token,
         method,
         url,
         headers=_headers_ml(cfg["access_token"]),
@@ -2522,11 +1650,16 @@ def _ml_api_request(client_id: str, loja: str, cfg: dict, method: str, url: str,
         json=json,
         data=data,
         timeout=timeout,
-        verify=_env_bool("ML_VERIFY_SSL", True),
+        verify_ssl=verify,
     )
     if resp.status_code == 401:
+        _ml_http_invalidar_session(client_id, loja, access_token, verify)
         cfg = _ml_refresh_token(client_id, loja, cfg)
-        resp = requests.request(
+        access_token = str((cfg or {}).get("access_token") or "").strip()
+        resp = _ml_http_request(
+            client_id,
+            loja,
+            access_token,
             method,
             url,
             headers=_headers_ml(cfg["access_token"]),
@@ -2534,7 +1667,7 @@ def _ml_api_request(client_id: str, loja: str, cfg: dict, method: str, url: str,
             json=json,
             data=data,
             timeout=timeout,
-            verify=_env_bool("ML_VERIFY_SSL", True),
+            verify_ssl=verify,
         )
     return resp, cfg
 
@@ -2955,29 +2088,18 @@ def _ml_favoritos_api_request(client_id: str, loja: str, cfg: dict, method: str,
     limitada a este mÃ³dulo e evita falso negativo na busca de descriÃ§Ãµes.
     """
     cfg_local = dict(cfg or {})
-    resp = requests.request(
+    return _ml_api_request(
+        client_id,
+        loja,
+        cfg_local,
         method,
         url,
-        headers=_headers_ml(cfg_local["access_token"]),
         params=params,
         json=json,
         data=data,
         timeout=timeout,
-        verify=False,
+        verify_ssl=False,
     )
-    if resp.status_code == 401:
-        cfg_local = _ml_refresh_token(client_id, loja, cfg_local)
-        resp = requests.request(
-            method,
-            url,
-            headers=_headers_ml(cfg_local["access_token"]),
-            params=params,
-            json=json,
-            data=data,
-            timeout=timeout,
-            verify=False,
-        )
-    return resp, cfg_local
 
 
 def _ml_favoritos_buscar_itens_batch(client_id: str, loja: str, cfg: dict, item_ids: list[str]):
@@ -4564,117 +3686,21 @@ def _favoritos_sku_caminhos(client_id: str) -> tuple[str, str]:
     return cadastro_path, estoque_path
 
 
-def _favoritos_usuario_slug(username: str) -> str:
-    slug = re.sub(r"[^0-9A-Za-z._-]+", "_", str(username or "").strip().lower())
-    return slug or "anon"
+def _favoritos_ml_skus_anuncios_cache_id(loja: Any = "", todas_lojas: bool = False) -> str:
+    if todas_lojas:
+        return "todas_lojas"
+    return _chave_loja_favoritos(loja) or str(loja or "").strip() or "auto"
 
 
-def _favoritos_normalizar_skus_ocultos(lista: Any) -> list[str]:
-    if not isinstance(lista, list):
-        return []
-    vistos: set[str] = set()
-    saida: list[str] = []
-    for item in lista:
-        sku = str(item or "").strip().upper()
-        if not sku or sku in vistos:
-            continue
-        vistos.add(sku)
-        saida.append(sku)
-        if len(saida) >= 10000:
-            break
-    return saida
-
-
-def _favoritos_arquivo_skus_ocultos(client_id: str, username: str) -> str:
-    return os.path.join(get_tenant_path(client_id), f"favoritos_skus_ocultos_{_favoritos_usuario_slug(username)}.json")
-
-
-def _favoritos_arquivo_planilhas_lojas(client_id: str) -> str:
-    return os.path.join(get_tenant_path(client_id), "favoritos_planilhas_lojas.json")
-
-
-def _favoritos_normalizar_url_planilha_google(valor: Any) -> str:
-    url = re.sub(r"\s+", "", str(valor or "").strip())
-    if not url:
-        return ""
-    if len(url) > 1200:
-        raise HTTPException(status_code=400, detail="Link da planilha muito longo.")
-    parsed = urlparse(url)
-    host = str(parsed.netloc or "").lower()
-    path = str(parsed.path or "").lower()
-    if parsed.scheme not in {"http", "https"} or host != "docs.google.com" or not path.startswith("/spreadsheets/"):
-        raise HTTPException(status_code=400, detail="Informe um link valido do Google Sheets.")
-    return url
-
-
-def _favoritos_normalizar_planilha_loja_item(loja: Any, url: Any, updated_at: Any = None) -> dict | None:
-    nome = re.sub(r"\s+", " ", str(loja or "").strip())
-    if not nome:
-        return None
-    chave = _chave_loja_favoritos(nome)
-    if not chave:
-        return None
-    return {
-        "loja": nome[:160],
-        "url": _favoritos_normalizar_url_planilha_google(url),
-        "updated_at": str(updated_at or "").strip() or None,
-    }
-
-
-def _favoritos_carregar_planilhas_lojas(client_id: str) -> dict:
-    caminho = _favoritos_arquivo_planilhas_lojas(client_id)
-    if not os.path.exists(caminho):
-        return {"planilhas": {}, "updated_at": None}
-    try:
-        with open(caminho, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        bruto = dados.get("planilhas") if isinstance(dados, dict) else {}
-        if not isinstance(bruto, dict):
-            bruto = {}
-        planilhas: dict[str, dict] = {}
-        for chave, item in bruto.items():
-            if isinstance(item, dict):
-                nome = item.get("loja") or chave
-                url = item.get("url") or ""
-                updated_at = item.get("updated_at")
-            else:
-                nome = chave
-                url = item
-                updated_at = None
-            normalizado = _favoritos_normalizar_planilha_loja_item(nome, url, updated_at)
-            if not normalizado:
-                continue
-            planilhas[_chave_loja_favoritos(normalizado.get("loja"))] = normalizado
-        return {
-            "planilhas": planilhas,
-            "updated_at": dados.get("updated_at") if isinstance(dados, dict) else None,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("[Favoritos Planilhas] Falha ao carregar links por loja: %s", exc)
-        return {"planilhas": {}, "updated_at": None}
-
-
-def _favoritos_salvar_planilhas_lojas(client_id: str, itens: list[FavoritosPlanilhaLojaItem]) -> dict:
-    payload = _favoritos_carregar_planilhas_lojas(client_id)
-    planilhas = dict(payload.get("planilhas") or {})
-    agora = datetime.now().isoformat(timespec="seconds")
-    atualizadas = []
-    for item in itens or []:
-        normalizado = _favoritos_normalizar_planilha_loja_item(item.loja, item.url, agora)
-        if not normalizado:
-            continue
-        normalizado["updated_at"] = agora
-        chave = _chave_loja_favoritos(normalizado.get("loja"))
-        planilhas[chave] = normalizado
-        atualizadas.append(normalizado)
-    caminho = _favoritos_arquivo_planilhas_lojas(client_id)
-    os.makedirs(os.path.dirname(caminho), exist_ok=True)
-    salvo = {"planilhas": planilhas, "updated_at": agora}
-    with open(caminho, "w", encoding="utf-8") as f:
-        json.dump(salvo, f, ensure_ascii=False, indent=2)
-    return {**salvo, "atualizadas": atualizadas}
+def _favoritos_ml_anuncios_sku_cache_id(nome_loja: str, sku: str, compartilhar: bool = False, ids_forcados_key: str = "") -> str:
+    partes = [
+        _chave_loja_favoritos(nome_loja) or nome_loja,
+        _normalizar_sku_match_favoritos(sku),
+        "compartilhar" if compartilhar else "loja",
+    ]
+    if ids_forcados_key:
+        partes.append(hashlib.sha1(ids_forcados_key.encode("utf-8", errors="ignore")).hexdigest()[:16])
+    return "::".join(str(parte or "").strip() for parte in partes if str(parte or "").strip())
 
 
 def _favoritos_arquivo_pesquisas_usuario(client_id: str, username: str) -> str:
@@ -8410,38 +7436,6 @@ def _permissoes_autorizam_rota(permissoes: dict, permissao_necessaria: Any) -> b
     return any(permissoes.get(chave) is True for chave in _normalizar_permissoes_exigidas(permissao_necessaria))
 
 
-def _extrair_texto_openai_response(payload: dict) -> str:
-    texto = payload.get("output_text")
-    if isinstance(texto, str) and texto.strip():
-        return texto.strip()
-
-    partes = []
-    for item in payload.get("output") or []:
-        for content in item.get("content") or []:
-            if isinstance(content, dict):
-                valor = content.get("text")
-                if isinstance(valor, str) and valor.strip():
-                    partes.append(valor.strip())
-    return "\n".join(partes).strip()
-
-def _extrair_b64_openai_image_response(payload: dict) -> str:
-    try:
-        data = payload.get("data")
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and isinstance(item.get("b64_json"), str) and item.get("b64_json").strip():
-                    return item.get("b64_json").strip()
-                if isinstance(item, dict) and isinstance(item.get("url"), str) and item.get("url").strip():
-                    try:
-                        resp_img = requests.get(item.get("url"), timeout=60)
-                        if resp_img.ok and resp_img.content:
-                            return base64.b64encode(resp_img.content).decode("ascii")
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-    return ""
-
 def _ia_estoque_texto(client_id: str) -> str:
     """LÃƒÂª produtos_compilado.csv e retorna texto compacto com estoque de todos os SKUs (apenas os com saldo > 0)."""
     try:
@@ -9214,52 +8208,6 @@ def _ia_tool_get_sales_quantity_by_period(client_id: str, data_inicio: str, data
         return None
 
 
-def _ia_normalizar_data_iso_chat(valor: str) -> str:
-    texto = str(valor or "").strip()
-    if not texto:
-        return ""
-    try:
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", texto):
-            dt.date.fromisoformat(texto)
-            return texto
-        if re.match(r"^\d{4}-\d{2}-\d{2}[ T].*$", texto):
-            base = texto[:10]
-            dt.date.fromisoformat(base)
-            return base
-    except Exception:
-        pass
-    try:
-        return _ia_parse_data_iso_flex(texto) or ""
-    except Exception:
-        return ""
-
-
-def _ia_normalizar_periodo_chat(data_inicio: str, data_fim: str) -> tuple[str, str]:
-    ini = _ia_normalizar_data_iso_chat(data_inicio)
-    fim = _ia_normalizar_data_iso_chat(data_fim)
-    if ini and not fim:
-        fim = ini
-    if fim and not ini:
-        ini = fim
-    if ini and fim and ini > fim:
-        ini, fim = fim, ini
-    return ini, fim
-
-
-def _ia_ultimo_dia_mes(ano: int, mes: int) -> dt.date:
-    prox = dt.date(ano + 1, 1, 1) if mes == 12 else dt.date(ano, mes + 1, 1)
-    return prox - dt.timedelta(days=1)
-
-
-def _ia_subtrair_meses(data_ref: dt.date, meses: int) -> dt.date:
-    ano = data_ref.year
-    mes = data_ref.month - int(meses or 0)
-    while mes <= 0:
-        mes += 12
-        ano -= 1
-    return dt.date(ano, mes, 1)
-
-
 def _ia_extrair_mes_ano_mensagem(mensagem: str, contexto: Optional[dict] = None) -> Optional[str]:
     raw = str(mensagem or "")
     texto = _normalizar_texto(raw)
@@ -9319,19 +8267,6 @@ def _ia_extrair_mes_ano_mensagem(mensagem: str, contexto: Optional[dict] = None)
         return f"{ano:04d}-{mes:02d}"
 
     return None
-
-
-def _ia_periodo_do_mes(mes_ano: str) -> tuple[str, str]:
-    txt = str(mes_ano or "").strip()
-    if not re.match(r"^\d{4}-\d{2}$", txt):
-        return "", ""
-    ano = int(txt[:4])
-    mes = int(txt[5:7])
-    if mes < 1 or mes > 12:
-        return "", ""
-    ini = dt.date(ano, mes, 1)
-    fim = _ia_ultimo_dia_mes(ano, mes)
-    return ini.isoformat(), fim.isoformat()
 
 
 def _ia_periodo_mensal_padrao(client_id: str, loja: Optional[str] = None, meses: int = 12) -> tuple[str, str]:
@@ -10903,264 +9838,6 @@ def _ia_vendas_db_consulta_sku(client_id: str, data_inicio: str, data_fim: str, 
         return None
 
 
-def _ia_chat_pede_consulta_vendas(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos = (
-        "VENDA", "VENDEU", "VENDEMOS", "VENDERAM", "VENDIDO", "VENDIDA", "VENDIDOS", "VENDIDAS",
-        "FATURAMENTO", "FATUROU", "RECEITA", "UNIDADES", "QTD", "QUANTIDADE", "TOP", "LIDER"
-    )
-    return any(gatilho in texto for gatilho in gatilhos)
-
-
-def _ia_chat_pede_consulta_produto(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos = (
-        "SKU", "PRODUTO", "ESTOQUE", "SALDO", "CADASTRO", "MARCA", "CATEGORIA", "PRECO", "PREÃƒâ€¡O", "CUSTO"
-    )
-    return any(gatilho in texto for gatilho in gatilhos)
-
-
-def _ia_chat_pede_consulta_estoque(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("ESTOQUE", "SALDO", "DISPONIVEL", "DISPONÃƒÂVEL", "FULL"))
-
-
-def _ia_chat_pede_consulta_margem(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("MARGEM", "LUCRO", "MARGEM DE CONTRIBUICAO", "MARGEM DE CONTRIBUIÃƒâ€¡ÃƒÆ’O"))
-
-
-def _ia_chat_pede_consulta_devolucoes(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("DEVOLUCAO", "DEVOLUÃƒâ€¡Ãƒâ€¢ES", "DEVOLUCOES", "DEVOLVIDO", "DEVOLVERAM"))
-
-
-def _ia_chat_pede_status_integracoes(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    return (
-        any(g in texto for g in ("INTEGRACAO", "INTEGRACOES", "API", "APIS", "CONECTAD", "TOKEN", "OAUTH"))
-        and any(g in texto for g in ("MERCADO LIVRE", "MERCADOLIVRE", "ML", "BLING"))
-    )
-
-
-def _ia_chat_pede_consulta_mercado_livre(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    if re.search(r"\bMLB[\s_-]*\d{5,}\b", str(mensagem or ""), flags=re.IGNORECASE):
-        return True
-    gatilhos_ml = ("MERCADO LIVRE", "MERCADOLIVRE", "ANUNCIO", "ANUNCIOS", "MLB", "SELLER SKU", "SELLER_SKU")
-    gatilhos_consulta = ("CONSULTE", "CONSULTAR", "BUSQUE", "BUSCAR", "LISTE", "LISTAR", "MOSTRE", "VERIFIQUE", "PRECO", "ESTOQUE", "STATUS", "DESCRICAO", "SKU")
-    return any(g in texto for g in gatilhos_ml) and any(g in texto for g in gatilhos_consulta)
-
-
-def _ia_chat_pede_consulta_bling(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos_bling = ("BLING", "ID BLING", "PRODUTO BLING", "NCM", "CEST")
-    gatilhos_consulta = ("CONSULTE", "CONSULTAR", "BUSQUE", "BUSCAR", "LISTE", "LISTAR", "MOSTRE", "VERIFIQUE", "PRECO", "ESTOQUE", "SALDO", "SKU", "CADASTRO")
-    return any(g in texto for g in gatilhos_bling) and any(g in texto for g in gatilhos_consulta)
-
-
-def _ia_chat_pede_vendas_por_loja_virtual(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos = (
-        "LOJA VIRTUAL",
-        "LOJAS VIRTUAIS",
-        "UNIDADE DE NEGOCIO",
-        "UNIDADE NEGOCIO",
-        "CANAL",
-        "CANAIS",
-        "MARKETPLACE",
-    )
-    if any(gatilho in texto for gatilho in gatilhos):
-        return True
-    return "POR LOJA" in texto
-
-
-def _ia_chat_pede_recorte_mensal(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    if any(gatilho in texto for gatilho in ("MENSAL", "POR MES", "MES A MES")):
-        return True
-    return bool(re.search(
-        r"\b(MES|JANEIRO|JAN|FEVEREIRO|FEV|MARCO|MAR|ABRIL|ABR|MAIO|MAI|JUNHO|JUN|JULHO|JUL|AGOSTO|AGO|SETEMBRO|SET|OUTUBRO|OUT|NOVEMBRO|NOV|DEZEMBRO|DEZ)\b",
-        texto,
-    ))
-
-
-def _ia_chat_extrair_limite_top(mensagem: str, padrao: int = 5, maximo: int = 50) -> int:
-    texto = _normalizar_texto(mensagem or "")
-    limite = int(padrao or 5)
-    for padrao_regex in (
-        r"\bTOP\s*(\d{1,3})\b",
-        r"\b(\d{1,3})\s*(?:SKUS?|SKU|PRODUTOS?|ITENS?)\b",
-    ):
-        match = re.search(padrao_regex, texto)
-        if match:
-            try:
-                limite = int(match.group(1))
-                break
-            except Exception:
-                pass
-    return max(1, min(limite, int(maximo or 50)))
-
-
-def _ia_chat_pede_comparativo_periodo(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("COMPARE", "COMPARA", "COMPARATIVO", "VERSUS", " VS ", "DIFERENCA", "CRESCIMENTO", "QUEDA"))
-
-
-def _ia_chat_pede_ticket_medio(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return "TICKET" in texto
-
-
-def _ia_chat_pede_taxa_devolucao(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return ("TAXA" in texto and "DEVOL" in texto) or ("PERCENTUAL" in texto and "DEVOL" in texto)
-
-
-def _ia_chat_pede_serie_temporal(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if any(gatilho in texto for gatilho in ("TENDENCIA", "SERIE", "POR DIA", "DIARIO", "DIARIA", "GRAFICO")):
-        return True
-    return re.search(r"\bEVOLUCAO\b", texto) is not None
-
-
-def _ia_chat_pede_anomalia(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("ANOMALIA", "PICO", "FORA DO PADRAO", "ALERTA", "QUEDA BRUSCA", "OSCILACAO"))
-
-
-def _ia_chat_pede_lucro_periodo(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    return any(gatilho in texto for gatilho in ("LUCRO", "RENTABILIDADE", "MARGEM REAL", "MARGEM LIQUIDA", "MARGEM LÃƒÂQUIDA", "RESULTADO"))
-
-
-def _ia_chat_pede_previsao_ruptura_estoque(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    gatilhos = (
-        "PREVEJA",
-        "PREVER",
-        "PREVISAO",
-        "PREVISAO",
-        "RUPTURA",
-        "ACABAR",
-        "ACABA",
-        "ESGOTAR",
-        "ESGOTA",
-        "DIAS PARA ACABAR",
-        "QUANDO ACABA",
-        "QUANDO VAI ACABAR",
-        "ESTOQUE VAI ACABAR",
-    )
-    return ("ESTOQUE" in texto) and any(g in texto for g in gatilhos)
-
-
-def _ia_chat_pede_dias_sem_venda(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    gatilhos = (
-        "DIAS SEM VENDER",
-        "NAO VENDE",
-        "NÃƒO VENDE",
-        "SEM VENDER",
-        "TEMPO SEM VENDER",
-        "ULTIMA VENDA",
-        "ÃƒÅ¡LTIMA VENDA",
-    )
-    return any(g in texto for g in gatilhos)
-
-
-def _ia_chat_pede_top_dias_sem_venda(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    gatilhos = (
-        "SKUS SEM VENDER",
-        "TOP SEM VENDER",
-        "MAIS TEMPO SEM VENDER",
-        "PRODUTOS SEM VENDER",
-        "LISTA SEM VENDER",
-        "PARARAM DE VENDER",
-        "QUE PARARAM",
-    )
-    return any(g in texto for g in gatilhos)
-
-
-def _ia_chat_extrair_opcoes_top_dias_sem_venda(mensagem: str) -> dict:
-    texto_norm = _normalizar_texto(mensagem or "")
-
-    limite = 20
-    padroes_limite = (
-        r"\bTOP\s*(\d{1,3})\b",
-        r"\b(\d{1,3})\s*(?:SKUS?|ITENS?|PRODUTOS?)\b",
-    )
-    for padrao in padroes_limite:
-        m = re.search(padrao, texto_norm)
-        if m:
-            try:
-                limite = max(1, min(int(m.group(1)), 200))
-                break
-            except Exception:
-                pass
-
-    apenas_com_estoque = any(
-        chave in texto_norm
-        for chave in (
-            "COM ESTOQUE",
-            "EM ESTOQUE",
-            "ESTOQUE POSITIVO",
-            "SO COM ESTOQUE",
-            "SOMENTE COM ESTOQUE",
-        )
-    )
-    apenas_ja_vendidos = any(
-        chave in texto_norm
-        for chave in (
-            "JA VENDERAM",
-            "JÃƒÂ VENDERAM",
-            "QUE JA VENDERAM",
-            "QUE JÃƒÂ VENDERAM",
-            "PARARAM DE VENDER",
-            "QUE PARARAM",
-            "APENAS COM HISTORICO",
-            "SOMENTE COM HISTORICO",
-            "SEM NUNCA VENDEU",
-            "EXCETO NUNCA",
-        )
-    )
-
-    return {
-        "limite": limite,
-        "apenas_com_estoque": apenas_com_estoque,
-        "apenas_ja_vendidos": apenas_ja_vendidos,
-    }
-
-
-def _ia_chat_pede_info_cadastro_produto(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    gatilhos = ("CADASTRO", "DESCRICAO", "DESCRIÃƒâ€¡ÃƒÆ’O", "IMAGEM", "FOTO", "FICHA", "DADOS DO PRODUTO")
-    return any(g in texto for g in gatilhos)
-
-
-def _ia_chat_pede_imagem_produto(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos_imagem = ("IMAGEM", "FOTO", "IMG", "FIGURA", "MOSTRA", "MOSTRE", "MANDA", "ENVIA", "ENVIE")
-    gatilhos_produto = ("SKU", "PRODUTO", "ITEM", "PECA", "PEÃƒÆ’Ã¢â‚¬Â¡A")
-    return any(g in texto for g in gatilhos_imagem) and any(g in texto for g in gatilhos_produto)
-
-
 def _ia_extrair_item_ids_ml(*valores) -> list[str]:
     ids = []
     vistos = set()
@@ -11774,21 +10451,6 @@ def _ia_tool_get_product_image(client_id: str, mensagem: str, produto_tool: Opti
     except Exception as exc:
         logger.warning(f"[IA TOOLS] Falha ao obter imagem do produto: {exc}")
         return None
-
-
-def _ia_chat_pede_geracao_imagem(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos_explicitos = (
-        "GERE UMA IMAGEM", "GERAR UMA IMAGEM", "GERA UMA IMAGEM", "CRIE UMA IMAGEM", "CRIAR UMA IMAGEM",
-        "FACA UMA IMAGEM", "FA?A UMA IMAGEM", "GERE UMA FOTO", "GERAR UMA FOTO", "CRIE UMA FOTO",
-        "CRIAR UMA FOTO", "NOVA IMAGEM", "IMAGEM NOVA", "GERAR ARTE", "GERE ARTE", "CRIE ARTE",
-        "CRIAR ARTE", "GERAR RENDER", "GERE RENDER", "CRIE RENDER", "CRIAR RENDER",
-    )
-    if any(g in texto for g in gatilhos_explicitos):
-        return True
-    return bool(re.search(r"\b(GERE|GERAR|GERA|CRIE|CRIAR|FACA|FA?A)\b.{0,60}\b(IMAGEM|FOTO|ARTE|RENDER)\b", texto))
 
 
 def _ia_montar_prompt_geracao_imagem_sku(client_id: str, mensagem: str) -> tuple[str, dict]:
@@ -12583,39 +11245,6 @@ def _ia_chat_contexto_funcoes(payload: IAChatRequest, client_id: str) -> str:
     return "\n".join(linhas)
 
 
-def _ia_chat_resumo_historico(history: Optional[list[dict]], limite: int = 10) -> list[dict]:
-    resumo = []
-    for item in (history or []):
-        role = str((item or {}).get("role") or "user").strip().lower()
-        if role not in ("user", "assistant"):
-            role = "user"
-        content = str((item or {}).get("content") or "").strip()
-        if not content:
-            continue
-        resumo.append({
-            "role": role,
-            "content": content[:1200],
-        })
-    if limite > 0:
-        return resumo[-limite:]
-    return resumo
-
-
-def _ia_chat_mensagem_contextual(payload: IAChatRequest) -> str:
-    mensagem = str(payload.message or "").strip()
-    resumo = _ia_chat_resumo_historico(payload.history, limite=6)
-    if not resumo:
-        return mensagem
-    linhas = []
-    for item in resumo:
-        prefixo = "U" if item.get("role") == "user" else "A"
-        linhas.append(f"{prefixo}: {str(item.get('content') or '').strip()}")
-    bloco = "\n".join(linhas)
-    if not bloco:
-        return mensagem
-    return f"{mensagem}\n\nContexto recente da conversa:\n{bloco}".strip()
-
-
 def _ia_vendas_db_texto(client_id: str, data_inicio: str, data_fim: str, loja: str = None) -> str:
     """Consulta os bancos SQLite de vendas do tenant e retorna texto compacto com todos os SKUs vendidos no perÃƒÂ­odo."""
     try:
@@ -12681,24 +11310,6 @@ def _ia_vendas_db_texto(client_id: str, data_inicio: str, data_fim: str, loja: s
     except Exception as exc:
         logger.warning(f"[IA] Falha ao montar vendas DB para IA: {exc}")
         return ""
-
-
-def _ia_parse_data_iso_flex(texto: str) -> Optional[str]:
-    valor = str(texto or "").strip()
-    if not valor:
-        return None
-    valor = valor.replace(".", "/").replace("-", "/")
-    partes = valor.split("/")
-    if len(partes) != 3:
-        return None
-    try:
-        if len(partes[0]) == 4:
-            ano = int(partes[0]); mes = int(partes[1]); dia = int(partes[2])
-        else:
-            dia = int(partes[0]); mes = int(partes[1]); ano = int(partes[2])
-        return dt.date(ano, mes, dia).isoformat()
-    except Exception:
-        return None
 
 
 def _ia_extrair_periodo_mensagem_vendas(mensagem: str, contexto: Optional[dict] = None) -> tuple[str, str]:
@@ -13266,86 +11877,6 @@ def _montar_contexto_ia(payload: IAChatRequest, client_id: str) -> str:
     }
     contexto_seguro.update(contexto_extra)
     return json.dumps(contexto_seguro, ensure_ascii=False, default=str)
-
-def _ia_chat_normalizar_anexos(payload: IAChatRequest) -> list[dict]:
-    anexos_norm = []
-    anexos_raw = payload.attachments or []
-    for item in anexos_raw[:4]:
-        try:
-            nome = str(getattr(item, "name", "") or "anexo").strip()[:120] or "anexo"
-            mime = str(getattr(item, "mime_type", "") or "application/octet-stream").strip().lower()[:100]
-            b64 = str(getattr(item, "data_base64", "") or "").strip()
-            if "," in b64 and b64.lower().startswith("data:"):
-                b64 = b64.split(",", 1)[1].strip()
-            if not b64:
-                continue
-            conteudo = base64.b64decode(b64, validate=True)
-            if not conteudo:
-                continue
-            if len(conteudo) > 5 * 1024 * 1024:
-                logger.warning(f"[IA] Anexo ignorado por tamanho (>5MB): {nome}")
-                continue
-            anexos_norm.append({
-                "name": nome,
-                "mime_type": mime,
-                "data_base64": b64,
-                "bytes": conteudo,
-            })
-        except Exception:
-            logger.warning("[IA] Falha ao normalizar anexo recebido.")
-            continue
-    return anexos_norm
-
-def _ia_chat_extrair_texto_anexo(anexo: dict) -> str:
-    mime = str(anexo.get("mime_type") or "").lower()
-    nome = str(anexo.get("name") or "anexo")
-    conteudo = anexo.get("bytes") or b""
-    if not conteudo:
-        return ""
-
-    mimetypes_texto = {
-        "application/json",
-        "application/xml",
-        "text/csv",
-        "application/csv",
-        "application/x-csv",
-    }
-    extensoes_texto = (".txt", ".csv", ".json", ".xml", ".md", ".log")
-    is_texto = mime.startswith("text/") or mime in mimetypes_texto or nome.lower().endswith(extensoes_texto)
-
-    if is_texto:
-        for enc in ("utf-8", "latin-1"):
-            try:
-                texto = conteudo.decode(enc, errors="strict").strip()
-                if texto:
-                    return texto[:12000]
-            except Exception:
-                continue
-        return conteudo.decode("utf-8", errors="ignore").strip()[:12000]
-
-    if mime == "application/pdf" or nome.lower().endswith(".pdf"):
-        try:
-            pdf = fitz.open(stream=conteudo, filetype="pdf")
-            partes = []
-            max_paginas = min(8, len(pdf))
-            for idx in range(max_paginas):
-                pagina = pdf[idx]
-                txt = (pagina.get_text("text") or "").strip()
-                if txt:
-                    partes.append(txt)
-                if sum(len(p) for p in partes) > 12000:
-                    break
-            pdf.close()
-            return "\n\n".join(partes)[:12000]
-        except Exception:
-            logger.warning(f"[IA] Nao foi possivel extrair texto de PDF: {nome}")
-            return ""
-
-    return ""
-
-# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-# IA Ã¢â‚¬â€ PersistÃƒÂªncia de Conversas
-# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 def _ia_conversas_db_path(client_id: str) -> str:
     """Retorna o caminho do banco SQLite para conversas do cliente."""
@@ -15716,25 +14247,6 @@ def _modelo_eh_gemini_api(model_name: str) -> bool:
     return str(model_name or "").strip().lower().startswith("gemini:")
 
 
-def _ia_chat_tem_imagem(anexos: Optional[list[dict]] = None) -> bool:
-    for anexo in (anexos or []):
-        mime = str(anexo.get("mime_type") or "").lower()
-        if mime.startswith("image/"):
-            return True
-    return False
-
-
-def _ia_contexto_desativa_recursos_chat(contexto: Optional[dict]) -> bool:
-    if not isinstance(contexto, dict):
-        return False
-    if bool(contexto.get("desativar_recursos_chat")):
-        return True
-    if bool(contexto.get("desativar_busca_web_chat")):
-        return True
-    tipo = str(contexto.get("tipo") or contexto.get("origem_ia") or "").strip().lower()
-    return tipo in {"agente_cloud_perguntas_ml_sem_chat", "mercado_livre_perguntas_sem_chat"}
-
-
 def _ia_web_busca_ativa() -> bool:
     valor = str(os.getenv("IA_WEB_SEARCH_ENABLED") or "true").strip().lower()
     return valor not in {"0", "false", "nao", "nÃ£o", "off"}
@@ -15810,17 +14322,6 @@ def _ia_web_cache_valido(item: dict) -> bool:
     except Exception:
         return False
     return datetime.now() - criado_dt <= timedelta(hours=max(1, ttl_horas))
-
-
-def _ia_chat_pede_noticias(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    gatilhos = (
-        "NOTICIA", "NOTICIAS", "NOTÃƒÂCIA", "NOTÃƒÂCIAS", "MANCHETES", "ULTIMAS NOTICIAS",
-        "ÃƒÅ¡LTIMAS NOTÃƒÂCIAS", "DO DIA", "DE HOJE", "HOJE", "AGORA", "RECENTES", "ATUALIDADES",
-    )
-    return any(gatilho in texto for gatilho in gatilhos)
 
 
 def _ia_chat_precisa_busca_web(mensagem: str, page: Optional[str] = None, contexto: Optional[dict] = None) -> bool:
@@ -16243,109 +14744,6 @@ def _ia_chat_deve_anexar_estoque_contexto(mensagem: str) -> bool:
         "SKU", "PRODUTO", "CADASTRO", "MARGEM", "CUSTO",
     )
     return any(termo in texto for termo in termos)
-
-
-def _ia_chat_deve_anexar_vendas_db_contexto(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-    termos = (
-        "TOP", "RANKING", "MAIS VENDEU", "MAIS VENDIDO", "LIDER",
-        "LISTE", "LISTAR", "TODOS OS SKU", "TODOS OS SKUS",
-        "SKUS VENDIDOS", "PRODUTOS VENDIDOS", "CURVA ABC",
-    )
-    return any(termo in texto for termo in termos)
-
-
-def _ia_chat_pede_analise_especialista_vendas(
-    mensagem: str,
-    page: Optional[str] = None,
-    context: Optional[dict] = None,
-) -> bool:
-    texto = _normalizar_texto(mensagem or "")
-    if not texto:
-        return False
-
-    gatilhos_analise = (
-        "ANALISE",
-        "ANALISAR",
-        "QUAL ANALISE",
-        "QUE ANALISE",
-        "ME DE UMA ANALISE",
-        "FAZ UMA ANALISE",
-        "FACA UMA ANALISE",
-        "ANALISE DAS VENDAS",
-        "DIAGNOSTICO",
-        "RAIO X",
-        "RELATORIO",
-        "PARECER",
-        "ESTRATEGIA",
-    )
-    gatilhos_comerciais = (
-        "VENDA",
-        "VENDAS",
-        "ESTOQUE",
-        "FATURAMENTO",
-        "DEVOLUCAO",
-        "DEVOLUCOES",
-        "SKU",
-        "MARGEM",
-        "GIRO",
-        "CURVA ABC",
-        "REPOSICAO",
-        "LEAD TIME",
-        "MERCADO LIVRE",
-        "SHOPEE",
-        "MARKETPLACE",
-        "CATALOGO",
-        "MIX",
-    )
-
-    page_norm = _normalizar_texto(page or "")
-    contexto = context if isinstance(context, dict) else {}
-    tem_contexto_comercial = (
-        any(chave in page_norm for chave in ("VENDAS", "ESTOQUE", "DASHBOARD", "ASSISTENTE IA"))
-        or any(str(contexto.get(k) or "").strip() for k in ("data_inicio", "data_fim", "loja", "periodo", "periodo_label"))
-    )
-
-    if any(g in texto for g in gatilhos_analise) and any(g in texto for g in gatilhos_comerciais):
-        return True
-
-    if any(g in texto for g in gatilhos_analise) and tem_contexto_comercial:
-        return True
-
-    # TambÃƒÂ©m ativa para pedidos explÃƒÂ­citos de especialista, mesmo sem a palavra "analise".
-    if ("ESPECIALISTA" in texto or "CONSULTOR" in texto) and any(g in texto for g in gatilhos_comerciais):
-        return True
-
-    if ("ESPECIALISTA" in texto or "CONSULTOR" in texto) and tem_contexto_comercial:
-        return True
-
-    return False
-
-
-def _ia_chat_bloco_prompt_analise_especialista(
-    mensagem: str,
-    page: Optional[str] = None,
-    context: Optional[dict] = None,
-) -> str:
-    if not _ia_chat_pede_analise_especialista_vendas(mensagem, page, context):
-        return ""
-
-    return (
-        "\n\nModo de atuaÃƒÂ§ÃƒÂ£o para esta resposta: aja como especialista sÃƒÂªnior em operaÃƒÂ§ÃƒÂµes de e-commerce automotivo "
-        "(foco em Mercado Livre, Shopee e logÃƒÂ­stica China-Brasil), com objetivo de otimizar capital de giro e margem. "
-        "Estruture a analise de forma objetiva e executiva, priorizando: "
-        "1) Giro de estoque e Curva ABC (itens A/B/C e impacto no caixa), "
-        "2) ReposiÃƒÂ§ÃƒÂ£o e lead time de importaÃƒÂ§ÃƒÂ£o (risco de ruptura e ponto de pedido sugerido), "
-        "3) Oportunidades de mix/cross-sell (produtos complementares e aÃƒÂ§ÃƒÂµes prÃƒÂ¡ticas). "
-        "Sempre baseie a analise primeiro nos dados reais disponÃƒÂ­veis no backend/contexto; "
-        "quando faltar dado essencial, explicite o que falta e proponha a prÃƒÂ³xima pergunta objetiva. "
-        "Entregue a resposta neste formato fixo e nesta ordem: "
-        "DiagnÃƒÂ³stico executivo; Curva ABC (A/B/C com leitura de giro); Risco de ruptura e reposiÃƒÂ§ÃƒÂ£o (incluindo lead time); "
-        "Oportunidades de mix/cross-sell; Plano de aÃƒÂ§ÃƒÂ£o 7 dias; Plano de aÃƒÂ§ÃƒÂ£o 30 dias; Impacto esperado. "
-        "Em cada seÃƒÂ§ÃƒÂ£o, inclua recomendaÃƒÂ§ÃƒÂµes priorizadas e objetivas com linguagem clara e acionÃƒÂ¡vel."
-    )
 
 
 def _ia_treinamento_ppv_path(client_id: str) -> str:
@@ -17114,7 +15512,7 @@ def _perguntas_ia_intencao_heuristica(pergunta: dict, item: dict | None = None) 
     )
     sinais_compat = (
         "serve", "servi", "compativel", "compatibilidade", "aplica", "encaixa", "da certo",
-        "ano", "motor", "modelo", "veiculo", "corolla", "civic", "focus", "hilux",
+        "ano", "motor", "modelo", "veiculo", "chassi", "vin", "corolla", "civic", "focus", "hilux",
     )
     sinais_outra = (
         "voces tem", "voce tem", "tem essa peca", "tem o", "tem a", "manda link", "envia link",
@@ -19501,7 +17899,7 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
         "Por ultimo use web_search_question_context para responder a pergunta atual com comparacao de codigos, titulos e descricoes de anuncios similares, manuais, catalogos ou fontes publicas disponiveis. "
         "Nao invente detalhes quando a internet nao trouxer evidencias suficientes; responda com cautela e recomende confirmacao tecnica. "
         "Se os dados externos divergirem do cadastro, Mercado Livre ou Bling, prefira os dados internos para dados comerciais e use a web apenas como apoio tecnico. "
-        "Se o dado estiver ausente, peça a informacao necessaria com cordialidade. "
+        "Se o dado estiver ausente, peça a informacao necessaria com cordialidade, exceto chassi em compatibilidade automotiva. "
         f"Limite de caracteres: {constraints.get('max_chars') or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO}.\n\n"
         f"Pipeline obrigatorio de contexto executado pelo app:\n{bloco_pipeline or '[]'}\n\n"
         f"Intencao classificada em JSON:\n{bloco_intencao or '{}'}\n\n"
@@ -19646,6 +18044,23 @@ def _ia_agent_perguntas_conectores(texto: str) -> set[str]:
     return encontrados
 
 
+def _ia_agent_perguntas_resposta_pede_chassi(texto: str) -> bool:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
+    if "chassi" not in texto_norm and "vin" not in texto_norm:
+        return False
+    termos_pedido = (
+        "informe", "envie", "mande", "passe", "forneca", "digite", "encaminhe",
+        "pode informar", "poderia informar", "favor informar", "preciso",
+        "precisamos", "necessario", "necessaria",
+    )
+    padrao_pedido = r"(?:{})".format("|".join(re.escape(termo) for termo in termos_pedido))
+    padrao_chassi = r"(?:chassi|vin)"
+    return bool(
+        re.search(padrao_pedido + r".{0,90}\b" + padrao_chassi + r"\b", texto_norm)
+        or re.search(r"\b" + padrao_chassi + r"\b.{0,90}" + padrao_pedido, texto_norm)
+    )
+
+
 def _ia_agent_perguntas_pede_conector(texto: str) -> bool:
     texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
     if _ia_agent_perguntas_conectores(texto_norm):
@@ -19734,7 +18149,7 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         violacoes.append("usou expressao proibida: conforme o anuncio")
     if "NAO CONSEGUIMOS CONFIRMAR A COMPATIBILIDADE" in texto_norm:
         violacoes.append("usou expressao proibida sobre nao confirmar compatibilidade")
-    if "CHASSI" in texto_norm:
+    if _ia_agent_perguntas_resposta_pede_chassi(texto):
         violacoes.append("pediu chassi em pergunta de compatibilidade")
     if re.search(r"COMPAT\w*\s+COM\s+(?:O|A)?\s*(?:BOA|BOM|OLA|OI)", texto_norm):
         violacoes.append("copiou a pergunta inteira como veiculo")
@@ -19747,7 +18162,7 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
             violacoes.append("repetiu a resposta atual sem corrigir")
     pergunta_compatibilidade = any(
         termo in pergunta_sem_acentos
-        for termo in ("serve", "servi", "compat", "aplica", "encaixa", "veiculo", "carro", "peugeot", "thp", "308cc")
+        for termo in ("serve", "servi", "compat", "aplica", "encaixa", "veiculo", "carro", "chassi", "vin", "peugeot", "thp", "308cc")
     )
     resposta_compatibilidade = any(
         termo in texto_sem_acentos
@@ -19860,21 +18275,23 @@ class _PerguntasVertexGeminiV2Client:
         self.parser = AIResponseParser()
 
     def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
-        web_search_query = _perguntas_ia_v2_query_pesquisa(metadata)
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        fluxo_pos_venda = str(metadata_dict.get("category") or "").strip() == "post_sale"
+        web_search_query = "" if fluxo_pos_venda else _perguntas_ia_v2_query_pesquisa(metadata_dict)
         payload = IAChatRequest(
             message=prompt,
             page="Perguntas e pos venda",
             context={
                 "modulo": "perguntas_pos_venda",
-                "tipo": ML_PERGUNTAS_IA_V2_MODO,
-                "tipo_treinamento": "perguntas_anuncio",
-                "origem_ia": "mercado_livre_perguntas_v2_vertex_gemini",
-                "forcar_busca_web_chat": True,
-                "web_search_required": True,
+                "tipo": ML_POS_VENDA_IA_V2_MODO if fluxo_pos_venda else ML_PERGUNTAS_IA_V2_MODO,
+                "tipo_treinamento": "pos_venda" if fluxo_pos_venda else "perguntas_anuncio",
+                "origem_ia": "mercado_livre_perguntas_pos_venda_v2_vertex_gemini" if fluxo_pos_venda else "mercado_livre_perguntas_v2_vertex_gemini",
+                "forcar_busca_web_chat": not fluxo_pos_venda,
+                "web_search_required": not fluxo_pos_venda,
                 "web_search_query": web_search_query,
-                "ativar_google_search_grounding": True,
+                "ativar_google_search_grounding": not fluxo_pos_venda,
                 "loja": self.loja,
-                "metadata": metadata or {},
+                "metadata": metadata_dict,
             },
             model=self.model_req,
             tool_results=[],
@@ -19952,8 +18369,8 @@ def _perguntas_ia_v2_prompt(
             "A intencao foi classificada como PERGUNTA DE ANUNCIO.",
             "Responda diretamente a ultima pergunta do comprador; nao reinicie o atendimento.",
             "Nao mencione SKU, codigo interno, quantidade em estoque, status do anuncio, nome da loja ou link do proprio anuncio.",
-            "Se faltar dado tecnico ou compatibilidade segura, responda com cautela e peca a informacao necessaria.",
-            "Em compatibilidade automotiva sem confirmacao objetiva, recomende confirmar com mecanico de confianca e nao peca chassi.",
+            "Se faltar dado tecnico ou compatibilidade segura, responda com cautela; em compatibilidade automotiva, nao peca chassi.",
+            "Em compatibilidade automotiva sem confirmacao objetiva, recomende confirmar com mecanico de confianca e nao use a frase 'nao conseguimos confirmar a compatibilidade'.",
             "Se a pergunta for sobre outra peca, so informe link quando o contexto interno trouxer anuncio ativo e link.",
         ])
     if app_guidance:
@@ -19972,15 +18389,80 @@ def _perguntas_ia_v2_prompt(
     return _perguntas_ia_compactar_contexto("\n\n".join(partes), 32000)
 
 
+def _perguntas_ia_v2_resposta_segura_compatibilidade(agent_input: dict, loja: str) -> str:
+    agent_input = agent_input if isinstance(agent_input, dict) else {}
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    historico = question.get("history") if isinstance(question.get("history"), list) else []
+    textos = [str(question.get("text") or "")]
+    for evento in historico[-10:]:
+        if not isinstance(evento, dict):
+            continue
+        role = str(evento.get("role") or evento.get("from_role") or "").strip().lower()
+        if role in {"seller", "loja", "store"}:
+            continue
+        textos.append(str(evento.get("text") or ""))
+    pergunta_sem_acentos = _favoritos_normalizar_sem_acentos(" ".join(textos))
+    intent = _perguntas_ia_intencao_agent(agent_input)
+    if intent.get("intencao") != "compatibilidade" and not any(
+        termo in pergunta_sem_acentos
+        for termo in ("serve", "servi", "compat", "aplica", "encaixa", "veiculo", "carro", "chassi", "vin")
+    ):
+        return ""
+    return _perguntas_ia_resposta_final_loja(
+        "Para o veiculo informado, nao temos confirmacao objetiva da aplicacao. "
+        "Recomendamos confirmar com seu mecanico de confianca antes da compra.",
+        loja,
+    )
+
+
+def _perguntas_ia_v2_corrigir_resposta_bloqueada(
+    client_id: str,
+    loja: str,
+    agent_input: dict,
+    model_req: str,
+    resposta_bloqueada: str,
+    violacoes: list[str],
+) -> tuple[str, str]:
+    mensagem = _perguntas_ia_v2_prompt(
+        client_id,
+        agent_input,
+        resposta_bloqueada=resposta_bloqueada,
+        violacoes=violacoes,
+    )
+    payload = IAChatRequest(
+        message=mensagem,
+        page="Perguntas e pos venda",
+        context={
+            "modulo": "perguntas_pos_venda",
+            "tipo": "correcao_app_perguntas_v2",
+            "tipo_treinamento": "perguntas_anuncio",
+            "origem_ia": "mercado_livre_perguntas_v2_correcao_validacao_app",
+            "desativar_recursos_chat": True,
+            "desativar_busca_web_chat": True,
+            "modo_rapido_sidebar": True,
+            "loja": loja,
+        },
+        model=model_req,
+    )
+    resposta, model_usado = _ia_agent_perguntas_chamar_modelo(client_id, payload, model_req)
+    resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
+    if not resposta_limpa:
+        return "", model_usado
+    return _perguntas_ia_resposta_final_loja(resposta_limpa, loja), model_usado
+
+
 def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[str, str, list[dict]]:
     perf_total_t0 = time.perf_counter()
     loja = str((agent_input or {}).get("store") or (agent_input or {}).get("loja") or "").strip()
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja no input da nova IA.")
     settings = GeminiQuestionsSettings.from_env()
+    fluxo_pos_venda = _perguntas_ia_fluxo_pos_venda(agent_input)
     settings.max_chars = min(int(settings.max_chars or ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO), ML_RESPOSTA_PERGUNTA_LIMITE_SEGURO)
-    settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not _perguntas_ia_v2_exigir_aprovacao())
-    model_req = _normalizar_ia_modelo_padrao(settings.model or _ia_modelo_perguntas_configurado())
+    exige_aprovacao = _pos_venda_ia_v2_exigir_aprovacao() if fluxo_pos_venda else _perguntas_ia_v2_exigir_aprovacao()
+    settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not exige_aprovacao)
+    modelo_configurado = _ia_modelo_pos_venda_configurado() if fluxo_pos_venda else _ia_modelo_perguntas_configurado()
+    model_req = _normalizar_ia_modelo_padrao(settings.model or modelo_configurado)
     if not _modelo_eh_vertex_ai(model_req):
         model_req = IA_MODELO_PADRAO_SISTEMA
     settings.model = model_req
@@ -19993,6 +18475,7 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
             "gemini_model": model_req,
             "vertex_gemini": True,
             "auto_publish_enabled": settings.auto_publish_enabled,
+            "fluxo_pos_venda": fluxo_pos_venda,
         },
     }]
     try:
@@ -20049,15 +18532,78 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
         if _perguntas_ia_resposta_fallback_invalida(resposta_limpa):
             raise PerguntasIARespostaIndisponivel("Resposta de fallback da nova IA de perguntas bloqueada.")
         violacoes = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_limpa)
-        if violacoes and resultado.source == "gemini":
+        if violacoes:
             diagnostico[0]["result"]["app_validation_issues"] = violacoes[:8]
-            raise PerguntasIARespostaIndisponivel(
-                "Nova IA de perguntas gerou resposta fora das orientacoes do app: " + ", ".join(violacoes[:6])
-            )
-        elif violacoes:
-            raise PerguntasIARespostaIndisponivel(
-                "Nova IA de perguntas gerou resposta fora das orientacoes: " + ", ".join(violacoes[:6])
-            )
+            violacoes_pendentes = list(violacoes)
+            if resultado.source == "gemini":
+                perf_corr_t0 = time.perf_counter()
+                try:
+                    resposta_corrigida, model_corrigido = _perguntas_ia_v2_corrigir_resposta_bloqueada(
+                        client_id,
+                        loja,
+                        agent_input,
+                        model_req,
+                        resposta_limpa,
+                        violacoes,
+                    )
+                except Exception as corr_exc:
+                    resposta_corrigida, model_corrigido = "", model_usado
+                    _ia_agent_perguntas_log_perf(
+                        client_id,
+                        loja,
+                        agent_input,
+                        "v2_correcao_validacao_app",
+                        time.perf_counter() - perf_corr_t0,
+                        tentativa=2,
+                        modelo=model_req,
+                        status="erro",
+                        erro=type(corr_exc).__name__,
+                    )
+                else:
+                    violacoes_corrigidas = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_corrigida)
+                    if resposta_corrigida and not _perguntas_ia_resposta_fallback_invalida(resposta_corrigida) and not violacoes_corrigidas:
+                        resposta_limpa = resposta_corrigida
+                        model_usado = model_corrigido or model_usado
+                        violacoes_pendentes = []
+                        diagnostico[0]["result"].update({
+                            "app_validation_repaired": True,
+                            "app_validation_repair_issues": [],
+                        })
+                    else:
+                        violacoes_pendentes = violacoes_corrigidas or violacoes_pendentes
+                        diagnostico[0]["result"].update({
+                            "app_validation_repaired": False,
+                            "app_validation_repair_issues": violacoes_pendentes[:8],
+                        })
+                    _ia_agent_perguntas_log_perf(
+                        client_id,
+                        loja,
+                        agent_input,
+                        "v2_correcao_validacao_app",
+                        time.perf_counter() - perf_corr_t0,
+                        tentativa=2,
+                        modelo=model_corrigido or model_req,
+                        status="ok" if not violacoes_pendentes else "violacao",
+                        violacoes="|".join(violacoes_pendentes[:5]) if violacoes_pendentes else "",
+                    )
+            if violacoes_pendentes:
+                resposta_segura = _perguntas_ia_v2_resposta_segura_compatibilidade(agent_input, loja)
+                violacoes_seguras = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_segura) if resposta_segura else violacoes_pendentes
+                if resposta_segura and not violacoes_seguras:
+                    resposta_limpa = resposta_segura
+                    violacoes_pendentes = []
+                    diagnostico[0]["result"].update({
+                        "app_validation_repaired": True,
+                        "app_validation_repair_source": "fallback_local_compatibilidade",
+                        "app_validation_repair_issues": [],
+                    })
+            if violacoes_pendentes:
+                mensagem = "Nova IA de perguntas gerou resposta fora das orientacoes"
+                if resultado.source == "gemini":
+                    mensagem += " do app"
+                raise PerguntasIARespostaIndisponivel(
+                    mensagem + ": " + ", ".join(violacoes_pendentes[:6])
+                )
         _ia_agent_perguntas_log_perf(
             client_id,
             loja,
@@ -21265,8 +19811,8 @@ def _perguntas_ia_gerar_resposta(
             "Quando citar o veiculo, nunca copie a pergunta inteira do comprador; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
             "Nunca invente link; use somente links retornados na lista de anuncios ativos quando o link for realmente necessario. "
             "Nao mencione SKU, codigo interno, quantidade em estoque, preco ou nome da loja na resposta ao comprador, salvo se o comprador perguntar isso diretamente. "
-            "Se a pergunta depender de dado ausente, responda pedindo a informacao necessaria de forma educada. "
-            "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca. "
+            "Se a pergunta depender de dado ausente, responda pedindo a informacao necessaria de forma educada, exceto chassi em compatibilidade automotiva. "
+            "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca e nao use a frase 'nao conseguimos confirmar a compatibilidade'. "
             "Quando houver historico da conversa, responda considerando a ultima pergunta no contexto das mensagens anteriores, sem reiniciar o atendimento. "
             "A resposta sera enviada ao comprador, portanto seja cordial, objetiva e comercial. "
             "Nunca se apresente como IA, assistente ou JK Sistema. "
@@ -22413,8 +20959,6 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-@app.post("/api/ia/agente/perguntas/query")
-@app.post("/api/ia/agent/perguntas/query")
 def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
     _ia_agent_endpoint_autorizar(request)
     metodo = str(payload.classMethod or "query").strip() or "query"
@@ -22450,7 +20994,6 @@ def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
     }
 
 
-@app.post("/api/ia/chat")
 def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     perf_t0 = time.perf_counter()
     contexto = payload.context if isinstance(payload.context, dict) else {}
@@ -22582,7 +21125,6 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     }
 
 
-@app.get("/api/ia/modelos")
 async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenant_id)):
     pode_escolher_modelo = _usuario_pode_escolher_modelo_chat(request, client_id)
     return {
@@ -22626,13 +21168,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
 # IA Ã¢â‚¬â€ Endpoints de PersistÃƒÂªncia de Conversas
 # Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
-class IASalvarConversaRequest(BaseModel):
-    conversa_id: str
-    modulo: str
-    titulo: str
-    mensagens: list[dict]
 
-@app.post("/api/ia/conversas/salvar")
 async def ia_salvar_conversa(payload: IASalvarConversaRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     """Salva uma conversa no servidor."""
     username = _extrair_username_do_request(request)
@@ -22649,7 +21185,6 @@ async def ia_salvar_conversa(payload: IASalvarConversaRequest, request: Request,
         "conversa_id": payload.conversa_id,
     }
 
-@app.get("/api/ia/conversas/listar")
 async def ia_listar_conversas(request: Request, modulo: str = None, client_id: str = Depends(get_tenant_id)):
     """Lista conversas salvas do cliente, opcionalmente filtradas por mÃƒÂ³dulo."""
     username = _extrair_username_do_request(request)
@@ -22659,7 +21194,6 @@ async def ia_listar_conversas(request: Request, modulo: str = None, client_id: s
         "conversas": conversas,
     }
 
-@app.get("/api/ia/conversas/{conversa_id}")
 async def ia_carregar_conversa(conversa_id: str, request: Request, client_id: str = Depends(get_tenant_id)):
     """Carrega uma conversa completa com suas mensagens."""
     username = _extrair_username_do_request(request)
@@ -22671,7 +21205,6 @@ async def ia_carregar_conversa(conversa_id: str, request: Request, client_id: st
         "conversa": conversa,
     }
 
-@app.delete("/api/ia/conversas/{conversa_id}")
 async def ia_deletar_conversa(conversa_id: str, request: Request, client_id: str = Depends(get_tenant_id)):
     """Deleta uma conversa e suas mensagens."""
     username = _extrair_username_do_request(request)
@@ -22681,7 +21214,6 @@ async def ia_deletar_conversa(conversa_id: str, request: Request, client_id: str
         "conversa_id": conversa_id,
     }
 
-@app.get("/api/ia/rag/status")
 async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
     cfg = _ia_rag_config()
     status = {
@@ -22719,7 +21251,6 @@ async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
 
     return status
 
-@app.post("/api/ia/rag/indexar")
 async def ia_rag_indexar(payload: IARagIndexRequest, client_id: str = Depends(get_tenant_id)):
     if not _ia_rag_ativo():
         raise HTTPException(
@@ -22733,7 +21264,6 @@ async def ia_rag_indexar(payload: IARagIndexRequest, client_id: str = Depends(ge
         raise HTTPException(status_code=502, detail=str(exc))
     return {"success": True, "inseridos": inseridos}
 
-@app.post("/api/ia/rag/reindexar")
 async def ia_rag_reindexar(payload: IARagReindexRequest = IARagReindexRequest(), client_id: str = Depends(get_tenant_id)):
     if not _ia_rag_ativo():
         raise HTTPException(
@@ -25679,6 +24209,20 @@ def _firebase_db():
             return None
 
 
+configure_configuracoes_context(
+    arquivo_config_globais=ARQUIVO_CONFIG_GLOBAIS,
+    logger=logger,
+    openai_api_key=_obter_openai_api_key,
+    deepseek_api_key=_obter_deepseek_api_key,
+    gemini_api_key=_obter_gemini_api_key,
+    agent_api_key=_vertex_ai_agent_api_key,
+    env_texto=_env_texto,
+    firebase_deve_usar=_firebase_deve_usar,
+    firebase_db=_firebase_db,
+    firebase_access_obrigatorio=_firebase_access_obrigatorio,
+)
+
+
 def _firebase_doc_id(username: str) -> str:
     username_norm = str(username or "").strip().lower()
     username_norm = username_norm.replace("/", "_")
@@ -27331,11 +25875,6 @@ SHARED_SYNC_SCOPES = {
 
 SHARED_SYNC_ALLOWED_EXTENSIONS = {".json", ".csv", ".db", ".sqlite", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".webp"}
 SHARED_SYNC_CHUNK_CHARS = 620_000
-SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
-SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES = 75 * 1024 * 1024
-SHARED_SYNC_DEFAULT_LOCAL_BACKUP_RETENTION = 24
-
-
 def _firebase_shared_sync_config_collection_name() -> str:
     return _env_texto("FIREBASE_SHARED_SYNC_CONFIG_COLLECTION", "JK_FIREBASE_SHARED_SYNC_CONFIG_COLLECTION") or "jk_sistema_shared_sync_config"
 
@@ -27354,99 +25893,6 @@ def _firebase_shared_sync_user_invites_collection_name() -> str:
 
 def _firebase_shared_sync_user_links_collection_name() -> str:
     return _env_texto("FIREBASE_SHARED_SYNC_USER_LINKS_COLLECTION", "JK_FIREBASE_SHARED_SYNC_USER_LINKS_COLLECTION") or "jk_sistema_shared_sync_user_links"
-
-
-def _shared_sync_safe_doc_id(*partes: str) -> str:
-    raw = "|".join(str(parte or "").strip().lower() for parte in partes)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _shared_sync_doc_id(client_id: str, scope: str) -> str:
-    return _shared_sync_safe_doc_id("shared-sync", client_id, scope)
-
-
-def _shared_sync_pair_doc_id(source_client_id: str, source_username: str, target_client_id: str, target_username: str, scope: str) -> str:
-    return _shared_sync_safe_doc_id("shared-sync-user-pair", source_client_id, source_username, target_client_id, target_username, scope)
-
-
-def _shared_sync_machine_doc_id(client_id: str, username: str, scope: str) -> str:
-    return _shared_sync_safe_doc_id("shared-sync-machine", client_id, username, scope)
-
-
-def _shared_sync_config_doc_id(client_id: str) -> str:
-    return _shared_sync_safe_doc_id("shared-sync-config", client_id)
-
-
-def _shared_sync_now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _shared_sync_env_int(nome: str, padrao: int, minimo: int, maximo: int) -> int:
-    try:
-        valor = int(float(os.getenv(nome, str(padrao)) or padrao))
-        return max(minimo, min(valor, maximo))
-    except Exception:
-        return padrao
-
-
-def _shared_sync_docs_cache_ttl_seconds() -> int:
-    return _shared_sync_env_int("JK_SHARED_SYNC_DOCS_CACHE_TTL_S", 300, 30, 3600)
-
-
-def _shared_sync_docs_cache_key(collection_name: str, local_path: str) -> tuple[str, str]:
-    return (str(collection_name or "").strip(), os.path.abspath(str(local_path or "")))
-
-
-def _shared_sync_clone_docs(items: list[dict]) -> list[dict]:
-    return [_shared_sync_json_clone(item) for item in (items or []) if isinstance(item, dict)]
-
-
-def _shared_sync_docs_cache_get(collection_name: str, local_path: str, allow_expired: bool = False) -> Optional[list[dict]]:
-    key = _shared_sync_docs_cache_key(collection_name, local_path)
-    now = time.time()
-    ttl = _shared_sync_docs_cache_ttl_seconds()
-    with SHARED_SYNC_DOCS_CACHE_LOCK:
-        cached = SHARED_SYNC_DOCS_CACHE.get(key)
-        if not cached:
-            return None
-        if not allow_expired and now - float(cached.get("ts") or 0) > ttl:
-            return None
-        return _shared_sync_clone_docs(cached.get("docs") or [])
-
-
-def _shared_sync_docs_cache_set(collection_name: str, local_path: str, docs: list[dict]) -> None:
-    key = _shared_sync_docs_cache_key(collection_name, local_path)
-    with SHARED_SYNC_DOCS_CACHE_LOCK:
-        SHARED_SYNC_DOCS_CACHE[key] = {
-            "ts": time.time(),
-            "docs": _shared_sync_clone_docs(docs),
-        }
-
-
-def _shared_sync_docs_cache_invalidate(collection_name: Optional[str] = None, local_path: Optional[str] = None) -> None:
-    with SHARED_SYNC_DOCS_CACHE_LOCK:
-        if collection_name is None and local_path is None:
-            SHARED_SYNC_DOCS_CACHE.clear()
-            return
-        target_key = _shared_sync_docs_cache_key(collection_name or "", local_path or "")
-        for key in list(SHARED_SYNC_DOCS_CACHE.keys()):
-            if collection_name is not None and key[0] != target_key[0]:
-                continue
-            if local_path is not None and key[1] != target_key[1]:
-                continue
-            SHARED_SYNC_DOCS_CACHE.pop(key, None)
-
-
-def _shared_sync_max_file_bytes() -> int:
-    return _shared_sync_env_int("JK_SHARED_SYNC_MAX_FILE_BYTES", SHARED_SYNC_DEFAULT_MAX_FILE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
-
-
-def _shared_sync_max_bundle_bytes() -> int:
-    return _shared_sync_env_int("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
-
-
-def _shared_sync_local_backup_retention() -> int:
-    return _shared_sync_env_int("JK_SHARED_SYNC_LOCAL_BACKUP_RETENTION", SHARED_SYNC_DEFAULT_LOCAL_BACKUP_RETENTION, 0, 500)
 
 
 def _shared_sync_prune_local_backups(tenant_abs: str) -> None:
@@ -27544,11 +25990,6 @@ def _shared_sync_config_local_write(client_id: str, config: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
-
-
-def _shared_sync_safe_filename(valor: str) -> str:
-    texto = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(valor or "default").strip())
-    return (texto or "default")[:90]
 
 
 def _shared_sync_state_path(client_id: str, username: str) -> str:
@@ -27816,14 +26257,6 @@ def _shared_sync_resolver_scopes(config: dict, requested: Optional[list[str]], s
     return saida
 
 
-def _shared_sync_relativo_seguro(rel_path: str) -> str:
-    rel = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
-    norm = os.path.normpath(rel).replace("\\", "/")
-    if not norm or norm == "." or norm == ".." or norm.startswith("../") or os.path.isabs(norm):
-        raise HTTPException(status_code=400, detail="Pacote contem caminho invalido.")
-    return norm
-
-
 def _shared_sync_user_scoped_rels(scope: str, username: str) -> list[str]:
     slug = _favoritos_usuario_slug(username)
     if scope == "favoritos_historico":
@@ -27853,14 +26286,6 @@ def _shared_sync_scope_match(scope: str, rel_path: str) -> bool:
         elif fnmatch.fnmatch(rel, pat):
             return True
     return False
-
-
-def _shared_sync_sha256_file(path: str) -> str:
-    sha = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
 
 
 def _shared_sync_sqlite_ext(path: str) -> bool:
@@ -27988,10 +26413,6 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
                 warnings.append(f"{rel} ignorado: {exc}")
     entries.sort(key=lambda item: item["relative_path"])
     return entries, warnings
-
-
-def _shared_sync_bytes_sha256(data: bytes) -> str:
-    return hashlib.sha256(data or b"").hexdigest()
 
 
 def _shared_sync_entry_from_bytes(rel: str, data: bytes, mtime: float, item_keys: Optional[list[str]] = None) -> dict:
@@ -28910,13 +27331,6 @@ def _shared_sync_aplicar_user_scoped_share(
         "files": [target_rel],
         "shared_source_count": len(fontes),
     }
-
-
-def _shared_sync_json_clone(valor: Any) -> Any:
-    try:
-        return json.loads(json.dumps(valor, ensure_ascii=False, default=str))
-    except Exception:
-        return valor
 
 
 def _shared_sync_valor_preenchido(valor: Any) -> bool:
@@ -30781,7 +29195,6 @@ def _shared_sync_propagar_lojas_integracoes_cliente(client_id: str, machine_id: 
     return resultados
 
 
-@app.get("/api/shared-sync/users")
 def shared_sync_listar_usuarios_destino(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
@@ -30811,7 +29224,6 @@ def shared_sync_listar_usuarios_destino(
     }
 
 
-@app.get("/api/shared-sync/user-shares")
 def shared_sync_user_shares_status(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
@@ -30820,7 +29232,6 @@ def shared_sync_user_shares_status(
     return _shared_sync_user_shares_for_session(sessao)
 
 
-@app.post("/api/shared-sync/user-shares/invite")
 def shared_sync_user_shares_invite(
     payload: SharedSyncUserInviteCreateRequest,
     authorization: Optional[str] = Header(default=None),
@@ -30946,7 +29357,6 @@ def shared_sync_user_shares_invite(
     }
 
 
-@app.post("/api/shared-sync/user-shares/invites/{invite_id}/accept")
 def shared_sync_user_shares_accept(
     invite_id: str,
     payload: SharedSyncUserInviteActionRequest,
@@ -31024,7 +29434,6 @@ def shared_sync_user_shares_accept(
     }
 
 
-@app.post("/api/shared-sync/user-shares/invites/{invite_id}/reject")
 def shared_sync_user_shares_reject(
     invite_id: str,
     authorization: Optional[str] = Header(default=None),
@@ -31046,7 +29455,6 @@ def shared_sync_user_shares_reject(
     return {"success": True, "message": "Convite recusado.", "invite": _shared_sync_invite_public(invite, sessao)}
 
 
-@app.post("/api/shared-sync/user-shares/invites/{invite_id}/cancel")
 def shared_sync_user_shares_cancel(
     invite_id: str,
     authorization: Optional[str] = Header(default=None),
@@ -31084,7 +29492,6 @@ def shared_sync_user_shares_cancel(
     }
 
 
-@app.delete("/api/shared-sync/user-shares/invites/{invite_id}")
 def shared_sync_user_shares_delete(
     invite_id: str,
     authorization: Optional[str] = Header(default=None),
@@ -31119,7 +29526,6 @@ def shared_sync_user_shares_delete(
     }
 
 
-@app.put("/api/shared-sync/user-shares/links/{link_id}")
 def shared_sync_user_shares_link_update(
     link_id: str,
     payload: SharedSyncUserLinkUpdateRequest,
@@ -31149,7 +29555,6 @@ def shared_sync_user_shares_link_update(
     return {"success": True, "message": "Preferencias atualizadas.", "link": _shared_sync_link_public(link, sessao)}
 
 
-@app.post("/api/shared-sync/user-shares/links/{link_id}/push")
 def shared_sync_user_shares_link_push(
     link_id: str,
     payload: SharedSyncUserLinkRunRequest,
@@ -31167,7 +29572,6 @@ def shared_sync_user_shares_link_push(
     return {"success": True, "direction": "push", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
 
-@app.post("/api/shared-sync/user-shares/links/{link_id}/pull")
 def shared_sync_user_shares_link_pull(
     link_id: str,
     payload: SharedSyncUserLinkRunRequest,
@@ -31185,7 +29589,6 @@ def shared_sync_user_shares_link_pull(
     return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
 
-@app.post("/api/shared-sync/user-shares/auto-push")
 def shared_sync_user_shares_auto_push(
     payload: SharedSyncUserLinkRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31222,7 +29625,6 @@ def shared_sync_user_shares_auto_push(
     return {"success": True, "direction": "auto-push", "results": results, "skipped": skipped}
 
 
-@app.post("/api/shared-sync/user-shares/auto")
 def shared_sync_user_shares_auto(
     payload: SharedSyncUserLinkRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31282,7 +29684,6 @@ def shared_sync_user_shares_auto(
     return {"success": True, "direction": "user-share-auto", "results": results, "skipped": skipped}
 
 
-@app.get("/api/shared-sync/machine-sync")
 def shared_sync_machine_status(
     machine_id: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
@@ -31292,7 +29693,6 @@ def shared_sync_machine_status(
     return _shared_sync_machine_status_payload(sessao, machine_id or "")
 
 
-@app.put("/api/shared-sync/machine-sync")
 def shared_sync_machine_salvar_config(
     payload: SharedSyncMachineConfigRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31303,7 +29703,6 @@ def shared_sync_machine_salvar_config(
     return _shared_sync_machine_status_payload(sessao, "")
 
 
-@app.post("/api/shared-sync/machine-sync/push")
 def shared_sync_machine_push(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31315,7 +29714,6 @@ def shared_sync_machine_push(
     return {"success": True, "direction": "machine-push", "results": results}
 
 
-@app.post("/api/shared-sync/machine-sync/pull")
 def shared_sync_machine_pull(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31327,7 +29725,6 @@ def shared_sync_machine_pull(
     return {"success": True, "direction": "machine-pull", "results": results}
 
 
-@app.post("/api/shared-sync/machine-sync/auto")
 def shared_sync_machine_auto(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31337,7 +29734,6 @@ def shared_sync_machine_auto(
     return _shared_sync_machine_auto_run(sessao, payload.machine_id or "", payload.scopes)
 
 
-@app.get("/api/admin/shared-sync/config")
 def admin_shared_sync_config(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
@@ -31346,7 +29742,6 @@ def admin_shared_sync_config(
     return _shared_sync_status_payload(client_id)
 
 
-@app.put("/api/admin/shared-sync/config")
 def admin_shared_sync_salvar_config(
     payload: SharedSyncConfigRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31357,7 +29752,6 @@ def admin_shared_sync_salvar_config(
     return _shared_sync_status_payload(client_id, config)
 
 
-@app.get("/api/shared-sync/status")
 def shared_sync_status(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
@@ -31369,7 +29763,6 @@ def shared_sync_status(
     return payload
 
 
-@app.post("/api/shared-sync/auto-pull")
 def shared_sync_auto_pull(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31461,7 +29854,6 @@ def shared_sync_auto_pull(
     }
 
 
-@app.post("/api/shared-sync/push")
 def shared_sync_push(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31474,7 +29866,6 @@ def shared_sync_push(
     return {"success": True, "direction": "push", "results": resultados}
 
 
-@app.post("/api/shared-sync/pull")
 def shared_sync_pull(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31490,7 +29881,9 @@ def shared_sync_pull(
     return {"success": True, "direction": "pull", "results": resultados}
 
 
-@app.get("/api/admin/access-backend")
+app.include_router(create_shared_sync_router(sys.modules[__name__]))
+
+
 def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
     firebase_file = _firebase_service_account_file()
     firebase_configurado = _firebase_tem_configuracao()
@@ -31511,7 +29904,6 @@ def admin_status_controle_acesso(client_id: str = Depends(get_tenant_id)):
     }
 
 
-@app.get("/api/firebase/realtime-presence/session")
 def firebase_realtime_presence_session(
     request: Request,
     machine_id: Optional[str] = "",
@@ -31618,7 +30010,6 @@ def firebase_realtime_presence_session(
     }
 
 
-@app.get("/api/admin/users")
 def admin_listar_usuarios(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
@@ -31628,7 +30019,6 @@ def admin_listar_usuarios(
     return {"success": True, "users": users, "backend": backend}
 
 
-@app.post("/api/admin/users/message")
 def admin_enviar_mensagem_usuario(
     payload: AdminUserMessageRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31674,7 +30064,6 @@ def admin_enviar_mensagem_usuario(
     }
 
 
-@app.post("/api/admin/users")
 def admin_salvar_usuario(
     payload: AdminUserUpsertRequest,
     authorization: Optional[str] = Header(default=None),
@@ -31691,7 +30080,6 @@ def admin_salvar_usuario(
     }
 
 
-@app.put("/api/admin/users/{username}/password")
 def admin_trocar_senha_usuario(
     username: str,
     payload: AdminUserPasswordRequest,
@@ -31707,7 +30095,6 @@ def admin_trocar_senha_usuario(
     }
 
 
-@app.put("/api/auth/change-password")
 def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     usuario = _obter_usuario_sql(sessao["username"])
@@ -31733,7 +30120,6 @@ def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Option
     return {"success": True, "message": "Senha alterada com sucesso."}
 
 
-@app.get("/api/auth/me", response_model=LoginResponse)
 def minha_sessao_auth(
     request: Request,
     authorization: Optional[str] = Header(default=None),
@@ -31767,7 +30153,6 @@ def minha_sessao_auth(
     return _montar_resposta_login_sucesso(sessao["username"], usuario, permissoes, client_usuario, machine_final)
 
 
-@app.put("/api/admin/users/{username}/reset-devices")
 def admin_resetar_dispositivos_usuario(
     username: str,
     authorization: Optional[str] = Header(default=None),
@@ -31782,7 +30167,6 @@ def admin_resetar_dispositivos_usuario(
     }
 
 
-@app.put("/api/admin/users/{username}/status")
 def admin_alterar_status_usuario(
     username: str,
     payload: AdminUserStatusRequest,
@@ -31798,7 +30182,6 @@ def admin_alterar_status_usuario(
     }
 
 
-@app.put("/api/admin/users/{username}/permissions")
 def admin_alterar_permissoes_usuario(
     username: str,
     payload: AdminUserPermissionsRequest,
@@ -31814,7 +30197,6 @@ def admin_alterar_permissoes_usuario(
     }
 
 
-@app.put("/api/admin/users/{username}/max-machines")
 def admin_alterar_limite_dispositivos_usuario(
     username: str,
     payload: AdminUserMaxMachinesRequest,
@@ -31830,7 +30212,6 @@ def admin_alterar_limite_dispositivos_usuario(
     }
 
 
-@app.delete("/api/admin/users/{username}")
 def admin_excluir_usuario(
     username: str,
     authorization: Optional[str] = Header(default=None),
@@ -32383,7 +30764,6 @@ def _montar_payload_usuarios_online(
     }
 
 
-@app.get("/api/admin/users/online")
 def admin_listar_usuarios_online(
     authorization: Optional[str] = Header(default=None),
 ):
@@ -32398,7 +30778,6 @@ def admin_listar_usuarios_online(
     )
 
 
-@app.post("/api/user/machines/heartbeat")
 def user_machine_heartbeat(
     payload: MachinePresenceHeartbeatRequest,
     request: Request,
@@ -32426,7 +30805,6 @@ def user_machine_heartbeat(
     }
 
 
-@app.get("/api/user/machines/online")
 def user_machines_online(
     machine_id: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
@@ -32447,7 +30825,6 @@ def user_machines_online(
     }
 
 
-@app.get("/api/user/chat/contacts")
 def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     usuario_atual = _obter_usuario_sql(sessao["username"])
@@ -32467,7 +30844,6 @@ def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
     return payload
 
 
-@app.post("/api/user/chat/typing")
 def user_chat_typing(payload: UserChatTypingRequest, authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     destino = _user_chat_norm_username(payload.username)
@@ -32492,7 +30868,6 @@ def user_chat_typing(payload: UserChatTypingRequest, authorization: Optional[str
     }
 
 
-@app.get("/api/user/chat/typing")
 def user_chat_typing_get(
     username: str,
     client_id: Optional[str] = None,
@@ -32514,7 +30889,6 @@ def user_chat_typing_get(
     }
 
 
-@app.get("/api/user/chat/unread")
 def user_chat_unread(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     _user_chat_mark_delivered_for_user(sessao["username"], sessao["client_id"])
@@ -32527,7 +30901,6 @@ def user_chat_unread(authorization: Optional[str] = Header(default=None)):
     }
 
 
-@app.get("/api/user/chat/history")
 def user_chat_history(
     username: str,
     client_id: Optional[str] = None,
@@ -32552,7 +30925,6 @@ def user_chat_history(
     }
 
 
-@app.post("/api/user/chat/send")
 def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     destino = _user_chat_norm_username(payload.username)
@@ -32597,7 +30969,6 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
     }
 
 
-@app.get("/api/user/messages")
 def user_admin_messages(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     mensagens = _admin_messages_for_user(sessao["username"], sessao["client_id"], unread_only=True)
@@ -32609,7 +30980,6 @@ def user_admin_messages(authorization: Optional[str] = Header(default=None)):
     }
 
 
-@app.get("/api/user/messages/stream")
 def user_admin_messages_stream(token: str = ""):
     authorization = f"Bearer {str(token or '').strip()}"
     sessao = _payload_sessao_por_authorization(authorization)
@@ -32623,7 +30993,6 @@ def user_admin_messages_stream(token: str = ""):
     )
 
 
-@app.post("/api/user/messages/{message_id}/read")
 def user_admin_message_read(message_id: str, authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     mensagem = _admin_messages_mark_read(message_id, sessao["username"], sessao["client_id"])
@@ -33354,7 +31723,6 @@ def _google_login_finish_poll(state: str, resp: LoginResponse):
     return _google_login_poll_html(False, resp.message or "Conta Google nao autorizada.")
 
 
-@app.get("/api/auth/google/config")
 def google_auth_config(request: Request):
     client_id = _google_login_client_id()
     client_secret = _google_login_client_secret()
@@ -33368,7 +31736,6 @@ def google_auth_config(request: Request):
     }
 
 
-@app.get("/api/auth/google/start")
 def google_auth_start(request: Request, machine_id: str = "", mode: str = "", app_version: str = ""):
     mode = str(mode or "").strip().lower()
     client_id_google = _google_login_client_id()
@@ -33417,7 +31784,6 @@ def google_auth_start(request: Request, machine_id: str = "", mode: str = "", ap
     return RedirectResponse(url=auth_url, status_code=303)
 
 
-@app.get("/api/auth/google/result/{state}")
 def google_auth_result(state: str):
     state = str(state or "").strip()
     agora = time.time()
@@ -33436,7 +31802,6 @@ def google_auth_result(state: str):
     return resultado
 
 
-@app.get("/auth/google/callback")
 def google_auth_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
     state = str(state or "").strip()
     if error:
@@ -33548,7 +31913,6 @@ def google_auth_callback(request: Request, code: Optional[str] = None, state: Op
     return _google_login_success_html(login_resp)
 
 
-@app.post("/api/auth/google", response_model=LoginResponse)
 async def google_login_endpoint(payload: GoogleLoginRequest, request: Request):
     client_id_google = _google_login_client_id()
     if not client_id_google:
@@ -34164,7 +32528,6 @@ def _drive_sync_local_snapshot(client_id: str) -> tuple[str, int]:
     return _drive_sync_snapshot_hash(entries), len(entries)
 
 
-@app.get("/api/drive-sync/status")
 def drive_sync_status(authorization: Optional[str] = Header(default=None)):
     ctx = _drive_sync_contexto_usuario(authorization)
     token_info = _google_drive_token_linkado(ctx)
@@ -34183,7 +32546,6 @@ def drive_sync_status(authorization: Optional[str] = Header(default=None)):
     }
 
 
-@app.post("/api/drive-sync/backup")
 def drive_sync_backup(authorization: Optional[str] = Header(default=None)):
     ctx = _drive_sync_contexto_usuario(authorization)
     result = _drive_sync_upload_backup(ctx)
@@ -34196,7 +32558,6 @@ def drive_sync_backup(authorization: Optional[str] = Header(default=None)):
     }
 
 
-@app.post("/api/drive-sync/restore-latest")
 def drive_sync_restore_latest(authorization: Optional[str] = Header(default=None)):
     ctx = _drive_sync_contexto_usuario(authorization)
     result = _drive_sync_restaurar_ultimo(ctx)
@@ -34212,7 +32573,6 @@ def drive_sync_restore_latest(authorization: Optional[str] = Header(default=None
     }
 
 
-@app.post("/api/drive-sync/backup-if-changed")
 def drive_sync_backup_if_changed(authorization: Optional[str] = Header(default=None)):
     ctx = _drive_sync_contexto_usuario(authorization)
     token_info = _google_drive_token_linkado(ctx)
@@ -34266,7 +32626,6 @@ def drive_sync_backup_if_changed(authorization: Optional[str] = Header(default=N
     }
 
 
-@app.post("/api/drive-sync/auto")
 def drive_sync_auto(authorization: Optional[str] = Header(default=None)):
     ctx = _drive_sync_contexto_usuario(authorization)
     token_info = _google_drive_token_linkado(ctx)
@@ -34327,7 +32686,6 @@ def drive_sync_auto(authorization: Optional[str] = Header(default=None)):
     }
 
 
-@app.post("/api/login", response_model=LoginResponse)
 async def login_endpoint(payload: LoginRequest, request: Request):
     username = str(payload.username or "").strip().lower()
     senha = str(payload.password or "")
@@ -34384,6 +32742,9 @@ async def login_endpoint(payload: LoginRequest, request: Request):
         logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial para %s: %s", username, exc)
 
     return _montar_resposta_login_sucesso(username, usuario, permissoes, client_id, machine_final)
+
+
+app.include_router(create_admin_usuarios_router(sys.modules[__name__]))
 
 # --- FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã¢â‚¬Â¢ES AUXILIARES PROMO (Adaptadas de promo.py) ---
 def carregar_id_planilha_sistema(client_id: str = None):
@@ -39024,7 +37385,6 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
     return [{"id": item_id} for item_id in ids], raw_total, cfg
 
 
-@app.post("/api/promo/analise-via-api")
 def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends(get_tenant_id)):
     """
     Compara duas promocoes/campanhas existentes do Mercado Livre
@@ -39991,7 +38351,6 @@ async def analisar_promo_via_api_sem_arquivos(
     }
 
 
-@app.post("/api/promo/analise-via-api-arquivos")
 async def analisar_promo_via_api_com_arquivos(
     loja: str = Form(...),
     promocao_a_id: str = Form(...),
@@ -40914,7 +39273,6 @@ def _promo_automacao_worker() -> None:
         time.sleep(30)
 
 
-@app.on_event("startup")
 def _promo_automacao_iniciar_background():
     if _agent_service_only():
         logger.info("[AGENT SERVICE] Automacao de promocoes desativada neste servico.")
@@ -40931,7 +39289,6 @@ def _promo_automacao_iniciar_background():
     ).start()
 
 
-@app.post("/api/promo/analise-via-api/start")
 async def iniciar_analise_promo_via_api(
     loja: str = Form(...),
     promocao_a_id: str = Form(...),
@@ -40951,7 +39308,6 @@ async def iniciar_analise_promo_via_api(
     )
 
 
-@app.post("/api/promo/analise-via-api-arquivos/start")
 async def iniciar_analise_promo_via_api_com_arquivos(
     loja: str = Form(...),
     promocao_a_id: str = Form(...),
@@ -41009,7 +39365,6 @@ async def iniciar_analise_promo_via_api_com_arquivos(
     return payload
 
 
-@app.get("/api/promo/analise-via-api-arquivos/progresso/{job_id}")
 async def progresso_analise_promo_via_api_com_arquivos(job_id: str, client_id: str = Depends(get_tenant_id)):
     if not _ensure_promo_worker_running():
         raise HTTPException(status_code=503, detail="Worker dedicado de promocoes indisponivel.")
@@ -41044,7 +39399,6 @@ async def progresso_analise_promo_via_api_com_arquivos(job_id: str, client_id: s
     return payload
 
 
-@app.post("/api/promo/analise-via-api-arquivos/cancelar/{job_id}")
 async def cancelar_analise_promo_via_api_com_arquivos(job_id: str, client_id: str = Depends(get_tenant_id)):
     if not _ensure_promo_worker_running():
         raise HTTPException(status_code=503, detail="Worker dedicado de promocoes indisponivel.")
@@ -41065,7 +39419,6 @@ async def cancelar_analise_promo_via_api_com_arquivos(job_id: str, client_id: st
     return payload
 
 
-@app.get("/api/promo/automacao")
 def promo_automacao_obter(client_id: str = Depends(get_tenant_id)):
     deve_processar = False
     with PROMO_AUTOMACAO_LOCK:
@@ -41089,7 +39442,6 @@ def promo_automacao_obter(client_id: str = Depends(get_tenant_id)):
     return _promo_automacao_public_payload(client_id, cfg or {})
 
 
-@app.put("/api/promo/automacao")
 def promo_automacao_salvar(req: PromoAutomacaoConfigRequest, client_id: str = Depends(get_tenant_id)):
     entrada = req.dict()
     with PROMO_AUTOMACAO_LOCK:
@@ -41631,7 +39983,6 @@ def _aplicar_participacoes_promocoes_payload(
     }
 
 
-@app.post("/api/promo/aplicar-participacoes")
 def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client_id: str = Depends(get_tenant_id)):
     return _aplicar_participacoes_promocoes_payload(req, client_id)
 
@@ -41688,7 +40039,6 @@ def _promo_aplicar_participacoes_job_worker(job_id: str, payload_req: dict, clie
         )
 
 
-@app.post("/api/promo/aplicar-participacoes/start")
 def aplicar_participacoes_promocoes_start(req: PromoAplicarParticipacaoRequest, client_id: str = Depends(get_tenant_id)):
     payload_req = req.model_dump() if hasattr(req, "model_dump") else req.dict()
     loja = str(payload_req.get("loja") or "").strip()
@@ -41727,7 +40077,6 @@ def aplicar_participacoes_promocoes_start(req: PromoAplicarParticipacaoRequest, 
     }
 
 
-@app.get("/api/promo/aplicar-participacoes/jobs/{job_id}")
 def aplicar_participacoes_promocoes_job(job_id: str, client_id: str = Depends(get_tenant_id)):
     job = _promo_job_get(job_id)
     if not job or job.get("client_id") != client_id:
@@ -41739,7 +40088,6 @@ def aplicar_participacoes_promocoes_job(job_id: str, client_id: str = Depends(ge
     return payload
 
 
-@app.get("/api/promo/analise")
 async def analisar_promo_automatico(
     loja: str,
     margem_minima: float = 15.0,
@@ -41807,6 +40155,9 @@ async def analisar_promo_automatico(
         "data": dados_analise,
         "planilha_gerada": planilha_nome,
     }
+
+
+app.include_router(create_promocoes_router(sys.modules[__name__]))
 
 def limpar_dados_para_exportacao(df_original):
     df_limpo = df_original.copy()
@@ -41946,346 +40297,6 @@ def gerar_excel_atualizado(file_bytes, df_decisoes):
         return None
 
 # --- FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã¢â‚¬Â¢ES AUXILIARES RENOVACAO (Adaptadas de renovacao.py) ---
-def find_sheet_name(workbook):
-    """Encontra o nome da aba de promocoes ou retorna a primeira."""
-    for name in workbook.sheetnames:
-        if "promocoes" in name.lower() or "promo" in name.lower():
-            return name
-    return workbook.sheetnames[0]
-
-def find_common_key(df_antiga, df_nova):
-    """Encontra uma coluna chave comum para unir os dataframes."""
-    POSSIBLE_KEYS = ['ITEM_ID', 'SELLER_SKU', 'SKU', 'ID', 'CÃƒÆ’Ã¢â‚¬Å“DIGO', 'MLB']
-    for key in POSSIBLE_KEYS:
-        if key in df_antiga.columns and key in df_nova.columns:
-            return key
-    return None
-
-def find_col(df_columns, names):
-    """Encontra o primeiro nome de coluna correspondente em uma lista de possibilidades."""
-    upper_cols = [str(c).upper().strip() for c in df_columns]
-    for name in names:
-        target = str(name).upper().strip()
-        if target in upper_cols:
-            return df_columns[upper_cols.index(target)]
-    return None
-
-def processar_renovacao_logic(file_antiga_bytes, file_nova_bytes):
-    try:
-        # 1. Carregar Planilha Antiga para MemÃƒÆ’Ã‚Â³ria (DataFrame) para busca rÃƒÆ’Ã‚Â¡pida
-        with io.BytesIO(file_antiga_bytes) as b:
-            # Tenta ler com openpyxl engine para garantir compatibilidade
-            try:
-                wb = openpyxl.load_workbook(b, data_only=True, read_only=True)
-                sheet_name = find_sheet_name(wb)
-                wb.close()
-                b.seek(0)
-                df_antiga = pd.read_excel(b, sheet_name=sheet_name, header=0)
-            except:
-                b.seek(0)
-                df_antiga = pd.read_excel(b, header=0)
-
-        # LÃƒÆ’Ã‚Â³gica de limpeza de cabeÃƒÆ’Ã‚Â§alho do renovacao.py (se > 4 linhas, assume header na linha 5)
-        cols_upper = [str(c).upper() for c in df_antiga.columns]
-        if len(df_antiga) > 4 and not any(k in cols_upper for k in ['ITEM_ID', 'SKU', 'MLB', 'STATUS']):
-             with io.BytesIO(file_antiga_bytes) as b:
-                 df_antiga = pd.read_excel(b, header=4)
-
-        df_antiga.columns = df_antiga.columns.str.strip().str.upper()
-        
-        # Identificar colunas chave na Antiga
-        key_col = find_common_key(df_antiga, df_antiga)
-        status_col = find_col(df_antiga.columns, ['STATUS', 'ESTADO'])
-        
-        if not key_col or not status_col:
-            return None, f"Colunas chave ou STATUS nÃƒÆ’Ã‚Â£o encontradas na planilha antiga."
-            
-        # Mapa: Chave -> Status (Remove duplicatas mantendo o ÃƒÆ’Ã‚Âºltimo)
-        df_antiga[key_col] = df_antiga[key_col].astype(str).str.strip()
-        status_map = df_antiga.set_index(key_col)[status_col].to_dict()
-        
-        # 2. Carregar Planilha Nova para EdiÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o (OpenPyXL)
-        wb_nova = openpyxl.load_workbook(io.BytesIO(file_nova_bytes))
-        ws_name = find_sheet_name(wb_nova)
-        ws_nova = wb_nova[ws_name]
-                
-        # Localizar cabeÃƒÆ’Ã‚Â§alho na Nova
-        header_row_idx = 1
-        header_map = {} 
-        
-        # Varre as primeiras 10 linhas para achar o cabeÃƒÆ’Ã‚Â§alho
-        found_header = False
-        for r in range(1, 11):
-            row_vals = [str(c.value).strip().upper() if c.value else "" for c in ws_nova[r]]
-            # CritÃƒÆ’Ã‚Â©rio: Tem chave E tem ACTION
-            if (key_col in row_vals or any(k in row_vals for k in ['ITEM_ID', 'SKU', 'MLB'])) and \
-               any(x in row_vals for x in ['ACTION', 'AÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O', 'ACAO']):
-                header_row_idx = r
-                for idx, val in enumerate(row_vals):
-                    if val: header_map[val] = idx + 1
-                found_header = True
-                break
-        
-        if not found_header:
-            return None, f"CabeÃƒÆ’Ã‚Â§alho nÃƒÆ’Ã‚Â£o encontrado na planilha nova."
-            
-        idx_key_nova = header_map.get(key_col)
-        if not idx_key_nova:
-             # Tenta achar qualquer chave vÃƒÆ’Ã‚Â¡lida no header map
-             for k in ['ITEM_ID', 'SELLER_SKU', 'SKU', 'ID', 'CÃƒÆ’Ã¢â‚¬Å“DIGO', 'MLB']:
-                 if k in header_map:
-                     idx_key_nova = header_map[k]
-                     break
-
-        idx_action_nova = header_map.get("ACTION") or header_map.get("AÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O") or header_map.get("ACAO")
-        
-        if not idx_key_nova or not idx_action_nova:
-             return None, "Colunas Chave ou ACTION nÃƒÆ’Ã‚Â£o mapeadas na planilha nova."
-
-        # 3. Processar Linhas
-        for row in ws_nova.iter_rows(min_row=header_row_idx + 1):
-            cell_key = row[idx_key_nova - 1].value
-            if not cell_key: continue
-            
-            key_val = str(cell_key).strip()
-            
-            # LÃƒÆ’Ã‚Â³gica de DecisÃƒÆ’Ã‚Â£o (Igual ao renovacao.py)
-            status_antigo = status_map.get(key_val)
-            acao = "Participar" # Default para itens novos (nÃƒÆ’Ã‚Â£o encontrados na antiga)
-            
-            if status_antigo:
-                st_str = str(status_antigo).strip().lower()
-                # Se estava ativo ou programado, mantÃƒÆ’Ã‚Â©m (Participar). Se estava inativo/pausado, NÃƒÆ’Ã‚Â£o participar.
-                if st_str not in ['ativo', 'programado', 'active']:
-                    acao = "NÃƒÆ’Ã‚Â£o participar"
-            
-            # Atualiza a cÃƒÆ’Ã‚Â©lula de aÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
-            row[idx_action_nova - 1].value = acao
-        
-        output = io.BytesIO()
-        wb_nova.save(output)
-        output.seek(0)
-        return output, "Sucesso"
-    except Exception as e:
-        return None, str(e)
-
-def analisar_renovacao_logic(file_antiga_bytes, file_nova_bytes):
-    try:
-        # --- 1. Carregar Planilha Antiga (Igual ao renovacao.py) ---
-        with io.BytesIO(file_antiga_bytes) as b:
-            try:
-                wb = openpyxl.load_workbook(b, data_only=True, read_only=True)
-                sheet_name_antiga = find_sheet_name(wb)
-                wb.close()
-                b.seek(0)
-                df_antiga = pd.read_excel(b, sheet_name=sheet_name_antiga, header=0)
-            except:
-                b.seek(0)
-                df_antiga = pd.read_excel(b, header=0)
-
-        # LÃƒÆ’Ã‚Â³gica de corte de linhas (PadrÃƒÆ’Ã‚Â£o ML: Header na linha 5)
-        cols_antiga_upper = [str(c).upper() for c in df_antiga.columns]
-        if len(df_antiga) > 4 and not any(k in cols_antiga_upper for k in ['ITEM_ID', 'SKU', 'MLB', 'STATUS']):
-             with io.BytesIO(file_antiga_bytes) as b:
-                 df_antiga = pd.read_excel(b, sheet_name=sheet_name_antiga if 'sheet_name_antiga' in locals() else 0, header=4)
-
-        df_antiga.columns = df_antiga.columns.str.strip().str.upper()
-        
-        # --- 2. Carregar Planilha Nova ---
-        with io.BytesIO(file_nova_bytes) as b:
-            try:
-                wb = openpyxl.load_workbook(b, data_only=True, read_only=True)
-                sheet_name_nova = find_sheet_name(wb)
-                wb.close()
-                b.seek(0)
-                df_nova = pd.read_excel(b, sheet_name=sheet_name_nova, header=0)
-            except:
-                b.seek(0)
-                df_nova = pd.read_excel(b, header=0)
-
-        cols_nova_upper = [str(c).upper() for c in df_nova.columns]
-        if len(df_nova) > 4 and not any(k in cols_nova_upper for k in ['ITEM_ID', 'SKU', 'MLB', 'ACTION', 'AÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O']):
-             with io.BytesIO(file_nova_bytes) as b:
-                 df_nova = pd.read_excel(b, sheet_name=sheet_name_nova if 'sheet_name_nova' in locals() else 0, header=4)
-        
-        df_nova.columns = df_nova.columns.str.strip().str.upper()
-
-        # --- 3. Identificar Chaves e Status ---
-        key_col = find_common_key(df_antiga, df_antiga)
-        status_col = find_col(df_antiga.columns, ['STATUS', 'ESTADO'])
-        
-        if not key_col:
-            return None, "NÃƒÆ’Ã‚Â£o foi possÃƒÆ’Ã‚Â­vel encontrar uma coluna chave comum (ITEM_ID, SKU, etc.)."
-        
-        # Listas de nomes possÃƒÆ’Ã‚Â­veis para colunas
-        DISCOUNT_NAMES = ['DISCOUNT_PERCENTAGE', 'DISCOUNT %', 'DESCONTO', 'DESC %', 'DISCOUNT']
-        PRICE_NAMES = ['FINAL_PRICE', 'PREÃƒÆ’Ã¢â‚¬Â¡O FINAL', 'PRECO FINAL', 'PRICE', 'PREÃƒÆ’Ã¢â‚¬Â¡O']
-
-        # --- 4. Processar Status Antigo ---
-        df_antiga[key_col] = df_antiga[key_col].astype(str).str.strip()
-        
-        # Identificar colunas na Antiga
-        disc_col_ant = find_col(df_antiga.columns, DISCOUNT_NAMES)
-        price_col_ant = find_col(df_antiga.columns, PRICE_NAMES)
-        
-        antiga_map = {}
-        
-        def get_clean_val(row, col):
-            if not col: return ""
-            val = row[col]
-            if pd.isna(val): return ""
-            return str(val).strip()
-
-        def parse_pct(val):
-            if not val: return 0.0
-            try:
-                s = str(val).replace('%', '').strip()
-                if ',' in s and '.' in s: s = s.replace('.', '').replace(',', '.')
-                elif ',' in s: s = s.replace(',', '.')
-                return float(s)
-            except:
-                return 0.0
-
-        for _, row in df_antiga.iterrows():
-            k = str(row[key_col]).strip()
-            antiga_map[k] = {
-                'STATUS': get_clean_val(row, status_col),
-                'DESC': get_clean_val(row, disc_col_ant),
-                'PRICE': get_clean_val(row, price_col_ant)
-            }
-        
-        # --- 5. Processar Nova e Gerar Dados ---
-        df_nova[key_col] = df_nova[key_col].astype(str).str.strip()
-        
-        # Colunas de exibiÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
-        title_col = find_col(df_nova.columns, ['TITLE', 'TITULO', 'TÃƒÆ’Ã‚ÂTULO'])
-        disc_col_nova = find_col(df_nova.columns, DISCOUNT_NAMES)
-        price_col_nova = find_col(df_nova.columns, PRICE_NAMES)
-
-        dados_analise = []
-        # Itera sobre a NOVA (Equivalente a Left Join / How Right do renovacao.py)
-        for _, row in df_nova.iterrows():
-            key_val = str(row[key_col])
-            
-            if not key_val.strip().upper().startswith("MLB"):
-                continue
-            
-            antiga_data = antiga_map.get(key_val, {})
-            status_antigo = antiga_data.get('STATUS', "")
-            
-            if not status_antigo:
-                acao = "Participar"
-            else:
-                st_str = str(status_antigo).strip().lower()
-                if 'elegÃƒÆ’Ã‚Â­vel' in st_str or 'elegivel' in st_str:
-                    acao = "NÃƒÆ’Ã‚Â£o participar"
-                elif st_str in ['ativo', 'programado']:
-                    acao = "Participar"
-                else:
-                    acao = "NÃƒÆ’Ã‚Â£o participar"
-                
-                # Regra: Se desconto novo > desconto antigo, NÃƒÆ’Ã‚Â£o participar
-                desc_antiga_val = parse_pct(antiga_data.get('DESC', ""))
-                desc_nova_val = parse_pct(str(row[disc_col_nova]) if disc_col_nova else "")
-                if desc_nova_val > desc_antiga_val + 1e-9: # +1e-9 para evitar erros de ponto flutuante
-                    acao = "NÃƒÆ’Ã‚Â£o participar"
-            
-            dados_analise.append({
-                "KEY": key_val,
-                "TITLE": str(row[title_col]) if title_col else "",
-                "STATUS_ANTIGO": status_antigo,
-                "DESC_ANTIGA": antiga_data.get('DESC', ""),
-                "DESC_NOVA": str(row[disc_col_nova]) if disc_col_nova else "",
-                "PRICE_ANTIGA": antiga_data.get('PRICE', ""),
-                "PRICE_NOVA": str(row[price_col_nova]) if price_col_nova else "",
-                "ACTION": acao
-            })
-            
-        return dados_analise, "Sucesso"
-    except Exception as e:
-        return None, f"Erro interno: {str(e)}"
-
-def gerar_excel_renovacao(file_nova_bytes, decisoes_list):
-    try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_nova_bytes))
-        ws_name = find_sheet_name(wb)
-        ws = wb[ws_name]
-        
-        # Mapeamento: Chave -> Objeto completo de decisÃƒÆ’Ã‚Â£o
-        decision_map = {str(d['KEY']).strip(): d for d in decisoes_list}
-        
-        # Re-localiza colunas (simplificado, assume mesma estrutura da anÃƒÆ’Ã‚Â¡lise)
-        # Para robustez total, repetimos a busca de header
-        header_row_idx = 1
-        col_key_idx = None
-        col_action_idx = None
-        col_desc_idx = None
-        col_price_idx = None
-        
-        DISCOUNT_NAMES = ['DISCOUNT_PERCENTAGE', 'DISCOUNT %', 'DESCONTO', 'DESC %', 'DISCOUNT']
-        PRICE_NAMES = ['FINAL_PRICE', 'PREÃƒÆ’Ã¢â‚¬Â¡O FINAL', 'PRECO FINAL', 'PRICE', 'PREÃƒÆ’Ã¢â‚¬Â¡O']
-        
-        for r in range(1, 21):
-            row_vals = [str(c.value).strip().upper() if c.value else "" for c in ws[r]]
-            if any(x in row_vals for x in ['ACTION', 'AÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O', 'ACAO']):
-                header_row_idx = r
-                
-                # Busca ÃƒÆ’Ã‚Â­ndices das colunas de valores e aÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
-                for idx, val in enumerate(row_vals):
-                    if val in ['ACTION', 'AÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O', 'ACAO']: col_action_idx = idx + 1
-                    if val in DISCOUNT_NAMES: col_desc_idx = idx + 1
-                    if val in PRICE_NAMES: col_price_idx = idx + 1
-                
-                # Busca ÃƒÆ’Ã‚Â­ndice da coluna chave com prioridade para ITEM_ID/MLB
-                if 'ITEM_ID' in row_vals:
-                    col_key_idx = row_vals.index('ITEM_ID') + 1
-                elif 'MLB' in row_vals:
-                    col_key_idx = row_vals.index('MLB') + 1
-                else:
-                    # Fallback para outras chaves
-                    for idx, val in enumerate(row_vals):
-                        if val in ['SKU', 'SELLER_SKU', 'ID', 'CÃƒÆ’Ã¢â‚¬Å“DIGO']:
-                            col_key_idx = idx + 1
-                            break
-                            
-                if col_key_idx and col_action_idx: break
-        
-        if not col_key_idx or not col_action_idx: return None, "Colunas nÃƒÆ’Ã‚Â£o encontradas para exportaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o."
-        
-        for row in ws.iter_rows(min_row=header_row_idx + 1):
-            cell_key = row[col_key_idx - 1].value
-            if cell_key:
-                k = str(cell_key).strip()
-                if k in decision_map:
-                    data = decision_map[k]
-                    # Atualiza AÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
-                    row[col_action_idx - 1].value = data.get('ACTION', '')
-                    
-                    # Atualiza Desconto (se existir coluna)
-                    if col_desc_idx and 'DESC_NOVA' in data:
-                        try:
-                            val = data['DESC_NOVA']
-                            if val and val != 'nan' and val != 'None':
-                                row[col_desc_idx - 1].value = float(val) if str(val).replace('.','',1).isdigit() else val
-                        except:
-                            row[col_desc_idx - 1].value = data['DESC_NOVA']
-                            
-                    # Atualiza PreÃƒÆ’Ã‚Â§o (se existir coluna)
-                    if col_price_idx and 'PRICE_NOVA' in data:
-                        try:
-                            val = data['PRICE_NOVA']
-                            if val and val != 'nan' and val != 'None':
-                                row[col_price_idx - 1].value = float(val) if str(val).replace('.','',1).isdigit() else val
-                        except:
-                            row[col_price_idx - 1].value = data['PRICE_NOVA']
-        
-        output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
-        return output, "Sucesso"
-    except Exception as e:
-        return None, str(e)
-
 def _renovacao_json_response(resp):
     try:
         return resp.json() or {}
@@ -43493,7 +41504,6 @@ def _renovacao_sincronizar_promocao_existente(
     }
 
 
-@app.get("/api/renovacao/campanhas-usuario")
 def renovacao_listar_campanhas_usuario(loja: str, client_id: str = Depends(get_tenant_id)):
     campanhas, _cfg = _renovacao_ml_listar_campanhas_usuario(client_id, loja)
     ag_payload = _renovacao_agendamentos_carregar(client_id)
@@ -43515,7 +41525,6 @@ def renovacao_listar_campanhas_usuario(loja: str, client_id: str = Depends(get_t
     return {"success": True, "loja": loja, "campaigns": campanhas, "total": len(campanhas)}
 
 
-@app.post("/api/renovacao/criar-proximo-mes")
 def renovacao_criar_proximo_mes(req: RenovacaoCampanhaCriarRequest, client_id: str = Depends(get_tenant_id)):
     return _renovacao_criar_ou_completar_proximo_mes(
         client_id,
@@ -43526,7 +41535,6 @@ def renovacao_criar_proximo_mes(req: RenovacaoCampanhaCriarRequest, client_id: s
     )
 
 
-@app.put("/api/renovacao/campanha-periodo")
 def renovacao_alterar_periodo_campanha(req: RenovacaoCampanhaPeriodoRequest, client_id: str = Depends(get_tenant_id)):
     return _renovacao_atualizar_periodo_campanha_ml(
         client_id,
@@ -43539,7 +41547,6 @@ def renovacao_alterar_periodo_campanha(req: RenovacaoCampanhaPeriodoRequest, cli
     )
 
 
-@app.delete("/api/renovacao/campanha")
 def renovacao_deletar_campanha(req: RenovacaoCampanhaExcluirRequest, client_id: str = Depends(get_tenant_id)):
     return _renovacao_deletar_campanha_ml(
         client_id,
@@ -43599,7 +41606,6 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
         )
 
 
-@app.post("/api/renovacao/sincronizar-promocao")
 def renovacao_sincronizar_promocao(req: RenovacaoCampanhaSincronizarRequest, client_id: str = Depends(get_tenant_id)):
     return _renovacao_sincronizar_promocao_existente(
         client_id,
@@ -43611,7 +41617,6 @@ def renovacao_sincronizar_promocao(req: RenovacaoCampanhaSincronizarRequest, cli
     )
 
 
-@app.post("/api/renovacao/sincronizar-promocao/iniciar")
 def renovacao_sincronizar_promocao_iniciar(req: RenovacaoCampanhaSincronizarRequest, client_id: str = Depends(get_tenant_id)):
     _renovacao_sync_jobs_limpar_antigos()
     job_id = uuid.uuid4().hex
@@ -43637,7 +41642,6 @@ def renovacao_sincronizar_promocao_iniciar(req: RenovacaoCampanhaSincronizarRequ
     return {"success": True, "job_id": job_id}
 
 
-@app.get("/api/renovacao/sincronizar-promocao/progresso/{job_id}")
 def renovacao_sincronizar_promocao_progresso(job_id: str, client_id: str = Depends(get_tenant_id)):
     job = _renovacao_sync_job_get(job_id)
     if not job or job.get("client_id") != client_id:
@@ -43753,7 +41757,6 @@ def _renovacao_agendamento_atual(client_id: str, loja: str, campanha_id: str) ->
     }
 
 
-@app.get("/api/renovacao/agendamento")
 def renovacao_agendamento_get(
     loja: str,
     campanha_id: str,
@@ -43765,7 +41768,6 @@ def renovacao_agendamento_get(
     }
 
 
-@app.put("/api/renovacao/agendamento")
 def renovacao_agendamento_put(req: RenovacaoAgendamentoRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     campanha_id = str(req.campanha_id or "").strip()
@@ -43912,7 +41914,6 @@ def _renovacao_agendamento_worker() -> None:
         time.sleep(6 * 60 * 60)
 
 
-@app.on_event("startup")
 def _renovacao_iniciar_agendamento_background():
     if _agent_service_only():
         logger.info("[AGENT SERVICE] Agendamento de renovacao desativado neste servico.")
@@ -43929,7 +41930,6 @@ def _renovacao_iniciar_agendamento_background():
     ).start()
 
 
-@app.post("/api/renovacao/analisar")
 async def renovacao_analisar_endpoint(
     antiga: UploadFile = File(...),
     nova: UploadFile = File(...),
@@ -43943,7 +41943,6 @@ async def renovacao_analisar_endpoint(
     return {"success": True, "data": dados or []}
 
 
-@app.post("/api/renovacao/exportar")
 async def renovacao_exportar_endpoint(
     nova: UploadFile = File(...),
     decisoes: str = Form(...),
@@ -43964,6 +41963,9 @@ async def renovacao_exportar_endpoint(
     )
 
 
+app.include_router(create_renovacao_router(sys.modules[__name__]))
+
+
 # --- ENDPOINTS DA API ---
 
 # --- ENDPOINTS DE INTEGRAÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O ---
@@ -43976,6 +41978,15 @@ def get_tenant_path(client_id: str):
     if not os.path.exists(tenant_path):
         os.makedirs(tenant_path, exist_ok=True)
     return tenant_path
+
+
+configure_full_context(get_tenant_path=get_tenant_path)
+configure_vendas_context(get_tenant_path=get_tenant_path, sync_state_lock=SYNC_STATE_LOCK)
+configure_favoritos_context(
+    get_tenant_path=get_tenant_path,
+    logger=logger,
+    chave_loja_favoritos=_chave_loja_favoritos,
+)
 
 
 def _migrar_arquivo_legado_para_tenant(client_id: str, nome_arquivo: str, caminho_legado: str):
@@ -44248,18 +42259,15 @@ def buscar_loja(client_id: str, nome_loja: str):
 
 # --- ENDPOINTS LOJAS ---
 
-@app.get("/api/lojas")
 async def get_lojas(client_id: str = Depends(get_tenant_id)):
     return carregar_lojas(client_id)
 
-@app.get("/api/lojas/{nome_loja}")
 async def get_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
     loja = buscar_loja(client_id, nome_loja)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nÃƒÆ’Ã‚Â£o encontrada")
     return loja
 
-@app.post("/api/lojas")
 async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_tenant_id)):
     lojas = carregar_lojas(client_id)
     if any(l['nome'] == store_request.nome for l in lojas):
@@ -44267,7 +42275,6 @@ async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_
     atualizar_api_loja(client_id, store_request.nome, "criacao", {"data": str(datetime.now())})
     return {"success": True, "loja": buscar_loja(client_id, store_request.nome)}
 
-@app.delete("/api/lojas/{nome_loja}")
 async def delete_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
     lojas = carregar_lojas(client_id)
     lojas_filtradas = [l for l in lojas if l['nome'] != nome_loja]
@@ -44276,7 +42283,6 @@ async def delete_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
     salvar_lojas(client_id, lojas_filtradas)
     return {"success": True}
 
-@app.post("/api/integracoes/{loja_nome}/turbo")
 async def save_turbo_token(loja_nome: str, token_req: TokenRequest, client_id: str = Depends(get_tenant_id)):
     if not buscar_loja(client_id, loja_nome):
         raise HTTPException(status_code=404, detail="Loja nÃƒÆ’Ã‚Â£o encontrada.")
@@ -44284,7 +42290,6 @@ async def save_turbo_token(loja_nome: str, token_req: TokenRequest, client_id: s
     atualizar_api_loja(client_id, loja_nome, "mercadoturbo", {"token": token_req.token, "connected": is_connected})
     return {"success": True}
 
-@app.delete("/api/integracoes/{loja_nome}/{servico_nome}")
 async def disconnect_integracao(loja_nome: str, servico_nome: str, client_id: str = Depends(get_tenant_id)):
     servico = str(servico_nome or "").strip().lower()
     mapa_servicos = {
@@ -44300,14 +42305,12 @@ async def disconnect_integracao(loja_nome: str, servico_nome: str, client_id: st
     loja = desconectar_api_loja(client_id, loja_nome, api_nome)
     return {"success": True, "loja": loja_nome, "servico": api_nome, "dados": loja.get("integracoes", {}).get(api_nome) or {}}
 
-@app.post("/api/integracoes/temp-auth")
 async def save_temp_auth_endpoint(temp_data: dict, client_id: str = Depends(get_tenant_id)):
     """Salva dados temporÃƒÂ¡rios para OAuth (usado antes de redirecionar para autenticaÃƒÂ§ÃƒÂ£o)"""
     salvar_temp_auth(temp_data)
     return {"success": True}
 
 
-@app.post("/api/integracoes/bling/start")
 async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     if not buscar_loja(client_id, auth_req.loja):
         raise HTTPException(status_code=404, detail="Loja nao encontrada.")
@@ -44326,7 +42329,6 @@ async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: s
     return {"success": True, "url": auth_bling_get_link(auth_req.client_id, state, redirect_uri=redirect_uri), "redirect_uri": redirect_uri}
 
 
-@app.post("/api/integracoes/mercadolivre/start")
 async def start_mercadolivre_auth(auth_req: AuthRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     if not buscar_loja(client_id, auth_req.loja):
         raise HTTPException(status_code=404, detail="Loja nao encontrada.")
@@ -44345,7 +42347,6 @@ async def start_mercadolivre_auth(auth_req: AuthRequest, request: Request, clien
     return {"success": True, "url": auth_ml_get_link(auth_req.client_id, state, redirect_uri=redirect_uri)}
 
 
-@app.get("/auth/callback")
 async def integracoes_auth_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None):
     def _redirect(status, msg=""):
         destino = f"/integracoes.html?status={quote_plus(status)}"
@@ -44442,14 +42443,15 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
     return _redirect("success")
 
 
-@app.post("/api/mercadolivre/cache/invalidar")
+app.include_router(create_integracoes_router(sys.modules[__name__]))
+
+
 def ml_invalidar_cache(loja: str, client_id: str = Depends(get_tenant_id)):
     """Invalida o cache local de anuncios e promocoes para forÃƒÂ§ar nova busca na API."""
     removidas = _cache_invalidar_loja(client_id, loja)
     return {"success": True, "entradas_removidas": removidas}
 
 
-@app.get("/api/mercadolivre/perguntas/lojas")
 def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
     lojas = []
     configs_lojas = _perguntas_loja_configs_carregar(client_id)
@@ -44500,7 +42502,6 @@ def ml_perguntas_listar_lojas(client_id: str = Depends(get_tenant_id)):
     return {"success": True, "lojas": lojas}
 
 
-@app.post("/api/mercadolivre/perguntas/lojas/config")
 def ml_perguntas_salvar_config_loja(req: PerguntasLojaConfigRequest, client_id: str = Depends(get_tenant_id)):
     config = _perguntas_loja_config_salvar(
         client_id,
@@ -44513,7 +42514,45 @@ def ml_perguntas_salvar_config_loja(req: PerguntasLojaConfigRequest, client_id: 
     return {"success": True, "loja": req.loja, "config_perguntas": config}
 
 
-@app.post("/api/mercadolivre/perguntas/automacao/poll")
+def ml_perguntas_salvar_config_lojas_lote(req: PerguntasLojasConfigLoteRequest, client_id: str = Depends(get_tenant_id)):
+    configs_lojas = _perguntas_loja_configs_carregar(client_id)
+    intervalo_cfg = _perguntas_loja_config_normalizar({"intervalo_minutos": req.intervalo_minutos})
+    intervalo_minutos = intervalo_cfg["intervalo_minutos"]
+    atualizadas = []
+    ignoradas = []
+    for loja_cfg in carregar_lojas(client_id) or []:
+        if not isinstance(loja_cfg, dict):
+            continue
+        nome = _corrigir_texto_mojibake(str(loja_cfg.get("nome") or "").strip())
+        if not nome:
+            continue
+        integracoes = loja_cfg.get("integracoes") or {}
+        ml_cfg = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else {}
+        conectado = bool(_ml_oauth_status(ml_cfg).get("conectado"))
+        if req.somente_conectadas and not conectado:
+            ignoradas.append({"loja": nome, "motivo": "mercado_livre_desconectado"})
+            continue
+        config_atual = _perguntas_loja_config_normalizar(_perguntas_loja_config_obter(configs_lojas, nome))
+        config = _perguntas_loja_config_salvar(
+            client_id,
+            nome,
+            config_atual.get("responder_automaticamente") is True,
+            config_atual.get("solicitar_aprovacao") is True,
+            config_atual.get("habilitar_pos_venda_automatico") is True,
+            intervalo_minutos,
+        )
+        atualizadas.append({"loja": nome, "config_perguntas": config})
+    if not atualizadas:
+        raise HTTPException(status_code=400, detail="Nenhuma conta Mercado Livre conectada para atualizar.")
+    return {
+        "success": True,
+        "intervalo_minutos": intervalo_minutos,
+        "atualizadas": atualizadas,
+        "ignoradas": ignoradas,
+        "total": len(atualizadas),
+    }
+
+
 def ml_perguntas_automacao_poll(
     loja: Optional[str] = None,
     max_per_store: int = 3,
@@ -44689,7 +42728,6 @@ def ml_perguntas_automacao_poll(
     })
 
 
-@app.get("/api/mercadolivre/perguntas/aprovacoes")
 def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
     mudou = False
@@ -44770,7 +42808,6 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
     return {"success": True, "pendentes": pendentes}
 
 
-@app.post("/api/mercadolivre/perguntas/aprovacoes/aprovar")
 def ml_perguntas_aprovacoes_aprovar(req: PerguntasAprovacaoRequest, client_id: str = Depends(get_tenant_id)):
     approval_id = str(req.approval_id or "").strip()
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
@@ -44848,7 +42885,6 @@ def ml_perguntas_aprovacoes_aprovar(req: PerguntasAprovacaoRequest, client_id: s
     return {"success": True, "approval": approval}
 
 
-@app.post("/api/mercadolivre/perguntas/aprovacoes/rejeitar")
 def ml_perguntas_aprovacoes_rejeitar(req: PerguntasAprovacaoRequest, client_id: str = Depends(get_tenant_id)):
     approval_id = str(req.approval_id or "").strip()
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
@@ -44866,7 +42902,6 @@ def ml_perguntas_aprovacoes_rejeitar(req: PerguntasAprovacaoRequest, client_id: 
     return {"success": True, "approval": approval}
 
 
-@app.post("/webhooks/mercadolivre")
 async def ml_questions_v2_webhook(request: Request, client_id: str = Depends(get_tenant_id)):
     try:
         payload = await request.json()
@@ -44888,7 +42923,6 @@ async def ml_questions_v2_webhook(request: Request, client_id: str = Depends(get
     return {"success": True, "event": event, "processed": False}
 
 
-@app.post("/questions/{question_id}/process")
 def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     if not loja:
@@ -44916,12 +42950,10 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
     }
 
 
-@app.get("/questions/pending-review")
 def ml_questions_v2_pending_review(client_id: str = Depends(get_tenant_id)):
     return ml_perguntas_aprovacoes_listar(client_id)
 
 
-@app.post("/reviews/{approval_id}/approve")
 def ml_questions_v2_review_approve(
     approval_id: str,
     req: MLQuestionsV2ReviewActionRequest,
@@ -44933,7 +42965,6 @@ def ml_questions_v2_review_approve(
     )
 
 
-@app.post("/reviews/{approval_id}/reject")
 def ml_questions_v2_review_reject(
     approval_id: str,
     req: MLQuestionsV2ReviewActionRequest,
@@ -44945,7 +42976,6 @@ def ml_questions_v2_review_reject(
     )
 
 
-@app.get("/audit/questions/{question_id}")
 def ml_questions_v2_audit_question(question_id: str, client_id: str = Depends(get_tenant_id)):
     qid = str(question_id or "").strip()
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
@@ -44968,7 +42998,6 @@ def ml_questions_v2_audit_question(question_id: str, client_id: str = Depends(ge
     }
 
 
-@app.get("/metrics/ai-questions")
 def ml_questions_v2_metrics(client_id: str = Depends(get_tenant_id)):
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
     metrics = {
@@ -44993,7 +43022,6 @@ def ml_questions_v2_metrics(client_id: str = Depends(get_tenant_id)):
     return {"success": True, "metrics": metrics}
 
 
-@app.post("/api/mercadolivre/perguntas/resposta/gerar")
 def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
@@ -45052,7 +43080,6 @@ def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, clien
     }
 
 
-@app.post("/api/mercadolivre/perguntas/responder")
 def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     question_id = str(req.question_id or "").strip()
@@ -45121,13 +43148,11 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
     }
 
 
-@app.get("/api/mercadolivre/ia-treinamento")
 def ml_ia_treinamento_obter(loja: Optional[str] = None, client_id: str = Depends(get_tenant_id)):
     data = _ia_treinamento_ppv_resolver(client_id, loja)
     return {"success": True, **data}
 
 
-@app.post("/api/mercadolivre/ia-treinamento")
 def ml_ia_treinamento_salvar(req: IATreinamentoPerguntasPosVendaRequest, client_id: str = Depends(get_tenant_id)):
     data = _ia_treinamento_ppv_salvar(
         client_id,
@@ -45144,12 +43169,10 @@ def ml_ia_treinamento_salvar(req: IATreinamentoPerguntasPosVendaRequest, client_
     return {"success": True, **data}
 
 
-@app.get("/api/mercadolivre/ia-treinamento/skus")
 def ml_ia_treinamento_listar_skus(client_id: str = Depends(get_tenant_id)):
     return {"success": True, "produtos": _ia_treinamento_ppv_listar_skus(client_id)}
 
 
-@app.post("/api/mercadolivre/ia-treinamento/simular")
 def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest, client_id: str = Depends(get_tenant_id)):
     pergunta = str(req.pergunta or "").strip()
     if not pergunta:
@@ -46605,7 +44628,6 @@ def _ml_pos_venda_preparar_conversa_ia(
     )
 
 
-@app.get("/api/mercadolivre/pos-venda/conversas")
 def ml_pos_venda_listar_conversas(
     loja: str,
     dias: int = 365,
@@ -46797,7 +44819,6 @@ def ml_pos_venda_listar_conversas(
         raise HTTPException(status_code=500, detail=f"Erro ao listar conversas do pÃƒÂ³s venda: {str(e)}")
 
 
-@app.get("/api/mercadolivre/pos-venda/mediacoes")
 def ml_pos_venda_listar_mediacoes(
     loja: str,
     dias: int = 365,
@@ -46966,7 +44987,6 @@ def ml_pos_venda_listar_mediacoes(
         raise HTTPException(status_code=500, detail=f"Erro ao listar mediaÃ§Ãµes: {str(e)}")
 
 
-@app.get("/api/mercadolivre/pos-venda/conversas/detalhe")
 def ml_pos_venda_detalhe_conversa(
     loja: str,
     pack_id: str,
@@ -46996,7 +45016,6 @@ def ml_pos_venda_detalhe_conversa(
     })
 
 
-@app.get("/api/mercadolivre/pos-venda/anexos/{attachment_id}")
 def ml_pos_venda_obter_anexo(
     attachment_id: str,
     loja: str,
@@ -47025,7 +45044,6 @@ def ml_pos_venda_obter_anexo(
     return StreamingResponse(io.BytesIO(resp.content), media_type=media_type, headers=headers)
 
 
-@app.post("/api/mercadolivre/pos-venda/conversas/gerar-resposta")
 def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, client_id: str = Depends(get_tenant_id)):
     nome_loja = str(req.loja or "").strip()
     pack = str(req.pack_id or "").strip()
@@ -47062,7 +45080,6 @@ def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, clie
     })
 
 
-@app.post("/api/mercadolivre/pos-venda/conversas/responder")
 def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str = Depends(get_tenant_id)):
     nome_loja = str(req.loja or "").strip()
     pack = str(req.pack_id or "").strip()
@@ -47162,7 +45179,6 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
     })
 
 
-@app.post("/api/mercadolivre/pos-venda/automacao/poll")
 def ml_pos_venda_automacao_poll(
     loja: Optional[str] = None,
     max_per_store: int = 2,
@@ -47486,7 +45502,6 @@ def _perguntas_automacao_bg_worker() -> None:
         time.sleep(10)
 
 
-@app.on_event("startup")
 def _perguntas_automacao_iniciar_background() -> None:
     if _agent_service_only():
         logger.info("[AGENT SERVICE] Automacao de perguntas/pos-venda desativada neste servico.")
@@ -47503,7 +45518,6 @@ def _perguntas_automacao_iniciar_background() -> None:
     ).start()
 
 
-@app.get("/api/mercadolivre/perguntas")
 def ml_listar_perguntas(
     loja: str,
     status: Optional[str] = None,
@@ -47752,7 +45766,9 @@ def ml_listar_perguntas(
         raise HTTPException(status_code=500, detail=f"Erro ao listar perguntas do Mercado Livre: {str(e)}")
 
 
-@app.get("/api/mercadolivre/anuncios")
+app.include_router(create_perguntas_pos_venda_router(sys.modules[__name__]))
+
+
 def ml_listar_anuncios(loja: str, offset: int = 0, limit: int = 50, sku: Optional[str] = None, client_id: str = Depends(get_tenant_id)):
     try:
         sku_norm = str(sku or "").strip()
@@ -47860,7 +45876,6 @@ def _ml_parse_data_visita(valor: Any) -> Optional[dt.date]:
         return None
 
 
-@app.get("/api/mercadolivre/anuncios/{item_id}/visitas")
 def ml_historico_visitas_anuncio(
     item_id: str,
     loja: str,
@@ -47960,7 +45975,6 @@ def ml_historico_visitas_anuncio(
         raise HTTPException(status_code=500, detail=f"Erro ao consultar histórico de visitas: {str(e)}")
 
 
-@app.get("/api/mercadolivre/anuncios/{item_id}")
 async def ml_buscar_anuncio(item_id: str, loja: str, client_id: str = Depends(get_tenant_id)):
     cfg = _obter_cfg_ml(client_id, loja)
     url = f"https://api.mercadolibre.com/items/{item_id}"
@@ -48005,12 +46019,10 @@ async def ml_buscar_anuncio(item_id: str, loja: str, client_id: str = Depends(ge
     return item
 
 
-@app.get("/api/favoritos/skus")
 def favoritos_listar_skus(client_id: str = Depends(get_tenant_id)):
     return _favoritos_listar_skus_payload(client_id)
 
 
-@app.get("/api/favoritos/skus/ocultos")
 def favoritos_skus_ocultos_get(request: Request, client_id: str = Depends(get_tenant_id)):
     username = _extrair_username_do_request(request)
     prefs = _favoritos_carregar_skus_ocultos(client_id, username)
@@ -48021,7 +46033,6 @@ def favoritos_skus_ocultos_get(request: Request, client_id: str = Depends(get_te
     }
 
 
-@app.put("/api/favoritos/skus/ocultos")
 def favoritos_skus_ocultos_put(
     req: FavoritosSkusOcultosRequest,
     request: Request,
@@ -48036,7 +46047,6 @@ def favoritos_skus_ocultos_put(
     }
 
 
-@app.get("/api/favoritos/preferencias-vendedores-ignorados")
 def favoritos_vendedores_ignorados_get(request: Request, client_id: str = Depends(get_tenant_id)):
     username = _extrair_username_do_request(request)
     prefs = _favoritos_carregar_vendedores_ignorados(client_id, username)
@@ -48047,7 +46057,6 @@ def favoritos_vendedores_ignorados_get(request: Request, client_id: str = Depend
     }
 
 
-@app.put("/api/favoritos/preferencias-vendedores-ignorados")
 def favoritos_vendedores_ignorados_put(
     req: FavoritosVendedoresIgnoradosRequest,
     request: Request,
@@ -48062,7 +46071,6 @@ def favoritos_vendedores_ignorados_put(
     }
 
 
-@app.get("/api/favoritos/preferencias-anuncios-ignorados")
 def favoritos_anuncios_ignorados_get(request: Request, client_id: str = Depends(get_tenant_id)):
     username = _extrair_username_do_request(request)
     prefs = _favoritos_carregar_anuncios_ignorados(client_id, username)
@@ -48073,7 +46081,6 @@ def favoritos_anuncios_ignorados_get(request: Request, client_id: str = Depends(
     }
 
 
-@app.put("/api/favoritos/preferencias-anuncios-ignorados")
 def favoritos_anuncios_ignorados_put(
     req: FavoritosAnunciosIgnoradosRequest,
     request: Request,
@@ -48088,7 +46095,6 @@ def favoritos_anuncios_ignorados_put(
     }
 
 
-@app.get("/api/favoritos/historico")
 def favoritos_historico_get(request: Request, client_id: str = Depends(get_tenant_id)):
     username = _extrair_username_do_request(request)
     payload = _favoritos_carregar_historico(client_id, username)
@@ -48099,7 +46105,6 @@ def favoritos_historico_get(request: Request, client_id: str = Depends(get_tenan
     }
 
 
-@app.put("/api/favoritos/historico")
 def favoritos_historico_put(
     req: FavoritosHistoricoRequest,
     request: Request,
@@ -48130,7 +46135,6 @@ def favoritos_historico_put(
     }
 
 
-@app.post("/api/favoritos/historico/realtime-sync")
 def favoritos_historico_realtime_sync(
     req: FavoritosHistoricoRealtimeSyncRequest,
     request: Request,
@@ -48157,7 +46161,6 @@ def favoritos_historico_realtime_sync(
     }
 
 
-@app.get("/api/favoritos/planilhas-lojas")
 def favoritos_planilhas_lojas_get(client_id: str = Depends(get_tenant_id)):
     payload = _favoritos_carregar_planilhas_lojas(client_id)
     return {
@@ -48167,7 +46170,6 @@ def favoritos_planilhas_lojas_get(client_id: str = Depends(get_tenant_id)):
     }
 
 
-@app.put("/api/favoritos/planilhas-lojas")
 def favoritos_planilhas_lojas_put(
     req: FavoritosPlanilhasLojasRequest,
     client_id: str = Depends(get_tenant_id),
@@ -48181,13 +46183,13 @@ def favoritos_planilhas_lojas_put(
     }
 
 
-@app.get("/api/favoritos/ml/skus-anuncios")
 def favoritos_ml_listar_skus_anuncios(
     request: Request,
     loja: Optional[str] = None,
     sku: Optional[str] = None,
     apenas_lojas: bool = False,
     todas_lojas: bool = False,
+    atualizar: bool = False,
     client_id: str = Depends(get_tenant_id),
 ):
     lojas_validas = _lojas_favoritos_com_bling_ml(client_id)
@@ -48220,25 +46222,70 @@ def favoritos_ml_listar_skus_anuncios(
     username = _extrair_username_do_request(request)
     sku_busca = str(sku or "").strip()
     inicio_endpoint = time.perf_counter()
+    cache_categoria_endpoint = "skus_anuncios"
+    cache_id_endpoint = ""
     cache_key_endpoint = ""
+    loja_info_cache = None
+    nome_loja_cache = ""
     if not sku_busca:
-        cache_key_endpoint = (
-            f"favoritos:skus_anuncios:v1:{client_id}:{username}:"
-            f"{int(bool(todas_lojas))}:{_chave_loja_favoritos(loja) or 'auto'}"
-        )
-        cached_endpoint = _ml_cache_get(cache_key_endpoint, ttl=600)
-        if isinstance(cached_endpoint, dict) and cached_endpoint.get("skus"):
-            logger.info(
-                "[Favoritos ML] skus-anuncios cache hit loja=%s todas=%s skus=%s ms=%d",
-                loja or "",
-                bool(todas_lojas),
-                len(cached_endpoint.get("skus") or []),
-                int((time.perf_counter() - inicio_endpoint) * 1000),
-            )
-            return cached_endpoint
+        if todas_lojas:
+            cache_id_endpoint = _favoritos_ml_skus_anuncios_cache_id("", True)
+        else:
+            loja_chave_cache = _chave_loja_favoritos(loja)
+            if loja_chave_cache:
+                for candidata in lojas_validas:
+                    if _chave_loja_favoritos(candidata.get("nome")) == loja_chave_cache:
+                        loja_info_cache = candidata
+                        break
+            if loja_info_cache is None:
+                loja_info_cache = lojas_validas[0]
+            nome_loja_cache = str((loja_info_cache or {}).get("nome") or "").strip()
+            cache_id_endpoint = _favoritos_ml_skus_anuncios_cache_id(nome_loja_cache, False)
+        cache_key_endpoint = f"favoritos:skus_anuncios:persist:v1:{client_id}:{username}:{cache_id_endpoint}"
+        if not atualizar:
+            cached_endpoint = _ml_cache_get(cache_key_endpoint, ttl=60)
+            if isinstance(cached_endpoint, dict):
+                logger.info(
+                    "[Favoritos ML] skus-anuncios cache memoria loja=%s todas=%s skus=%s ms=%d",
+                    loja or nome_loja_cache or "",
+                    bool(todas_lojas),
+                    len(cached_endpoint.get("skus") or []),
+                    int((time.perf_counter() - inicio_endpoint) * 1000),
+                )
+                return cached_endpoint
+            persistente = _favoritos_ml_persist_cache_read(client_id, cache_categoria_endpoint, cache_id_endpoint)
+            if persistente is not None:
+                payload_cache, meta_cache = persistente
+                payload_cache = dict(payload_cache)
+                payload_cache["lojas"] = lojas_payload
+                if todas_lojas:
+                    payload_cache["loja"] = "__todas"
+                    payload_cache["todas_lojas"] = True
+                elif nome_loja_cache:
+                    payload_cache["loja"] = nome_loja_cache
+                    payload_cache["todas_lojas"] = False
+                payload_cache = _favoritos_ml_persist_cache_apply(payload_cache, meta_cache, hit=True)
+                _ml_cache_set(cache_key_endpoint, payload_cache)
+                logger.info(
+                    "[Favoritos ML] skus-anuncios cache persistente loja=%s todas=%s skus=%s ms=%d",
+                    payload_cache.get("loja") or "",
+                    bool(payload_cache.get("todas_lojas")),
+                    len(payload_cache.get("skus") or []),
+                    int((time.perf_counter() - inicio_endpoint) * 1000),
+                )
+                return payload_cache
 
     def _finalizar_payload_skus_anuncios(payload: dict, etapa: str) -> dict:
-        if cache_key_endpoint and isinstance(payload, dict) and payload.get("skus"):
+        if (
+            cache_key_endpoint
+            and cache_id_endpoint
+            and isinstance(payload, dict)
+            and payload.get("success", True)
+            and etapa != "stale"
+            and not payload.get("stale_cache")
+        ):
+            meta_cache = _favoritos_ml_persist_cache_write(client_id, cache_categoria_endpoint, cache_id_endpoint, payload)
+            payload = _favoritos_ml_persist_cache_apply(payload, meta_cache, hit=False, refreshed=True)
             _ml_cache_set(cache_key_endpoint, payload)
         logger.info(
             "[Favoritos ML] skus-anuncios %s loja=%s todas=%s skus=%s anuncios=%s ms=%d",
@@ -48252,17 +46299,19 @@ def favoritos_ml_listar_skus_anuncios(
         return payload
 
     def _payload_stale_skus_anuncios(motivo: str) -> dict | None:
-        if not cache_key_endpoint:
+        if not cache_id_endpoint:
             return None
-        stale = _ml_cache_get_stale(cache_key_endpoint, 6 * 60 * 60)
-        if not isinstance(stale, dict) or not stale.get("skus"):
+        persistente = _favoritos_ml_persist_cache_read(client_id, cache_categoria_endpoint, cache_id_endpoint)
+        if persistente is None:
             return None
-        payload = dict(stale)
-        aviso = f"Mostrando SKUs em cache porque o Mercado Livre nao respondeu agora: {motivo}"
-        warning_atual = str(payload.get("warning") or "").strip()
-        payload["warning"] = f"{warning_atual} | {aviso}" if warning_atual else aviso
-        payload["stale_cache"] = True
-        logger.warning("[Favoritos ML] skus-anuncios usando cache stale loja=%s motivo=%s", payload.get("loja"), motivo)
+        payload, meta_cache = persistente
+        if not isinstance(payload, dict):
+            return None
+        payload = dict(payload)
+        payload["lojas"] = lojas_payload
+        aviso = f"Mostrando SKUs salvos porque o Mercado Livre nao respondeu agora: {motivo}"
+        payload = _favoritos_ml_persist_cache_apply(payload, meta_cache, hit=True, warning=aviso)
+        logger.warning("[Favoritos ML] skus-anuncios usando cache persistente loja=%s motivo=%s", payload.get("loja"), motivo)
         return payload
 
     if todas_lojas and not sku_busca:
@@ -48342,8 +46391,8 @@ def favoritos_ml_listar_skus_anuncios(
         }, "ok")
 
     loja_chave = _chave_loja_favoritos(loja)
-    loja_info = None
-    if loja_chave:
+    loja_info = loja_info_cache
+    if loja_info is None and loja_chave:
         for candidata in lojas_validas:
             if _chave_loja_favoritos(candidata.get("nome")) == loja_chave:
                 loja_info = candidata
@@ -48674,7 +46723,6 @@ def _ml_contar_itens_promocao_status(
     return None, cfg
 
 
-@app.get("/api/mercadolivre/promocoes")
 def mercadolivre_listar_promocoes_ativas(
     loja: str,
     client_id: str = Depends(get_tenant_id),
@@ -48682,7 +46730,6 @@ def mercadolivre_listar_promocoes_ativas(
     return _ml_listar_promocoes_ativas_payload(client_id, loja)
 
 
-@app.get("/api/mercadolivre/promocoes/contagens")
 def mercadolivre_listar_promocoes_contagens(
     loja: str,
     client_id: str = Depends(get_tenant_id),
@@ -48731,7 +46778,9 @@ def mercadolivre_listar_promocoes_contagens(
     return resultado
 
 
-@app.get("/api/favoritos/ml/promocoes")
+app.include_router(create_mercado_livre_router(sys.modules[__name__]))
+
+
 def favoritos_ml_listar_promocoes_ativas(
     loja: str,
     client_id: str = Depends(get_tenant_id),
@@ -50145,7 +48194,6 @@ def _favoritos_ml_verificar_efetivacao(
     return ultimo, cfg
 
 
-@app.post("/api/favoritos/ml/validar-efetivacao")
 def favoritos_ml_validar_efetivacao(
     req: FavoritosValidarEfetivacaoRequest,
     client_id: str = Depends(get_tenant_id),
@@ -50203,7 +48251,6 @@ def favoritos_ml_validar_efetivacao(
     return {"itens": resultados}
 
 
-@app.post("/api/favoritos/ml/efetivar-promocao")
 def favoritos_ml_efetivar_promocao(
     req: FavoritosEfetivarPromocaoRequest,
     client_id: str = Depends(get_tenant_id),
@@ -50707,13 +48754,13 @@ def _favoritos_aplicar_margem_anuncio_ml(
     return anuncio
 
 
-@app.get("/api/favoritos/ml/anuncios-sku")
 def favoritos_ml_listar_anuncios_sku(
     sku: str,
     loja: Optional[str] = None,
     compartilhar_sku: bool = False,
     todas_contas: bool = False,
     mlbs: Optional[str] = None,
+    atualizar: bool = False,
     client_id: str = Depends(get_tenant_id),
 ):
     sku_norm = _normalizar_sku_match_favoritos(sku)
@@ -50757,13 +48804,26 @@ def favoritos_ml_listar_anuncios_sku(
             break
     ids_forcados_key = ",".join(ids_forcados)
     compartilhar_efetivo = bool(compartilhar_sku and todas_contas)
+    cache_categoria_endpoint = "anuncios_sku"
+    cache_id_endpoint = _favoritos_ml_anuncios_sku_cache_id(nome_loja, sku_norm, compartilhar_efetivo, ids_forcados_key)
     cache_key_endpoint = (
         f"favoritos:anuncios_sku:v3:{client_id}:"
         f"{_chave_loja_favoritos(nome_loja)}:{sku_norm}:{int(compartilhar_efetivo)}:{ids_forcados_key}"
     )
-    cached_endpoint = _ml_cache_get(cache_key_endpoint, ttl=90)
-    if cached_endpoint is not None:
-        return cached_endpoint
+    if not atualizar:
+        cached_endpoint = _ml_cache_get(cache_key_endpoint, ttl=90)
+        if cached_endpoint is not None:
+            return cached_endpoint
+        persistente = _favoritos_ml_persist_cache_read(client_id, cache_categoria_endpoint, cache_id_endpoint)
+        if persistente is not None:
+            payload_cache, meta_cache = persistente
+            payload_cache = dict(payload_cache)
+            payload_cache["lojas"] = lojas_payload
+            payload_cache["loja"] = nome_loja
+            payload_cache["sku"] = sku_norm
+            payload_cache = _favoritos_ml_persist_cache_apply(payload_cache, meta_cache, hit=True)
+            _ml_cache_set(cache_key_endpoint, payload_cache)
+            return payload_cache
 
     def _resumir_item_ml(
         item: dict,
@@ -51112,16 +49172,35 @@ def favoritos_ml_listar_anuncios_sku(
             "warnings": avisos,
             "warning": " | ".join(avisos[:3]) if avisos else "",
         }
+        meta_cache = _favoritos_ml_persist_cache_write(client_id, cache_categoria_endpoint, cache_id_endpoint, payload)
+        payload = _favoritos_ml_persist_cache_apply(payload, meta_cache, hit=False, refreshed=True)
         _ml_cache_set(cache_key_endpoint, payload)
         return payload
-    except HTTPException:
+    except HTTPException as exc:
+        persistente = _favoritos_ml_persist_cache_read(client_id, cache_categoria_endpoint, cache_id_endpoint)
+        if persistente is not None:
+            payload_cache, meta_cache = persistente
+            aviso = f"Mostrando anuncios salvos porque o Mercado Livre nao respondeu agora: {getattr(exc, 'detail', '') or exc}"
+            payload_cache = dict(payload_cache)
+            payload_cache["lojas"] = lojas_payload
+            payload_cache["loja"] = nome_loja
+            payload_cache["sku"] = sku_norm
+            return _favoritos_ml_persist_cache_apply(payload_cache, meta_cache, hit=True, warning=aviso)
         raise
     except Exception as exc:
+        persistente = _favoritos_ml_persist_cache_read(client_id, cache_categoria_endpoint, cache_id_endpoint)
+        if persistente is not None:
+            payload_cache, meta_cache = persistente
+            payload_cache = dict(payload_cache)
+            payload_cache["lojas"] = lojas_payload
+            payload_cache["loja"] = nome_loja
+            payload_cache["sku"] = sku_norm
+            aviso = f"Mostrando anuncios salvos porque o Mercado Livre nao respondeu agora: {exc}"
+            return _favoritos_ml_persist_cache_apply(payload_cache, meta_cache, hit=True, warning=aviso)
         logger.exception("[Favoritos ML] Falha ao listar anuncios do SKU %s loja %s: %s", sku_norm, nome_loja, exc)
         raise HTTPException(status_code=500, detail=f"Erro ao listar anÃºncios do SKU no Mercado Livre: {exc}")
 
 
-@app.put("/api/favoritos/skus/pesquisas")
 def favoritos_salvar_pesquisas_sku(
     req: FavoritosSkuPesquisaRequest,
     request: Request,
@@ -51166,7 +49245,6 @@ def favoritos_salvar_pesquisas_sku(
     }
 
 
-@app.post("/api/favoritos/skus/pesquisas/ia")
 def favoritos_gerar_pesquisas_sku_ia(
     req: FavoritosSkusPesquisaIARequest,
     request: Request,
@@ -51258,7 +49336,6 @@ def favoritos_gerar_pesquisas_sku_ia(
     }
 
 
-@app.post("/api/favoritos/ranking/filtrar-ia")
 def favoritos_filtrar_ranking_ia(
     req: FavoritosRankingIARequest,
     client_id: str = Depends(get_tenant_id),
@@ -51303,7 +49380,6 @@ def favoritos_filtrar_ranking_ia(
     }
 
 
-@app.get("/api/favoritos/skus/descricao")
 def favoritos_buscar_descricao_sku(
     sku: str,
     loja: Optional[str] = None,
@@ -51382,8 +49458,6 @@ def favoritos_buscar_descricao_sku(
         detalhe += " Detalhes: " + " | ".join(erros[:3])
     raise HTTPException(status_code=404, detail=detalhe)
 
-
-@app.post("/api/favoritos/skus/descricoes")
 
 def favoritos_buscar_descricoes_skus(req: FavoritosSkuDescricoesRequest, client_id: str = Depends(get_tenant_id)):
     skus_originais = [str(sku or "").strip() for sku in (req.skus or []) if str(sku or "").strip()]
@@ -52604,7 +50678,6 @@ def _extrair_info_anuncio(
     _aplicar_data_criacao_aproximada()
     return info
 
-@app.post("/api/favoritos/ml/primeira-pagina")
 async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, client_id: str = Depends(get_tenant_id)):
     termo = (req.termo or "").strip()
     if not termo:
@@ -52702,7 +50775,6 @@ async def favoritos_ml_primeira_pagina(req: FavoritosPrimeiraPaginaRequest, clie
             "warning": "NÃƒÂ£o foi possÃƒÂ­vel consultar anuncios agora."
         }
 
-@app.post("/api/favoritos/ml/enriquecer-datas")
 async def favoritos_ml_enriquecer_datas(req: FavoritosEnriquecerDatasRequest, client_id: str = Depends(get_tenant_id)):
     anuncios_req = req.anuncios or []
     limite = req.max_anuncios or len(anuncios_req) or 50
@@ -54108,7 +52180,6 @@ def _enriquecer_link_html(url: str, max_retries: int = 1, delay: int = 1):
     
     return {"url": url, "titulo": "", "preco": "", "vendas": None}
 
-@app.post("/api/favoritos/pesquisar")
 async def favoritos_pesquisar(req: FavoritosSearchRequest):
     termo = (req.termo or "").strip()
     if not termo:
@@ -54177,37 +52248,16 @@ async def favoritos_pesquisar(req: FavoritosSearchRequest):
         "top": top7
     }
 
+app.include_router(create_favoritos_router(sys.modules[__name__]))
+
 # --- ENDPOINTS ETIQUETAS ---
 
-class EtiquetaAvulsaItem(BaseModel):
-    layout_planilha: Optional[bool] = False
-    sequencia: Optional[str] = ""
-    sku: Optional[str] = ""
-    descricao: Optional[str] = ""
-    quantidade: Optional[int] = 1
-    caixa: Optional[str] = ""
-    torre: Optional[str] = ""
-    paletes: Optional[str] = ""
-    corredor: Optional[str] = ""
-    conta: Optional[str] = ""
 
 
-class ImpressaoAvulsaPayload(BaseModel):
-    formato: Optional[str] = "grande"
-    itens: list[EtiquetaAvulsaItem]
 
 
-class ImpressaoEditorPayload(BaseModel):
-    tamanho: Optional[str] = "grande"
-    etiquetas: list[str]
 
 
-class EtiquetaQrCodePayload(BaseModel):
-    link: str
-    titulo: Optional[str] = ""
-    quantidade: Optional[int] = 1
-    tamanho: Optional[str] = "grande"
-    layout: Optional[str] = "a4"
 
 
 class _EtiquetasNoopProgress:
@@ -55044,7 +53094,6 @@ def gerar_pdf_qrcode_link(link, titulo="", quantidade=1, tamanho="grande", layou
     return buffer.getvalue(), quantidade
 
 
-@app.post("/api/etiquetas/impressao-editor")
 async def gerar_impressao_editor_endpoint(payload: ImpressaoEditorPayload, client_id: str = Depends(get_tenant_id)):
     try:
         pdf_bytes, qtd = gerar_pdf_editor_livre(payload.etiquetas, payload.tamanho)
@@ -55058,7 +53107,6 @@ async def gerar_impressao_editor_endpoint(payload: ImpressaoEditorPayload, clien
         return {"success": False, "message": str(e)}
 
 
-@app.post("/api/etiquetas/impressao-avulsa")
 async def gerar_impressao_avulsa_endpoint(payload: ImpressaoAvulsaPayload, client_id: str = Depends(get_tenant_id)):
     try:
         pdf_bytes, qtd = gerar_pdf_impressao_avulsa(payload.itens, payload.formato)
@@ -55072,7 +53120,6 @@ async def gerar_impressao_avulsa_endpoint(payload: ImpressaoAvulsaPayload, clien
         return {"success": False, "message": str(e)}
 
 
-@app.post("/api/etiquetas/qrcode-link")
 async def gerar_qrcode_link_endpoint(payload: EtiquetaQrCodePayload, client_id: str = Depends(get_tenant_id)):
     try:
         pdf_bytes, qtd = gerar_pdf_qrcode_link(
@@ -55092,7 +53139,6 @@ async def gerar_qrcode_link_endpoint(payload: EtiquetaQrCodePayload, client_id: 
         return {"success": False, "message": str(e)}
 
 
-@app.post("/api/etiquetas/processar")
 async def processar_etiquetas_endpoint(
     store: str = Form(...),
     file_etiquetas: UploadFile = File(None),
@@ -55145,7 +53191,6 @@ async def processar_etiquetas_endpoint(
         print(f"Erro etiquetas: {e}")
         return {"success": False, "message": str(e)}
 
-@app.get("/api/etiquetas/download/{file_id}")
 async def download_etiqueta(file_id: str, client_id: str = Depends(get_tenant_id)):
     if file_id in TEMP_FILES_STORAGE:
         file_bytes = TEMP_FILES_STORAGE[file_id]
@@ -55153,7 +53198,6 @@ async def download_etiqueta(file_id: str, client_id: str = Depends(get_tenant_id
     raise HTTPException(status_code=404, detail="Arquivo nÃƒÆ’Ã‚Â£o encontrado ou expirado.")
 
 
-@app.get("/api/etiquetas/preview/{file_id}")
 async def preview_etiqueta(file_id: str, page: int = 0, client_id: str = Depends(get_tenant_id)):
     if file_id not in TEMP_FILES_STORAGE:
         raise HTTPException(status_code=404, detail="Arquivo nao encontrado ou expirado.")
@@ -55175,13 +53219,14 @@ async def preview_etiqueta(file_id: str, page: int = 0, client_id: str = Depends
         raise HTTPException(status_code=500, detail=f"Erro ao gerar previa: {e}")
 
 
-@app.get("/api/configuracoes")
+app.include_router(create_etiquetas_router(sys.modules[__name__]))
+
+
 async def obter_configuracoes_globais(_client_id: str = Depends(get_tenant_id)):
     """Retorna configuraÃƒÂ§ÃƒÂµes globais compartilhadas por todos os usuÃƒÂ¡rios."""
     return _carregar_configuracoes_globais()
 
 
-@app.put("/api/configuracoes")
 async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _client_id: str = Depends(get_tenant_id)):
     """Atualiza configuraÃƒÂ§ÃƒÂµes globais compartilhadas por todos os usuÃƒÂ¡rios autenticados."""
     valor = int(req.auto_sync_estoque_janela_minutos)
@@ -55265,6 +53310,9 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
     _salvar_configuracoes_globais(atuais)
     resposta = _carregar_configuracoes_globais()
     return {"success": True, "configuracoes": resposta}
+
+
+app.include_router(create_configuracoes_router(sys.modules[__name__]))
 
 
 def _sala_reuniao_daily_api_key() -> str:
@@ -56001,7 +54049,6 @@ def _sala_reuniao_criar_token_host(
     return _sala_reuniao_daily_post("/meeting-tokens", api_key, {"properties": properties})
 
 
-@app.get("/api/sala-reuniao/status")
 async def sala_reuniao_status(_client_id: str = Depends(get_tenant_id)):
     """Informa se a chave Daily esta disponivel para criacao automatica de salas."""
     domain = str(os.getenv("DAILY_DOMAIN") or os.getenv("JK_DAILY_DOMAIN") or "").strip()
@@ -56037,7 +54084,6 @@ async def sala_reuniao_status(_client_id: str = Depends(get_tenant_id)):
     }
 
 
-@app.post("/api/sala-reuniao/salas")
 async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Cria uma sala Daily Prebuilt quando DAILY_API_KEY ou JK_DAILY_API_KEY esta configurada."""
     sessao = _sala_reuniao_sessao(authorization, _client_id)
@@ -56137,7 +54183,6 @@ async def sala_reuniao_criar_sala(req: SalaReuniaoCriarSalaRequest, _client_id: 
     }
 
 
-@app.get("/api/sala-reuniao/reunioes-ativas")
 async def sala_reuniao_reunioes_ativas(_client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Lista salas abertas e sessoes em andamento para a tela inicial do modulo."""
     sessao = _sala_reuniao_sessao(authorization, _client_id)
@@ -56151,19 +54196,16 @@ async def sala_reuniao_reunioes_ativas(_client_id: str = Depends(get_tenant_id),
     }
 
 
-@app.get("/api/sala-reuniao/salas-ativas")
 async def sala_reuniao_salas_ativas_alias(_client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Alias de compatibilidade para listar reunioes ativas."""
     return await sala_reuniao_reunioes_ativas(_client_id, authorization)
 
 
-@app.get("/api/sala-reuniao/salas")
 async def sala_reuniao_salas_listar(_client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Alias GET para listar salas ativas sem conflitar com o POST de criacao."""
     return await sala_reuniao_reunioes_ativas(_client_id, authorization)
 
 
-@app.post("/api/sala-reuniao/reunioes-ativas/encerrar-local")
 async def sala_reuniao_encerrar_local(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Oculta localmente uma sala que acabou de ser encerrada no navegador."""
     sessao = _sala_reuniao_sessao(authorization, _client_id)
@@ -56176,7 +54218,6 @@ async def sala_reuniao_encerrar_local(req: SalaReuniaoEncerrarLocalRequest, _cli
     }
 
 
-@app.post("/api/sala-reuniao/reunioes-ativas/encerrar")
 async def sala_reuniao_encerrar(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Encerra uma sala Daily quando possivel e remove da lista local de reunioes ativas."""
     sessao = _sala_reuniao_sessao(authorization, _client_id)
@@ -56189,7 +54230,6 @@ async def sala_reuniao_encerrar(req: SalaReuniaoEncerrarLocalRequest, _client_id
     }
 
 
-@app.post("/api/sala-reuniao/reunioes-ativas/encerrar-todas")
 async def sala_reuniao_encerrar_todas(req: SalaReuniaoEncerrarTodasRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Encerra todas as salas que aparecem na lista de reunioes ativas."""
     sessao = _sala_reuniao_sessao(authorization, _client_id)
@@ -56230,13 +54270,11 @@ async def sala_reuniao_encerrar_todas(req: SalaReuniaoEncerrarTodasRequest, _cli
     }
 
 
-@app.post("/api/sala-reuniao/salas/encerrar-local")
 async def sala_reuniao_encerrar_local_alias(req: SalaReuniaoEncerrarLocalRequest, _client_id: str = Depends(get_tenant_id), authorization: Optional[str] = Header(default=None)):
     """Alias de compatibilidade para marcar uma sala como encerrada localmente."""
     return await sala_reuniao_encerrar_local(req, _client_id, authorization)
 
 
-@app.get("/api/sala-reuniao/uso-mensal")
 async def sala_reuniao_uso_mensal(_client_id: str = Depends(get_tenant_id)):
     """Retorna o uso estimado em participant-minutes da sala de reuniao no mes atual."""
     return {
@@ -56245,7 +54283,6 @@ async def sala_reuniao_uso_mensal(_client_id: str = Depends(get_tenant_id)):
     }
 
 
-@app.post("/api/sala-reuniao/uso-mensal/adicionar")
 async def sala_reuniao_uso_mensal_adicionar(req: SalaReuniaoUsoAdicionarRequest, _client_id: str = Depends(get_tenant_id)):
     """Acumula participant-seconds estimados pela interface durante uma chamada."""
     return {
@@ -56254,7 +54291,6 @@ async def sala_reuniao_uso_mensal_adicionar(req: SalaReuniaoUsoAdicionarRequest,
     }
 
 
-@app.get("/api/sala-reuniao/gravacoes")
 async def sala_reuniao_gravacoes(room_name: str = "", limit: int = 20, _client_id: str = Depends(get_tenant_id)):
     """Lista gravacoes cloud armazenadas no Daily para esta conta."""
     api_key = _sala_reuniao_daily_api_key()
@@ -56273,7 +54309,6 @@ async def sala_reuniao_gravacoes(room_name: str = "", limit: int = 20, _client_i
     }
 
 
-@app.get("/api/sala-reuniao/transcricoes")
 async def sala_reuniao_transcricoes(room_id: str = "", mtg_session_id: str = "", limit: int = 20, _client_id: str = Depends(get_tenant_id)):
     """Lista transcricoes geradas pelo Daily."""
     api_key = _sala_reuniao_daily_api_key()
@@ -56294,18 +54329,14 @@ async def sala_reuniao_transcricoes(room_id: str = "", mtg_session_id: str = "",
         "raw": data,
     }
 
+
+app.include_router(create_sala_reuniao_router(sys.modules[__name__]))
+
 # --- ENDPOINTS IMPOSTOS ---
 
 def _arquivo_regras_impostos(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "impostos_regras.json")
 
-
-SISCOMEX_AMBIENTES = {
-    "val": "val.portalunico.siscomex.gov.br",
-    "prod": "portalunico.siscomex.gov.br",
-    "producao": "portalunico.siscomex.gov.br",
-    "hom": "hom.pucomex.serpro.gov.br",
-}
 
 SISCOMEX_CONFIG_DEFAULT = {
     "ambiente": "prod",
@@ -56327,53 +54358,6 @@ SISCOMEX_AUTH_CACHE_LOCK = threading.Lock()
 
 def _arquivo_config_siscomex(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "siscomex_config.json")
-
-
-def _normalizar_siscomex_ambiente(valor: Any) -> str:
-    base = str(valor or "val").strip().lower()
-    return base if base in SISCOMEX_AMBIENTES else "val"
-
-
-def _normalizar_role_type_siscomex(valor: Any) -> str:
-    txt = str(valor or "IMPEXP").strip().upper()
-    return txt or "IMPEXP"
-
-
-def _normalizar_auth_header_type_siscomex(valor: Any) -> str:
-    txt = str(valor or "bearer").strip().lower()
-    return txt if txt in {"bearer", "token", "raw"} else "bearer"
-
-
-def _normalizar_tipo_operacao_siscomex(valor: Any) -> str:
-    txt = str(valor or "I").strip().upper()
-    return txt if txt in {"I", "E", "F"} else "I"
-
-
-def _normalizar_loja_siscomex(valor: Any) -> str:
-    txt = str(valor or "").strip()
-    txt = re.sub(r"\s+", " ", txt)
-    return txt[:120]
-
-
-def _normalizar_perfil_siscomex(valor: Any) -> str:
-    txt = str(valor or "").strip().lower()
-    txt = re.sub(r"\s+", " ", txt)
-    return txt[:120]
-
-
-def _siscomex_scope_key(loja_vinculada: str = "", perfil_usuario: str = "") -> str:
-    loja = _normalizar_loja_siscomex(loja_vinculada)
-    perfil = _normalizar_perfil_siscomex(perfil_usuario)
-    if not loja and not perfil:
-        return "__default__"
-    return f"{loja}::{perfil}"
-
-
-def _siscomex_scope_payload(loja_vinculada: str = "", perfil_usuario: str = "") -> dict:
-    return {
-        "loja_vinculada": _normalizar_loja_siscomex(loja_vinculada),
-        "perfil_usuario": _normalizar_perfil_siscomex(perfil_usuario),
-    }
 
 
 def _extrair_username_do_request(request: Request) -> str:
@@ -57469,28 +55453,6 @@ def _conexao_db_ncm_impostos(client_id: str) -> sqlite3.Connection:
     return conn
 
 
-def _normalizar_coluna_ncm_excel(nome_coluna: Any) -> str:
-    base = unicodedata.normalize("NFKD", str(nome_coluna or ""))
-    base = "".join(ch for ch in base if not unicodedata.combining(ch))
-    return re.sub(r"[^a-z0-9]+", "", base.lower())
-
-
-def _normalizar_aliquota_percentual(valor: Any) -> float:
-    txt = str(valor if valor is not None else "").strip()
-    tem_percentual = "%" in txt
-    if tem_percentual:
-        txt = txt.replace("%", "")
-
-    n = _to_float(txt, 0.0)
-
-    # Sem sÃƒÂ­mbolo de percentual, valores fracionÃƒÂ¡rios sÃƒÂ£o tratados como proporÃƒÂ§ÃƒÂ£o.
-    # Ex.: 0.0325 -> 3.25%
-    if 0 < n <= 1:
-        if not tem_percentual:
-            n *= 100.0
-    return round(max(0.0, n), 6)
-
-
 def _ler_registros_ncm_excel(caminho_excel: str) -> list[dict]:
     if not caminho_excel or not os.path.exists(caminho_excel):
         raise HTTPException(status_code=404, detail="Arquivo NCM.xlsx nÃ£o encontrado na pasta do projeto.")
@@ -58090,7 +56052,6 @@ def _montar_simulacao_impostos(client_id: str, reserva_percentual: float = 0.0) 
     }
 
 
-@app.get("/api/impostos/regras")
 async def listar_regras_impostos(client_id: str = Depends(get_tenant_id)):
     regras = _carregar_regras_impostos(client_id)
     for r in regras:
@@ -58098,7 +56059,6 @@ async def listar_regras_impostos(client_id: str = Depends(get_tenant_id)):
     return regras
 
 
-@app.post("/api/impostos/regras")
 async def salvar_regra_impostos(req: ImpostoRegraRequest, client_id: str = Depends(get_tenant_id)):
     ncm = _normalizar_codigo_fiscal(req.ncm)
     cest = _normalizar_codigo_fiscal(req.cest)
@@ -58139,7 +56099,6 @@ async def salvar_regra_impostos(req: ImpostoRegraRequest, client_id: str = Depen
     return {"success": True, "regra": regra_nova, "total": len(regras)}
 
 
-@app.delete("/api/impostos/regras/{regra_id}")
 async def excluir_regra_impostos(regra_id: str, client_id: str = Depends(get_tenant_id)):
     regras = _carregar_regras_impostos(client_id)
     antes = len(regras)
@@ -58151,17 +56110,14 @@ async def excluir_regra_impostos(regra_id: str, client_id: str = Depends(get_ten
     return {"success": True, "removidos": removidos, "total": len(regras)}
 
 
-@app.get("/api/impostos/produtos")
 async def listar_produtos_impostos(client_id: str = Depends(get_tenant_id)):
     return _montar_simulacao_impostos(client_id, 0.0)
 
 
-@app.post("/api/impostos/simular")
 async def simular_impostos(req: ImpostosSimulacaoRequest, client_id: str = Depends(get_tenant_id)):
     return _montar_simulacao_impostos(client_id, req.reserva_percentual)
 
 
-@app.post("/api/impostos/aplicar-cadastro")
 async def aplicar_impostos_no_cadastro(client_id: str = Depends(get_tenant_id)):
     df, arquivo = _carregar_cadastro_para_impostos(client_id)
     if df.empty or not arquivo or not os.path.exists(arquivo):
@@ -58201,7 +56157,6 @@ async def aplicar_impostos_no_cadastro(client_id: str = Depends(get_tenant_id)):
     return {"success": True, "atualizados": atualizados, "preservados": preservados, "qtd_regras": len(regras)}
 
 
-@app.get("/api/impostos/siscomex/config")
 async def obter_config_siscomex_impostos(
     request: Request,
     loja_vinculada: str = "",
@@ -58218,7 +56173,6 @@ async def obter_config_siscomex_impostos(
     return {"success": True, "config": cfg}
 
 
-@app.put("/api/impostos/siscomex/config")
 async def salvar_config_siscomex_impostos(req: SiscomexConfigRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
     persistir_secret = bool(payload.pop("persistir_secret", True))
@@ -58235,7 +56189,6 @@ async def salvar_config_siscomex_impostos(req: SiscomexConfigRequest, request: R
     return {"success": True, "config": cfg}
 
 
-@app.post("/api/impostos/siscomex/testar")
 async def testar_config_siscomex_impostos(request: Request, req: SiscomexConfigRequest | None = None, client_id: str = Depends(get_tenant_id)):
     payload = (req.model_dump() if req and hasattr(req, "model_dump") else (req.dict() if req else {}))
     loja_vinculada = str(payload.get("loja_vinculada") or "").strip()
@@ -58272,7 +56225,6 @@ async def testar_config_siscomex_impostos(request: Request, req: SiscomexConfigR
     }
 
 
-@app.post("/api/impostos/siscomex/consultar")
 async def consultar_ttce_impostos(req: SiscomexConsultaRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
 
@@ -58332,14 +56284,6 @@ async def consultar_ttce_impostos(req: SiscomexConsultaRequest, request: Request
 
 
 # --- Helpers para TEC (II) e TIPI (IPI) via Portal ÃƒÅ¡nico ---
-
-def _formatar_ncm_pontos(ncm_digitos: str) -> str:
-    """Converte 8 dÃƒÂ­gitos para o formato X4.XX.XX usado pela TEC/TIPI."""
-    d = str(ncm_digitos or "").replace(".", "").replace("-", "").strip()
-    if len(d) == 8:
-        return f"{d[:4]}.{d[4:6]}.{d[6:8]}"
-    return d
-
 
 def _siscomex_build_get_header_variants(cfg: dict, token_jwt: str, csrf_token: str) -> list[dict]:
     """Monta variaÃƒÂ§ÃƒÂµes de headers para GET (TEC/TIPI), pois alguns endpoints
@@ -58466,24 +56410,6 @@ def _siscomex_get_tipi(host: str, ncm_digitos: str, auth_header_variants: list[d
             break
 
     return {"erro": ultimo_erro or "Falha na consulta TIPI", "fonte": "TIPI"}
-
-
-def _aliquotas_pis_cofins_por_regime(regime: str) -> tuple[float, float]:
-    """Retorna (PIS%, COFINS%) na importaÃƒÂ§ÃƒÂ£o.
-    Regra padrÃƒÂ£o de importaÃƒÂ§ÃƒÂ£o: PIS 2,1% e COFINS 9,65%.
-    ObservaÃƒÂ§ÃƒÂ£o: para revenda monofÃƒÂ¡sica, o ajuste para zero ÃƒÂ© aplicado em etapa
-    posterior (_ajustar_pis_cofins_monofasico_revenda).
-    """
-    _ = str(regime or "simples").strip().lower()
-    return 2.1, 9.65
-
-
-def _ajustar_pis_cofins_monofasico_revenda(monofasico_info: dict, aliquota_pis: float, aliquota_cofins: float) -> tuple[float, float, bool]:
-    """Como o tenant opera sempre como revendedor, produto monofÃƒÂ¡sico tem PIS/COFINS zero na revenda."""
-    status = str((monofasico_info or {}).get("status") or "").strip().lower()
-    if status == "sim":
-        return 0.0, 0.0, True
-    return aliquota_pis, aliquota_cofins, False
 
 
 # ---------------------------------------------------------------------------
@@ -58715,14 +56641,8 @@ def _avaliar_monofasico_ncm(client_id: str, ncm: str, ttce_result: dict | None =
     }
 
 
-class SiscomexAliquotasRequest(BaseModel):
-    loja_vinculada: str = ""
-    perfil_usuario: str = ""
-    ncm: str
-    permitir_fallback_local: bool = True
 
 
-@app.post("/api/impostos/siscomex/aliquotas-completas")
 async def consultar_aliquotas_completas(req: SiscomexAliquotasRequest, request: Request, client_id: str = Depends(get_tenant_id)):
     """Consulta alÃƒÂ­quotas em base local atualizÃƒÂ¡vel e usa TTCE como validaÃƒÂ§ÃƒÂ£o oficial."""
     loja_vinculada = str(req.loja_vinculada or "").strip()
@@ -58819,13 +56739,11 @@ async def consultar_aliquotas_completas(req: SiscomexAliquotasRequest, request: 
     }
 
 
-@app.post("/api/impostos/aliquotas-importacao/atualizar/{ncm}")
 async def atualizar_aliquotas_importacao_ncm(ncm: str, client_id: str = Depends(get_tenant_id)):
     registro = _obter_aliquotas_importacao_atualizavel(client_id, ncm, forcar_atualizacao=True)
     return {"success": True, "registro": registro, "aliquotas": _aliquotas_importacao_para_cards(registro)}
 
 
-@app.get("/api/impostos/aliquotas-importacao/{ncm}")
 async def obter_aliquotas_importacao_ncm(ncm: str, client_id: str = Depends(get_tenant_id)):
     registro = _buscar_aliquotas_importacao_local(client_id, ncm)
     if not registro:
@@ -58834,7 +56752,6 @@ async def obter_aliquotas_importacao_ncm(ncm: str, client_id: str = Depends(get_
     return {"success": True, "registro": registro, "aliquotas": _aliquotas_importacao_para_cards(registro)}
 
 
-@app.post("/api/impostos/ncm/importar-excel")
 async def importar_ncm_excel_impostos(client_id: str = Depends(get_tenant_id)):
     if not os.path.exists(ARQUIVO_NCM_XLSX):
         raise HTTPException(status_code=404, detail="Arquivo NCM.xlsx nÃ£o encontrado na pasta do projeto.")
@@ -58842,7 +56759,6 @@ async def importar_ncm_excel_impostos(client_id: str = Depends(get_tenant_id)):
     return {"success": True, **resultado}
 
 
-@app.get("/api/impostos/ncm")
 async def listar_ncm_impostos(
     search: str = "",
     limit: int = 50,
@@ -58942,7 +56858,6 @@ async def listar_ncm_impostos(
         conn.close()
 
 
-@app.post("/api/simulador/calcular")
 async def calcular_preco_simulador(req: SimuladorCalculoRequest, client_id: str = Depends(get_tenant_id)):
     def _primeiro_numero_percentual(valor: Any) -> float | None:
         match = re.search(r"-?\d+(?:[.,]\d+)?", str(valor or "").replace(" ", ""))
@@ -59107,7 +57022,6 @@ async def calcular_preco_simulador(req: SimuladorCalculoRequest, client_id: str 
     }
 
 
-@app.post("/api/impostos/convenio-mg/importar-excel")
 async def importar_convenio_mg_excel_impostos(client_id: str = Depends(get_tenant_id)):
     if not os.path.exists(ARQUIVO_NCM1_XLSX):
         raise HTTPException(status_code=404, detail="Arquivo NCM1.xlsx nÃ£o encontrado na pasta do projeto.")
@@ -59115,7 +57029,6 @@ async def importar_convenio_mg_excel_impostos(client_id: str = Depends(get_tenan
     return {"success": True, **resultado}
 
 
-@app.get("/api/impostos/convenio-mg")
 async def listar_convenio_mg_impostos(
     search: str = "",
     limit: int = 50,
@@ -59218,9 +57131,10 @@ async def listar_convenio_mg_impostos(
     finally:
         conn.close()
 
+app.include_router(create_impostos_router(sys.modules[__name__]))
+
 # --- ENDPOINTS ESTOQUE (MIGRAÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O) ---
 
-@app.get("/api/estoque")
 async def listar_estoque(client_id: str = Depends(get_tenant_id)):
     """Retorna o estoque compilado especÃƒÆ’Ã‚Â­fico do cliente (pasta info/<client_id>/)."""
     arquivo_cliente = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
@@ -59238,7 +57152,6 @@ async def listar_estoque(client_id: str = Depends(get_tenant_id)):
     return []
 
 
-@app.get("/api/full/estoque")
 async def listar_estoque_full(client_id: str = Depends(get_tenant_id)):
     """Retorna somente itens com saldo no Full."""
     registros = await listar_estoque(client_id)
@@ -59269,7 +57182,6 @@ async def listar_estoque_full(client_id: str = Depends(get_tenant_id)):
     ]
 
 
-@app.get("/api/full/lojas-mercadolivre")
 async def listar_lojas_full_mercadolivre(client_id: str = Depends(get_tenant_id)):
     """Lista lojas com Mercado Livre autenticado em Integrações."""
     lojas = carregar_lojas(client_id) or []
@@ -59308,23 +57220,6 @@ def _full_item_logistic_type(item: dict) -> str:
 
 def _full_item_eh_full(item: dict) -> bool:
     return _full_item_logistic_type(item).lower() == "fulfillment"
-
-
-def _full_numero(valor) -> float:
-    if isinstance(valor, (int, float)):
-        try:
-            return float(valor) if math.isfinite(float(valor)) else 0.0
-        except Exception:
-            return 0.0
-    texto = str(valor or "").strip()
-    if not texto:
-        return 0.0
-    normalizado = re.sub(r"[^\d,.-]", "", texto).replace(".", "").replace(",", ".")
-    try:
-        numero = float(normalizado)
-        return numero if math.isfinite(numero) else 0.0
-    except Exception:
-        return 0.0
 
 
 def _full_obter_estoque_fulfillment(
@@ -59457,7 +57352,6 @@ def _full_normalizar_anuncio_ml(client_id: str, loja: str, cfg: dict, item: dict
     return anuncio, cfg_local
 
 
-@app.get("/api/full/anuncios")
 async def listar_anuncios_full_mercadolivre(
     loja: str,
     limite: int = 10000,
@@ -59540,7 +57434,6 @@ def _full_feriados_nacionais_ano(ano: int) -> dict:
     return resultado
 
 
-@app.get("/api/full/calendario-comercial")
 async def calendario_comercial_full(
     ano: int | None = None,
     mes: int | None = None,
@@ -59621,317 +57514,12 @@ async def calendario_comercial_full(
     }
 
 
-class FullEnvioTransitoItem(BaseModel):
-    sku: str = ""
-    produto: str = ""
-    variacao: str = ""
-    quantidade: float = 0
-    mlb: str = ""
 
 
-class FullEnvioTransitoPayload(BaseModel):
-    codigo_envio: str = ""
-    loja: str = ""
-    status: str = "aguardando_inicio"
-    situacao_ml: str = ""
-    data_envio: str = ""
-    data_recebimento: str = ""
-    total_unidades: float | None = None
-    observacoes: str = ""
-    ativo: bool = True
-    itens: list[FullEnvioTransitoItem] = []
 
 
-class FullEnvioTransitoUpdate(BaseModel):
-    codigo_envio: str | None = None
-    loja: str | None = None
-    status: str | None = None
-    situacao_ml: str | None = None
-    data_envio: str | None = None
-    data_recebimento: str | None = None
-    total_unidades: float | None = None
-    observacoes: str | None = None
-    ativo: bool | None = None
-    itens: list[FullEnvioTransitoItem] | None = None
 
 
-def _full_envios_db_path(client_id: str) -> str:
-    return os.path.join(get_tenant_path(client_id), "full_envios_transito.db")
-
-
-def _full_envios_files_dir(client_id: str) -> str:
-    path = os.path.join(get_tenant_path(client_id), "full_envios_transito_pdfs")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _full_envios_status_norm(status: str) -> str:
-    valor = str(status or "aguardando_inicio").strip().lower()
-    valor = unicodedata.normalize("NFKD", valor).encode("ascii", "ignore").decode("ascii")
-    valor = re.sub(r"[^a-z0-9]+", "_", valor).strip("_")
-    permitidos = {
-        "aguardando_inicio",
-        "em_processamento",
-        "finalizando",
-        "finalizado",
-        "recebimento_pendente",
-        "recebido",
-        "inativo",
-    }
-    return valor if valor in permitidos else "aguardando_inicio"
-
-
-def _full_envios_data_iso(valor: str | None, fallback_hoje: bool = False) -> str:
-    texto = str(valor or "").strip()
-    if not texto:
-        return datetime.now().strftime("%Y-%m-%d") if fallback_hoje else ""
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
-        try:
-            return datetime.strptime(texto[:10], fmt).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    match = re.search(r"(\d{2})[/-](\d{2})[/-](\d{4})", texto)
-    if match:
-        try:
-            return datetime(int(match.group(3)), int(match.group(2)), int(match.group(1))).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return datetime.now().strftime("%Y-%m-%d") if fallback_hoje else ""
-
-
-def _garantir_tabela_full_envios_transito(client_id: str) -> None:
-    db_path = _full_envios_db_path(client_id)
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS envios_transito (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                codigo_envio TEXT NOT NULL,
-                loja TEXT,
-                status TEXT NOT NULL DEFAULT 'aguardando_inicio',
-                situacao_ml TEXT,
-                data_envio TEXT,
-                data_recebimento TEXT,
-                total_unidades REAL NOT NULL DEFAULT 0,
-                total_produtos INTEGER NOT NULL DEFAULT 0,
-                arquivo_pdf TEXT,
-                arquivo_nome TEXT,
-                itens_json TEXT NOT NULL DEFAULT '[]',
-                observacoes TEXT,
-                ativo INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_full_envios_status ON envios_transito (status, ativo)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_full_envios_data ON envios_transito (data_envio)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_full_envios_codigo ON envios_transito (codigo_envio)")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _full_envio_row_to_dict(row: sqlite3.Row) -> dict:
-    data = dict(row)
-    try:
-        itens = json.loads(data.get("itens_json") or "[]")
-    except Exception:
-        itens = []
-    data["itens"] = itens if isinstance(itens, list) else []
-    data["ativo"] = bool(data.get("ativo"))
-    data.pop("itens_json", None)
-    return data
-
-
-def _full_envios_agrupar_itens(itens: list[dict]) -> list[dict]:
-    agrupado: dict[tuple[str, str, str], dict] = {}
-    for item in itens or []:
-        sku_item = str(item.get("sku") or "").strip()
-        produto = str(item.get("produto") or "").strip()
-        variacao = str(item.get("variacao") or "").strip()
-        key = (sku_item.upper(), produto.lower(), variacao.lower())
-        atual = agrupado.get(key) or {
-            "sku": sku_item,
-            "produto": produto,
-            "variacao": variacao,
-            "quantidade": 0,
-            "mlb": str(item.get("mlb") or "").strip(),
-        }
-        atual["quantidade"] = float(atual.get("quantidade") or 0) + _full_numero(item.get("quantidade"))
-        if not atual.get("mlb"):
-            atual["mlb"] = str(item.get("mlb") or "").strip()
-        agrupado[key] = atual
-    return list(agrupado.values())
-
-
-def _full_envios_extrair_texto_pdf(conteudo: bytes) -> str:
-    doc = fitz.open(stream=conteudo, filetype="pdf")
-    try:
-        partes = []
-        for idx in range(min(len(doc), 80)):
-            partes.append(doc[idx].get_text() or "")
-        return "\n".join(partes)
-    finally:
-        doc.close()
-
-
-def _full_envios_parse_itens(texto: str) -> list[dict]:
-    itens: list[dict] = []
-    for match in re.finditer(r"(?is)Produto\s+Varia..o\s+Qnt\s+SKU\s+(.*?)(?:Checklist de carregamento|ID Pedido|Corte aqui|$)", texto or ""):
-        linhas = [ln.strip() for ln in match.group(1).splitlines() if ln.strip()]
-        if not linhas:
-            continue
-        if linhas and re.fullmatch(r"\d+", linhas[0]):
-            linhas = linhas[1:]
-        sku_idx = None
-        for idx in range(len(linhas) - 1, -1, -1):
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,40}", linhas[idx]):
-                sku_idx = idx
-                break
-        if sku_idx is None:
-            continue
-        qtd_idx = None
-        for idx in range(sku_idx - 1, -1, -1):
-            if re.fullmatch(r"\d+(?:[,.]\d+)?", linhas[idx]):
-                qtd_idx = idx
-                break
-        if qtd_idx is None:
-            continue
-        nome_partes = linhas[:qtd_idx]
-        variacao = ""
-        if len(nome_partes) > 1:
-            variacao = nome_partes[-1]
-            nome_partes = nome_partes[:-1]
-        itens.append({
-            "produto": " ".join(nome_partes).strip(),
-            "variacao": variacao,
-            "quantidade": _full_numero(linhas[qtd_idx]),
-            "sku": linhas[sku_idx],
-            "mlb": "",
-        })
-
-    if itens:
-        return _full_envios_agrupar_itens(itens)
-
-    for match in re.finditer(r"(?im)\bSKU\s*[:\-]?\s*([A-Z0-9._/-]{2,})", texto or ""):
-        start = max(0, match.start() - 180)
-        trecho = (texto or "")[start:match.start()]
-        qtd_match = re.search(r"(?im)(?:qtd|quantidade|unidades?)\s*[:\-]?\s*(\d+(?:[,.]\d+)?)", trecho)
-        produto_match = re.search(r"(?im)(?:produto|titulo|descri..o)\s*[:\-]?\s*(.+)$", trecho)
-        itens.append({
-            "produto": produto_match.group(1).strip() if produto_match else "",
-            "variacao": "",
-            "quantidade": _full_numero(qtd_match.group(1)) if qtd_match else 1,
-            "sku": match.group(1).strip(),
-            "mlb": "",
-        })
-    return _full_envios_agrupar_itens(itens)
-
-
-def _full_envios_parse_pdf(nome_arquivo: str, conteudo: bytes) -> dict:
-    texto = _full_envios_extrair_texto_pdf(conteudo)
-    codigo = ""
-    for pattern in (
-        r"#\s*(\d{5,})",
-        r"\b(?:envio|remessa|shipment|inbound)\s*(?:n(?:ro|o|r|\.)*)?\s*[:#-]?\s*(\d{5,})",
-        r"\b(\d{6,10})\b",
-    ):
-        match = re.search(pattern, texto, flags=re.IGNORECASE)
-        if match:
-            codigo = match.group(1)
-            break
-    if not codigo:
-        nome_match = re.search(r"(\d{5,})", nome_arquivo or "")
-        codigo = nome_match.group(1) if nome_match else f"ENV-{uuid.uuid4().hex[:8].upper()}"
-
-    data_envio = ""
-    previsto = re.search(r"(?is)(?:envio previsto|data(?: de)? envio|criado em|recebimento)\D{0,30}(\d{2}[/-]\d{2}[/-]\d{4})", texto or "")
-    if previsto:
-        data_envio = _full_envios_data_iso(previsto.group(1))
-    if not data_envio:
-        data_envio = _full_envios_data_iso(texto, fallback_hoje=True)
-
-    situacao = ""
-    texto_norm = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode("ascii").lower()
-    if "recebimento pendente" in texto_norm:
-        situacao = "Recebimento pendente"
-    elif re.search(r"\brecebido\b", texto_norm):
-        situacao = "Recebido"
-
-    itens = _full_envios_parse_itens(texto)
-    total_unidades = sum(_full_numero(item.get("quantidade")) for item in itens)
-    if not total_unidades:
-        match_unidades = re.search(r"(\d+(?:[,.]\d+)?)\s+unidades", texto or "", flags=re.IGNORECASE)
-        total_unidades = _full_numero(match_unidades.group(1)) if match_unidades else 0
-
-    status = "recebido" if situacao.lower() == "recebido" else "recebimento_pendente"
-    return {
-        "codigo_envio": codigo,
-        "status": status,
-        "situacao_ml": situacao,
-        "data_envio": data_envio,
-        "data_recebimento": data_envio if status == "recebido" else "",
-        "total_unidades": total_unidades,
-        "total_produtos": len(itens),
-        "itens": itens,
-        "observacoes": "",
-    }
-
-
-def _full_envios_inserir_registro(client_id: str, payload: dict) -> dict:
-    _garantir_tabela_full_envios_transito(client_id)
-    agora = datetime.now().isoformat(timespec="seconds")
-    itens = payload.get("itens") if isinstance(payload.get("itens"), list) else []
-    itens = _full_envios_agrupar_itens([dict(item) for item in itens])
-    total_unidades = payload.get("total_unidades")
-    if total_unidades is None:
-        total_unidades = sum(_full_numero(item.get("quantidade")) for item in itens)
-    status = _full_envios_status_norm(payload.get("status"))
-    ativo = 0 if status == "inativo" else (1 if payload.get("ativo", True) else 0)
-    codigo = str(payload.get("codigo_envio") or "").strip() or f"ENV-{uuid.uuid4().hex[:8].upper()}"
-
-    conn = sqlite3.connect(_full_envios_db_path(client_id))
-    conn.row_factory = sqlite3.Row
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO envios_transito (
-                codigo_envio, loja, status, situacao_ml, data_envio, data_recebimento,
-                total_unidades, total_produtos, arquivo_pdf, arquivo_nome,
-                itens_json, observacoes, ativo, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                codigo,
-                str(payload.get("loja") or "").strip(),
-                status,
-                str(payload.get("situacao_ml") or "").strip(),
-                _full_envios_data_iso(payload.get("data_envio"), fallback_hoje=True),
-                _full_envios_data_iso(payload.get("data_recebimento")),
-                float(total_unidades or 0),
-                len(itens),
-                str(payload.get("arquivo_pdf") or "").strip(),
-                str(payload.get("arquivo_nome") or "").strip(),
-                json.dumps(itens, ensure_ascii=False),
-                str(payload.get("observacoes") or "").strip(),
-                ativo,
-                agora,
-                agora,
-            ),
-        )
-        conn.commit()
-        cur.execute("SELECT * FROM envios_transito WHERE id = ?", (cur.lastrowid,))
-        return _full_envio_row_to_dict(cur.fetchone())
-    finally:
-        conn.close()
-
-
-@app.get("/api/full/envios-transito")
 async def listar_full_envios_transito(status: str = "all", client_id: str = Depends(get_tenant_id)):
     _garantir_tabela_full_envios_transito(client_id)
     status_norm = str(status or "all").strip().lower()
@@ -59964,7 +57552,6 @@ async def listar_full_envios_transito(status: str = "all", client_id: str = Depe
     return {"success": True, "total": len(rows), "results": rows, "resumo": resumo}
 
 
-@app.post("/api/full/envios-transito/upload")
 async def upload_full_envios_transito(
     files: list[UploadFile] = File(...),
     loja: str = Form(""),
@@ -60006,7 +57593,6 @@ async def upload_full_envios_transito(
     return {"success": True, "total": len(registros), "results": registros}
 
 
-@app.post("/api/full/envios-transito/manual")
 async def criar_full_envio_transito_manual(payload: FullEnvioTransitoPayload, client_id: str = Depends(get_tenant_id)):
     data = payload.dict()
     data["status"] = _full_envios_status_norm(data.get("status"))
@@ -60014,7 +57600,6 @@ async def criar_full_envio_transito_manual(payload: FullEnvioTransitoPayload, cl
     return {"success": True, "result": registro}
 
 
-@app.patch("/api/full/envios-transito/{envio_id}")
 async def atualizar_full_envio_transito(envio_id: int, payload: FullEnvioTransitoUpdate, client_id: str = Depends(get_tenant_id)):
     _garantir_tabela_full_envios_transito(client_id)
     campos = payload.dict(exclude_unset=True)
@@ -60069,7 +57654,6 @@ async def atualizar_full_envio_transito(envio_id: int, payload: FullEnvioTransit
         conn.close()
 
 
-@app.delete("/api/full/envios-transito/{envio_id}")
 async def excluir_full_envio_transito(envio_id: int, client_id: str = Depends(get_tenant_id)):
     _garantir_tabela_full_envios_transito(client_id)
     conn = sqlite3.connect(_full_envios_db_path(client_id))
@@ -60093,7 +57677,6 @@ async def excluir_full_envio_transito(envio_id: int, client_id: str = Depends(ge
         conn.close()
 
 
-@app.get("/api/full/envios-transito/{envio_id}/pdf")
 async def baixar_pdf_full_envio_transito(envio_id: int, client_id: str = Depends(get_tenant_id)):
     _garantir_tabela_full_envios_transito(client_id)
     conn = sqlite3.connect(_full_envios_db_path(client_id))
@@ -60107,6 +57690,9 @@ async def baixar_pdf_full_envio_transito(envio_id: int, client_id: str = Depends
     if not os.path.exists(caminho):
         raise HTTPException(status_code=404, detail="Arquivo PDF nao encontrado.")
     return FileResponse(caminho, media_type="application/pdf", filename=str(row[1] or row[0]))
+
+
+app.include_router(create_full_router(sys.modules[__name__]))
 
 
 def _estoque_historico_db_path(client_id: str) -> str:
@@ -60275,6 +57861,205 @@ def _inicio_periodo_estoque(
             conn.close()
 
     return data_fim_ref - timedelta(days=90)
+
+
+def _vendas_series_estoque_historico(
+    client_id: str,
+    loja: str | None,
+    intervalo: str,
+    data_inicio_ref: datetime,
+    data_fim_ref: datetime,
+    chaves_periodo: list[str],
+    mostrar_estoque_geral: bool,
+    mostrar_estoque_sku: bool,
+    sku: str | None,
+) -> dict:
+    total_pontos = len(chaves_periodo or [])
+    incluir_geral = bool(mostrar_estoque_geral)
+    sku_norm = _normalizar_sku_estoque(sku) if sku else ""
+    incluir_sku = bool(mostrar_estoque_sku and sku_norm)
+    resultado = {
+        "estoque_geral": [None] * total_pontos if incluir_geral else [],
+        "estoque_sku": [None] * total_pontos if incluir_sku else [],
+        "estoque_meta": {
+            "success": True,
+            "requested": bool(mostrar_estoque_geral or mostrar_estoque_sku),
+            "lojas": 0,
+            "sku": sku_norm or None,
+            "detail": "",
+        },
+    }
+
+    if not (incluir_geral or incluir_sku):
+        if mostrar_estoque_sku and not sku_norm:
+            resultado["estoque_meta"]["detail"] = "Informe um SKU para exibir estoque por SKU."
+        return resultado
+
+    db_hist = _estoque_historico_db_path(client_id)
+    if not os.path.exists(db_hist):
+        resultado["estoque_meta"]["detail"] = "Histórico de estoque ainda não foi gerado."
+        return resultado
+
+    loja_txt = str(loja or "").strip()
+    loja_especifica = bool(loja_txt and loja_txt != "__todas")
+    data_fim_str = data_fim_ref.strftime("%Y-%m-%d")
+
+    conn_hist = sqlite3.connect(db_hist)
+    try:
+        cur_hist = conn_hist.cursor()
+        if loja_especifica:
+            cur_hist.execute(
+                """
+                SELECT lower(trim(loja_sync)) AS loja_ref, MAX(date(data_ref)) AS data_base
+                FROM estoque_historico
+                WHERE lower(trim(loja_sync)) = lower(trim(?))
+                  AND date(data_ref) <= date(?)
+                GROUP BY lower(trim(loja_sync))
+                """,
+                (loja_txt, data_fim_str),
+            )
+        else:
+            cur_hist.execute(
+                """
+                SELECT lower(trim(loja_sync)) AS loja_ref, MAX(date(data_ref)) AS data_base
+                FROM estoque_historico
+                WHERE trim(coalesce(loja_sync, '')) != ''
+                  AND date(data_ref) <= date(?)
+                GROUP BY lower(trim(loja_sync))
+                """,
+                (data_fim_str,),
+            )
+        lojas_base = [
+            (str(row[0] or "").strip(), str(row[1] or "").strip())
+            for row in cur_hist.fetchall()
+            if str(row[0] or "").strip() and str(row[1] or "").strip()
+        ]
+
+        if not lojas_base:
+            resultado["estoque_meta"]["detail"] = "Sem snapshot de estoque no período solicitado."
+            return resultado
+
+        _garantir_tabela_lancamentos_estoque(client_id)
+        bucket_geral: dict[str, float] = {}
+        bucket_sku: dict[str, float] = {}
+        inicio_periodo_date = data_inicio_ref.date()
+        fim_periodo_date = data_fim_ref.date()
+
+        def somar_snapshot(loja_ref: str, data_base: str, apenas_sku: str = "") -> float | None:
+            query = """
+                SELECT SUM(coalesce(saldo_loja, 0))
+                FROM estoque_historico
+                WHERE lower(trim(loja_sync)) = ?
+                  AND date(data_ref) = date(?)
+            """
+            params = [loja_ref, data_base]
+            if apenas_sku:
+                query += " AND upper(trim(sku)) = ?"
+                params.append(apenas_sku)
+            cur_hist.execute(query, params)
+            row = cur_hist.fetchone()
+            if not row or row[0] is None:
+                return None
+            return float(row[0] or 0)
+
+        def carregar_movimentos(
+            loja_ref: str,
+            data_inicio_calc: str,
+            data_base: str,
+            apenas_sku: str = "",
+        ) -> tuple[dict[str, float], dict[str, float]]:
+            entradas: dict[str, float] = {}
+            saidas: dict[str, float] = {}
+            query = """
+                SELECT date(data_ref) AS data_ref,
+                       SUM(coalesce(entrada, 0)) AS entradas,
+                       SUM(coalesce(saida, 0)) AS saidas
+                FROM estoque_lancamentos
+                WHERE lower(trim(loja_sync)) = ?
+                  AND date(data_ref) >= date(?)
+                  AND date(data_ref) <= date(?)
+            """
+            params = [loja_ref, data_inicio_calc, data_base]
+            if apenas_sku:
+                query += " AND upper(trim(sku)) = ?"
+                params.append(apenas_sku)
+            query += " GROUP BY date(data_ref)"
+            cur_hist.execute(query, params)
+            for data_ref, entradas_raw, saidas_raw in cur_hist.fetchall():
+                data_ref_str = str(data_ref or "").strip()
+                if not data_ref_str:
+                    continue
+                entradas[data_ref_str] = float(entradas_raw or 0)
+                saidas[data_ref_str] = float(saidas_raw or 0)
+            return entradas, saidas
+
+        def acumular_buckets(
+            destino: dict[str, float],
+            loja_ref: str,
+            valor_base: float | None,
+            data_base: str,
+            movimentos_sku: str = "",
+        ) -> None:
+            if valor_base is None:
+                return
+            data_base_dt = datetime.fromisoformat(data_base)
+            data_inicio_calc = min(data_inicio_ref, data_base_dt).strftime("%Y-%m-%d")
+            entradas, saidas = carregar_movimentos(
+                loja_ref,
+                data_inicio_calc,
+                data_base,
+                movimentos_sku,
+            )
+            saldo_atual = float(valor_base or 0)
+            data_cursor = data_base_dt.date()
+            limite_calc = datetime.fromisoformat(data_inicio_calc).date()
+            buckets_loja: dict[str, float] = {}
+            while data_cursor >= limite_calc:
+                data_cursor_str = data_cursor.strftime("%Y-%m-%d")
+                if inicio_periodo_date <= data_cursor <= fim_periodo_date:
+                    chave_bucket, _label_bucket = _chave_intervalo_estoque(
+                        datetime.combine(data_cursor, datetime.min.time()),
+                        intervalo,
+                    )
+                    if chave_bucket not in buckets_loja:
+                        buckets_loja[chave_bucket] = saldo_atual
+
+                entradas_dia = float(entradas.get(data_cursor_str, 0) or 0)
+                saidas_dia = float(saidas.get(data_cursor_str, 0) or 0)
+                saldo_atual = saldo_atual - entradas_dia + saidas_dia
+                data_cursor -= timedelta(days=1)
+
+            for chave_bucket, valor_bucket in buckets_loja.items():
+                destino[chave_bucket] = float(destino.get(chave_bucket, 0) or 0) + float(valor_bucket or 0)
+
+        for loja_ref_atual, data_base in lojas_base:
+            if incluir_geral:
+                total_base = somar_snapshot(loja_ref_atual, data_base)
+                acumular_buckets(bucket_geral, loja_ref_atual, total_base, data_base)
+            if incluir_sku:
+                total_sku_base = somar_snapshot(loja_ref_atual, data_base, sku_norm)
+                acumular_buckets(bucket_sku, loja_ref_atual, total_sku_base, data_base, sku_norm)
+
+        for idx, chave in enumerate(chaves_periodo or []):
+            if incluir_geral and chave in bucket_geral:
+                resultado["estoque_geral"][idx] = round(float(bucket_geral[chave] or 0), 2)
+            if incluir_sku and chave in bucket_sku:
+                resultado["estoque_sku"][idx] = round(float(bucket_sku[chave] or 0), 2)
+
+        resultado["estoque_meta"].update({
+            "lojas": len(lojas_base),
+            "detail": "",
+        })
+        return resultado
+    except sqlite3.OperationalError as exc:
+        logger.warning(f"Falha ao consultar histórico de estoque para gráfico de vendas: {exc}")
+        resultado["estoque_meta"].update({
+            "success": False,
+            "detail": "Não foi possível consultar o histórico de estoque.",
+        })
+        return resultado
+    finally:
+        conn_hist.close()
 
 
 def _bling_listar_lotes_produto(access_token: str, produto_id: str) -> tuple[list[dict], int]:
@@ -60776,7 +58561,6 @@ def _sincronizar_lancamentos_estoque_sku_api(
     }
 
 
-@app.post("/api/estoque/lancamentos/sync")
 async def sincronizar_lancamentos_estoque_api(
     req: EstoqueLancamentosSyncRequest,
     client_id: str = Depends(get_tenant_id),
@@ -61069,7 +58853,6 @@ def _sincronizar_lancamentos_estoque_lote_thread_worker(req: "EstoqueLancamentos
         ESTOQUE_LANC_SYNC_ACTIVE.pop(client_id, None)
 
 
-@app.post("/api/estoque/lancamentos/sync-lote")
 async def sincronizar_lancamentos_estoque_lote_api(
     req: EstoqueLancamentosSyncLoteRequest,
     client_id: str = Depends(get_tenant_id),
@@ -61096,7 +58879,6 @@ async def sincronizar_lancamentos_estoque_lote_api(
     return {"started": True, "message": "Sincronização de lançamentos iniciada em background."}
 
 
-@app.get("/api/estoque/lancamentos/sync-lote/progress")
 async def progresso_sincronizacao_lancamentos_estoque(client_id: str = Depends(get_tenant_id)):
     active = bool(ESTOQUE_LANC_SYNC_ACTIVE.get(client_id))
     progress = ESTOQUE_LANC_SYNC_PROGRESS.get(client_id)
@@ -61111,7 +58893,6 @@ async def progresso_sincronizacao_lancamentos_estoque(client_id: str = Depends(g
     }
 
 
-@app.get("/api/estoque/serie-retroativa")
 async def estoque_serie_retroativa(
     loja: str,
     periodo: str = "3m",
@@ -61538,7 +59319,6 @@ def _estoque_verificar_cancelamento(client_id: str):
         _set_estoque_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, "Sincronização de estoque cancelada."))
         raise HTTPException(status_code=409, detail="Sincronização de estoque cancelada pelo usuário.")
 
-@app.get("/api/estoque/sync/progress")
 async def progresso_sincronizacao_estoque(client_id: str = Depends(get_tenant_id)):
     active = bool(ESTOQUE_SYNC_ACTIVE.get(client_id))
     progress = ESTOQUE_SYNC_PROGRESS.get(client_id)
@@ -61553,7 +59333,6 @@ async def progresso_sincronizacao_estoque(client_id: str = Depends(get_tenant_id
     }
 
 
-@app.get("/api/estoque/preferencias-colunas")
 async def api_estoque_preferencias_colunas_get(client_id: str = Depends(get_tenant_id)):
     prefs = _carregar_preferencias_colunas_estoque(client_id)
     return {
@@ -61563,7 +59342,6 @@ async def api_estoque_preferencias_colunas_get(client_id: str = Depends(get_tena
     }
 
 
-@app.put("/api/estoque/preferencias-colunas")
 async def api_estoque_preferencias_colunas_put(
     req: EstoquePreferenciasColunasRequest,
     client_id: str = Depends(get_tenant_id),
@@ -61602,7 +59380,6 @@ def _sincronizar_estoque_thread_worker(req: "EstoqueSyncRequest", client_id: str
     finally:
         ESTOQUE_SYNC_ACTIVE.pop(client_id, None)
 
-@app.post("/api/estoque/sync")
 async def sincronizar_estoque(req: EstoqueSyncRequest, client_id: str = Depends(get_tenant_id)):
     if not req.loja or req.loja == "__todas":
         raise HTTPException(status_code=400, detail="Selecione uma loja para sincronizar.")
@@ -61622,6 +59399,8 @@ async def sincronizar_estoque(req: EstoqueSyncRequest, client_id: str = Depends(
     )
     t.start()
     return {"started": True, "message": "Atualização de estoque iniciada em background."}
+
+app.include_router(create_estoque_router(sys.modules[__name__]))
 
 async def _sincronizar_estoque_impl(req: EstoqueSyncRequest, client_id: str):
     ESTOQUE_SYNC_CANCEL_FLAGS.pop(client_id, None)
@@ -62430,7 +60209,6 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
     except Exception as e:
         _set_sync_ncm_job(job_id, status="error", mensagem=f"Erro na sincronizaÃƒÂ§ÃƒÂ£o de NCM: {e}")
 
-@app.post("/api/cadastro/sync-ncm/iniciar")
 async def iniciar_sync_ncm_cadastro(client_id: str = Depends(get_tenant_id)):
     # Reaproveita job em execuÃƒÂ§ÃƒÂ£o para o mesmo cliente.
     for job_id, job in SYNC_NCM_JOBS.items():
@@ -62451,7 +60229,6 @@ async def iniciar_sync_ncm_cadastro(client_id: str = Depends(get_tenant_id)):
     t.start()
     return {"job_id": job_id, "status": "running"}
 
-@app.get("/api/cadastro/sync-ncm/progresso/{job_id}")
 async def progresso_sync_ncm_cadastro(job_id: str, client_id: str = Depends(get_tenant_id)):
     job = SYNC_NCM_JOBS.get(job_id)
     if not job:
@@ -62460,7 +60237,6 @@ async def progresso_sync_ncm_cadastro(job_id: str, client_id: str = Depends(get_
         raise HTTPException(status_code=403, detail="Acesso negado a este job.")
     return {k: v for k, v in job.items() if k != "client_id"}
 
-@app.get("/api/cadastro/produtos")
 async def listar_produtos_cadastro(
     client_id: str = Depends(get_tenant_id),
     sync_fotos: bool = False,
@@ -62922,7 +60698,6 @@ async def listar_produtos_cadastro(
     return []
 
 
-@app.post("/api/cadastro/produtos")
 async def salvar_produto_cadastro(req: CadastroProdutoRequest, client_id: str = Depends(get_tenant_id)):
     sku = _normalizar_sku_mes(req.sku)
     nome = (req.nome or "").strip()
@@ -62981,7 +60756,6 @@ async def salvar_produto_cadastro(req: CadastroProdutoRequest, client_id: str = 
         raise HTTPException(status_code=500, detail=f"Erro ao salvar cadastro de produtos: {str(e)}")
 
 
-@app.post("/api/cadastro/importar-colunas")
 async def importar_colunas_cadastro_por_sku(
     arquivo: UploadFile = File(...),
     loja: Optional[str] = Form(None),
@@ -63167,7 +60941,6 @@ async def importar_colunas_cadastro_por_sku(
         raise HTTPException(status_code=500, detail=f"Erro ao importar colunas para cadastro: {str(e)}")
 
 
-@app.get("/api/cadastro/colunas")
 async def listar_colunas_cadastro(client_id: str = Depends(get_tenant_id)):
     tenant_path = get_tenant_path(client_id)
     arquivo_cliente = os.path.join(tenant_path, "cadastro_produtos.csv")
@@ -63190,7 +60963,6 @@ async def listar_colunas_cadastro(client_id: str = Depends(get_tenant_id)):
         raise HTTPException(status_code=500, detail=f"Erro ao listar colunas do cadastro: {str(e)}")
 
 
-@app.get("/api/cadastro/produto/{sku}")
 async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_id)):
     sku_norm = _normalizar_sku_mes(sku)
     tenant_path = get_tenant_path(client_id)
@@ -63237,7 +61009,6 @@ async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_i
         raise HTTPException(status_code=500, detail=f"Erro ao buscar produto no cadastro: {str(e)}")
 
 
-@app.put("/api/cadastro/produto/{sku}")
 async def atualizar_produto_cadastro_completo(sku: str, payload: dict, client_id: str = Depends(get_tenant_id)):
     sku_norm = _normalizar_sku_mes(sku)
     tenant_path = get_tenant_path(client_id)
@@ -63308,7 +61079,6 @@ async def atualizar_produto_cadastro_completo(sku: str, payload: dict, client_id
         raise HTTPException(status_code=500, detail=f"Erro ao atualizar produto no cadastro: {str(e)}")
 
 
-@app.post("/api/cadastro/produto")
 async def incluir_produto_cadastro_completo(payload: dict, client_id: str = Depends(get_tenant_id)):
     payload = payload or {}
     sku = _normalizar_sku_mes(payload.get("sku", ""))
@@ -63371,8 +61141,6 @@ async def incluir_produto_cadastro_completo(payload: dict, client_id: str = Depe
         raise HTTPException(status_code=500, detail=f"Erro ao incluir produto no cadastro: {str(e)}")
 
 
-@app.post("/api/cadastro/foto/upload")
-@app.post("/api/cadastro/foto-upload")
 async def upload_foto_cadastro(
     sku: str = Form(...),
     arquivo: UploadFile = File(...),
@@ -63429,13 +61197,11 @@ async def upload_foto_cadastro(
         raise HTTPException(status_code=500, detail=f"Erro ao salvar imagem do cadastro: {str(e)}")
 
 
-@app.get("/api/cadastro/produto")
 async def obter_produto_cadastro_query(sku: str, client_id: str = Depends(get_tenant_id)):
     # Wrapper para evitar problemas de roteamento com SKU no path.
     return await obter_produto_cadastro(sku, client_id)
 
 
-@app.put("/api/cadastro/produto")
 async def atualizar_produto_cadastro_completo_query(
     payload: dict,
     sku_original: str,
@@ -63446,7 +61212,6 @@ async def atualizar_produto_cadastro_completo_query(
 
 # --- ENDPOINTS VENDAS (LISTAGEM) ---
 
-@app.get("/api/vendas")
 async def listar_vendas(
     client_id: str = Depends(get_tenant_id),
     data_inicio: str = None,
@@ -63787,7 +61552,6 @@ async def listar_vendas(
     return dados
 
 
-@app.get("/api/notas-entrada")
 async def listar_notas_entrada(client_id: str = Depends(get_tenant_id), data_inicio: str = None, data_fim: str = None, agrupado: bool = False, unidade_negocio: str = None, loja: str = None):
     db_path = _get_notas_entrada_db(client_id, loja)
     if not (db_path and os.path.exists(db_path)):
@@ -63890,7 +61654,6 @@ async def listar_notas_entrada(client_id: str = Depends(get_tenant_id), data_ini
 
 
 
-@app.get("/api/notas-entrada/itens")
 async def listar_itens_devolucoes(client_id: str = Depends(get_tenant_id), data_inicio: str = None, data_fim: str = None, unidade_negocio: str = None, loja: str = None):
     """Retorna todos os itens de devoluÃƒÂ§ÃƒÂµes (para cÃƒÂ¡lculo de totais)"""
     db_paths = _listar_bancos_vendas_tenant(client_id, loja)
@@ -63964,7 +61727,6 @@ async def listar_itens_devolucoes(client_id: str = Depends(get_tenant_id), data_
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao ler itens de devoluÃƒÂ§ÃƒÂµes: {str(e)}")
 
-@app.get("/api/notas-entrada/sku/{sku}")
 async def listar_notas_entrada_por_sku(sku: str, client_id: str = Depends(get_tenant_id), data_inicio: str = None, data_fim: str = None, unidade_negocio: str = None, loja: str = None):
     db_path = _get_notas_entrada_db(client_id, loja)
     if not (db_path and os.path.exists(db_path)):
@@ -64030,7 +61792,6 @@ async def listar_notas_entrada_por_sku(sku: str, client_id: str = Depends(get_te
             conn.close()
 
 
-@app.get("/api/notas-entrada/debug/devolucoes-por-loja")
 async def debug_devolucoes_por_loja(
     client_id: str = Depends(get_tenant_id),
     data_inicio: str = None,
@@ -64117,7 +61878,6 @@ async def debug_devolucoes_por_loja(
             conn.close()
 
 
-@app.get("/api/unidades-negocios")
 async def listar_unidades_negocios(loja: str = None, sku: str = None, data_inicio: str = None, data_fim: str = None, client_id: str = Depends(get_tenant_id)):
     """Lista as unidades de negÃƒÂ³cio e seus nomes configurados"""
     try:
@@ -64267,7 +62027,6 @@ async def listar_unidades_negocios(loja: str = None, sku: str = None, data_inici
         return {"error": str(e), "unidades": [], "mapeamento": {}}
 
 
-@app.post("/api/vendas/limpar-tudo")
 async def limpar_todos_bancos_vendas(client_id: str = Depends(get_tenant_id)):
     """Apaga todos os bancos de vendas do tenant (legado + segregados por loja)."""
     tenant_path = get_tenant_path(client_id)
@@ -64296,7 +62055,6 @@ async def limpar_todos_bancos_vendas(client_id: str = Depends(get_tenant_id)):
     }
 
 
-@app.post("/api/unidades-negocios/atualizar")
 async def atualizar_unidade_negocio(
     nome_antigo: str,
     nome_novo: str,
@@ -64328,7 +62086,6 @@ async def atualizar_unidade_negocio(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/unidades-negocios/mapeamento")
 async def salvar_mapeamento_unidades(mapeamento: dict, client_id: str = Depends(get_tenant_id)):
     """Salva o mapeamento de IDs para nomes de unidades"""
     try:
@@ -64341,7 +62098,6 @@ async def salvar_mapeamento_unidades(mapeamento: dict, client_id: str = Depends(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/debug/notas-entrada-itens")
 async def debug_notas_entrada_itens(client_id: str = Depends(get_tenant_id), data_inicio: str = None, data_fim: str = None):
     """Debug endpoint para verificar itens salvos na tabela notas_entrada_itens"""
     db_path = _get_notas_entrada_db(client_id)
@@ -64606,122 +62362,6 @@ def _verificar_cancelamento(client_id: str):
         raise HTTPException(status_code=409, detail="SincronizaÃƒÂ§ÃƒÂ£o cancelada pelo usuÃƒÂ¡rio.")
 
 
-def _vendas_sync_parse_date(valor: str, campo: str) -> dt.date:
-    try:
-        return dt.date.fromisoformat(str(valor or "").strip()[:10])
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"Data invalida em {campo}. Use YYYY-MM-DD.")
-
-
-def _vendas_sync_dias_periodo(data_inicio: str, data_fim: str) -> list[str]:
-    inicio = _vendas_sync_parse_date(data_inicio, "data_inicio")
-    fim = _vendas_sync_parse_date(data_fim, "data_fim")
-    if inicio > fim:
-        raise HTTPException(status_code=400, detail="Data inicial nao pode ser maior que a data final.")
-    total = (fim - inicio).days + 1
-    return [(inicio + dt.timedelta(days=i)).isoformat() for i in range(total)]
-
-
-def _vendas_sync_state_path(client_id: str) -> str:
-    return os.path.join(get_tenant_path(client_id), "vendas_sync_state.json")
-
-
-def _vendas_sync_load_state(client_id: str) -> dict:
-    path = _vendas_sync_state_path(client_id)
-    if not os.path.exists(path):
-        return {"jobs": {}}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        if not isinstance(state, dict):
-            return {"jobs": {}}
-        if not isinstance(state.get("jobs"), dict):
-            state["jobs"] = {}
-        return state
-    except Exception:
-        return {"jobs": {}}
-
-
-def _vendas_sync_save_state(client_id: str, state: dict):
-    path = _vendas_sync_state_path(client_id)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state or {"jobs": {}}, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
-
-
-def _vendas_sync_job_key(loja: str, data_inicio: str, data_fim: str, forcar_resync: bool) -> str:
-    base = "|".join([
-        str(loja or "").strip().lower(),
-        str(data_inicio or "").strip()[:10],
-        str(data_fim or "").strip()[:10],
-        "1" if forcar_resync else "0",
-    ])
-    return hashlib.sha1(base.encode("utf-8")).hexdigest()
-
-
-def _vendas_sync_prepare_job(client_id: str, req: VendasSyncRequest, dias: list[str]) -> tuple[str, dict]:
-    with SYNC_STATE_LOCK:
-        state = _vendas_sync_load_state(client_id)
-        jobs = state.setdefault("jobs", {})
-        key = _vendas_sync_job_key(req.loja, req.data_inicio, req.data_fim, req.forcar_resync)
-        job = jobs.get(key)
-        precisa_novo = (
-            not isinstance(job, dict)
-            or job.get("status") == "complete"
-            or job.get("loja") != req.loja
-            or job.get("data_inicio") != req.data_inicio
-            or job.get("data_fim") != req.data_fim
-            or bool(job.get("forcar_resync")) != bool(req.forcar_resync)
-        )
-        if precisa_novo:
-            job = {
-                "id": key,
-                "loja": req.loja,
-                "data_inicio": req.data_inicio,
-                "data_fim": req.data_fim,
-                "forcar_resync": bool(req.forcar_resync),
-                "dias_total": len(dias),
-                "dias_concluidos": [],
-                "dia_atual": None,
-                "status": "running",
-                "started_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-            }
-        else:
-            job["status"] = "running"
-            job["dias_total"] = len(dias)
-            job["updated_at"] = datetime.now().isoformat()
-        jobs[key] = job
-        state["active_key"] = key
-        _vendas_sync_save_state(client_id, state)
-        return key, job
-
-
-def _vendas_sync_update_job(client_id: str, key: str, updates: dict) -> dict:
-    with SYNC_STATE_LOCK:
-        state = _vendas_sync_load_state(client_id)
-        jobs = state.setdefault("jobs", {})
-        job = jobs.get(key) if isinstance(jobs.get(key), dict) else {"id": key}
-        job.update(updates or {})
-        job["updated_at"] = datetime.now().isoformat()
-        jobs[key] = job
-        state["active_key"] = key
-
-        # Mantem o arquivo pequeno, preservando os jobs mais recentes.
-        if len(jobs) > 25:
-            ordenados = sorted(
-                jobs.items(),
-                key=lambda item: str((item[1] or {}).get("updated_at") or ""),
-                reverse=True,
-            )
-            state["jobs"] = dict(ordenados[:25])
-
-        _vendas_sync_save_state(client_id, state)
-        return job
-
-@app.get("/api/vendas/todas")
 async def listar_vendas_todas(client_id: str = Depends(get_tenant_id)):
     db_path = _get_vendas_db(client_id)
     if not os.path.exists(db_path):
@@ -64738,7 +62378,6 @@ async def listar_vendas_todas(client_id: str = Depends(get_tenant_id)):
     finally:
         conn.close()
 
-@app.get("/api/vendas/grafico")
 async def grafico_vendas(
     periodo: str = "3m",
     intervalo: str = "dia",
@@ -64747,6 +62386,8 @@ async def grafico_vendas(
     data_fim: str = None,
     loja: str = None,
     unidade_negocio: str = None,
+    mostrar_estoque_geral: bool = False,
+    mostrar_estoque_sku: bool = False,
     client_id: str = Depends(get_tenant_id)
 ):
     """
@@ -64762,7 +62403,16 @@ async def grafico_vendas(
             "valores_vendas": [],
             "quantidades_vendas": [],
             "valores_devolucoes": [],
-            "quantidades_devolucoes": []
+            "quantidades_devolucoes": [],
+            "estoque_geral": [],
+            "estoque_sku": [],
+            "estoque_meta": {
+                "success": True,
+                "requested": bool(mostrar_estoque_geral or mostrar_estoque_sku),
+                "lojas": 0,
+                "sku": _normalizar_sku_estoque(sku) if sku else None,
+                "detail": "Sem bancos de vendas para o filtro informado.",
+            },
         }
 
     try:
@@ -65035,13 +62685,26 @@ async def grafico_vendas(
             quantidades_vendas.append(dados["vendas_qtd"])
             valores_devolucoes.append(dados["devol_valor"])
             quantidades_devolucoes.append(dados["devol_qtd"])
+
+        estoque_series = _vendas_series_estoque_historico(
+            client_id=client_id,
+            loja=loja,
+            intervalo=intervalo,
+            data_inicio_ref=data_inicio_dt,
+            data_fim_ref=data_fim_dt,
+            chaves_periodo=chaves_periodo,
+            mostrar_estoque_geral=mostrar_estoque_geral,
+            mostrar_estoque_sku=mostrar_estoque_sku,
+            sku=sku,
+        )
         
         return {
             "labels": labels,
             "valores_vendas": valores_vendas,
             "quantidades_vendas": quantidades_vendas,
             "valores_devolucoes": valores_devolucoes,
-            "quantidades_devolucoes": quantidades_devolucoes
+            "quantidades_devolucoes": quantidades_devolucoes,
+            **estoque_series,
         }
     except HTTPException:
         raise
@@ -65050,7 +62713,6 @@ async def grafico_vendas(
         raise HTTPException(status_code=500, detail="Erro ao gerar grÃƒÂ¡fico de vendas.")
 
 
-@app.get("/api/vendas/skus-sem-venda")
 async def skus_sem_venda(
     loja: str = None,
     unidade_negocio: str = None,
@@ -65214,7 +62876,6 @@ async def skus_sem_venda(
         raise HTTPException(status_code=500, detail="Erro ao buscar SKUs sem venda.")
 
 
-@app.get("/api/vendas/limites")
 async def limites_vendas(
     loja: str = None,
     unidade_negocio: str = None,
@@ -65266,13 +62927,11 @@ async def limites_vendas(
         "fim": maior_data,
     }
 
-@app.post("/api/vendas/sync/cancel")
 async def cancelar_sincronizacao_vendas(client_id: str = Depends(get_tenant_id)):
     SYNC_CANCEL_FLAGS[client_id] = True
     _set_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, "Cancelamento solicitado."))
     return {"success": True, "message": "Cancelamento solicitado."}
 
-@app.get("/api/vendas/sync/progress")
 async def progresso_sincronizacao_vendas(client_id: str = Depends(get_tenant_id)):
     active_jobs = _sync_active_jobs(client_id)
     active = bool(active_jobs)
@@ -65357,7 +63016,6 @@ def _sincronizar_vendas_thread_worker(req: "VendasSyncRequest", client_id: str, 
             except Exception:
                 pass
 
-@app.post("/api/vendas/sync")
 async def sincronizar_vendas(req: VendasSyncRequest, client_id: str = Depends(get_tenant_id)):
     # ValidaÃƒÂ§ÃƒÂµes bÃƒÂ¡sicas antes de iniciar a thread
     if not req.loja or req.loja == "__todas":
@@ -65404,6 +63062,9 @@ async def sincronizar_vendas(req: VendasSyncRequest, client_id: str = Depends(ge
         "limit": SYNC_MAX_ACTIVE_VENDAS,
         "message": "Sincronizacao diaria iniciada em background.",
     }
+
+
+app.include_router(create_vendas_router(sys.modules[__name__]))
 
 
 async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
@@ -66263,7 +63924,6 @@ async def _sincronizar_vendas_periodo_impl(req: VendasSyncRequest, client_id: st
         "notas_processadas": notas_total
     }
 
-@app.post("/api/medias-compras/calcular")
 async def api_medias_compras_calcular(req: MediasComprasRequest):
     try:
         itens = [item.model_dump() for item in req.itens]
@@ -66273,7 +63933,6 @@ async def api_medias_compras_calcular(req: MediasComprasRequest):
         raise HTTPException(status_code=500, detail="Erro ao calcular mÃƒÂ©dias e compras")
 
 
-@app.get("/api/medias-compras/visao")
 async def api_medias_compras_visao(
     meses: int = 12,
     loja: str = "__todas",
@@ -67449,7 +65108,6 @@ def _gerar_excel_lista_pedido_bytes(nome_lista: str, itens: list[dict], client_i
     return buffer.getvalue()
 
 
-@app.post("/api/medias-compras/gerar-lista-compra")
 async def api_medias_compras_gerar_lista_compra(
     req: ListaCompraRequest,
     client_id: str = Depends(get_tenant_id)
@@ -67908,7 +65566,6 @@ async def api_medias_compras_gerar_lista_compra(
         raise HTTPException(status_code=500, detail="Erro ao gerar lista de compra")
 
 
-@app.get("/api/medias-compras/gerar-lista-compra")
 async def api_medias_compras_gerar_lista_compra_get(
     opcao: str,
     crescimento_percent: float | None = None,
@@ -67929,7 +65586,6 @@ async def api_medias_compras_gerar_lista_compra_get(
     return await api_medias_compras_gerar_lista_compra(req, client_id)
 
 
-@app.get("/api/medias-compras/gerar-lista-sugestao")
 async def api_medias_compras_gerar_lista_sugestao(
     meses: int = 12,
     loja: str = "__todas",
@@ -67992,7 +65648,6 @@ async def api_medias_compras_gerar_lista_sugestao(
     }
 
 
-@app.get("/api/medias-compras/produtos-sem-venda")
 async def api_medias_compras_produtos_sem_venda(
     faixa: str = "3m",
     order: str = "desc",
@@ -68069,7 +65724,6 @@ async def api_medias_compras_produtos_sem_venda(
     }
 
 
-@app.get("/api/medias-compras/listas-pedidos")
 async def api_medias_compras_listas_pedidos(
     loja: str = "__todas",
     client_id: str = Depends(get_tenant_id)
@@ -68088,7 +65742,6 @@ async def api_medias_compras_listas_pedidos(
     }
 
 
-@app.get("/api/medias-compras/preferencias-skus-ocultos")
 async def api_medias_compras_skus_ocultos_get(
     request: Request,
     client_id: str = Depends(get_tenant_id),
@@ -68102,7 +65755,6 @@ async def api_medias_compras_skus_ocultos_get(
     }
 
 
-@app.put("/api/medias-compras/preferencias-skus-ocultos")
 async def api_medias_compras_skus_ocultos_put(
     req: MediasComprasSkusOcultosRequest,
     request: Request,
@@ -68117,7 +65769,6 @@ async def api_medias_compras_skus_ocultos_put(
     }
 
 
-@app.get("/api/medias-compras/listas-pedidos/preferencias-colunas")
 async def api_medias_compras_preferencias_colunas_get(client_id: str = Depends(get_tenant_id)):
     prefs = _carregar_preferencias_colunas_importacoes(client_id)
     return {
@@ -68127,7 +65778,6 @@ async def api_medias_compras_preferencias_colunas_get(client_id: str = Depends(g
     }
 
 
-@app.put("/api/medias-compras/listas-pedidos/preferencias-colunas")
 async def api_medias_compras_preferencias_colunas_put(
     req: ListaPedidoPreferenciasColunasRequest,
     client_id: str = Depends(get_tenant_id),
@@ -68144,7 +65794,6 @@ async def api_medias_compras_preferencias_colunas_put(
     }
 
 
-@app.get("/api/medias-compras/concorrentes-links")
 async def api_medias_compras_concorrentes_links(
     sku: str,
     client_id: str = Depends(get_tenant_id),
@@ -68263,7 +65912,6 @@ async def api_medias_compras_concorrentes_links(
         raise HTTPException(status_code=500, detail="Erro ao buscar links de concorrentes")
 
 
-@app.get("/api/medias-compras/listas-pedidos/{lista_id}")
 async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str = Depends(get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
@@ -68290,7 +65938,6 @@ async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str 
     }
 
 
-@app.put("/api/medias-compras/listas-pedidos/{lista_id}")
 async def api_medias_compras_lista_pedido_editar(
     lista_id: str,
     req: ListaPedidoUpdateRequest,
@@ -68323,7 +65970,6 @@ async def api_medias_compras_lista_pedido_editar(
     }
 
 
-@app.post("/api/medias-compras/listas-pedidos/{lista_id}/adicionar-sku")
 async def api_medias_compras_lista_pedido_adicionar_sku(
     lista_id: str,
     req: ListaPedidoAddSkuRequest,
@@ -68469,7 +66115,6 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
     }
 
 
-@app.patch("/api/medias-compras/listas-pedidos/{lista_id}/status")
 async def api_medias_compras_lista_pedido_atualizar_status(
     lista_id: str,
     req: ListaPedidoStatusRequest,
@@ -68496,7 +66141,6 @@ async def api_medias_compras_lista_pedido_atualizar_status(
     }
 
 
-@app.delete("/api/medias-compras/listas-pedidos/{lista_id}")
 async def api_medias_compras_lista_pedido_excluir(lista_id: str, client_id: str = Depends(get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
@@ -68515,7 +66159,6 @@ async def api_medias_compras_lista_pedido_excluir(lista_id: str, client_id: str 
     }
 
 
-@app.get("/api/medias-compras/listas-pedidos/{lista_id}/download")
 async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str = Depends(get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     lista = next((l for l in listas if str(l.get("id", "")) == str(lista_id)), None)
@@ -68569,7 +66212,6 @@ async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str
     )
 
 
-@app.post("/api/medias-compras/listas-pedidos/{lista_id}/gerar-download")
 async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_id: str = Depends(get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     lista = next((l for l in listas if str(l.get("id", "")) == str(lista_id)), None)
@@ -68618,7 +66260,6 @@ async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_i
     }
 
 
-@app.post("/api/medias-compras/listas-pedidos/{lista_id}/importar-excel-precos")
 async def api_medias_compras_lista_pedido_importar_excel_precos(
     lista_id: str,
     file: UploadFile = File(...),
@@ -68856,7 +66497,6 @@ async def api_medias_compras_lista_pedido_importar_excel_precos(
     }
 
 
-@app.post("/api/medias-compras/listas-pedidos/importar-excel")
 async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
     file: UploadFile = File(...),
     nome_lista: str = Form(""),
@@ -69014,7 +66654,6 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
     }
 
 
-@app.get("/api/medias-compras/download/{file_id}")
 async def api_medias_compras_download(file_id: str, client_id: str = Depends(get_tenant_id)):
     file_bytes = TEMP_FILES_STORAGE.get(file_id)
     if not file_bytes:
@@ -69029,33 +66668,19 @@ async def api_medias_compras_download(file_id: str, client_id: str = Depends(get
     }
     return StreamingResponse(io.BytesIO(file_bytes), media_type=media_type, headers=headers)
 
-# --- ROTAS PARA SERVIR HTML NA RAIZ ---
-@app.get("/")
-async def root():
-    # Redireciona automaticamente para a tela de login
-    return RedirectResponse(url="/frontend_index.html")
 
-@app.get("/{filename}.html")
-async def serve_html(filename: str):
-    response = None
-    # 1. Prioriza sempre a pasta static (frontend atualizado)
-    if os.path.exists(f"static/{filename}.html"):
-        response = FileResponse(f"static/{filename}.html", media_type="text/html; charset=utf-8")
-    # 2. Fallback para raiz (compatibilidade legada)
-    elif os.path.exists(f"{filename}.html"):
-        response = FileResponse(f"{filename}.html", media_type="text/html; charset=utf-8")
-    
-    if response:
-        # Desabilita cache do navegador para garantir que alteraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes apareÃƒÆ’Ã‚Â§am
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
+app.include_router(create_medias_compras_router(sys.modules[__name__]))
+app.include_router(create_importacoes_router(sys.modules[__name__]))
 
-    raise HTTPException(status_code=404, detail="Arquivo nÃƒÆ’Ã‚Â£o encontrado")
+_frontend_router_config = FrontendRouterConfig(
+    base_dir=BASE_DIR,
+    static_dir="static",
+    img_dir=PASTA_IMG,
+    chrome_extensions_dir="extensoes_chrome",
+)
+app.include_router(create_frontend_router(_frontend_router_config))
 
 
-@app.get("/api/cadastro/foto/{client_id}/{filename:path}")
 async def servir_foto_cadastro(client_id: str, filename: str):
     nome_original = str(filename or "").replace("\\", "/").strip("/")
     if nome_original.lower().startswith("cadastro_fotos/"):
@@ -69091,7 +66716,6 @@ async def servir_foto_cadastro(client_id: str, filename: str):
     return response
 
 
-@app.get("/api/cadastro/foto-arquivo/{filename:path}")
 async def servir_foto_cadastro_por_arquivo(filename: str):
     nome_original = str(filename or "").replace("\\", "/").strip("/")
     if nome_original.lower().startswith("cadastro_fotos/"):
@@ -69121,7 +66745,8 @@ async def servir_foto_cadastro_por_arquivo(filename: str):
     response.headers["Expires"] = "0"
     return response
 
-@app.get("/api/ia/imagens/{filename:path}")
+app.include_router(create_cadastro_router(sys.modules[__name__]))
+
 async def servir_imagem_ia(filename: str):
     nome_original = str(filename or "").replace("\\", "/").strip("/")
     nome_seguro = os.path.basename(nome_original)
@@ -69148,45 +66773,12 @@ async def servir_imagem_ia(filename: str):
     return response
 
 
-@app.get("/ia-sidebar.js")
-async def servir_ia_sidebar_js():
-    caminho = os.path.join("static", "ia-sidebar.js")
-    if not os.path.exists(caminho):
-        raise HTTPException(status_code=404, detail="Arquivo do assistente IA nao encontrado")
-    response = FileResponse(caminho, media_type="application/javascript; charset=utf-8")
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
-
-
-@app.get("/extensoes_chrome/jk_ml_collector/{filename:path}")
-async def servir_jk_ml_collector(filename: str):
-    nome = str(filename or "").replace("\\", "/").strip("/")
-    if not nome or ".." in nome.split("/"):
-        raise HTTPException(status_code=404, detail="Arquivo da extensao invalido")
-
-    base_extensao = os.path.abspath(os.path.join(BASE_DIR, "extensoes_chrome", "jk_ml_collector"))
-    caminho = os.path.abspath(os.path.join(base_extensao, nome))
-    if not caminho.startswith(base_extensao + os.sep) or not os.path.isfile(caminho):
-        raise HTTPException(status_code=404, detail="Arquivo da extensao nao encontrado")
-
-    extensao = os.path.splitext(caminho)[1].lower()
-    media_type = "application/javascript; charset=utf-8" if extensao == ".js" else "application/json; charset=utf-8"
-    response = FileResponse(caminho, media_type=media_type)
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+app.include_router(create_ia_router(sys.modules[__name__]))
 
 
 # --- ARQUIVOS ESTÃƒÆ’Ã‚ÂTICOS (FRONTEND) ---
-if not os.path.exists("static"):
-    os.makedirs("static")
-if not os.path.exists(PASTA_IMG):
-    os.makedirs(PASTA_IMG)
-app.mount("/img", StaticFiles(directory=PASTA_IMG), name="img")
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+register_startup_events(app, sys.modules[__name__])
+mount_static_assets(app, _frontend_router_config)
 
 
 
