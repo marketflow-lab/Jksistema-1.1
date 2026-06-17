@@ -1955,6 +1955,13 @@
                             <p>Valem para o tipo selecionado acima: perguntas de anúncio ou pós-venda.</p>
                         </div>
                         <label class="training-field">
+                            <span>Escopo do treinamento</span>
+                            <select id="ai-training-scope">
+                                <option value="">Padrao para todas as contas</option>
+                            </select>
+                            <small>Use o padrao geral para todas as contas. Escolha uma conta apenas quando ela precisar de uma instrucao propria.</small>
+                        </label>
+                        <label class="training-field">
                             <span id="ai-training-orientacoes-label">Orientações para perguntas de anúncio</span>
                             <textarea id="ai-training-orientacoes" rows="5" placeholder="Ex.: responder sempre com tom cordial, não prometer prazo sem confirmação, pedir modelo/ano quando a aplicação do produto for incerta..."></textarea>
                         </label>
@@ -2088,6 +2095,7 @@
                 proibicoes: '',
                 notas_sku: {}
             },
+            treinamentoEscopoLoja: '',
             treinamentoSkuNotasAtual: '',
             produtosTreinamento: [],
             produtosTreinamentoCarregados: false,
@@ -2146,6 +2154,7 @@
         const aiTrainingTypeTabs = Array.from(document.querySelectorAll('.training-type-tab'));
         const aiTrainingOrientacoesLabel = document.getElementById('ai-training-orientacoes-label');
         const aiTrainingOrientacoes = document.getElementById('ai-training-orientacoes');
+        const aiTrainingScope = document.getElementById('ai-training-scope');
         const aiTrainingContextoLoja = document.getElementById('ai-training-contexto-loja');
         const aiTrainingCompatibilidade = document.getElementById('ai-training-compatibilidade');
         const aiTrainingProibicoes = document.getElementById('ai-training-proibicoes');
@@ -2300,6 +2309,52 @@
             });
         }
 
+        function montarSeletorEscopoTreinamento() {
+            if (!aiTrainingScope) return;
+            const valorAtual = String(state.treinamentoEscopoLoja || aiTrainingScope.value || '').trim();
+            aiTrainingScope.innerHTML = '';
+
+            const optGlobal = document.createElement('option');
+            optGlobal.value = '';
+            optGlobal.textContent = 'Padrao para todas as contas';
+            aiTrainingScope.appendChild(optGlobal);
+
+            lojasMercadoLivreConectadas().forEach((loja) => {
+                const nome = String(loja && loja.nome || '').trim();
+                if (!nome) return;
+                const option = document.createElement('option');
+                option.value = nome;
+                option.textContent = `Conta ${nome}`;
+                aiTrainingScope.appendChild(option);
+            });
+
+            const valorExiste = !valorAtual || Array.from(aiTrainingScope.options).some((option) => option.value === valorAtual);
+            state.treinamentoEscopoLoja = valorExiste ? valorAtual : '';
+            aiTrainingScope.value = state.treinamentoEscopoLoja;
+        }
+
+        function lojaEscopoTreinamento() {
+            return String(state.treinamentoEscopoLoja || aiTrainingScope?.value || '').trim();
+        }
+
+        function rotuloEscopoTreinamento() {
+            const loja = lojaEscopoTreinamento();
+            return loja ? `conta ${loja}` : 'padrao de todas as contas';
+        }
+
+        function intervaloChecagemReferenciaTodas(lojas) {
+            const origem = (lojas || []).find((loja) => loja && loja.config_perguntas) || {};
+            const config = origem.config_perguntas || {};
+            return Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+        }
+
+        function atualizarConfigPerguntasLocal(nomeLoja, configPerguntas) {
+            const chave = chaveLojaCronometro(nomeLoja);
+            if (!chave || !configPerguntas) return;
+            const loja = state.lojas.find((item) => chaveLojaCronometro(item && item.nome) === chave);
+            if (loja) loja.config_perguntas = configPerguntas;
+        }
+
         function dadosNotificacaoVazios() {
             return {
                 perguntas: 0,
@@ -2439,6 +2494,9 @@
         function lojaParaConfigurarChecagemPerguntas() {
             const lojas = lojasMercadoLivreConectadas();
             if (!lojas.length) return null;
+            if (todasAsLojasSelecionadas() && state.lojaConfiguracaoPerguntas === TODAS_LOJAS_VALUE) {
+                return lojas[0] || null;
+            }
             const nomePreferido = todasAsLojasSelecionadas()
                 ? (state.lojaConfiguracaoPerguntas || (lojas[0] && lojas[0].nome) || '')
                 : state.lojaSelecionada;
@@ -2453,18 +2511,26 @@
                 perguntasAutomationControls.innerHTML = '<span class="store-next-check automation-next-check">Escolha uma loja para configurar a checagem.</span>';
                 return;
             }
+            const alvoTodas = todasAsLojasSelecionadas() && state.lojaConfiguracaoPerguntas === TODAS_LOJAS_VALUE;
             const nome = String(loja.nome || '').trim();
-            state.lojaConfiguracaoPerguntas = nome;
+            state.lojaConfiguracaoPerguntas = alvoTodas ? TODAS_LOJAS_VALUE : nome;
             const config = loja.config_perguntas || {};
-            const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
+            const intervaloMinutos = alvoTodas
+                ? intervaloChecagemReferenciaTodas(lojasConectadas)
+                : Math.max(0.25, Math.min(1440, Number(config.intervalo_minutos || 10) || 10));
             const seletorLoja = todasAsLojasSelecionadas() ? `
                     <select id="perguntas-loja-intervalo" aria-label="Loja para configurar checagem">
+                        <option value="${TODAS_LOJAS_VALUE}" ${alvoTodas ? 'selected' : ''}>Todas as contas conectadas</option>
                         ${lojasConectadas.map((item) => {
                             const itemNome = String(item.nome || '').trim();
-                            return `<option value="${escapeHtml(itemNome)}" ${chaveLojaCronometro(itemNome) === chaveLojaCronometro(nome) ? 'selected' : ''}>${escapeHtml(itemNome)}</option>`;
+                            return `<option value="${escapeHtml(itemNome)}" ${!alvoTodas && chaveLojaCronometro(itemNome) === chaveLojaCronometro(nome) ? 'selected' : ''}>${escapeHtml(itemNome)}</option>`;
                         }).join('')}
                     </select>
                 ` : `<strong>${escapeHtml(nome)}</strong>`;
+            const textoStatus = alvoTodas
+                ? `Aplicar em ${lojasConectadas.length} conta(s) conectada(s).`
+                : textoProximaChecagemLoja(nome, loja);
+            const atributoProxima = alvoTodas ? '' : ` data-next-check-loja="${escapeHtml(nome)}"`;
             perguntasAutomationControls.innerHTML = `
                 <label class="automation-interval-control">
                     <span>Checagem automatica</span>
@@ -2473,7 +2539,7 @@
                     <input id="perguntas-intervalo-global" type="number" min="0.25" max="1440" step="0.25" value="${intervaloMinutos}" aria-label="Intervalo de checagem em minutos">
                     <span>minuto(s)</span>
                     <button class="store-config-save" type="button" id="btn-salvar-intervalo-perguntas">Aplicar</button>
-                    <span class="store-next-check automation-next-check" data-next-check-loja="${escapeHtml(nome)}">${escapeHtml(textoProximaChecagemLoja(nome, loja))}</span>
+                    <span class="store-next-check automation-next-check"${atributoProxima}>${escapeHtml(textoStatus)}</span>
                 </label>
             `;
             const input = document.getElementById('perguntas-intervalo-global');
@@ -2709,6 +2775,7 @@
             vincularEventosLojas(lojasGrid);
             vincularEventosLojas(posVendaLojasGrid);
             renderizarControlesAutomacaoSelecionada();
+            montarSeletorEscopoTreinamento();
             renderizarNotificacoes();
         }
 
@@ -2794,14 +2861,38 @@
         }
 
         async function salvarIntervaloLojaSelecionada() {
+            const alvoTodas = todasAsLojasSelecionadas() && state.lojaConfiguracaoPerguntas === TODAS_LOJAS_VALUE;
             const loja = lojaParaConfigurarChecagemPerguntas();
             if (!loja) return;
-            state.lojaConfiguracaoPerguntas = String(loja.nome || '').trim();
+            state.lojaConfiguracaoPerguntas = alvoTodas ? TODAS_LOJAS_VALUE : String(loja.nome || '').trim();
             const input = document.getElementById('perguntas-intervalo-global');
             const config = loja.config_perguntas || {};
             const intervaloMinutos = Math.max(0.25, Math.min(1440, Number(input?.value || config.intervalo_minutos || 10) || 10));
             if (input) input.value = String(intervaloMinutos);
             try {
+                if (alvoTodas) {
+                    const response = await fetch('/api/mercadolivre/perguntas/lojas/config-lote', {
+                        method: 'POST',
+                        headers: {
+                            ...obterAuthHeaders(),
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            intervalo_minutos: intervaloMinutos,
+                            somente_conectadas: true
+                        })
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data.detail || 'Erro ao salvar intervalo em lote.');
+                    (data.atualizadas || []).forEach((item) => {
+                        atualizarConfigPerguntasLocal(item.loja, item.config_perguntas);
+                    });
+                    lojasStatus.textContent = `Intervalo aplicado em ${Number(data.total || 0)} conta(s).`;
+                    renderizarLojas();
+                    iniciarAutomacaoPerguntas();
+                    return;
+                }
+
                 const response = await fetch('/api/mercadolivre/perguntas/lojas/config', {
                     method: 'POST',
                     headers: {
@@ -3458,6 +3549,7 @@
             }
             const payload = {
                 tipo,
+                loja: lojaEscopoTreinamento(),
                 orientacoes: (state.treinamentoDados[tipo] || {}).orientacoes || '',
                 contexto_loja: state.treinamentoContexto.contexto_loja || '',
                 compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
@@ -3632,6 +3724,7 @@
                 const lojaSelecionadaAtual = state.lojas.find((loja) => String(loja.nome || '') === String(state.lojaSelecionada || ''));
                 if (!haLojasConectadas) {
                     state.lojaSelecionada = '';
+                    state.lojaConfiguracaoPerguntas = '';
                 } else if (
                     !state.lojaSelecionada ||
                     todasAsLojasSelecionadas() ||
@@ -3639,6 +3732,11 @@
                     lojaSelecionadaAtual.mercadolivre_conectado !== true
                 ) {
                     state.lojaSelecionada = TODAS_LOJAS_VALUE;
+                }
+                if (todasAsLojasSelecionadas()) {
+                    state.lojaConfiguracaoPerguntas = TODAS_LOJAS_VALUE;
+                } else if (!state.lojaConfiguracaoPerguntas) {
+                    state.lojaConfiguracaoPerguntas = state.lojaSelecionada;
                 }
                 lojasStatus.textContent = state.lojas.length
                     ? `${state.lojas.length} loja(s) cadastrada(s)`
@@ -3658,7 +3756,7 @@
         async function selecionarLoja(nome) {
             if (!nome || state.carregandoPerguntas) return;
             state.lojaSelecionada = nome;
-            if (!todasAsLojasSelecionadas()) state.lojaConfiguracaoPerguntas = nome;
+            state.lojaConfiguracaoPerguntas = todasAsLojasSelecionadas() ? TODAS_LOJAS_VALUE : nome;
             resetarPaginacaoPosVenda();
             resetarMediacoes();
             renderizarLojas();
@@ -4914,12 +5012,13 @@
         function atualizarStatusTreinamentoTipo() {
             const dados = state.treinamentoDados[state.treinamentoTipo] || {};
             const rotulo = rotuloTipoTreinamento();
+            const escopo = rotuloEscopoTreinamento();
             if (dados.updated_at) {
-                aiTrainingStatus.textContent = `Orientações de ${rotulo} salvas em ${formatarData(dados.updated_at)}`;
+                aiTrainingStatus.textContent = `Orientacoes de ${rotulo} (${escopo}) salvas em ${formatarData(dados.updated_at)}`;
             } else if (dados.orientacoes) {
-                aiTrainingStatus.textContent = `Orientações de ${rotulo} carregadas.`;
+                aiTrainingStatus.textContent = `Orientacoes de ${rotulo} (${escopo}) carregadas.`;
             } else {
-                aiTrainingStatus.textContent = `Nenhuma orientação de ${rotulo} salva ainda.`;
+                aiTrainingStatus.textContent = `Nenhuma orientacao de ${rotulo} (${escopo}) salva ainda.`;
             }
         }
 
@@ -4958,11 +5057,16 @@
             renderizarTipoTreinamento(true);
         }
 
-        async function carregarTreinamentoAI() {
-            if (state.treinamentoCarregado) return;
-            aiTrainingStatus.textContent = 'Carregando orientações...';
+        async function carregarTreinamentoAI(forcar = false) {
+            if (!forcar && state.treinamentoCarregado) return;
+            montarSeletorEscopoTreinamento();
+            const lojaEscopo = lojaEscopoTreinamento();
+            const params = new URLSearchParams();
+            if (lojaEscopo) params.set('loja', lojaEscopo);
+            const url = `/api/mercadolivre/ia-treinamento${params.toString() ? `?${params.toString()}` : ''}`;
+            aiTrainingStatus.textContent = `Carregando orientacoes (${rotuloEscopoTreinamento()})...`;
             try {
-                const response = await fetch('/api/mercadolivre/ia-treinamento', {
+                const response = await fetch(url, {
                     headers: obterAuthHeaders(),
                     cache: 'no-store'
                 });
@@ -4999,9 +5103,10 @@
         async function salvarTreinamentoAI() {
             sincronizarOrientacoesTreinamentoAtual();
             const tipoAtual = state.treinamentoTipo === 'pos_venda' ? 'pos_venda' : 'perguntas_anuncio';
+            const lojaEscopo = lojaEscopoTreinamento();
             btnAiTrainingSalvar.disabled = true;
             btnAiTrainingSimular.disabled = true;
-            aiTrainingStatus.textContent = 'Salvando orientações...';
+            aiTrainingStatus.textContent = `Salvando orientacoes (${rotuloEscopoTreinamento()})...`;
             try {
                 const response = await fetch('/api/mercadolivre/ia-treinamento', {
                     method: 'POST',
@@ -5011,6 +5116,7 @@
                     },
                     body: JSON.stringify({
                         tipo: tipoAtual,
+                        loja: lojaEscopo,
                         orientacoes: aiTrainingOrientacoes.value || '',
                         contexto_loja: state.treinamentoContexto.contexto_loja || '',
                         compatibilidade_autopecas: state.treinamentoContexto.compatibilidade_autopecas || '',
@@ -5114,6 +5220,7 @@
                     body: JSON.stringify({
                         pergunta,
                         tipo: state.treinamentoTipo,
+                        loja: lojaEscopoTreinamento(),
                         sku: aiTrainingSku.value || '',
                         contexto: aiTrainingContexto.value || ''
                     })
@@ -5194,6 +5301,14 @@
             resetarMediacoes();
             carregarMediacoes(true);
         });
+        if (aiTrainingScope) {
+            aiTrainingScope.addEventListener('change', () => {
+                state.treinamentoEscopoLoja = String(aiTrainingScope.value || '').trim();
+                state.treinamentoCarregado = false;
+                limparChatTreinamento();
+                carregarTreinamentoAI(true);
+            });
+        }
         aiTrainingSku.addEventListener('change', () => {
             salvarNotasSkuTreinamentoAtual();
             renderizarSkuTreinamentoInfo();

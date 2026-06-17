@@ -1,39 +1,31 @@
 @echo off
 REM =====================================================
-REM Sincronizar arquivos HTML da raiz para /static
+REM Fonte oficial dos HTML: /static
+REM Espelha /static para a raiz legada e valida hashes.
 REM =====================================================
 
-echo.
-echo Sincronizando arquivos HTML...
-echo.
-
-REM Lista de arquivos HTML para sincronizar
-setlocal enabledelayedexpansion
-set arquivos=^
-    vendas.html ^
-    vendas_sku.html ^
-    devolucoes.html ^
-    devolucoes_sku.html ^
-    estoque.html ^
-    renovacao.html ^
-    integracoes.html ^
-    promo.html ^
-    frontend_promo.html ^
-    frontend_etiquetas.html ^
-    debug_vendas.html ^
-    admin_usuarios.html ^
-    dashboard.html
-    perguntas_pos_venda.html
-
-for %%f in (%arquivos%) do (
-    if exist "%%f" (
-        copy "%%f" "static\%%f" /Y > nul
-        echo ✓ %%f
-    ) else (
-        echo ✗ %%f (nao encontrado)
-    )
-)
+setlocal
+pushd "%~dp0" > nul
 
 echo.
-echo Sincronizacao concluida!
+echo Sincronizando HTML: static\ -^> raiz
 echo.
+
+node scripts\sync-static-html-mirrors.js
+if errorlevel 1 goto :erro
+
+node electron_app\scripts\verify-installer-package.js
+if errorlevel 1 goto :erro
+
+echo.
+echo Sincronizacao concluida. Fonte oficial: static\
+echo.
+popd > nul
+exit /b 0
+
+:erro
+echo.
+echo Sincronizacao falhou. Corrija os arquivos acima antes de testar ou empacotar.
+echo.
+popd > nul
+exit /b 1

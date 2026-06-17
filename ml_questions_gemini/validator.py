@@ -29,7 +29,7 @@ class AnswerValidator:
         if confidence < rules.min_confidence:
             issues.append("low_confidence")
         if category == QuestionCategory.POST_SALE:
-            issues.append("post_sale_not_supported_v2")
+            issues.append("post_sale_requires_review")
         if category == QuestionCategory.REGULATED_PRODUCT:
             issues.append("regulated_product")
         if _has_external_contact(text):
@@ -38,6 +38,10 @@ class AnswerValidator:
             issues.append("internal_ai_leak")
         if _has_forbidden_identity(norm):
             issues.append("forbidden_identity")
+        if category == QuestionCategory.COMPATIBILITY and _uses_forbidden_compatibility_phrase(norm):
+            issues.append("forbidden_compatibility_phrase")
+        if category == QuestionCategory.COMPATIBILITY and _asks_for_chassis(norm):
+            issues.append("asks_for_chassis")
         if category == QuestionCategory.COMPATIBILITY and _asserts_compatibility(norm) and not _has_compatibility_evidence(question, listing):
             issues.append("compatibility_without_evidence")
         if category == QuestionCategory.WARRANTY_ORIGINALITY and _asserts_originality_or_warranty(norm) and not _has_originality_or_warranty_evidence(listing):
@@ -72,6 +76,26 @@ def _has_internal_ai_terms(norm: str) -> bool:
 
 def _has_forbidden_identity(norm: str) -> bool:
     return any(term in norm for term in ("assistente da jk sistema", "assistente do jk sistema", "sou o assistente", "sou a assistente", "sou uma ia", "sou um assistente", "jk sistema"))
+
+
+def _uses_forbidden_compatibility_phrase(norm: str) -> bool:
+    return "nao conseguimos confirmar a compatibilidade" in norm
+
+
+def _asks_for_chassis(norm: str) -> bool:
+    if "chassi" not in norm and "vin" not in norm:
+        return False
+    request_terms = (
+        "informe", "envie", "mande", "passe", "forneca", "digite", "encaminhe",
+        "pode informar", "poderia informar", "favor informar", "preciso",
+        "precisamos", "necessario", "necessaria",
+    )
+    chassis_terms = r"(?:chassi|vin)"
+    request_pattern = r"(?:{})".format("|".join(re.escape(term) for term in request_terms))
+    return bool(
+        re.search(request_pattern + r".{0,90}\b" + chassis_terms + r"\b", norm)
+        or re.search(r"\b" + chassis_terms + r"\b.{0,90}" + request_pattern, norm)
+    )
 
 
 def _asserts_compatibility(norm: str) -> bool:

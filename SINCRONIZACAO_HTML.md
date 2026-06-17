@@ -1,99 +1,61 @@
-# ðŸ“ SINCRONIZAÃ‡ÃƒO DE ARQUIVOS HTML
+# Regra de fonte unica dos HTML
 
-## âš ï¸ O Problema
+## Regra oficial
 
-O sistema tem **arquivos HTML em dois lugares**:
-- **Raiz do projeto** (ex: `vendas.html`)
-- **DiretÃ³rio `/static`** (ex: `static/vendas.html`)
+A fonte oficial das telas HTML do sistema agora e a pasta `static/`.
 
-O backend (`backend_api.py`) estÃ¡ configurado para servir arquivos **do diretÃ³rio `/static`**:
+O backend serve essa pasta em `backend_api.py`:
 
 ```python
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 ```
 
-**Resultado:** Se vocÃª edita `vendas.html` na raiz, as mudanÃ§as **nÃ£o aparecem** no navegador porque o servidor estÃ¡ servindo a versÃ£o antiga do diretÃ³rio `/static`.
+Entao, ao corrigir ou criar uma tela, edite primeiro:
 
-## âœ… SoluÃ§Ã£o
+```text
+static/nome_da_tela.html
+```
 
-Sempre manter os arquivos HTML **sincronizados** entre a raiz e `/static`.
+Os arquivos HTML na raiz continuam existindo apenas como espelhos legados para compatibilidade com empacotamento e fluxos antigos.
 
-### **OpÃ§Ã£o 1: Script AutomÃ¡tico** (Recomendado)
+## Como sincronizar
 
-Execute antes de iniciar o servidor:
-```bash
+Depois de editar qualquer HTML em `static/`, execute:
+
+```bat
 sincronizar_html.bat
 ```
 
-Este script copia automaticamente todos os arquivos HTML da raiz para `/static`.
+Esse comando copia os HTML oficiais de `static/` para a raiz e valida se os hashes estao iguais.
 
-### **OpÃ§Ã£o 2: Copiar Manualmente**
+Tambem e possivel rodar diretamente:
 
-```powershell
-# Copiar um arquivo especÃ­fico
-Copy-Item vendas.html static/ -Force
-
-# Copiar todos os arquivos .html
-Get-ChildItem *.html | Copy-Item -Destination static/ -Force
+```bat
+npm.cmd run source:sync
+npm.cmd run source:verify
 ```
 
-### **OpÃ§Ã£o 3: Editar Diretamente em `/static`**
+## Bloqueio obrigatorio
 
-Se preferir, vocÃª pode editar os arquivos diretamente em `/static`:
+Antes de iniciar o app por `npm start`, rodar o Bug Hunter ou empacotar o Electron, a checagem de fonte unica precisa passar.
+
+Se aparecer erro como:
+
+```text
+HTML fora da regra de fonte unica
 ```
-static/vendas.html
-static/dashboard.html
-static/debug_vendas.html
-...
-```
 
-## ðŸ“‹ Arquivos que Precisam Ser Sincronizados
+edite a versao em `static/`, rode `sincronizar_html.bat` e tente novamente.
 
-| Arquivo | LocalizaÃ§Ã£o |
-|---------|------------|
-| `vendas.html` | Raiz + `/static` |
-| `vendas_sku.html` | Raiz + `/static` |
-| `devolucoes.html` | Raiz + `/static` |
-| `devolucoes_sku.html` | Raiz + `/static` |
-| `estoque.html` | Raiz + `/static` |
-| `renovacao.html` | Raiz + `/static` |
-| `integracoes.html` | Raiz + `/static` |
-| `promo.html` | Raiz + `/static` |
-| `frontend_promo.html` | Raiz + `/static` |
-| `frontend_etiquetas.html` | Raiz + `/static` |
-| `dashboard.html` | Raiz + `/static` |
-| `debug_vendas.html` | Raiz + `/static` |
-| `frontend_index.html` | Apenas em `/static` |
+## Fluxo correto para mudancas de modulo
 
-## ðŸ”§ PrÃ³ximos Passos
+1. Edite `static/<modulo>.html`.
+2. Rode `sincronizar_html.bat`.
+3. Rode a validacao do modulo ou `npm.cmd run source:verify`.
+4. Se estiver mexendo no app instalado, sincronize tambem `%APPDATA%\JK Sistema Cliente\local_app`.
 
-1. **Execute o script de sincronizaÃ§Ã£o:**
-   ```bash
-   sincronizar_html.bat
-   ```
+## Por que isso existe
 
-2. **Reinicie o servidor:**
-   ```bash
-   uvicorn backend_api:app --reload --port 8001
-   ```
+Antes, algumas mudancas eram feitas na raiz e outras em `static/`. Como o backend serve `static/`, isso criava divergencia: o codigo parecia corrigido no repositorio, mas o programa aberto podia estar usando outra copia.
 
-3. **Acesse o mÃ³dulo de vendas** e verifique se as mudanÃ§as aparecem
-
-## ðŸ’¡ Dica Importante
-
-Sempre que vocÃª:
-- âœï¸ Editar um arquivo HTML na raiz
-- ðŸ› Corrigir um bug em um mÃ³dulo
-- âž• Adicionar uma nova funcionalidade
-
-**Execute `sincronizar_html.bat`** antes de testar no navegador!
-
-## ðŸ“Š Status Atual
-
-âœ… Todos os arquivos HTML foram sincronizados para `/static`
-
-VocÃª agora pode ver o mÃ³dulo de vendas **com o design/layout correto**! ðŸŽ‰
-
----
-
-**Criado:** 4 de fevereiro de 2026
+Com esta regra, `static/` e a verdade unica para HTML.

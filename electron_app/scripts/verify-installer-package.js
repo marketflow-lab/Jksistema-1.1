@@ -85,6 +85,21 @@ function normalizeResourceEntry(entry) {
   };
 }
 
+function resolveMirrorPairPolicy(manifest, pair) {
+  const policy = manifest.htmlSourcePolicy || {};
+  const canonicalDir = toPosix(policy.canonicalDirectory || '');
+  const source = toPosix(pair && pair.source);
+  const mirror = toPosix(pair && pair.mirror);
+
+  if (canonicalDir && mirror.startsWith(`${canonicalDir}/`)) {
+    return { canonical: mirror, legacy: source };
+  }
+  if (canonicalDir && source.startsWith(`${canonicalDir}/`)) {
+    return { canonical: source, legacy: mirror };
+  }
+  return { canonical: source, legacy: mirror };
+}
+
 function failIfMissingSource(manifest, failures) {
   for (const rel of manifest.requiredSourceFiles || []) {
     if (!fileExists(path.join(repoRoot, rel))) failures.push(`Arquivo obrigatorio ausente: ${rel}`);
@@ -106,12 +121,22 @@ function failIfMissingSource(manifest, failures) {
   }
 
   for (const pair of manifest.mirrorPairs || []) {
-    const source = path.join(repoRoot, pair.source);
-    const mirror = path.join(repoRoot, pair.mirror);
-    if (!fileExists(source) || !fileExists(mirror)) continue;
-    const a = fs.readFileSync(source);
-    const b = fs.readFileSync(mirror);
-    if (!a.equals(b)) failures.push(`Espelho desatualizado: ${pair.source} != ${pair.mirror}`);
+    const { canonical, legacy } = resolveMirrorPairPolicy(manifest, pair);
+    const canonicalPath = path.join(repoRoot, canonical);
+    const legacyPath = path.join(repoRoot, legacy);
+    if (!fileExists(canonicalPath)) {
+      failures.push(`Fonte HTML oficial ausente: ${canonical}`);
+      continue;
+    }
+    if (!fileExists(legacyPath)) {
+      failures.push(`Espelho HTML legado ausente: ${legacy}`);
+      continue;
+    }
+    const a = fs.readFileSync(canonicalPath);
+    const b = fs.readFileSync(legacyPath);
+    if (!a.equals(b)) {
+      failures.push(`HTML fora da regra de fonte unica: edite ${canonical} e sincronize ${legacy}`);
+    }
   }
 }
 

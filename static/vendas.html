@@ -447,11 +447,16 @@
             border-top-color: #f5c84f;
             box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(245,200,79,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
         }
+        .grafico-grupo.gc-estoque {
+            border-top-color: #ff8f70;
+            box-shadow: 0 12px 24px rgba(0,0,0,0.32), 0 0 16px rgba(255,143,112,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+        }
         .grafico-grupo.gc-visualizacao .grafico-label { color: #c894ff; }
         .grafico-grupo.gc-tipo        .grafico-label { color: #7ecfff; }
         .grafico-grupo.gc-metrica     .grafico-label { color: #62e8d8; }
         .grafico-grupo.gc-intervalo   .grafico-label { color: #88f0c4; }
         .grafico-grupo.gc-comparacao  .grafico-label { color: #f9d982; }
+        .grafico-grupo.gc-estoque     .grafico-label { color: #ffb199; }
         /* Botão ativo com cor do grupo */
         .grafico-grupo.gc-visualizacao .grafico-btn.active { background: linear-gradient(160deg,rgba(182,123,255,0.9),rgba(140,80,230,0.9)); color:#1a0a30; border-color:rgba(182,123,255,0.7); }
         .grafico-grupo.gc-tipo        .grafico-btn.active { background: linear-gradient(160deg,rgba(99,187,255,0.9),rgba(60,150,240,0.9)); color:#071828; border-color:rgba(99,187,255,0.7); }
@@ -476,6 +481,26 @@
             height: 16px;
             accent-color: #f5c84f;
             cursor: pointer;
+        }
+        .grafico-grupo.gc-estoque .grafico-compare-wrap input[type="checkbox"] {
+            accent-color: #ff8f70;
+        }
+        .grafico-sku-input {
+            min-width: 96px;
+            max-width: 140px;
+            height: 30px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,143,112,0.45);
+            background: rgba(11, 19, 34, 0.92);
+            color: #fff7ed;
+            padding: 0 10px;
+            font-size: 12px;
+            font-weight: 700;
+            outline: none;
+        }
+        .grafico-sku-input:focus {
+            border-color: #ffb199;
+            box-shadow: 0 0 0 2px rgba(255,143,112,0.18);
         }
         .grafico-label {
             color: var(--accent);
@@ -1509,6 +1534,20 @@
                     <span>Mesmo período ano passado</span>
                 </label>
             </div>
+            <div class="grafico-grupo gc-estoque">
+                <span class="grafico-label">Estoque:</span>
+                <div class="grafico-opcoes">
+                    <label class="grafico-compare-wrap" for="mostrarEstoqueGeral">
+                        <input type="checkbox" id="mostrarEstoqueGeral">
+                        <span>Geral</span>
+                    </label>
+                    <label class="grafico-compare-wrap" for="mostrarEstoqueSku">
+                        <input type="checkbox" id="mostrarEstoqueSku">
+                        <span>SKU</span>
+                    </label>
+                    <input type="text" id="graficoEstoqueSkuInput" class="grafico-sku-input" placeholder="SKU" aria-label="SKU do estoque no gráfico">
+                </div>
+            </div>
         </div>
         <div class="grafico-wrapper">
             <canvas id="graficoVendas"></canvas>
@@ -1643,6 +1682,9 @@
     const btnSync = document.getElementById('btnSync');
     const btnCancel = document.getElementById('btnCancel');
     const compareAnoPassado = document.getElementById('compareAnoPassado');
+    const mostrarEstoqueGeralCheck = document.getElementById('mostrarEstoqueGeral');
+    const mostrarEstoqueSkuCheck = document.getElementById('mostrarEstoqueSku');
+    const graficoEstoqueSkuInput = document.getElementById('graficoEstoqueSkuInput');
     const skuLoadingOverlay = document.getElementById('skuLoadingOverlay');
     const navActionsVendas = document.querySelector('.nav-actions');
     const graficosContainerVendas = document.querySelector('.graficos-container');
@@ -2875,19 +2917,11 @@
             .filter(Boolean);
     }
 
-    function agendarSyncAutomaticoAposCarregar(promptKey) {
+    function cancelarSyncAutomaticoVendas() {
         if (autoSyncTimer) {
             clearTimeout(autoSyncTimer);
-        }
-        autoSyncTimer = setTimeout(() => {
             autoSyncTimer = null;
-            requestAnimationFrame(() => {
-                setTimeout(() => {
-                    if (syncEmAndamento || missingPromptKey !== promptKey) return;
-                    executarSync({ automatico: true });
-                }, 250);
-            });
-        }, 0);
+        }
     }
 
     function aguardar(ms) {
@@ -2948,11 +2982,8 @@
     }
 
     async function executarSync(opcoes = {}) {
-        const syncAutomatico = !!opcoes.automatico;
-        if (autoSyncTimer) {
-            clearTimeout(autoSyncTimer);
-            autoSyncTimer = null;
-        }
+        const syncAutomatico = false;
+        cancelarSyncAutomaticoVendas();
         fecharCalendariosData();
 
         const dataIniIso = getDataIniISO();
@@ -3275,7 +3306,8 @@
             }
             if (!missingPromptShown && !syncEmAndamento) {
                 missingPromptShown = true;
-                agendarSyncAutomaticoAposCarregar(promptKeyAtual);
+                statusEl.className = 'status-bar empty';
+                statusEl.textContent = `Existem ${faltantes.length} dia(s) sem vendas no periodo selecionado. Clique em Atualizar para sincronizar manualmente.`;
                 return;
             }
         } else {
@@ -3439,6 +3471,8 @@
     let metricaGrafico = 'valor';
     let intervaloGrafico = 'dia';
     let skuAtualGrafico = null;
+    let mostrarEstoqueGeralGrafico = false;
+    let mostrarEstoqueSkuGrafico = false;
     let carregarGraficoToken = 0;
     let rankingSidebarModo = 'vendidos';
     let compararAnoPassado = false;
@@ -3583,7 +3617,10 @@
                 tipo: tipoGrafico,
                 metrica: metricaGrafico,
                 intervalo: intervaloGrafico,
-                compararAnoPassado
+                compararAnoPassado,
+                mostrarEstoqueGeralGrafico,
+                mostrarEstoqueSkuGrafico,
+                skuAtualGrafico
             }));
         } catch (_e) {
             // Ignora erro de localStorage.
@@ -3600,6 +3637,9 @@
             if (pref?.metrica) metricaGrafico = pref.metrica;
             if (pref?.intervalo) intervaloGrafico = pref.intervalo;
             compararAnoPassado = Boolean(pref?.compararAnoPassado);
+            mostrarEstoqueGeralGrafico = Boolean(pref?.mostrarEstoqueGeralGrafico);
+            mostrarEstoqueSkuGrafico = Boolean(pref?.mostrarEstoqueSkuGrafico);
+            skuAtualGrafico = String(pref?.skuAtualGrafico || '').trim() || null;
         } catch (_e) {
             // Ignora preferência inválida.
         }
@@ -3620,6 +3660,15 @@
         });
         if (compareAnoPassado) {
             compareAnoPassado.checked = compararAnoPassado;
+        }
+        if (mostrarEstoqueGeralCheck) {
+            mostrarEstoqueGeralCheck.checked = mostrarEstoqueGeralGrafico;
+        }
+        if (mostrarEstoqueSkuCheck) {
+            mostrarEstoqueSkuCheck.checked = mostrarEstoqueSkuGrafico;
+        }
+        if (graficoEstoqueSkuInput) {
+            graficoEstoqueSkuInput.value = skuAtualGrafico || '';
         }
 
         const btnsPeriodo = document.querySelectorAll('.grafico-btn[data-periodo]');
@@ -3885,9 +3934,17 @@
             if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
                 params.append('unidade_negocio', unidadeNegocioSelect.value);
             }
-            
-            if (skuAtualGrafico) {
-                params.append('sku', skuAtualGrafico);
+
+            skuAtualGrafico = String(graficoEstoqueSkuInput?.value || '').trim() || null;
+            const skuGraficoConsulta = mostrarEstoqueSkuGrafico ? skuAtualGrafico : null;
+            if (mostrarEstoqueGeralGrafico) {
+                params.append('mostrar_estoque_geral', 'true');
+            }
+            if (mostrarEstoqueSkuGrafico) {
+                params.append('mostrar_estoque_sku', 'true');
+            }
+            if (skuGraficoConsulta) {
+                params.append('sku', skuGraficoConsulta);
             }
 
             const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
@@ -3913,8 +3970,8 @@
                     if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
                         paramsComp.append('unidade_negocio', unidadeNegocioSelect.value);
                     }
-                    if (skuAtualGrafico) {
-                        paramsComp.append('sku', skuAtualGrafico);
+                    if (skuGraficoConsulta) {
+                        paramsComp.append('sku', skuGraficoConsulta);
                     }
 
                     const respComp = await fetchComTimeout(`/api/vendas/grafico?${paramsComp.toString()}`, {
@@ -3987,6 +4044,17 @@
         const valoresDevOrig = data.valores_devolucoes || [];
         const qtdVendasOrig = data.quantidades_vendas || [];
         const qtdDevOrig = data.quantidades_devolucoes || [];
+        const normalizarSerieEstoque = (serie) => {
+            const arr = Array.isArray(serie) ? serie : [];
+            return labelsOriginais.map((_label, idx) => {
+                const valor = arr[idx];
+                if (valor === null || valor === undefined || valor === '') return null;
+                const num = Number(valor);
+                return Number.isFinite(num) ? num : null;
+            });
+        };
+        const estoqueGeralOrig = normalizarSerieEstoque(data.estoque_geral);
+        const estoqueSkuOrig = normalizarSerieEstoque(data.estoque_sku);
 
         const labelsCompOrig = dataComparativo?.labels || [];
         const valoresVendasCompOrig = dataComparativo?.valores_vendas || [];
@@ -3998,7 +4066,9 @@
             valoresVendasOrig,
             valoresDevOrig,
             qtdVendasOrig,
-            qtdDevOrig
+            qtdDevOrig,
+            estoqueGeralOrig,
+            estoqueSkuOrig
         ]);
 
         const labelsRender = compactado.labels;
@@ -4006,6 +4076,11 @@
         const valoresDevolucoes = compactado.series[1] || [];
         const quantidadesVendas = compactado.series[2] || [];
         const quantidadesDevolucoes = compactado.series[3] || [];
+        const estoqueGeral = compactado.series[4] || [];
+        const estoqueSku = compactado.series[5] || [];
+        const haEstoqueGeral = mostrarEstoqueGeralGrafico && estoqueGeral.some(v => Number.isFinite(Number(v)));
+        const haEstoqueSku = mostrarEstoqueSkuGrafico && estoqueSku.some(v => Number.isFinite(Number(v)));
+        const mostrarEstoqueNoGrafico = haEstoqueGeral || haEstoqueSku;
         const usandoQuantidade = metricaGrafico === 'quantidade';
         const vendasCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdVendasCompOrig : valoresVendasCompOrig);
         const devolCompAlinhadas = alinharSerieComparativa(labelsOriginais, labelsCompOrig, usandoQuantidade ? qtdDevCompOrig : valoresDevCompOrig);
@@ -4021,6 +4096,7 @@
         const datasetsVendas = {
             label: usandoQuantidade ? 'Vendas (Qtd)' : 'Vendas (R$)',
             data: usandoQuantidade ? quantidadesVendas : valoresVendas,
+            yAxisID: 'y',
             backgroundColor: tipoGrafico === 'linha' ? 'rgba(79, 172, 254, 0.2)' : 'rgba(79, 172, 254, 0.6)',
             borderColor: 'rgba(79, 172, 254, 1)',
             borderWidth: 2,
@@ -4032,6 +4108,7 @@
         const datasetsDevol = {
             label: usandoQuantidade ? 'Devoluções (Qtd)' : 'Devoluções (R$)',
             data: usandoQuantidade ? quantidadesDevolucoes : valoresDevolucoes,
+            yAxisID: 'y',
             backgroundColor: tipoGrafico === 'linha' ? 'rgba(255, 107, 107, 0.2)' : 'rgba(255, 107, 107, 0.6)',
             borderColor: 'rgba(255, 107, 107, 1)',
             borderWidth: 2,
@@ -4043,6 +4120,7 @@
         const datasetsVendasAnoPassado = {
             label: usandoQuantidade ? 'Vendas ano passado (Qtd)' : 'Vendas ano passado (R$)',
             data: vendasCompRender,
+            yAxisID: 'y',
             backgroundColor: 'rgba(110, 196, 255, 0.05)',
             borderColor: 'rgba(110, 196, 255, 0.95)',
             borderWidth: 2,
@@ -4057,6 +4135,7 @@
         const datasetsDevolAnoPassado = {
             label: usandoQuantidade ? 'Devoluções ano passado (Qtd)' : 'Devoluções ano passado (R$)',
             data: devolCompRender,
+            yAxisID: 'y',
             backgroundColor: 'rgba(255, 130, 130, 0.05)',
             borderColor: 'rgba(255, 130, 130, 0.95)',
             borderWidth: 2,
@@ -4066,6 +4145,41 @@
             pointRadius: 0,
             pointHoverRadius: 3,
             quantidades: qtdDevolCompRender
+        };
+
+        const datasetEstoqueGeral = {
+            type: 'line',
+            label: 'Estoque geral',
+            data: estoqueGeral,
+            yAxisID: 'yEstoque',
+            backgroundColor: 'rgba(255, 143, 112, 0.06)',
+            borderColor: 'rgba(255, 143, 112, 0.95)',
+            borderWidth: 2,
+            tension: 0.25,
+            fill: false,
+            pointRadius: graficoPesado ? 0 : 2,
+            pointHoverRadius: 4,
+            spanGaps: true,
+            isEstoque: true,
+            skipTopLabels: true
+        };
+
+        const datasetEstoqueSku = {
+            type: 'line',
+            label: skuAtualGrafico ? `Estoque SKU ${skuAtualGrafico}` : 'Estoque por SKU',
+            data: estoqueSku,
+            yAxisID: 'yEstoque',
+            backgroundColor: 'rgba(255, 214, 128, 0.06)',
+            borderColor: 'rgba(255, 214, 128, 0.98)',
+            borderWidth: 2,
+            tension: 0.25,
+            fill: false,
+            pointRadius: graficoPesado ? 0 : 2,
+            pointHoverRadius: 4,
+            borderDash: [5, 4],
+            spanGaps: true,
+            isEstoque: true,
+            skipTopLabels: true
         };
 
         const datasets = [datasetsVendas];
@@ -4078,6 +4192,12 @@
                 datasets.push(datasetsDevolAnoPassado);
             }
         }
+        if (haEstoqueGeral) {
+            datasets.push(datasetEstoqueGeral);
+        }
+        if (haEstoqueSku) {
+            datasets.push(datasetEstoqueSku);
+        }
 
         const unidadesNoTopoPlugin = {
             id: 'unidadesNoTopo',
@@ -4089,12 +4209,13 @@
                 ctx.textBaseline = 'bottom';
 
                 chart.data.datasets.forEach((dataset, datasetIndex) => {
+                    if (dataset.skipTopLabels) return;
                     const meta = chart.getDatasetMeta(datasetIndex);
                     if (!meta || meta.hidden) return;
 
                     meta.data.forEach((pointOrBar, index) => {
                         const pos = pointOrBar.tooltipPosition();
-                        ctx.fillStyle = datasetIndex === 0 ? '#9bd1ff' : '#ffb3b3';
+                        ctx.fillStyle = dataset.topLabelColor || (datasetIndex === 0 ? '#9bd1ff' : '#ffb3b3');
 
                         if (tipoGrafico === 'barra') {
                             const valorMetrica = Number((dataset.data || [])[index] || 0);
@@ -4157,6 +4278,14 @@
                         callbacks: {
                             label: function(context) {
                                 const dataset = context.chart.data.datasets[context.datasetIndex];
+                                if (dataset.isEstoque) {
+                                    const valorEstoque = context.parsed?.y;
+                                    const baseLabel = context.dataset.label || 'Estoque';
+                                    if (valorEstoque === null || valorEstoque === undefined || !Number.isFinite(Number(valorEstoque))) {
+                                        return `${baseLabel}: sem histórico`;
+                                    }
+                                    return `${baseLabel}: ${Math.round(Number(valorEstoque)).toLocaleString('pt-BR')} un.`;
+                                }
                                 const quantidades = dataset.quantidades || [];
                                 const quantidade = quantidades[context.dataIndex] || 0;
                                 
@@ -4198,6 +4327,24 @@
                         },
                         grid: {
                             color: 'rgba(255, 255, 255, 0.1)'
+                        }
+                    },
+                    yEstoque: {
+                        display: mostrarEstoqueNoGrafico,
+                        position: 'right',
+                        ticks: {
+                            color: '#ffb199',
+                            callback: function(value) {
+                                return Number(value || 0).toLocaleString('pt-BR');
+                            }
+                        },
+                        title: {
+                            display: mostrarEstoqueNoGrafico,
+                            text: 'Estoque',
+                            color: '#ffb199'
+                        },
+                        grid: {
+                            drawOnChartArea: false
                         }
                     }
                 }
@@ -4344,6 +4491,54 @@
     if (compareAnoPassado) {
         compareAnoPassado.addEventListener('change', function() {
             compararAnoPassado = Boolean(this.checked);
+            salvarPreferenciaGrafico();
+            carregarGrafico();
+        });
+    }
+
+    function atualizarSkuGraficoPeloInput() {
+        skuAtualGrafico = String(graficoEstoqueSkuInput?.value || '').trim() || null;
+        if (graficoEstoqueSkuInput) {
+            graficoEstoqueSkuInput.value = skuAtualGrafico || '';
+        }
+    }
+
+    if (mostrarEstoqueGeralCheck) {
+        mostrarEstoqueGeralCheck.addEventListener('change', function() {
+            mostrarEstoqueGeralGrafico = Boolean(this.checked);
+            salvarPreferenciaGrafico();
+            carregarGrafico();
+        });
+    }
+
+    if (mostrarEstoqueSkuCheck) {
+        mostrarEstoqueSkuCheck.addEventListener('change', function() {
+            mostrarEstoqueSkuGrafico = Boolean(this.checked);
+            atualizarSkuGraficoPeloInput();
+            salvarPreferenciaGrafico();
+            if (mostrarEstoqueSkuGrafico && !skuAtualGrafico) {
+                graficoEstoqueSkuInput?.focus();
+            }
+            carregarGrafico();
+        });
+    }
+
+    if (graficoEstoqueSkuInput) {
+        graficoEstoqueSkuInput.addEventListener('change', function() {
+            atualizarSkuGraficoPeloInput();
+            salvarPreferenciaGrafico();
+            if (mostrarEstoqueSkuGrafico) {
+                carregarGrafico();
+            }
+        });
+        graficoEstoqueSkuInput.addEventListener('keydown', function(event) {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            atualizarSkuGraficoPeloInput();
+            mostrarEstoqueSkuGrafico = true;
+            if (mostrarEstoqueSkuCheck) {
+                mostrarEstoqueSkuCheck.checked = true;
+            }
             salvarPreferenciaGrafico();
             carregarGrafico();
         });

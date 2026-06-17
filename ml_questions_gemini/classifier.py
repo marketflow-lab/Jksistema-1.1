@@ -18,10 +18,16 @@ class QuestionClassifier:
     def classify(self, question: QuestionContext, listing: ListingSnapshot) -> Classification:
         text = normalize(question.text)
         listing_text = normalize(listing.searchable_text())
+        agent_intent = question.raw.get("_agent_intent") if isinstance(question.raw, dict) else {}
+        if isinstance(agent_intent, dict):
+            fluxo = normalize(agent_intent.get("fluxo"))
+            intencao = normalize(agent_intent.get("intencao") or agent_intent.get("intent"))
+            if fluxo == "pos_venda" or intencao in {"pos_venda_defeito", "troca_garantia", "reclamacao", "cancelamento"}:
+                return Classification(QuestionCategory.POST_SALE, "agent_intent")
 
         if self._has_prompt_injection(text):
             return Classification(QuestionCategory.UNKNOWN, "prompt_injection", prompt_injection=True)
-        if any(term in text for term in ("comprei", "minha compra", "meu pedido", "devolucao", "devolucao", "troca", "chegou quebrado", "veio errado", "nao funcionou", "defeito")):
+        if any(term in text for term in ("comprei", "minha compra", "meu pedido", "devolucao", "troca", "chegou quebrado", "veio errado", "nao funcionou", "defeito", "deu ruim", "procon", "procom", "nao presta", "nao vale nada", "nao valem nada")):
             return Classification(QuestionCategory.POST_SALE, "post_sale_keywords")
         if any(term in text or term in listing_text for term in ("medicamento", "remedio", "receita medica", "arma", "municao", "anvisa controlado")):
             return Classification(QuestionCategory.REGULATED_PRODUCT, "regulated_product")
@@ -39,7 +45,7 @@ class QuestionClassifier:
             return Classification(QuestionCategory.INVOICE, "invoice")
         if any(term in text for term in ("original", "genuino", "garantia", "paralelo", "procedencia")):
             return Classification(QuestionCategory.WARRANTY_ORIGINALITY, "warranty_originality")
-        if any(term in text for term in ("serve", "servi", "compativel", "aplica", "encaixa", "funciona no", "cabe no")):
+        if any(term in text for term in ("serve", "servi", "compativel", "aplica", "encaixa", "funciona no", "cabe no", "chassi", "vin")):
             return Classification(QuestionCategory.COMPATIBILITY, "compatibility")
         if any(term in text for term in ("voltagem", "volts", "v ", "medida", "tamanho", "cor", "material", "lado", "quantas", "itens inclusos")):
             return Classification(QuestionCategory.PRODUCT_FEATURE, "product_feature")

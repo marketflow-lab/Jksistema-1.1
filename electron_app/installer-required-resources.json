@@ -23,10 +23,15 @@
   ],
   "requiredSourceDirectories": [
     { "path": "extensoes_chrome/avant_pro", "minFiles": 10 },
+    { "path": "backend", "minFiles": 50 },
     { "path": "ml_questions_gemini", "minFiles": 10 },
     { "path": "static", "minFiles": 20 },
     { "path": "img", "minFiles": 1 }
   ],
+  "htmlSourcePolicy": {
+    "canonicalDirectory": "static",
+    "legacyRootMirrors": true
+  },
   "mirrorPairs": [
     { "source": "admin_usuarios.html", "mirror": "static/admin_usuarios.html" },
     { "source": "avant.html", "mirror": "static/avant.html" },
@@ -61,6 +66,9 @@
   ],
   "requiredLocalAppFilters": [
     "*.py",
+    "backend/**",
+    "!backend/**/__pycache__/**",
+    "!backend/**/*.pyc",
     "requirements.txt",
     "*.html",
     "*.js",
@@ -102,6 +110,7 @@
     "electron_shell.html",
     "electron_tab_preload.js",
     "local_app/backend_api.py",
+    "local_app/backend/__init__.py",
     "local_app/requirements.txt",
     "local_app/auth.js",
     "local_app/ml_questions_gemini/__init__.py",
@@ -123,6 +132,7 @@
   ],
   "requiredPackagedDirectories": [
     { "path": "extensoes_chrome/avant_pro", "minFiles": 10 },
+    { "path": "local_app/backend", "minFiles": 50 },
     { "path": "local_app/ml_questions_gemini", "minFiles": 10 },
     { "path": "local_app/static", "minFiles": 20 },
     { "path": "local_app/img", "minFiles": 1 }
@@ -141,6 +151,8 @@
     "local_app/logs/**",
     "local_app/backups/**",
     "local_app/electron_user_data/**",
+    "local_app/backend/**/__pycache__/**",
+    "local_app/backend/**/*.pyc",
     "local_app/ml_questions_gemini/**/__pycache__/**",
     "local_app/ml_questions_gemini/**/*.pyc",
     "ImportarCredenciais.bat",

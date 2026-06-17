@@ -21,5 +21,10 @@ STARTUP_EVENTS: tuple[StartupEventSpec, ...] = (
 
 
 def register_startup_events(app: FastAPI, legacy_module: ModuleType) -> None:
+    router = getattr(app, "router", None)
+    add_event_handler = getattr(router, "add_event_handler", None)
+    if add_event_handler is None:
+        add_event_handler = getattr(app, "add_event_handler")
+
     for spec in STARTUP_EVENTS:
-        app.router.add_event_handler("startup", getattr(legacy_module, spec.endpoint_name))
+        add_event_handler("startup", getattr(legacy_module, spec.endpoint_name))

@@ -6,11 +6,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend_api.py"
+BACKEND_DIR = ROOT / "backend"
 CONFIG_HTMLS = [ROOT / "configuracoes.html", ROOT / "static" / "configuracoes.html"]
+POS_VENDA_HTMLS = [ROOT / "perguntas_pos_venda.html", ROOT / "static" / "perguntas_pos_venda.html"]
 
 
 def backend_text() -> str:
-    return BACKEND.read_text(encoding="utf-8")
+    parts = [BACKEND.read_text(encoding="utf-8")]
+    if BACKEND_DIR.exists():
+        for path in sorted(BACKEND_DIR.rglob("*.py")):
+            parts.append(path.read_text(encoding="utf-8"))
+    return "\n\n".join(parts)
 
 
 def function_body(source: str, name: str) -> str:
@@ -88,6 +94,24 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 self.assertIn("ia_modelo_pos_venda", source)
                 self.assertIn("ia_modo_pos_venda", source)
 
+    def test_pos_venda_all_accounts_interval_and_ai_scope_are_exposed(self):
+        source = backend_text()
+        self.assertIn("class PerguntasLojasConfigLoteRequest", source)
+        self.assertIn('"/api/mercadolivre/perguntas/lojas/config-lote"', source)
+        lote_body = function_body(source, "ml_perguntas_salvar_config_lojas_lote")
+        self.assertIn("_perguntas_loja_config_obter", lote_body)
+        self.assertIn("somente_conectadas", lote_body)
+        self.assertIn("intervalo_minutos", lote_body)
+
+        for path in POS_VENDA_HTMLS:
+            with self.subTest(path=path.name):
+                html = path.read_text(encoding="utf-8")
+                self.assertIn("ai-training-scope", html)
+                self.assertIn("Padrao para todas as contas", html)
+                self.assertIn("lojaEscopoTreinamento", html)
+                self.assertIn("config-lote", html)
+                self.assertIn("Todas as contas conectadas", html)
+
     def test_public_question_code_validator_ignores_article_before_model(self):
         source = backend_text()
         namespace = {
@@ -116,6 +140,28 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertIn("not pergunta_compatibilidade", body)
         self.assertIn("nao respondeu ao modelo/codigo perguntado", body)
 
+    def test_public_question_chassis_is_compatibility_and_not_asked_again(self):
+        source = backend_text()
+        intent_body = function_body(source, "_perguntas_ia_intencao_heuristica")
+        validator_body = function_body(source, "_ia_agent_perguntas_violacoes_resposta")
+        v2_body = function_body(source, "_perguntas_ia_v2_gerar_resposta")
+        self.assertIn('"chassi"', intent_body)
+        self.assertIn('"chassi"', validator_body)
+        self.assertIn("_ia_agent_perguntas_resposta_pede_chassi(texto)", validator_body)
+        self.assertIn("_perguntas_ia_v2_corrigir_resposta_bloqueada", v2_body)
+        self.assertIn("_perguntas_ia_v2_resposta_segura_compatibilidade", v2_body)
+
+        namespace = {
+            "re": re,
+            "_favoritos_normalizar_sem_acentos": lambda texto: "".join(
+                ch for ch in unicodedata.normalize("NFKD", str(texto or "")) if not unicodedata.combining(ch)
+            ).lower(),
+        }
+        exec(function_body(source, "_ia_agent_perguntas_resposta_pede_chassi"), namespace)
+        pede_chassi = namespace["_ia_agent_perguntas_resposta_pede_chassi"]
+        self.assertTrue(pede_chassi("Informe o chassi para verificarmos."))
+        self.assertFalse(pede_chassi("Para o chassi informado, recomendamos confirmar com mecanico."))
+
     def test_public_questions_v2_sends_link_and_question_to_web_search(self):
         source = backend_text()
         client_body = function_body(source, "_perguntas_ia_v2_query_pesquisa")
@@ -126,10 +172,10 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         vertex_client = re.search(r"^class _PerguntasVertexGeminiV2Client:.*?^def _perguntas_ia_v2_prompt", source, re.M | re.S)
         self.assertIsNotNone(vertex_client)
         body = vertex_client.group(0)
-        self.assertIn('"forcar_busca_web_chat": True', body)
-        self.assertIn('"web_search_required": True', body)
+        self.assertIn('"forcar_busca_web_chat": not fluxo_pos_venda', body)
+        self.assertIn('"web_search_required": not fluxo_pos_venda', body)
         self.assertIn('"web_search_query": web_search_query', body)
-        self.assertIn('"ativar_google_search_grounding": True', body)
+        self.assertIn('"ativar_google_search_grounding": not fluxo_pos_venda', body)
         self.assertNotIn('"desativar_busca_web_chat": True', body)
 
         vertex_call = function_body(source, "_chamar_vertex_ai_chat")

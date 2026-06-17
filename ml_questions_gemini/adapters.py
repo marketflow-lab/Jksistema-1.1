@@ -58,13 +58,16 @@ def context_from_agent_input(agent_input: dict[str, Any], *, auto_publish_enable
     question_data = data.get("question") if isinstance(data.get("question"), dict) else {}
     item_data = data.get("item") if isinstance(data.get("item"), dict) else {}
     context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    agent_intent = data.get("intent") if isinstance(data.get("intent"), dict) else {}
+    if not agent_intent and isinstance(context.get("intencao_atendimento"), dict):
+        agent_intent = context.get("intencao_atendimento") or {}
     question = QuestionContext(
         id=str(question_data.get("id") or context.get("question_id") or "").strip(),
         text=str(question_data.get("text") or context.get("pergunta") or "").strip(),
         item_id=str(question_data.get("item_id") or item_data.get("id") or context.get("item_id") or "").strip(),
         buyer_id=str((question_data.get("from") or {}).get("id") if isinstance(question_data.get("from"), dict) else question_data.get("buyer_id") or "").strip(),
         status=str(question_data.get("status") or "UNANSWERED").strip(),
-        raw=question_data,
+        raw={**question_data, "_agent_intent": agent_intent},
     )
     listing = ListingSnapshot(
         id=str(item_data.get("id") or context.get("item_id") or question.item_id or "").strip(),

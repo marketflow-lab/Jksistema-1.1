@@ -3439,6 +3439,9 @@
                     Escolha uma loja integrada para carregar os SKUs dos anuncios ativos.
                 </div>
                 <input id="fav-ml-sku-sidebar-search" type="search" class="ml-sku-sidebar-search" placeholder="Pesquisar SKU">
+                <div class="ml-sku-sidebar-actions">
+                    <button id="fav-ml-sku-atualizar" type="button" class="ml-sku-select-all-btn">Atualizar agora</button>
+                </div>
                 <div id="fav-ml-sku-sidebar-list" class="ml-sku-sidebar-list"></div>
             </aside>
 
@@ -3522,6 +3525,9 @@
                     Escolha uma loja integrada para carregar os SKUs dos anuncios ativos.
                 </div>
                 <input id="hist-ml-sku-sidebar-search" type="search" class="ml-sku-sidebar-search" placeholder="Pesquisar SKU">
+                <div class="ml-sku-sidebar-actions">
+                    <button id="hist-ml-sku-atualizar" type="button" class="ml-sku-select-all-btn">Atualizar agora</button>
+                </div>
                 <div id="hist-ml-sku-sidebar-list" class="ml-sku-sidebar-list"></div>
             </aside>
 
@@ -3619,6 +3625,7 @@
                 </div>
                 <input id="ml-sku-sidebar-search" type="search" class="ml-sku-sidebar-search" placeholder="Pesquisar SKU">
                 <div class="ml-sku-sidebar-actions">
+                    <button id="ml-sku-atualizar" type="button" class="ml-sku-select-all-btn">Atualizar agora</button>
                     <button id="ml-sku-select-all" type="button" class="ml-sku-select-all-btn">Selecionar todos</button>
                     <div class="ml-sku-favoritos-row">
                         <button id="ml-sku-fazer-favoritos" type="button" class="ml-sku-select-all-btn ml-sku-favoritos-btn" disabled>Fazer favoritos</button>
@@ -3952,6 +3959,7 @@
         const mlSkuSidebarEmptyEl = document.getElementById('ml-sku-sidebar-empty');
         const mlSkuSidebarCountEl = document.getElementById('ml-sku-sidebar-count');
         const mlSkuSidebarSearchEl = document.getElementById('ml-sku-sidebar-search');
+        const mlSkuAtualizarEl = document.getElementById('ml-sku-atualizar');
         const mlSkuSelectAllEl = document.getElementById('ml-sku-select-all');
         const mlSkuFazerFavoritosEl = document.getElementById('ml-sku-fazer-favoritos');
         const mlSkuUsarIaFavoritosEl = document.getElementById('ml-sku-usar-ia-favoritos');
@@ -3967,6 +3975,7 @@
         const favMlSkuSidebarEmptyEl = document.getElementById('fav-ml-sku-sidebar-empty');
         const favMlSkuSidebarCountEl = document.getElementById('fav-ml-sku-sidebar-count');
         const favMlSkuSidebarSearchEl = document.getElementById('fav-ml-sku-sidebar-search');
+        const favMlSkuAtualizarEl = document.getElementById('fav-ml-sku-atualizar');
         const favMlStatusEl = document.getElementById('fav-ml-status');
         const favMlAnunciosBodyEl = document.getElementById('fav-ml-anuncios-body');
         const favMlAnunciosEmptyEl = document.getElementById('fav-ml-anuncios-empty');
@@ -3993,6 +4002,7 @@
         const histMlSkuSidebarEmptyEl = document.getElementById('hist-ml-sku-sidebar-empty');
         const histMlSkuSidebarCountEl = document.getElementById('hist-ml-sku-sidebar-count');
         const histMlSkuSidebarSearchEl = document.getElementById('hist-ml-sku-sidebar-search');
+        const histMlSkuAtualizarEl = document.getElementById('hist-ml-sku-atualizar');
         const mlFavoritosPanelEl = document.getElementById('ml-favoritos-panel');
         const mlFavoritosPanelTitleEl = document.getElementById('ml-favoritos-panel-title');
         const mlFavoritosStatusEl = document.getElementById('ml-favoritos-status');
@@ -4113,6 +4123,7 @@
         const mlSkuDadosPorLojaCache = new Map();
         const mlSkuCarregamentoPromises = new Map();
         const ML_SKU_CACHE_REFRESH_MS = 10 * 60 * 1000;
+        let favoritosMlSkuCacheMetaAtual = null;
         let mlSkuCarregamentoRunId = 0;
         let mlSkuCarregamentoEmAndamento = false;
         let mlSkuCarregamentoChave = '';
@@ -4188,6 +4199,68 @@
         function headersJsonAutenticado() {
             const base = (typeof obterAuthHeaders === 'function') ? obterAuthHeaders() : {};
             return { ...base, 'Content-Type': 'application/json' };
+        }
+
+        function fetchFavoritosComTimeout(url, options = {}, timeoutMs = 15000) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            return fetch(url, { ...options, signal: controller.signal })
+                .catch(err => {
+                    if (err && err.name === 'AbortError') {
+                        throw new Error('Tempo limite atingido ao carregar dados do modulo.');
+                    }
+                    throw err;
+                })
+                .finally(() => clearTimeout(timeoutId));
+        }
+
+        function favoritosFormatarDataCacheMl(valor) {
+            const texto = String(valor || '').trim();
+            if (!texto) return '';
+            const data = new Date(texto);
+            if (Number.isNaN(data.getTime())) return '';
+            return data.toLocaleString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function favoritosCacheMlMeta(data) {
+            const meta = data && typeof data === 'object' && data.cache ? data.cache : {};
+            const updatedAt = String((meta && meta.updated_at) || (data && data.cache_updated_at) || '').trim();
+            const dataTexto = favoritosFormatarDataCacheMl(updatedAt);
+            return {
+                hit: !!((meta && meta.hit) || (data && data.cache_hit)),
+                refreshed: !!((meta && meta.refreshed) || (data && data.cache_refreshed)),
+                updatedAt,
+                dataTexto
+            };
+        }
+
+        function favoritosMensagemCacheMl(data) {
+            const meta = favoritosCacheMlMeta(data);
+            favoritosMlSkuCacheMetaAtual = meta.updatedAt ? meta : favoritosMlSkuCacheMetaAtual;
+            if (meta.refreshed) return meta.dataTexto ? `Atualizado agora (${meta.dataTexto}).` : 'Atualizado agora.';
+            if (meta.hit) return meta.dataTexto ? `Dados salvos (${meta.dataTexto}).` : 'Dados salvos.';
+            return '';
+        }
+
+        function favoritosComporStatusCacheMl(base, data) {
+            const sufixo = favoritosMensagemCacheMl(data);
+            return [base, sufixo].filter(Boolean).join(' ');
+        }
+
+        function favoritosBotoesAtualizarSkuMl() {
+            return [mlSkuAtualizarEl, favMlSkuAtualizarEl, histMlSkuAtualizarEl].filter(Boolean);
+        }
+
+        function favoritosDefinirBotoesAtualizarSkuMl(carregando) {
+            favoritosBotoesAtualizarSkuMl().forEach(botao => {
+                botao.disabled = !!carregando;
+                botao.textContent = carregando ? 'Atualizando...' : 'Atualizar agora';
+            });
         }
 
         function textoLimpoHistoricoFavoritos(valor, limite = 160) {
@@ -5151,6 +5224,7 @@
                 todasLojas: !!favoritosSkusTodasLojasCarregados,
                 totalAnuncios: Number(favoritosTotalAnunciosLojaAtual || 0),
                 warning: favoritosWarningLojaAtual || '',
+                cacheMeta: favoritosClonarValorCache(favoritosMlSkuCacheMetaAtual),
                 ocultos: Array.from(skuSkusOcultos || []),
                 salvoEm: Date.now()
             });
@@ -5162,6 +5236,7 @@
             favoritosSkusTodasLojasCarregados = favoritosEhTodasLojas(nomeLoja);
             favoritosTotalAnunciosLojaAtual = 0;
             favoritosWarningLojaAtual = '';
+            favoritosMlSkuCacheMetaAtual = null;
             skuDescricaoAutoRunId++;
             if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
         }
@@ -5188,6 +5263,7 @@
             favoritosSkusTodasLojasCarregados = !!cache.todasLojas;
             favoritosTotalAnunciosLojaAtual = Number(cache.totalAnuncios || 0);
             favoritosWarningLojaAtual = cache.warning || '';
+            favoritosMlSkuCacheMetaAtual = favoritosClonarValorCache(cache.cacheMeta) || favoritosMlSkuCacheMetaAtual;
             skuSkusOcultos = new Set(Array.isArray(cache.ocultos) ? cache.ocultos : []);
             skuDescricaoAutoRunId++;
             if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
@@ -5408,10 +5484,10 @@
                 favoritosStoreGateStatusEl.textContent = 'Carregando lojas cadastradas em Integracoes...';
             }
             try {
-                const response = await fetch('/api/favoritos/ml/skus-anuncios?apenas_lojas=1', {
+                const response = await fetchFavoritosComTimeout('/api/favoritos/ml/skus-anuncios?apenas_lojas=1', {
                     headers: obterAuthHeaders(),
                     cache: 'no-store'
-                });
+                }, 12000);
                 if (!response.ok) {
                     let detalhe = `HTTP ${response.status}`;
                     try {
@@ -5427,7 +5503,7 @@
                 if (favoritosStoreGateStatusEl) {
                     favoritosStoreGateStatusEl.classList.remove('error');
                     favoritosStoreGateStatusEl.textContent = data.warning || (lojas.length
-                        ? 'Carregando SKUs da loja selecionada...'
+                        ? 'Lojas carregadas. Carregando SKUs em segundo plano...'
                         : 'Nenhuma loja disponivel para fazer favoritos.');
                 }
                 if (lojas.length) {
@@ -5435,7 +5511,15 @@
                     favoritosDefinirLojaSelecionada(lojaInicial);
                     favoritosLojaEntradaSelecionada = true;
                     favoritosMostrarTelaPrincipal();
-                    await carregarSkuFavoritos(lojaInicial);
+                    if (skuStatusEl) {
+                        skuStatusEl.textContent = `Carregando SKUs da loja ${favoritosNomeLojaExibicao(lojaInicial)} em segundo plano...`;
+                    }
+                    carregarSkuFavoritos(lojaInicial).catch(err => {
+                        console.warn('[Favoritos ML] erro ao carregar SKUs em segundo plano:', err);
+                        if (skuStatusEl) {
+                            skuStatusEl.textContent = `Erro ao carregar SKUs do Mercado Livre: ${err && err.message ? err.message : err}`;
+                        }
+                    });
                 }
             } catch (err) {
                 favoritosRenderizarCardsEntrada([]);
@@ -5515,30 +5599,35 @@
             });
         }
 
-        async function mlSkuCarregarSkusAnuncios(loja = '') {
+        async function mlSkuCarregarSkusAnuncios(loja = '', opcoes = {}) {
             if (!mlSkuLojaCardsEl && !mlSkuSidebarListEl) return;
+            if (opcoes && opcoes.type && opcoes.target) opcoes = {};
+            const forcarAtualizacao = !!(opcoes && opcoes.atualizar);
             const preferida = loja || mlSkuLojaSelecionada || mlSkuCarregarPreferenciaLoja();
             const carregarTodas = !preferida || favoritosEhTodasLojas(preferida);
             const alvoCache = preferida || FAVORITOS_TODAS_LOJAS;
             const chaveCache = favoritosChaveCacheLoja(alvoCache);
-            const cacheExistente = favoritosObterCacheSkusLoja(alvoCache);
-            const cacheAplicado = favoritosAplicarCacheSkusLoja(alvoCache, { status: false });
-            if (cacheAplicado && favoritosCacheSkusRecente(cacheExistente)) {
+            const cacheAplicado = !forcarAtualizacao && favoritosAplicarCacheSkusLoja(alvoCache, { status: false });
+            if (cacheAplicado) {
                 return;
             }
-            if (cacheAplicado && mlSkuStatusEl) {
-                mlSkuStatusEl.textContent = `Mostrando cache de ${favoritosNomeLojaExibicao(mlSkuLojaSelecionada).toLowerCase()} enquanto atualiza no Mercado Livre...`;
-            }
-            const promiseEmAndamento = chaveCache ? mlSkuCarregamentoPromises.get(chaveCache) : null;
+            const promiseKey = chaveCache ? `${chaveCache}:${forcarAtualizacao ? 'atualizar' : 'cache'}` : '';
+            const promiseEmAndamento = promiseKey ? mlSkuCarregamentoPromises.get(promiseKey) : null;
             if (promiseEmAndamento) return promiseEmAndamento;
             const runId = ++mlSkuCarregamentoRunId;
             favoritosDefinirCarregamentoSkus(alvoCache, true, chaveCache);
             if (mlSkuStatusEl) {
+                if (forcarAtualizacao) {
+                    mlSkuStatusEl.textContent = carregarTodas
+                        ? 'Atualizando SKUs e anuncios de todas as lojas no Mercado Livre...'
+                        : `Atualizando SKUs e anuncios da loja ${preferida} no Mercado Livre...`;
+                } else {
                 mlSkuStatusEl.textContent = carregarTodas
                     ? 'Carregando SKUs dos anuncios de todas as lojas...'
                     : preferida
                     ? `Carregando SKUs dos anúncios da loja ${preferida}...`
                     : 'Carregando lojas integradas ao Mercado Livre...';
+                }
             }
             const promessa = (async () => {
             try {
@@ -5548,6 +5637,7 @@
                 } else if (preferida) {
                     params.set('loja', preferida);
                 }
+                if (forcarAtualizacao) params.set('atualizar', '1');
                 const response = await fetch(`/api/favoritos/ml/skus-anuncios${params.toString() ? `?${params.toString()}` : ''}`, {
                     headers: obterAuthHeaders(),
                     cache: 'no-store'
@@ -5571,6 +5661,7 @@
                 favoritosSkusTodasLojasCarregados = !!data.todas_lojas;
                 favoritosTotalAnunciosLojaAtual = Number(data.total_anuncios || 0);
                 favoritosWarningLojaAtual = data.warning || '';
+                favoritosMlSkuCacheMetaAtual = favoritosCacheMlMeta(data);
                 skuLojasDisponiveis = mlSkuLojasDisponiveis;
                 skuAtualizarDadosComApiMercadoLivre(mlSkusAnunciosLojaAtual, mlSkuLojaSelecionada);
                 favoritosSalvarCacheSkusAtual();
@@ -5596,6 +5687,10 @@
                             : 'Selecione uma loja para carregar os SKUs do Mercado Livre.';
                     }
                 }
+                if (mlSkuStatusEl && !data.warning) {
+                    const statusCache = favoritosMensagemCacheMl(data);
+                    if (statusCache) mlSkuStatusEl.textContent = `${mlSkuStatusEl.textContent} ${statusCache}`;
+                }
             } catch (err) {
                 if (!cacheAplicado) {
                     renderizarSkuSidebarMercadoLivre();
@@ -5610,10 +5705,10 @@
                 if (runId === mlSkuCarregamentoRunId) {
                     favoritosDefinirCarregamentoSkus('', false);
                 }
-                if (chaveCache) mlSkuCarregamentoPromises.delete(chaveCache);
+                if (promiseKey) mlSkuCarregamentoPromises.delete(promiseKey);
             }
             })();
-            if (chaveCache) mlSkuCarregamentoPromises.set(chaveCache, promessa);
+            if (promiseKey) mlSkuCarregamentoPromises.set(promiseKey, promessa);
             return promessa;
         }
 
@@ -6013,26 +6108,29 @@
             skuAtualizarBotaoOcultos();
         }
 
-        async function carregarSkuFavoritos(loja = '') {
+        async function carregarSkuFavoritos(loja = '', opcoes = {}) {
             if (!skuBodyEl) return;
+            if (opcoes && opcoes.type && opcoes.target) opcoes = {};
+            const forcarAtualizacao = !!(opcoes && opcoes.atualizar);
             const preferida = loja || skuLojaSelecionada || mlSkuLojaSelecionada || mlSkuCarregarPreferenciaLoja() || skuCarregarPreferenciaLoja();
             const carregarTodas = !preferida || favoritosEhTodasLojas(preferida);
             const alvoCache = preferida || FAVORITOS_TODAS_LOJAS;
             const chaveCache = favoritosChaveCacheLoja(alvoCache);
-            const cacheExistente = favoritosObterCacheSkusLoja(alvoCache);
-            const cacheAplicado = favoritosAplicarCacheSkusLoja(alvoCache, { status: false });
-            if (cacheAplicado && favoritosCacheSkusRecente(cacheExistente)) {
+            const cacheAplicado = !forcarAtualizacao && favoritosAplicarCacheSkusLoja(alvoCache, { status: false });
+            if (cacheAplicado) {
                 return;
             }
-            if (cacheAplicado && skuStatusEl) {
-                skuStatusEl.textContent = `Mostrando cache de ${favoritosNomeLojaExibicao(mlSkuLojaSelecionada).toLowerCase()} enquanto atualiza no Mercado Livre...`;
-            }
-            const promiseEmAndamento = chaveCache ? mlSkuCarregamentoPromises.get(chaveCache) : null;
+            const promiseKey = chaveCache ? `${chaveCache}:${forcarAtualizacao ? 'atualizar' : 'cache'}` : '';
+            const promiseEmAndamento = promiseKey ? mlSkuCarregamentoPromises.get(promiseKey) : null;
             if (promiseEmAndamento) return promiseEmAndamento;
             if (skuStatusEl) {
-                skuStatusEl.textContent = carregarTodas
-                    ? 'Carregando SKUs dos anuncios de todas as contas pela API do Mercado Livre...'
-                    : `Carregando SKUs dos anuncios da loja ${preferida} pela API do Mercado Livre...`;
+                skuStatusEl.textContent = forcarAtualizacao
+                    ? (carregarTodas
+                        ? 'Atualizando SKUs e anuncios de todas as contas no Mercado Livre...'
+                        : `Atualizando SKUs e anuncios da loja ${preferida} no Mercado Livre...`)
+                    : (carregarTodas
+                        ? 'Carregando SKUs salvos de todas as contas...'
+                        : `Carregando SKUs salvos da loja ${preferida}...`);
             }
             const runId = ++mlSkuCarregamentoRunId;
             favoritosDefinirCarregamentoSkus(alvoCache, true, chaveCache);
@@ -6044,6 +6142,7 @@
                 } else {
                     params.set('loja', preferida);
                 }
+                if (forcarAtualizacao) params.set('atualizar', '1');
                 const [response, ocultosResponse] = await Promise.all([
                     fetch(`/api/favoritos/ml/skus-anuncios${params.toString() ? `?${params.toString()}` : ''}`, {
                         headers: obterAuthHeaders(),
@@ -6073,6 +6172,7 @@
                 favoritosSkusTodasLojasCarregados = !!data.todas_lojas;
                 favoritosTotalAnunciosLojaAtual = Number(data.total_anuncios || 0);
                 favoritosWarningLojaAtual = data.warning || '';
+                favoritosMlSkuCacheMetaAtual = favoritosCacheMlMeta(data);
                 skuDescricaoAutoRunId++;
                 if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
                 skuDados = mlSkusAnunciosLojaAtual
@@ -6099,6 +6199,8 @@
                         : data.todas_lojas
                             ? 'Nenhum SKU encontrado na API do Mercado Livre para as contas integradas.'
                             : `Nenhum SKU encontrado na API do Mercado Livre para a loja ${mlSkuLojaSelecionada}.`;
+                    const statusCache = favoritosMensagemCacheMl(data);
+                    if (statusCache) skuStatusEl.textContent = `${skuStatusEl.textContent} ${statusCache}`;
                 }
                 if (skuDados.length) skuAgendarBuscaDescricoesAutomaticas(500);
             } catch (err) {
@@ -6107,12 +6209,38 @@
                 if (runId === mlSkuCarregamentoRunId) {
                     favoritosDefinirCarregamentoSkus('', false);
                 }
-                if (chaveCache) mlSkuCarregamentoPromises.delete(chaveCache);
+                if (promiseKey) mlSkuCarregamentoPromises.delete(promiseKey);
             }
             })();
-            if (chaveCache) mlSkuCarregamentoPromises.set(chaveCache, promessa);
+            if (promiseKey) mlSkuCarregamentoPromises.set(promiseKey, promessa);
             return promessa;
         }
+
+        async function atualizarSkusMercadoLivreAgora() {
+            if (mlSkuCarregamentoEmAndamento) return;
+            const lojaAtual = mlSkuLojaSelecionada || skuLojaSelecionada || mlSkuCarregarPreferenciaLoja() || skuCarregarPreferenciaLoja() || FAVORITOS_TODAS_LOJAS;
+            favoritosDefinirBotoesAtualizarSkuMl(true);
+            try {
+                await carregarSkuFavoritos(lojaAtual, { atualizar: true });
+                const skuAberto = String(favMlSkuSelecionado || '').trim();
+                if (skuAberto && typeof carregarFavoritosAnunciosSku === 'function') {
+                    await carregarFavoritosAnunciosSku(skuAberto, favMlLojaSelecionada || mlSkuLojaSelecionada || skuLojaSelecionada || lojaAtual, {
+                        atualizar: true,
+                        manterRankingSelecionado: true
+                    });
+                }
+            } catch (err) {
+                const mensagem = err && err.message ? err.message : String(err || 'erro desconhecido');
+                if (skuStatusEl) skuStatusEl.textContent = `Erro ao atualizar SKUs do Mercado Livre: ${mensagem}`;
+                if (mlSkuStatusEl) mlSkuStatusEl.textContent = `Erro ao atualizar SKUs do Mercado Livre: ${mensagem}`;
+            } finally {
+                favoritosDefinirBotoesAtualizarSkuMl(false);
+            }
+        }
+
+        favoritosBotoesAtualizarSkuMl().forEach(botao => {
+            botao.addEventListener('click', atualizarSkusMercadoLivreAgora);
+        });
 
         if (skuFiltroEl) {
             skuFiltroEl.addEventListener('input', () => {
@@ -13499,7 +13627,7 @@
 
         function agendarBuscaRemotaSkuSidebarMercadoLivre(termoBusca) {
             const termo = String(termoBusca || '').trim();
-            const loja = favoritosLojaSelecionadaParaApi((opcoes && opcoes.loja) || undefined);
+            const loja = favoritosLojaSelecionadaParaApi();
             const chaveBusca = `${skuNormalizarLoja(loja)}:${normalizarSkuBuscaMl(termo) || normalizarTextoMl(termo)}`;
             if (!loja || termo.length < 2 || !normalizarTextoMl(termo) || mlSkuBuscaRemotaCache.has(chaveBusca)) return;
             if (mlSkuBuscaRemotaTimer) clearTimeout(mlSkuBuscaRemotaTimer);
@@ -18611,6 +18739,7 @@
             const skuSelecionado = String(sku || '').trim();
             if (!skuSelecionado) return;
             const manterRankingSelecionado = !!(opcoes && opcoes.manterRankingSelecionado);
+            const forcarAtualizacao = !!(opcoes && opcoes.atualizar);
             const itemSidebar = (opcoes && opcoes.itemSidebar)
                 || encontrarItemSkuSidebarMercadoLivre(skuSelecionado, loja || favMlLojaSelecionada || mlSkuLojaSelecionada || '');
 
@@ -18637,6 +18766,7 @@
                 if (carregarCompartilhado) params.set('compartilhar_sku', '1');
                 const mlbsSidebar = extrairMlbsItemSkuSidebar(itemSidebar);
                 if (mlbsSidebar.length) params.set('mlbs', mlbsSidebar.join(','));
+                if (forcarAtualizacao) params.set('atualizar', '1');
                 const controller = typeof AbortController === 'function' ? new AbortController() : null;
                 const timeoutId = controller ? window.setTimeout(() => controller.abort(), 90000) : null;
                 const response = await fetch(`/api/favoritos/ml/anuncios-sku?${params.toString()}`, {
@@ -18668,7 +18798,10 @@
                     const lojasTexto = lojasCompartilhadas.length > 1
                         ? ` nas lojas ${lojasCompartilhadas.join(', ')}`
                         : (loja ? ` em ${loja}` : '');
-                    favMlStatusEl.textContent = `${favMlAnunciosSkuAtual.length} anuncio(s) do Mercado Livre para o SKU ${skuSelecionado}${lojasTexto}.`;
+                    favMlStatusEl.textContent = favoritosComporStatusCacheMl(
+                        `${favMlAnunciosSkuAtual.length} anuncio(s) do Mercado Livre para o SKU ${skuSelecionado}${lojasTexto}.`,
+                        data
+                    );
                 }
             } catch (err) {
                 if (favMlSkuSelecionado !== skuSelecionado) return;

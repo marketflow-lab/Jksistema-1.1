@@ -1,9 +1,10 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.79",
+  "version": "1.0.80",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
+    "prestart": "npm run verify:package",
     "start": "electron .",
     "verify:package": "node scripts/verify-installer-package.js",
     "verify:package:built": "node scripts/verify-installer-package.js --packaged dist-client-setup/win-unpacked/resources",
@@ -63,6 +64,9 @@
         "to": "local_app",
         "filter": [
           "*.py",
+          "backend/**",
+          "!backend/**/__pycache__/**",
+          "!backend/**/*.pyc",
           "requirements.txt",
           "*.html",
           "*.js",
