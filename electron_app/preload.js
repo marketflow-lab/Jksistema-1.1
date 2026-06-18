@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMlPublicItemInfo: (itemId) => ipcRenderer.invoke('ml-public-item-info', itemId),
     getMlBrowserItemInfo: (itemId, url) => ipcRenderer.invoke('ml-browser-item-info', itemId, url),
     openInternalBrowser: (url) => ipcRenderer.invoke('open-internal-browser', url),
+    openDetachedInternalBrowser: (url, title) => ipcRenderer.invoke('open-detached-internal-browser', url, title || ''),
     openExternalChrome: (url) => ipcRenderer.invoke('open-external-chrome', url),
     extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url),
     showEmbeddedMlBrowser: (url, bounds) => ipcRenderer.invoke('embedded-ml-browser-show', url, bounds),

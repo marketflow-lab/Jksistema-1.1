@@ -20,11 +20,7 @@ function _jwtPayloadLocal(token) {
 }
 
 function tokenSessaoExpirado() {
-    const token = obterToken();
-    if (!token) return false;
-    const payload = _jwtPayloadLocal(token);
-    const exp = Number(payload && payload.exp ? payload.exp : 0);
-    return !!exp && Date.now() >= (exp * 1000);
+    return false;
 }
 
 function respostaIndicaSessaoExpirada(resp, payload) {
@@ -67,6 +63,189 @@ function redirecionarSessaoExpirada() {
             }
         }
         return resp;
+    };
+})();
+
+(function initTabCoordinator() {
+    if (window.__jkTabCoordinatorInit && window.jkTabCoordinator) return;
+    window.__jkTabCoordinatorInit = true;
+
+    const TAB_ID_KEY = 'jk-tab-instance-id-v1';
+    const LEASE_PREFIX = 'jk-tab-leader:';
+    const BUS_PREFIX = 'jk-tab-bus:';
+    const BUS_CHANNEL_PREFIX = 'jk-tab-bus-channel:';
+    const DEFAULT_TTL_MS = 45000;
+    const ownedLeases = new Set();
+    const channelCache = new Map();
+
+    function gerarId() {
+        try {
+            if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        } catch (_err) {}
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+
+    let tabId = gerarId();
+    try {
+        const stored = sessionStorage.getItem(TAB_ID_KEY);
+        if (stored) {
+            tabId = stored;
+        } else {
+            sessionStorage.setItem(TAB_ID_KEY, tabId);
+        }
+    } catch (_err) {}
+
+    function leaseKey(name) {
+        return LEASE_PREFIX + String(name || 'default');
+    }
+
+    function busKey(name) {
+        return BUS_PREFIX + String(name || 'default');
+    }
+
+    function lerJsonStorage(key) {
+        try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : null;
+        } catch (_err) {
+            return null;
+        }
+    }
+
+    function escreverJsonStorage(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+            return true;
+        } catch (_err) {
+            return false;
+        }
+    }
+
+    function lerLease(name) {
+        return lerJsonStorage(leaseKey(name));
+    }
+
+    function liberar(name) {
+        const key = leaseKey(name);
+        try {
+            const atual = lerLease(name);
+            if (atual && atual.id === tabId) localStorage.removeItem(key);
+        } catch (_err) {}
+        ownedLeases.delete(String(name || 'default'));
+    }
+
+    function isLeader(name, ttlMs) {
+        const leaseName = String(name || 'default');
+        const ttl = Math.max(10000, Number(ttlMs) || DEFAULT_TTL_MS);
+        const agora = Date.now();
+        let atual = lerLease(leaseName);
+        if (!atual || !atual.id || Number(atual.expiresAt || 0) <= agora || atual.id === tabId) {
+            const next = { id: tabId, updatedAt: agora, expiresAt: agora + ttl };
+            if (!escreverJsonStorage(leaseKey(leaseName), next)) {
+                ownedLeases.add(leaseName);
+                return true;
+            }
+            atual = lerLease(leaseName);
+        }
+        const lider = !!(atual && atual.id === tabId && Number(atual.expiresAt || 0) > agora);
+        if (lider) ownedLeases.add(leaseName);
+        else ownedLeases.delete(leaseName);
+        return lider;
+    }
+
+    function createLeader(name, options = {}) {
+        const leaseName = String(name || 'default');
+        const ttl = Math.max(10000, Number(options.ttlMs) || DEFAULT_TTL_MS);
+        let stopped = false;
+        const intervalMs = Math.max(5000, Math.floor(ttl / 3));
+        const timer = setInterval(() => {
+            if (!stopped) isLeader(leaseName, ttl);
+        }, intervalMs);
+        const controller = {
+            id: tabId,
+            isLeader: () => !stopped && isLeader(leaseName, ttl),
+            release: () => liberar(leaseName),
+            stop: () => {
+                stopped = true;
+                clearInterval(timer);
+                liberar(leaseName);
+            }
+        };
+        controller.isLeader();
+        return controller;
+    }
+
+    function obterCanal(name) {
+        if (typeof BroadcastChannel !== 'function') return null;
+        const channelName = BUS_CHANNEL_PREFIX + String(name || 'default');
+        if (!channelCache.has(channelName)) {
+            channelCache.set(channelName, new BroadcastChannel(channelName));
+        }
+        return channelCache.get(channelName);
+    }
+
+    function normalizarEnvelope(payload) {
+        return {
+            id: gerarId(),
+            from: tabId,
+            ts: Date.now(),
+            payload
+        };
+    }
+
+    function broadcast(name, payload) {
+        const envelope = normalizarEnvelope(payload);
+        try {
+            const canal = obterCanal(name);
+            if (canal) canal.postMessage(envelope);
+        } catch (_err) {}
+        try {
+            localStorage.setItem(busKey(name), JSON.stringify(envelope));
+        } catch (_err) {}
+    }
+
+    function tratarEnvelope(envelope, handler) {
+        if (!envelope || envelope.from === tabId) return;
+        try {
+            handler(envelope.payload, envelope);
+        } catch (_err) {}
+    }
+
+    function subscribe(name, handler) {
+        let canal = null;
+        const onMessage = (event) => tratarEnvelope(event && event.data, handler);
+        try {
+            canal = obterCanal(name);
+            if (canal) canal.addEventListener('message', onMessage);
+        } catch (_err) {
+            canal = null;
+        }
+        const onStorage = (event) => {
+            if (!event || event.key !== busKey(name) || !event.newValue) return;
+            try {
+                tratarEnvelope(JSON.parse(event.newValue), handler);
+            } catch (_err) {}
+        };
+        window.addEventListener('storage', onStorage);
+        return () => {
+            try {
+                if (canal) canal.removeEventListener('message', onMessage);
+            } catch (_err) {}
+            window.removeEventListener('storage', onStorage);
+        };
+    }
+
+    window.addEventListener('pagehide', () => {
+        Array.from(ownedLeases).forEach(liberar);
+    });
+
+    window.jkTabCoordinator = {
+        tabId,
+        isLeader,
+        createLeader,
+        broadcast,
+        subscribe,
+        release: liberar
     };
 })();
 
@@ -515,6 +694,111 @@ function obterAuthHeaders(extra) {
         started: false,
         lastUsersPayload: null
     };
+    const presenceLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
+        ? window.jkTabCoordinator.createLeader('machine-presence', { ttlMs: 45000 })
+        : null;
+    const PRESENCE_DATA_CHANNEL = 'machine-presence-data';
+    const PRESENCE_REQUEST_CHANNEL = 'machine-presence-request';
+    const PRESENCE_CACHE_TTL_MS = 60 * 1000;
+    let tentativaLiderPresencaTimer = null;
+    let cacheMaquinasOnline = null;
+    let cacheMaquinasOnlineAt = 0;
+    let cacheUsuariosOnline = null;
+    let cacheUsuariosOnlineAt = 0;
+    let maquinasOnlinePromise = null;
+    let usuariosOnlinePromise = null;
+
+    function liderPresenca() {
+        return !presenceLeader || presenceLeader.isLeader();
+    }
+
+    function cachePresencaValido(ts, ttlMs = PRESENCE_CACHE_TTL_MS) {
+        return !!ts && Date.now() - ts < ttlMs;
+    }
+
+    function atualizarCachePresenca(tipo, payload) {
+        if (!payload || typeof payload !== 'object') return;
+        if (tipo === 'machines') {
+            cacheMaquinasOnline = payload;
+            cacheMaquinasOnlineAt = Date.now();
+        } else if (tipo === 'users') {
+            cacheUsuariosOnline = payload;
+            cacheUsuariosOnlineAt = Date.now();
+            rtdbState.lastUsersPayload = payload;
+        }
+    }
+
+    function publicarPresenca(tipo, payload) {
+        atualizarCachePresenca(tipo, payload);
+        try {
+            window.jkTabCoordinator?.broadcast(PRESENCE_DATA_CHANNEL, { type: tipo, payload });
+        } catch (_err) {}
+    }
+
+    function cachePresenca(tipo, permitirStale = false) {
+        if (tipo === 'machines') {
+            if (permitirStale || cachePresencaValido(cacheMaquinasOnlineAt)) return cacheMaquinasOnline;
+        }
+        if (tipo === 'users') {
+            if (permitirStale || cachePresencaValido(cacheUsuariosOnlineAt)) return cacheUsuariosOnline;
+        }
+        return null;
+    }
+
+    function aguardarPresencaLider(tipo, timeoutMs = 1800) {
+        if (!window.jkTabCoordinator || typeof window.jkTabCoordinator.subscribe !== 'function') {
+            return Promise.resolve(cachePresenca(tipo, true));
+        }
+        const cached = cachePresenca(tipo);
+        if (cached) return Promise.resolve(cached);
+        return new Promise((resolve) => {
+            let resolvido = false;
+            const encerrar = (payload) => {
+                if (resolvido) return;
+                resolvido = true;
+                try { unsubscribe(); } catch (_err) {}
+                resolve(payload || cachePresenca(tipo, true));
+            };
+            const unsubscribe = window.jkTabCoordinator.subscribe(PRESENCE_DATA_CHANNEL, (evento) => {
+                if (!evento || evento.type !== tipo) return;
+                atualizarCachePresenca(tipo, evento.payload);
+                encerrar(evento.payload);
+            });
+            try {
+                window.jkTabCoordinator.broadcast(PRESENCE_REQUEST_CHANNEL, { type: tipo });
+            } catch (_err) {}
+            setTimeout(() => encerrar(null), Math.max(600, Number(timeoutMs) || 1800));
+        });
+    }
+
+    function agendarTentativaLiderPresenca(delayMs = 20000) {
+        if (tentativaLiderPresencaTimer) return;
+        tentativaLiderPresencaTimer = setTimeout(() => {
+            tentativaLiderPresencaTimer = null;
+            if (!obterToken() || tokenSessaoExpirado()) return;
+            if (liderPresenca()) iniciar();
+            else agendarTentativaLiderPresenca(delayMs);
+        }, Math.max(5000, Number(delayMs) || 20000));
+    }
+
+    try {
+        window.jkTabCoordinator?.subscribe(PRESENCE_DATA_CHANNEL, (evento) => {
+            if (!evento || !evento.type) return;
+            atualizarCachePresenca(evento.type, evento.payload);
+        });
+        window.jkTabCoordinator?.subscribe(PRESENCE_REQUEST_CHANNEL, (evento) => {
+            if (!evento || !liderPresenca()) return;
+            if (evento.type === 'machines') {
+                buscarMaquinasOnline({ requestedByPeer: true })
+                    .then((data) => { if (data) publicarPresenca('machines', data); })
+                    .catch(() => {});
+            } else if (evento.type === 'users') {
+                buscarUsuariosOnline({ requestedByPeer: true })
+                    .then((data) => { if (data) publicarPresenca('users', data); })
+                    .catch(() => {});
+            }
+        });
+    } catch (_err) {}
 
     function obterUserDataPresenca() {
         try {
@@ -546,7 +830,18 @@ function obterAuthHeaders(extra) {
             } catch (_err) {
                 versao = '';
             }
-            appVersionCache = versao || extrairAppVersionUserAgent();
+            let versaoLocal = '';
+            try {
+                versaoLocal = String(localStorage.getItem('jk_app_version') || '').trim();
+            } catch (_err) {
+                versaoLocal = '';
+            }
+            appVersionCache = versao || extrairAppVersionUserAgent() || versaoLocal;
+            if (appVersionCache) {
+                try {
+                    localStorage.setItem('jk_app_version', appVersionCache);
+                } catch (_err) {}
+            }
             appVersionPromise = null;
             return appVersionCache;
         })();
@@ -601,7 +896,12 @@ function obterAuthHeaders(extra) {
             return rtdbState.session;
         }
         const machineId = obterMachineIdPresenca();
-        const url = `${RTDB_SESSION_ENDPOINT}?machine_id=${encodeURIComponent(machineId)}`;
+        const appVersion = await obterAppVersionPresenca();
+        const params = new URLSearchParams({
+            machine_id: machineId,
+            app_version: appVersion || ''
+        });
+        const url = `${RTDB_SESSION_ENDPOINT}?${params.toString()}`;
         const resp = await fetch(url, {
             method: 'GET',
             headers: obterAuthHeaders(),
@@ -812,6 +1112,10 @@ function obterAuthHeaders(extra) {
     }
 
     async function iniciarPresencaRtdb() {
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            return null;
+        }
         if (rtdbState.disabled) return null;
         if (rtdbState.startPromise) return rtdbState.startPromise;
         rtdbState.startPromise = (async () => {
@@ -863,15 +1167,26 @@ function obterAuthHeaders(extra) {
 
     async function desconectarPresencaRtdb() {
         try {
+            if (rtdbState.unsubscribeConnected) {
+                rtdbState.unsubscribeConnected();
+                rtdbState.unsubscribeConnected = null;
+            }
             if (rtdbState.connectionRef && rtdbState.modules) {
                 await rtdbState.modules.database.remove(rtdbState.connectionRef);
             }
         } catch (_err) {}
+        rtdbState.connectionRef = null;
+        rtdbState.lastStateRef = null;
+        rtdbState.started = false;
     }
 
     async function enviarHeartbeatBackend(motivo) {
         if (emExecucao || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            return null;
+        }
         const agora = Date.now();
         if (motivo !== 'manual' && agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
         ultimoHeartbeat = agora;
@@ -900,6 +1215,10 @@ function obterAuthHeaders(extra) {
     async function enviarHeartbeat(motivo) {
         if (!obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            return null;
+        }
         if (!rtdbState.disabled) {
             try {
                 if (rtdbState.started) return await atualizarConexaoRtdb();
@@ -943,15 +1262,30 @@ function obterAuthHeaders(extra) {
         };
     }
 
-    async function buscarMaquinasOnline() {
+    async function buscarMaquinasOnline(options = {}) {
         if (!obterToken() || tokenSessaoExpirado()) return null;
-        if (!rtdbState.disabled) {
-            try {
-                const data = await buscarMaquinasOnlineRtdb();
-                if (data) return data;
-            } catch (_err) {}
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            return aguardarPresencaLider('machines');
         }
-        return buscarMaquinasOnlineBackend();
+        if (!options.force && cachePresencaValido(cacheMaquinasOnlineAt)) {
+            return cacheMaquinasOnline;
+        }
+        if (maquinasOnlinePromise) return maquinasOnlinePromise;
+        maquinasOnlinePromise = (async () => {
+            let data = null;
+            if (!rtdbState.disabled) {
+                try {
+                    data = await buscarMaquinasOnlineRtdb();
+                } catch (_err) {}
+            }
+            if (!data) data = await buscarMaquinasOnlineBackend();
+            if (data) publicarPresenca('machines', data);
+            return data;
+        })().finally(() => {
+            maquinasOnlinePromise = null;
+        });
+        return maquinasOnlinePromise;
     }
 
     function chaveUsuarioPresenca(user) {
@@ -1063,17 +1397,50 @@ function obterAuthHeaders(extra) {
         return payload;
     }
 
-    async function buscarUsuariosOnline() {
+    async function buscarUsuariosOnline(options = {}) {
         if (!obterToken() || tokenSessaoExpirado()) return null;
-        const realtimePromise = !rtdbState.disabled
-            ? buscarUsuariosOnlineRtdb().catch(() => null)
-            : Promise.resolve(null);
-        const backendPromise = buscarUsuariosOnlineBackend().catch(() => null);
-        const [realtimeData, backendData] = await Promise.all([realtimePromise, backendPromise]);
-        return mesclarUsuariosOnline(backendData, realtimeData);
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            return aguardarPresencaLider('users');
+        }
+        if (!options.force && cachePresencaValido(cacheUsuariosOnlineAt)) {
+            return cacheUsuariosOnline;
+        }
+        if (usuariosOnlinePromise) return usuariosOnlinePromise;
+        usuariosOnlinePromise = (async () => {
+            const realtimePromise = !rtdbState.disabled
+                ? buscarUsuariosOnlineRtdb().catch(() => null)
+                : Promise.resolve(null);
+            const backendPromise = buscarUsuariosOnlineBackend().catch(() => null);
+            const [realtimeData, backendData] = await Promise.all([realtimePromise, backendPromise]);
+            const data = mesclarUsuariosOnline(backendData, realtimeData);
+            if (data) publicarPresenca('users', data);
+            return data;
+        })().finally(() => {
+            usuariosOnlinePromise = null;
+        });
+        return usuariosOnlinePromise;
     }
 
     async function assinarPresencaUsuarios(onUpdate, onError) {
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            const cached = cachePresenca('users', true);
+            if (cached && typeof onUpdate === 'function') {
+                setTimeout(() => onUpdate(cached), 0);
+            }
+            try {
+                window.jkTabCoordinator?.broadcast(PRESENCE_REQUEST_CHANNEL, { type: 'users' });
+            } catch (_err) {}
+            if (window.jkTabCoordinator && typeof window.jkTabCoordinator.subscribe === 'function') {
+                return window.jkTabCoordinator.subscribe(PRESENCE_DATA_CHANNEL, (evento) => {
+                    if (!evento || evento.type !== 'users') return;
+                    atualizarCachePresenca('users', evento.payload);
+                    if (typeof onUpdate === 'function') onUpdate(evento.payload);
+                });
+            }
+            throw new Error('Presenca em tempo real indisponivel nesta aba.');
+        }
         const ctx = await prepararRtdb();
         if (!ctx) {
             throw new Error('Presenca em tempo real indisponivel.');
@@ -1082,6 +1449,7 @@ function obterAuthHeaders(extra) {
         return ctx.modules.database.onValue(usersRef, (snap) => {
             const payload = montarPayloadUsuariosRtdb(snap.val(), ctx.session);
             rtdbState.lastUsersPayload = payload;
+            publicarPresenca('users', payload);
             if (typeof onUpdate === 'function') onUpdate(payload);
         }, (error) => {
             if (typeof onError === 'function') onError(error);
@@ -1105,6 +1473,10 @@ function obterAuthHeaders(extra) {
 
     function iniciarFallbackHeartbeat() {
         if (!obterToken() || tokenSessaoExpirado()) return;
+        if (!liderPresenca()) {
+            agendarTentativaLiderPresenca();
+            return;
+        }
         enviarHeartbeatBackend('inicio');
         if (!timer) {
             timer = setInterval(() => enviarHeartbeatBackend('intervalo'), FALLBACK_HEARTBEAT_INTERVAL_MS);
@@ -1124,6 +1496,11 @@ function obterAuthHeaders(extra) {
 
     function iniciar() {
         if (!obterToken() || tokenSessaoExpirado()) return;
+        if (!liderPresenca()) {
+            desconectarPresencaRtdb().catch(() => {});
+            agendarTentativaLiderPresenca();
+            return;
+        }
         iniciarPresencaRtdb()
             .then((result) => { if (!result) iniciarFallbackHeartbeat(); })
             .catch(() => iniciarFallbackHeartbeat());
@@ -1134,10 +1511,23 @@ function obterAuthHeaders(extra) {
     } else {
         setTimeout(iniciar, 500);
     }
-    window.addEventListener('focus', () => iniciarPresencaRtdb().catch(() => {}));
-    window.addEventListener('pagehide', () => { desconectarPresencaRtdb(); });
+    setInterval(() => {
+        if (!liderPresenca() && (rtdbState.started || timer)) {
+            if (timer) clearInterval(timer);
+            timer = null;
+            desconectarPresencaRtdb().catch(() => {});
+            agendarTentativaLiderPresenca();
+        }
+    }, 15000);
+    window.addEventListener('focus', iniciar);
+    window.addEventListener('pagehide', () => {
+        if (timer) clearInterval(timer);
+        timer = null;
+        desconectarPresencaRtdb();
+        try { presenceLeader?.release(); } catch (_err) {}
+    });
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') iniciarPresencaRtdb().catch(() => {});
+        if (document.visibilityState === 'visible') iniciar();
         if (document.visibilityState === 'hidden' && rtdbState.disabled) enviarHeartbeatBackend('hidden');
     });
 })();
@@ -1187,7 +1577,7 @@ function obterAuthHeaders(extra) {
     let executandoFavoritosHistorico = false;
     let ultimaPull = 0;
     let ultimaPush = 0;
-    let ultimaFavoritosHistorico = 0;
+    let ultimaFavoritosHistorico = Date.now();
     let timerFavoritosHistorico = null;
     let favoritosHistoricoRealtimeUnsubscribe = null;
     let favoritosHistoricoRealtimeUltimoEvento = '';
@@ -1195,7 +1585,16 @@ function obterAuthHeaders(extra) {
     const FAVORITOS_HISTORICO_SCOPE = 'favoritos_historico';
     const FAVORITOS_HISTORICO_SYNC_STORAGE_KEY = 'favoritosMlHistoricoSyncEvento';
     const FAVORITOS_HISTORICO_SYNC_CHANNEL = 'jkFavoritosMlHistoricoSync';
-    const FAVORITOS_HISTORICO_SYNC_INTERVAL_MS = 20 * 60 * 1000;
+    const SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
+    const SHARED_SYNC_AUTO_START_DELAY_MS = 10 * 60 * 1000;
+    const FAVORITOS_HISTORICO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+    const sharedSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
+        ? window.jkTabCoordinator.createLeader('shared-sync-auto', { ttlMs: 60000 })
+        : null;
+
+    function liderSharedSync() {
+        return !sharedSyncLeader || sharedSyncLeader.isLeader();
+    }
 
     function telaSeguraParaRestaurar() {
         const path = String(window.location.pathname || '').toLowerCase();
@@ -1281,9 +1680,10 @@ function obterAuthHeaders(extra) {
     async function executarAutoPull(motivo) {
         if (executandoPull || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaSeguraParaRestaurar()) return null;
+        if (motivo !== 'manual' && !liderSharedSync()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaPull < 5 * 60 * 1000) return null;
+        if (motivo !== 'manual' && agora - ultimaPull < SHARED_SYNC_AUTO_INTERVAL_MS) return null;
         ultimaPull = agora;
         executandoPull = true;
         try {
@@ -1308,9 +1708,10 @@ function obterAuthHeaders(extra) {
     async function executarAutoPush(motivo) {
         if (executandoPush || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaSeguraParaRestaurar()) return null;
+        if (motivo !== 'manual' && !liderSharedSync()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaPush < 5 * 60 * 1000) return null;
+        if (motivo !== 'manual' && agora - ultimaPush < SHARED_SYNC_AUTO_INTERVAL_MS) return null;
         ultimaPush = agora;
         executandoPush = true;
         try {
@@ -1335,6 +1736,7 @@ function obterAuthHeaders(extra) {
     async function executarAutoHistoricoFavoritos(motivo) {
         if (executandoFavoritosHistorico || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaPermiteSyncHistoricoFavoritos()) return null;
+        if (motivo !== 'manual' && !liderSharedSync()) return null;
         if (motivo !== 'manual' && motivo !== 'realtime' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
         if (motivo !== 'manual' && motivo !== 'realtime' && agora - ultimaFavoritosHistorico < FAVORITOS_HISTORICO_SYNC_INTERVAL_MS) return null;
@@ -1363,6 +1765,13 @@ function obterAuthHeaders(extra) {
     }
 
     async function iniciarRealtimeHistoricoFavoritos() {
+        if (!liderSharedSync()) {
+            if (favoritosHistoricoRealtimeUnsubscribe) {
+                try { favoritosHistoricoRealtimeUnsubscribe(); } catch (_err) {}
+                favoritosHistoricoRealtimeUnsubscribe = null;
+            }
+            return false;
+        }
         if (favoritosHistoricoRealtimeUnsubscribe || typeof window.jkAssinarFavoritosHistoricoRealtime !== 'function') return false;
         if (!obterToken() || tokenSessaoExpirado()) return false;
         try {
@@ -1396,8 +1805,17 @@ function obterAuthHeaders(extra) {
     window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
     window.jkFavoritosHistoricoSyncNow = () => executarAutoHistoricoFavoritos('manual');
 
-    agendarAutoHistoricoFavoritos(15000);
+    agendarAutoHistoricoFavoritos(SHARED_SYNC_AUTO_START_DELAY_MS);
     setTimeout(() => iniciarRealtimeHistoricoFavoritos(), 3500);
+    setInterval(() => {
+        if (!liderSharedSync() && favoritosHistoricoRealtimeUnsubscribe) {
+            try { favoritosHistoricoRealtimeUnsubscribe(); } catch (_err) {}
+            favoritosHistoricoRealtimeUnsubscribe = null;
+        }
+    }, 20000);
+    window.addEventListener('pagehide', () => {
+        try { sharedSyncLeader?.release(); } catch (_err) {}
+    });
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) iniciarRealtimeHistoricoFavoritos();
         if (!document.hidden) setTimeout(() => executarAutoHistoricoFavoritos('visible'), 1200);
@@ -1410,6 +1828,14 @@ function obterAuthHeaders(extra) {
 
     let executando = false;
     let ultimaExecucao = 0;
+    const MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
+    const machineSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
+        ? window.jkTabCoordinator.createLeader('machine-shared-sync-auto', { ttlMs: 60000 })
+        : null;
+
+    function liderMachineSync() {
+        return !machineSyncLeader || machineSyncLeader.isLeader();
+    }
 
     function telaSeguraParaSincronizar() {
         const path = String(window.location.pathname || '').toLowerCase();
@@ -1429,9 +1855,10 @@ function obterAuthHeaders(extra) {
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         if (!telaSeguraParaSincronizar()) return null;
+        if (motivo !== 'manual' && !liderMachineSync()) return null;
         if (motivo !== 'manual' && document.visibilityState === 'hidden') return null;
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimaExecucao < 5 * 60 * 1000) return null;
+        if (motivo !== 'manual' && agora - ultimaExecucao < MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS) return null;
         ultimaExecucao = agora;
         executando = true;
         try {
@@ -1454,6 +1881,9 @@ function obterAuthHeaders(extra) {
     }
 
     window.jkMachineSyncNow = () => executarMachineSync('manual');
+    window.addEventListener('pagehide', () => {
+        try { machineSyncLeader?.release(); } catch (_err) {}
+    });
 })();
 
 /** Remove dados de sessão e redireciona para login. */
@@ -2728,6 +3158,11 @@ function verificarSessao() {
                     display: flex;
                     flex-direction: column;
                 }
+                #jk-global-ai-sidebar *,
+                #jk-global-ai-sidebar *::before,
+                #jk-global-ai-sidebar *::after {
+                    box-sizing: border-box;
+                }
                 #jk-global-ai-sidebar.open { transform: translateX(0); }
                 #jk-global-ai-sidebar.open + #jk-global-ai-tab { right: 320px; }
                 #jk-global-ai-sidebar .jk-ai-head {
@@ -2760,11 +3195,13 @@ function verificarSessao() {
                 }
                 #jk-global-ai-sidebar .jk-ai-chat {
                     flex: 1 1 auto;
+                    min-width: 0;
                     min-height: 220px;
                     display: flex;
                     flex-direction: column;
                     gap: 12px;
                     overflow-y: auto;
+                    overflow-x: hidden;
                     padding: 4px 2px 12px;
                     margin-bottom: 10px;
                     scrollbar-width: none;
@@ -2774,12 +3211,16 @@ function verificarSessao() {
                 }
                 #jk-global-ai-sidebar .jk-ai-msg {
                     max-width: 86%;
+                    min-width: 0;
+                    overflow: hidden;
                     border-radius: 16px;
                     padding: 10px 12px;
                     border: 1px solid transparent;
                     font-size: 0.84rem;
                     line-height: 1.45;
                     white-space: pre-wrap;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
                 }
                 #jk-global-ai-sidebar .jk-ai-msg.user {
                     align-self: flex-end;
@@ -2800,6 +3241,9 @@ function verificarSessao() {
                     border-radius: 6px;
                     padding: 1px 5px;
                     font-size: 0.78rem;
+                    white-space: pre-wrap;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
                 }
                 #jk-global-ai-sidebar .jk-ai-msg.assistant strong {
                     color: #ffffff;
@@ -2832,6 +3276,7 @@ function verificarSessao() {
                     display: flex;
                     align-items: flex-end;
                     gap: 8px;
+                    min-width: 0;
                     border: 1px solid rgba(123, 207, 255, 0.22);
                     border-radius: 16px;
                     background: rgba(5, 13, 25, 0.88);
@@ -2839,6 +3284,7 @@ function verificarSessao() {
                 }
                 #jk-global-ai-sidebar .jk-ai-input {
                     flex: 1 1 auto;
+                    min-width: 0;
                     min-height: 42px;
                     max-height: 140px;
                     resize: none;
@@ -2850,6 +3296,8 @@ function verificarSessao() {
                     font-size: 0.82rem;
                     padding: 9px 8px;
                     outline: none;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
                 }
                 #jk-global-ai-sidebar .jk-ai-send {
                     flex: 0 0 42px;
@@ -3062,6 +3510,50 @@ function verificarSessao() {
     let streamMensagensAdmin = null;
     let streamConectado = false;
     let fallbackTimer = null;
+    let fallbackLiderTimer = null;
+    const ADMIN_MESSAGES_CHANNEL = 'admin-user-messages';
+    const adminMessagesLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
+        ? window.jkTabCoordinator.createLeader(ADMIN_MESSAGES_CHANNEL, { ttlMs: 60000 })
+        : null;
+
+    function liderMensagensAdmin() {
+        return !adminMessagesLeader || adminMessagesLeader.isLeader();
+    }
+
+    function publicarMensagensAdmin(type, payload) {
+        try {
+            window.jkTabCoordinator?.broadcast(ADMIN_MESSAGES_CHANNEL, { type, payload });
+        } catch (_err) {}
+    }
+
+    function agendarChecagemLiderMensagens(delayMs = 30000) {
+        if (fallbackLiderTimer) clearTimeout(fallbackLiderTimer);
+        fallbackLiderTimer = setTimeout(() => {
+            fallbackLiderTimer = null;
+            iniciarMensagensAdmin();
+        }, Math.max(5000, Number(delayMs) || 30000));
+    }
+
+    function fecharStreamMensagensAdmin() {
+        try {
+            if (streamMensagensAdmin) streamMensagensAdmin.close();
+        } catch (_err) {}
+        streamMensagensAdmin = null;
+        streamConectado = false;
+    }
+
+    try {
+        window.jkTabCoordinator?.subscribe(ADMIN_MESSAGES_CHANNEL, (evento) => {
+            if (!evento || !evento.type) return;
+            if (evento.type === 'message') {
+                enfileirarMensagem(evento.payload);
+            } else if (evento.type === 'messages' && Array.isArray(evento.payload)) {
+                evento.payload.forEach(enfileirarMensagem);
+            } else if (evento.type === 'request' && liderMensagensAdmin()) {
+                buscarMensagensAdmin().catch(() => {});
+            }
+        });
+    } catch (_err) {}
 
     function tokenAtual() {
         return localStorage.getItem('access_token') || '';
@@ -3216,6 +3708,11 @@ function verificarSessao() {
         if (buscando || !tokenAtual()) return;
         const path = String(window.location.pathname || '').toLowerCase();
         if (path.includes('frontend_index') || path.includes('login')) return;
+        if (!liderMensagensAdmin()) {
+            publicarMensagensAdmin('request', {});
+            agendarChecagemLiderMensagens();
+            return;
+        }
         buscando = true;
         try {
             const resp = await fetch('/api/user/messages', {
@@ -3225,6 +3722,7 @@ function verificarSessao() {
             const data = await resp.json().catch(() => ({}));
             if (resp.ok && data.success !== false && Array.isArray(data.messages) && data.messages.length) {
                 data.messages.forEach(enfileirarMensagem);
+                publicarMensagensAdmin('messages', data.messages);
             }
         } catch (_err) {
         } finally {
@@ -3251,6 +3749,12 @@ function verificarSessao() {
     function iniciarStreamMensagensAdmin() {
         const token = tokenAtual();
         if (!token || /frontend_index|login/i.test(String(window.location.pathname || ''))) return;
+        if (!liderMensagensAdmin()) {
+            fecharStreamMensagensAdmin();
+            publicarMensagensAdmin('request', {});
+            agendarChecagemLiderMensagens();
+            return;
+        }
         if (!window.EventSource) {
             agendarFallbackMensagens(60000);
             return;
@@ -3270,7 +3774,9 @@ function verificarSessao() {
                 streamConectado = true;
                 limparFallbackMensagens();
                 try {
-                    enfileirarMensagem(JSON.parse(event.data || '{}'));
+                    const msg = JSON.parse(event.data || '{}');
+                    enfileirarMensagem(msg);
+                    publicarMensagensAdmin('message', msg);
                 } catch (_err) {}
             });
             streamMensagensAdmin.addEventListener('fallback', () => {
@@ -3289,6 +3795,12 @@ function verificarSessao() {
     }
 
     function iniciarMensagensAdmin() {
+        if (!liderMensagensAdmin()) {
+            fecharStreamMensagensAdmin();
+            publicarMensagensAdmin('request', {});
+            agendarChecagemLiderMensagens();
+            return;
+        }
         buscarMensagensAdmin();
         iniciarStreamMensagensAdmin();
     }
@@ -3298,10 +3810,20 @@ function verificarSessao() {
     } else {
         setTimeout(iniciarMensagensAdmin, 3500);
     }
+    setInterval(() => {
+        if (!liderMensagensAdmin() && (streamMensagensAdmin || fallbackTimer)) {
+            fecharStreamMensagensAdmin();
+            limparFallbackMensagens();
+            agendarChecagemLiderMensagens();
+        }
+    }, 20000);
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
-            iniciarStreamMensagensAdmin();
-            if (!streamConectado) buscarMensagensAdmin();
+            iniciarMensagensAdmin();
         }
+    });
+    window.addEventListener('pagehide', () => {
+        fecharStreamMensagensAdmin();
+        try { adminMessagesLeader?.release(); } catch (_err) {}
     });
 })();

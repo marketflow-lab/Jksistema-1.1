@@ -85,7 +85,7 @@
             border-left: 3px solid var(--tab-accent);
             border-radius: 10px;
             color: #243447;
-            cursor: pointer;
+            cursor: grab;
             display: flex;
             flex: 0 0 auto;
             gap: 8px;
@@ -93,7 +93,8 @@
             max-width: 238px;
             min-width: 132px;
             padding: 0 7px 0 8px;
-            transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+            transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease, transform 140ms ease;
+            user-select: none;
         }
         .tab:hover {
             background: #ffffff;
@@ -104,6 +105,20 @@
             border-color: var(--tab-accent);
             box-shadow: 0 0 0 2px rgba(79, 172, 254, 0.14);
             color: #0f172a;
+        }
+        .tab.is-dragging {
+            cursor: grabbing;
+            opacity: 0.52;
+            pointer-events: none;
+            transform: scale(0.98);
+        }
+        .tab.is-drop-before {
+            box-shadow: -4px 0 0 var(--tab-accent), 0 0 0 2px rgba(79, 172, 254, 0.16);
+        }
+        .tab.is-detach-target {
+            background: #fff7ed;
+            border-color: #f97316;
+            box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.18);
         }
         .tab-icon {
             align-items: center;
@@ -401,6 +416,25 @@
             border-color: rgba(255, 112, 112, 0.58);
             box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34), 0 0 22px rgba(255, 112, 112, 0.16);
         }
+        .tab-detach-hint {
+            background: rgba(15, 23, 42, 0.94);
+            border: 1px solid rgba(79, 172, 254, 0.42);
+            border-radius: 9px;
+            color: #eef6ff;
+            display: none;
+            font-size: 12px;
+            font-weight: 800;
+            left: 50%;
+            padding: 8px 12px;
+            pointer-events: none;
+            position: fixed;
+            top: 58px;
+            transform: translateX(-50%);
+            z-index: 130;
+        }
+        .tab-detach-hint.is-active {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -434,6 +468,7 @@
             <button id="update-toast-action" class="update-toast-action" type="button">Atualizar agora</button>
         </div>
     </div>
+    <div id="tab-detach-hint" class="tab-detach-hint">Solte para abrir esta aba em outra janela</div>
 
     <script>
         function normalizeInitialAppUrl(value) {
@@ -472,6 +507,7 @@
         const updateToastProgressFill = document.getElementById('update-toast-progress-fill');
         const updateToastActions = document.getElementById('update-toast-actions');
         const updateToastAction = document.getElementById('update-toast-action');
+        const tabDetachHint = document.getElementById('tab-detach-hint');
         const tabs = new Map();
         const pendingUpdateSaveRequests = new Map();
         let activeId = '';
@@ -481,6 +517,7 @@
         let updateToastActionHandler = null;
         let mlBrowserWebview = null;
         let mlBrowserOwnerId = '';
+        let tabDragState = null;
         const mlBrowserBoundsByTab = new Map();
         const mlBrowserUrlByTab = new Map();
         const mlBrowserVisibleByTab = new Map();
@@ -669,6 +706,149 @@
                     tab.webview.contentWindow.postMessage(message, '*');
                 }
             } catch (_err) {}
+        }
+
+        function getTabIdFromButton(button) {
+            return button && button.dataset ? String(button.dataset.tabId || '') : '';
+        }
+
+        function clearTabDragClasses() {
+            tabs.forEach(tab => {
+                if (!tab || !tab.button) return;
+                tab.button.classList.remove('is-dragging', 'is-drop-before', 'is-detach-target');
+            });
+            if (tabDetachHint) tabDetachHint.classList.remove('is-active');
+        }
+
+        function isDetachDropPoint(event) {
+            if (!toolbarEl) return false;
+            const rect = toolbarEl.getBoundingClientRect();
+            return event.clientY > rect.bottom + 32
+                || event.clientY < rect.top - 16
+                || event.clientX < rect.left - 24
+                || event.clientX > rect.right + 24;
+        }
+
+        function getDropTargetId(clientX) {
+            const buttons = Array.from(tabsEl.querySelectorAll('.tab'))
+                .filter(button => !button.classList.contains('is-dragging'));
+            for (const button of buttons) {
+                const rect = button.getBoundingClientRect();
+                if (clientX < rect.left + rect.width / 2) {
+                    return getTabIdFromButton(button);
+                }
+            }
+            return '';
+        }
+
+        function reorderTabBefore(dragId, targetId) {
+            if (!dragId || dragId === targetId || !tabs.has(dragId)) return;
+            const entries = Array.from(tabs.entries());
+            const dragged = entries.find(([id]) => id === dragId);
+            if (!dragged) return;
+            const remaining = entries.filter(([id]) => id !== dragId);
+            const targetIndex = targetId
+                ? remaining.findIndex(([id]) => id === targetId)
+                : remaining.length;
+            if (targetIndex < 0) return;
+            const nextEntries = [
+                ...remaining.slice(0, targetIndex),
+                dragged,
+                ...remaining.slice(targetIndex)
+            ];
+            tabs.clear();
+            nextEntries.forEach(([id, tab]) => {
+                tabs.set(id, tab);
+                if (tab.button) tabsEl.appendChild(tab.button);
+            });
+        }
+
+        async function detachTabToWindow(id) {
+            const tab = tabs.get(id);
+            if (!tab) return;
+            const url = getCurrentTabUrl(tab) || tab.url || appUrl;
+            const title = tab.title || titleFromUrl(url) || 'JK Sistema';
+            try {
+                if (window.electronAPI && typeof window.electronAPI.openDetachedInternalBrowser === 'function') {
+                    const result = await window.electronAPI.openDetachedInternalBrowser(url, title);
+                    if (result && result.success === false) return;
+                } else {
+                    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+                    if (!popup) return;
+                }
+                closeTab(id);
+            } catch (_err) {}
+        }
+
+        function bindTabDragHandlers(button, id) {
+            button.dataset.tabId = id;
+            button.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0 || event.target.closest('.tab-close')) return;
+                tabDragState = {
+                    id,
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    dragging: false
+                };
+                try { button.setPointerCapture(event.pointerId); } catch (_err) {}
+            });
+            button.addEventListener('pointermove', (event) => {
+                if (!tabDragState || tabDragState.id !== id || tabDragState.pointerId !== event.pointerId) return;
+                const dx = Math.abs(event.clientX - tabDragState.startX);
+                const dy = Math.abs(event.clientY - tabDragState.startY);
+                if (!tabDragState.dragging && Math.max(dx, dy) < 6) return;
+                if (!tabDragState.dragging) {
+                    tabDragState.dragging = true;
+                    button.classList.add('is-dragging');
+                    showTabsToolbar(0);
+                }
+                event.preventDefault();
+                const detach = isDetachDropPoint(event);
+                clearTabDragClasses();
+                button.classList.add('is-dragging');
+                button.classList.toggle('is-detach-target', detach);
+                if (tabDetachHint) tabDetachHint.classList.toggle('is-active', detach);
+                if (!detach) {
+                    const targetId = getDropTargetId(event.clientX);
+                    reorderTabBefore(id, targetId);
+                    const targetButton = targetId && tabs.get(targetId) ? tabs.get(targetId).button : null;
+                    if (targetButton) targetButton.classList.add('is-drop-before');
+                }
+            });
+            const finalizar = (event) => {
+                if (!tabDragState || tabDragState.id !== id || tabDragState.pointerId !== event.pointerId) return;
+                const shouldDetach = tabDragState.dragging && isDetachDropPoint(event);
+                const wasDragging = tabDragState.dragging;
+                tabDragState = null;
+                clearTabDragClasses();
+                try { button.releasePointerCapture(event.pointerId); } catch (_err) {}
+                if (wasDragging) {
+                    button.dataset.dragSuppress = '1';
+                    setTimeout(() => { delete button.dataset.dragSuppress; }, 0);
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                if (shouldDetach) {
+                    detachTabToWindow(id);
+                } else if (wasDragging) {
+                    activateTab(id);
+                    showTabsToolbar(1200);
+                }
+            };
+            button.addEventListener('pointerup', finalizar);
+            button.addEventListener('pointercancel', (event) => {
+                if (!tabDragState || tabDragState.id !== id || tabDragState.pointerId !== event.pointerId) return;
+                tabDragState = null;
+                clearTabDragClasses();
+                try { button.releasePointerCapture(event.pointerId); } catch (_err) {}
+            });
+            button.addEventListener('lostpointercapture', () => {
+                if (tabDragState && tabDragState.id === id) {
+                    tabDragState = null;
+                    clearTabDragClasses();
+                }
+            });
         }
 
         function setUpdateSaveOverlay(active, message = '') {
@@ -1237,7 +1417,11 @@
             button.type = 'button';
             button.className = 'tab';
             button.innerHTML = '<span class="tab-icon" aria-hidden="true"></span><span class="tab-title"></span><span class="tab-close" title="Fechar aba" aria-label="Fechar aba">x</span>';
-            button.addEventListener('click', () => activateTab(id));
+            bindTabDragHandlers(button, id);
+            button.addEventListener('click', () => {
+                if (button.dataset.dragSuppress === '1') return;
+                activateTab(id);
+            });
             button.querySelector('.tab-close').addEventListener('click', (event) => {
                 event.stopPropagation();
                 closeTab(id);

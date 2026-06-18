@@ -278,7 +278,7 @@
             .tabs .btn-save-top { min-height: 44px; }
         }
     </style>
-    <script src="/auth.js?v=20260609-favhist-rt"></script>
+    <script src="/auth.js?v=20260618-persist-login"></script>
 </head>
 <body>
 <div class="container">
@@ -1040,15 +1040,17 @@
     async function carregarUsuarios() {
         if (!canManageUsers) return;
         setUserStatus('Carregando usuários...', 'loading');
-        const resp = await fetch('/api/admin/users', { headers: obterAuthHeaders() });
+        usersList.innerHTML = '<div class="small">Carregando usuários...</div>';
+        const resp = await fetch('/api/admin/users', { headers: obterAuthHeaders(), cache: 'no-store' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || data.success === false) {
             setUserStatus(data.detail || data.message || 'Erro ao carregar usuários.', 'error');
             return;
         }
-        usuariosCache = data.users || [];
+        usuariosCache = Array.isArray(data.users) ? data.users : [];
         renderListaUsuarios(usuariosCache);
-        setUserStatus('Lista atualizada.', 'success');
+        const backendInfo = data.backend ? ` (${data.backend})` : '';
+        setUserStatus(`Lista atualizada: ${usuariosCache.length} usuário(s)${backendInfo}.`, 'success');
     }
 
     async function salvarUsuario() {

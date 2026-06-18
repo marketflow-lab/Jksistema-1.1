@@ -726,6 +726,16 @@
             return appVersionLoginCache;
         }
 
+        function extrairMensagemErroHttp(errJson, fallback) {
+            const detail = errJson && errJson.detail;
+            if (!detail) return fallback;
+            if (Array.isArray(detail)) return detail.map(e => e.msg).join(", ");
+            if (typeof detail === 'object') {
+                return detail.message || detail.detail || detail.reason || JSON.stringify(detail);
+            }
+            return detail;
+        }
+
         async function fazerLogin() {
             const user = document.getElementById('username').value;
             const pass = document.getElementById('password').value;
@@ -757,14 +767,7 @@
                     let errorDetail = "Erro no servidor (" + response.status + ")";
                     try { 
                         const errJson = await response.json(); 
-                        if (errJson.detail) {
-                            // Se for lista de erros (Pydantic), junta as mensagens
-                            if (Array.isArray(errJson.detail)) {
-                                errorDetail = errJson.detail.map(e => e.msg).join(", ");
-                            } else {
-                                errorDetail = typeof errJson.detail === 'object' ? JSON.stringify(errJson.detail) : errJson.detail;
-                            }
-                        }
+                        errorDetail = extrairMensagemErroHttp(errJson, errorDetail);
                     } catch(e){}
                     throw new Error(errorDetail);
                 }
@@ -822,11 +825,7 @@
                 let errorDetail = "Erro no servidor (" + response.status + ")";
                 try {
                     const errJson = await response.json();
-                    if (errJson.detail) {
-                        errorDetail = Array.isArray(errJson.detail)
-                            ? errJson.detail.map(e => e.msg).join(", ")
-                            : (typeof errJson.detail === 'object' ? JSON.stringify(errJson.detail) : errJson.detail);
-                    }
+                    errorDetail = extrairMensagemErroHttp(errJson, errorDetail);
                 } catch(e) {}
                 throw new Error(errorDetail);
             }

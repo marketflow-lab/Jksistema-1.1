@@ -3117,6 +3117,38 @@ function ensureInternalBrowser(parent) {
     return internalBrowserWindow;
 }
 
+function createDetachedInternalBrowser(parent, targetUrl, title = '') {
+    const safeTitle = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 90);
+    const detachedWindow = new BrowserWindow({
+        width: 1280,
+        height: 820,
+        title: safeTitle ? `${safeTitle} - JK Sistema` : 'Navegador Interno - JK Sistema',
+        parent,
+        webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            session: getMlSession()
+        }
+    });
+    detachedWindow.webContents.__jkAllowMlAdNavigation = true;
+    registerAvantProConsoleDiagnostics(detachedWindow.webContents);
+    detachedWindow.setMenuBarVisibility(false);
+    detachedWindow.webContents.on('page-title-updated', (_event, pageTitle) => {
+        const clean = String(pageTitle || safeTitle || 'Navegador Interno')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 90);
+        if (clean) detachedWindow.setTitle(`${clean} - JK Sistema`);
+    });
+    detachedWindow.loadURL(targetUrl).catch((err) => {
+        logElectronLifecycle('detached-internal-browser-load-failed', {
+            url: targetUrl,
+            error: err && err.message ? err.message : String(err)
+        });
+    });
+    return detachedWindow;
+}
+
 function normalizarBoundsNavegadorMl(bounds) {
     const raw = bounds || {};
     const x = Math.max(0, Math.round(Number(raw.x ?? raw.left ?? 0)));
@@ -3604,6 +3636,18 @@ app.whenReady().then(async () => {
             console.error('Falha ao abrir navegador interno:', err);
             throw err;
         }
+    });
+
+    ipcMain.handle('open-detached-internal-browser', async (event, targetUrl, title = '') => {
+        const url = normalizeTargetUrl(targetUrl);
+        if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
+            logElectronLifecycle('blocked-detached-ml-logout-load-during-favoritos', { url });
+            return { success: false, blocked: true, reason: 'favoritos-em-execucao', url: '' };
+        }
+        await ensureChromeExtensionsForMlSession();
+        const parent = BrowserWindow.fromWebContents(event.sender) || null;
+        const detachedWindow = createDetachedInternalBrowser(parent, url, title);
+        return { success: true, url, windowId: detachedWindow.id };
     });
 
     ipcMain.handle('open-external-chrome', async (_event, targetUrl) => {
