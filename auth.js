@@ -754,7 +754,7 @@ function obterAuthHeaders(extra) {
     window.__jkMachinePresenceInit = true;
 
     const FIREBASE_SDK_VERSION = '10.12.5';
-    const FALLBACK_HEARTBEAT_INTERVAL_MS = 45 * 1000;
+    const FALLBACK_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
     const RTDB_SESSION_ENDPOINT = '/api/firebase/realtime-presence/session';
     let ultimoHeartbeat = 0;
     let timer = null;
@@ -782,7 +782,7 @@ function obterAuthHeaders(extra) {
         : null;
     const PRESENCE_DATA_CHANNEL = 'machine-presence-data';
     const PRESENCE_REQUEST_CHANNEL = 'machine-presence-request';
-    const PRESENCE_CACHE_TTL_MS = 60 * 1000;
+    const PRESENCE_CACHE_TTL_MS = 90 * 1000;
     let tentativaLiderPresencaTimer = null;
     let cacheMaquinasOnline = null;
     let cacheMaquinasOnlineAt = 0;
@@ -1271,7 +1271,7 @@ function obterAuthHeaders(extra) {
             return null;
         }
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
+        if (agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
         ultimoHeartbeat = agora;
         emExecucao = true;
         try {
@@ -1484,13 +1484,20 @@ function obterAuthHeaders(extra) {
         if (!obterToken() || tokenSessaoExpirado()) return null;
         if (!liderPresenca()) {
             agendarTentativaLiderPresenca();
-            return aguardarPresencaLider('users');
+            const payload = await aguardarPresencaLider('users');
+            return options.realtimeOnly && !(payload && payload.realtime) ? null : payload;
         }
-        if (!options.force && cachePresencaValido(cacheUsuariosOnlineAt)) {
+        if (!options.force && cachePresencaValido(cacheUsuariosOnlineAt) && (!options.realtimeOnly || (cacheUsuariosOnline && cacheUsuariosOnline.realtime))) {
             return cacheUsuariosOnline;
         }
         if (usuariosOnlinePromise) return usuariosOnlinePromise;
         usuariosOnlinePromise = (async () => {
+            if (options.realtimeOnly) {
+                if (rtdbState.disabled) return null;
+                const realtimeData = await buscarUsuariosOnlineRtdb().catch(() => null);
+                if (realtimeData) publicarPresenca('users', realtimeData);
+                return realtimeData;
+            }
             const realtimePromise = !rtdbState.disabled
                 ? buscarUsuariosOnlineRtdb().catch(() => null)
                 : Promise.resolve(null);
@@ -1671,9 +1678,18 @@ function obterAuthHeaders(extra) {
     const SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
     const SHARED_SYNC_AUTO_START_DELAY_MS = 10 * 60 * 1000;
     const FAVORITOS_HISTORICO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+    const SHARED_SYNC_AUTO_FILES_STORAGE_KEY = 'jk_shared_sync_auto_files_enabled';
     const sharedSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader('shared-sync-auto', { ttlMs: 60000 })
         : null;
+
+    function arquivosSyncAutomaticoAtivo() {
+        try {
+            return localStorage.getItem(SHARED_SYNC_AUTO_FILES_STORAGE_KEY) === '1';
+        } catch (_err) {
+            return false;
+        }
+    }
 
     function liderSharedSync() {
         return !sharedSyncLeader || sharedSyncLeader.isLeader();
@@ -1761,6 +1777,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarAutoPull(motivo) {
+        if (!arquivosSyncAutomaticoAtivo()) return null;
         if (executandoPull || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaSeguraParaRestaurar()) return null;
         if (motivo !== 'manual' && !liderSharedSync()) return null;
@@ -1789,6 +1806,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarAutoPush(motivo) {
+        if (!arquivosSyncAutomaticoAtivo()) return null;
         if (executandoPush || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaSeguraParaRestaurar()) return null;
         if (motivo !== 'manual' && !liderSharedSync()) return null;
@@ -1817,6 +1835,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarAutoHistoricoFavoritos(motivo) {
+        if (!arquivosSyncAutomaticoAtivo()) return null;
         if (executandoFavoritosHistorico || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaPermiteSyncHistoricoFavoritos()) return null;
         if (motivo !== 'manual' && !liderSharedSync()) return null;
@@ -1848,6 +1867,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function iniciarRealtimeHistoricoFavoritos() {
+        if (!arquivosSyncAutomaticoAtivo()) return false;
         if (!liderSharedSync()) {
             if (favoritosHistoricoRealtimeUnsubscribe) {
                 try { favoritosHistoricoRealtimeUnsubscribe(); } catch (_err) {}
@@ -1876,6 +1896,7 @@ function obterAuthHeaders(extra) {
     }
 
     function agendarAutoHistoricoFavoritos(delayMs) {
+        if (!arquivosSyncAutomaticoAtivo()) return;
         if (timerFavoritosHistorico) clearTimeout(timerFavoritosHistorico);
         timerFavoritosHistorico = setTimeout(async () => {
             timerFavoritosHistorico = null;
@@ -1888,8 +1909,10 @@ function obterAuthHeaders(extra) {
     window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
     window.jkFavoritosHistoricoSyncNow = () => executarAutoHistoricoFavoritos('manual');
 
-    agendarAutoHistoricoFavoritos(SHARED_SYNC_AUTO_START_DELAY_MS);
-    setTimeout(() => iniciarRealtimeHistoricoFavoritos(), 3500);
+    if (arquivosSyncAutomaticoAtivo()) {
+        agendarAutoHistoricoFavoritos(SHARED_SYNC_AUTO_START_DELAY_MS);
+        setTimeout(() => iniciarRealtimeHistoricoFavoritos(), 3500);
+    }
     setInterval(() => {
         if (!liderSharedSync() && favoritosHistoricoRealtimeUnsubscribe) {
             try { favoritosHistoricoRealtimeUnsubscribe(); } catch (_err) {}
@@ -1900,6 +1923,7 @@ function obterAuthHeaders(extra) {
         try { sharedSyncLeader?.release(); } catch (_err) {}
     });
     document.addEventListener('visibilitychange', () => {
+        if (!arquivosSyncAutomaticoAtivo()) return;
         if (!document.hidden) iniciarRealtimeHistoricoFavoritos();
         if (!document.hidden) setTimeout(() => executarAutoHistoricoFavoritos('visible'), 1200);
     });
@@ -1912,9 +1936,18 @@ function obterAuthHeaders(extra) {
     let executando = false;
     let ultimaExecucao = 0;
     const MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
+    const MACHINE_SHARED_SYNC_AUTO_STORAGE_KEY = 'jk_shared_sync_auto_files_enabled';
     const machineSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader('machine-shared-sync-auto', { ttlMs: 60000 })
         : null;
+
+    function machineSyncAutomaticoAtivo() {
+        try {
+            return localStorage.getItem(MACHINE_SHARED_SYNC_AUTO_STORAGE_KEY) === '1';
+        } catch (_err) {
+            return false;
+        }
+    }
 
     function liderMachineSync() {
         return !machineSyncLeader || machineSyncLeader.isLeader();
@@ -1935,6 +1968,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarMachineSync(motivo) {
+        if (!machineSyncAutomaticoAtivo()) return null;
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         if (!telaSeguraParaSincronizar()) return null;
@@ -3587,6 +3621,7 @@ function verificarSessao() {
     window.__jkAdminUserMessagesInit = true;
 
     const FALLBACK_POLL_MS = 60 * 60 * 1000;
+    const ADMIN_MESSAGES_CACHE_MS = 2 * 60 * 1000;
     let buscando = false;
     let mensagemAtualId = '';
     let filaMensagensAdmin = [];
@@ -3594,6 +3629,8 @@ function verificarSessao() {
     let streamConectado = false;
     let fallbackTimer = null;
     let fallbackLiderTimer = null;
+    let ultimasMensagensAdmin = [];
+    let ultimasMensagensAdminAt = 0;
     const ADMIN_MESSAGES_CHANNEL = 'admin-user-messages';
     const adminMessagesLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader(ADMIN_MESSAGES_CHANNEL, { ttlMs: 60000 })
@@ -3607,6 +3644,19 @@ function verificarSessao() {
         try {
             window.jkTabCoordinator?.broadcast(ADMIN_MESSAGES_CHANNEL, { type, payload });
         } catch (_err) {}
+    }
+
+    function cacheMensagensAdminValido() {
+        return Date.now() - ultimasMensagensAdminAt <= ADMIN_MESSAGES_CACHE_MS;
+    }
+
+    function salvarCacheMensagensAdmin(mensagens) {
+        ultimasMensagensAdmin = Array.isArray(mensagens) ? mensagens.slice(0, 10) : [];
+        ultimasMensagensAdminAt = Date.now();
+    }
+
+    function publicarCacheMensagensAdmin() {
+        publicarMensagensAdmin('messages', ultimasMensagensAdmin);
     }
 
     function agendarChecagemLiderMensagens(delayMs = 30000) {
@@ -3633,7 +3683,11 @@ function verificarSessao() {
             } else if (evento.type === 'messages' && Array.isArray(evento.payload)) {
                 evento.payload.forEach(enfileirarMensagem);
             } else if (evento.type === 'request' && liderMensagensAdmin()) {
-                buscarMensagensAdmin().catch(() => {});
+                if (cacheMensagensAdminValido()) {
+                    publicarCacheMensagensAdmin();
+                } else {
+                    buscarMensagensAdmin().catch(() => {});
+                }
             }
         });
     } catch (_err) {}
@@ -3737,6 +3791,8 @@ function verificarSessao() {
                 headers: headersAuth(),
                 cache: 'no-store'
             });
+            salvarCacheMensagensAdmin(ultimasMensagensAdmin.filter(item => idMensagem(item) !== id));
+            publicarCacheMensagensAdmin();
         } catch (_err) {}
     }
 
@@ -3803,9 +3859,12 @@ function verificarSessao() {
                 cache: 'no-store'
             });
             const data = await resp.json().catch(() => ({}));
-            if (resp.ok && data.success !== false && Array.isArray(data.messages) && data.messages.length) {
-                data.messages.forEach(enfileirarMensagem);
-                publicarMensagensAdmin('messages', data.messages);
+            if (resp.ok && data.success !== false && Array.isArray(data.messages)) {
+                salvarCacheMensagensAdmin(data.messages);
+                if (data.messages.length) {
+                    data.messages.forEach(enfileirarMensagem);
+                    publicarMensagensAdmin('messages', data.messages);
+                }
             }
         } catch (_err) {
         } finally {
@@ -3858,6 +3917,9 @@ function verificarSessao() {
                 limparFallbackMensagens();
                 try {
                     const msg = JSON.parse(event.data || '{}');
+                    salvarCacheMensagensAdmin([msg].concat(
+                        ultimasMensagensAdmin.filter(item => idMensagem(item) !== idMensagem(msg))
+                    ));
                     enfileirarMensagem(msg);
                     publicarMensagensAdmin('message', msg);
                 } catch (_err) {}

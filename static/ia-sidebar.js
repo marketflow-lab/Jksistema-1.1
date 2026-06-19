@@ -1222,13 +1222,13 @@
     const PANEL_MAX_WIDTH = 760;
     const MSG_NOTIFICACOES_KEY = 'jk_msg_notificacoes_exibidas_v1';
     const MSG_REFRESH_CLOSED_INTERVAL_MS = 5 * 60 * 1000;
-    const MSG_REFRESH_PANEL_INTERVAL_MS = 10 * 1000;
-    const MSG_REFRESH_CHAT_INTERVAL_MS = 30 * 1000;
+    const MSG_REFRESH_PANEL_INTERVAL_MS = 60 * 1000;
+    const MSG_REFRESH_CHAT_INTERVAL_MS = 90 * 1000;
     const MSG_REFRESH_HIDDEN_INTERVAL_MS = 10 * 60 * 1000;
     const MSG_ATTACHMENT_MAX_COUNT = 6;
     const MSG_ATTACHMENT_MAX_BYTES = 700 * 1024;
     const MSG_ATTACHMENT_TOTAL_MAX_BYTES = 900 * 1024;
-    const MSG_TYPING_POLL_MS = 2000;
+    const MSG_TYPING_POLL_MS = 8000;
     const MSG_USUARIOS_CACHE_KEY = 'jk_msg_usuarios_cache_v1';
     const MSG_USUARIOS_CACHE_TTL_MS = 5 * 60 * 1000;
     const MSG_HISTORY_LIMIT = 50;
@@ -2094,6 +2094,41 @@
       } catch (_) {}
     }
 
+    function _msgMesclarPresencaUsuarios(contatos, usuariosOnline) {
+      const lista = Array.isArray(contatos) ? contatos : [];
+      const presencas = Array.isArray(usuariosOnline) ? usuariosOnline : [];
+      if (!lista.length || !presencas.length) return lista;
+      const porChave = new Map();
+      presencas.forEach(user => {
+        if (!user || typeof user !== 'object') return;
+        const chave = _msgChaveUsuario(user.username, user.client_id);
+        if (chave) porChave.set(chave, user);
+      });
+      if (!porChave.size) return lista;
+      return lista.map(user => {
+        if (!user || typeof user !== 'object') return user;
+        const presenca = porChave.get(_msgChaveUsuario(user.username, user.client_id));
+        if (!presenca) return user;
+        const onlineCount = Math.max(Number(user.online_count || 0), Number(presenca.online_count || 0));
+        const machines = Array.isArray(presenca.machines) && presenca.machines.length
+          ? presenca.machines
+          : (Array.isArray(user.machines) ? user.machines : []);
+        const allRecent = Array.isArray(presenca.all_recent_machines) && presenca.all_recent_machines.length
+          ? presenca.all_recent_machines
+          : (Array.isArray(user.all_recent_machines) ? user.all_recent_machines : []);
+        return Object.assign({}, user, {
+          online: !!(user.online || presenca.online || onlineCount > 0),
+          online_count: onlineCount,
+          last_seen_at: presenca.last_seen_at || user.last_seen_at || '',
+          seconds_since_seen: presenca.seconds_since_seen !== undefined && presenca.seconds_since_seen !== null
+            ? presenca.seconds_since_seen
+            : user.seconds_since_seen,
+          machines,
+          all_recent_machines: allRecent,
+        });
+      });
+    }
+
     function _msgUsuarioEstaOnline(user, isSelf = false) {
       if (isSelf) return true;
       if (!user || typeof user !== 'object') return false;
@@ -2825,38 +2860,21 @@
     }
 
     async function _msgBuscarMensagens() {
-      const [adminResult, chatResult] = await Promise.allSettled([
-        fetch('/api/user/messages', {
-          method: 'GET',
-          headers: _authHeaders(),
-          cache: 'no-store',
-        }).then(async resp => {
-          const data = await resp.json().catch(() => ({}));
-          if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao buscar mensagens.');
-          return data;
-        }),
-        fetch('/api/user/chat/unread', {
-          method: 'GET',
-          headers: _authHeaders(),
-          cache: 'no-store',
-        }).then(async resp => {
-          const data = await resp.json().catch(() => ({}));
-          if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao buscar chats.');
-          return data;
-        }),
-      ]);
-
-      const adminData = adminResult.status === 'fulfilled' ? adminResult.value : {};
-      const chatData = chatResult.status === 'fulfilled' ? chatResult.value : {};
-      if (adminResult.status === 'rejected' && chatResult.status === 'rejected') {
-        throw adminResult.reason || chatResult.reason || new Error('Erro ao buscar mensagens.');
+      const resp = await fetch('/api/user/messages', {
+        method: 'GET',
+        headers: _authHeaders(),
+        cache: 'no-store',
+      });
+      const adminData = await resp.json().catch(() => ({}));
+      if (!resp.ok || adminData.success === false) {
+        throw new Error(adminData.detail || adminData.message || 'Erro ao buscar mensagens.');
       }
 
       const adminMessages = (Array.isArray(adminData.messages) ? adminData.messages : []).map(item => ({
         ...item,
         type: 'admin',
       }));
-      const chatConversations = Array.isArray(chatData.conversations) ? chatData.conversations : [];
+      const chatConversations = Array.isArray(adminData.chat_conversations) ? adminData.chat_conversations : [];
       msgNaoLidasPorUsuario = new Map(chatConversations.map(item => [
         _msgChaveUsuario(item.username, item.client_id),
         {
@@ -2882,12 +2900,18 @@
         created_at: item.created_at,
         created_ts: item.created_ts,
       }));
-      const total = Number(adminData.unread_count || adminMessages.length || 0) + Number(chatData.unread_count || 0);
+      const summary = adminData.summary && typeof adminData.summary === 'object' ? adminData.summary : {};
+      const total = Number(
+        summary.unread_count !== undefined
+          ? summary.unread_count
+          : (Number(adminData.unread_count || adminMessages.length || 0) + Number(summary.user_chat_unread_count || 0))
+      );
       _msgSetBadge(total);
       return [...chatMessages, ...adminMessages];
     }
 
     async function _msgBuscarUsuariosOnline() {
+      let contatosAutorizados = null;
       try {
         const resp = await fetch('/api/user/chat/contacts', {
           method: 'GET',
@@ -2896,23 +2920,48 @@
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
-          const users = data.users.filter(user => user && user.active !== false);
+          contatosAutorizados = data.users.filter(user => user && user.active !== false);
           msgContatosAutoritativos = true;
-          _msgSalvarUsuariosCache(users);
-          return users;
         }
       } catch (_) {}
 
       if (typeof window.jkBuscarUsuariosOnline === 'function') {
         try {
-          const data = await window.jkBuscarUsuariosOnline();
+          const data = await window.jkBuscarUsuariosOnline({ realtimeOnly: !!contatosAutorizados });
           if (data && data.success !== false && Array.isArray(data.users)) {
             const users = data.users.filter(user => user && user.active !== false);
+            if (contatosAutorizados) {
+              const contatosComPresenca = _msgMesclarPresencaUsuarios(contatosAutorizados, users);
+              msgContatosAutoritativos = true;
+              _msgSalvarUsuariosCache(contatosComPresenca);
+              return contatosComPresenca;
+            }
             msgContatosAutoritativos = false;
             _msgSalvarUsuariosCache(users);
             return users;
           }
         } catch (_) {}
+      }
+
+      if (contatosAutorizados) {
+        try {
+          const resp = await fetch('/api/admin/users/online', {
+            method: 'GET',
+            headers: _authHeaders(),
+            cache: 'no-store',
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
+            const users = data.users.filter(user => user && user.active !== false);
+            const contatosComPresenca = _msgMesclarPresencaUsuarios(contatosAutorizados, users);
+            msgContatosAutoritativos = true;
+            _msgSalvarUsuariosCache(contatosComPresenca);
+            return contatosComPresenca;
+          }
+        } catch (_) {}
+        msgContatosAutoritativos = true;
+        _msgSalvarUsuariosCache(contatosAutorizados);
+        return contatosAutorizados;
       }
 
       try {

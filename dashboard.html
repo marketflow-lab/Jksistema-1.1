@@ -1299,7 +1299,9 @@
 
     preencherSidebarUsuario();
     atualizarMaquinasOnlineSidebar();
-    setInterval(atualizarMaquinasOnlineSidebar, 60000);
+    setInterval(() => {
+        if (document.visibilityState === 'visible') atualizarMaquinasOnlineSidebar();
+    }, 90000);
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') atualizarMaquinasOnlineSidebar();
     });

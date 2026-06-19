@@ -2807,6 +2807,10 @@
             const unsubscribe = await window.jkAssinarPresencaUsuarios((payload) => {
                 onlineRealtimeDisponivel = true;
                 onlineRealtimePayload = mesclarPayloadOnlineRealtime(payload);
+                if (document.visibilityState === 'hidden') {
+                    aplicarPayloadOnlineUsuarios(onlineRealtimePayload);
+                    return;
+                }
                 carregarOnlineUsuariosCompleto().catch(() => aplicarPayloadOnlineUsuarios(onlineRealtimePayload));
             }, () => {
                 onlineRealtimeDisponivel = false;
@@ -3034,7 +3038,7 @@
     carregarUsuarios();
     if (usuarioPodeVerPresenca) {
         setInterval(() => {
-            if (!onlineRealtimeDisponivel) carregarOnlineUsuarios();
+            if (document.visibilityState === 'visible' && !onlineRealtimeDisponivel) carregarOnlineUsuarios();
         }, 10 * 60 * 1000);
     }
 </script>

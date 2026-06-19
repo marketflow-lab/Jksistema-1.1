@@ -754,7 +754,7 @@ function obterAuthHeaders(extra) {
     window.__jkMachinePresenceInit = true;
 
     const FIREBASE_SDK_VERSION = '10.12.5';
-    const FALLBACK_HEARTBEAT_INTERVAL_MS = 45 * 1000;
+    const FALLBACK_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
     const RTDB_SESSION_ENDPOINT = '/api/firebase/realtime-presence/session';
     let ultimoHeartbeat = 0;
     let timer = null;
@@ -782,7 +782,7 @@ function obterAuthHeaders(extra) {
         : null;
     const PRESENCE_DATA_CHANNEL = 'machine-presence-data';
     const PRESENCE_REQUEST_CHANNEL = 'machine-presence-request';
-    const PRESENCE_CACHE_TTL_MS = 60 * 1000;
+    const PRESENCE_CACHE_TTL_MS = 90 * 1000;
     let tentativaLiderPresencaTimer = null;
     let cacheMaquinasOnline = null;
     let cacheMaquinasOnlineAt = 0;
@@ -1271,7 +1271,7 @@ function obterAuthHeaders(extra) {
             return null;
         }
         const agora = Date.now();
-        if (motivo !== 'manual' && agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
+        if (agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
         ultimoHeartbeat = agora;
         emExecucao = true;
         try {
@@ -1484,13 +1484,20 @@ function obterAuthHeaders(extra) {
         if (!obterToken() || tokenSessaoExpirado()) return null;
         if (!liderPresenca()) {
             agendarTentativaLiderPresenca();
-            return aguardarPresencaLider('users');
+            const payload = await aguardarPresencaLider('users');
+            return options.realtimeOnly && !(payload && payload.realtime) ? null : payload;
         }
-        if (!options.force && cachePresencaValido(cacheUsuariosOnlineAt)) {
+        if (!options.force && cachePresencaValido(cacheUsuariosOnlineAt) && (!options.realtimeOnly || (cacheUsuariosOnline && cacheUsuariosOnline.realtime))) {
             return cacheUsuariosOnline;
         }
         if (usuariosOnlinePromise) return usuariosOnlinePromise;
         usuariosOnlinePromise = (async () => {
+            if (options.realtimeOnly) {
+                if (rtdbState.disabled) return null;
+                const realtimeData = await buscarUsuariosOnlineRtdb().catch(() => null);
+                if (realtimeData) publicarPresenca('users', realtimeData);
+                return realtimeData;
+            }
             const realtimePromise = !rtdbState.disabled
                 ? buscarUsuariosOnlineRtdb().catch(() => null)
                 : Promise.resolve(null);
@@ -3614,6 +3621,7 @@ function verificarSessao() {
     window.__jkAdminUserMessagesInit = true;
 
     const FALLBACK_POLL_MS = 60 * 60 * 1000;
+    const ADMIN_MESSAGES_CACHE_MS = 2 * 60 * 1000;
     let buscando = false;
     let mensagemAtualId = '';
     let filaMensagensAdmin = [];
@@ -3621,6 +3629,8 @@ function verificarSessao() {
     let streamConectado = false;
     let fallbackTimer = null;
     let fallbackLiderTimer = null;
+    let ultimasMensagensAdmin = [];
+    let ultimasMensagensAdminAt = 0;
     const ADMIN_MESSAGES_CHANNEL = 'admin-user-messages';
     const adminMessagesLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader(ADMIN_MESSAGES_CHANNEL, { ttlMs: 60000 })
@@ -3634,6 +3644,19 @@ function verificarSessao() {
         try {
             window.jkTabCoordinator?.broadcast(ADMIN_MESSAGES_CHANNEL, { type, payload });
         } catch (_err) {}
+    }
+
+    function cacheMensagensAdminValido() {
+        return Date.now() - ultimasMensagensAdminAt <= ADMIN_MESSAGES_CACHE_MS;
+    }
+
+    function salvarCacheMensagensAdmin(mensagens) {
+        ultimasMensagensAdmin = Array.isArray(mensagens) ? mensagens.slice(0, 10) : [];
+        ultimasMensagensAdminAt = Date.now();
+    }
+
+    function publicarCacheMensagensAdmin() {
+        publicarMensagensAdmin('messages', ultimasMensagensAdmin);
     }
 
     function agendarChecagemLiderMensagens(delayMs = 30000) {
@@ -3660,7 +3683,11 @@ function verificarSessao() {
             } else if (evento.type === 'messages' && Array.isArray(evento.payload)) {
                 evento.payload.forEach(enfileirarMensagem);
             } else if (evento.type === 'request' && liderMensagensAdmin()) {
-                buscarMensagensAdmin().catch(() => {});
+                if (cacheMensagensAdminValido()) {
+                    publicarCacheMensagensAdmin();
+                } else {
+                    buscarMensagensAdmin().catch(() => {});
+                }
             }
         });
     } catch (_err) {}
@@ -3764,6 +3791,8 @@ function verificarSessao() {
                 headers: headersAuth(),
                 cache: 'no-store'
             });
+            salvarCacheMensagensAdmin(ultimasMensagensAdmin.filter(item => idMensagem(item) !== id));
+            publicarCacheMensagensAdmin();
         } catch (_err) {}
     }
 
@@ -3830,9 +3859,12 @@ function verificarSessao() {
                 cache: 'no-store'
             });
             const data = await resp.json().catch(() => ({}));
-            if (resp.ok && data.success !== false && Array.isArray(data.messages) && data.messages.length) {
-                data.messages.forEach(enfileirarMensagem);
-                publicarMensagensAdmin('messages', data.messages);
+            if (resp.ok && data.success !== false && Array.isArray(data.messages)) {
+                salvarCacheMensagensAdmin(data.messages);
+                if (data.messages.length) {
+                    data.messages.forEach(enfileirarMensagem);
+                    publicarMensagensAdmin('messages', data.messages);
+                }
             }
         } catch (_err) {
         } finally {
@@ -3885,6 +3917,9 @@ function verificarSessao() {
                 limparFallbackMensagens();
                 try {
                     const msg = JSON.parse(event.data || '{}');
+                    salvarCacheMensagensAdmin([msg].concat(
+                        ultimasMensagensAdmin.filter(item => idMensagem(item) !== idMensagem(msg))
+                    ));
                     enfileirarMensagem(msg);
                     publicarMensagensAdmin('message', msg);
                 } catch (_err) {}

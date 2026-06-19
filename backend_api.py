@@ -26354,13 +26354,13 @@ def _user_status_get(username: str, client_id: str) -> dict:
     status = _user_status_firebase_get(username, client_id)
     if status is not None:
         status["_trusted"] = True
-        _backend_cache_set(cache_key, status, ttl_seconds=30)
+        _backend_cache_set(cache_key, status, ttl_seconds=60)
         return status
     local = _user_status_local_get(username, client_id)
     if local is not None:
         local["_source"] = "local"
         local["_trusted"] = not _firebase_live_features_ativas()
-        _backend_cache_set(cache_key, local, ttl_seconds=15)
+        _backend_cache_set(cache_key, local, ttl_seconds=30)
         return local
     rebuilt = _user_status_rebuild_local(username, client_id)
     rebuilt["_source"] = "rebuilt"
@@ -31668,12 +31668,20 @@ def _registrar_login_maquina(username: str, client_id: str, machine_id: str, req
     return machine_final, meta
 
 
+def _machine_presence_write_interval_seconds() -> int:
+    try:
+        valor = int(float(os.getenv("JK_MACHINE_PRESENCE_WRITE_INTERVAL_SECONDS", "300") or 300))
+        return max(60, min(valor, 1800))
+    except Exception:
+        return 300
+
+
 def _machine_presence_timeout_seconds() -> int:
     try:
-        valor = int(float(os.getenv("JK_MACHINE_ONLINE_TIMEOUT_SECONDS", "60") or 60))
-        return max(45, min(valor, 3600))
+        valor = int(float(os.getenv("JK_MACHINE_ONLINE_TIMEOUT_SECONDS", "360") or 360))
+        return max(_machine_presence_write_interval_seconds() + 30, min(valor, 3600))
     except Exception:
-        return 60
+        return 360
 
 
 def _machine_presence_doc_id(username: str, client_id: str, machine_id: str) -> str:
@@ -31803,7 +31811,7 @@ def _machine_presence_auto_touch(username: str, client_id: str, request: Optiona
             return
         doc_id = _machine_presence_doc_id(username_norm, client_norm, machine_final)
         now = time.time()
-        min_interval = max(20, min(int(_machine_presence_timeout_seconds() / 2), 45))
+        min_interval = _machine_presence_write_interval_seconds()
         with MACHINE_PRESENCE_LOCK:
             last_touch = float(MACHINE_PRESENCE_AUTO_TOUCH_LAST.get(doc_id) or 0)
             if now - last_touch < min_interval:
@@ -31902,7 +31910,7 @@ def _machine_presence_list_firebase(username: str, client_id: str) -> list[dict]
             if str(data.get("client_id") or "").strip() != client_norm:
                 continue
             registros.append(data)
-        _backend_cache_set(cache_key, registros, ttl_seconds=30)
+        _backend_cache_set(cache_key, registros, ttl_seconds=90)
         return registros
     except Exception as exc:
         logger.warning("[MACHINES] Falha ao listar presenca no Firebase: %s", exc)
@@ -31923,7 +31931,7 @@ def _machine_presence_list_firebase_client(client_id: str) -> list[dict]:
             return []
         coll = db.collection(_firebase_presence_collection_name())
         registros = [(snap.to_dict() or {}) for snap in coll.where("client_id", "==", client_norm).stream()]
-        _backend_cache_set(cache_key, registros, ttl_seconds=30)
+        _backend_cache_set(cache_key, registros, ttl_seconds=90)
         return registros
     except Exception as exc:
         logger.warning("[MACHINES] Falha ao listar presenca do cliente no Firebase: %s", exc)
@@ -32240,7 +32248,7 @@ def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
                 if isinstance(usuario, dict) and bool(usuario.get("active", True))
                 and _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm
             ]
-        _backend_cache_set(cache_key, usuarios, ttl_seconds=30)
+        _backend_cache_set(cache_key, usuarios, ttl_seconds=90)
     payload = _montar_payload_usuarios_online(
         usuarios,
         include_admin_fields=False,
@@ -32439,15 +32447,22 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
 def user_admin_messages(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     status = _user_status_get(sessao["username"], sessao["client_id"])
+    chat_unread_count = int(status.get("user_chat_unread_count") or 0)
+    chat_conversations = (
+        _user_chat_unread_conversations(sessao["username"], sessao["client_id"], include_firebase=False)
+        if chat_unread_count > 0
+        else []
+    )
     if bool(status.get("_trusted")) and int(status.get("admin_unread_count") or 0) <= 0:
         return {
             "success": True,
             "messages": [],
+            "chat_conversations": chat_conversations,
             "unread_count": 0,
             "summary": {
                 "unread_count": int(status.get("unread_count") or 0),
                 "admin_unread_count": int(status.get("admin_unread_count") or 0),
-                "user_chat_unread_count": int(status.get("user_chat_unread_count") or 0),
+                "user_chat_unread_count": chat_unread_count,
                 "last_message_at": status.get("last_message_at") or "",
                 "last_message_ts": int(status.get("last_message_ts") or 0),
                 "source": status.get("_source") or "",
@@ -32476,11 +32491,12 @@ def user_admin_messages(authorization: Optional[str] = Header(default=None)):
     return {
         "success": True,
         "messages": mensagens[:10],
+        "chat_conversations": chat_conversations,
         "unread_count": len(mensagens),
         "summary": {
             "unread_count": int(status.get("unread_count") or len(mensagens)),
             "admin_unread_count": int(status.get("admin_unread_count") or len(mensagens)),
-            "user_chat_unread_count": int(status.get("user_chat_unread_count") or 0),
+            "user_chat_unread_count": chat_unread_count,
             "last_message_at": status.get("last_message_at") or "",
             "last_message_ts": int(status.get("last_message_ts") or 0),
             "source": status.get("_source") or "",
