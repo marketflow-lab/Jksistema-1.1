@@ -11,6 +11,7 @@ class AdminUserUpsertRequest(BaseModel):
     password: Optional[str] = None
     name: str = ""
     email: str = ""
+    empresa: str = ""
     client_id: str = "default"
     permissions: dict = {}
     active: bool = True

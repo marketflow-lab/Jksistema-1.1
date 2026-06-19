@@ -23,6 +23,8 @@ class LegacyRouteSpec:
 LEGACY_IA_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("POST", "/api/ia/agente/perguntas/query", "ia_agent_perguntas_query"),
     LegacyRouteSpec("POST", "/api/ia/agent/perguntas/query", "ia_agent_perguntas_query"),
+    LegacyRouteSpec("GET", "/api/ia/secrets/status", "ia_secrets_status"),
+    LegacyRouteSpec("POST", "/api/ia/secrets/provisionar", "ia_secrets_provisionar"),
     LegacyRouteSpec("POST", "/api/ia/chat", "ia_chat"),
     LegacyRouteSpec("GET", "/api/ia/modelos", "ia_listar_modelos"),
     LegacyRouteSpec("POST", "/api/ia/conversas/salvar", "ia_salvar_conversa"),

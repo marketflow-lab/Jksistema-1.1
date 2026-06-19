@@ -666,6 +666,89 @@ function obterAuthHeaders(extra) {
     return headers;
 }
 
+(function initIaSecretsProvisioning() {
+    if (window.__jkIaSecretsProvisioningInit) return;
+    window.__jkIaSecretsProvisioningInit = true;
+
+    const STORAGE_KEY = 'jk-ia-secrets-provision-v1';
+    const SUCCESS_INTERVAL_MS = 12 * 60 * 60 * 1000;
+    const RETRY_INTERVAL_MS = 15 * 60 * 1000;
+    let emExecucao = false;
+
+    function lerEstado() {
+        try {
+            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {};
+        } catch (_err) {
+            return {};
+        }
+    }
+
+    function salvarEstado(patch) {
+        try {
+            const atual = lerEstado();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.assign({}, atual, patch || {})));
+        } catch (_err) {}
+    }
+
+    function podeTentar() {
+        if (!obterToken()) return false;
+        const estado = lerEstado();
+        const agora = Date.now();
+        if (Number(estado.successAt || 0) && agora - Number(estado.successAt || 0) < SUCCESS_INTERVAL_MS) return false;
+        if (Number(estado.lastAttemptAt || 0) && agora - Number(estado.lastAttemptAt || 0) < RETRY_INTERVAL_MS) return false;
+        return true;
+    }
+
+    async function provisionar() {
+        if (emExecucao || !podeTentar()) return;
+        const leader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
+            ? window.jkTabCoordinator.createLeader('ia-secrets-provisioning', { ttlMs: 60000 })
+            : null;
+        if (leader && !leader.isLeader()) return;
+        emExecucao = true;
+        salvarEstado({ lastAttemptAt: Date.now() });
+        try {
+            const resp = await fetch('/api/ia/secrets/provisionar', {
+                method: 'POST',
+                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: '{}',
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && data.success) {
+                salvarEstado({
+                    successAt: Date.now(),
+                    version: data.version || '',
+                    lastError: ''
+                });
+            } else {
+                salvarEstado({
+                    lastErrorAt: Date.now(),
+                    lastError: String((data && (data.message || data.detail)) || 'Provisionamento indisponivel.')
+                });
+            }
+        } catch (err) {
+            salvarEstado({
+                lastErrorAt: Date.now(),
+                lastError: String((err && err.message) || err || 'Falha no provisionamento.')
+            });
+        } finally {
+            emExecucao = false;
+            try { leader?.release?.(); } catch (_err) {}
+        }
+    }
+
+    function iniciar() {
+        setTimeout(provisionar, 1200);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+    } else {
+        iniciar();
+    }
+})();
+
 (function initMachinePresenceHeartbeat() {
     if (window.__jkMachinePresenceInit) return;
     window.__jkMachinePresenceInit = true;

@@ -42,7 +42,7 @@ Se o índice ainda estiver vazio, a IA continua funcionando com o contexto da te
 
 ## Modo opcional: PostgreSQL + pgvector + Ollama
 
-Esse modo continua disponível para Cloud SQL ou para instalações locais que já usam PostgreSQL.
+Esse modo continua disponivel para instalacoes locais que ja usam PostgreSQL.
 
 Fluxo PostgreSQL:
 

@@ -1210,6 +1210,7 @@
     let msgTypingEnviado = false;
     let msgUsuariosCache = [];
     let msgUsuariosCacheTs = 0;
+    let msgContatosAutoritativos = false;
     let msgMensagensCache = [];
     let msgHistoricoCache = new Map();
     let msgCallRinging = null;
@@ -2742,7 +2743,9 @@
       if (!el) return;
       const listaBase = (Array.isArray(usuarios) ? usuarios : []).filter(user => user && user.username);
       const vistos = new Set(listaBase.map(user => _msgChaveUsuario(user.username, user.client_id)));
-      const extrasNaoLidas = Array.from(msgNaoLidasPorUsuario.values()).filter(item => item && item.username && !vistos.has(_msgChaveUsuario(item.username, item.client_id)));
+      const extrasNaoLidas = msgContatosAutoritativos
+        ? []
+        : Array.from(msgNaoLidasPorUsuario.values()).filter(item => item && item.username && !vistos.has(_msgChaveUsuario(item.username, item.client_id)));
       const lista = listaBase.concat(extrasNaoLidas.map(item => ({
         username: item.username,
         client_id: item.client_id,
@@ -2891,6 +2894,7 @@
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
           const users = data.users.filter(user => user && user.active !== false);
+          msgContatosAutoritativos = true;
           _msgSalvarUsuariosCache(users);
           return users;
         }
@@ -2901,6 +2905,7 @@
           const data = await window.jkBuscarUsuariosOnline();
           if (data && data.success !== false && Array.isArray(data.users)) {
             const users = data.users.filter(user => user && user.active !== false);
+            msgContatosAutoritativos = false;
             _msgSalvarUsuariosCache(users);
             return users;
           }
@@ -2916,6 +2921,7 @@
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data && data.success !== false && Array.isArray(data.users)) {
           const users = data.users.filter(user => user && user.active !== false);
+          msgContatosAutoritativos = false;
           _msgSalvarUsuariosCache(users);
           return users;
         }
@@ -2926,6 +2932,7 @@
         const machines = Array.isArray(data && data.machines) ? data.machines : [];
         if (machines.length) {
           const userData = _msgUserData();
+          msgContatosAutoritativos = false;
           return [{
             username: _msgUsernameAtual() || 'usuario',
             name: userData.name || userData.username || 'Usuario atual',
@@ -2937,6 +2944,7 @@
         }
       }
 
+      msgContatosAutoritativos = false;
       return [];
     }
 
@@ -2957,7 +2965,7 @@
         const usersPromise = _msgBuscarUsuariosOnline()
           .then(usuarios => {
             const lista = Array.isArray(usuarios) ? usuarios : [];
-            if (lista.length || !usuariosCache.length) _msgRenderUsuarios(lista);
+            if (msgContatosAutoritativos || lista.length || !usuariosCache.length) _msgRenderUsuarios(lista);
             return lista;
           });
         const [msgsResult, usersResult] = await Promise.allSettled([msgsPromise, usersPromise]);

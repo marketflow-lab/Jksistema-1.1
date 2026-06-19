@@ -135,6 +135,15 @@ from backend.services.env_config import (
     _resolver_redirect_uri_publica,
     configure_env_context,
 )
+from backend.services.secure_credentials import (
+    delete_secret as _secure_delete_secret,
+    read_any_secret as _secure_read_any_secret,
+    read_secret as _secure_read_secret,
+    secrets_status as _secure_secrets_status,
+    secure_store_available as _secure_store_available,
+    write_secret as _secure_write_secret,
+    write_secrets_bundle as _secure_write_secrets_bundle,
+)
 from backend.services.favoritos import (
     _favoritos_arquivo_planilhas_lojas,
     _favoritos_arquivo_skus_ocultos,
@@ -568,6 +577,18 @@ IA_AGENT_API_KEY_ENV_KEYS = (
     "GOOGLE_API_KEY",
     "GEMINI_API_KEY",
 )
+IA_SECRETS_PROVISIONING_URL_ENV_KEYS = (
+    "JK_SECRETS_PROVISIONING_URL",
+    "IA_SECRETS_PROVISIONING_URL",
+)
+IA_SECRETS_PROVISIONING_DOWNLOAD_TOKEN_ENV_KEYS = (
+    "JK_SECRETS_PROVISIONING_DOWNLOAD_TOKEN",
+    "IA_SECRETS_PROVISIONING_DOWNLOAD_TOKEN",
+)
+IA_SECRETS_PROVISIONING_ADMIN_TOKEN_ENV_KEYS = (
+    "JK_SECRETS_PROVISIONING_ADMIN_TOKEN",
+    "IA_SECRETS_PROVISIONING_ADMIN_TOKEN",
+)
 VERTEX_AI_API_KEY_ALLOW_ENV_KEYS = (
     "VERTEX_AI_ALLOW_API_KEY",
     "IA_VERTEX_ALLOW_API_KEY",
@@ -605,7 +626,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.81"
+VERSAO_MINIMA_APP_PADRAO = "1.0.82"
 
 
 def versao_minima_app_backend() -> str:
@@ -12263,8 +12284,6 @@ def _ia_rag_backend_configurado() -> str:
         "local_sqlite": "local",
         "pg": "postgres",
         "postgresql": "postgres",
-        "cloudsql": "postgres",
-        "cloud_sql": "postgres",
     }
     return aliases.get(valor, valor if valor in {"auto", "local", "postgres"} else "auto")
 
@@ -13775,6 +13794,11 @@ def _obter_openai_api_key() -> str:
             # Ignora arquivo invalido e segue fallback.
             pass
 
+    secure_key = _secure_read_secret("OPENAI_API_KEY")
+    if secure_key:
+        os.environ["OPENAI_API_KEY"] = secure_key
+        return secure_key
+
     key_file = os.path.join(PASTA_INFO, "openai_api_key.txt")
     if os.path.exists(key_file):
         try:
@@ -13813,6 +13837,11 @@ def _obter_deepseek_api_key() -> str:
                             return candidate
         except Exception:
             pass
+    secure_key = _secure_read_secret("DEEPSEEK_API_KEY")
+    if secure_key:
+        os.environ["DEEPSEEK_API_KEY"] = secure_key
+        return secure_key
+
     key_file = os.path.join(PASTA_INFO, "deepseek_api_key.txt")
     if os.path.exists(key_file):
         try:
@@ -13854,6 +13883,11 @@ def _obter_gemini_api_key() -> str:
         except Exception:
             pass
 
+    secure_key = _secure_read_secret("GEMINI_API_KEY")
+    if secure_key:
+        os.environ["GEMINI_API_KEY"] = secure_key
+        return secure_key
+
     key_file = os.path.join(PASTA_INFO, "gemini_api_key.txt")
     if os.path.exists(key_file):
         try:
@@ -13882,6 +13916,10 @@ def _salvar_ia_provider_api_key(provider: str, valor: str | None, limpar: bool =
                 os.remove(key_file)
         except Exception:
             logger.exception("[CONFIG] Falha ao limpar chave %s", provider_norm)
+        try:
+            _secure_delete_secret(env_key)
+        except Exception:
+            logger.exception("[CONFIG] Falha ao limpar chave %s no cofre local", provider_norm)
         os.environ.pop(env_key, None)
         return
 
@@ -13889,9 +13927,21 @@ def _salvar_ia_provider_api_key(provider: str, valor: str | None, limpar: bool =
     if not api_key:
         return
 
-    os.makedirs(PASTA_INFO, exist_ok=True)
-    with open(key_file, "w", encoding="utf-8") as f:
-        f.write(api_key)
+    gravou_no_cofre = False
+    try:
+        gravou_no_cofre = bool(_secure_write_secret(env_key, api_key))
+    except Exception:
+        logger.exception("[CONFIG] Falha ao gravar chave %s no cofre local", provider_norm)
+    if gravou_no_cofre:
+        try:
+            if os.path.exists(key_file):
+                os.remove(key_file)
+        except Exception:
+            logger.exception("[CONFIG] Falha ao remover arquivo legado da chave %s", provider_norm)
+    else:
+        os.makedirs(PASTA_INFO, exist_ok=True)
+        with open(key_file, "w", encoding="utf-8") as f:
+            f.write(api_key)
     os.environ[env_key] = api_key
 
 
@@ -14223,6 +14273,10 @@ def _vertex_ai_agent_api_key() -> str:
     api_key = _env_config_value(*IA_AGENT_API_KEY_ENV_KEYS, cache_as="GEMINI_AGENT_API_KEY")
     if api_key:
         return api_key
+    api_key = _secure_read_any_secret(IA_AGENT_API_KEY_ENV_KEYS)
+    if api_key:
+        os.environ["GEMINI_AGENT_API_KEY"] = api_key
+        return api_key
     return _vertex_ai_agent_api_key_arquivo()
 
 
@@ -14233,16 +14287,182 @@ def _salvar_vertex_agent_api_key(valor: str | None, limpar: bool = False) -> Non
                 os.remove(ARQUIVO_VERTEX_AGENT_API_KEY)
         except Exception:
             logger.exception("Erro ao remover chave do agente Vertex")
+        try:
+            _secure_delete_secret("GEMINI_AGENT_API_KEY")
+        except Exception:
+            logger.exception("Erro ao remover chave do agente Vertex do cofre local")
         for key in IA_AGENT_API_KEY_ENV_KEYS:
             os.environ.pop(key, None)
         return
     api_key = str(valor or "").strip()
     if not api_key:
         return
-    os.makedirs(os.path.dirname(ARQUIVO_VERTEX_AGENT_API_KEY), exist_ok=True)
-    with open(ARQUIVO_VERTEX_AGENT_API_KEY, "w", encoding="utf-8") as f:
-        f.write(api_key)
+    gravou_no_cofre = False
+    try:
+        gravou_no_cofre = bool(_secure_write_secret("GEMINI_AGENT_API_KEY", api_key))
+    except Exception:
+        logger.exception("Erro ao gravar chave do agente Vertex no cofre local")
+    if gravou_no_cofre:
+        try:
+            if os.path.exists(ARQUIVO_VERTEX_AGENT_API_KEY):
+                os.remove(ARQUIVO_VERTEX_AGENT_API_KEY)
+        except Exception:
+            logger.exception("Erro ao remover arquivo legado da chave do agente Vertex")
+    else:
+        os.makedirs(os.path.dirname(ARQUIVO_VERTEX_AGENT_API_KEY), exist_ok=True)
+        with open(ARQUIVO_VERTEX_AGENT_API_KEY, "w", encoding="utf-8") as f:
+            f.write(api_key)
     os.environ["GEMINI_AGENT_API_KEY"] = api_key
+
+
+def _ia_secrets_provisioning_url(path: str = "") -> str:
+    base = _env_config_value(*IA_SECRETS_PROVISIONING_URL_ENV_KEYS).strip()
+    if not base:
+        return ""
+    base = base.rstrip("/")
+    path_norm = "/" + str(path or "").strip().strip("/")
+    if path_norm == "/":
+        return base
+    if base.endswith(path_norm):
+        return base
+    return base + path_norm
+
+
+def _ia_secrets_provisioning_download_token() -> str:
+    return _env_config_value(*IA_SECRETS_PROVISIONING_DOWNLOAD_TOKEN_ENV_KEYS).strip()
+
+
+def _ia_secrets_provisioning_admin_token() -> str:
+    return _env_config_value(*IA_SECRETS_PROVISIONING_ADMIN_TOKEN_ENV_KEYS).strip()
+
+
+def _ia_secrets_bundle_atual() -> dict:
+    bundle = {
+        "OPENAI_API_KEY": _obter_openai_api_key(),
+        "DEEPSEEK_API_KEY": _obter_deepseek_api_key(),
+        "GEMINI_API_KEY": _obter_gemini_api_key(),
+        "GEMINI_AGENT_API_KEY": _vertex_ai_agent_api_key(),
+        "GROQ_API_KEY": _secure_read_secret("GROQ_API_KEY"),
+    }
+    return {k: v for k, v in bundle.items() if str(v or "").strip()}
+
+
+def _ia_secrets_publicar_no_provisionador_se_configurado() -> dict:
+    url = _ia_secrets_provisioning_url("/admin/secrets")
+    admin_token = _ia_secrets_provisioning_admin_token()
+    if not url or not admin_token:
+        return {"success": False, "configured": False, "message": "Provisionador de chaves nao configurado."}
+    bundle = _ia_secrets_bundle_atual()
+    if not bundle:
+        return {"success": False, "configured": True, "message": "Nenhuma chave de IA configurada para publicar."}
+    headers = {
+        "Authorization": f"Bearer {admin_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(url, headers=headers, json={"secrets": bundle}, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").lower().startswith("application/json") else {}
+    except Exception as exc:
+        logger.warning("[IA-SECRETS] Falha ao publicar chaves no provisionador: %s", exc)
+        return {"success": False, "configured": True, "message": "Falha ao publicar chaves no provisionador."}
+    if resp.status_code >= 400 or data.get("success") is False:
+        logger.warning("[IA-SECRETS] Provisionador recusou publicacao: status=%s", resp.status_code)
+        return {"success": False, "configured": True, "message": "Provisionador recusou a publicacao das chaves."}
+    return {
+        "success": True,
+        "configured": True,
+        "version": str(data.get("version") or "").strip(),
+    }
+
+
+def _ia_secrets_validar_sessao_ativa(sessao: dict) -> None:
+    username = str((sessao or {}).get("username") or "").strip().lower()
+    client_id = str((sessao or {}).get("client_id") or "").strip()
+    if not username or not client_id:
+        raise HTTPException(status_code=401, detail="Sessao invalida. Faca login novamente.")
+    usuarios, _ws, _headers = carregar_usuarios_sheets()
+    usuario = usuarios.get(username) if isinstance(usuarios, dict) else None
+    if not isinstance(usuario, dict):
+        raise HTTPException(status_code=403, detail="Usuario nao encontrado para provisionar chaves.")
+    usuario_client = str(usuario.get("client_id") or client_id or "default").strip() or "default"
+    if usuario_client != client_id:
+        raise HTTPException(status_code=403, detail="Sessao invalida para este cliente.")
+    if not _login_usuario_ativo(usuario):
+        raise HTTPException(status_code=403, detail="Usuario inativo nao pode baixar chaves de IA.")
+    validade_ok, msg_validade = _login_validade_ok(usuario)
+    if not validade_ok:
+        raise HTTPException(status_code=403, detail=msg_validade or "Acesso expirado ou invalido.")
+
+
+def _ia_secrets_provisionar_cofre_local(sessao: dict) -> dict:
+    if not _secure_store_available():
+        return {
+            "success": False,
+            "configured": False,
+            "message": "Cofre local do Windows indisponivel neste ambiente.",
+            "local_store": _secure_secrets_status(),
+        }
+    url = _ia_secrets_provisioning_url("/download")
+    if not url:
+        return {
+            "success": False,
+            "configured": False,
+            "message": "Servidor de provisionamento de chaves nao configurado.",
+            "local_store": _secure_secrets_status(),
+        }
+    headers = {"Content-Type": "application/json"}
+    download_token = _ia_secrets_provisioning_download_token()
+    if download_token:
+        headers["Authorization"] = f"Bearer {download_token}"
+        headers["X-JK-Provisioning-Token"] = download_token
+    payload = {
+        "username": str((sessao or {}).get("username") or "").strip().lower(),
+        "client_id": str((sessao or {}).get("client_id") or "").strip(),
+        "machine_id": str((sessao or {}).get("machine_id") or "").strip(),
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        data = resp.json() if resp.headers.get("content-type", "").lower().startswith("application/json") else {}
+    except Exception as exc:
+        logger.warning("[IA-SECRETS] Falha ao baixar chaves do provisionador: %s", exc)
+        return {
+            "success": False,
+            "configured": True,
+            "message": "Nao foi possivel baixar as chaves de IA agora.",
+            "local_store": _secure_secrets_status(),
+        }
+    if resp.status_code >= 400 or data.get("success") is False:
+        logger.warning("[IA-SECRETS] Provisionador recusou download: status=%s", resp.status_code)
+        return {
+            "success": False,
+            "configured": True,
+            "message": str(data.get("message") or "Provisionador recusou o download das chaves."),
+            "local_store": _secure_secrets_status(),
+        }
+    secrets_payload = data.get("secrets")
+    if not isinstance(secrets_payload, dict):
+        secrets_payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if not secrets_payload:
+        return {
+            "success": False,
+            "configured": True,
+            "message": "Provisionador nao retornou chaves para gravar.",
+            "local_store": _secure_secrets_status(),
+        }
+    version = str(data.get("version") or data.get("etag") or "").strip()
+    saved = _secure_write_secrets_bundle(secrets_payload, version=version, source="provisionador")
+    for key in saved.get("saved") or []:
+        value = _secure_read_secret(key)
+        if value:
+            os.environ[str(key)] = value
+    return {
+        "success": bool(saved.get("saved")),
+        "configured": True,
+        "saved": saved.get("saved") or [],
+        "skipped": saved.get("skipped") or [],
+        "version": version,
+        "local_store": _secure_secrets_status(),
+    }
 
 
 def _vertex_ai_credentials_file() -> str:
@@ -21078,6 +21298,29 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+
+async def ia_secrets_status(client_id: str = Depends(get_tenant_id)):
+    """Retorna apenas o estado do cofre local, sem expor valores sensiveis."""
+    return {
+        "success": True,
+        "client_id": client_id,
+        "provisioning_configured": bool(_ia_secrets_provisioning_url("/download")),
+        "local_store": _secure_secrets_status(),
+    }
+
+
+async def ia_secrets_provisionar(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _payload_sessao_por_authorization(authorization)
+    if str(sessao.get("client_id") or "").strip() != str(client_id or "").strip():
+        raise HTTPException(status_code=403, detail="Sessao invalida para este cliente.")
+    _ia_secrets_validar_sessao_ativa(sessao)
+    return await asyncio.to_thread(_ia_secrets_provisionar_cofre_local, sessao)
+
+
 def ia_agent_perguntas_query(payload: IAAgentQueryRequest, request: Request):
     _ia_agent_endpoint_autorizar(request)
     metodo = str(payload.classMethod or "query").strip() or "query"
@@ -23995,6 +24238,23 @@ def _normalizar_email(valor) -> str:
     return str(valor or "").strip().lower()
 
 
+def _normalizar_empresa(valor) -> str:
+    return re.sub(r"\s+", " ", str(valor or "").strip())
+
+
+def _empresa_chat_key(valor) -> str:
+    texto = unicodedata.normalize("NFKD", _normalizar_empresa(valor))
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", texto).strip().casefold()
+
+
+def _pydantic_campo_enviado(modelo, campo: str) -> bool:
+    enviados = getattr(modelo, "model_fields_set", None)
+    if enviados is None:
+        enviados = getattr(modelo, "__fields_set__", set())
+    return campo in (enviados or set())
+
+
 def _hash_password_se_preciso(password: str) -> str:
     senha = str(password or "").strip()
     if not senha:
@@ -24392,6 +24652,7 @@ def _firebase_user_from_data(username: str, data: dict, index: int = None) -> di
         "password": password_hash,
         "name": str(payload.get("name") or payload.get("nome") or username_norm).strip() or username_norm,
         "email": _normalizar_email(payload.get("email") or payload.get("google_email")),
+        "empresa": _normalizar_empresa(payload.get("empresa") or payload.get("company") or payload.get("company_name")),
         "client_id": str(payload.get("client_id") or payload.get("cliente") or payload.get("tenant_id") or "default").strip() or "default",
         "permissions": _normalizar_permissoes(payload.get("permissions") or payload.get("permissoes") or {}),
         "original_row": [],
@@ -24414,6 +24675,7 @@ def _firebase_user_to_data(username: str, usuario: dict, *, include_password: bo
         "username": username_norm,
         "name": str(usuario.get("name") or username_norm).strip() or username_norm,
         "email": _normalizar_email(usuario.get("email") or usuario.get("google_email")),
+        "empresa": _normalizar_empresa(usuario.get("empresa") or usuario.get("company") or usuario.get("company_name")),
         "client_id": str(usuario.get("client_id") or "default").strip() or "default",
         "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
         "active": bool(usuario.get("active", True)),
@@ -24465,6 +24727,7 @@ def _firebase_user_index_summary(username: str, usuario: dict) -> dict:
         "username": username_norm,
         "name": str(item.get("name") or username_norm).strip() or username_norm,
         "email": _normalizar_email(item.get("email")),
+        "empresa": _normalizar_empresa(item.get("empresa") or item.get("company") or item.get("company_name")),
         "client_id": str(item.get("client_id") or "default").strip() or "default",
         "permissions": _normalizar_permissoes(item.get("permissions") or {}),
         "active": _firebase_bool(item.get("active", True), True),
@@ -24775,6 +25038,7 @@ def _init_auth_db():
                 password TEXT NOT NULL,
                 name TEXT NOT NULL,
                 email TEXT,
+                empresa TEXT,
                 client_id TEXT NOT NULL,
                 permissions_json TEXT NOT NULL DEFAULT '{}',
                 active INTEGER NOT NULL DEFAULT 1,
@@ -24805,6 +25069,8 @@ def _init_auth_db():
         colunas = {str(row['name']) for row in conn.execute("PRAGMA table_info(usuarios_auth)").fetchall()}
         if 'email' not in colunas:
             cur.execute("ALTER TABLE usuarios_auth ADD COLUMN email TEXT")
+        if 'empresa' not in colunas:
+            cur.execute("ALTER TABLE usuarios_auth ADD COLUMN empresa TEXT")
         if 'max_machines' not in colunas:
             cur.execute("ALTER TABLE usuarios_auth ADD COLUMN max_machines INTEGER NOT NULL DEFAULT 1")
         if 'machine_ids_json' not in colunas:
@@ -24844,6 +25110,7 @@ def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
                 continue
             nome = str(item.get("name") or username_norm).strip()
             email = _normalizar_email(item.get("email") or item.get("google_email"))
+            empresa = _normalizar_empresa(item.get("empresa") or item.get("company") or item.get("company_name"))
             client_id = str(item.get("client_id") or "default").strip() or "default"
             permissoes = _normalizar_permissoes(item.get("permissions") or {})
             active = 1 if item.get("active", True) else 0
@@ -24854,14 +25121,15 @@ def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
             cur.execute(
                 """
                 INSERT INTO usuarios_auth (
-                    username, password, name, email, client_id, permissions_json,
+                    username, password, name, email, empresa, client_id, permissions_json,
                     active, valid_until, machine_id, max_machines, machine_ids_json,
                     source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(username) DO UPDATE SET
                     password=excluded.password,
                     name=excluded.name,
                     email=excluded.email,
+                    empresa=excluded.empresa,
                     client_id=excluded.client_id,
                     permissions_json=excluded.permissions_json,
                     active=excluded.active,
@@ -24877,6 +25145,7 @@ def _salvar_usuarios_sql(usuarios: dict, source: str = "importado"):
                     senha,
                     nome,
                     email,
+                    empresa,
                     client_id,
                     json.dumps(permissoes, ensure_ascii=False),
                     active,
@@ -24914,7 +25183,7 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
     try:
         rows = conn.execute(
             """
-            SELECT username, password, name, email, client_id, permissions_json,
+            SELECT username, password, name, email, empresa, client_id, permissions_json,
                    active, valid_until, machine_id, max_machines, machine_ids_json, source, user_number
             FROM usuarios_auth
             ORDER BY user_number, username
@@ -24994,6 +25263,7 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
                 "password": str(row["password"] or ""),
                 "name": str(row["name"] or row["username"] or ""),
                 "email": _normalizar_email(row["email"]),
+                "empresa": _normalizar_empresa(row["empresa"]),
                 "client_id": str(row["client_id"] or "default"),
                 "permissions": permissoes_norm,
                 "original_row": [],
@@ -25038,6 +25308,7 @@ def _listar_usuarios_admin_sql(return_backend: bool = False, client_id: Optional
                 "username": username,
                 "name": str(item.get("name") or username),
                 "email": _normalizar_email(item.get("email")),
+                "empresa": _normalizar_empresa(item.get("empresa") or item.get("company") or item.get("company_name")),
                 "client_id": item_client,
                 "permissions": _normalizar_permissoes(item.get("permissions") or {}),
                 "active": bool(item.get("active", True)),
@@ -25063,10 +25334,11 @@ def _listar_usuarios_admin_sql(return_backend: bool = False, client_id: Optional
         if client_norm and item_client != client_norm:
             continue
         resultado.append({
-            "username": username,
-            "name": str(item.get("name") or username),
-            "email": _normalizar_email(item.get("email")),
-            "client_id": item_client,
+                "username": username,
+                "name": str(item.get("name") or username),
+                "email": _normalizar_email(item.get("email")),
+                "empresa": _normalizar_empresa(item.get("empresa") or item.get("company") or item.get("company_name")),
+                "client_id": item_client,
             "permissions": _normalizar_permissoes(item.get("permissions") or {}),
             "active": bool(item.get("active", True)),
             "valid_until": item.get("valid_until"),
@@ -25099,6 +25371,7 @@ def _obter_usuario_sql(username: str) -> dict:
                 "password": usuario_fb.get("password") or "",
                 "name": str(usuario_fb.get("name") or username_norm),
                 "email": _normalizar_email(usuario_fb.get("email")),
+                "empresa": _normalizar_empresa(usuario_fb.get("empresa") or usuario_fb.get("company") or usuario_fb.get("company_name")),
                 "client_id": str(usuario_fb.get("client_id") or "default"),
                 "permissions": _normalizar_permissoes(usuario_fb.get("permissions") or {}),
                 "active": bool(usuario_fb.get("active", True)),
@@ -25121,6 +25394,7 @@ def _obter_usuario_sql(username: str) -> dict:
         "password": item.get("password") or "",
         "name": str(item.get("name") or username_norm),
         "email": _normalizar_email(item.get("email")),
+        "empresa": _normalizar_empresa(item.get("empresa") or item.get("company") or item.get("company_name")),
         "client_id": str(item.get("client_id") or "default"),
         "permissions": _normalizar_permissoes(item.get("permissions") or {}),
         "active": bool(item.get("active", True)),
@@ -25169,6 +25443,7 @@ def _salvar_usuario_admin_firebase(payload: AdminUserUpsertRequest) -> dict:
         "password": senha_final,
         "name": str(payload.name or ((existente or {}).get("name") if existente else username_norm)).strip() or username_norm,
         "email": email_norm,
+        "empresa": _normalizar_empresa(payload.empresa if _pydantic_campo_enviado(payload, "empresa") else ((existente or {}).get("empresa") if existente else "")),
         "client_id": str(payload.client_id or ((existente or {}).get("client_id") if existente else "default")).strip() or "default",
         "permissions": _normalizar_permissoes(payload.permissions or ((existente or {}).get("permissions") if existente else {})),
         "active": bool(payload.active),
@@ -25246,6 +25521,7 @@ def _salvar_usuario_admin_sql(payload: AdminUserUpsertRequest) -> dict:
         "password": senha_final,
         "name": str(payload.name or username_norm).strip() or username_norm,
         "email": email_norm,
+        "empresa": _normalizar_empresa(payload.empresa if _pydantic_campo_enviado(payload, "empresa") else (existente.get("empresa") if existente else "")),
         "client_id": str(payload.client_id or (existente.get("client_id") if existente else "default")).strip() or "default",
         "permissions": _normalizar_permissoes(payload.permissions or (existente.get("permissions") if existente else {})),
         "active": bool(payload.active),
@@ -25362,6 +25638,7 @@ def _resumo_usuario_admin(usuario: dict) -> dict:
         "username": usuario.get("username"),
         "name": usuario.get("name"),
         "email": _normalizar_email(usuario.get("email")),
+        "empresa": _normalizar_empresa(usuario.get("empresa") or usuario.get("company") or usuario.get("company_name")),
         "client_id": usuario.get("client_id"),
         "permissions": _normalizar_permissoes(usuario.get("permissions") or {}),
         "active": bool(usuario.get("active", True)),
@@ -31541,6 +31818,7 @@ def _montar_payload_usuarios_online(
     *,
     include_admin_fields: bool = True,
     include_machine_details: bool = True,
+    use_remote_presence: bool = True,
 ) -> dict:
     resultados = []
     total_online = 0
@@ -31551,8 +31829,9 @@ def _montar_payload_usuarios_online(
         if isinstance(usuario, dict)
     })
     registros_presenca = []
-    for cid in client_ids:
-        registros_presenca.extend(_machine_presence_list_firebase_client(cid))
+    if use_remote_presence:
+        for cid in client_ids:
+            registros_presenca.extend(_machine_presence_list_firebase_client(cid))
     registros_presenca.extend(list(_machine_presence_local_read().values()))
 
     for usuario in usuarios:
@@ -31580,6 +31859,7 @@ def _montar_payload_usuarios_online(
             "username": username,
             "name": usuario.get("name") or username,
             "client_id": user_client_id,
+            "empresa": _normalizar_empresa(usuario.get("empresa") or usuario.get("company") or usuario.get("company_name")),
             "active": bool(usuario.get("active", True)),
             "online": bool(maquinas_online),
             "online_count": len(maquinas_online),
@@ -31670,27 +31950,110 @@ def user_machines_online(
     }
 
 
+def _usuarios_podem_conversar_chat(origem: dict, destino: dict) -> bool:
+    origem_empresa = _empresa_chat_key((origem or {}).get("empresa"))
+    destino_empresa = _empresa_chat_key((destino or {}).get("empresa"))
+    if origem_empresa and destino_empresa:
+        return origem_empresa == destino_empresa
+    origem_client = _user_chat_norm_client((origem or {}).get("client_id") or "default")
+    destino_client = _user_chat_norm_client((destino or {}).get("client_id") or "default")
+    return origem_client == destino_client
+
+
+def _user_chat_usuarios_locais() -> dict:
+    try:
+        usuarios_sql, _headers_sql = _carregar_usuarios_sql(seed_if_empty=True)
+    except Exception as exc:
+        logger.warning("[USER-CHAT] Falha ao carregar usuarios locais para contatos: %s", exc)
+        return {}
+    if not isinstance(usuarios_sql, dict):
+        return {}
+    resultado = {}
+    for username, usuario in usuarios_sql.items():
+        if not isinstance(usuario, dict):
+            continue
+        username_norm = _user_chat_norm_username(username or usuario.get("username"))
+        if not username_norm:
+            continue
+        item = dict(usuario)
+        item["username"] = username_norm
+        item["empresa"] = _normalizar_empresa(item.get("empresa") or item.get("company") or item.get("company_name"))
+        item["client_id"] = _user_chat_norm_client(item.get("client_id") or "default")
+        resultado[username_norm] = item
+    return resultado
+
+
+def _user_chat_obter_usuario(username: str, usuarios_locais: Optional[dict] = None) -> dict:
+    username_norm = _user_chat_norm_username(username)
+    if not username_norm:
+        return {}
+    if isinstance(usuarios_locais, dict):
+        usuario_local = usuarios_locais.get(username_norm)
+        if isinstance(usuario_local, dict):
+            return dict(usuario_local)
+    return _obter_usuario_sql(username_norm)
+
+
+def _user_chat_resolver_destino(sessao: dict, username: str, client_id: Optional[str] = None) -> tuple[dict, str]:
+    destino_username = _user_chat_norm_username(username)
+    if not destino_username:
+        raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
+    usuarios_locais = _user_chat_usuarios_locais()
+    origem = _user_chat_obter_usuario(sessao["username"], usuarios_locais)
+    destino = _user_chat_obter_usuario(destino_username, usuarios_locais)
+    if not _login_usuario_ativo(destino):
+        raise HTTPException(status_code=403, detail="Usuario de destino inativo.")
+    destino_real_client = _user_chat_norm_client(destino.get("client_id") or "default")
+    destino_client_id = _user_chat_norm_client(client_id or destino_real_client or sessao["client_id"])
+    if destino_real_client and destino_client_id != destino_real_client:
+        raise HTTPException(status_code=404, detail="Usuario de destino nao encontrado neste cliente.")
+    if not _usuarios_podem_conversar_chat(origem, destino):
+        raise HTTPException(status_code=403, detail="Usuarios so podem conversar quando pertencem a mesma empresa.")
+    return destino, destino_real_client or destino_client_id
+
+
 def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
-    usuario_atual = _obter_usuario_sql(sessao["username"])
+    usuarios_locais = _user_chat_usuarios_locais()
+    usuario_atual = _user_chat_obter_usuario(sessao["username"], usuarios_locais)
     if not _login_usuario_ativo(usuario_atual):
         raise HTTPException(status_code=403, detail="Usuario inativo.")
     client_norm = str(sessao.get("client_id") or "default").strip() or "default"
-    cache_key = f"chat-contacts-users:{client_norm}:v2"
+    empresa_atual = _normalizar_empresa(usuario_atual.get("empresa"))
+    empresa_key = _empresa_chat_key(empresa_atual)
+    cache_key = (
+        f"chat-contacts-users:empresa:{hashlib.sha256(empresa_key.encode('utf-8')).hexdigest()[:24]}:v3"
+        if empresa_key
+        else f"chat-contacts-users:{client_norm}:v3"
+    )
     usuarios = _backend_cache_get(cache_key)
     if not isinstance(usuarios, list):
-        usuarios = [
-            usuario for usuario in _listar_usuarios_admin_sql(client_id=client_norm)
-            if isinstance(usuario, dict) and bool(usuario.get("active", True))
-        ]
+        if empresa_key:
+            usuarios = [
+                dict(usuario)
+                for usuario in usuarios_locais.values()
+                if isinstance(usuario, dict)
+                and bool(usuario.get("active", True))
+                and _empresa_chat_key(usuario.get("empresa")) == empresa_key
+            ]
+        else:
+            usuarios = [
+                dict(usuario)
+                for usuario in usuarios_locais.values()
+                if isinstance(usuario, dict) and bool(usuario.get("active", True))
+                and _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm
+            ]
         _backend_cache_set(cache_key, usuarios, ttl_seconds=30)
     payload = _montar_payload_usuarios_online(
         usuarios,
         include_admin_fields=False,
         include_machine_details=False,
+        use_remote_presence=False,
     )
     payload["current_user"] = sessao["username"]
     payload["current_client_id"] = sessao["client_id"]
+    payload["empresa"] = empresa_atual
+    payload["chat_scope"] = "empresa" if empresa_key else "client_id"
     return payload
 
 
@@ -31699,7 +32062,7 @@ def user_chat_typing(payload: UserChatTypingRequest, authorization: Optional[str
     destino = _user_chat_norm_username(payload.username)
     if not destino:
         raise HTTPException(status_code=400, detail="Informe o usuario de destino.")
-    destino_client_id = _user_chat_norm_client(payload.client_id or sessao["client_id"])
+    _destino_usuario, destino_client_id = _user_chat_resolver_destino(sessao, destino, payload.client_id)
     if destino == sessao["username"] and destino_client_id == sessao["client_id"]:
         return {"success": True, "typing": False}
     item = _user_chat_typing_save(
@@ -31727,7 +32090,7 @@ def user_chat_typing_get(
     other_username = _user_chat_norm_username(username)
     if not other_username:
         raise HTTPException(status_code=400, detail="Informe o usuario da conversa.")
-    other_client_id = _user_chat_norm_client(client_id or sessao["client_id"])
+    _destino_usuario, other_client_id = _user_chat_resolver_destino(sessao, other_username, client_id)
     status = _user_chat_typing_status(sessao["username"], sessao["client_id"], other_username, other_client_id)
     return {
         "success": True,
@@ -31793,7 +32156,7 @@ def user_chat_history(
     other_username = _user_chat_norm_username(username)
     if not other_username:
         raise HTTPException(status_code=400, detail="Informe o usuario da conversa.")
-    other_client_id = _user_chat_norm_client(client_id or sessao["client_id"])
+    _destino_usuario, other_client_id = _user_chat_resolver_destino(sessao, other_username, client_id)
     _user_chat_mark_read_between(sessao["username"], sessao["client_id"], other_username, other_client_id)
     mensagens = _user_chat_history(sessao["username"], sessao["client_id"], other_username, other_client_id, limit or 80)
     return {
@@ -31819,7 +32182,7 @@ def user_chat_send(payload: UserChatMessageRequest, authorization: Optional[str]
         raise HTTPException(status_code=400, detail="Informe a mensagem ou anexe um arquivo.")
     if len(texto) > 2000:
         raise HTTPException(status_code=400, detail="A mensagem deve ter no maximo 2000 caracteres.")
-    destino_client_id = _user_chat_norm_client(payload.client_id or sessao["client_id"])
+    _destino_usuario, destino_client_id = _user_chat_resolver_destino(sessao, destino, payload.client_id)
     if destino == sessao["username"] and destino_client_id == sessao["client_id"]:
         raise HTTPException(status_code=400, detail="Nao e possivel enviar mensagem para voce mesmo.")
 
@@ -54217,6 +54580,23 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
         atuais["ia_agent_resource_name"] = str(req.ia_agent_resource_name or "").strip()
     if req.ia_agent_endpoint_url is not None:
         atuais["ia_agent_endpoint_url"] = str(req.ia_agent_endpoint_url or "").strip()
+    chaves_ia_alteradas = any(
+        valor is not None and str(valor or "").strip()
+        for valor in (
+            req.ia_openai_api_key,
+            req.ia_deepseek_api_key,
+            req.ia_gemini_api_key,
+            req.ia_agent_api_key,
+        )
+    ) or any(
+        bool(valor)
+        for valor in (
+            req.ia_openai_api_key_limpar,
+            req.ia_deepseek_api_key_limpar,
+            req.ia_gemini_api_key_limpar,
+            req.ia_agent_api_key_limpar,
+        )
+    )
     _salvar_ia_provider_api_key("openai", req.ia_openai_api_key, limpar=bool(req.ia_openai_api_key_limpar))
     _salvar_ia_provider_api_key("deepseek", req.ia_deepseek_api_key, limpar=bool(req.ia_deepseek_api_key_limpar))
     _salvar_ia_provider_api_key("gemini", req.ia_gemini_api_key, limpar=bool(req.ia_gemini_api_key_limpar))
@@ -54235,9 +54615,15 @@ async def atualizar_configuracoes_globais(req: ConfiguracoesGlobaisRequest, _cli
             atuais[campo] = bool(valor)
         else:
             atuais[campo] = bool(atuais.get(campo, True))
+    publicacao_chaves = None
+    if chaves_ia_alteradas:
+        publicacao_chaves = _ia_secrets_publicar_no_provisionador_se_configurado()
     _salvar_configuracoes_globais(atuais)
     resposta = _carregar_configuracoes_globais()
-    return {"success": True, "configuracoes": resposta}
+    retorno = {"success": True, "configuracoes": resposta}
+    if publicacao_chaves is not None:
+        retorno["ia_secrets_publication"] = publicacao_chaves
+    return retorno
 
 
 app.include_router(create_configuracoes_router(sys.modules[__name__]))

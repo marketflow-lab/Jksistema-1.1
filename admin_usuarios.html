@@ -668,6 +668,9 @@
 
                 <label>E-mail Google</label>
                 <input id="email" type="email" placeholder="usuario@empresa.com">
+
+                <label>Empresa</label>
+                <input id="empresa" placeholder="Ex.: JK Pecas">
             </div>
 
             <div class="form-block">
@@ -860,7 +863,7 @@
                 <div class="table-tools">
                     <div>
                         <label>Buscar</label>
-                        <input id="userSearch" placeholder="Nome, usuário, e-mail ou cliente" oninput="aplicarFiltrosUsuarios()">
+                        <input id="userSearch" placeholder="Nome, usuário, e-mail, empresa ou cliente" oninput="aplicarFiltrosUsuarios()">
                     </div>
                     <div>
                         <label>Status</label>
@@ -888,6 +891,7 @@
                             <tr>
                                 <th>Usuário</th>
                                 <th>Nome</th>
+                                <th>Empresa</th>
                                 <th>Cliente</th>
                                 <th>Status</th>
                                 <th>Permissões</th>
@@ -1165,6 +1169,7 @@
         document.getElementById('username').disabled = false;
         document.getElementById('name').value = '';
         document.getElementById('email').value = '';
+        document.getElementById('empresa').value = '';
         document.getElementById('password').value = '';
         document.getElementById('clientId').value = 'default';
         document.getElementById('validUntil').value = '';
@@ -1203,6 +1208,7 @@
         document.getElementById('username').disabled = false;
         document.getElementById('name').value = user.name || '';
         document.getElementById('email').value = user.email || '';
+        document.getElementById('empresa').value = user.empresa || '';
         document.getElementById('password').value = '';
         document.getElementById('clientId').value = user.client_id || 'default';
         document.getElementById('validUntil').value = normalizarDataSistema(user.valid_until || '');
@@ -1246,6 +1252,7 @@
                 user.username,
                 user.name,
                 user.email,
+                user.empresa,
                 user.client_id,
                 resumoPermissoes(user.permissions || {})
             ].join(' ').toLowerCase();
@@ -1281,7 +1288,7 @@
         tbody.innerHTML = '';
         if (!users.length) {
             const msg = usuariosCache.length ? 'Nenhum usuário encontrado com os filtros atuais.' : 'Nenhum usuário cadastrado.';
-            tbody.innerHTML = `<tr><td colspan="6">${msg}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7">${msg}</td></tr>`;
             if (summary) summary.textContent = msg;
             return;
         }
@@ -1304,6 +1311,7 @@
                     ${email ? `<div class="small">${escaparHtml(email)}</div>` : ''}
                 </td>
                 <td>${escaparHtml(user.name || '')}</td>
+                <td>${escaparHtml(user.empresa || '')}</td>
                 <td>${escaparHtml(user.client_id || '')}</td>
                 <td>
                     <span class="pill ${user.active ? 'on' : 'off'}">${user.active ? 'Ativo' : 'Inativo'}</span>
@@ -2950,6 +2958,7 @@
             password: document.getElementById('password').value,
             name: document.getElementById('name').value.trim(),
             email: document.getElementById('email').value.trim(),
+            empresa: document.getElementById('empresa').value.trim(),
             client_id: document.getElementById('clientId').value.trim() || 'default',
             valid_until: normalizarDataSistema(document.getElementById('validUntil').value.trim()),
             machine_id: document.getElementById('machineId').value.trim(),

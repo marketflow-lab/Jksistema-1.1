@@ -1,0 +1,11 @@
+name = "jk-ia-secrets-provisioner"
+main = "worker.js"
+compatibility_date = "2026-06-18"
+
+# Configure estes valores como secrets no Cloudflare, nao neste arquivo:
+# - ADMIN_TOKEN
+# - DOWNLOAD_TOKEN
+# - GCP_CLIENT_EMAIL
+# - GCP_PRIVATE_KEY
+# - GCP_PROJECT_ID
+# - GCP_SECRET_ID
