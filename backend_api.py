@@ -32115,6 +32115,14 @@ def admin_listar_usuarios_online(
             usuario_atual = {}
 
     empresa_atual = _normalizar_empresa(usuario_atual.get("empresa") or usuario_atual.get("company") or usuario_atual.get("company_name"))
+    if not _empresa_chat_key(empresa_atual):
+        try:
+            usuario_principal = _obter_usuario_sql(username_atual)
+            if _empresa_chat_key((usuario_principal or {}).get("empresa") or (usuario_principal or {}).get("company") or (usuario_principal or {}).get("company_name")):
+                usuario_atual = _user_chat_mesclar_usuario_preferindo_principal(usuario_principal, usuario_atual)
+                empresa_atual = _normalizar_empresa(usuario_atual.get("empresa") or usuario_atual.get("company") or usuario_atual.get("company_name"))
+        except Exception as exc:
+            logger.warning("[MACHINES] Falha ao atualizar empresa do usuario atual para presenca: %s", exc)
     empresa_key = _empresa_chat_key(empresa_atual)
     if empresa_key:
         usuarios = [
@@ -32225,36 +32233,64 @@ def _user_chat_usuarios_locais() -> dict:
     return resultado
 
 
+def _user_chat_mesclar_usuario_preferindo_principal(principal: Optional[dict], fallback: Optional[dict] = None) -> dict:
+    resultado = dict(fallback or {}) if isinstance(fallback, dict) else {}
+    if isinstance(principal, dict):
+        for chave, valor in principal.items():
+            if isinstance(valor, str):
+                if valor.strip() or chave not in resultado:
+                    resultado[chave] = valor
+            elif valor is not None:
+                resultado[chave] = valor
+    username_norm = _user_chat_norm_username(resultado.get("username") or "")
+    if username_norm:
+        resultado["username"] = username_norm
+    resultado["empresa"] = _normalizar_empresa(resultado.get("empresa") or resultado.get("company") or resultado.get("company_name"))
+    resultado["client_id"] = _user_chat_norm_client(resultado.get("client_id") or "default")
+    return resultado
+
+
 def _user_chat_obter_usuario(username: str, usuarios_locais: Optional[dict] = None) -> dict:
     username_norm = _user_chat_norm_username(username)
     if not username_norm:
         return {}
+    usuario_local = None
     if isinstance(usuarios_locais, dict):
         usuario_local = usuarios_locais.get(username_norm)
-        if isinstance(usuario_local, dict):
-            return dict(usuario_local)
-    return _obter_usuario_sql(username_norm)
+    try:
+        usuario_principal = _obter_usuario_sql(username_norm)
+        return _user_chat_mesclar_usuario_preferindo_principal(usuario_principal, usuario_local)
+    except Exception as exc:
+        logger.warning("[USER-CHAT] Falha ao obter usuario principal '%s'; usando cache local se existir: %s", username_norm, exc)
+    if isinstance(usuario_local, dict):
+        return _user_chat_mesclar_usuario_preferindo_principal(usuario_local)
+    return {}
 
 
 def _user_chat_encontrar_usuario_sessao(sessao: dict, usuarios: list[dict], usuarios_locais: Optional[dict] = None) -> dict:
     username_norm = _user_chat_norm_username((sessao or {}).get("username"))
     client_norm = _user_chat_norm_client((sessao or {}).get("client_id") or "default")
-    if isinstance(usuarios_locais, dict):
-        usuario_local = usuarios_locais.get(username_norm)
-        if isinstance(usuario_local, dict):
-            return dict(usuario_local)
+    usuario_local = usuarios_locais.get(username_norm) if isinstance(usuarios_locais, dict) else None
+    candidato_principal = None
     for usuario in usuarios or []:
         if not isinstance(usuario, dict):
             continue
-        if (
-            _user_chat_norm_username(usuario.get("username")) == username_norm
-            and _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm
-        ):
-            return dict(usuario)
+        if _user_chat_norm_username(usuario.get("username")) != username_norm:
+            continue
+        if _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm:
+            return _user_chat_mesclar_usuario_preferindo_principal(usuario, usuario_local)
+        if candidato_principal is None:
+            candidato_principal = dict(usuario)
+    if candidato_principal and _empresa_chat_key(candidato_principal.get("empresa") or candidato_principal.get("company") or candidato_principal.get("company_name")):
+        return _user_chat_mesclar_usuario_preferindo_principal(candidato_principal, usuario_local)
     try:
-        return _obter_usuario_sql(username_norm)
-    except Exception:
-        return {}
+        usuario_principal = _obter_usuario_sql(username_norm)
+        return _user_chat_mesclar_usuario_preferindo_principal(usuario_principal, usuario_local)
+    except Exception as exc:
+        logger.warning("[USER-CHAT] Falha ao resolver usuario da sessao '%s'; usando cache local se existir: %s", username_norm, exc)
+    if isinstance(usuario_local, dict):
+        return _user_chat_mesclar_usuario_preferindo_principal(usuario_local)
+    return {}
 
 
 def _user_chat_resolver_destino(sessao: dict, username: str, client_id: Optional[str] = None) -> tuple[dict, str]:
@@ -32284,6 +32320,14 @@ def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=403, detail="Usuario inativo.")
     client_norm = str(sessao.get("client_id") or "default").strip() or "default"
     empresa_atual = _normalizar_empresa(usuario_atual.get("empresa"))
+    if not _empresa_chat_key(empresa_atual):
+        try:
+            usuario_principal = _obter_usuario_sql(sessao["username"])
+            if _empresa_chat_key((usuario_principal or {}).get("empresa") or (usuario_principal or {}).get("company") or (usuario_principal or {}).get("company_name")):
+                usuario_atual = _user_chat_mesclar_usuario_preferindo_principal(usuario_principal, usuario_atual)
+                empresa_atual = _normalizar_empresa(usuario_atual.get("empresa"))
+        except Exception as exc:
+            logger.warning("[USER-CHAT] Falha ao atualizar empresa do usuario atual para contatos: %s", exc)
     empresa_key = _empresa_chat_key(empresa_atual)
     cache_key = (
         f"chat-contacts-users:empresa:{hashlib.sha256(empresa_key.encode('utf-8')).hexdigest()[:24]}:v3"
