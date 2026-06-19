@@ -32313,6 +32313,11 @@ def user_chat_unread(authorization: Optional[str] = Header(default=None)):
     status = _user_status_get(sessao["username"], sessao["client_id"])
     status_count = int(status.get("user_chat_unread_count") or 0)
     rebuilt_from_local = False
+    conversas = (
+        _user_chat_unread_conversations(sessao["username"], sessao["client_id"], include_firebase=True)
+        if status_count > 0
+        else []
+    )
     if not bool(status.get("_trusted")):
         conversas_local = _user_chat_unread_conversations(sessao["username"], sessao["client_id"], include_firebase=False)
         local_count = sum(int(item.get("unread_count") or 0) for item in conversas_local)
@@ -32331,11 +32336,12 @@ def user_chat_unread(authorization: Optional[str] = Header(default=None)):
         status = _user_status_local_save(atualizado)
         _user_status_firebase_set(status)
         status_count = local_count
+        conversas = conversas_local
         rebuilt_from_local = True
     unread_count = max(0, status_count)
     return {
         "success": True,
-        "conversations": [],
+        "conversations": conversas,
         "unread_count": unread_count,
         "summary": {
             "unread_count": int(status.get("unread_count") or 0),
@@ -32449,7 +32455,7 @@ def user_admin_messages(authorization: Optional[str] = Header(default=None)):
     status = _user_status_get(sessao["username"], sessao["client_id"])
     chat_unread_count = int(status.get("user_chat_unread_count") or 0)
     chat_conversations = (
-        _user_chat_unread_conversations(sessao["username"], sessao["client_id"], include_firebase=False)
+        _user_chat_unread_conversations(sessao["username"], sessao["client_id"], include_firebase=True)
         if chat_unread_count > 0
         else []
     )
@@ -32472,6 +32478,12 @@ def user_admin_messages(authorization: Optional[str] = Header(default=None)):
     mensagens = _admin_messages_for_user(sessao["username"], sessao["client_id"], unread_only=True)
     if not mensagens:
         status = _user_status_rebuild_and_save(sessao["username"], sessao["client_id"])
+        chat_unread_count = int(status.get("user_chat_unread_count") or chat_unread_count)
+        chat_conversations = (
+            _user_chat_unread_conversations(sessao["username"], sessao["client_id"], include_firebase=True)
+            if chat_unread_count > 0
+            else []
+        )
     else:
         latest = max(mensagens, key=lambda item: int(item.get("created_ts") or 0))
         atualizado = _user_status_empty(sessao["username"], sessao["client_id"])
@@ -32488,6 +32500,7 @@ def user_admin_messages(authorization: Optional[str] = Header(default=None)):
         })
         status = _user_status_local_save(atualizado)
         _user_status_firebase_set(status)
+        chat_unread_count = int(status.get("user_chat_unread_count") or chat_unread_count)
     return {
         "success": True,
         "messages": mensagens[:10],

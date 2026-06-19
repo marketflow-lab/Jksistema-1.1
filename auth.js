@@ -775,7 +775,8 @@ function obterAuthHeaders(extra) {
         lastStateRef: null,
         unsubscribeConnected: null,
         started: false,
-        lastUsersPayload: null
+        lastUsersPayload: null,
+        lastUsersPayloadAt: 0
     };
     const presenceLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader('machine-presence', { ttlMs: 45000 })
@@ -783,6 +784,7 @@ function obterAuthHeaders(extra) {
     const PRESENCE_DATA_CHANNEL = 'machine-presence-data';
     const PRESENCE_REQUEST_CHANNEL = 'machine-presence-request';
     const PRESENCE_CACHE_TTL_MS = 90 * 1000;
+    const RTDB_USERS_CACHE_TTL_MS = 15 * 1000;
     let tentativaLiderPresencaTimer = null;
     let cacheMaquinasOnline = null;
     let cacheMaquinasOnlineAt = 0;
@@ -808,6 +810,7 @@ function obterAuthHeaders(extra) {
             cacheUsuariosOnline = payload;
             cacheUsuariosOnlineAt = Date.now();
             rtdbState.lastUsersPayload = payload;
+            rtdbState.lastUsersPayloadAt = Date.now();
         }
     }
 
@@ -1272,7 +1275,6 @@ function obterAuthHeaders(extra) {
         }
         const agora = Date.now();
         if (agora - ultimoHeartbeat < FALLBACK_HEARTBEAT_INTERVAL_MS) return null;
-        ultimoHeartbeat = agora;
         emExecucao = true;
         try {
             const payload = {
@@ -1287,7 +1289,11 @@ function obterAuthHeaders(extra) {
                 body: JSON.stringify(payload),
                 keepalive: motivo === 'hidden'
             });
-            return await resp.json().catch(() => ({}));
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok && data && data.success !== false) {
+                ultimoHeartbeat = Date.now();
+            }
+            return data;
         } catch (_err) {
             return null;
         } finally {
@@ -1470,13 +1476,18 @@ function obterAuthHeaders(extra) {
     async function buscarUsuariosOnlineRtdb() {
         const ctx = await prepararRtdb();
         if (!ctx) return null;
-        if (rtdbState.lastUsersPayload && Array.isArray(rtdbState.lastUsersPayload.users)) {
+        if (
+            rtdbState.lastUsersPayload
+            && Array.isArray(rtdbState.lastUsersPayload.users)
+            && cachePresencaValido(rtdbState.lastUsersPayloadAt, RTDB_USERS_CACHE_TTL_MS)
+        ) {
             return rtdbState.lastUsersPayload;
         }
         const usersRef = ctx.modules.database.ref(ctx.db, `${ctx.session.rootPath}/users`);
         const snap = await ctx.modules.database.get(usersRef);
         const payload = montarPayloadUsuariosRtdb(snap.val(), ctx.session);
         rtdbState.lastUsersPayload = payload;
+        rtdbState.lastUsersPayloadAt = Date.now();
         return payload;
     }
 
@@ -1539,6 +1550,7 @@ function obterAuthHeaders(extra) {
         return ctx.modules.database.onValue(usersRef, (snap) => {
             const payload = montarPayloadUsuariosRtdb(snap.val(), ctx.session);
             rtdbState.lastUsersPayload = payload;
+            rtdbState.lastUsersPayloadAt = Date.now();
             publicarPresenca('users', payload);
             if (typeof onUpdate === 'function') onUpdate(payload);
         }, (error) => {

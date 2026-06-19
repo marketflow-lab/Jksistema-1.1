@@ -2129,6 +2129,16 @@
       });
     }
 
+    function _msgListaTemPresencaOnline(lista) {
+      return (Array.isArray(lista) ? lista : []).some(user => (
+        user && (
+          user.online === true ||
+          Number(user.online_count || 0) > 0 ||
+          (Array.isArray(user.machines) && user.machines.some(machine => machine && machine.online !== false))
+        )
+      ));
+    }
+
     function _msgUsuarioEstaOnline(user, isSelf = false) {
       if (isSelf) return true;
       if (!user || typeof user !== 'object') return false;
@@ -2932,13 +2942,16 @@
             const users = data.users.filter(user => user && user.active !== false);
             if (contatosAutorizados) {
               const contatosComPresenca = _msgMesclarPresencaUsuarios(contatosAutorizados, users);
-              msgContatosAutoritativos = true;
-              _msgSalvarUsuariosCache(contatosComPresenca);
-              return contatosComPresenca;
+              if (_msgListaTemPresencaOnline(contatosComPresenca)) {
+                msgContatosAutoritativos = true;
+                _msgSalvarUsuariosCache(contatosComPresenca);
+                return contatosComPresenca;
+              }
+            } else {
+              msgContatosAutoritativos = false;
+              _msgSalvarUsuariosCache(users);
+              return users;
             }
-            msgContatosAutoritativos = false;
-            _msgSalvarUsuariosCache(users);
-            return users;
           }
         } catch (_) {}
       }
