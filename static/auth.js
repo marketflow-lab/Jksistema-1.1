@@ -1671,9 +1671,18 @@ function obterAuthHeaders(extra) {
     const SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
     const SHARED_SYNC_AUTO_START_DELAY_MS = 10 * 60 * 1000;
     const FAVORITOS_HISTORICO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+    const SHARED_SYNC_AUTO_FILES_STORAGE_KEY = 'jk_shared_sync_auto_files_enabled';
     const sharedSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader('shared-sync-auto', { ttlMs: 60000 })
         : null;
+
+    function arquivosSyncAutomaticoAtivo() {
+        try {
+            return localStorage.getItem(SHARED_SYNC_AUTO_FILES_STORAGE_KEY) === '1';
+        } catch (_err) {
+            return false;
+        }
+    }
 
     function liderSharedSync() {
         return !sharedSyncLeader || sharedSyncLeader.isLeader();
@@ -1761,6 +1770,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarAutoPull(motivo) {
+        if (!arquivosSyncAutomaticoAtivo()) return null;
         if (executandoPull || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaSeguraParaRestaurar()) return null;
         if (motivo !== 'manual' && !liderSharedSync()) return null;
@@ -1789,6 +1799,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarAutoPush(motivo) {
+        if (!arquivosSyncAutomaticoAtivo()) return null;
         if (executandoPush || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaSeguraParaRestaurar()) return null;
         if (motivo !== 'manual' && !liderSharedSync()) return null;
@@ -1817,6 +1828,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarAutoHistoricoFavoritos(motivo) {
+        if (!arquivosSyncAutomaticoAtivo()) return null;
         if (executandoFavoritosHistorico || !obterToken() || tokenSessaoExpirado()) return null;
         if (!telaPermiteSyncHistoricoFavoritos()) return null;
         if (motivo !== 'manual' && !liderSharedSync()) return null;
@@ -1848,6 +1860,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function iniciarRealtimeHistoricoFavoritos() {
+        if (!arquivosSyncAutomaticoAtivo()) return false;
         if (!liderSharedSync()) {
             if (favoritosHistoricoRealtimeUnsubscribe) {
                 try { favoritosHistoricoRealtimeUnsubscribe(); } catch (_err) {}
@@ -1876,6 +1889,7 @@ function obterAuthHeaders(extra) {
     }
 
     function agendarAutoHistoricoFavoritos(delayMs) {
+        if (!arquivosSyncAutomaticoAtivo()) return;
         if (timerFavoritosHistorico) clearTimeout(timerFavoritosHistorico);
         timerFavoritosHistorico = setTimeout(async () => {
             timerFavoritosHistorico = null;
@@ -1888,8 +1902,10 @@ function obterAuthHeaders(extra) {
     window.jkSharedSyncAutoPushNow = () => executarAutoPush('manual');
     window.jkFavoritosHistoricoSyncNow = () => executarAutoHistoricoFavoritos('manual');
 
-    agendarAutoHistoricoFavoritos(SHARED_SYNC_AUTO_START_DELAY_MS);
-    setTimeout(() => iniciarRealtimeHistoricoFavoritos(), 3500);
+    if (arquivosSyncAutomaticoAtivo()) {
+        agendarAutoHistoricoFavoritos(SHARED_SYNC_AUTO_START_DELAY_MS);
+        setTimeout(() => iniciarRealtimeHistoricoFavoritos(), 3500);
+    }
     setInterval(() => {
         if (!liderSharedSync() && favoritosHistoricoRealtimeUnsubscribe) {
             try { favoritosHistoricoRealtimeUnsubscribe(); } catch (_err) {}
@@ -1900,6 +1916,7 @@ function obterAuthHeaders(extra) {
         try { sharedSyncLeader?.release(); } catch (_err) {}
     });
     document.addEventListener('visibilitychange', () => {
+        if (!arquivosSyncAutomaticoAtivo()) return;
         if (!document.hidden) iniciarRealtimeHistoricoFavoritos();
         if (!document.hidden) setTimeout(() => executarAutoHistoricoFavoritos('visible'), 1200);
     });
@@ -1912,9 +1929,18 @@ function obterAuthHeaders(extra) {
     let executando = false;
     let ultimaExecucao = 0;
     const MACHINE_SHARED_SYNC_AUTO_INTERVAL_MS = 15 * 60 * 1000;
+    const MACHINE_SHARED_SYNC_AUTO_STORAGE_KEY = 'jk_shared_sync_auto_files_enabled';
     const machineSyncLeader = window.jkTabCoordinator && typeof window.jkTabCoordinator.createLeader === 'function'
         ? window.jkTabCoordinator.createLeader('machine-shared-sync-auto', { ttlMs: 60000 })
         : null;
+
+    function machineSyncAutomaticoAtivo() {
+        try {
+            return localStorage.getItem(MACHINE_SHARED_SYNC_AUTO_STORAGE_KEY) === '1';
+        } catch (_err) {
+            return false;
+        }
+    }
 
     function liderMachineSync() {
         return !machineSyncLeader || machineSyncLeader.isLeader();
@@ -1935,6 +1961,7 @@ function obterAuthHeaders(extra) {
     }
 
     async function executarMachineSync(motivo) {
+        if (!machineSyncAutomaticoAtivo()) return null;
         if (executando || !obterToken() || tokenSessaoExpirado()) return null;
         if (/frontend_index\.html$/i.test(window.location.pathname || '')) return null;
         if (!telaSeguraParaSincronizar()) return null;

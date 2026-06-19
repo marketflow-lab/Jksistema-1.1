@@ -1221,7 +1221,10 @@
     const PANEL_MIN_WIDTH = 300;
     const PANEL_MAX_WIDTH = 760;
     const MSG_NOTIFICACOES_KEY = 'jk_msg_notificacoes_exibidas_v1';
-    const MSG_REFRESH_INTERVAL_MS = 10000;
+    const MSG_REFRESH_CLOSED_INTERVAL_MS = 5 * 60 * 1000;
+    const MSG_REFRESH_PANEL_INTERVAL_MS = 10 * 1000;
+    const MSG_REFRESH_CHAT_INTERVAL_MS = 30 * 1000;
+    const MSG_REFRESH_HIDDEN_INTERVAL_MS = 10 * 60 * 1000;
     const MSG_ATTACHMENT_MAX_COUNT = 6;
     const MSG_ATTACHMENT_MAX_BYTES = 700 * 1024;
     const MSG_ATTACHMENT_TOTAL_MAX_BYTES = 900 * 1024;
@@ -3149,17 +3152,43 @@
       }
     }
 
-    function _msgIniciarAtualizacao() {
-      if (!msgRefreshTimer) {
-        msgRefreshTimer = setInterval(() => {
-          if (msgPanelAberto) {
-            void _msgCarregarPainel(true);
-            if (msgChatAberto) void _msgCarregarHistorico(true);
-          }
-          else void _msgBuscarMensagens().catch(() => {});
-        }, MSG_REFRESH_INTERVAL_MS);
+    function _msgIntervaloAtualizacao() {
+      if (document.hidden) return MSG_REFRESH_HIDDEN_INTERVAL_MS;
+      if (msgChatAberto) return MSG_REFRESH_CHAT_INTERVAL_MS;
+      if (msgPanelAberto) return MSG_REFRESH_PANEL_INTERVAL_MS;
+      return MSG_REFRESH_CLOSED_INTERVAL_MS;
+    }
+
+    async function _msgExecutarAtualizacaoAgendada() {
+      if (document.hidden) return;
+      if (msgPanelAberto) {
+        await _msgCarregarPainel(true);
+        if (msgChatAberto) await _msgCarregarHistorico(true);
+      } else {
+        await _msgBuscarMensagens().catch(() => {});
       }
     }
+
+    function _msgAgendarAtualizacao(delayMs) {
+      if (msgRefreshTimer) clearTimeout(msgRefreshTimer);
+      const intervalo = Math.max(30000, Number(delayMs) || _msgIntervaloAtualizacao());
+      msgRefreshTimer = setTimeout(async () => {
+        msgRefreshTimer = null;
+        try {
+          await _msgExecutarAtualizacaoAgendada();
+        } finally {
+          _msgAgendarAtualizacao(_msgIntervaloAtualizacao());
+        }
+      }, intervalo);
+    }
+
+    function _msgIniciarAtualizacao() {
+      if (!msgRefreshTimer) _msgAgendarAtualizacao(_msgIntervaloAtualizacao());
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) _msgAgendarAtualizacao(1500);
+    });
 
     // Carregar ou criar conversa inicial
     async function carregarOuCriarConversa() {
@@ -4285,7 +4314,7 @@
     _msgAtualizarSelecao();
     _msgIniciarAtualizacao();
     void _msgBuscarMensagens().catch(() => {});
-    setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 1200);
+    setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 10 * 60 * 1000);
     _perguntasIniciarMonitorGlobal();
     window.addEventListener('beforeunload', _msgPararToqueChamada);
 

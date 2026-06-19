@@ -626,7 +626,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.82"
+VERSAO_MINIMA_APP_PADRAO = "1.0.83"
 
 
 def versao_minima_app_backend() -> str:
@@ -25284,13 +25284,17 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
         conn.close()
 
 
-def _listar_usuarios_admin_sql(return_backend: bool = False, client_id: Optional[str] = None):
+def _listar_usuarios_admin_sql(
+    return_backend: bool = False,
+    client_id: Optional[str] = None,
+    prefer_index: bool = True,
+):
     firebase_fallback_detail = ""
     usuarios_fb = None
     client_norm = str(client_id or "").strip()
     if _firebase_deve_usar():
         try:
-            usuarios_fb = _firebase_listar_usuarios(seed_if_empty=True, client_id=client_norm or None, prefer_index=True)
+            usuarios_fb = _firebase_listar_usuarios(seed_if_empty=True, client_id=client_norm or None, prefer_index=prefer_index)
         except HTTPException as exc:
             if not _firebase_http_exception_permite_fallback(exc):
                 raise
@@ -25932,6 +25936,8 @@ USER_CHAT_TYPING_TTL_SECONDS = 6
 USER_CHAT_ATTACHMENT_MAX_COUNT = 6
 USER_CHAT_ATTACHMENT_MAX_BYTES = 700 * 1024
 USER_CHAT_ATTACHMENT_TOTAL_MAX_BYTES = 900 * 1024
+USER_CHAT_REMOTE_HISTORY_CHECK_TTL_SECONDS = 10 * 60
+USER_CHAT_REMOTE_HISTORY_CHECK_CACHE: dict[str, int] = {}
 
 
 def _user_chat_typing_firebase_enabled() -> bool:
@@ -26184,6 +26190,10 @@ def _user_status_doc_id(username: str, client_id: str) -> str:
     return "".join(ch if (ch.isalnum() or ch in {"_", "-", "."}) else "_" for ch in raw)[:220]
 
 
+def _user_status_cache_key(username: str, client_id: str) -> str:
+    return f"user-status:{_user_chat_norm_client(client_id)}:{_user_chat_norm_username(username)}:v1"
+
+
 def _user_status_empty(username: str, client_id: str) -> dict:
     username_norm = _user_chat_norm_username(username)
     client_norm = _user_chat_norm_client(client_id)
@@ -26269,6 +26279,10 @@ def _user_status_local_save(status: dict) -> dict:
     data = _user_status_local_read()
     data[item["id"]] = item
     _user_status_local_write(data)
+    cache_item = dict(item)
+    cache_item["_source"] = "local-cache"
+    cache_item["_trusted"] = True
+    _backend_cache_set(_user_status_cache_key(item.get("username"), item.get("client_id")), cache_item, ttl_seconds=30)
     return item
 
 
@@ -26333,14 +26347,20 @@ def _user_status_firebase_delta(username: str, client_id: str, update: dict, adm
 
 
 def _user_status_get(username: str, client_id: str) -> dict:
+    cache_key = _user_status_cache_key(username, client_id)
+    cached = _backend_cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
     status = _user_status_firebase_get(username, client_id)
     if status is not None:
         status["_trusted"] = True
+        _backend_cache_set(cache_key, status, ttl_seconds=30)
         return status
     local = _user_status_local_get(username, client_id)
     if local is not None:
         local["_source"] = "local"
         local["_trusted"] = not _firebase_live_features_ativas()
+        _backend_cache_set(cache_key, local, ttl_seconds=15)
         return local
     rebuilt = _user_status_rebuild_local(username, client_id)
     rebuilt["_source"] = "rebuilt"
@@ -26525,11 +26545,19 @@ def _user_chat_save(message: dict) -> dict:
     return item
 
 
-def _user_chat_firebase_for_user(username: str, client_id: str) -> list[dict]:
+def _user_chat_int_ts(value: Any) -> int:
+    try:
+        return max(0, int(float(value or 0)))
+    except Exception:
+        return 0
+
+
+def _user_chat_firebase_for_user(username: str, client_id: str, after_ts: int = 0) -> list[dict]:
     if not _firebase_live_features_ativas():
         return []
     username = _user_chat_norm_username(username)
     client_id = _user_chat_norm_client(client_id)
+    after_ts = _user_chat_int_ts(after_ts)
     mensagens = []
     try:
         db = _firebase_db()
@@ -26537,11 +26565,16 @@ def _user_chat_firebase_for_user(username: str, client_id: str) -> list[dict]:
             return []
         coll = db.collection(_firebase_user_chat_collection_name())
         for campo in ("sender_username", "recipient_username"):
-            for snap in coll.where(campo, "==", username).stream():
+            query = coll.where(campo, "==", username)
+            if after_ts:
+                query = query.where("created_ts", ">", after_ts)
+            for snap in query.stream():
                 data = snap.to_dict() or {}
                 if not data.get("id"):
                     data["id"] = snap.id
                 public = _user_chat_public(data)
+                if after_ts and int(public.get("created_ts") or 0) <= after_ts:
+                    continue
                 if (
                     public.get("sender_username") == username
                     and public.get("sender_client_id") == client_id
@@ -26556,13 +26589,14 @@ def _user_chat_firebase_for_user(username: str, client_id: str) -> list[dict]:
     return mensagens
 
 
-def _user_chat_firebase_between(username: str, client_id: str, other_username: str, other_client_id: str) -> list[dict]:
+def _user_chat_firebase_between(username: str, client_id: str, other_username: str, other_client_id: str, after_ts: int = 0) -> list[dict]:
     if not _firebase_live_features_ativas():
         return []
     username = _user_chat_norm_username(username)
     client_id = _user_chat_norm_client(client_id)
     other_username = _user_chat_norm_username(other_username)
     other_client_id = _user_chat_norm_client(other_client_id)
+    after_ts = _user_chat_int_ts(after_ts)
     mensagens = []
     try:
         db = _firebase_db()
@@ -26570,19 +26604,27 @@ def _user_chat_firebase_between(username: str, client_id: str, other_username: s
             return []
         coll = db.collection(_firebase_user_chat_collection_name())
         consultas = [
-            coll.where("sender_username", "==", username).where("recipient_username", "==", other_username).stream(),
-            coll.where("sender_username", "==", other_username).where("recipient_username", "==", username).stream(),
+            coll.where("sender_username", "==", username).where("recipient_username", "==", other_username),
+            coll.where("sender_username", "==", other_username).where("recipient_username", "==", username),
         ]
-        for stream in consultas:
+        if after_ts:
+            consultas = [query.where("created_ts", ">", after_ts) for query in consultas]
+        for query in consultas:
+            stream = query.stream()
             for snap in stream:
                 data = snap.to_dict() or {}
                 if not data.get("id"):
                     data["id"] = snap.id
                 public = _user_chat_public(data)
+                if after_ts and int(public.get("created_ts") or 0) <= after_ts:
+                    continue
                 if _user_chat_is_between(public, username, client_id, other_username, other_client_id):
                     public["storage"] = "firebase"
                     mensagens.append(public)
     except Exception as exc:
+        if after_ts:
+            logger.warning("[USER CHAT] Falha ao listar conversa incremental no Firebase; usando sincronizacao completa: %s", exc)
+            return _user_chat_firebase_between(username, client_id, other_username, other_client_id, 0)
         logger.warning("[USER CHAT] Falha ao listar conversa no Firebase; usando fallback por usuario: %s", exc)
         try:
             mensagens.extend(
@@ -26663,6 +26705,135 @@ def _user_chat_all_between(username: str, client_id: str, other_username: str, o
         if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
     )
     return _user_chat_merge_messages(mensagens)
+
+
+def _user_chat_conversation_key(username: str, client_id: str, other_username: str, other_client_id: str) -> str:
+    lados = sorted([
+        f"{_user_chat_norm_client(client_id)}:{_user_chat_norm_username(username)}",
+        f"{_user_chat_norm_client(other_client_id)}:{_user_chat_norm_username(other_username)}",
+    ])
+    return "__".join(lados)
+
+
+def _user_chat_cache_remote_messages(messages: list[dict]) -> int:
+    remotas = []
+    for raw in messages or []:
+        item = _user_chat_public(raw)
+        if not item.get("id"):
+            continue
+        storages = {s for s in str(item.get("storage") or "").split("+") if s}
+        storages.update({"firebase", "local"})
+        item["storage"] = "+".join(sorted(storages))
+        remotas.append(item)
+    if not remotas:
+        return 0
+    local = _user_chat_local_read()
+    _user_chat_local_write(_user_chat_merge_messages(local + remotas))
+    return len(remotas)
+
+
+def _user_chat_local_between(username: str, client_id: str, other_username: str, other_client_id: str) -> list[dict]:
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+    mensagens = [
+        _user_chat_public(item)
+        for item in _user_chat_local_read()
+        if _user_chat_is_between(item, username, client_id, other_username, other_client_id)
+    ]
+    return _user_chat_merge_messages(mensagens)
+
+
+def _user_chat_latest_ts(messages: list[dict]) -> int:
+    latest = 0
+    for item in messages or []:
+        latest = max(latest, _user_chat_int_ts((item or {}).get("created_ts")))
+    return latest
+
+
+def _user_chat_remote_sync_plan(
+    username: str,
+    client_id: str,
+    other_username: str,
+    other_client_id: str,
+    local_latest_ts: int,
+    force_remote: bool = False,
+) -> tuple[bool, int, str]:
+    local_latest_ts = _user_chat_int_ts(local_latest_ts)
+    if force_remote:
+        return True, 0, "forced"
+
+    chave = _user_chat_conversation_key(username, client_id, other_username, other_client_id)
+    checked_at = _user_chat_int_ts(USER_CHAT_REMOTE_HISTORY_CHECK_CACHE.get(chave))
+    checked_recently = bool(checked_at and int(time.time()) - checked_at <= USER_CHAT_REMOTE_HISTORY_CHECK_TTL_SECONDS)
+
+    status = _user_status_get(username, client_id)
+    unread = max(0, int(status.get("user_chat_unread_count") or 0))
+    status_latest_ts = _user_chat_int_ts(status.get("last_message_ts"))
+    if unread:
+        if local_latest_ts and status_latest_ts > local_latest_ts:
+            return True, local_latest_ts, "unread_newer"
+        return True, 0, "unread_full_check"
+    if local_latest_ts and status_latest_ts > local_latest_ts:
+        if checked_recently:
+            return False, local_latest_ts, "status_newer_recently_checked"
+        return True, local_latest_ts, "status_newer"
+
+    if not local_latest_ts:
+        if checked_recently:
+            return False, 0, "empty_recently_checked"
+        return True, 0, "initial_or_empty_local"
+
+    return False, local_latest_ts, "local_current"
+
+
+def _user_chat_history_cached(
+    username: str,
+    client_id: str,
+    other_username: str,
+    other_client_id: str,
+    limit: int = 80,
+    force_remote: bool = False,
+) -> dict:
+    limit = max(1, min(int(limit or 80), 200))
+    username = _user_chat_norm_username(username)
+    client_id = _user_chat_norm_client(client_id)
+    other_username = _user_chat_norm_username(other_username)
+    other_client_id = _user_chat_norm_client(other_client_id)
+
+    local = _user_chat_local_between(username, client_id, other_username, other_client_id)
+    local_latest_ts = _user_chat_latest_ts(local)
+    remote_checked, after_ts, reason = _user_chat_remote_sync_plan(
+        username,
+        client_id,
+        other_username,
+        other_client_id,
+        local_latest_ts,
+        force_remote=force_remote,
+    )
+    imported = 0
+    if remote_checked:
+        remotas = _user_chat_firebase_between(username, client_id, other_username, other_client_id, after_ts=after_ts)
+        imported = _user_chat_cache_remote_messages(remotas)
+        chave = _user_chat_conversation_key(username, client_id, other_username, other_client_id)
+        if imported:
+            local = _user_chat_local_between(username, client_id, other_username, other_client_id)
+            local_latest_ts = _user_chat_latest_ts(local)
+        else:
+            USER_CHAT_REMOTE_HISTORY_CHECK_CACHE[chave] = int(time.time())
+
+    local.sort(key=lambda item: int(item.get("created_ts") or 0))
+    return {
+        "messages": local[-limit:],
+        "history_source": "local+firebase" if imported else "local",
+        "remote_checked": bool(remote_checked),
+        "remote_reason": reason,
+        "remote_after_ts": int(after_ts or 0),
+        "remote_imported": int(imported or 0),
+        "local_count": len(local),
+        "local_latest_ts": int(local_latest_ts or 0),
+    }
 
 
 def _user_chat_update_incoming_status(
@@ -26757,7 +26928,13 @@ def _user_chat_mark_delivered_for_user(username: str, client_id: str, sync_fireb
     _user_chat_update_incoming_status(username, client_id, mark_delivered=True, mark_read=False, sync_firebase=sync_firebase)
 
 
-def _user_chat_mark_read_between(username: str, client_id: str, other_username: str, other_client_id: str) -> None:
+def _user_chat_mark_read_between(
+    username: str,
+    client_id: str,
+    other_username: str,
+    other_client_id: str,
+    sync_firebase: bool = True,
+) -> None:
     _user_chat_update_incoming_status(
         username,
         client_id,
@@ -26765,17 +26942,12 @@ def _user_chat_mark_read_between(username: str, client_id: str, other_username: 
         other_client_id,
         mark_delivered=True,
         mark_read=True,
+        sync_firebase=sync_firebase,
     )
 
 
 def _user_chat_history(username: str, client_id: str, other_username: str, other_client_id: str, limit: int = 80) -> list[dict]:
-    limit = max(1, min(int(limit or 80), 200))
-    mensagens = [
-        item
-        for item in _user_chat_all_between(username, client_id, other_username, other_client_id)
-    ]
-    mensagens.sort(key=lambda item: int(item.get("created_ts") or 0))
-    return mensagens[-limit:]
+    return _user_chat_history_cached(username, client_id, other_username, other_client_id, limit=limit).get("messages") or []
 
 
 def _user_chat_unread_conversations(username: str, client_id: str, include_firebase: bool = True) -> list[dict]:
@@ -26896,6 +27068,23 @@ def _shared_sync_auto_interval_seconds() -> int:
     except Exception:
         valor = 900
     return max(600, min(valor, 3600))
+
+
+def _shared_sync_auto_enabled() -> bool:
+    valor = _env_texto("JK_SHARED_SYNC_AUTO_ENABLED", "SHARED_SYNC_AUTO_ENABLED").lower()
+    return valor in {"1", "true", "sim", "yes", "on"}
+
+
+def _shared_sync_manual_only_payload(direction: str) -> dict:
+    return {
+        "success": True,
+        "direction": direction,
+        "results": [],
+        "skipped": [{
+            "reason": "manual_only",
+            "message": "Sincronizacao automatica desativada; use envio/recebimento manual.",
+        }],
+    }
 
 
 def _shared_sync_auto_rate_limit(endpoint: str, sessao: dict, machine_id: str = "") -> Optional[dict]:
@@ -29772,7 +29961,8 @@ def _shared_sync_link_public(item: dict, sessao: Optional[dict] = None) -> dict:
         "scope_labels": [SHARED_SYNC_SCOPES[scope].get("label") or scope for scope in scopes],
         "source_keep_synced": bool(item.get("source_keep_synced")),
         "target_keep_synced": bool(item.get("target_keep_synced")),
-        "auto_sync_enabled": bool(item.get("active", True) and item.get("source_keep_synced") and item.get("target_keep_synced")),
+        "auto_sync_enabled": bool(_shared_sync_auto_enabled() and item.get("active", True) and item.get("source_keep_synced") and item.get("target_keep_synced")),
+        "manual_only": not _shared_sync_auto_enabled(),
         "created_at": item.get("created_at") or "",
         "updated_at": item.get("updated_at") or "",
         "direction": "source" if source else "target" if target else "",
@@ -30672,6 +30862,8 @@ def shared_sync_user_shares_auto_push(
     client_id: str = Depends(get_tenant_id),
 ):
     sessao = _shared_sync_session(authorization, client_id)
+    if not _shared_sync_auto_enabled():
+        return _shared_sync_manual_only_payload("auto-push")
     limitado = _shared_sync_auto_rate_limit("user-shares-auto-push", sessao, payload.machine_id or "")
     if limitado:
         return {"success": True, "direction": "auto-push", "results": [], "skipped": [limitado]}
@@ -30711,6 +30903,8 @@ def shared_sync_user_shares_auto(
     client_id: str = Depends(get_tenant_id),
 ):
     sessao = _shared_sync_session(authorization, client_id)
+    if not _shared_sync_auto_enabled():
+        return _shared_sync_manual_only_payload("user-share-auto")
     limitado = _shared_sync_auto_rate_limit("user-shares-auto", sessao, payload.machine_id or "")
     if limitado:
         return {"success": True, "direction": "user-share-auto", "results": [], "skipped": [limitado]}
@@ -30814,6 +31008,8 @@ def shared_sync_machine_auto(
     client_id: str = Depends(get_tenant_id),
 ):
     sessao = _shared_sync_session(authorization, client_id)
+    if not _shared_sync_auto_enabled():
+        return _shared_sync_manual_only_payload("machine-auto")
     limitado = _shared_sync_auto_rate_limit("machine-auto", sessao, payload.machine_id or "")
     if limitado:
         return {"success": True, "direction": "machine-auto", "results": [], "skipped": [limitado]}
@@ -30855,6 +31051,8 @@ def shared_sync_auto_pull(
     client_id: str = Depends(get_tenant_id),
 ):
     sessao = _shared_sync_session(authorization, client_id)
+    if not _shared_sync_auto_enabled():
+        return _shared_sync_manual_only_payload("auto-pull")
     limitado = _shared_sync_auto_rate_limit("auto-pull", sessao, payload.machine_id or "")
     if limitado:
         return {"success": True, "direction": "auto-pull", "results": [], "skipped": [limitado]}
@@ -31109,13 +31307,12 @@ def admin_listar_usuarios(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
-    _require_full_admin_user_management(authorization, client_id)
-    client_norm = str(client_id or "default").strip() or "default"
-    cache_key = f"admin-users:{client_norm}:v2"
+    acesso = _require_full_admin_user_management(authorization, client_id)
+    cache_key = f"admin-users:global:{acesso.get('username')}:v3"
     cached = _backend_cache_get(cache_key)
     if isinstance(cached, dict):
         return cached
-    users, backend = _listar_usuarios_admin_sql(return_backend=True, client_id=client_norm)
+    users, backend = _listar_usuarios_admin_sql(return_backend=True, client_id=None, prefer_index=False)
     payload = {"success": True, "users": users, "backend": backend, "cache_ttl_seconds": 60}
     _backend_cache_set(cache_key, payload, ttl_seconds=60)
     return payload
@@ -32150,6 +32347,7 @@ def user_chat_history(
     username: str,
     client_id: Optional[str] = None,
     limit: Optional[int] = 80,
+    force_remote: Optional[bool] = False,
     authorization: Optional[str] = Header(default=None),
 ):
     sessao = _payload_sessao_por_authorization(authorization)
@@ -32157,8 +32355,25 @@ def user_chat_history(
     if not other_username:
         raise HTTPException(status_code=400, detail="Informe o usuario da conversa.")
     _destino_usuario, other_client_id = _user_chat_resolver_destino(sessao, other_username, client_id)
-    _user_chat_mark_read_between(sessao["username"], sessao["client_id"], other_username, other_client_id)
-    mensagens = _user_chat_history(sessao["username"], sessao["client_id"], other_username, other_client_id, limit or 80)
+    historico = _user_chat_history_cached(
+        sessao["username"],
+        sessao["client_id"],
+        other_username,
+        other_client_id,
+        limit or 80,
+        force_remote=bool(force_remote),
+    )
+    _user_chat_mark_read_between(
+        sessao["username"],
+        sessao["client_id"],
+        other_username,
+        other_client_id,
+        sync_firebase=False,
+    )
+    limit_final = max(1, min(int(limit or 80), 200))
+    mensagens = _user_chat_local_between(sessao["username"], sessao["client_id"], other_username, other_client_id)
+    mensagens.sort(key=lambda item: int(item.get("created_ts") or 0))
+    mensagens = mensagens[-limit_final:]
     return {
         "success": True,
         "current_user": sessao["username"],
@@ -32167,6 +32382,13 @@ def user_chat_history(
         "other_client_id": other_client_id,
         "other_name": _user_chat_user_name(other_username),
         "messages": mensagens,
+        "history_source": historico.get("history_source") or "local",
+        "remote_checked": bool(historico.get("remote_checked")),
+        "remote_reason": historico.get("remote_reason") or "",
+        "remote_after_ts": int(historico.get("remote_after_ts") or 0),
+        "remote_imported": int(historico.get("remote_imported") or 0),
+        "local_count": int(historico.get("local_count") or len(mensagens)),
+        "local_latest_ts": int(historico.get("local_latest_ts") or 0),
     }
 
 
@@ -47403,18 +47625,21 @@ def favoritos_historico_put(
 ):
     username = _extrair_username_do_request(request)
     payload = _favoritos_salvar_historico(client_id, username, req.historico or [])
-    realtime_sync = _favoritos_propagar_historico_para_usuarios(client_id, username, payload)
     evento_publicado = False
-    if not realtime_sync.get("skipped"):
-        evento_publicado = _favoritos_historico_publicar_evento_realtime(
-            client_id,
-            username,
-            {
-                "updated_users": realtime_sync.get("updated_users") or [],
-                "eligible_count": len(realtime_sync.get("eligible_users") or []),
-                "item_count": len(payload.get("historico") or []),
-            },
-        )
+    if _shared_sync_auto_enabled():
+        realtime_sync = _favoritos_propagar_historico_para_usuarios(client_id, username, payload)
+        if not realtime_sync.get("skipped"):
+            evento_publicado = _favoritos_historico_publicar_evento_realtime(
+                client_id,
+                username,
+                {
+                    "updated_users": realtime_sync.get("updated_users") or [],
+                    "eligible_count": len(realtime_sync.get("eligible_users") or []),
+                    "item_count": len(payload.get("historico") or []),
+                },
+            )
+    else:
+        realtime_sync = _shared_sync_manual_only_payload("favoritos-historico")
     return {
         "success": True,
         "historico": payload.get("historico") or [],
@@ -47432,6 +47657,13 @@ def favoritos_historico_realtime_sync(
     client_id: str = Depends(get_tenant_id),
 ):
     username = _extrair_username_do_request(request)
+    if not _shared_sync_auto_enabled():
+        payload = _favoritos_carregar_historico(client_id, username)
+        return {
+            **_shared_sync_manual_only_payload("favoritos-historico-realtime"),
+            "historico": payload.get("historico") or [],
+            "updated_at": payload.get("updated_at"),
+        }
     resultado = _favoritos_reconciliar_historico_usuario(client_id, username)
     payload = resultado.get("payload") or _favoritos_carregar_historico(client_id, username)
     result_item = {

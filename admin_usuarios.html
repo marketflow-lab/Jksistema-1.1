@@ -778,7 +778,7 @@
                     </div>
                     <label class="check-item">
                         <input id="machineSyncEnabled" type="checkbox">
-                        <span>Ativar sincronização automática entre as máquinas em que estou logado</span>
+                        <span>Permitir sincronização manual entre as máquinas em que estou logado</span>
                     </label>
                     <div class="machine-sync-grid">
                         <div>
@@ -814,7 +814,7 @@
                         </div>
                         <label class="check-item" style="margin:24px 0 0;">
                             <input id="userShareKeepSynced" type="checkbox">
-                            <span>Quero manter estes dados sincronizados</span>
+                            <span>Quero permitir sincronização manual destes dados</span>
                         </label>
                     </div>
                     <label>Dados a compartilhar</label>
@@ -1584,10 +1584,9 @@
                     <div class="sync-user-list ${mode === 'selected' ? 'is-visible' : ''}" data-sync-users="${escaparHtml(scope)}">
                         ${userChecks || '<div class="small">Nenhum usuário carregado.</div>'}
                     </div>
-                    <label class="sync-auto-row">
-                        <input type="checkbox" data-sync-auto-pull="${escaparHtml(scope)}" ${cfg.auto_pull !== false ? 'checked' : ''}>
-                        <span>Restaurar automaticamente quando houver dados mais novos</span>
-                    </label>
+                    <div class="sync-auto-row">
+                        <span>Restauração automática desativada. Use enviar/receber manualmente.</span>
+                    </div>
                     ${shareUsersControl}
                     <div class="sync-remote">${escaparHtml(remoteText)}</div>
                 </div>
@@ -1600,7 +1599,6 @@
         Object.keys((compartilhamentoCache && compartilhamentoCache.scopes) || {}).forEach(scope => {
             const enabledEl = document.querySelector(`[data-sync-enabled="${scope}"]`);
             const modeEl = document.querySelector(`[data-sync-mode="${scope}"]`);
-            const autoPullEl = document.querySelector(`[data-sync-auto-pull="${scope}"]`);
             const shareUsersEl = document.querySelector(`[data-sync-share-users="${scope}"]`);
             const selectedUsers = Array.from(document.querySelectorAll(`[data-sync-user="${scope}"]:checked`))
                 .map(el => String(el.value || '').trim().toLowerCase())
@@ -1608,7 +1606,7 @@
             scopes[scope] = {
                 enabled: !!(enabledEl && enabledEl.checked),
                 allowed_users: modeEl && modeEl.value === 'selected' ? selectedUsers : [],
-                auto_pull: !(autoPullEl && autoPullEl.checked === false),
+                auto_pull: false,
                 auto_push: false,
                 share_between_users: !!(shareUsersEl && shareUsersEl.checked),
                 conflict: 'latest_wins'
@@ -1959,7 +1957,7 @@
         const pendencias = links
             .map(link => ({ link, resumo: statusEscoposVinculo(link) }))
             .filter(item => Number(item.resumo.pending || 0) > 0);
-        const automaticos = links.filter(link => link && link.active && link.auto_sync_enabled);
+        const manuais = links.filter(link => link && link.active);
         const rows = [];
         const processoAtual = linhaProcessoAtualCompartilhamento();
         if (processoAtual) rows.push(processoAtual);
@@ -2004,9 +2002,9 @@
         if (!rows.length && (invites.length || links.length)) {
             rows.push({
                 kind: 'ok',
-                title: automaticos.length ? 'Sincronização em dia' : 'Sem pendências no momento',
-                detail: automaticos.length
-                    ? `${automaticos.length} vínculo(s) automático(s) ativo(s).`
+                title: manuais.length ? 'Sincronização manual pronta' : 'Sem pendências no momento',
+                detail: manuais.length
+                    ? `${manuais.length} vínculo(s) disponível(is) para enviar/receber manualmente.`
                     : 'Não há dados novos para receber agora.'
             });
         }
@@ -2101,7 +2099,7 @@
             if (invite.status === 'pending' && preparando) status = 'preparando dados';
             if (invite.status === 'pending' && preparoParcial) status = 'parcial: alguns dados não foram preparados';
             if (preparoFalhou) status = 'falhou ao preparar dados';
-            const syncText = invite.source_keep_synced ? 'Origem quer manter sincronizado.' : 'Envio único pela origem.';
+            const syncText = invite.source_keep_synced ? 'Origem permitiu sincronização manual.' : 'Envio único pela origem.';
             const erros = Array.isArray(invite.prepare_errors) ? invite.prepare_errors : [];
             const errosHtml = erros.length
                 ? `<div class="muted-line">Falhas: ${escaparHtml(erros.map(err => `${err.label || err.scope}: ${err.message || 'erro'}`).join(' | '))}</div>`
@@ -2113,7 +2111,7 @@
             const actions = receivedPending && !preparando && !preparoFalhou ? `
                 <label class="sync-auto-row">
                     <input type="checkbox" id="acceptSync_${escaparHtml(invite.id)}">
-                    <span>Também quero manter sincronizado</span>
+                    <span>Também quero permitir sincronização manual</span>
                 </label>
                 <div class="row">
                     <button class="btn-success" onclick="aceitarConviteCompartilhamentoUsuario('${escaparHtml(invite.id)}')">Aceitar</button>
@@ -2162,9 +2160,7 @@
                 : `${link.source_client_id} - ${link.source_name || link.source_username}`;
             const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
             const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
-            const syncStatus = link.auto_sync_enabled
-                ? 'Pronto para sincronização manual'
-                : `sincronização manual incompleta (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
+            const syncStatus = `Sincronização manual (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
             const dados = (link.scope_labels || []).join(', ');
             return `
                 <tr>
@@ -2174,16 +2170,15 @@
                     </td>
                     <td title="${escaparHtml(dados)}">${escaparHtml(dados)}</td>
                     <td>
-                        <span class="share-status-pill ${link.auto_sync_enabled ? 'ok' : 'pending'}">${escaparHtml(link.auto_sync_enabled ? 'Manual' : 'Parcial')}</span>
+                        <span class="share-status-pill ok">Manual</span>
                         <div class="muted-line">${escaparHtml(syncStatus)}</div>
                         <label class="sync-auto-row">
                             <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
-                            <span>Permitir sincronizar do meu lado</span>
+                            <span>Permitir sincronização manual do meu lado</span>
                         </label>
                     </td>
                     <td>
                         <div class="share-row-actions">
-                        <button class="btn-primary" onclick="rodarSincronizacaoAutomaticaEntreUsuarios(false)">Sincronizar agora</button>
                         <button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>
                         <button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Receber agora</button>
                         <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
@@ -2251,7 +2246,7 @@
             const prepareStatus = String(invite.prepare_status || '').toLowerCase();
             return status === 'pending' && prepareStatus === 'preparing';
         })) return true;
-        return links.some(link => Number(((link.sync_status || {}).pending_receive) || 0) > 0);
+        return false;
     }
 
     function intervaloAtualizacaoCompartilhamento(payload = compartilhamentoUsuariosCache) {
@@ -2259,8 +2254,6 @@
         if (precisaAtualizacaoRapidaCompartilhamento(payload)) return 30000;
         const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
         if (invites.some(invite => String(invite.status || '').toLowerCase() === 'pending')) return 60000;
-        const links = Array.isArray(payload && payload.links) ? payload.links : [];
-        if (links.some(link => link && link.active && link.auto_sync_enabled)) return 2 * 60 * 1000;
         return 5 * 60 * 1000;
     }
 
@@ -2353,8 +2346,8 @@
         return {
             enabled: !!document.getElementById('machineSyncEnabled')?.checked,
             scopes: scopesSelecionadosSincronizacaoMinhasMaquinas(),
-            auto_pull: true,
-            auto_push: true
+            auto_pull: false,
+            auto_push: false
         };
     }
 
@@ -2651,45 +2644,8 @@
     }
 
     async function rodarSincronizacaoAutomaticaEntreUsuarios(silencioso = true) {
-        if (sincronizacaoUsuariosAutomaticaRodando) return false;
-        const links = Array.isArray(compartilhamentoUsuariosCache && compartilhamentoUsuariosCache.links)
-            ? compartilhamentoUsuariosCache.links
-            : [];
-        const ativos = links.filter(link => link && link.active && link.auto_sync_enabled);
-        if (!ativos.length) {
-            if (!silencioso) setUserShareStatus('Nenhum vínculo com sincronização contínua ativa.', true);
-            return false;
-        }
-        sincronizacaoUsuariosAutomaticaRodando = true;
-        if (!silencioso) setUserShareProcesso('Sincronização automática', 0, 'Conferindo vínculos ativos.');
-        try {
-            if (!silencioso) setUserShareProcesso('Sincronização automática', 30, 'Recebendo e enviando novidades.');
-            const resp = await fetch('/api/shared-sync/user-shares/auto', {
-                method: 'POST',
-                headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ machine_id: machineIdAtual() })
-            });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro na sincronização automática.');
-            const results = Array.isArray(data.results) ? data.results : [];
-            const recebeu = results.some(item => item && item.direction === 'pull');
-            if (recebeu) await atualizarCacheHistoricoFavoritosSincronizado(results);
-            if (!silencioso) setUserShareProcesso('Sincronização automática', 80, 'Atualizando status na tela.');
-            if (results.length) {
-                await carregarCompartilhamentoEntreUsuarios({ forcar: true });
-            }
-            if (!silencioso && results.length) {
-                setUserShareProcesso('Sincronização automática', 100, 'Concluída. ' + resumoResultadosSync(results));
-            } else if (!silencioso) {
-                setUserShareProcesso('Sincronização automática', 100, 'Conferida. Nenhuma novidade.');
-            }
-            return true;
-        } catch (error) {
-            if (!silencioso) setUserShareProcesso('Sincronização automática', 100, error.message || 'Erro na sincronização automática.', true);
-            return false;
-        } finally {
-            sincronizacaoUsuariosAutomaticaRodando = false;
-        }
+        if (!silencioso) setUserShareStatus('Sincronização automática desativada. Use Enviar agora ou Receber agora em cada vínculo.', true);
+        return false;
     }
 
     function normalizarChaveFisicaOnline(valor) {
@@ -2946,8 +2902,10 @@
         usuariosCache = data.users || [];
         aplicarFiltrosUsuarios();
         await carregarOnlineUsuarios();
-        await carregarSincronizacaoMinhasMaquinas();
-        await carregarCompartilhamentoEntreUsuarios();
+        if (modoCompartilharEmbutido || secaoAtual === 'compartilhar') {
+            await carregarSincronizacaoMinhasMaquinas();
+            await carregarCompartilhamentoEntreUsuarios();
+        }
         setStatus('Lista atualizada.');
     }
 

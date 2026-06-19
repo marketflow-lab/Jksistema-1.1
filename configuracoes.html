@@ -455,7 +455,7 @@
                                 <div id="userNumberBadge" style="display:none; margin-bottom:10px;"><span id="userNumberDisplay" style="background:#172233; border:1px solid #2b4564; border-radius:6px; padding:4px 12px; color:#9bd1ff; font-weight:bold; font-size:0.95rem; font-family:monospace;"></span></div>
                                 <label class="label">Usuário</label><input id="username" type="text" placeholder="Ex.: admin">
                                 <label class="label">Nome</label><input id="name" type="text" placeholder="Nome exibido">
-                                <label class="label">E-mail Google</label><input id="email" type="email" placeholder="email@empresa.com">
+                                <div class="grid-2"><div><label class="label">E-mail Google</label><input id="email" type="email" placeholder="email@empresa.com"></div><div><label class="label">Empresa</label><input id="empresa" type="text" placeholder="Ex.: JK Peças"></div></div>
                                 <div class="grid-2"><div><label class="label">Cliente</label><input id="clientId" type="text" value="default"></div><div><label class="label">Validade</label><input id="validUntil" type="text" placeholder="15/04/2026"></div></div>
                                 <div class="grid-2"><div><label class="label">Senha</label><input id="password" type="password" placeholder="Informe para criar ou trocar"></div><div><label class="label">Máquina principal</label><input id="machineId" type="text" placeholder="Gerado no primeiro login"></div></div>
                                 <div class="grid-2"><div><label class="label">Limite de máquinas</label><input id="maxMachines" type="number" min="0" value="1" placeholder="1"></div><div><label class="label">Observação</label><input value="0 = ilimitado" disabled></div></div>
@@ -565,6 +565,7 @@
     const usernameInput = document.getElementById('username');
     const nameInput = document.getElementById('name');
     const emailInput = document.getElementById('email');
+    const empresaInput = document.getElementById('empresa');
     const clientIdInput = document.getElementById('clientId');
     const validUntilInput = document.getElementById('validUntil');
     const passwordInput = document.getElementById('password');
@@ -803,6 +804,7 @@
         usernameInput.value = '';
         nameInput.value = '';
         emailInput.value = '';
+        empresaInput.value = '';
         clientIdInput.value = proximoNumeroCliente();
         validUntilInput.value = '';
         passwordInput.value = '';
@@ -836,7 +838,7 @@
             const numFormatado = String(user.client_id || '').padStart(6, '0');
             item.innerHTML = `
                 <div class="name">#${numFormatado} — ${user.username}</div>
-                <div class="meta">${user.name || ''} • ${user.email || 'sem e-mail Google'} • ${user.active ? 'Ativo' : 'Inativo'} • Dispositivos: ${user.machine_count || 0}/${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div>
+                <div class="meta">${user.name || ''} • ${user.email || 'sem e-mail Google'} • ${user.empresa || 'sem empresa'} • ${user.active ? 'Ativo' : 'Inativo'} • Dispositivos: ${user.machine_count || 0}/${user.max_machines === 0 ? '∞' : (user.max_machines || 1)}</div>
             `;
             item.addEventListener('click', () => preencherFormularioUsuario(user));
             usersList.appendChild(item);
@@ -850,6 +852,7 @@
         usernameInput.value = user.username || '';
         nameInput.value = user.name || '';
         emailInput.value = user.email || '';
+        empresaInput.value = user.empresa || '';
         clientIdInput.value = user.client_id || 'default';
         validUntilInput.value = normalizarDataSistema(user.valid_until || '');
         passwordInput.value = '';
@@ -1060,6 +1063,7 @@
             password: passwordInput.value,
             name: nameInput.value.trim(),
             email: emailInput.value.trim(),
+            empresa: empresaInput.value.trim(),
             client_id: clientIdInput.value.trim() || 'default',
             valid_until: normalizarDataSistema(validUntilInput.value),
             machine_id: machineIdInput.value.trim(),
