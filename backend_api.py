@@ -32100,12 +32100,49 @@ def admin_listar_usuarios_online(
     acesso = _require_online_presence_access(authorization, "")
     permissoes = acesso.get("permissions") if isinstance(acesso.get("permissions"), dict) else {}
     pode_ver_campos_admin = bool(permissoes.get("full") is True or permissoes.get("admin_usuarios") is True)
-    usuarios = _listar_usuarios_admin_sql(client_id=acesso.get("client_id"))
-    return _montar_payload_usuarios_online(
+    client_norm = _user_chat_norm_client(acesso.get("client_id") or "default")
+    usuarios_todos = _listar_usuarios_admin_sql(client_id=None)
+    usuario_atual = {}
+    username_atual = _user_chat_norm_username(acesso.get("username") or "")
+    for usuario in usuarios_todos or []:
+        if _user_chat_norm_username((usuario or {}).get("username")) == username_atual:
+            usuario_atual = dict(usuario or {})
+            break
+    if not usuario_atual:
+        try:
+            usuario_atual = _obter_usuario_sql(username_atual)
+        except Exception:
+            usuario_atual = {}
+
+    empresa_atual = _normalizar_empresa(usuario_atual.get("empresa") or usuario_atual.get("company") or usuario_atual.get("company_name"))
+    empresa_key = _empresa_chat_key(empresa_atual)
+    if empresa_key:
+        usuarios = [
+            dict(usuario)
+            for usuario in (usuarios_todos or [])
+            if isinstance(usuario, dict)
+            and _empresa_chat_key(usuario.get("empresa") or usuario.get("company") or usuario.get("company_name")) == empresa_key
+        ]
+        presence_scope = "empresa"
+    else:
+        usuarios = [
+            dict(usuario)
+            for usuario in (usuarios_todos or [])
+            if isinstance(usuario, dict)
+            and _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm
+        ]
+        presence_scope = "client_id"
+
+    payload = _montar_payload_usuarios_online(
         usuarios,
         include_admin_fields=pode_ver_campos_admin,
         include_machine_details=True,
     )
+    payload["current_user"] = username_atual
+    payload["current_client_id"] = client_norm
+    payload["empresa"] = empresa_atual
+    payload["presence_scope"] = presence_scope
+    return payload
 
 
 def user_machine_heartbeat(
@@ -32286,7 +32323,7 @@ def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
         usuarios,
         include_admin_fields=False,
         include_machine_details=False,
-        use_remote_presence=False,
+        use_remote_presence=True,
     )
     payload["current_user"] = sessao["username"]
     payload["current_client_id"] = sessao["client_id"]

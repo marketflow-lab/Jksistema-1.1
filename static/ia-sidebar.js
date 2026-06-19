@@ -2791,9 +2791,8 @@
       if (!el) return;
       const listaBase = (Array.isArray(usuarios) ? usuarios : []).filter(user => user && user.username);
       const vistos = new Set(listaBase.map(user => _msgChaveUsuario(user.username, user.client_id)));
-      const extrasNaoLidas = msgContatosAutoritativos
-        ? []
-        : Array.from(msgNaoLidasPorUsuario.values()).filter(item => item && item.username && !vistos.has(_msgChaveUsuario(item.username, item.client_id)));
+      const extrasNaoLidas = Array.from(msgNaoLidasPorUsuario.values())
+        .filter(item => item && item.username && !vistos.has(_msgChaveUsuario(item.username, item.client_id)));
       const lista = listaBase.concat(extrasNaoLidas.map(item => ({
         username: item.username,
         client_id: item.client_id,
