@@ -2942,11 +2942,9 @@
             const users = data.users.filter(user => user && user.active !== false);
             if (contatosAutorizados) {
               const contatosComPresenca = _msgMesclarPresencaUsuarios(contatosAutorizados, users);
-              if (_msgListaTemPresencaOnline(contatosComPresenca)) {
-                msgContatosAutoritativos = true;
-                _msgSalvarUsuariosCache(contatosComPresenca);
-                return contatosComPresenca;
-              }
+              msgContatosAutoritativos = true;
+              _msgSalvarUsuariosCache(contatosComPresenca);
+              if (_msgListaTemPresencaOnline(contatosComPresenca)) return contatosComPresenca;
             } else {
               msgContatosAutoritativos = false;
               _msgSalvarUsuariosCache(users);

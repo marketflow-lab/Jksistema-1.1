@@ -32199,6 +32199,27 @@ def _user_chat_obter_usuario(username: str, usuarios_locais: Optional[dict] = No
     return _obter_usuario_sql(username_norm)
 
 
+def _user_chat_encontrar_usuario_sessao(sessao: dict, usuarios: list[dict], usuarios_locais: Optional[dict] = None) -> dict:
+    username_norm = _user_chat_norm_username((sessao or {}).get("username"))
+    client_norm = _user_chat_norm_client((sessao or {}).get("client_id") or "default")
+    if isinstance(usuarios_locais, dict):
+        usuario_local = usuarios_locais.get(username_norm)
+        if isinstance(usuario_local, dict):
+            return dict(usuario_local)
+    for usuario in usuarios or []:
+        if not isinstance(usuario, dict):
+            continue
+        if (
+            _user_chat_norm_username(usuario.get("username")) == username_norm
+            and _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm
+        ):
+            return dict(usuario)
+    try:
+        return _obter_usuario_sql(username_norm)
+    except Exception:
+        return {}
+
+
 def _user_chat_resolver_destino(sessao: dict, username: str, client_id: Optional[str] = None) -> tuple[dict, str]:
     destino_username = _user_chat_norm_username(username)
     if not destino_username:
@@ -32220,7 +32241,8 @@ def _user_chat_resolver_destino(sessao: dict, username: str, client_id: Optional
 def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     usuarios_locais = _user_chat_usuarios_locais()
-    usuario_atual = _user_chat_obter_usuario(sessao["username"], usuarios_locais)
+    usuarios_admin = _listar_usuarios_admin_sql(client_id=None)
+    usuario_atual = _user_chat_encontrar_usuario_sessao(sessao, usuarios_admin, usuarios_locais)
     if not _login_usuario_ativo(usuario_atual):
         raise HTTPException(status_code=403, detail="Usuario inativo.")
     client_norm = str(sessao.get("client_id") or "default").strip() or "default"
@@ -32233,18 +32255,29 @@ def user_chat_contacts(authorization: Optional[str] = Header(default=None)):
     )
     usuarios = _backend_cache_get(cache_key)
     if not isinstance(usuarios, list):
-        if empresa_key:
-            usuarios = [
+        fonte_usuarios = [
+            dict(usuario)
+            for usuario in (usuarios_admin or [])
+            if isinstance(usuario, dict)
+        ]
+        if not fonte_usuarios:
+            fonte_usuarios = [
                 dict(usuario)
                 for usuario in usuarios_locais.values()
                 if isinstance(usuario, dict)
+            ]
+        if empresa_key:
+            usuarios = [
+                dict(usuario)
+                for usuario in fonte_usuarios
+                if isinstance(usuario, dict)
                 and bool(usuario.get("active", True))
-                and _empresa_chat_key(usuario.get("empresa")) == empresa_key
+                and _empresa_chat_key(usuario.get("empresa") or usuario.get("company") or usuario.get("company_name")) == empresa_key
             ]
         else:
             usuarios = [
                 dict(usuario)
-                for usuario in usuarios_locais.values()
+                for usuario in fonte_usuarios
                 if isinstance(usuario, dict) and bool(usuario.get("active", True))
                 and _user_chat_norm_client(usuario.get("client_id") or "default") == client_norm
             ]
