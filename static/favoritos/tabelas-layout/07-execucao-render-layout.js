@@ -13,7 +13,7 @@
                 limparBotaoContinuarLoginAvantProFavoritos();
             }
             mlFavoritosEmExecucao = false;
-            mlFavoritosExecucaoEmSegundoPlano = false;
+            mlFavoritosExecucaoEmSegundoPlano = true;
             mlFavoritosCancelado = false;
             mlFavoritosPausado = false;
             mostrarBalaoFavoritosStatus('Avant Pro confirmado. Rotina antiga removida; aguardando a nova etapa ser criada.', {
@@ -358,7 +358,7 @@
             }
 
             mostrarBalaoFavoritosStatus(`Abrindo pesquisa "${termo}" no Mercado Livre...`, {
-                manterNavegadorVisivel: true,
+                manterNavegadorVisivel: !navegadorMlEmSegundoPlano(),
                 larga: true,
                 titulo: opcoes.primeiraPesquisa ? 'Primeira pesquisa' : 'Pesquisa'
             });
@@ -368,7 +368,7 @@
                 subtitulo: opcoes.subtitulo || `SKU ${info && info.sku || ''} - Pesquisa ${pesquisa && pesquisa.campo || ''}`,
                 mostrarFavoritos: true,
                 browserCompleto: true,
-                forcarExibicao: true,
+                forcarExibicao: !navegadorMlEmSegundoPlano(),
                 aguardarPesquisaMs: 900,
                 apenasAbrirUrl: true,
                 confirmarPesquisa: false,
@@ -536,19 +536,17 @@
 
             mostrarBalaoFavoritosStatus(`Avant Pro confirmado. Abrindo a primeira pesquisa de "${termo}"...`, {
                 erro: false,
-                manterNavegadorVisivel: true,
+                manterNavegadorVisivel: false,
                 larga: true,
                 titulo: 'Primeira pesquisa'
             });
-            if (typeof mudarAba === 'function') {
-                try { mudarAba('navegador'); } catch (_err) {}
-            }
+            await prepararNavegadorFavoritosBackground();
             abrirBalaoResultadosMl({
                 titulo: 'Fazendo Favorito! Aguarde...',
                 subtitulo: `${selecionadosLista.length} SKU(s), ${quantidadePesquisas} pesquisa(s) por SKU`,
                 mostrarFavoritos: true,
                 browserCompleto: true,
-                forcarExibicao: true
+                forcarExibicao: false
             });
 
             const grupos = [];
