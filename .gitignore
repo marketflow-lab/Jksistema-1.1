@@ -58,6 +58,15 @@ info/electron_user_data_*/
 info/vertex_agent_api_key.txt
 info/*/_shared_sync_backups/
 info/*/tmp/
+info/*/favoritos_ml_cache/
+info/*/favoritos_jobs/
+info/*/favoritos_historico_*.json
+info/*/favoritos_simulador_*.json
+info/*/favoritos_historico_*.db-*
+info/*/codex_assistant/cache/*.json
+info/*/codex_assistant/scheduler_state.json
+info/*/codex_assistant/reports/*/metadata.json
+info/*/codex_assistant/**/*.db-*
 info/promo_jobs/
 info/promo_worker_jobs/
 info/**/*.db
