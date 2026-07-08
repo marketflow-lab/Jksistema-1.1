@@ -1,0 +1,5 @@
+{
+  "name": "jk-favoritos-search-test-app",
+  "private": true,
+  "main": "../test_favoritos_search_extract_electron.js"
+}

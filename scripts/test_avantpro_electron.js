@@ -92,6 +92,39 @@ async function scanPage(win) {
     return await win.webContents.executeJavaScript(`
         (function () {
             var avantNodes = Array.prototype.slice.call(document.querySelectorAll('[class*="avant"], [id*="avant"], .created-time-card, .avantpro-product-info-row'));
+            var norm = function (value) {
+                var text = String(value || '').replace(/\\s+/g, ' ').trim();
+                try { text = text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
+                return text.toLowerCase();
+            };
+            var visible = function (node) {
+                if (!node || !node.getBoundingClientRect) return false;
+                var rect = node.getBoundingClientRect();
+                var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+                    && (!style || (style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0));
+            };
+            var textOf = function (node) {
+                if (!node) return '';
+                return [
+                    node.innerText,
+                    node.textContent,
+                    node.value,
+                    node.getAttribute && node.getAttribute('aria-label'),
+                    node.getAttribute && node.getAttribute('title'),
+                    node.getAttribute && node.getAttribute('placeholder'),
+                    node.getAttribute && node.getAttribute('class'),
+                    node.getAttribute && node.getAttribute('id')
+                ].filter(Boolean).join(' ');
+            };
+            var emailInputs = Array.prototype.slice.call(document.querySelectorAll('input:not([type="hidden"]), textarea, [role="textbox"], [contenteditable="true"]'))
+                .filter(function (node) {
+                    return visible(node) && /email|e-?mail|mail|credenciais|avant/.test(norm(textOf(node)));
+                });
+            var confirmarButtons = Array.prototype.slice.call(document.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"], a'))
+                .filter(function (node) {
+                    return visible(node) && /confirmar|entrar|acessar|login|iniciar|continuar|enviar|comecar|começar/.test(norm(textOf(node)));
+                });
             var scripts = performance.getEntriesByType('resource')
                 .map(function (entry) { return entry.name || ''; })
                 .filter(function (name) { return /chrome-extension|avantpro/i.test(name); });
@@ -101,6 +134,21 @@ async function scanPage(win) {
                 readyState: document.readyState,
                 bodyTextSample: String(document.body && document.body.innerText || '').slice(0, 500),
                 hasChromeRuntime: !!(window.chrome && chrome.runtime),
+                hasThanksMessage: /obrigado\\s+por\\s+usar\\s+nossa\\s+extensao|obrigado\\s+por\\s+usar\\s+nossa\\s+extens[aã]o/.test(norm(document.body && document.body.innerText || '')),
+                emailInputCount: emailInputs.length,
+                confirmarButtonCount: confirmarButtons.length,
+                emailInputSamples: emailInputs.slice(0, 5).map(function (node) {
+                    var rect = node.getBoundingClientRect();
+                    return {
+                        tag: node.tagName,
+                        type: node.type || '',
+                        id: node.id || '',
+                        className: String(node.className || ''),
+                        placeholder: node.getAttribute && node.getAttribute('placeholder') || '',
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2)
+                    };
+                }),
                 avantNodeCount: avantNodes.length,
                 avantNodeSamples: avantNodes.slice(0, 12).map(function (node) {
                     return {
@@ -114,6 +162,155 @@ async function scanPage(win) {
             };
         })();
     `, true);
+}
+
+async function localizarFerramentasAvantPro(win) {
+    return await win.webContents.executeJavaScript(`
+        (function () {
+            var normalizar = function (value) {
+                var text = String(value || '').replace(/\\s+/g, ' ').trim();
+                try { text = text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
+                return text.toLowerCase();
+            };
+            var visivel = function (node) {
+                if (!node || !node.getBoundingClientRect) return false;
+                var rect = node.getBoundingClientRect();
+                var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+                    && rect.left < (window.innerWidth || document.documentElement.clientWidth || 0)
+                    && rect.top < (window.innerHeight || document.documentElement.clientHeight || 0)
+                    && (!style || (style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0));
+            };
+            var textoNode = function (node) {
+                if (!node) return '';
+                return [
+                    node.innerText,
+                    node.textContent,
+                    node.value,
+                    node.getAttribute && node.getAttribute('aria-label'),
+                    node.getAttribute && node.getAttribute('title'),
+                    node.getAttribute && node.getAttribute('class'),
+                    node.getAttribute && node.getAttribute('id')
+                ].filter(Boolean).join(' ');
+            };
+            var contextoNode = function (node) {
+                var parts = [textoNode(node)];
+                var current = node && node.parentElement;
+                for (var level = 0; current && level < 5; level += 1) {
+                    parts.push(textoNode(current));
+                    parts.push(current.innerText || current.textContent || '');
+                    current = current.parentElement;
+                }
+                return normalizar(parts.filter(Boolean).join(' '));
+            };
+            var escolherAlvoClique = function (node) {
+                var candidatos = [];
+                var incluir = function (item, bonus) {
+                    if (!item || candidatos.indexOf(item) >= 0 || !visivel(item)) return;
+                    var rect = item.getBoundingClientRect();
+                    if (rect.width < 24 || rect.height < 12) return;
+                    var texto = normalizar(textoNode(item));
+                    var alvo = texto + ' ' + contextoNode(item);
+                    if (!/\\bferramentas\\b|\\btools\\b/.test(alvo)) return;
+                    if (/assine\\s+ja|assinar|suporte/.test(texto) && !/^ferramentas$|^tools$/.test(texto)) return;
+                    var area = rect.width * rect.height;
+                    var score = Number(bonus) || 0;
+                    if (/button|a/i.test(item.tagName || '')) score += 80;
+                    if (item.getAttribute && item.getAttribute('role') === 'button') score += 70;
+                    if (rect.width >= 70 && rect.height >= 28 && rect.width <= 280 && rect.height <= 120) score += 90;
+                    if (/avant|speed|dial|menu|tool|ferramentas/.test(String(item.className || '') + ' ' + String(item.id || ''))) score += 50;
+                    if (area > 1200 && area < 32000) score += 40;
+                    candidatos.push({ node: item, score: score, area: area });
+                };
+                incluir(node, 0);
+                try {
+                    incluir(node.closest && node.closest('button, a, [role="button"], [class*="speed-dial-action"], [class*="speed-dial-item"], [class*="floating-button"], [class*="avantpro"]'), 50);
+                } catch (_err) {}
+                var atual = node && node.parentElement;
+                for (var nivel = 0; atual && nivel < 5; nivel += 1) {
+                    incluir(atual, 40 - nivel * 5);
+                    atual = atual.parentElement;
+                }
+                candidatos.sort(function (a, b) { return b.score - a.score || b.area - a.area; });
+                return candidatos.length ? candidatos[0].node : node;
+            };
+            var todosCandidatos = Array.prototype.slice.call(document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"], [tabindex], [aria-label], [title], [class*="andes-button"], [class*="avant"], [id*="avant"], [class*="speed"], [class*="menu"], div, span'))
+                .map(function (node, index) {
+                    if (!visivel(node)) return null;
+                    var texto = normalizar(textoNode(node));
+                    if (!/\\bferramentas\\b|\\btools\\b/.test(texto)) return null;
+                    if (/assine\\s+ja|assinar|suporte/.test(texto)) return null;
+                    var clickNode = escolherAlvoClique(node);
+                    var rect = clickNode.getBoundingClientRect();
+                    return {
+                        node: clickNode,
+                        index: index,
+                        score: (/button|a/i.test(clickNode.tagName) ? 80 : 0) + (/avant|speed|menu|tool|ferramentas/.test(String(clickNode.className || '') + ' ' + texto) ? 80 : 0) + (rect.width >= 70 && rect.height >= 28 ? 90 : 0),
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2,
+                        width: rect.width,
+                        height: rect.height,
+                        label: textoNode(node).replace(/\\s+/g, ' ').trim().slice(0, 120)
+                    };
+                })
+                .filter(Boolean);
+            var candidatos = todosCandidatos
+                .filter(function (item) { return item.width >= 40 && item.height >= 20; })
+                .sort(function (a, b) { return b.score - a.score || a.index - b.index; });
+            if (candidatos.length) {
+                var item = candidatos[0];
+                return {
+                    success: true,
+                    source: 'ferramentas_dom_real',
+                    x: Math.round(item.x),
+                    y: Math.round(item.y),
+                    width: item.width,
+                    height: item.height,
+                    label: item.label
+                };
+            }
+            var rotulosPequenos = todosCandidatos
+                .filter(function (item) { return item.score > 0 && (item.width < 40 || item.height < 20); })
+                .sort(function (a, b) { return b.score - a.score || a.index - b.index; });
+            if (rotulosPequenos.length) {
+                var r = rotulosPequenos[0];
+                return {
+                    success: true,
+                    source: 'ferramentas_rotulo_estimado',
+                    x: Math.max(40, Math.min(Math.round(r.x - 30), (window.innerWidth || document.documentElement.clientWidth || 1280) - 1)),
+                    y: Math.max(40, Math.min(Math.round(r.y), (window.innerHeight || document.documentElement.clientHeight || 900) - 1)),
+                    width: 120,
+                    height: 46,
+                    label: r.label || 'Ferramentas'
+                };
+            }
+            var bodyBusca = normalizar(document.body && (document.body.innerText || document.body.textContent) || '');
+            if (/\\bferramentas\\b/.test(bodyBusca) && (/\\bsuporte\\b|assine\\s+ja|avant\\s*pro|avantpro/.test(bodyBusca))) {
+                return {
+                    success: true,
+                    source: 'ferramentas_menu_lateral_estimado',
+                    x: Math.max(40, (window.innerWidth || document.documentElement.clientWidth || 1280) - 110),
+                    y: Math.max(40, (window.innerHeight || document.documentElement.clientHeight || 900) - 180),
+                    width: 120,
+                    height: 46,
+                    label: 'Ferramentas'
+                };
+            }
+            return { success: false, reason: 'ferramentas_nao_localizado', bodyText: String(document.body && document.body.innerText || '').slice(0, 500) };
+        })();
+    `, true);
+}
+
+async function clicarFerramentasAvantPro(win) {
+    const target = await localizarFerramentasAvantPro(win);
+    if (!target || !target.success) return { target, clicked: false };
+    win.webContents.focus();
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: target.x, y: target.y, movementX: 0, movementY: 0 });
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: target.x, y: target.y, button: 'left', clickCount: 1 });
+    await wait(60);
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: target.x, y: target.y, button: 'left', clickCount: 1 });
+    await wait(Number(process.env.AVANTPRO_TEST_CLICK_WAIT_MS) || 5000);
+    return { target, clicked: true };
 }
 
 async function main() {
@@ -171,6 +368,12 @@ async function main() {
     await waitForLoad(win).catch(() => null);
     await wait(12000);
     const scan = await scanPage(win);
+    let ferramentasClick = null;
+    let scanAfterTools = null;
+    if (process.env.AVANTPRO_TEST_CLICK_TOOLS === '1') {
+        ferramentasClick = await clicarFerramentasAvantPro(win);
+        scanAfterTools = await scanPage(win);
+    }
 
     writeResult({
         ok: true,
@@ -187,7 +390,9 @@ async function main() {
         })),
         events: events.slice(0, 80),
         consoleMessages: consoleMessages.slice(0, 80),
-        scan
+        scan,
+        ferramentasClick,
+        scanAfterTools
     });
 
     win.destroy();
