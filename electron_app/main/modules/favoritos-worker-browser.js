@@ -63,15 +63,13 @@ function ensureFavoritosWorkerBrowser(parent = null) {
         return favoritosWorkerBrowserWindow;
     }
 
-    const owner = parent && !parent.isDestroyed() ? parent : mainWindow;
     favoritosWorkerBrowserWindow = new BrowserWindow({
         width: 1280,
         height: 900,
         show: false,
-        parent: owner && !owner.isDestroyed() ? owner : undefined,
         title: 'Favoritos ML - Navegador Trabalhador',
         backgroundColor: '#ffffff',
-        skipTaskbar: true,
+        skipTaskbar: false,
         webPreferences: {
             contextIsolation: true,
             nodeIntegration: false,
@@ -148,6 +146,15 @@ async function startFavoritosWorkerBrowser(targetUrl, parent = null, options = {
     await restaurarSessaoAvantProAntesDeAbrirNavegador('before-favoritos-worker-browser-start', { url });
     await ensureChromeExtensionsForMlSession();
     const worker = ensureFavoritosWorkerBrowser(parent);
+    if (options.show !== false) {
+        try {
+            worker.setSkipTaskbar(false);
+            if (!worker.isVisible()) {
+                if (typeof worker.showInactive === 'function') worker.showInactive();
+                else worker.show();
+            }
+        } catch (_err) {}
+    }
     setFavoritosWorkerBrowserState({
         active: true,
         paused: false,
@@ -244,7 +251,7 @@ async function hideFavoritosWorkerBrowser() {
         !favoritosWorkerBrowserWindow.isDestroyed()
     ) {
         favoritosWorkerBrowserWindow.hide();
-        favoritosWorkerBrowserWindow.setSkipTaskbar(true);
+        favoritosWorkerBrowserWindow.setSkipTaskbar(false);
     }
     return setFavoritosWorkerBrowserState({
         visible: false,
