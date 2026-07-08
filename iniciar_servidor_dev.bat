@@ -223,7 +223,9 @@ set "ELECTRON_LAUNCHER=%TEMP%\jk_electron_launcher_dev.cmd"
 	echo echo Backend 8001 pronto. Abrindo desktop... ^>^> logs\electron_dev.log
 	echo if exist "%~dp0node_modules\electron\dist\electron.exe" ^(
 	echo ^  echo Iniciando Electron por executavel local... ^>^> logs\electron_dev.log
-	echo ^  powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue; $appRoot = '%~dp0'; $appPath = $appRoot.TrimEnd('\'); Start-Process -FilePath ($appRoot + 'node_modules\electron\dist\electron.exe') -ArgumentList ('\"' + $appPath + '\"') -WorkingDirectory $appRoot"
+	echo ^  set "JK_APP_ROOT=%~dp0"
+	echo ^  set "JK_APP_ROOT=%%JK_APP_ROOT:~0,-1%%"
+	echo ^  start "JK Sistema Desktop" /D "%~dp0" "%~dp0node_modules\electron\dist\electron.exe" "%%JK_APP_ROOT%%"
 	echo ^) else ^(
 	echo ^  echo Iniciando Electron por node_modules\.bin... ^>^> logs\electron_dev.log
 	echo ^  call node_modules\.bin\electron.cmd . ^>^> logs\electron_dev.log 2^>^&1

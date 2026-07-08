@@ -19,6 +19,16 @@ node_modules
 bug-hunter-report/
 test-results/
 playwright-report/
+.codex-remote-attachments/
+.firebase/
+.tmp_*/
+.tmp_*.err
+.tmp_*.out
+tmp_*.png
+tmp_*.html
+playwright_*.png
+design_previews/
+000002/
 
 # Artefatos de runtime/build locais (nao versionar)
 logs/

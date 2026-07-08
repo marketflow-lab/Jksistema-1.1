@@ -22,7 +22,8 @@ timeout /t 4 >nul
 
 :: 4. Inicia o Electron (Launcher Desktop)
 set "ELECTRON_RUN_AS_NODE="
-cd electron_app
+set "JK_APP_ROOT=%~dp0"
+set "JK_APP_ROOT=%JK_APP_ROOT:~0,-1%"
 
 :: Verifica se node_modules existe, se nÃ£o, instala
 if not exist "node_modules" (
@@ -30,4 +31,9 @@ if not exist "node_modules" (
     call npm install
 )
 
-start npm start
+if exist "%~dp0node_modules\electron\dist\electron.exe" (
+    start "JK Sistema Desktop" /D "%~dp0" "%~dp0node_modules\electron\dist\electron.exe" "%JK_APP_ROOT%"
+) else (
+    cd /d "%~dp0electron_app"
+    start "JK Sistema Desktop" npm start
+)
