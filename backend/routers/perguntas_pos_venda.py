@@ -8,9 +8,10 @@ monolith no longer registers these routes directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
 
 from fastapi import APIRouter
+
+from backend.services import perguntas_pos_venda_endpoints
 
 
 @dataclass(frozen=True)
@@ -55,11 +56,11 @@ LEGACY_PERGUNTAS_POS_VENDA_ROUTES: tuple[LegacyRouteSpec, ...] = (
 router = APIRouter(tags=["perguntas-pos-venda"])
 
 
-def create_perguntas_pos_venda_router(legacy_module: ModuleType) -> APIRouter:
+def create_perguntas_pos_venda_router() -> APIRouter:
     perguntas_pos_venda_router = APIRouter(tags=["perguntas-pos-venda"])
 
     for spec in LEGACY_PERGUNTAS_POS_VENDA_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(perguntas_pos_venda_endpoints, spec.endpoint_name)
         perguntas_pos_venda_router.add_api_route(
             spec.path,
             endpoint,

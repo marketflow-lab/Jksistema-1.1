@@ -1,0 +1,739 @@
+"""Read-only data source discovery and query helpers for Joao Pretinho."""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import time
+import unicodedata
+from pathlib import Path
+from typing import Any, Optional
+
+from backend.services.runtime_bridge import bind_runtime_globals
+
+
+READONLY_SOURCES_VERSION = "20260624-readonly-sources-v1"
+MAX_DISCOVERY_FILES = int(os.getenv("JK_CODEX_READONLY_MAX_DISCOVERY_FILES") or "1200")
+MAX_TEXT_BYTES = int(os.getenv("JK_CODEX_READONLY_MAX_TEXT_BYTES") or str(512 * 1024))
+DEFAULT_LIMIT = 50
+SEARCH_STOPWORDS = {
+    "a", "o", "os", "as", "de", "do", "da", "dos", "das", "um", "uma", "para", "com", "por",
+    "qual", "quais", "como", "quando", "onde", "dados", "dado", "fiscal", "fiscais", "produto",
+    "produtos", "sku", "estoque", "vendas", "venda", "pergunta", "perguntas", "mercado", "livre",
+    "bling", "local", "locais", "fonte", "fontes", "consulta", "consultar", "busca", "buscar",
+}
+SENSITIVE_KEY_RE = re.compile(
+    r"(token|access_token|refresh_token|secret|client_secret|api_key|apikey|senha|password|cookie|authorization|jwt)",
+    re.I,
+)
+SYNC_HINT_RE = re.compile(r"(sync|sincron|shared|state|status|erro|error|log|auditoria|job|worker|progress)", re.I)
+CACHE_HINT_RE = re.compile(r"(cache|historico|state|favoritos|ia_|web_cache|ml_|mercado|bling|integracoes)", re.I)
+FISCAL_HINT_RE = re.compile(r"(imposto|fiscal|ncm|cest|tribut|aliquota|convenio|nf-e|nfe|\bnf\b)", re.I)
+QUESTION_HINT_RE = re.compile(r"(pergunta|pos_venda|pos-venda|question|approval|aprovacao|comprador)", re.I)
+
+
+def configure_codex_readonly_sources_runtime(runtime_module=None):
+    return bind_runtime_globals(globals(), runtime_module)
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _base_dir() -> str:
+    base = str(globals().get("BASE_DIR") or os.getcwd()).strip()
+    return os.path.abspath(base or os.getcwd())
+
+
+def _info_root() -> Path:
+    base_info = str(globals().get("PASTA_INFO") or os.path.join(_base_dir(), "info")).strip()
+    if not os.path.isabs(base_info):
+        base_info = os.path.join(_base_dir(), base_info)
+    return Path(base_info).resolve()
+
+
+def _tenant_dir(client_id: str) -> Path:
+    client = str(client_id or "default").strip() or "default"
+    path = (_info_root() / client).resolve()
+    if not _is_inside(path, _info_root()):
+        return (_info_root() / "default").resolve()
+    return path
+
+
+def _safe_id(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    try:
+        text = text.encode("latin1").decode("utf-8")
+    except Exception:
+        pass
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9_.-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._-")
+    return (text or "source")[:140]
+
+
+def _norm(value: Any) -> str:
+    text = str(value or "").lower()
+    try:
+        text = text.encode("latin1").decode("utf-8")
+    except Exception:
+        pass
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text)).strip()
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _rel(path: Path, root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(root.resolve())).replace("\\", "/")
+    except Exception:
+        return path.name
+
+
+def _module_for_path(path: Path) -> str:
+    text = _norm(str(path))
+    if "vendas" in text or "pedido" in text:
+        return "vendas"
+    if "estoque" in text:
+        return "estoque"
+    if "cadastro" in text or "produto" in text or "sku" in text:
+        return "cadastro"
+    if "bling" in text:
+        return "bling"
+    if "mercado" in text or "ml_" in text or "mlb" in text or "anuncio" in text:
+        return "mercado_livre"
+    if "pergunta" in text or "pos_venda" in text or "question" in text:
+        return "perguntas_pos_venda"
+    if FISCAL_HINT_RE.search(str(path)):
+        return "fiscal"
+    if SYNC_HINT_RE.search(str(path)):
+        return "integracoes"
+    if "favoritos" in text:
+        return "favoritos"
+    if "full" in text:
+        return "full"
+    return "sistema"
+
+
+def _source_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".db", ".sqlite", ".sqlite3"}:
+        return "sqlite"
+    if suffix == ".csv":
+        return "csv"
+    if suffix in {".json", ".jsonl"}:
+        if SYNC_HINT_RE.search(path.name):
+            return "sync_log"
+        if CACHE_HINT_RE.search(str(path)):
+            return "cache"
+        return "json"
+    if suffix in {".txt", ".log", ".md"}:
+        return "log" if SYNC_HINT_RE.search(str(path)) else "text"
+    return "file"
+
+
+def _risk_for_path(path: Path) -> str:
+    text = str(path).lower()
+    if SENSITIVE_KEY_RE.search(text) or "integracoes" in text or "lojas_config" in text:
+        return "contains_sensitive_config_redacted"
+    return "low"
+
+
+def _redact(value: Any, key: str = "") -> Any:
+    if key and SENSITIVE_KEY_RE.search(str(key)):
+        text = str(value or "")
+        if not text:
+            return ""
+        digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:10]
+        return f"[redacted:{digest}]"
+    if isinstance(value, dict):
+        return {str(k): _redact(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(item) for item in value[:200]]
+    if isinstance(value, str) and len(value) > 4000:
+        return value[:4000] + "...[truncated]"
+    return value
+
+
+def _safe_int(value: Any, default: int = DEFAULT_LIMIT, minimum: int = 1, maximum: int = 500) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default)
+    return max(minimum, min(parsed, maximum))
+
+
+def _search_terms(message: str, extra: Optional[list[str]] = None) -> list[str]:
+    raw = [str(message or ""), *(extra or [])]
+    terms: list[str] = []
+    for text in raw:
+        for match in re.findall(r"\bMLB\d+\b|\bSKU[:\s#-]*[A-Za-z0-9._/-]+\b|\b[A-Za-z0-9._/-]{2,}\b", str(text or ""), flags=re.I):
+            term = re.sub(r"^sku[:\s#-]*", "", match, flags=re.I).strip()
+            term_norm = _norm(term)
+            if len(term_norm) < 3 and not term_norm.isdigit():
+                continue
+            if term_norm in SEARCH_STOPWORDS:
+                continue
+            if len(term) >= 2:
+                if term not in terms:
+                    terms.append(term)
+    return terms[:12]
+
+
+def _read_text(path: Path, max_bytes: int = MAX_TEXT_BYTES) -> str:
+    data = path.read_bytes()[:max_bytes]
+    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+        try:
+            return data.decode(enc, errors="replace")
+        except Exception:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _json_preview(path: Path) -> Any:
+    text = _read_text(path)
+    if path.suffix.lower() == ".jsonl":
+        rows = []
+        for line in text.splitlines()[:200]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                rows.append({"line": line[:500]})
+        return rows
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"text": text[:3000]}
+
+
+def _sqlite_schema(path: Path) -> dict[str, Any]:
+    tables: list[dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3)
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 80"):
+            table = str(row["name"] or "")
+            cols = []
+            try:
+                for col in conn.execute(f"PRAGMA table_info({_quote_ident(table)})"):
+                    cols.append({"name": col[1], "type": col[2]})
+            except Exception:
+                pass
+            tables.append({"name": table, "columns": cols[:80]})
+        conn.close()
+    except Exception as exc:
+        return {"error": str(exc)[:300], "tables": []}
+    return {"tables": tables}
+
+
+def _csv_schema(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="", errors="replace") as fh:
+            sample = fh.read(4096)
+        dialect = csv.Sniffer().sniff(sample) if sample else csv.excel
+        reader = csv.reader(sample.splitlines(), dialect)
+        header = next(reader, [])
+        return {"columns": [str(item or "") for item in header[:120]]}
+    except Exception:
+        try:
+            text = _read_text(path, 4096)
+            first = text.splitlines()[0] if text.splitlines() else ""
+            return {"columns": [part.strip() for part in first.split(";")[:120]]}
+        except Exception as exc:
+            return {"error": str(exc)[:300], "columns": []}
+
+
+def _discover_files(client_id: str) -> list[Path]:
+    root = _tenant_dir(client_id)
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    allowed = {".db", ".sqlite", ".sqlite3", ".csv", ".json", ".jsonl", ".txt", ".log", ".md"}
+    for path in root.rglob("*"):
+        if len(files) >= MAX_DISCOVERY_FILES:
+            break
+        try:
+            if not path.is_file() or path.suffix.lower() not in allowed:
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            files.append(path.resolve())
+        except Exception:
+            continue
+    return files
+
+
+def _source_payload(client_id: str, path: Path) -> dict[str, Any]:
+    root = _tenant_dir(client_id)
+    rel = _rel(path, root)
+    stype = _source_type(path)
+    schema: dict[str, Any] = {}
+    if stype == "sqlite":
+        schema = _sqlite_schema(path)
+    elif stype == "csv":
+        schema = _csv_schema(path)
+    return {
+        "source_id": _safe_id(rel),
+        "type": stype,
+        "module": _module_for_path(path),
+        "path": rel,
+        "extension": path.suffix.lower(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+        "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime)) if path.exists() else "",
+        "schema": schema,
+        "allowed_filters": ["message", "source_id", "module", "type", "limit", "sql"],
+        "default_limit": DEFAULT_LIMIT,
+        "sensitive_risk": _risk_for_path(path),
+        "status": "available",
+    }
+
+
+def discover_data_sources(
+    *,
+    client_id: str,
+    query: str = "",
+    module: str = "",
+    source_type: str = "",
+    limit: int = 300,
+) -> dict[str, Any]:
+    sources = [_source_payload(client_id, path) for path in _discover_files(client_id)]
+    query_norm = _norm(query)
+    query_terms = [_norm(item) for item in _search_terms(query)]
+    query_terms.extend(
+        token for token in _norm(query).split()
+        if len(token) >= 4 and token not in {"qual", "quais", "para", "como", "dados", "fonte", "fontes", "voce", "consegue"}
+    )
+    query_terms = list(dict.fromkeys([term for term in query_terms if term]))
+    module_norm = _norm(module)
+    type_norm = _norm(source_type)
+    filtered = []
+    for src in sources:
+        hay = _norm(" ".join([src.get("source_id", ""), src.get("path", ""), src.get("module", ""), src.get("type", "")]))
+        if query_norm:
+            if len(query_norm.split()) <= 2:
+                if query_norm not in hay:
+                    continue
+            elif query_terms and not any(term in hay for term in query_terms):
+                continue
+        if module_norm and module_norm != _norm(src.get("module")):
+            continue
+        if type_norm and type_norm != _norm(src.get("type")):
+            continue
+        filtered.append(src)
+    limit_safe = _safe_int(limit, 300, 1, 2000)
+    return {
+        "success": True,
+        "version": READONLY_SOURCES_VERSION,
+        "client_id": str(client_id or ""),
+        "sources": filtered[:limit_safe],
+        "total_sources": len(sources),
+        "filtered_count": len(filtered),
+        "generated_at": _now(),
+    }
+
+
+def _find_source_path(client_id: str, source_id: str) -> Optional[Path]:
+    wanted = _safe_id(source_id)
+    for path in _discover_files(client_id):
+        if _safe_id(_rel(path, _tenant_dir(client_id))) == wanted:
+            return path
+    return None
+
+
+def _matching_paths(client_id: str, stypes: set[str], message: str, source_id: str = "", module: str = "", limit_sources: int = 30) -> list[Path]:
+    if source_id:
+        found = _find_source_path(client_id, source_id)
+        return [found] if found and _source_type(found) in stypes else []
+    terms = [_norm(item) for item in _search_terms(message)]
+    module_norm = _norm(module)
+    paths = []
+    for path in _discover_files(client_id):
+        if _source_type(path) not in stypes:
+            continue
+        if module_norm and _norm(_module_for_path(path)) != module_norm:
+            continue
+        hay = _norm(str(path))
+        if terms and not any(term and term in hay for term in terms):
+            if not any(hint in hay for hint in ("vendas", "estoque", "cadastro", "produto", "pergunta", "bling", "mercado", "sync", "imposto")):
+                continue
+        paths.append(path)
+        if len(paths) >= limit_sources:
+            break
+    return paths
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + str(name or "").replace('"', '""') + '"'
+
+
+def _safe_sql(sql: str) -> tuple[bool, str]:
+    text = str(sql or "").strip()
+    if not text:
+        return False, "SQL vazio."
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    if not (normalized.startswith("select ") or normalized.startswith("with ") or normalized.startswith("pragma table_info")):
+        return False, "Somente SELECT/WITH/PRAGMA table_info sao permitidos."
+    stripped = normalized.rstrip(";")
+    if ";" in stripped:
+        return False, "Apenas uma instrucao SQL e permitida."
+    if re.search(r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|vacuum|reindex|pragma\s+writable_schema)\b", stripped):
+        return False, "Comando mutavel bloqueado."
+    return True, ""
+
+
+def _rows_from_cursor(cur: sqlite3.Cursor, limit: int) -> list[dict[str, Any]]:
+    cols = [desc[0] for desc in (cur.description or [])]
+    rows = []
+    for row in cur.fetchmany(limit):
+        rows.append(_redact({cols[idx]: row[idx] for idx in range(min(len(cols), len(row)))}) if cols else {})
+    return rows
+
+
+def local_database_query(
+    *,
+    client_id: str,
+    message: str = "",
+    source_id: str = "",
+    sql: str = "",
+    module: str = "",
+    limit: int = DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    limit_safe = _safe_int(limit)
+    paths = _matching_paths(client_id, {"sqlite"}, message, source_id, module, limit_sources=20)
+    records: list[dict[str, Any]] = []
+    sources = []
+    warnings = []
+    terms = _search_terms(message)
+    for path in paths:
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=4)
+            conn.row_factory = sqlite3.Row
+            if sql:
+                ok, reason = _safe_sql(sql)
+                if not ok:
+                    warnings.append(reason)
+                    continue
+                cur = conn.execute(sql)
+                rows = _rows_from_cursor(cur, max(1, limit_safe - len(records)))
+                records.extend({"source": _rel(path, _tenant_dir(client_id)), **row} for row in rows)
+                sources.append(_source_payload(client_id, path))
+            else:
+                for table_row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 80"):
+                    table = str(table_row["name"] or "")
+                    cols = []
+                    try:
+                        cols = [str(col[1] or "") for col in conn.execute(f"PRAGMA table_info({_quote_ident(table)})")]
+                    except Exception:
+                        continue
+                    if not cols:
+                        continue
+                    text_cols = cols[:30]
+                    where = ""
+                    params: list[Any] = []
+                    if terms:
+                        pieces = []
+                        preferred_cols = [
+                            col for col in text_cols
+                            if any(token in _norm(col) for token in ("sku", "codigo", "bling", "mlb", "item"))
+                        ]
+                        sku_like_terms = [term for term in terms[:6] if re.match(r"^(MLB\d+|[A-Za-z0-9._/-]{2,})$", str(term or ""), re.I)]
+                        if sku_like_terms and preferred_cols:
+                            for term in sku_like_terms:
+                                for col in preferred_cols:
+                                    pieces.append(f"TRIM(CAST({_quote_ident(col)} AS TEXT)) = ?")
+                                    params.append(str(term).strip())
+                        if not pieces:
+                            for term in terms[:6]:
+                                like = f"%{term}%"
+                                for col in text_cols:
+                                    pieces.append(f"CAST({_quote_ident(col)} AS TEXT) LIKE ?")
+                                    params.append(like)
+                        where = "WHERE " + " OR ".join(pieces)
+                    query = f"SELECT * FROM {_quote_ident(table)} {where} LIMIT ?"
+                    params.append(max(1, limit_safe - len(records)))
+                    cur = conn.execute(query, params)
+                    rows = _rows_from_cursor(cur, max(1, limit_safe - len(records)))
+                    for row in rows:
+                        records.append({"source": _rel(path, _tenant_dir(client_id)), "table": table, **row})
+                        if len(records) >= limit_safe:
+                            break
+                    if len(records) >= limit_safe:
+                        break
+                sources.append(_source_payload(client_id, path))
+            conn.close()
+        except Exception as exc:
+            warnings.append(f"{_rel(path, _tenant_dir(client_id))}: {str(exc)[:220]}")
+        if len(records) >= limit_safe:
+            break
+    return _result("local_database_query", records, sources, {"message": message, "source_id": source_id, "sql": bool(sql), "module": module, "limit": limit_safe}, warnings)
+
+
+def local_csv_query(
+    *,
+    client_id: str,
+    message: str = "",
+    source_id: str = "",
+    module: str = "",
+    limit: int = DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    limit_safe = _safe_int(limit)
+    paths = _matching_paths(client_id, {"csv"}, message, source_id, module, limit_sources=30)
+    terms_norm = [_norm(item) for item in _search_terms(message)]
+    records: list[dict[str, Any]] = []
+    sources = []
+    warnings = []
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="", errors="replace") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    text = _norm(" ".join(str(v or "") for v in row.values()))
+                    if terms_norm and not all(term in text for term in terms_norm[:3]):
+                        continue
+                    records.append({"source": _rel(path, _tenant_dir(client_id)), **(_redact(row) or {})})
+                    if len(records) >= limit_safe:
+                        break
+            sources.append(_source_payload(client_id, path))
+        except Exception as exc:
+            warnings.append(f"{_rel(path, _tenant_dir(client_id))}: {str(exc)[:220]}")
+        if len(records) >= limit_safe:
+            break
+    return _result("local_csv_query", records, sources, {"message": message, "source_id": source_id, "module": module, "limit": limit_safe}, warnings)
+
+
+def _json_records_from_value(value: Any, path: Path, terms_norm: list[str], limit_safe: int) -> list[dict[str, Any]]:
+    records = []
+    if isinstance(value, dict):
+        candidates = []
+        for key, item in value.items():
+            if isinstance(item, list):
+                candidates.extend({"key": key, **row} if isinstance(row, dict) else {"key": key, "value": row} for row in item[:500])
+            elif isinstance(item, dict):
+                candidates.append({"key": key, **item})
+        if not candidates:
+            candidates = [{"key": key, "value": item} for key, item in list(value.items())[:200]]
+    elif isinstance(value, list):
+        candidates = [row if isinstance(row, dict) else {"value": row} for row in value[:500]]
+    else:
+        candidates = [{"value": value}]
+    for item in candidates:
+        redacted = _redact(item) or {}
+        text = _norm(json.dumps(redacted, ensure_ascii=False, default=str))
+        if terms_norm and not any(term in text for term in terms_norm):
+            continue
+        records.append({"source": str(path.name), **redacted})
+        if len(records) >= limit_safe:
+            break
+    return records
+
+
+def local_cache_query(
+    *,
+    client_id: str,
+    message: str = "",
+    source_id: str = "",
+    module: str = "",
+    limit: int = DEFAULT_LIMIT,
+    sync_only: bool = False,
+    fiscal_only: bool = False,
+    questions_only: bool = False,
+) -> dict[str, Any]:
+    limit_safe = _safe_int(limit)
+    stypes = {"json", "cache", "sync_log", "text", "log"}
+    paths = _matching_paths(client_id, stypes, message, source_id, module, limit_sources=50)
+    if sync_only:
+        paths = [p for p in paths if SYNC_HINT_RE.search(str(p))]
+    if fiscal_only:
+        paths = [p for p in paths if FISCAL_HINT_RE.search(str(p))]
+    if questions_only:
+        paths = [p for p in paths if QUESTION_HINT_RE.search(str(p))]
+    terms_norm = [_norm(item) for item in _search_terms(message)]
+    records: list[dict[str, Any]] = []
+    sources = []
+    warnings = []
+    for path in paths:
+        try:
+            if path.suffix.lower() in {".json", ".jsonl"}:
+                value = _json_preview(path)
+                rows = _json_records_from_value(value, path, terms_norm, max(1, limit_safe - len(records)))
+                for row in rows:
+                    row["source"] = _rel(path, _tenant_dir(client_id))
+                records.extend(rows)
+            else:
+                text = _read_text(path)
+                lines = []
+                for line in text.splitlines()[:5000]:
+                    if terms_norm and not any(term in _norm(line) for term in terms_norm):
+                        continue
+                    lines.append(line[:1200])
+                    if len(lines) >= max(1, limit_safe - len(records)):
+                        break
+                records.extend({"source": _rel(path, _tenant_dir(client_id)), "line": line} for line in lines)
+            sources.append(_source_payload(client_id, path))
+        except Exception as exc:
+            warnings.append(f"{_rel(path, _tenant_dir(client_id))}: {str(exc)[:220]}")
+        if len(records) >= limit_safe:
+            break
+    return _result("sync_logs_query" if sync_only else "local_cache_query", records, sources, {"message": message, "source_id": source_id, "module": module, "limit": limit_safe}, warnings)
+
+
+def sync_logs_query(**kwargs: Any) -> dict[str, Any]:
+    kwargs["sync_only"] = True
+    if _norm(kwargs.get("module")) in {"integracoes", "sync", "sincronizacao", "shared_sync"}:
+        kwargs["module"] = ""
+    return local_cache_query(**kwargs)
+
+
+def questions_post_sale_query(**kwargs: Any) -> dict[str, Any]:
+    kwargs["questions_only"] = True
+    result = local_cache_query(**kwargs)
+    result["tool_id"] = "questions_post_sale_query"
+    return result
+
+
+def fiscal_local_query(**kwargs: Any) -> dict[str, Any]:
+    kwargs["fiscal_only"] = True
+    result = local_cache_query(**kwargs)
+    if not result.get("records"):
+        base = {k: v for k, v in kwargs.items() if k in {"client_id", "message", "source_id", "limit"}}
+        db_result = local_database_query(**base, module="fiscal")
+        csv_result = local_csv_query(**base, module="cadastro")
+        records = (db_result.get("records") or []) + (csv_result.get("records") or [])
+        result["records"] = records[: _safe_int(kwargs.get("limit"))]
+        result["rows"] = result["records"]
+        result["top_rows"] = result["records"][:20]
+        result["record_count"] = len(result["records"])
+        result["sources"] = (result.get("sources") or []) + (db_result.get("sources") or []) + (csv_result.get("sources") or [])
+        result["empty_reason"] = "" if result["records"] else result.get("empty_reason") or "Nenhum dado fiscal local encontrado."
+    result["tool_id"] = "fiscal_local_query"
+    return result
+
+
+def mercado_livre_readonly(
+    *,
+    client_id: str,
+    message: str = "",
+    loja: str = "",
+    limit: int = DEFAULT_LIMIT,
+    **_: Any,
+) -> dict[str, Any]:
+    records = []
+    warnings = []
+    sources = []
+    try:
+        from backend.services import ia_tools_marketplaces
+
+        raw = ia_tools_marketplaces._ia_tool_get_mercado_livre_listing(client_id, message or "listar anuncios ativos mercado livre", loja or None, None, _safe_int(limit, 20, 1, 100))
+        result = (raw or {}).get("result") if isinstance(raw, dict) else {}
+        matches = result.get("matches") if isinstance(result, dict) else []
+        if isinstance(matches, list):
+            records.extend(_redact(matches))
+        sources.append({"source_id": "mercado_livre_api", "type": "external_api", "module": "mercado_livre", "path": "Mercado Livre read-only"})
+    except Exception as exc:
+        warnings.append(f"Mercado Livre anuncios: {str(exc)[:220]}")
+    if re.search(r"(pergunta|pos venda|pos-venda|question)", _norm(message)):
+        q = questions_post_sale_query(client_id=client_id, message=message, loja=loja, limit=limit)
+        records.extend(q.get("records") or [])
+        sources.extend(q.get("sources") or [])
+        warnings.extend(q.get("warnings") or [])
+    return _result("mercado_livre_readonly", records[: _safe_int(limit)], sources, {"message": message, "loja": loja, "limit": limit}, warnings)
+
+
+def execute_readonly_source_tool(
+    *,
+    client_id: str,
+    tool_id: str,
+    message: str = "",
+    loja: str = "",
+    data_inicio: str = "",
+    data_fim: str = "",
+    limit: int = DEFAULT_LIMIT,
+    args: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    args = dict(args or {}) if isinstance(args, dict) else {}
+    common = {
+        "client_id": client_id,
+        "message": message,
+        "source_id": str(args.get("source_id") or args.get("fonte") or ""),
+        "module": str(args.get("module") or args.get("modulo") or ""),
+        "limit": limit,
+    }
+    if tool_id == "source_discovery":
+        return discover_data_sources(client_id=client_id, query=message, module=common["module"], source_type=str(args.get("type") or args.get("tipo") or ""), limit=limit)
+    if tool_id == "local_database_query":
+        return local_database_query(**common, sql=str(args.get("sql") or ""))
+    if tool_id == "local_csv_query":
+        return local_csv_query(**common)
+    if tool_id == "local_cache_query":
+        return local_cache_query(**common)
+    if tool_id == "sync_logs_query":
+        return sync_logs_query(**common)
+    if tool_id == "questions_post_sale_query":
+        return questions_post_sale_query(**common)
+    if tool_id == "fiscal_local_query":
+        return fiscal_local_query(**common)
+    if tool_id == "mercado_livre_readonly":
+        return mercado_livre_readonly(client_id=client_id, message=message, loja=loja, limit=limit)
+    return _result(tool_id, [], [], {"message": message}, [f"Ferramenta read-only desconhecida: {tool_id}"])
+
+
+def _result(tool_id: str, records: list[dict[str, Any]], sources: list[dict[str, Any]], filters: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    records = [_redact(item) for item in (records or []) if isinstance(item, dict)]
+    compact_sources = []
+    seen = set()
+    for source in sources or []:
+        sid = str((source or {}).get("source_id") or (source or {}).get("path") or "")
+        if sid in seen:
+            continue
+        seen.add(sid)
+        compact_sources.append(_redact(source))
+    return {
+        "success": True,
+        "tool_id": tool_id,
+        "records": records,
+        "rows": records,
+        "top_rows": records[:20],
+        "sources": compact_sources[:30],
+        "queried_at": _now(),
+        "generated_at": _now(),
+        "filters": _redact(filters),
+        "record_count": len(records),
+        "warnings": [str(item or "")[:400] for item in warnings[:20]],
+        "empty_reason": "" if records else "Nenhum registro encontrado nas fontes read-only consultadas.",
+        "fallbacks_attempted": [],
+        "sensitive_fields_redacted": True,
+    }
+
+
+configure_codex_readonly_sources_runtime()
+
+
+__all__ = [
+    "READONLY_SOURCES_VERSION",
+    "configure_codex_readonly_sources_runtime",
+    "discover_data_sources",
+    "execute_readonly_source_tool",
+    "local_database_query",
+    "local_csv_query",
+    "local_cache_query",
+    "sync_logs_query",
+    "questions_post_sale_query",
+    "fiscal_local_query",
+    "mercado_livre_readonly",
+]

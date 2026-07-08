@@ -8,9 +8,10 @@ can move here without keeping registration in the monolith.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
 
 from fastapi import APIRouter
+
+from backend.services import favoritos_endpoints, favoritos_jobs
 
 
 @dataclass(frozen=True)
@@ -48,15 +49,34 @@ LEGACY_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("POST", "/pesquisar", "favoritos_pesquisar"),
 )
 
+JOB_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
+    LegacyRouteSpec("POST", "/jobs", "favoritos_jobs_start"),
+    LegacyRouteSpec("GET", "/jobs/{job_id}/status", "favoritos_jobs_status"),
+    LegacyRouteSpec("GET", "/jobs/{job_id}/proxima-coleta", "favoritos_jobs_proxima_coleta"),
+    LegacyRouteSpec("POST", "/jobs/{job_id}/coleta-termo", "favoritos_jobs_coleta_termo"),
+    LegacyRouteSpec("POST", "/jobs/{job_id}/pause", "favoritos_jobs_pause"),
+    LegacyRouteSpec("POST", "/jobs/{job_id}/resume", "favoritos_jobs_resume"),
+    LegacyRouteSpec("POST", "/jobs/{job_id}/cancel", "favoritos_jobs_cancel"),
+)
+
 
 router = APIRouter(prefix="/api/favoritos", tags=["favoritos"])
 
 
-def create_favoritos_router(legacy_module: ModuleType) -> APIRouter:
+def create_favoritos_router() -> APIRouter:
     favoritos_router = APIRouter(prefix="/api/favoritos", tags=["favoritos"])
 
     for spec in LEGACY_FAVORITOS_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(favoritos_endpoints, spec.endpoint_name)
+        favoritos_router.add_api_route(
+            spec.path,
+            endpoint,
+            methods=[spec.method],
+            name=spec.endpoint_name,
+        )
+
+    for spec in JOB_FAVORITOS_ROUTES:
+        endpoint = getattr(favoritos_jobs, spec.endpoint_name)
         favoritos_router.add_api_route(
             spec.path,
             endpoint,

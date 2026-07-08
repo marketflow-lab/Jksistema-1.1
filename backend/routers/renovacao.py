@@ -1,53 +1,169 @@
-"""Renovacao router definitions.
-
-The endpoint implementations are still in backend_api.py while renewal
-promotion helpers are untangled. This module owns the route table so the
-monolith no longer registers these routes directly.
-"""
+"""Renovacao API routes."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from types import ModuleType
+from typing import Callable
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+
+from backend.schemas.renovacao import (
+    RenovacaoAgendamentoRequest,
+    RenovacaoCampanhaCriarRequest,
+    RenovacaoCampanhaExcluirRequest,
+    RenovacaoCampanhaPeriodoRequest,
+    RenovacaoCampanhaSincronizarRequest,
+)
+from backend.services.renovacao import analisar_renovacao_logic, gerar_excel_renovacao
 
 
 @dataclass(frozen=True)
-class LegacyRouteSpec:
-    method: str
-    path: str
-    endpoint_name: str
+class RenovacaoRouterConfig:
+    get_tenant_id: Callable
+    listar_campanhas_usuario: Callable[..., dict]
+    criar_ou_completar_proximo_mes: Callable[..., dict]
+    atualizar_periodo_campanha: Callable[..., dict]
+    deletar_campanha: Callable[..., dict]
+    sincronizar_promocao_existente: Callable[..., dict]
+    iniciar_sincronizacao_promocao: Callable[..., dict]
+    sync_job_get: Callable[[str], dict]
+    agendamento_atual: Callable[..., dict]
+    agendamento_put: Callable[..., dict]
 
 
-LEGACY_RENOVACAO_ROUTES: tuple[LegacyRouteSpec, ...] = (
-    LegacyRouteSpec("GET", "/api/renovacao/campanhas-usuario", "renovacao_listar_campanhas_usuario"),
-    LegacyRouteSpec("POST", "/api/renovacao/criar-proximo-mes", "renovacao_criar_proximo_mes"),
-    LegacyRouteSpec("PUT", "/api/renovacao/campanha-periodo", "renovacao_alterar_periodo_campanha"),
-    LegacyRouteSpec("DELETE", "/api/renovacao/campanha", "renovacao_deletar_campanha"),
-    LegacyRouteSpec("POST", "/api/renovacao/sincronizar-promocao", "renovacao_sincronizar_promocao"),
-    LegacyRouteSpec("POST", "/api/renovacao/sincronizar-promocao/iniciar", "renovacao_sincronizar_promocao_iniciar"),
-    LegacyRouteSpec("GET", "/api/renovacao/sincronizar-promocao/progresso/{job_id}", "renovacao_sincronizar_promocao_progresso"),
-    LegacyRouteSpec("GET", "/api/renovacao/agendamento", "renovacao_agendamento_get"),
-    LegacyRouteSpec("PUT", "/api/renovacao/agendamento", "renovacao_agendamento_put"),
-    LegacyRouteSpec("POST", "/api/renovacao/analisar", "renovacao_analisar_endpoint"),
-    LegacyRouteSpec("POST", "/api/renovacao/exportar", "renovacao_exportar_endpoint"),
-)
+def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
+    router = APIRouter(tags=["renovacao"])
 
+    @router.get("/api/renovacao/campanhas-usuario", name="renovacao_listar_campanhas_usuario")
+    def renovacao_listar_campanhas_usuario(
+        loja: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.listar_campanhas_usuario(client_id, loja)
 
-router = APIRouter(tags=["renovacao"])
-
-
-def create_renovacao_router(legacy_module: ModuleType) -> APIRouter:
-    renovacao_router = APIRouter(tags=["renovacao"])
-
-    for spec in LEGACY_RENOVACAO_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
-        renovacao_router.add_api_route(
-            spec.path,
-            endpoint,
-            methods=[spec.method],
-            name=spec.endpoint_name,
+    @router.post("/api/renovacao/criar-proximo-mes", name="renovacao_criar_proximo_mes")
+    def renovacao_criar_proximo_mes(
+        req: RenovacaoCampanhaCriarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.criar_ou_completar_proximo_mes(
+            client_id,
+            req.loja,
+            req.campanha_id,
+            req.nome,
+            req.promotion_type or "SELLER_CAMPAIGN",
         )
 
-    return renovacao_router
+    @router.put("/api/renovacao/campanha-periodo", name="renovacao_alterar_periodo_campanha")
+    def renovacao_alterar_periodo_campanha(
+        req: RenovacaoCampanhaPeriodoRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.atualizar_periodo_campanha(
+            client_id,
+            req.loja,
+            req.campanha_id,
+            req.start_date,
+            req.finish_date,
+            req.promotion_type or "SELLER_CAMPAIGN",
+            req.nome,
+        )
+
+    @router.delete("/api/renovacao/campanha", name="renovacao_deletar_campanha")
+    def renovacao_deletar_campanha(
+        req: RenovacaoCampanhaExcluirRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.deletar_campanha(
+            client_id,
+            req.loja,
+            req.campanha_id,
+            req.promotion_type or "SELLER_CAMPAIGN",
+        )
+
+    @router.post("/api/renovacao/sincronizar-promocao", name="renovacao_sincronizar_promocao")
+    def renovacao_sincronizar_promocao(
+        req: RenovacaoCampanhaSincronizarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.sincronizar_promocao_existente(
+            client_id,
+            req.loja,
+            req.campanha_origem_id,
+            req.campanha_destino_id,
+            req.promotion_type_origem or "SELLER_CAMPAIGN",
+            req.promotion_type_destino or "SELLER_CAMPAIGN",
+        )
+
+    @router.post("/api/renovacao/sincronizar-promocao/iniciar", name="renovacao_sincronizar_promocao_iniciar")
+    def renovacao_sincronizar_promocao_iniciar(
+        req: RenovacaoCampanhaSincronizarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.iniciar_sincronizacao_promocao(client_id, req)
+
+    @router.get("/api/renovacao/sincronizar-promocao/progresso/{job_id}", name="renovacao_sincronizar_promocao_progresso")
+    def renovacao_sincronizar_promocao_progresso(
+        job_id: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        job = config.sync_job_get(job_id)
+        if not job or job.get("client_id") != client_id:
+            raise HTTPException(status_code=404, detail="Job de sincronizacao nao encontrado.")
+        job.pop("client_id", None)
+        return job
+
+    @router.get("/api/renovacao/agendamento", name="renovacao_agendamento_get")
+    def renovacao_agendamento_get(
+        loja: str,
+        campanha_id: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return {
+            "success": True,
+            "agendamento": config.agendamento_atual(client_id, loja, campanha_id),
+        }
+
+    @router.put("/api/renovacao/agendamento", name="renovacao_agendamento_put")
+    def renovacao_agendamento_put(
+        req: RenovacaoAgendamentoRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return config.agendamento_put(client_id, req)
+
+    @router.post("/api/renovacao/analisar")
+    async def renovacao_analisar_endpoint(
+        antiga: UploadFile = File(...),
+        nova: UploadFile = File(...),
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        antiga_bytes = await antiga.read()
+        nova_bytes = await nova.read()
+        dados, erro = analisar_renovacao_logic(antiga_bytes, nova_bytes)
+        if erro and dados is None:
+            raise HTTPException(status_code=400, detail=erro)
+        return {"success": True, "data": dados or []}
+
+    @router.post("/api/renovacao/exportar")
+    async def renovacao_exportar_endpoint(
+        nova: UploadFile = File(...),
+        decisoes: str = Form(...),
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        try:
+            decisoes_list = json.loads(decisoes or "[]")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Decisoes invalidas.")
+        output, erro = gerar_excel_renovacao(await nova.read(), decisoes_list)
+        if output is None:
+            raise HTTPException(status_code=400, detail=erro)
+        filename = nova.filename or "renovacao.xlsx"
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    return router

@@ -73,21 +73,6 @@ def create_frontend_router(config: FrontendRouterConfig) -> APIRouter:
             raise HTTPException(status_code=404, detail="Arquivo do assistente IA nao encontrado")
         return _with_no_cache(FileResponse(caminho, media_type="application/javascript; charset=utf-8"))
 
-    @router.get("/extensoes_chrome/jk_ml_collector/{filename:path}")
-    async def servir_jk_ml_collector(filename: str):
-        nome = str(filename or "").replace("\\", "/").strip("/")
-        if not nome or ".." in nome.split("/"):
-            raise HTTPException(status_code=404, detail="Arquivo da extensao invalido")
-
-        base_extensao = os.path.abspath(os.path.join(config.chrome_extensions_path, "jk_ml_collector"))
-        caminho = os.path.abspath(os.path.join(base_extensao, nome))
-        if not caminho.startswith(base_extensao + os.sep) or not os.path.isfile(caminho):
-            raise HTTPException(status_code=404, detail="Arquivo da extensao nao encontrado")
-
-        extensao = os.path.splitext(caminho)[1].lower()
-        media_type = "application/javascript; charset=utf-8" if extensao == ".js" else "application/json; charset=utf-8"
-        return _with_no_cache(FileResponse(caminho, media_type=media_type))
-
     return router
 
 

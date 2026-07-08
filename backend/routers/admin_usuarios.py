@@ -1,16 +1,14 @@
-"""Admin, auth, users, presence, and internal chat router definitions.
-
-The endpoint implementations are still in backend_api.py while the auth and
-admin helpers are untangled. This module owns the route table so the monolith
-no longer registers these routes directly.
-"""
+"""Admin, auth, users, presence, and internal chat router definitions."""
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from types import ModuleType
 
 from fastapi import APIRouter
+
+from backend.schemas import LoginResponse
+from backend.services import admin_usuarios
 
 
 @dataclass(frozen=True)
@@ -59,14 +57,14 @@ LEGACY_ADMIN_USUARIOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
 router = APIRouter(tags=["admin-usuarios"])
 
 
-def create_admin_usuarios_router(legacy_module: ModuleType) -> APIRouter:
+def create_admin_usuarios_router() -> APIRouter:
     admin_usuarios_router = APIRouter(tags=["admin-usuarios"])
 
     for spec in LEGACY_ADMIN_USUARIOS_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(admin_usuarios, spec.endpoint_name)
         kwargs = {}
         if spec.response_model_name:
-            kwargs["response_model"] = getattr(legacy_module, spec.response_model_name)
+            kwargs["response_model"] = LoginResponse
         admin_usuarios_router.add_api_route(
             spec.path,
             endpoint,
@@ -74,5 +72,13 @@ def create_admin_usuarios_router(legacy_module: ModuleType) -> APIRouter:
             name=spec.endpoint_name,
             **kwargs,
         )
+
+    from backend.routers.codex_console import create_codex_console_router
+    from backend.services import codex_assistant as codex_assistant_service
+    from backend.services import codex_console as codex_console_service
+
+    codex_console_service.configure_codex_console_runtime(sys.modules.get("backend_api"))
+    codex_assistant_service.configure_codex_assistant_runtime(sys.modules.get("backend_api"))
+    admin_usuarios_router.include_router(create_codex_console_router())
 
     return admin_usuarios_router

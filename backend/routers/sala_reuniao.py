@@ -1,55 +1,32 @@
-"""Sala de Reuniao router definitions.
-
-The endpoint implementations are still in backend_api.py while the Daily
-integration helpers are untangled. This module owns the route table so the
-monolith no longer registers the Sala de Reuniao routes directly.
-"""
+"""Sala de Reuniao router definitions."""
 
 from __future__ import annotations
-
-from dataclasses import dataclass
-from types import ModuleType
 
 from fastapi import APIRouter
 
 
-@dataclass(frozen=True)
-class LegacyRouteSpec:
-    method: str
-    path: str
-    endpoint_name: str
+def create_sala_reuniao_router() -> APIRouter:
+    from backend.services import sala_reuniao
+
+    router = APIRouter(tags=["sala-reuniao"])
+    router.add_api_route("/api/sala-reuniao/status", sala_reuniao.sala_reuniao_status, methods=["GET"], name="sala_reuniao_status")
+    router.add_api_route("/api/sala-reuniao/salas", sala_reuniao.sala_reuniao_criar_sala, methods=["POST"], name="sala_reuniao_criar_sala")
+    router.add_api_route("/api/sala-reuniao/reunioes-ativas", sala_reuniao.sala_reuniao_reunioes_ativas, methods=["GET"], name="sala_reuniao_reunioes_ativas")
+    router.add_api_route("/api/sala-reuniao/salas-ativas", sala_reuniao.sala_reuniao_salas_ativas_alias, methods=["GET"], name="sala_reuniao_salas_ativas_alias")
+    router.add_api_route("/api/sala-reuniao/salas", sala_reuniao.sala_reuniao_salas_listar, methods=["GET"], name="sala_reuniao_salas_listar")
+    router.add_api_route("/api/sala-reuniao/reunioes-ativas/encerrar-local", sala_reuniao.sala_reuniao_encerrar_local, methods=["POST"], name="sala_reuniao_encerrar_local")
+    router.add_api_route("/api/sala-reuniao/reunioes-ativas/encerrar", sala_reuniao.sala_reuniao_encerrar, methods=["POST"], name="sala_reuniao_encerrar")
+    router.add_api_route("/api/sala-reuniao/reunioes-ativas/encerrar-todas", sala_reuniao.sala_reuniao_encerrar_todas, methods=["POST"], name="sala_reuniao_encerrar_todas")
+    router.add_api_route("/api/sala-reuniao/salas/encerrar-local", sala_reuniao.sala_reuniao_encerrar_local_alias, methods=["POST"], name="sala_reuniao_encerrar_local_alias")
+    router.add_api_route("/api/sala-reuniao/uso-mensal", sala_reuniao.sala_reuniao_uso_mensal, methods=["GET"], name="sala_reuniao_uso_mensal")
+    router.add_api_route("/api/sala-reuniao/uso-mensal/adicionar", sala_reuniao.sala_reuniao_uso_mensal_adicionar, methods=["POST"], name="sala_reuniao_uso_mensal_adicionar")
+    router.add_api_route("/api/sala-reuniao/gravacoes", sala_reuniao.sala_reuniao_gravacoes, methods=["GET"], name="sala_reuniao_gravacoes")
+    router.add_api_route("/api/sala-reuniao/transcricoes", sala_reuniao.sala_reuniao_transcricoes, methods=["GET"], name="sala_reuniao_transcricoes")
+    router.add_api_route("/api/sala-reuniao/rustdesk/status", sala_reuniao.sala_reuniao_rustdesk_status, methods=["GET"], name="sala_reuniao_rustdesk_status")
+    router.add_api_route("/api/sala-reuniao/rustdesk/abrir", sala_reuniao.sala_reuniao_rustdesk_abrir, methods=["POST"], name="sala_reuniao_rustdesk_abrir")
+    router.add_api_route("/api/sala-reuniao/rustdesk/acoplar", sala_reuniao.sala_reuniao_rustdesk_acoplar, methods=["POST"], name="sala_reuniao_rustdesk_acoplar")
+    router.add_api_route("/api/sala-reuniao/rustdesk/ocultar", sala_reuniao.sala_reuniao_rustdesk_ocultar, methods=["POST"], name="sala_reuniao_rustdesk_ocultar")
+    return router
 
 
-LEGACY_SALA_REUNIAO_ROUTES: tuple[LegacyRouteSpec, ...] = (
-    LegacyRouteSpec("GET", "/api/sala-reuniao/status", "sala_reuniao_status"),
-    LegacyRouteSpec("POST", "/api/sala-reuniao/salas", "sala_reuniao_criar_sala"),
-    LegacyRouteSpec("GET", "/api/sala-reuniao/reunioes-ativas", "sala_reuniao_reunioes_ativas"),
-    LegacyRouteSpec("GET", "/api/sala-reuniao/salas-ativas", "sala_reuniao_salas_ativas_alias"),
-    LegacyRouteSpec("GET", "/api/sala-reuniao/salas", "sala_reuniao_salas_listar"),
-    LegacyRouteSpec("POST", "/api/sala-reuniao/reunioes-ativas/encerrar-local", "sala_reuniao_encerrar_local"),
-    LegacyRouteSpec("POST", "/api/sala-reuniao/reunioes-ativas/encerrar", "sala_reuniao_encerrar"),
-    LegacyRouteSpec("POST", "/api/sala-reuniao/reunioes-ativas/encerrar-todas", "sala_reuniao_encerrar_todas"),
-    LegacyRouteSpec("POST", "/api/sala-reuniao/salas/encerrar-local", "sala_reuniao_encerrar_local_alias"),
-    LegacyRouteSpec("GET", "/api/sala-reuniao/uso-mensal", "sala_reuniao_uso_mensal"),
-    LegacyRouteSpec("POST", "/api/sala-reuniao/uso-mensal/adicionar", "sala_reuniao_uso_mensal_adicionar"),
-    LegacyRouteSpec("GET", "/api/sala-reuniao/gravacoes", "sala_reuniao_gravacoes"),
-    LegacyRouteSpec("GET", "/api/sala-reuniao/transcricoes", "sala_reuniao_transcricoes"),
-)
-
-
-router = APIRouter(tags=["sala-reuniao"])
-
-
-def create_sala_reuniao_router(legacy_module: ModuleType) -> APIRouter:
-    sala_reuniao_router = APIRouter(tags=["sala-reuniao"])
-
-    for spec in LEGACY_SALA_REUNIAO_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
-        sala_reuniao_router.add_api_route(
-            spec.path,
-            endpoint,
-            methods=[spec.method],
-            name=spec.endpoint_name,
-        )
-
-    return sala_reuniao_router
+__all__ = ["create_sala_reuniao_router"]

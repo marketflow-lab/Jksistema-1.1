@@ -1,16 +1,12 @@
-"""Estoque router definitions.
-
-The endpoint implementations are still in backend_api.py while Estoque helpers
-are untangled. This module owns the route table so new Estoque routes can move
-here without keeping registration in the monolith.
-"""
+"""Estoque router definitions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
 
 from fastapi import APIRouter
+
+from backend.services import estoque as estoque_service
 
 
 @dataclass(frozen=True)
@@ -36,11 +32,11 @@ LEGACY_ESTOQUE_ROUTES: tuple[LegacyRouteSpec, ...] = (
 router = APIRouter(tags=["estoque"])
 
 
-def create_estoque_router(legacy_module: ModuleType) -> APIRouter:
+def create_estoque_router() -> APIRouter:
     estoque_router = APIRouter(tags=["estoque"])
 
     for spec in LEGACY_ESTOQUE_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(estoque_service, spec.endpoint_name)
         estoque_router.add_api_route(
             spec.path,
             endpoint,

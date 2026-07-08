@@ -1,15 +1,8 @@
-"""IA router definitions.
-
-The endpoint implementations are still in backend_api.py while IA helpers are
-untangled. This module owns the route table so new IA routes can move here
-without keeping registration in the monolith.
-"""
+"""IA router definitions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
-
 from fastapi import APIRouter
 
 
@@ -41,11 +34,13 @@ LEGACY_IA_ROUTES: tuple[LegacyRouteSpec, ...] = (
 router = APIRouter(tags=["ia"])
 
 
-def create_ia_router(legacy_module: ModuleType) -> APIRouter:
+def create_ia_router() -> APIRouter:
+    from backend.services import ia
+
     ia_router = APIRouter(tags=["ia"])
 
     for spec in LEGACY_IA_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(ia, spec.endpoint_name)
         ia_router.add_api_route(
             spec.path,
             endpoint,

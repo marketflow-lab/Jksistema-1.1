@@ -1,149 +1,95 @@
-"""Vendas synchronization state helpers."""
+"""Compatibility facade for the Vendas module."""
 
 from __future__ import annotations
 
-import datetime as dt
-import hashlib
-import json
-import os
-import threading
-from datetime import datetime
-from typing import Any, Callable
-
-from fastapi import HTTPException
-
-
-_get_tenant_path: Callable[[str], str] | None = None
-_sync_state_lock = threading.RLock()
-
-
-def configure_vendas_context(
-    *,
-    get_tenant_path: Callable[[str], str],
-    sync_state_lock=None,
-) -> None:
-    global _get_tenant_path, _sync_state_lock
-    _get_tenant_path = get_tenant_path
-    if sync_state_lock is not None:
-        _sync_state_lock = sync_state_lock
-
-
-def _tenant_path(client_id: str) -> str:
-    if not callable(_get_tenant_path):
-        raise RuntimeError("Vendas service context was not configured.")
-    return _get_tenant_path(client_id)
+from backend.schemas import VendasQuery, VendasSyncRequest
+from backend.services.vendas_context import *
+from backend.services.vendas_context import configure_vendas_context as configure_vendas_runtime_context
+from backend.services.vendas_sync_state import *
+from backend.services.vendas_sync_state import (
+    configure_vendas_context as configure_vendas_sync_state_context,
+    _vendas_sync_parse_date,
+    _vendas_sync_dias_periodo,
+    _vendas_sync_state_path,
+    _vendas_sync_load_state,
+    _vendas_sync_save_state,
+    _vendas_sync_job_key,
+    _vendas_sync_prepare_job,
+    _vendas_sync_update_job,
+)
+from backend.services.vendas_consultas import *
+from backend.services.vendas_consultas import configure_vendas_consultas_runtime
+from backend.services.vendas_notas import *
+from backend.services.vendas_notas import configure_vendas_notas_runtime
+from backend.services.vendas_unidades import *
+from backend.services.vendas_unidades import configure_vendas_unidades_runtime
+from backend.services.vendas_sync import *
+from backend.services.vendas_sync import configure_vendas_sync_runtime
 
 
-def _vendas_sync_parse_date(valor: str, campo: str) -> dt.date:
-    try:
-        return dt.date.fromisoformat(str(valor or "").strip()[:10])
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"Data invalida em {campo}. Use YYYY-MM-DD.")
+def configure_vendas_context(*, get_tenant_path, sync_state_lock=None):
+    configure_vendas_runtime_context(get_tenant_path=get_tenant_path, sync_state_lock=sync_state_lock)
+    configure_vendas_sync_state_context(get_tenant_path=get_tenant_path, sync_state_lock=sync_state_lock)
 
 
-def _vendas_sync_dias_periodo(data_inicio: str, data_fim: str) -> list[str]:
-    inicio = _vendas_sync_parse_date(data_inicio, "data_inicio")
-    fim = _vendas_sync_parse_date(data_fim, "data_fim")
-    if inicio > fim:
-        raise HTTPException(status_code=400, detail="Data inicial nao pode ser maior que a data final.")
-    total = (fim - inicio).days + 1
-    return [(inicio + dt.timedelta(days=i)).isoformat() for i in range(total)]
+def configure_vendas_runtime(runtime_module=None):
+    configure_vendas_runtime_context(runtime_module)
+    configure_vendas_sync_state_context(
+        get_tenant_path=get_tenant_path,
+        sync_state_lock=SYNC_STATE_LOCK,
+    )
+    configure_vendas_consultas_runtime(runtime_module)
+    configure_vendas_notas_runtime(runtime_module)
+    configure_vendas_unidades_runtime(runtime_module)
+    configure_vendas_sync_runtime(runtime_module)
+    return runtime_module
 
 
-def _vendas_sync_state_path(client_id: str) -> str:
-    return os.path.join(_tenant_path(client_id), "vendas_sync_state.json")
+configure_vendas_runtime()
 
-
-def _vendas_sync_load_state(client_id: str) -> dict:
-    path = _vendas_sync_state_path(client_id)
-    if not os.path.exists(path):
-        return {"jobs": {}}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        if not isinstance(state, dict):
-            return {"jobs": {}}
-        if not isinstance(state.get("jobs"), dict):
-            state["jobs"] = {}
-        return state
-    except Exception:
-        return {"jobs": {}}
-
-
-def _vendas_sync_save_state(client_id: str, state: dict):
-    path = _vendas_sync_state_path(client_id)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state or {"jobs": {}}, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
-
-
-def _vendas_sync_job_key(loja: str, data_inicio: str, data_fim: str, forcar_resync: bool) -> str:
-    base = "|".join([
-        str(loja or "").strip().lower(),
-        str(data_inicio or "").strip()[:10],
-        str(data_fim or "").strip()[:10],
-        "1" if forcar_resync else "0",
-    ])
-    return hashlib.sha1(base.encode("utf-8")).hexdigest()
-
-
-def _vendas_sync_prepare_job(client_id: str, req: Any, dias: list[str]) -> tuple[str, dict]:
-    with _sync_state_lock:
-        state = _vendas_sync_load_state(client_id)
-        jobs = state.setdefault("jobs", {})
-        key = _vendas_sync_job_key(req.loja, req.data_inicio, req.data_fim, req.forcar_resync)
-        job = jobs.get(key)
-        precisa_novo = (
-            not isinstance(job, dict)
-            or job.get("status") == "complete"
-            or job.get("loja") != req.loja
-            or job.get("data_inicio") != req.data_inicio
-            or job.get("data_fim") != req.data_fim
-            or bool(job.get("forcar_resync")) != bool(req.forcar_resync)
-        )
-        if precisa_novo:
-            job = {
-                "id": key,
-                "loja": req.loja,
-                "data_inicio": req.data_inicio,
-                "data_fim": req.data_fim,
-                "forcar_resync": bool(req.forcar_resync),
-                "dias_total": len(dias),
-                "dias_concluidos": [],
-                "dia_atual": None,
-                "status": "running",
-                "started_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-            }
-        else:
-            job["status"] = "running"
-            job["dias_total"] = len(dias)
-            job["updated_at"] = datetime.now().isoformat()
-        jobs[key] = job
-        state["active_key"] = key
-        _vendas_sync_save_state(client_id, state)
-        return key, job
-
-
-def _vendas_sync_update_job(client_id: str, key: str, updates: dict) -> dict:
-    with _sync_state_lock:
-        state = _vendas_sync_load_state(client_id)
-        jobs = state.setdefault("jobs", {})
-        job = jobs.get(key) if isinstance(jobs.get(key), dict) else {"id": key}
-        job.update(updates or {})
-        job["updated_at"] = datetime.now().isoformat()
-        jobs[key] = job
-        state["active_key"] = key
-
-        if len(jobs) > 25:
-            ordenados = sorted(
-                jobs.items(),
-                key=lambda item: str((item[1] or {}).get("updated_at") or ""),
-                reverse=True,
-            )
-            state["jobs"] = dict(ordenados[:25])
-
-        _vendas_sync_save_state(client_id, state)
-        return job
+__all__ = [
+    "configure_vendas_context",
+    "configure_vendas_runtime",
+    "VendasQuery",
+    "VendasSyncRequest",
+    "_vendas_sync_parse_date",
+    "_vendas_sync_dias_periodo",
+    "_vendas_sync_state_path",
+    "_vendas_sync_load_state",
+    "_vendas_sync_save_state",
+    "_vendas_sync_job_key",
+    "_vendas_sync_prepare_job",
+    "_vendas_sync_update_job",
+    "resumo_vendas",
+    "listar_vendas",
+    "limpar_todos_bancos_vendas",
+    "listar_vendas_todas",
+    "grafico_vendas",
+    "skus_sem_venda",
+    "limites_vendas",
+    "listar_notas_entrada",
+    "listar_itens_devolucoes",
+    "listar_notas_entrada_por_sku",
+    "listar_unidades_negocios",
+    "atualizar_unidade_negocio",
+    "salvar_mapeamento_unidades",
+    "_corrigir_texto_mojibake",
+    "_criar_progresso",
+    "_sync_context_key",
+    "_sync_context_loja",
+    "_sync_active_jobs_unlocked",
+    "_sync_active_jobs",
+    "_sync_register_active_unlocked",
+    "_sync_unregister_active",
+    "_sync_build_aggregate_progress",
+    "_set_progresso",
+    "_limpar_progresso",
+    "_sync_log",
+    "_verificar_cancelamento",
+    "cancelar_sincronizacao_vendas",
+    "progresso_sincronizacao_vendas",
+    "_sincronizar_vendas_thread_worker",
+    "sincronizar_vendas",
+    "_sincronizar_vendas_impl",
+    "_sincronizar_vendas_periodo_impl",
+]

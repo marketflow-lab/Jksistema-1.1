@@ -1,0 +1,1479 @@
+"""Read-only Bling Data Tools for the internal Codex assistant."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+import unicodedata
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from fastapi import HTTPException
+
+from backend.services.bling import _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
+from backend.services.bling_vendas import (
+    _bling_executar_com_refresh,
+    _bling_listar_naturezas,
+    _bling_map_canais_venda_basico,
+    _bling_map_depositos,
+    _bling_map_lojas_virtuais,
+    _bling_saldos,
+)
+from backend.services.estoque_lancamentos import (
+    _bling_listar_lancamentos_lote,
+    _bling_listar_lotes_produto,
+)
+
+
+logger = logging.getLogger(__name__)
+
+BLING_API_BASE = "https://api.bling.com.br/Api/v3"
+DEFAULT_LIMIT = 50
+REPORT_LIMIT = 200
+DETAIL_LIMIT = 100
+
+
+_RESOURCE_ROWS = [
+    ("/anuncios", "anuncios", "List ads", "situacao,idProduto"),
+    ("/anuncios/{idAnuncio}", "anuncios", "Get ad", "idAnuncio"),
+    ("/anuncios/categorias", "anuncios", "List ad categories", "idCategoria,tipoProduto"),
+    ("/caixas", "financeiro", "List cash/bank entries", "dataInicial,dataFinal"),
+    ("/caixas/{idCaixa}", "financeiro", "Get cash/bank entry", "idCaixa"),
+    ("/canais-venda", "canais", "List sales channels", "tipos[],situacao"),
+    ("/canais-venda/{idCanalVenda}", "canais", "Get sales channel", "idCanalVenda"),
+    ("/canais-venda/tipos", "canais", "List sales channel types", ""),
+    ("/categorias/lojas", "categorias", "List virtual store categories", "idLoja,idCategoriaProduto"),
+    ("/categorias/produtos", "categorias", "List product categories", ""),
+    ("/categorias/receitas-despesas", "financeiro", "List revenue/expense categories", "tipo,situacao"),
+    ("/contas/pagar", "financeiro", "List payable accounts", "dataVencimentoInicial,dataVencimentoFinal,situacao"),
+    ("/contas/pagar/{idContaPagar}", "financeiro", "Get payable account", "idContaPagar"),
+    ("/contas/receber", "financeiro", "List receivable accounts", "tipoFiltroData,dataInicial,dataFinal,situacoes[]"),
+    ("/contas/receber/{idContaReceber}", "financeiro", "Get receivable account", "idContaReceber"),
+    ("/contas/receber/boletos", "financeiro", "List receivable boletos", ""),
+    ("/contas-contabeis", "financeiro", "List financial accounts", "situacoes,ordenacao"),
+    ("/contatos", "contatos", "List contacts", "pesquisa,criterio,numeroDocumento"),
+    ("/contatos/{idContato}", "contatos", "Get contact", "idContato"),
+    ("/contratos", "contratos", "List contracts", "dataCriacaoInicio,dataCriacaoFinal,situacao,idContato"),
+    ("/depositos", "estoque", "List deposits", "descricao,situacao"),
+    ("/depositos/{idDeposito}", "estoque", "Get deposit", "idDeposito"),
+    ("/empresas/me/dados-basicos", "empresa", "Get company basic data", ""),
+    ("/estoques/saldos", "estoque", "Get product stock balances", "idsProdutos[],codigos[]"),
+    ("/estoques/saldos/{idDeposito}", "estoque", "Get stock balances by deposit", "idDeposito,idsProdutos[],codigos[]"),
+    ("/formas-pagamentos", "financeiro", "List payment methods", "descricao,situacao"),
+    ("/grupos-produtos", "produtos", "List product groups", "nome,nomePai"),
+    ("/logisticas", "logistica", "List logistics", "tipoIntegracao,situacao"),
+    ("/logisticas/{idLogistica}", "logistica", "Get logistics", "idLogistica"),
+    ("/logisticas/etiquetas", "logistica", "Get sale labels", "formato,idsVendas[]"),
+    ("/naturezas-operacoes", "fiscal", "List operation natures", "situacao,descricao"),
+    ("/nfce", "fiscal", "List NFC-e", "chaveAcesso,numero,serie,situacao,dataEmissaoInicial,dataEmissaoFinal"),
+    ("/nfce/{idNotaFiscalConsumidor}", "fiscal", "Get NFC-e", "idNotaFiscalConsumidor"),
+    ("/nfe", "fiscal", "List NF-e", "chaveAcesso,numero,serie,situacao,tipo,dataEmissaoInicial,dataEmissaoFinal"),
+    ("/nfe/{idNotaFiscal}", "fiscal", "Get NF-e", "idNotaFiscal"),
+    ("/nfe/documento/{chaveAcesso}", "fiscal", "Get NF-e document", "chaveAcesso,formato"),
+    ("/nfse", "fiscal", "List NFS-e", "situacao,dataEmissaoInicial,dataEmissaoFinal"),
+    ("/notificacoes", "notificacoes", "List notifications", "periodo"),
+    ("/ordens-producao", "producao", "List production orders", "idsSituacoes[]"),
+    ("/pedidos/compras", "compras", "List purchase orders", "dataInicial,dataFinal,idFornecedor"),
+    ("/pedidos/compras/{idPedidoCompra}", "compras", "Get purchase order", "idPedidoCompra"),
+    ("/pedidos/vendas", "vendas", "List sales orders", "dataInicial,dataFinal,numero,idLoja,idsSituacoes[]"),
+    ("/pedidos/vendas/{idPedidoVenda}", "vendas", "Get sales order", "idPedidoVenda"),
+    ("/produtos", "produtos", "List products", "criterio,tipo,nome,idsProdutos[],codigos[],gtins[]"),
+    ("/produtos/{idProduto}", "produtos", "Get product", "idProduto"),
+    ("/produtos/fornecedores", "produtos", "List supplier products", "idProduto,idFornecedor"),
+    ("/produtos/lojas", "produtos", "List product-store links", "idProduto,idLoja,dataAlteracaoInicial,dataAlteracaoFinal"),
+    ("/produtos/lotes", "lotes", "List product lots", "idsProdutos[]"),
+    ("/produtos/lotes/{idLote}", "lotes", "Get product lot", "idLote"),
+    ("/produtos/lotes/{idLote}/lancamentos", "lotes", "List lot movements", "idLote"),
+    ("/produtos/lotes/controla-lote", "lotes", "Check lot control", "idsProdutos[]"),
+    ("/produtos/lotes/lancamentos/{idLancamento}", "lotes", "Get lot movement", "idLancamento"),
+    ("/produtos/variacoes/{idProdutoPai}", "produtos", "Get product variations", "idProdutoPai"),
+    ("/propostas-comerciais", "vendas", "List commercial proposals", "situacao,idContato,dataInicial,dataFinal"),
+    ("/situacoes/{idSituacao}", "situacoes", "Get status", "idSituacao"),
+    ("/situacoes/modulos", "situacoes", "List status modules", ""),
+    ("/situacoes/modulos/{idModuloSistema}", "situacoes", "List module statuses", "idModuloSistema"),
+    ("/vendedores", "vendedores", "List sellers", "nomeContato,situacaoContato,idContato,idLoja"),
+    ("/vendedores/{idVendedor}", "vendedores", "Get seller", "idVendedor"),
+]
+
+
+BLING_READ_ONLY_RESOURCES = [
+    {
+        "method": "GET",
+        "path": path,
+        "module": module,
+        "description": description,
+        "params": [item for item in params.split(",") if item],
+        "read_only": True,
+    }
+    for path, module, description, params in _RESOURCE_ROWS
+]
+
+BLING_READ_ONLY_EXCEPTIONS = [
+    {
+        "method": "POST",
+        "path": "/naturezas-operacoes/{idNaturezaOperacao}/obter-tributacao",
+        "module": "fiscal",
+        "description": "Read-only fiscal tax rule calculation for an operation nature",
+        "params": ["idNaturezaOperacao"],
+        "read_only": True,
+        "mutating": False,
+    }
+]
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _norm(value: Any) -> str:
+    text = unicodedata.normalize("NFD", str(value or "").lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _num(value: Any) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(str(value).replace(",", "."))
+    except Exception:
+        return 0.0
+
+
+def _limit(value: Any, default: int = DEFAULT_LIMIT, maximum: int = REPORT_LIMIT) -> int:
+    try:
+        parsed = int(value or default)
+    except Exception:
+        parsed = default
+    return max(1, min(parsed, maximum))
+
+
+def _extract_first_id(text: str) -> str:
+    cleaned = str(text or "")
+    for pattern in (
+        r"\bid\s*(?:bling|pedido|nota|nfe|lote|conta|caixa)?\s*[:#-]?\s*(\d{2,})\b",
+        r"\b(?:pedido|nota|nfe|lote|conta|caixa)\s+(\d{2,})\b",
+    ):
+        match = re.search(pattern, cleaned, flags=re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _extract_invoice_key(text: str) -> str:
+    match = re.search(r"\b(\d{44})\b", str(text or ""))
+    return match.group(1) if match else ""
+
+
+def _extract_ref(text: str) -> str:
+    raw = str(text or "").strip()
+    for pattern in (
+        r"\bsku\s*[:#-]?\s*([A-Za-z0-9._/-]{2,50})\b",
+        r"\bcodigo\s*[:#-]?\s*([A-Za-z0-9._/-]{2,50})\b",
+        r"\bgtin\s*[:#-]?\s*([A-Za-z0-9._/-]{8,50})\b",
+        r"\bean\s*[:#-]?\s*([A-Za-z0-9._/-]{8,50})\b",
+    ):
+        match = re.search(pattern, raw, flags=re.I)
+        if match:
+            return match.group(1).strip(".,;:)")
+    for token in re.findall(r"\b[A-Z0-9][A-Z0-9._/-]{2,50}\b", raw.upper()):
+        if re.search(r"\d", token) and token.lower() not in {"bling", "nfe", "sku"}:
+            return token.strip(".,;:)")
+    return ""
+
+
+def _unique_texts(values: Any, limit: int = 20) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
+    for value in values:
+        text = str(value or "").strip().strip(".,;:)")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= max(1, int(limit or 1)):
+            break
+    return out
+
+
+def _extract_bling_product_ids(text: str) -> list[str]:
+    raw = str(text or "")
+    ids: list[str] = []
+    patterns = (
+        r"\b(?:id_bling|id\s*bling|bling\s*id|id_produto_bling|id\s*produto\s*bling|idsProdutos\[\]|ids_produtos)\b[^0-9]{0,30}((?:\d{3,}[\s,;/|]*){1,12})",
+        r"\b(?:ids?\s*bling|ids?\s*produtos?\s*bling)\b[^0-9]{0,30}((?:\d{3,}[\s,;/|]*){1,12})",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, raw, flags=re.I):
+            ids.extend(re.findall(r"\d{3,}", match.group(1) or ""))
+    return _unique_texts(ids, 20)
+
+
+def _extract_name_term(text: str) -> str:
+    raw = str(text or "").strip()
+    quoted = re.search(r"[\"']([^\"']{3,80})[\"']", raw)
+    if quoted:
+        return quoted.group(1).strip()
+    match = re.search(r"\b(?:produto|nome|item)\s+(.{3,80})", raw, flags=re.I)
+    if match:
+        tail = re.sub(r"\b(?:na|no|do|da)?\s*bling\b.*$", "", match.group(1), flags=re.I).strip()
+        return tail[:80]
+    return ""
+
+
+def _params_add(base: list[tuple[str, Any]], key: str, values: Any) -> None:
+    if values is None:
+        return
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            base.append((key, text))
+
+
+def _json_error_payload(status: int, data: Any) -> str:
+    if isinstance(data, dict):
+        error = data.get("error") if isinstance(data.get("error"), dict) else {}
+        message = error.get("message") or error.get("description") or data.get("message")
+        if message:
+            return str(message)[:300]
+    return f"HTTP {status}"
+
+
+def _response_error_text(data: Any, status: int) -> str:
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()[:300]
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("description")
+            if message:
+                return str(message)[:300]
+        message = data.get("message")
+        if message:
+            return str(message)[:300]
+    if int(status or 0) == 401:
+        return "Token Bling ausente, expirado ou sem permissao. Refaca a conexao em Integracoes."
+    return f"HTTP {status}"
+
+
+def _resource_meta(path: str) -> dict[str, Any]:
+    for item in BLING_READ_ONLY_RESOURCES + BLING_READ_ONLY_EXCEPTIONS:
+        if item.get("path") == path:
+            return dict(item)
+    return {"path": path, "method": "GET", "module": "bling", "description": path, "params": [], "read_only": True}
+
+
+def _resource_url(path: str) -> str:
+    return BLING_API_BASE + path
+
+
+def _ia_func(name: str) -> Callable[..., Any]:
+    from backend.services import ia as ia_service
+
+    func = getattr(ia_service, name, None)
+    if not callable(func):
+        raise RuntimeError(f"Funcao IA indisponivel: {name}")
+    return func
+
+
+def _get_json(access_token: str, path: str, params: Any = None, timeout: int = 25) -> tuple[Any, int]:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = _bling_get_with_adaptive_limit(
+        _resource_url(path),
+        headers=headers,
+        params=params,
+        timeout=timeout,
+        limiter=_BlingAdaptiveLimiter(start_interval=0.09),
+        max_attempts=5,
+    )
+    if resp is None:
+        return {"error": "Falha de conexao com a API Bling."}, 503
+    status = int(resp.status_code or 0)
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"error": {"message": str(getattr(resp, "text", ""))[:300]}}
+    if status != 200:
+        return payload, status
+    if isinstance(payload, dict) and "data" in payload:
+        return payload.get("data"), 200
+    return payload, 200
+
+
+def _list_paginated(
+    access_token: str,
+    path: str,
+    params: Any = None,
+    limit: int = DEFAULT_LIMIT,
+    page_limit: int = 10,
+) -> tuple[list[dict[str, Any]], int]:
+    remaining = _limit(limit)
+    rows: list[dict[str, Any]] = []
+    for pagina in range(1, max(1, int(page_limit or 1)) + 1):
+        page_params = list(params or []) if isinstance(params, list) else list((params or {}).items())
+        page_params.append(("pagina", pagina))
+        page_params.append(("limite", min(100, max(1, remaining))))
+        data, status = _get_json(access_token, path, page_params)
+        if status != 200:
+            return [], status
+        if isinstance(data, dict):
+            data = data.get("data") if isinstance(data.get("data"), list) else []
+        if not isinstance(data, list) or not data:
+            break
+        for item in data:
+            if isinstance(item, dict):
+                rows.append(item)
+                remaining -= 1
+                if remaining <= 0:
+                    return rows, 200
+        if len(data) < 100:
+            break
+    return rows, 200
+
+
+def _exception_chain_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen and len(parts) < 5:
+        seen.add(id(cur))
+        detail = getattr(cur, "detail", None)
+        text = str(detail or cur or "").strip()
+        if text:
+            parts.append(text)
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return " | ".join(parts)
+
+
+def _classify_bling_exception(exc: BaseException) -> tuple[int, str]:
+    if isinstance(exc, HTTPException):
+        return int(exc.status_code or 500), str(exc.detail or exc)[:300]
+    chain = _exception_chain_text(exc)
+    chain_norm = _norm(chain)
+    if "token bling expirado" in chain_norm or ("refaca a conexao" in chain_norm and "integracoes" in chain_norm):
+        return 401, "Token Bling expirado para esta loja. Refaca a conexao em Integracoes."
+    if "unauthorized" in chain_norm or "401" in chain_norm:
+        return 401, "Bling retornou 401. Token ausente, expirado ou sem permissao."
+    return 500, (chain or str(exc))[:300]
+
+
+def _call_store(
+    client_id: str,
+    loja: str,
+    cfg: dict[str, Any],
+    callback: Callable[[str], tuple[Any, int]],
+) -> tuple[Any, int, dict[str, Any]]:
+    try:
+        return _bling_executar_com_refresh(client_id, loja, cfg, callback)
+    except HTTPException as exc:
+        return {"error": str(exc.detail or exc)}, int(exc.status_code or 500), cfg
+    except Exception as exc:
+        status, message = _classify_bling_exception(exc)
+        if status in {401, 403}:
+            logger.warning("[Codex Bling] Consulta read-only sem autorizacao da loja %s: %s", loja, message)
+        else:
+            logger.exception("[Codex Bling] Falha na consulta read-only da loja %s", loja)
+        return {"error": message}, status, cfg
+
+
+def _connected_stores(client_id: str, loja: Optional[str]) -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
+    warnings: list[str] = []
+    stores: list[tuple[str, dict[str, Any]]] = []
+    lojas_cfg: list[dict[str, Any]] = []
+    try:
+        from backend.services.integracoes import carregar_lojas
+
+        lojas_cfg = [item for item in (carregar_lojas(client_id) or []) if isinstance(item, dict)]
+    except Exception as exc:
+        root = Path(__file__).resolve().parents[2]
+        path = root / "info" / str(client_id or "default") / "lojas_config.json"
+        if not path.exists() and str(client_id or "") != "default":
+            path = root / "info" / "default" / "lojas_config.json"
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                lojas_cfg = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+                warnings.append("Usei leitura direta de lojas_config.json porque o servico de integracoes nao estava configurado.")
+            except Exception as read_exc:
+                return [], [f"Nao foi possivel carregar lojas Bling: {str(exc)[:120]}; fallback falhou: {str(read_exc)[:120]}"]
+        else:
+            return [], [f"Nao foi possivel carregar lojas Bling: {str(exc)[:180]}"]
+
+    conectadas: list[str] = []
+    by_norm: dict[str, dict[str, Any]] = {}
+    for loja_cfg in lojas_cfg:
+        nome = str(loja_cfg.get("nome") or "").strip()
+        integracoes = loja_cfg.get("integracoes") if isinstance(loja_cfg.get("integracoes"), dict) else {}
+        cfg = integracoes.get("bling") if isinstance(integracoes, dict) else {}
+        if nome:
+            by_norm[_norm(nome)] = loja_cfg
+        if nome and isinstance(cfg, dict) and str(cfg.get("access_token") or "").strip():
+            conectadas.append(nome)
+    loja_txt = str(loja or "").strip()
+    if loja_txt and loja_txt not in {"__todas", "Todas as lojas"}:
+        alvo_norm = _norm(loja_txt)
+        nomes = [
+            nome for nome in conectadas
+            if _norm(nome) == alvo_norm or (alvo_norm and (alvo_norm in _norm(nome) or _norm(nome) in alvo_norm))
+        ][:5]
+    else:
+        nomes = conectadas[:5]
+    if not nomes:
+        return [], ["Nenhuma loja com Bling conectado foi encontrada para o escopo solicitado."]
+    for nome in nomes:
+        try:
+            loja_cfg = by_norm.get(_norm(nome))
+            if not loja_cfg:
+                raise HTTPException(status_code=404, detail="Loja nao encontrada")
+            integracoes = loja_cfg.get("integracoes") if isinstance(loja_cfg.get("integracoes"), dict) else {}
+            cfg = dict(integracoes.get("bling") or {})
+            if not cfg:
+                raise HTTPException(status_code=400, detail="Integracao Bling nao configurada para esta loja")
+            cfg["id"] = cfg.get("id") or cfg.get("client_id")
+            cfg["secret"] = cfg.get("secret") or cfg.get("client_secret")
+            if not cfg.get("access_token"):
+                raise HTTPException(status_code=401, detail="Token Bling ausente. Refaca a autenticacao OAuth.")
+        except HTTPException as exc:
+            warnings.append(f"{nome}: {exc.detail}")
+            continue
+        except Exception as exc:
+            warnings.append(f"{nome}: {str(exc)[:180]}")
+            continue
+        stores.append((nome, cfg))
+    if not stores and not warnings:
+        warnings.append("As lojas encontradas nao possuem token Bling valido.")
+    return stores, warnings
+
+
+def _result(
+    function: str,
+    arguments: dict[str, Any],
+    rows_key: str,
+    rows: list[Any],
+    *,
+    lojas: list[str],
+    sources: list[dict[str, Any]],
+    warnings: Optional[list[str]] = None,
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    result = dict(extra or {})
+    result.update(
+        {
+            rows_key: rows,
+            "rows": rows,
+            "records": len(rows),
+            "record_count": len(rows),
+            "lojas": lojas,
+            "sources": sources,
+            "warnings": list(warnings or []),
+            "queried_at": _now(),
+            "read_only": True,
+            "cache_hit": False,
+        }
+    )
+    return {"function": function, "arguments": arguments, "result": result}
+
+
+def _source(loja: str, path: str, records: int, params: Any = None, status: int = 200) -> dict[str, Any]:
+    meta = _resource_meta(path)
+    return {
+        "loja": loja,
+        "method": meta.get("method") or "GET",
+        "path": path,
+        "module": meta.get("module") or "bling",
+        "records": int(records or 0),
+        "status": status,
+        "params": params or {},
+        "external": True,
+        "read_only": True,
+    }
+
+
+def _compact_product(produto: dict[str, Any], loja: str = "") -> dict[str, Any]:
+    tributacao = produto.get("tributacao") if isinstance(produto.get("tributacao"), dict) else {}
+    estoque = produto.get("estoque") if isinstance(produto.get("estoque"), dict) else {}
+    return {
+        "loja": loja,
+        "id": produto.get("id"),
+        "sku": produto.get("codigo") or produto.get("sku"),
+        "nome": produto.get("nome") or produto.get("descricao"),
+        "tipo": produto.get("tipo"),
+        "situacao": produto.get("situacao"),
+        "formato": produto.get("formato"),
+        "preco": produto.get("preco"),
+        "preco_custo": produto.get("precoCusto") or produto.get("preco_custo"),
+        "ncm": produto.get("ncm") or tributacao.get("ncm"),
+        "cest": produto.get("cest") or tributacao.get("cest"),
+        "origem": tributacao.get("origem"),
+        "unidade": produto.get("unidade"),
+        "estoque_minimo": estoque.get("minimo") or produto.get("estoqueMinimo"),
+        "estoque_maximo": estoque.get("maximo") or produto.get("estoqueMaximo"),
+    }
+
+
+def _search_products_for_store(access_token: str, message: str, limit: int) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
+    ref = _extract_ref(message)
+    explicit_ids = _extract_bling_product_ids(message)
+    term = _extract_name_term(message)
+    attempts: list[tuple[str, list[tuple[str, Any]]]] = []
+    if explicit_ids:
+        attempts.append(("idsProdutos[]", [("idsProdutos[]", pid) for pid in explicit_ids[:_limit(limit)]]))
+    if ref:
+        attempts.append(("codigos[]", [("codigos[]", ref)]))
+        if len(ref) >= 8:
+            attempts.append(("gtins[]", [("gtins[]", ref)]))
+        attempts.append(("nome", [("nome", ref)]))
+    if term and term != ref:
+        attempts.append(("nome", [("nome", term)]))
+    if not attempts:
+        attempts.append(("recentes", []))
+
+    seen: set[str] = set()
+    products: list[dict[str, Any]] = []
+    last_status = 200
+    used: dict[str, Any] = {"ref": ref, "ids_bling": explicit_ids, "term": term, "attempts": []}
+    for name, params in attempts:
+        rows, status = _list_paginated(access_token, "/produtos", params=params, limit=limit, page_limit=3)
+        last_status = status
+        used["attempts"].append({"type": name, "status": status, "records": len(rows)})
+        if status != 200:
+            continue
+        for item in rows:
+            pid = str(item.get("id") or "")
+            key = pid or str(item.get("codigo") or item)
+            if key in seen:
+                continue
+            seen.add(key)
+            products.append(item)
+            if len(products) >= limit:
+                return products, 200, used
+        if products:
+            break
+    return products, last_status, used
+
+
+def _search_products_payload(access_token: str, message: str, limit: int) -> tuple[dict[str, Any], int]:
+    products, status, used = _search_products_for_store(access_token, message, limit)
+    return {"products": products, "used": used}, status
+
+
+def _detail_products(access_token: str, products: list[dict[str, Any]], detail_limit: int = 10) -> list[dict[str, Any]]:
+    detailed: list[dict[str, Any]] = []
+    for produto in products[: max(0, int(detail_limit or 0))]:
+        pid = str(produto.get("id") or "").strip()
+        if not pid:
+            detailed.append(produto)
+            continue
+        data, status = _get_json(access_token, f"/produtos/{pid}")
+        if status == 200 and isinstance(data, dict):
+            detailed.append(data)
+        else:
+            detailed.append(produto)
+    detailed.extend(products[len(detailed):])
+    return detailed
+
+
+def tool_bling_status(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    try:
+        raw_status = _ia_func("_ia_tool_get_integrations_status")(client_id, loja)
+    except Exception:
+        raw_status = None
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    for nome, cfg in stores:
+        info = {
+            "loja": nome,
+            "bling_conectado": True,
+            "access_token": "presente" if cfg.get("access_token") else "ausente",
+            "refresh_token": "presente" if cfg.get("refresh_token") else "ausente",
+        }
+        canais, status_canais, cfg = _call_store(client_id, nome, cfg, _bling_map_canais_venda_basico)
+        depositos, status_deps, _ = _call_store(client_id, nome, cfg, _bling_map_depositos)
+        if status_canais == 200 and isinstance(canais, dict):
+            info["canais_venda"] = len(canais)
+        elif status_canais != 200:
+            warnings.append(f"{nome}: canais de venda retornaram HTTP {status_canais}.")
+        if status_deps == 200 and isinstance(depositos, dict):
+            info["depositos"] = len(depositos)
+        elif status_deps != 200:
+            warnings.append(f"{nome}: depositos retornaram HTTP {status_deps}.")
+        rows.append(info)
+        sources.append(_source(nome, "/canais-venda", int(info.get("canais_venda") or 0), status=status_canais))
+        sources.append(_source(nome, "/depositos", int(info.get("depositos") or 0), status=status_deps))
+    if not rows and isinstance(raw_status, dict):
+        result = raw_status.get("result") if isinstance(raw_status.get("result"), dict) else {}
+        lojas = result.get("lojas") if isinstance(result.get("lojas"), list) else []
+        rows.extend([item for item in lojas if isinstance(item, dict)])
+    return _result(
+        "bling_status",
+        {"loja": loja or ""},
+        "lojas",
+        rows[:_limit(limit)],
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+        extra={"status_source": "integrations_status_and_bling_light_checks"},
+    )
+
+
+def tool_bling_products(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    ref = _extract_ref(message)
+    if ref:
+        try:
+            raw = _ia_func("_ia_tool_get_bling_product")(client_id, message, loja, None, limite=min(_limit(limit), 20))
+        except Exception:
+            raw = None
+        result = raw.get("result") if isinstance(raw, dict) and isinstance(raw.get("result"), dict) else {}
+        matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+        if matches:
+            for item in matches:
+                if isinstance(item, dict):
+                    rows.append(item)
+            product_warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+            return _result(
+                "bling_products",
+                {"mensagem": message, "loja": loja or "", "ref": ref},
+                "produtos",
+                rows[:_limit(limit)],
+                lojas=sorted({str(item.get("loja") or "") for item in rows if isinstance(item, dict)}),
+                sources=[_source(str(item.get("loja") or ""), "/produtos", 1, {"ref": ref}) for item in rows[:10] if isinstance(item, dict)],
+                warnings=warnings + list(product_warnings or []),
+                extra={"source_tool": "_ia_tool_get_bling_product"},
+            )
+    for nome, cfg in stores:
+        product_payload, status, cfg = _call_store(
+            client_id,
+            nome,
+            cfg,
+            lambda token: _search_products_payload(token, message, _limit(limit)),
+        )
+        used = product_payload.get("used") if isinstance(product_payload, dict) and isinstance(product_payload.get("used"), dict) else {}
+        if status != 200:
+            warnings.append(f"{nome}: produtos Bling falharam: {_response_error_text(product_payload, status)}.")
+            sources.append(_source(nome, "/produtos", 0, used if isinstance(used, dict) else {}, status=status))
+            continue
+        products = product_payload.get("products") if isinstance(product_payload, dict) and isinstance(product_payload.get("products"), list) else []
+        detailed, status_detail, _ = _call_store(
+            client_id,
+            nome,
+            cfg,
+            lambda token, _items=products: (_detail_products(token, _items, min(10, _limit(limit))), 200),
+        )
+        if status_detail == 200 and isinstance(detailed, list):
+            products = detailed
+        compact = [_compact_product(item, nome) for item in products if isinstance(item, dict)]
+        rows.extend(compact)
+        sources.append(_source(nome, "/produtos", len(compact), used if isinstance(used, dict) else {}, status=status))
+    return _result(
+        "bling_products",
+        {"mensagem": message, "loja": loja or "", "limite": _limit(limit)},
+        "produtos",
+        rows[:_limit(limit)],
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+    )
+
+
+def tool_bling_fiscal_product(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **kwargs: Any) -> dict[str, Any]:
+    raw = tool_bling_products(client_id, message, loja, limit=min(_limit(limit), 20), **kwargs)
+    result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+    products = result.get("produtos") if isinstance(result.get("produtos"), list) else []
+    fiscal_rows = []
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        fiscal_rows.append(
+            {
+                "loja": item.get("loja"),
+                "id": item.get("id") or item.get("id_bling"),
+                "sku": item.get("sku"),
+                "nome": item.get("nome"),
+                "ncm": item.get("ncm"),
+                "cest": item.get("cest"),
+                "origem": item.get("origem"),
+                "unidade": item.get("unidade"),
+                "preco": item.get("preco"),
+                "preco_custo": item.get("preco_custo") or item.get("preco_custo_bling"),
+            }
+        )
+    return _result(
+        "bling_fiscal_product",
+        {"mensagem": message, "loja": loja or ""},
+        "produtos_fiscais",
+        fiscal_rows,
+        lojas=result.get("lojas") if isinstance(result.get("lojas"), list) else [],
+        sources=result.get("sources") if isinstance(result.get("sources"), list) else [],
+        warnings=result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        extra={"records_source": "bling_products"},
+    )
+
+
+def tool_bling_stock_balances(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    ref = _extract_ref(message)
+    explicit_product_ids = _extract_bling_product_ids(message)
+    for nome, cfg in stores:
+        product_payload, status_prod, cfg = _call_store(
+            client_id,
+            nome,
+            cfg,
+            lambda token: _search_products_payload(token, message, _limit(limit)),
+        )
+        used = product_payload.get("used") if isinstance(product_payload, dict) and isinstance(product_payload.get("used"), dict) else {}
+        products = product_payload.get("products") if status_prod == 200 and isinstance(product_payload, dict) and isinstance(product_payload.get("products"), list) else []
+        product_ids = _unique_texts(
+            explicit_product_ids
+            + [str(item.get("id") or "").strip() for item in products if isinstance(item, dict) and item.get("id")],
+            _limit(limit),
+        )
+        attempts: list[tuple[str, list[tuple[str, Any]]]] = []
+        if product_ids:
+            params_ids: list[tuple[str, Any]] = []
+            _params_add(params_ids, "idsProdutos[]", product_ids[:_limit(limit)])
+            attempts.append(("idsProdutos[]", params_ids))
+        if ref:
+            params_codes: list[tuple[str, Any]] = []
+            _params_add(params_codes, "codigos[]", [ref])
+            attempts.append(("codigos[]", params_codes))
+        if not attempts:
+            warnings.append(f"{nome}: informe SKU/codigo ou produto para saldo Bling mais preciso.")
+            if not products:
+                sources.append(_source(nome, "/estoques/saldos", 0, {"produto_search": used}, status=status_prod))
+                continue
+
+        product_by_id = {str(item.get("id") or ""): item for item in products if isinstance(item, dict)}
+        any_success = False
+        for attempt_name, params in attempts:
+            data, status, cfg = _call_store(client_id, nome, cfg, lambda token, _params=params: _get_json(token, "/estoques/saldos", _params))
+            if status != 200:
+                warnings.append(f"{nome}: saldo Bling falhou usando {attempt_name}: {_response_error_text(data, status)}.")
+                sources.append(_source(nome, "/estoques/saldos", 0, params, status=status))
+                continue
+            any_success = True
+            items = data if isinstance(data, list) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                prod = item.get("produto") if isinstance(item.get("produto"), dict) else {}
+                pid = str(prod.get("id") or item.get("idProduto") or "").strip()
+                cadastro = product_by_id.get(pid, {})
+                depositos = item.get("depositos") if isinstance(item.get("depositos"), list) else []
+                saldo_total = sum(_num(dep.get("saldoFisico")) for dep in depositos if isinstance(dep, dict))
+                rows.append(
+                    {
+                        "loja": nome,
+                        "id_produto": pid,
+                        "sku": prod.get("codigo") or cadastro.get("codigo") or ref,
+                        "produto": prod.get("nome") or cadastro.get("nome"),
+                        "saldo_total": saldo_total,
+                        "depositos": [
+                        {
+                            "id": dep.get("id"),
+                            "descricao": dep.get("descricao"),
+                            "saldo_fisico": _num(dep.get("saldoFisico")),
+                            "saldo_virtual": _num(dep.get("saldoVirtual")),
+                        }
+                        for dep in depositos
+                        if isinstance(dep, dict)
+                    ][:20],
+                }
+            )
+            sources.append(_source(nome, "/estoques/saldos", len(items), params, status=status))
+            if items:
+                break
+        if not any_success and status_prod != 200:
+            warnings.append(f"{nome}: busca de produto na Bling falhou: {_response_error_text(product_payload, status_prod)}.")
+    return _result(
+        "bling_stock_balances",
+        {"mensagem": message, "loja": loja or "", "limite": _limit(limit), "ref": ref, "ids_bling": explicit_product_ids},
+        "saldos",
+        rows[:_limit(limit)],
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+    )
+
+
+def tool_bling_deposits(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    for nome, cfg in stores:
+        data, status, _ = _call_store(client_id, nome, cfg, lambda token: _list_paginated(token, "/depositos", {"situacao": 1}, _limit(limit), 3))
+        if status != 200:
+            warnings.append(f"{nome}: depositos retornaram HTTP {status}.")
+            sources.append(_source(nome, "/depositos", 0, {"situacao": 1}, status=status))
+            continue
+        items = data if isinstance(data, list) else []
+        for dep in items:
+            if not isinstance(dep, dict):
+                continue
+            nome_dep = str(dep.get("descricao") or "")
+            tipo = "FULL" if re.search(r"full|fulfillment|mercado livre|envio", nome_dep, re.I) else ("LOJA_PADRAO" if dep.get("padrao") else "LOJA_SECUNDARIA")
+            rows.append(
+                {
+                    "loja": nome,
+                    "id": dep.get("id"),
+                    "descricao": nome_dep,
+                    "situacao": dep.get("situacao"),
+                    "padrao": bool(dep.get("padrao")),
+                    "desconsiderar_saldo": bool(dep.get("desconsiderarSaldo")),
+                    "tipo_detectado": tipo,
+                }
+            )
+        sources.append(_source(nome, "/depositos", len(items), {"situacao": 1}, status=status))
+    return _result("bling_deposits", {"loja": loja or ""}, "depositos", rows[:_limit(limit)], lojas=[nome for nome, _ in stores], sources=sources, warnings=warnings)
+
+
+def _compact_order(order: dict[str, Any], loja: str) -> dict[str, Any]:
+    situacao = order.get("situacao") if isinstance(order.get("situacao"), dict) else {}
+    loja_obj = order.get("loja") if isinstance(order.get("loja"), dict) else {}
+    return {
+        "loja": loja,
+        "id": order.get("id"),
+        "numero": order.get("numero"),
+        "numero_loja": order.get("numeroPedidoLoja"),
+        "data": order.get("data") or order.get("dataSaida"),
+        "situacao": situacao.get("nome") or order.get("situacao"),
+        "valor_total": order.get("total") or order.get("valorTotal"),
+        "canal": loja_obj.get("descricao"),
+    }
+
+
+def _items_from_order(order: dict[str, Any]) -> list[dict[str, Any]]:
+    items = order.get("itens") if isinstance(order.get("itens"), list) else []
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        produto = item.get("produto") if isinstance(item.get("produto"), dict) else {}
+        sku = item.get("codigo") or produto.get("codigo") or produto.get("sku")
+        normalized.append(
+            {
+                "sku": sku or "",
+                "produto": item.get("descricao") or produto.get("nome") or produto.get("descricao") or "",
+                "quantidade": _num(item.get("quantidade")),
+                "valor_unitario": _num(item.get("valor")) or _num(item.get("valorUnitario")),
+                "id_produto": produto.get("id"),
+            }
+        )
+    return normalized
+
+
+def tool_bling_sales_orders(
+    client_id: str,
+    message: str,
+    loja: Optional[str],
+    data_inicio: Optional[str] = None,
+    data_fim: Optional[str] = None,
+    limit: int = DEFAULT_LIMIT,
+    **_: Any,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    orders: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    top: dict[str, dict[str, Any]] = {}
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    params_base = {"dataInicial": data_inicio or "", "dataFinal": data_fim or ""}
+    detail_cap = min(_limit(limit), DETAIL_LIMIT)
+    for nome, cfg in stores:
+        rows, status, cfg = _call_store(
+            client_id,
+            nome,
+            cfg,
+            lambda token, _params=params_base: _list_paginated(token, "/pedidos/vendas", _params, _limit(limit), 10),
+        )
+        if status != 200:
+            warnings.append(f"{nome}: pedidos de venda retornaram HTTP {status}.")
+            sources.append(_source(nome, "/pedidos/vendas", 0, params_base, status=status))
+            continue
+        rows = rows if isinstance(rows, list) else []
+        for order in rows:
+            if isinstance(order, dict):
+                orders.append(_compact_order(order, nome))
+        details_done = 0
+        for order in rows[:detail_cap]:
+            oid = str((order or {}).get("id") or "").strip()
+            if not oid:
+                continue
+            detail, detail_status, _ = _call_store(client_id, nome, cfg, lambda token, _oid=oid: _get_json(token, f"/pedidos/vendas/{_oid}"))
+            if detail_status != 200 or not isinstance(detail, dict):
+                continue
+            details_done += 1
+            for item in _items_from_order(detail):
+                sku = str(item.get("sku") or "SEM_SKU").strip() or "SEM_SKU"
+                if sku not in top:
+                    top[sku] = {"sku": sku, "produto": item.get("produto") or "", "quantidade_vendida": 0.0, "valor_total": 0.0, "pedidos": 0, "lojas": set()}
+                top[sku]["quantidade_vendida"] += _num(item.get("quantidade"))
+                top[sku]["valor_total"] += _num(item.get("quantidade")) * _num(item.get("valor_unitario"))
+                top[sku]["pedidos"] += 1
+                top[sku]["lojas"].add(nome)
+        if len(rows) > details_done:
+            warnings.append(f"{nome}: ranking por SKU detalhou {details_done} de {len(rows)} pedido(s) retornados para respeitar limite.")
+        sources.append(_source(nome, "/pedidos/vendas", len(rows), params_base, status=status))
+        sources.append(_source(nome, "/pedidos/vendas/{idPedidoVenda}", details_done, {"detail_cap": detail_cap}, status=200))
+    top_rows = []
+    for item in top.values():
+        lojas_item = sorted(item.pop("lojas", set()))
+        item["lojas"] = lojas_item
+        top_rows.append(item)
+    top_rows.sort(key=lambda item: (_num(item.get("quantidade_vendida")), _num(item.get("valor_total"))), reverse=True)
+    primary_rows = top_rows[:_limit(limit)] if top_rows else orders[:_limit(limit)]
+    primary_key = "top_skus" if top_rows else "pedidos"
+    return _result(
+        "bling_sales_orders",
+        {"loja": loja or "", "data_inicio": data_inicio, "data_fim": data_fim, "limite": _limit(limit)},
+        primary_key,
+        primary_rows,
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+        extra={
+            "periodo": {"data_inicio": data_inicio, "data_fim": data_fim},
+            "pedidos": orders[:_limit(limit)],
+            "top_skus": top_rows[:_limit(limit)],
+            "ranking_fields": ["sku", "produto", "quantidade_vendida", "valor_total", "pedidos", "lojas"],
+        },
+    )
+
+
+def tool_bling_sales_order_detail(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    oid = _extract_first_id(message)
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    if not oid:
+        warnings.append("Informe o ID do pedido Bling para consultar o detalhe.")
+    for nome, cfg in stores:
+        if not oid:
+            continue
+        detail, status, _ = _call_store(client_id, nome, cfg, lambda token, _oid=oid: _get_json(token, f"/pedidos/vendas/{_oid}"))
+        if status == 200 and isinstance(detail, dict):
+            compact = _compact_order(detail, nome)
+            compact["itens"] = _items_from_order(detail)
+            rows.append(compact)
+        else:
+            warnings.append(f"{nome}: detalhe do pedido {oid} retornou HTTP {status}.")
+        sources.append(_source(nome, "/pedidos/vendas/{idPedidoVenda}", 1 if rows else 0, {"id": oid}, status=status))
+    return _result("bling_sales_order_detail", {"id": oid, "loja": loja or ""}, "pedidos", rows[:_limit(limit)], lojas=[nome for nome, _ in stores], sources=sources, warnings=warnings)
+
+
+def tool_bling_fiscal_nfe(
+    client_id: str,
+    message: str,
+    loja: Optional[str],
+    data_inicio: Optional[str] = None,
+    data_fim: Optional[str] = None,
+    limit: int = DEFAULT_LIMIT,
+    **_: Any,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    text = _norm(message)
+    tipo = None
+    if "entrada" in text or "compra" in text:
+        tipo = 0
+    elif "saida" in text or "venda" in text:
+        tipo = 1
+    params: dict[str, Any] = {"dataEmissaoInicial": f"{data_inicio} 00:00:00" if data_inicio else "", "dataEmissaoFinal": f"{data_fim} 23:59:59" if data_fim else ""}
+    if tipo is not None:
+        params["tipo"] = tipo
+    key = _extract_invoice_key(message)
+    if key:
+        params = {"chaveAcesso": key}
+    numero = _extract_first_id(message)
+    if numero and not key and re.search(r"\b(numero|nf|nfe|nota)\b", text):
+        params["numero"] = numero
+    for nome, cfg in stores:
+        notas, status, _ = _call_store(client_id, nome, cfg, lambda token, _params=params: _list_paginated(token, "/nfe", _params, _limit(limit), 10))
+        if status != 200:
+            warnings.append(f"{nome}: NF-e retornou HTTP {status}.")
+            sources.append(_source(nome, "/nfe", 0, params, status=status))
+            continue
+        for nota in notas if isinstance(notas, list) else []:
+            if not isinstance(nota, dict):
+                continue
+            rows.append(
+                {
+                    "loja": nome,
+                    "id": nota.get("id"),
+                    "numero": nota.get("numero"),
+                    "serie": nota.get("serie"),
+                    "situacao": nota.get("situacao"),
+                    "tipo": nota.get("tipo"),
+                    "data_emissao": nota.get("dataEmissao"),
+                    "valor": nota.get("valorNota") or nota.get("valor"),
+                    "chave_acesso": nota.get("chaveAcesso"),
+                }
+            )
+        sources.append(_source(nome, "/nfe", len(notas or []), params, status=status))
+    return _result(
+        "bling_fiscal_nfe",
+        {"loja": loja or "", "data_inicio": data_inicio, "data_fim": data_fim, "limite": _limit(limit), "tipo": tipo},
+        "notas",
+        rows[:_limit(limit)],
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+        extra={"periodo": {"data_inicio": data_inicio, "data_fim": data_fim}},
+    )
+
+
+def tool_bling_fiscal_nfe_detail(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **kwargs: Any) -> dict[str, Any]:
+    nid = _extract_first_id(message)
+    key = _extract_invoice_key(message)
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    for nome, cfg in stores:
+        target_id = nid
+        if key and not target_id:
+            raw = tool_bling_fiscal_nfe(client_id, key, nome, limit=1, **kwargs)
+            raw_result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+            notas = raw_result.get("notas") if isinstance(raw_result.get("notas"), list) else []
+            if notas:
+                target_id = str((notas[0] or {}).get("id") or "")
+        if not target_id:
+            continue
+        detail, status, _ = _call_store(client_id, nome, cfg, lambda token, _id=target_id: _get_json(token, f"/nfe/{_id}"))
+        if status == 200 and isinstance(detail, dict):
+            detail = dict(detail)
+            detail["loja"] = nome
+            rows.append(detail)
+        else:
+            warnings.append(f"{nome}: detalhe da NF-e retornou HTTP {status}.")
+        sources.append(_source(nome, "/nfe/{idNotaFiscal}", 1 if rows else 0, {"id": target_id, "chave": key}, status=status))
+    if not nid and not key:
+        warnings.append("Informe ID ou chave de acesso da NF-e para consultar o detalhe.")
+    return _result("bling_fiscal_nfe_detail", {"id": nid, "chave": key, "loja": loja or ""}, "notas", rows[:_limit(limit)], lojas=[nome for nome, _ in stores], sources=sources, warnings=warnings)
+
+
+def tool_bling_operation_natures(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    for nome, cfg in stores:
+        naturezas, status, _ = _call_store(client_id, nome, cfg, _bling_listar_naturezas)
+        if status != 200:
+            warnings.append(f"{nome}: naturezas retornaram HTTP {status}.")
+            sources.append(_source(nome, "/naturezas-operacoes", 0, status=status))
+            continue
+        for nid, descricao in (naturezas or {}).items() if isinstance(naturezas, dict) else []:
+            rows.append({"loja": nome, "id": nid, "descricao": descricao})
+        sources.append(_source(nome, "/naturezas-operacoes", len(naturezas or {}), status=status))
+    return _result("bling_operation_natures", {"loja": loja or ""}, "naturezas", rows[:_limit(limit)], lojas=[nome for nome, _ in stores], sources=sources, warnings=warnings)
+
+
+def tool_bling_lots(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **_: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    for nome, cfg in stores:
+        product_payload, status_prod, cfg = _call_store(client_id, nome, cfg, lambda token: _search_products_payload(token, message, min(20, _limit(limit))))
+        products = product_payload.get("products") if status_prod == 200 and isinstance(product_payload, dict) and isinstance(product_payload.get("products"), list) else []
+        if status_prod != 200 or not isinstance(products, list) or not products:
+            detail = _response_error_text(product_payload, status_prod) if status_prod != 200 else "produto nao encontrado."
+            warnings.append(f"{nome}: nao encontrei produto Bling para consultar lotes: {detail}")
+            sources.append(_source(nome, "/produtos", 0, status=status_prod))
+            continue
+        total = 0
+        for product in products[:20]:
+            pid = str((product or {}).get("id") or "").strip()
+            if not pid:
+                continue
+            lotes, status, _ = _call_store(client_id, nome, cfg, lambda token, _pid=pid: _bling_listar_lotes_produto(token, _pid))
+            if status != 200:
+                warnings.append(f"{nome}: lotes do produto {pid} retornaram HTTP {status}.")
+                continue
+            for lote in lotes if isinstance(lotes, list) else []:
+                if isinstance(lote, dict):
+                    row = dict(lote)
+                    row["loja"] = nome
+                    row["id_produto"] = pid
+                    row["sku"] = product.get("codigo")
+                    row["produto"] = product.get("nome")
+                    rows.append(row)
+                    total += 1
+        sources.append(_source(nome, "/produtos/lotes", total, status=200))
+    return _result("bling_lots", {"mensagem": message, "loja": loja or ""}, "lotes", rows[:_limit(limit)], lojas=[nome for nome, _ in stores], sources=sources, warnings=warnings)
+
+
+def tool_bling_lot_movements(client_id: str, message: str, loja: Optional[str], limit: int = DEFAULT_LIMIT, **kwargs: Any) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    lote_id = _extract_first_id(message)
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    lot_ids: list[tuple[str, str, dict[str, Any]]] = []
+    if lote_id:
+        for nome, _cfg in stores:
+            lot_ids.append((nome, lote_id, {}))
+    else:
+        raw_lots = tool_bling_lots(client_id, message, loja, limit=min(20, _limit(limit)), **kwargs)
+        lot_result = raw_lots.get("result") if isinstance(raw_lots.get("result"), dict) else {}
+        warnings.extend(w for w in lot_result.get("warnings", []) if isinstance(w, str))
+        for lote in lot_result.get("lotes", []) if isinstance(lot_result.get("lotes"), list) else []:
+            if isinstance(lote, dict) and lote.get("id"):
+                lot_ids.append((str(lote.get("loja") or ""), str(lote.get("id")), lote))
+    cfg_by_store = {nome: cfg for nome, cfg in stores}
+    for nome, lid, lote in lot_ids[: min(40, _limit(limit))]:
+        cfg = cfg_by_store.get(nome)
+        if not cfg:
+            continue
+        movs, status, _ = _call_store(client_id, nome, cfg, lambda token, _lid=lid: _bling_listar_lancamentos_lote(token, _lid))
+        if status != 200:
+            warnings.append(f"{nome}: lancamentos do lote {lid} retornaram HTTP {status}.")
+            sources.append(_source(nome, "/produtos/lotes/{idLote}/lancamentos", 0, {"idLote": lid}, status=status))
+            continue
+        for mov in movs if isinstance(movs, list) else []:
+            if isinstance(mov, dict):
+                row = dict(mov)
+                row["loja"] = nome
+                row["id_lote"] = lid
+                row["sku"] = lote.get("sku")
+                row["produto"] = lote.get("produto")
+                rows.append(row)
+        sources.append(_source(nome, "/produtos/lotes/{idLote}/lancamentos", len(movs or []), {"idLote": lid}, status=status))
+    if not rows and not lot_ids:
+        warnings.append("Informe ID de lote ou SKU/produto para consultar lancamentos de lote.")
+    return _result("bling_lot_movements", {"mensagem": message, "loja": loja or ""}, "lancamentos", rows[:_limit(limit)], lojas=[nome for nome, _ in stores], sources=sources, warnings=warnings)
+
+
+def _sum_finance(rows: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for item in rows:
+        if isinstance(item, dict):
+            total += _num(item.get("valor") or item.get("valorTotal") or item.get("saldo"))
+    return total
+
+
+def tool_bling_finance_summary(
+    client_id: str,
+    message: str,
+    loja: Optional[str],
+    data_inicio: Optional[str] = None,
+    data_fim: Optional[str] = None,
+    limit: int = DEFAULT_LIMIT,
+    **_: Any,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    stores, store_warnings = _connected_stores(client_id, loja)
+    warnings.extend(store_warnings)
+    text = _norm(message)
+    wants_receber = "receber" in text or "receita" in text or "financeiro" in text or "conta" in text
+    wants_pagar = "pagar" in text or "despesa" in text or "financeiro" in text or "conta" in text
+    wants_caixa = "caixa" in text or "banco" in text or "financeiro" in text
+    if not any((wants_receber, wants_pagar, wants_caixa)):
+        wants_receber = wants_pagar = wants_caixa = True
+    for nome, cfg in stores:
+        if wants_receber:
+            params = {"tipoFiltroData": "V", "dataInicial": data_inicio or "", "dataFinal": data_fim or ""}
+            contas, status, _ = _call_store(client_id, nome, cfg, lambda token, _params=params: _list_paginated(token, "/contas/receber", _params, _limit(limit), 5))
+            contas = contas if status == 200 and isinstance(contas, list) else []
+            rows.append({"loja": nome, "tipo": "contas_receber", "quantidade": len(contas), "valor_total": _sum_finance(contas), "amostra": contas[:10]})
+            sources.append(_source(nome, "/contas/receber", len(contas), params, status=status))
+            if status != 200:
+                warnings.append(f"{nome}: contas a receber retornaram HTTP {status}.")
+        if wants_pagar:
+            params = {"dataVencimentoInicial": data_inicio or "", "dataVencimentoFinal": data_fim or ""}
+            contas, status, _ = _call_store(client_id, nome, cfg, lambda token, _params=params: _list_paginated(token, "/contas/pagar", _params, _limit(limit), 5))
+            contas = contas if status == 200 and isinstance(contas, list) else []
+            rows.append({"loja": nome, "tipo": "contas_pagar", "quantidade": len(contas), "valor_total": _sum_finance(contas), "amostra": contas[:10]})
+            sources.append(_source(nome, "/contas/pagar", len(contas), params, status=status))
+            if status != 200:
+                warnings.append(f"{nome}: contas a pagar retornaram HTTP {status}.")
+        if wants_caixa:
+            params = {"dataInicial": data_inicio or "", "dataFinal": data_fim or ""}
+            caixas, status, _ = _call_store(client_id, nome, cfg, lambda token, _params=params: _list_paginated(token, "/caixas", _params, _limit(limit), 5))
+            caixas = caixas if status == 200 and isinstance(caixas, list) else []
+            rows.append({"loja": nome, "tipo": "caixas", "quantidade": len(caixas), "valor_total": _sum_finance(caixas), "amostra": caixas[:10]})
+            sources.append(_source(nome, "/caixas", len(caixas), params, status=status))
+            if status != 200:
+                warnings.append(f"{nome}: caixas retornaram HTTP {status}.")
+    return _result(
+        "bling_finance_summary",
+        {"loja": loja or "", "data_inicio": data_inicio, "data_fim": data_fim},
+        "financeiro",
+        rows,
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+        extra={"periodo": {"data_inicio": data_inicio, "data_fim": data_fim}},
+    )
+
+
+_RESOURCE_KEYWORDS = [
+    (("contas a receber", "receber", "boleto"), "/contas/receber"),
+    (("contas a pagar", "pagar", "despesa"), "/contas/pagar"),
+    (("caixa", "banco"), "/caixas"),
+    (("canal", "canais", "loja virtual"), "/canais-venda"),
+    (("contato", "cliente", "fornecedor"), "/contatos"),
+    (("categoria produto", "categorias produto"), "/categorias/produtos"),
+    (("categoria receita", "categoria despesa"), "/categorias/receitas-despesas"),
+    (("deposito", "depositos"), "/depositos"),
+    (("saldo", "estoque"), "/estoques/saldos"),
+    (("natureza", "operacao"), "/naturezas-operacoes"),
+    (("nfse", "servico"), "/nfse"),
+    (("nfce", "consumidor"), "/nfce"),
+    (("nfe", "nota", "fiscal"), "/nfe"),
+    (("pedido de compra", "compras"), "/pedidos/compras"),
+    (("pedido", "venda", "pedidos"), "/pedidos/vendas"),
+    (("produto", "sku", "gtin", "ean"), "/produtos"),
+    (("lote", "validade"), "/produtos/lotes"),
+    (("proposta",), "/propostas-comerciais"),
+    (("vendedor", "vendedores"), "/vendedores"),
+    (("logistica", "etiqueta", "remessa"), "/logisticas"),
+]
+
+
+def _resource_from_message(message: str) -> str:
+    text = _norm(message)
+    direct = re.search(r"(/(?:[a-z0-9-]+/?)+(?:\{[a-zA-Z0-9]+\})?)", str(message or ""))
+    if direct:
+        candidate = direct.group(1).rstrip("/")
+        for item in BLING_READ_ONLY_RESOURCES:
+            if item["path"] == candidate:
+                return candidate
+    for keywords, path in _RESOURCE_KEYWORDS:
+        if any(keyword in text for keyword in keywords):
+            return path
+    return ""
+
+
+def _params_for_resource(path: str, message: str, data_inicio: Optional[str], data_fim: Optional[str]) -> Any:
+    ref = _extract_ref(message)
+    explicit_ids = _extract_bling_product_ids(message)
+    key = _extract_invoice_key(message)
+    params: list[tuple[str, Any]] = []
+    if path in {"/pedidos/vendas", "/pedidos/compras", "/propostas-comerciais"}:
+        if data_inicio:
+            params.append(("dataInicial", data_inicio))
+        if data_fim:
+            params.append(("dataFinal", data_fim))
+    elif path in {"/nfe", "/nfce", "/nfse"}:
+        if data_inicio:
+            params.append(("dataEmissaoInicial", f"{data_inicio} 00:00:00" if path == "/nfe" else data_inicio))
+        if data_fim:
+            params.append(("dataEmissaoFinal", f"{data_fim} 23:59:59" if path == "/nfe" else data_fim))
+        if key:
+            params.append(("chaveAcesso", key))
+    elif path == "/contas/receber":
+        params.extend([("tipoFiltroData", "V"), ("dataInicial", data_inicio or ""), ("dataFinal", data_fim or "")])
+    elif path == "/contas/pagar":
+        params.extend([("dataVencimentoInicial", data_inicio or ""), ("dataVencimentoFinal", data_fim or "")])
+    elif path == "/caixas":
+        params.extend([("dataInicial", data_inicio or ""), ("dataFinal", data_fim or "")])
+    elif path == "/produtos":
+        if explicit_ids:
+            _params_add(params, "idsProdutos[]", explicit_ids)
+        elif ref:
+            params.append(("codigos[]", ref))
+        else:
+            term = _extract_name_term(message)
+            if term:
+                params.append(("nome", term))
+    elif path == "/estoques/saldos":
+        if explicit_ids:
+            _params_add(params, "idsProdutos[]", explicit_ids)
+        if ref:
+            params.append(("codigos[]", ref))
+    elif path == "/produtos/lotes":
+        if explicit_ids:
+            _params_add(params, "idsProdutos[]", explicit_ids)
+        elif ref.isdigit():
+            params.append(("idsProdutos[]", ref))
+    elif path == "/depositos":
+        params.append(("situacao", 1))
+    return params
+
+
+def tool_bling_resource_query(
+    client_id: str,
+    message: str,
+    loja: Optional[str],
+    data_inicio: Optional[str] = None,
+    data_fim: Optional[str] = None,
+    limit: int = DEFAULT_LIMIT,
+    **_: Any,
+) -> dict[str, Any]:
+    path = _resource_from_message(message)
+    if not path:
+        resources = BLING_READ_ONLY_RESOURCES[:_limit(limit, 30, 80)]
+        return _result(
+            "bling_resource_query",
+            {"mensagem": message, "loja": loja or ""},
+            "resources",
+            resources,
+            lojas=[],
+            sources=[],
+            warnings=["Nao identifiquei uma rota Bling especifica; retornando catalogo read-only disponivel."],
+            extra={"total_resources": len(BLING_READ_ONLY_RESOURCES), "mutating_routes_blocked": True},
+        )
+    if "{" in path:
+        rid = _extract_first_id(message) or _extract_invoice_key(message)
+        if not rid:
+            return _result(
+                "bling_resource_query",
+                {"path": path, "loja": loja or ""},
+                "rows",
+                [],
+                lojas=[],
+                sources=[],
+                warnings=[f"A rota {path} exige ID/chave para consulta read-only."],
+            )
+        concrete_path = re.sub(r"\{[^}]+\}", rid, path, count=1)
+    else:
+        concrete_path = path
+    stores, warnings = _connected_stores(client_id, loja)
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    params = _params_for_resource(path, message, data_inicio, data_fim)
+    for nome, cfg in stores:
+        if "{" in path:
+            data, status, _ = _call_store(client_id, nome, cfg, lambda token, _path=concrete_path, _params=params: _get_json(token, _path, _params))
+            records = 1 if status == 200 and isinstance(data, dict) else 0
+            if records:
+                row = dict(data)
+                row["loja"] = nome
+                rows.append(row)
+            else:
+                warnings.append(f"{nome}: {path} retornou HTTP {status}.")
+        else:
+            data, status, _ = _call_store(client_id, nome, cfg, lambda token, _path=path, _params=params: _list_paginated(token, _path, _params, _limit(limit), 5))
+            if status == 200 and isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        row = dict(item)
+                        row["loja"] = nome
+                        rows.append(row)
+                records = len(data)
+            else:
+                records = 0
+                warnings.append(f"{nome}: {path} retornou HTTP {status}.")
+        sources.append(_source(nome, path, records, params, status=status))
+    return _result(
+        "bling_resource_query",
+        {"path": path, "concrete_path": concrete_path, "loja": loja or "", "data_inicio": data_inicio, "data_fim": data_fim},
+        "rows",
+        rows[:_limit(limit)],
+        lojas=[nome for nome, _ in stores],
+        sources=sources,
+        warnings=warnings,
+        extra={"resource": _resource_meta(path), "mutating_routes_blocked": True},
+    )
+
+
+BLING_TOOL_EXECUTORS: dict[str, Callable[..., dict[str, Any]]] = {
+    "bling_status": tool_bling_status,
+    "bling_products": tool_bling_products,
+    "bling_fiscal_product": tool_bling_fiscal_product,
+    "bling_stock_balances": tool_bling_stock_balances,
+    "bling_deposits": tool_bling_deposits,
+    "bling_sales_orders": tool_bling_sales_orders,
+    "bling_sales_order_detail": tool_bling_sales_order_detail,
+    "bling_fiscal_nfe": tool_bling_fiscal_nfe,
+    "bling_fiscal_nfe_detail": tool_bling_fiscal_nfe_detail,
+    "bling_operation_natures": tool_bling_operation_natures,
+    "bling_lots": tool_bling_lots,
+    "bling_lot_movements": tool_bling_lot_movements,
+    "bling_finance_summary": tool_bling_finance_summary,
+    "bling_resource_query": tool_bling_resource_query,
+}
+
+
+def execute_bling_tool(
+    client_id: str,
+    tool_id: str,
+    message: str,
+    loja: Optional[str] = None,
+    data_inicio: Optional[str] = None,
+    data_fim: Optional[str] = None,
+    limit: int = DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    executor = BLING_TOOL_EXECUTORS.get(str(tool_id or ""))
+    if not executor:
+        return {
+            "function": str(tool_id or "bling_unknown"),
+            "arguments": {"tool_id": tool_id},
+            "result": {"error": f"Ferramenta Bling desconhecida: {tool_id}", "records": 0, "read_only": True},
+        }
+    started = time.time()
+    try:
+        raw = executor(
+            client_id=client_id,
+            message=message,
+            loja=loja,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.exception("[Codex Bling] Falha ao executar %s", tool_id)
+        raw = {
+            "function": tool_id,
+            "arguments": {"loja": loja or "", "data_inicio": data_inicio, "data_fim": data_fim},
+            "result": {"error": str(exc)[:300], "records": 0, "read_only": True, "warnings": [str(exc)[:300]]},
+        }
+    result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+    result["elapsed_ms"] = int((time.time() - started) * 1000)
+    result.setdefault("read_only", True)
+    raw["result"] = result
+    return raw
+
+
+def bling_resources_public() -> dict[str, Any]:
+    return {
+        "success": True,
+        "generated_at": _now(),
+        "read_only": True,
+        "mutating_routes_blocked": True,
+        "resources": BLING_READ_ONLY_RESOURCES,
+        "read_only_exceptions": BLING_READ_ONLY_EXCEPTIONS,
+        "total": len(BLING_READ_ONLY_RESOURCES),
+    }
+
+
+__all__ = [
+    "BLING_READ_ONLY_RESOURCES",
+    "BLING_READ_ONLY_EXCEPTIONS",
+    "execute_bling_tool",
+    "bling_resources_public",
+]

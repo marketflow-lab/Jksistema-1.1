@@ -30,8 +30,9 @@ class ListaCompraRequest(BaseModel):
 
 class ListaPedidoUpdateRequest(BaseModel):
     nome_lista: str | None = None
+    loja: str | None = None
     status: str | None = None
-    itens: list[dict] = []
+    itens: list[dict] | None = None
 
 
 class ListaPedidoStatusRequest(BaseModel):

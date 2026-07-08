@@ -11,6 +11,7 @@ from dotenv import dotenv_values
 
 BASE_DIR = os.getcwd()
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8001/auth/callback"
+DEFAULT_LOCAL_OAUTH_BRIDGE_URI = "https://jkjkjk-485920.web.app/auth/callback"
 REDIRECT_URI = os.getenv("JK_REDIRECT_URI", DEFAULT_REDIRECT_URI).strip()
 
 
@@ -137,6 +138,11 @@ def _resolver_redirect_uri_publica(request: Optional[Any] = None, saved_redirect
         if ngrok_uri:
             return ngrok_uri
 
+    if _request_eh_local(request):
+        bridge_uri = str(os.getenv("JK_LOCAL_OAUTH_CALLBACK_URL", "") or DEFAULT_LOCAL_OAUTH_BRIDGE_URI).strip()
+        if bridge_uri:
+            return bridge_uri.rstrip("/")
+
     valor_final = str(saved_redirect_uri or REDIRECT_URI or DEFAULT_REDIRECT_URI).strip() or DEFAULT_REDIRECT_URI
     return valor_final.rstrip("/")
 
@@ -151,6 +157,8 @@ def _resolver_redirect_uri_bling(request: Optional[Any] = None, saved_redirect_u
 
     auto_ngrok = str(os.getenv("JK_AUTO_NGROK_REDIRECT", "") or "").strip().lower() in {"1", "true", "sim", "yes"}
     if _request_eh_local(request) and not auto_ngrok:
-        return DEFAULT_REDIRECT_URI.rstrip("/")
+        bridge_uri = str(os.getenv("JK_LOCAL_OAUTH_CALLBACK_URL", "") or DEFAULT_LOCAL_OAUTH_BRIDGE_URI).strip()
+        if bridge_uri:
+            return bridge_uri.rstrip("/")
 
     return _resolver_redirect_uri_publica(request=request)

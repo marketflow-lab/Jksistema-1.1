@@ -1,15 +1,8 @@
-"""Impostos and Simulador router definitions.
-
-The endpoint implementations are still in backend_api.py while tax and
-simulator helpers are untangled. This module owns the route table so the
-monolith no longer registers these routes directly.
-"""
+"""Impostos and Simulador router definitions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
-
 from fastapi import APIRouter
 
 
@@ -45,11 +38,13 @@ LEGACY_IMPOSTOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
 router = APIRouter(tags=["impostos"])
 
 
-def create_impostos_router(legacy_module: ModuleType) -> APIRouter:
+def create_impostos_router() -> APIRouter:
+    from backend.services import impostos
+
     impostos_router = APIRouter(tags=["impostos"])
 
     for spec in LEGACY_IMPOSTOS_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(impostos, spec.endpoint_name)
         impostos_router.add_api_route(
             spec.path,
             endpoint,

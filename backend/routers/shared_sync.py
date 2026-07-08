@@ -1,16 +1,12 @@
-"""Shared Sync router definitions.
-
-The endpoint implementations are still in backend_api.py while the sync
-helpers are untangled. This module owns the route table so the monolith no
-longer registers Shared Sync routes directly.
-"""
+"""Shared Sync router definitions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
 
 from fastapi import APIRouter
+
+from backend.services import shared_sync
 
 
 @dataclass(frozen=True)
@@ -50,11 +46,11 @@ LEGACY_SHARED_SYNC_ROUTES: tuple[LegacyRouteSpec, ...] = (
 router = APIRouter(tags=["shared-sync"])
 
 
-def create_shared_sync_router(legacy_module: ModuleType) -> APIRouter:
+def create_shared_sync_router() -> APIRouter:
     shared_sync_router = APIRouter(tags=["shared-sync"])
 
     for spec in LEGACY_SHARED_SYNC_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
+        endpoint = getattr(shared_sync, spec.endpoint_name)
         shared_sync_router.add_api_route(
             spec.path,
             endpoint,

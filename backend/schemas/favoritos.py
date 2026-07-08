@@ -97,6 +97,42 @@ class FavoritosRankingIARequest(BaseModel):
     usar_imagem: bool | None = None
 
 
+class FavoritosJobTermoPesquisa(BaseModel):
+    campo: int | None = None
+    termo: str
+
+
+class FavoritosJobSkuItem(BaseModel):
+    sku: str
+    loja: str | None = ""
+    titulo: str | None = ""
+    descricao: str | None = ""
+    termos: list[FavoritosJobTermoPesquisa] | None = None
+    cadastro: dict | None = None
+
+
+class FavoritosJobStartRequest(BaseModel):
+    loja: str | None = ""
+    quantidade_pesquisas: int | None = 1
+    usar_ia: bool | None = False
+    max_confirmados_ia: int | None = 8
+    opcoes_promocao: dict | None = None
+    modo_coleta: str | None = None
+    selecionados: list[FavoritosJobSkuItem]
+
+
+class FavoritosJobColetaTermoRequest(BaseModel):
+    sku: str | None = ""
+    loja: str | None = ""
+    campo: int | None = None
+    termo: str | None = ""
+    url_confirmada: str | None = ""
+    card_count: int | None = 0
+    anuncios: list[dict] | None = None
+    metricas: dict | None = None
+    erro: str | None = ""
+
+
 class FavoritosSkusOcultosRequest(BaseModel):
     skus_ocultos: list[str] | None = None
 
@@ -139,6 +175,10 @@ __all__ = [
     "FavoritosSkuPesquisaIAItem",
     "FavoritosSkusPesquisaIARequest",
     "FavoritosRankingIARequest",
+    "FavoritosJobTermoPesquisa",
+    "FavoritosJobSkuItem",
+    "FavoritosJobStartRequest",
+    "FavoritosJobColetaTermoRequest",
     "FavoritosSkusOcultosRequest",
     "FavoritosVendedoresIgnoradosRequest",
     "FavoritosAnunciosIgnoradosRequest",

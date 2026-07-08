@@ -1,0 +1,28 @@
+"""Compatibility facade for Shared Sync endpoint handlers."""
+
+from __future__ import annotations
+
+from backend.services import shared_sync_user_endpoints as _child_0
+from backend.services.shared_sync_user_endpoints import *
+from backend.services import shared_sync_machine_endpoints as _child_1
+from backend.services.shared_sync_machine_endpoints import *
+
+_CHILD_MODULES = (_child_0, _child_1,)
+
+
+def configure_shared_sync_endpoints_runtime(runtime_module=None, peer_globals: dict[str, object] | None = None):
+    for module in _CHILD_MODULES:
+        configure = getattr(module, f"configure_{module.__name__.rsplit('.', 1)[-1]}_runtime", None)
+        if callable(configure):
+            configure(runtime_module, peer_globals)
+    return runtime_module
+
+
+configure_shared_sync_endpoints_runtime()
+
+__all__ = ["configure_shared_sync_endpoints_runtime"]
+for _module in _CHILD_MODULES:
+    for _name in getattr(_module, "__all__", ()): 
+        if _name not in __all__:
+            __all__.append(_name)
+del _module, _name

@@ -1,48 +1,80 @@
-"""Mercado Livre router definitions.
-
-The endpoint implementations are still in backend_api.py while Mercado Livre
-helpers are untangled. This module owns the route table so new Mercado Livre
-routes can move here without keeping registration in the monolith.
-"""
+"""Mercado Livre API routes."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import ModuleType
+from typing import Callable, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-
-@dataclass(frozen=True)
-class LegacyRouteSpec:
-    method: str
-    path: str
-    endpoint_name: str
-
-
-LEGACY_MERCADO_LIVRE_ROUTES: tuple[LegacyRouteSpec, ...] = (
-    LegacyRouteSpec("POST", "/api/mercadolivre/cache/invalidar", "ml_invalidar_cache"),
-    LegacyRouteSpec("GET", "/api/mercadolivre/anuncios", "ml_listar_anuncios"),
-    LegacyRouteSpec("GET", "/api/mercadolivre/anuncios/{item_id}/visitas", "ml_historico_visitas_anuncio"),
-    LegacyRouteSpec("GET", "/api/mercadolivre/anuncios/{item_id}", "ml_buscar_anuncio"),
-    LegacyRouteSpec("GET", "/api/mercadolivre/promocoes", "mercadolivre_listar_promocoes_ativas"),
-    LegacyRouteSpec("GET", "/api/mercadolivre/promocoes/contagens", "mercadolivre_listar_promocoes_contagens"),
+from backend.services.mercadolivre import (
+    buscar_anuncio_mercado_livre,
+    historico_visitas_anuncio_mercado_livre,
+    invalidar_cache_mercado_livre,
+    listar_anuncios_mercado_livre,
+    listar_promocoes_ativas_mercado_livre,
+    listar_promocoes_contagens_mercado_livre,
 )
 
 
-router = APIRouter(tags=["mercado-livre"])
+@dataclass(frozen=True)
+class MercadoLivreRouterConfig:
+    get_tenant_id: Callable
 
 
-def create_mercado_livre_router(legacy_module: ModuleType) -> APIRouter:
-    mercado_livre_router = APIRouter(tags=["mercado-livre"])
+def create_mercado_livre_router(config: MercadoLivreRouterConfig) -> APIRouter:
+    router = APIRouter(tags=["mercado-livre"])
 
-    for spec in LEGACY_MERCADO_LIVRE_ROUTES:
-        endpoint = getattr(legacy_module, spec.endpoint_name)
-        mercado_livre_router.add_api_route(
-            spec.path,
-            endpoint,
-            methods=[spec.method],
-            name=spec.endpoint_name,
+    @router.post("/api/mercadolivre/cache/invalidar", name="ml_invalidar_cache")
+    def ml_invalidar_cache(loja: str, client_id: str = Depends(config.get_tenant_id)):
+        return invalidar_cache_mercado_livre(client_id, loja)
+
+    @router.get("/api/mercadolivre/anuncios", name="ml_listar_anuncios")
+    def ml_listar_anuncios(
+        loja: str,
+        offset: int = 0,
+        limit: int = 50,
+        sku: Optional[str] = None,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return listar_anuncios_mercado_livre(
+            client_id=client_id,
+            loja=loja,
+            offset=offset,
+            limit=limit,
+            sku=sku,
         )
 
-    return mercado_livre_router
+    @router.get("/api/mercadolivre/anuncios/{item_id}/visitas", name="ml_historico_visitas_anuncio")
+    def ml_historico_visitas_anuncio(
+        item_id: str,
+        loja: str,
+        dias: int = 150,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return historico_visitas_anuncio_mercado_livre(
+            client_id=client_id,
+            item_id=item_id,
+            loja=loja,
+            dias=dias,
+        )
+
+    @router.get("/api/mercadolivre/anuncios/{item_id}", name="ml_buscar_anuncio")
+    def ml_buscar_anuncio(item_id: str, loja: str, client_id: str = Depends(config.get_tenant_id)):
+        return buscar_anuncio_mercado_livre(client_id=client_id, item_id=item_id, loja=loja)
+
+    @router.get("/api/mercadolivre/promocoes", name="mercadolivre_listar_promocoes_ativas")
+    def mercadolivre_listar_promocoes_ativas(
+        loja: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return listar_promocoes_ativas_mercado_livre(client_id, loja)
+
+    @router.get("/api/mercadolivre/promocoes/contagens", name="mercadolivre_listar_promocoes_contagens")
+    def mercadolivre_listar_promocoes_contagens(
+        loja: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return listar_promocoes_contagens_mercado_livre(client_id, loja)
+
+    return router
