@@ -5,6 +5,11 @@ info/jwt_secret.key
 info/credentials.json
 info/auth_users.db
 info/backend.log
+
+# Dados locais do runtime/cliente. Preservar no disco, mas nao versionar.
+info/
+!info/.gitkeep
+
 jkjkjk-*.json
 *service-account*.json
 .env
