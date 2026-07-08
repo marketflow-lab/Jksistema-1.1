@@ -168,11 +168,30 @@ function validatePackageConfig(manifest, failures) {
 }
 
 function validateRuntimeCopyGuards(manifest, failures) {
-  const mainPath = path.join(appDir, 'main.js');
-  const source = fs.readFileSync(mainPath, 'utf8');
+  const runtimeGuardSources = [
+    path.join(appDir, 'main.js'),
+    path.join(repoRoot, 'main.js'),
+    path.join(appDir, 'main', 'modules', 'backend.js'),
+  ].filter((filePath) => {
+    try {
+      return fs.statSync(filePath).isFile();
+    } catch (_err) {
+      return false;
+    }
+  });
+
+  if (!runtimeGuardSources.length) {
+    failures.push('Arquivo principal de runtime nao encontrado para validacao de protecao de sobrescrita');
+    return;
+  }
+
   for (const entry of manifest.requiredRuntimeSkipEntries || []) {
     const needle = `lower === '${entry}'`;
-    if (!source.includes(needle)) {
+    const present = runtimeGuardSources.some((sourcePath) => {
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      return source.includes(needle);
+    });
+    if (!present) {
       failures.push(`Protecao runtime ausente contra sobrescrita de dados locais: ${entry}`);
     }
   }
@@ -209,6 +228,19 @@ function validatePackagedOutput(manifest, failures) {
     const found = findGlob(packagedRoot, pattern);
     if (found.length) {
       failures.push(`Conteudo privado proibido no pacote: ${pattern} (${found.length} arquivo(s))`);
+    }
+  }
+
+  const asarPath = path.join(packagedRoot, 'app.asar');
+  if (fileExists(asarPath)) {
+    try {
+      const asar = require('@electron/asar');
+      const bootstrap = asar.extractFile(asarPath, 'main.js').toString('utf8');
+      if (!bootstrap.includes('process.resourcesPath') || !bootstrap.includes("'local_app'")) {
+        failures.push('Bootstrap app.asar/main.js nao aponta para resources/local_app/main.js');
+      }
+    } catch (err) {
+      failures.push(`Nao foi possivel validar app.asar/main.js: ${err && err.message ? err.message : String(err)}`);
     }
   }
 }

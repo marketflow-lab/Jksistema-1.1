@@ -70,6 +70,7 @@
           "requirements.txt",
           "*.html",
           "*.js",
+          "electron_app/main/modules/**",
           "ml_questions_gemini/**",
           "!ml_questions_gemini/**/__pycache__/**",
           "!ml_questions_gemini/**/*.pyc",

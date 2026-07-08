@@ -1,26 +1,11 @@
 {
   "name": "jk-sistema-desktop",
   "version": "1.0.88",
-  "description": "Launcher para JK Sistema",
+  "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
-  "scripts": {
-    "source:sync": "node scripts/sync-static-html-mirrors.js",
-    "source:verify": "node electron_app/scripts/verify-installer-package.js",
-    "prestart": "npm run source:verify",
-    "start": "electron .",
-    "installer:verify": "npm run source:verify",
-    "installer:verify:built": "node electron_app/scripts/verify-installer-package.js --packaged electron_app/dist-client-setup/win-unpacked/resources",
-    "prebug-hunter": "npm run source:verify",
-    "bug-hunter:install": "playwright install chromium",
-    "bug-hunter": "playwright test --config=playwright.bug-hunter.config.js",
-    "prebug-hunter:headed": "npm run source:verify",
-    "bug-hunter:headed": "playwright test --config=playwright.bug-hunter.config.js --headed",
-    "bug-hunter:report": "node tests/bug-hunter/lib/report.js"
-  },
   "author": "JK",
   "license": "ISC",
-  "devDependencies": {
-    "@playwright/test": "^1.60.0",
-    "electron": "^28.0.0"
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   }
 }
