@@ -609,6 +609,13 @@
                 <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:6px; font-weight:600; letter-spacing:0.03em;">DADOS DO PRODUTO</div>
                 <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap:8px; margin-bottom:14px;" id="consultaSkuKpis"></div>
 
+                <div id="consultaSkuImpostosCadastrados" style="display:none; margin:4px 0 14px;">
+                    <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:6px; font-weight:600; letter-spacing:0.03em;">IMPOSTOS CADASTRADOS DO SKU</div>
+                    <div id="consultaSkuImpostosResumo" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:10px; margin-bottom:10px;"></div>
+                    <div id="consultaSkuCustosPorLoja" style="margin-bottom:10px;"></div>
+                    <div id="consultaSkuImpostosDetalhes"></div>
+                </div>
+
                 <!-- Decisão TTCE por tributo -->
                 <div id="skuTtceDecisao" style="display:none; margin-top:4px;">
                     <div style="font-size:0.82em; color:#9fb3c8; margin-bottom:6px; font-weight:600; letter-spacing:0.03em;">ALÍQUOTAS TTCE — <span id="skuTtceRegimeLabel" style="color:#a8c7fa;"></span></div>
@@ -765,6 +772,10 @@
     const consultaSkuResultadoEl = document.getElementById('consultaSkuResultado');
     const consultaSkuVazioEl = document.getElementById('consultaSkuVazio');
     const consultaSkuKpisEl = document.getElementById('consultaSkuKpis');
+    const consultaSkuImpostosCadastradosEl = document.getElementById('consultaSkuImpostosCadastrados');
+    const consultaSkuImpostosResumoEl = document.getElementById('consultaSkuImpostosResumo');
+    const consultaSkuCustosPorLojaEl = document.getElementById('consultaSkuCustosPorLoja');
+    const consultaSkuImpostosDetalhesEl = document.getElementById('consultaSkuImpostosDetalhes');
     const tbConsultaSkuDetalhes = document.getElementById('tbConsultaSkuDetalhes');
     const tabConsultaSku = document.getElementById('tabConsultaSku');
     const panelConsultaSku = document.getElementById('panelConsultaSku');
@@ -784,6 +795,7 @@
 
     let _consultaSkuAtual = null;
     let _skuTtceFundamentosCache = [];
+    let _consultaSkuImpostosProdutosCache = null;
 
     const SISCOMEX_PAISES_SUGESTAO = [
         { codigo: '23', nome: 'Brasil' },
@@ -1641,6 +1653,7 @@
         renderResumo(payload.resumo || {});
 
         const produtos = payload.produtos || [];
+        _consultaSkuImpostosProdutosCache = produtos;
         tbProdutos.innerHTML = '';
         if (!produtos.length) {
             tbProdutos.innerHTML = '<tr><td colspan="18" style="color:#9fb3c8;">Nenhum produto encontrado no cadastro.</td></tr>';
@@ -1885,7 +1898,342 @@
         _renderSkuFundamentosTabela();
     }
 
-    function renderConsultaSkuResultado(produto) {
+    function valorSkuInformado(valor) {
+        if (valor === null || valor === undefined) return false;
+        if (Array.isArray(valor)) return valor.some(v => valorSkuInformado(v));
+        if (typeof valor === 'object') return Object.values(valor).some(v => valorSkuInformado(v));
+        return String(valor).trim() !== '';
+    }
+
+    function chavesSkuConsulta(valor) {
+        const bruto = String(valor || '').trim().toUpperCase();
+        const semDecimalPlanilha = bruto.replace(/(\d+)\.0+$/g, '$1');
+        const compacto = semDecimalPlanilha.replace(/[^A-Z0-9]+/g, '');
+        const semZeros = compacto.replace(/\d+/g, (parte) => {
+            const n = Number(parte);
+            return Number.isFinite(n) ? String(n) : parte;
+        });
+        return new Set([bruto, semDecimalPlanilha, compacto, semZeros].filter(Boolean));
+    }
+
+    function skusConsultaIguais(a, b) {
+        const aa = chavesSkuConsulta(a);
+        const bb = chavesSkuConsulta(b);
+        return Array.from(aa).some(chave => bb.has(chave));
+    }
+
+    function labelCampoSku(campo) {
+        const mapa = {
+            sku: 'SKU',
+            nome: 'Nome',
+            titulo: 'Titulo',
+            ncm: 'NCM',
+            cest: 'CEST',
+            custo: 'Custo',
+            preco: 'Preco',
+            imposto: 'Imposto',
+            aliquota_total: 'Aliquota total',
+            imposto_estimado: 'Imposto estimado',
+            margem_bruta: 'Margem bruta',
+            margem_liquida: 'Margem liquida',
+            regra_id: 'Regra ID',
+            regra_descricao: 'Regra fiscal',
+            cest_ncm_referencia: 'CEST/NCM referencia',
+            convenio_mg_vinculado: 'Convenio MG vinculado',
+            convenio_mg_parcial_nbm: 'Convenio MG parcial NBM',
+            convenio_mg_total_nbm: 'Convenio MG total NBM',
+            convenio_mg_total_compat: 'Convenio MG total compativel',
+            convenio_mg_nbm_sh: 'Convenio MG NBM/SH',
+            convenio_mg_cest: 'Convenio MG CEST',
+            convenio_mg_ambito_aplicacao: 'Convenio MG ambito',
+            convenio_mg_mva: 'Convenio MG MVA',
+            convenio_mg_st_minas: 'Convenio MG ST Minas',
+            convenio_mg_st_paraiba: 'Convenio MG ST Paraiba',
+            convenio_mg_detalhes: 'Convenio MG detalhes',
+            updated_at: 'Atualizado em',
+            custos_por_loja: 'Custos/impostos por loja',
+        };
+        if (mapa[campo]) return mapa[campo];
+        return String(campo || '')
+            .replace(/_/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\b\w/g, letra => letra.toUpperCase());
+    }
+
+    function renderValorSkuCampo(valor, nivel = 0) {
+        if (!valorSkuInformado(valor)) return '';
+        if (Array.isArray(valor)) {
+            const itens = valor
+                .map((item, idx) => {
+                    const conteudo = renderValorSkuCampo(item, nivel + 1);
+                    if (!conteudo) return '';
+                    return `<div style="margin-bottom:4px;"><strong style="color:#9bd1ff;">#${idx + 1}</strong> ${conteudo}</div>`;
+                })
+                .filter(Boolean)
+                .join('');
+            return itens || '';
+        }
+        if (typeof valor === 'object') {
+            const linhas = Object.entries(valor)
+                .filter(([, v]) => valorSkuInformado(v))
+                .map(([k, v]) => {
+                    const conteudo = renderValorSkuCampo(v, nivel + 1);
+                    if (!conteudo) return '';
+                    return `<div style="display:grid; grid-template-columns:minmax(120px, 220px) 1fr; gap:8px; border-top:1px solid #243044; padding:5px 0;">
+                        <span style="color:#9bd1ff;">${escaparHtml(labelCampoSku(k))}</span>
+                        <span style="min-width:0; overflow-wrap:anywhere;">${conteudo}</span>
+                    </div>`;
+                })
+                .filter(Boolean)
+                .join('');
+            return linhas ? `<div style="min-width:260px;">${linhas}</div>` : '';
+        }
+        return escaparHtml(String(valor));
+    }
+
+    function numeroSku(valor) {
+        if (!valorSkuInformado(valor)) return null;
+        const texto = String(valor).trim();
+        const normalizado = texto.includes(',')
+            ? texto.replace(/\./g, '').replace(',', '.')
+            : texto;
+        const n = Number(normalizado);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    function formatarMoedaSku(valor) {
+        const n = numeroSku(valor);
+        return n === null ? String(valor || '') : formatarMoeda(n);
+    }
+
+    function formatarPctSku(valor, casas = 2) {
+        const n = numeroSku(valor);
+        return n === null ? String(valor || '') : formatarPct(n, casas);
+    }
+
+    function camposFiscaisProduto(produto) {
+        const termos = [
+            'ncm', 'cest', 'imposto', 'tribut', 'aliquota', 'cfop', 'cst', 'csosn',
+            'icms', 'pis', 'cofins', 'ipi', 'mva', 'fcp', 'fiscal', 'origem',
+            'nbs', 'nbm', 'beneficio', 'regime', 'enquadramento', 'ex_tipi'
+        ];
+        const ignorar = new Set(['custos_por_loja']);
+        return Object.entries(produto || {})
+            .filter(([k, v]) => {
+                const chave = String(k || '').toLowerCase();
+                if (ignorar.has(chave) || !valorSkuInformado(v)) return false;
+                return termos.some(t => chave.includes(t));
+            })
+            .map(([campo, valor]) => ({ campo, valor }));
+    }
+
+    function entradasCustosPorLoja(produto) {
+        const mapa = produto && produto.custos_por_loja;
+        if (!mapa || typeof mapa !== 'object' || Array.isArray(mapa)) return [];
+        return Object.entries(mapa)
+            .map(([chave, dados]) => {
+                if (!dados || typeof dados !== 'object') {
+                    return { loja_sync: chave, custo: '', preco: '', imposto: dados, updated_at: '' };
+                }
+                return { loja_sync: dados.loja_sync || chave, ...dados };
+            })
+            .filter(item => valorSkuInformado(item));
+    }
+
+    function renderTabelaCamposSku(titulo, itens) {
+        const linhas = (itens || [])
+            .filter(item => item && valorSkuInformado(item.valor))
+            .map(item => `<tr>
+                <td style="color:#9bd1ff; font-size:0.85em; white-space:nowrap; width:220px;">${escaparHtml(labelCampoSku(item.campo))}</td>
+                <td style="overflow-wrap:anywhere; font-size:0.88em;">${renderValorSkuCampo(item.valor)}</td>
+            </tr>`)
+            .join('');
+        if (!linhas) return '';
+        return `<div style="margin-top:8px;">
+            <div style="font-size:0.82em; color:#c7ddf5; margin-bottom:5px; font-weight:700;">${escaparHtml(titulo)}</div>
+            <div class="table-wrap" style="max-height:28vh;">
+                <table>
+                    <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+                    <tbody>${linhas}</tbody>
+                </table>
+            </div>
+        </div>`;
+    }
+
+    function ncmConsultaSku(produto, impostosSku, aliquotasSku = null) {
+        const base = (aliquotasSku && (aliquotasSku.registro || aliquotasSku.base_local)) || {};
+        return String(
+            produto?.ncm ||
+            impostosSku?.ncm ||
+            base.ncm ||
+            base.ncm_formatado ||
+            aliquotasSku?.ncm ||
+            ''
+        ).replace(/\D/g, '');
+    }
+
+    function normalizarAliquotasImportacaoSku(aliquotasSku) {
+        if (!aliquotasSku || typeof aliquotasSku !== 'object') return null;
+        const base = aliquotasSku.registro || aliquotasSku.base_local || {};
+        const cards = aliquotasSku.aliquotas || {};
+        const item = (chave) => {
+            const card = cards[chave] || {};
+            const percentual = card.percentual !== undefined ? card.percentual : base[chave];
+            return {
+                percentual,
+                fonte: card.fonte || base.fonte || '',
+                erro: card.erro || '',
+            };
+        };
+        return {
+            ncm: String(base.ncm_formatado || base.ncm || aliquotasSku.ncm || '').trim(),
+            descricao: String(base.descricao || '').trim(),
+            origem: String(base.origem || '').trim(),
+            ii: item('ii'),
+            ipi: item('ipi'),
+            pis: item('pis'),
+            cofins: item('cofins'),
+        };
+    }
+
+    function renderConsultaSkuImpostos(produto, impostosSku, aviso = '', aliquotasSku = null) {
+        if (!consultaSkuImpostosCadastradosEl) return;
+
+        const cards = [];
+        const addCard = (label, valor, detalhe = '') => {
+            if (!valorSkuInformado(valor)) return;
+            cards.push(`<div style="background:#1a2535; border:1px solid #2a3a50; border-radius:8px; padding:10px 12px;">
+                <div style="font-size:0.78em; color:#9fb3c8; margin-bottom:4px;">${escaparHtml(label)}</div>
+                <div style="font-size:1.05em; color:#ffffff; font-weight:750; overflow-wrap:anywhere;">${escaparHtml(String(valor))}</div>
+                ${detalhe ? `<div style="font-size:0.75em; color:#6b8599; margin-top:3px;">${escaparHtml(detalhe)}</div>` : ''}
+            </div>`);
+        };
+        const addCardObrigatorio = (label, valor, detalhe = '') => {
+            cards.push(`<div style="background:#1a2535; border:1px solid #2a3a50; border-radius:8px; padding:10px 12px;">
+                <div style="font-size:0.78em; color:#9fb3c8; margin-bottom:4px;">${escaparHtml(label)}</div>
+                <div style="font-size:1.05em; color:#ffffff; font-weight:750; overflow-wrap:anywhere;">${escaparHtml(String(valor || '-'))}</div>
+                ${detalhe ? `<div style="font-size:0.75em; color:#6b8599; margin-top:3px;">${escaparHtml(detalhe)}</div>` : ''}
+            </div>`);
+        };
+
+        const ncmSku = ncmConsultaSku(produto, impostosSku, aliquotasSku);
+        const aliquotasImp = normalizarAliquotasImportacaoSku(aliquotasSku);
+        const ncmVisual = aliquotasImp?.ncm || (ncmSku ? ncmSku : 'Nao cadastrado no SKU');
+        addCardObrigatorio('NCM', ncmVisual, ncmSku ? (aliquotasImp?.descricao || '') : 'Preencha o NCM no cadastro para consultar II, IPI, PIS e Cofins.');
+        addCard('CEST cadastrado', produto?.cest || impostosSku?.cest || '');
+        addCard('Imposto no cadastro', produto?.imposto || '');
+
+        const addAliquotaImportacao = (chave, label) => {
+            if (!ncmSku || ncmSku.length !== 8) {
+                addCardObrigatorio(label, 'Pendente', 'Depende de NCM valido com 8 digitos.');
+                return;
+            }
+            const item = aliquotasImp && aliquotasImp[chave];
+            if (item && valorSkuInformado(item.percentual)) {
+                addCardObrigatorio(label, formatarPctSku(item.percentual, 4), item.fonte || 'Base local de aliquotas de importacao');
+                return;
+            }
+            addCardObrigatorio(label, 'Sem registro local', 'NCM encontrado, mas a base local ainda nao retornou esta aliquota.');
+        };
+        addAliquotaImportacao('ii', 'II');
+        addAliquotaImportacao('ipi', 'IPI');
+        addAliquotaImportacao('pis', 'PIS');
+        addAliquotaImportacao('cofins', 'Cofins');
+
+        if (impostosSku) {
+            const regra = impostosSku.regra_descricao || impostosSku.regra_id || 'Sem regra fiscal vinculada';
+            addCard('Regra fiscal', regra);
+            addCard('Aliquota total', formatarPctSku(impostosSku.aliquota_total || 0));
+            addCard('Imposto estimado', formatarMoedaSku(impostosSku.imposto_estimado || 0));
+            addCard('Margem liquida est.', formatarMoedaSku(impostosSku.margem_liquida || 0));
+            addCard('Convenio MG', impostosSku.convenio_mg_vinculado ? 'Sim' : 'Nao');
+            addCard('MVA Convenio MG', impostosSku.convenio_mg_mva || '');
+            addCard('ST Minas', impostosSku.convenio_mg_st_minas || '');
+            addCard('ST Paraiba', impostosSku.convenio_mg_st_paraiba || '');
+        }
+
+        if (consultaSkuImpostosResumoEl) {
+            consultaSkuImpostosResumoEl.innerHTML = cards.join('');
+        }
+
+        const custos = entradasCustosPorLoja(produto);
+        if (consultaSkuCustosPorLojaEl) {
+            if (custos.length) {
+                const linhas = custos.map(item => `<tr>
+                    <td>${escaparHtml(item.loja_sync || 'Sem loja')}</td>
+                    <td>${escaparHtml(valorSkuInformado(item.custo) ? formatarMoedaSku(item.custo) : '-')}</td>
+                    <td>${escaparHtml(valorSkuInformado(item.preco) ? formatarMoedaSku(item.preco) : '-')}</td>
+                    <td>${escaparHtml(valorSkuInformado(item.imposto) ? formatarPctSku(item.imposto) : '-')}</td>
+                    <td>${escaparHtml(item.updated_at || '-')}</td>
+                </tr>`).join('');
+                consultaSkuCustosPorLojaEl.innerHTML = `<div style="font-size:0.82em; color:#c7ddf5; margin-bottom:5px; font-weight:700;">Custos e impostos por loja</div>
+                    <div class="table-wrap" style="max-height:28vh;">
+                        <table>
+                            <thead><tr><th>Loja</th><th>Custo</th><th>Preco</th><th>Imposto</th><th>Atualizado em</th></tr></thead>
+                            <tbody>${linhas}</tbody>
+                        </table>
+                    </div>`;
+            } else {
+                consultaSkuCustosPorLojaEl.innerHTML = '';
+            }
+        }
+
+        const camposProduto = camposFiscaisProduto(produto);
+        const camposSimulacao = impostosSku
+            ? Object.entries(impostosSku)
+                .filter(([campo]) => !['sku', 'nome'].includes(String(campo || '').toLowerCase()))
+                .map(([campo, valor]) => ({ campo, valor }))
+            : [];
+
+        if (consultaSkuImpostosDetalhesEl) {
+            const avisoHtml = aviso
+                ? `<div style="color:#d69e2e; font-size:0.85em; margin-bottom:8px;">${escaparHtml(aviso)}</div>`
+                : '';
+            const detalhesHtml = [
+                renderTabelaCamposSku('Campos fiscais do cadastro', camposProduto),
+                renderTabelaCamposSku('Regra/simulacao do modulo Impostos', camposSimulacao),
+            ].filter(Boolean).join('');
+            consultaSkuImpostosDetalhesEl.innerHTML = avisoHtml + (detalhesHtml || '');
+        }
+
+        const temConteudo = cards.length || custos.length || camposProduto.length || camposSimulacao.length || aviso;
+        consultaSkuImpostosCadastradosEl.style.display = temConteudo ? '' : 'none';
+        if (!temConteudo && consultaSkuImpostosResumoEl) {
+            consultaSkuImpostosResumoEl.innerHTML = '<div style="color:#9fb3c8;">Nenhuma informacao fiscal cadastrada para este SKU.</div>';
+            consultaSkuImpostosCadastradosEl.style.display = '';
+        }
+    }
+
+    async function buscarImpostosCadastradosSku(sku) {
+        let produtos = Array.isArray(_consultaSkuImpostosProdutosCache)
+            ? _consultaSkuImpostosProdutosCache
+            : null;
+
+        if (!produtos) {
+            const resp = await fetch('/api/impostos/produtos', { headers: obterAuthHeaders() });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+            produtos = Array.isArray(data.produtos) ? data.produtos : [];
+            _consultaSkuImpostosProdutosCache = produtos;
+        }
+
+        return produtos.find(item => skusConsultaIguais(item?.sku, sku)) || null;
+    }
+
+    async function buscarAliquotasImportacaoSku(ncm) {
+        const ncmLimpo = String(ncm || '').replace(/\D/g, '');
+        if (!ncmLimpo || ncmLimpo.length !== 8) return null;
+        const resp = await fetch(`/api/impostos/aliquotas-importacao/${encodeURIComponent(ncmLimpo)}`, {
+            headers: obterAuthHeaders(),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 404) return null;
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        return data;
+    }
+
+    function renderConsultaSkuResultado(produto, impostosSku = null, avisoImpostos = '', aliquotasSku = null) {
         _consultaSkuAtual = produto;
 
         const kpisConfig = [
@@ -1898,7 +2246,13 @@
         ];
 
         consultaSkuKpisEl.innerHTML = kpisConfig.map(k => {
-            const val = produto[k.campo] || (k.fallback ? produto[k.fallback] : '') || '—';
+            let val = produto[k.campo] || (k.fallback ? produto[k.fallback] : '') || '—';
+            if (k.campo === 'ncm') {
+                const aliquotasImp = normalizarAliquotasImportacaoSku(aliquotasSku);
+                val = produto.ncm || impostosSku?.ncm || aliquotasImp?.ncm || '—';
+            } else if (k.campo === 'cest') {
+                val = produto.cest || impostosSku?.cest || '—';
+            }
             const display = (val !== '—' && k.prefix) ? k.prefix + val : val;
             return `<div class="kpi"><div class="label">${k.label}</div><div class="value">${escaparHtml(display)}</div></div>`;
         }).join('');
@@ -1911,13 +2265,16 @@
         tbConsultaSkuDetalhes.innerHTML = camposOrdenados
             .filter(k => produto[k] !== undefined)
             .map(k => {
-                const val = String(produto[k] ?? '');
+                if (!valorSkuInformado(produto[k])) return '';
+                const val = renderValorSkuCampo(produto[k]);
                 if (!val) return '';
                 return `<tr>
                     <td style="color:#9bd1ff; font-size:0.85em; white-space:nowrap; width:200px;">${escaparHtml(k)}</td>
-                    <td style="word-break:break-all; font-size:0.88em;">${escaparHtml(val)}</td>
+                    <td style="overflow-wrap:anywhere; font-size:0.88em;">${val}</td>
                 </tr>`;
             }).join('');
+
+        renderConsultaSkuImpostos(produto, impostosSku, avisoImpostos, aliquotasSku);
 
         consultaSkuResultadoEl.style.display = '';
         consultaSkuVazioEl.style.display = 'none';
@@ -1961,12 +2318,35 @@
             return;
         }
 
-        renderConsultaSkuResultado(produto);
+        consultaSkuStatusEl.textContent = 'Produto encontrado. Carregando impostos cadastrados do SKU...';
+        consultaSkuStatusEl.style.color = '#9bd1ff';
+
+        let impostosSku = null;
+        let avisoImpostos = '';
+        try {
+            impostosSku = await buscarImpostosCadastradosSku(produto.sku || sku);
+        } catch (e) {
+            avisoImpostos = `Nao foi possivel carregar regra/simulacao do modulo Impostos: ${e.message}`;
+        }
+
+        let aliquotasSku = null;
+        const ncmInicial = ncmConsultaSku(produto, impostosSku);
+        if (ncmInicial && ncmInicial.length === 8) {
+            try {
+                aliquotasSku = await buscarAliquotasImportacaoSku(ncmInicial);
+            } catch (e) {
+                avisoImpostos = [avisoImpostos, `Nao foi possivel carregar II/IPI/PIS/Cofins da base local: ${e.message}`]
+                    .filter(Boolean)
+                    .join(' ');
+            }
+        }
+
+        renderConsultaSkuResultado(produto, impostosSku, avisoImpostos, aliquotasSku);
         consultaSkuStatusEl.textContent = 'Produto encontrado. Consultando alíquotas na base local atualizável e validando regime no TTCE...';
         consultaSkuStatusEl.style.color = '#9bd1ff';
 
         // 2. Consultar alíquotas na base local atualizável e validar tratamento no TTCE.
-        const ncm = String(produto.ncm || '').replace(/\D/g, '');
+        const ncm = ncmInicial;
         if (!ncm || ncm.length !== 8) {
             consultaSkuStatusEl.textContent = 'Produto encontrado. NCM ausente ou inválido — consulta de alíquotas não realizada.';
             consultaSkuStatusEl.style.color = '#d69e2e';
@@ -1991,6 +2371,7 @@
             if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
 
             renderConsultaSkuTtce(data);
+            renderConsultaSkuImpostos(produto, impostosSku, avisoImpostos, data);
             const regime = (data.escopo || {}).regime_tributario || '';
             const ncmFmt = data.ncm || ncm;
             const modoFonte = (data.escopo || {}).modo_fonte || '';
@@ -2177,5 +2558,3 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
-

@@ -477,7 +477,8 @@
             background: linear-gradient(135deg, #0a1428, #121a28);
         }
 
-        .quick-join-card {
+        .quick-join-card,
+        .remote-support-card {
             box-shadow: 0 12px 28px rgba(0, 0, 0, 0.26);
         }
 
@@ -490,13 +491,56 @@
             line-height: 1.45;
         }
 
-        .quick-join-card {
+        .quick-join-card,
+        .remote-support-card {
             border: 1px solid var(--line);
             border-radius: 8px;
             background: var(--surface-soft);
             padding: 12px;
             display: grid;
             gap: 10px;
+        }
+
+        .remote-support-card {
+            border-color: rgba(79, 209, 165, 0.42);
+            background: linear-gradient(135deg, rgba(18, 34, 51, 0.98), rgba(13, 31, 30, 0.94));
+        }
+
+        .remote-support-head {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .remote-support-head .section-title {
+            margin: 0;
+        }
+
+        .rustdesk-badge {
+            min-height: 24px;
+            border: 1px solid rgba(79, 209, 165, 0.5);
+            border-radius: 999px;
+            padding: 3px 8px;
+            background: rgba(79, 209, 165, 0.12);
+            color: #b7f7df;
+            font-size: 0.68rem;
+            font-weight: 950;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .rustdesk-badge.warn {
+            border-color: rgba(255, 184, 77, 0.55);
+            background: rgba(255, 184, 77, 0.12);
+            color: #ffd48a;
+        }
+
+        .remote-support-status.status {
+            min-height: 40px;
+            padding: 9px 10px;
+            font-size: 0.82rem;
         }
 
         .layout {
@@ -1489,6 +1533,15 @@
                     </section>
 
                     <aside class="rooms-side-panel">
+                        <section class="remote-support-card" aria-label="Suporte remoto Acesso Remoto">
+                            <div class="remote-support-head">
+                                <h2 class="section-title">Suporte remoto</h2>
+                                <span id="rustDeskBadge" class="rustdesk-badge warn">Acesso Remoto</span>
+                            </div>
+                            <div id="rustDeskStatus" class="status remote-support-status" role="status" aria-live="polite">Abra o aplicativo de Acesso Remoto.</div>
+                            <button id="rustDeskOpenBtn" class="primary" type="button">Abrir Acesso Remoto</button>
+                        </section>
+
                         <section class="quick-join-card">
                             <h2 class="section-title">Entrar por link</h2>
                             <label aria-label="Link da reuniao">
@@ -1805,6 +1858,72 @@
             box.textContent = message || '';
             box.classList.toggle('warn', type === 'warn');
             box.classList.toggle('error', type === 'error');
+        }
+
+        function setRustDeskStatus(message, type) {
+            const box = $('rustDeskStatus');
+            if (!box) return;
+            box.textContent = message || '';
+            box.classList.toggle('warn', type === 'warn');
+            box.classList.toggle('error', type === 'error');
+        }
+
+        function setRustDeskBadge(text, type) {
+            const badge = $('rustDeskBadge');
+            if (!badge) return;
+            badge.textContent = text || 'Acesso Remoto';
+            badge.classList.toggle('warn', type === 'warn');
+        }
+
+        async function loadRustDeskStatus() {
+            try {
+                const resp = await fetch('/api/sala-reuniao/rustdesk/status', {
+                    cache: 'no-store',
+                    headers: authHeaders()
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.status === 404 || resp.status === 405) throw new Error('Reinicie o JK Sistema para ativar o Acesso Remoto.');
+                if (!resp.ok || data.success === false) throw new Error(data.detail || 'Nao foi possivel verificar o Acesso Remoto.');
+                if (data.running) {
+                    setRustDeskBadge('Rodando');
+                    setRustDeskStatus('Acesso Remoto esta em execucao.');
+                } else if (data.available) {
+                    setRustDeskBadge('Pronto');
+                    setRustDeskStatus('Acesso Remoto pronto para abrir.');
+                } else {
+                    setRustDeskBadge('Pendente', 'warn');
+                    setRustDeskStatus('Acesso Remoto nao encontrado.', 'warn');
+                }
+            } catch (err) {
+                setRustDeskBadge('Offline', 'warn');
+                setRustDeskStatus((err && err.message) || 'Nao foi possivel verificar o Acesso Remoto.', 'warn');
+            }
+        }
+
+        async function openRustDeskApp() {
+            const btn = $('rustDeskOpenBtn');
+            if (btn) btn.disabled = true;
+            setRustDeskBadge('Abrindo');
+            setRustDeskStatus('Abrindo aplicativo de Acesso Remoto...');
+            try {
+                const resp = await fetch('/api/sala-reuniao/rustdesk/abrir', {
+                    method: 'POST',
+                    cache: 'no-store',
+                    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ dock: false, external_only: true })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || data.success === false) {
+                    throw new Error(data.detail || data.message || 'Nao foi possivel abrir o Acesso Remoto.');
+                }
+                setRustDeskBadge('Rodando');
+                setRustDeskStatus(data.message || 'Acesso Remoto aberto.');
+            } catch (err) {
+                setRustDeskBadge('Erro', 'warn');
+                setRustDeskStatus((err && err.message) || 'Nao foi possivel abrir o Acesso Remoto.', 'error');
+            } finally {
+                if (btn) btn.disabled = false;
+            }
         }
 
         function dailyFriendlyError(message) {
@@ -3257,6 +3376,7 @@
             $('newMeetingBtn').addEventListener('click', prepareNewMeeting);
             $('endAllRoomsBtn').addEventListener('click', endAllActiveRooms);
             $('refreshRoomsBtn').addEventListener('click', loadActiveRooms);
+            $('rustDeskOpenBtn').addEventListener('click', openRustDeskApp);
             $('quickJoinBtn').addEventListener('click', quickJoinRoom);
             $('activeRoomsList').addEventListener('click', handleRoomsListClick);
             document.querySelectorAll('input[name="startPrivacy"]').forEach((input) => {
@@ -3308,6 +3428,7 @@
                 }
             });
             setCallToolsEnabled(false);
+            loadRustDeskStatus();
             loadStatus();
             loadMonthlyUsage();
             const incomingRoom = dailyJoinFromQuery();

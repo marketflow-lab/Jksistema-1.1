@@ -1547,6 +1547,7 @@
     }
 
     async function sincronizarDriveBackup(manual = false) {
+        if (!manual) return null;
         const botao = document.getElementById('btn-sincronizar-drive');
         try {
             if (botao && manual) {
@@ -1586,8 +1587,6 @@
             }
         }
     }
-
-    setTimeout(() => sincronizarDriveBackup(false), 1800);
 
     async function verificarAtualizacao() {
         const api = window.electronAPI;

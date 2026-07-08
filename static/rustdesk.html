@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acesso Remoto - JK Sistema</title>
+    <script src="/auth.js?v=20260618-persist-login"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #070b12;
+            color: #e5f3ff;
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+        body {
+            display: grid;
+            grid-template-rows: 42px minmax(0, 1fr);
+        }
+        .topbar {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 6px 10px;
+            background: #0b111c;
+            border-bottom: 1px solid rgba(79, 172, 254, 0.28);
+        }
+        .title {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 900;
+            letter-spacing: 0;
+            white-space: nowrap;
+        }
+        .status {
+            min-width: 0;
+            color: #9ccdf8;
+            font-size: 12px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        button {
+            min-height: 30px;
+            border: 1px solid rgba(79, 172, 254, 0.54);
+            border-radius: 8px;
+            background: #16324f;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 900;
+            padding: 0 12px;
+        }
+        button:hover { background: #1d4167; }
+        button:disabled { cursor: wait; opacity: 0.62; }
+        .dock {
+            position: relative;
+            min-width: 0;
+            min-height: 0;
+            background: #0b111c;
+            overflow: hidden;
+        }
+        .dock::before {
+            content: "Acesso Remoto";
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            color: rgba(156, 205, 248, 0.24);
+            font-size: clamp(28px, 7vw, 82px);
+            font-weight: 950;
+            letter-spacing: 0;
+            pointer-events: none;
+        }
+        .dock-message {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: min(560px, calc(100% - 36px));
+            transform: translate(-50%, -50%);
+            display: grid;
+            gap: 8px;
+            place-items: center;
+            text-align: center;
+            padding: 18px;
+            border: 1px solid rgba(79, 172, 254, 0.28);
+            border-radius: 8px;
+            background: rgba(11, 17, 28, 0.92);
+            box-shadow: 0 18px 52px rgba(0, 0, 0, 0.34);
+            color: #d9efff;
+            z-index: 1;
+            pointer-events: none;
+        }
+        .dock-message strong {
+            font-size: 18px;
+            font-weight: 950;
+        }
+        .dock-message span {
+            color: #9ccdf8;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+        .dock-message.error {
+            border-color: rgba(255, 113, 133, 0.45);
+            color: #ffd9df;
+        }
+        .dock-message.error span { color: #ffb5c0; }
+        .status.error { color: #ff9aa8; }
+        .status.warn { color: #ffd38a; }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="title">Acesso Remoto</div>
+        <div id="status" class="status" role="status" aria-live="polite">Pronto para iniciar.</div>
+        <div class="actions">
+            <button id="dockBtn" type="button">Iniciar Acesso Remoto</button>
+        </div>
+    </header>
+    <main id="dockTarget" class="dock" aria-label="Acesso Remoto">
+        <div id="dockMessage" class="dock-message">
+            <strong>Acesso Remoto pronto</strong>
+            <span>Clique em Iniciar Acesso Remoto para abrir dentro desta aba.</span>
+        </div>
+    </main>
+
+    <script>
+        const $ = (id) => document.getElementById(id);
+        let busy = false;
+        let docked = false;
+        let startRequested = false;
+        let tabActive = true;
+        let watchTimer = null;
+        let resizeTimer = null;
+        let redockBusy = false;
+        let lastRedockAt = 0;
+
+        function authToken() {
+            const token = typeof obterToken === 'function' ? obterToken() : localStorage.getItem('access_token');
+            return token ? String(token) : '';
+        }
+
+        function authHeaders() {
+            const token = authToken();
+            return token ? { Authorization: 'Bearer ' + token } : {};
+        }
+
+        function setStatus(message, type) {
+            const box = $('status');
+            box.textContent = message || '';
+            box.classList.toggle('warn', type === 'warn');
+            box.classList.toggle('error', type === 'error');
+        }
+
+        function setDockMessage(title, detail, type) {
+            const box = $('dockMessage');
+            if (!box) return;
+            box.hidden = false;
+            box.classList.toggle('error', type === 'error');
+            box.innerHTML = `<strong></strong><span></span>`;
+            box.querySelector('strong').textContent = title || 'Acesso Remoto';
+            box.querySelector('span').textContent = detail || '';
+        }
+
+        function setDockButton(text, disabled) {
+            const btn = $('dockBtn');
+            if (!btn) return;
+            btn.textContent = text || 'Iniciar Acesso Remoto';
+            btn.disabled = !!disabled;
+        }
+
+        function markReadyToStart() {
+            setStatus('Pronto para iniciar.');
+            setDockMessage('Acesso Remoto pronto', 'Clique em Iniciar Acesso Remoto para abrir dentro desta aba.');
+            setDockButton('Iniciar Acesso Remoto', false);
+        }
+
+        function backendMessage(data, fallback) {
+            const info = data && typeof data === 'object' ? data : {};
+            const base = String(info.message || fallback || '').trim();
+            const details = [];
+            if (info.reason) details.push(String(info.reason));
+            if (info.first_dock_reason && info.first_dock_reason !== info.reason) details.push(`primeira tentativa: ${info.first_dock_reason}`);
+            if (info.restore_attempted) details.push('restaurado do tray');
+            return details.length ? `${base} (${details.join(' | ')})` : base;
+        }
+
+        function readyForDock() {
+            const target = $('dockTarget');
+            if (!target || target.offsetParent === null) return false;
+            if (document.hidden || document.visibilityState === 'hidden') return false;
+            const rect = target.getBoundingClientRect();
+            return rect.width >= 320 && rect.height >= 240 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+        }
+
+        function nativeApi() {
+            if (window.electronAPI && typeof window.electronAPI.getNativeWindowHandle === 'function') {
+                return window.electronAPI;
+            }
+            try {
+                if (window.top && window.top.electronAPI && typeof window.top.electronAPI.getNativeWindowHandle === 'function') {
+                    return window.top.electronAPI;
+                }
+            } catch (_err) {}
+            return null;
+        }
+
+        async function getFrameBoundsFromShell() {
+            try {
+                if (!window.top || window.top === window) return null;
+                const requestId = 'rustdesk-frame-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+                return await new Promise((resolve) => {
+                    const timer = window.setTimeout(() => {
+                        window.removeEventListener('message', listener);
+                        resolve(null);
+                    }, 900);
+                    function listener(event) {
+                        const data = event.data || {};
+                        if (data.channel !== 'jk-tab-frame-bounds-response' || data.requestId !== requestId) return;
+                        window.clearTimeout(timer);
+                        window.removeEventListener('message', listener);
+                        resolve(data.payload || null);
+                    }
+                    window.addEventListener('message', listener);
+                    window.top.postMessage({ channel: 'jk-tab-frame-bounds-request', requestId }, '*');
+                });
+            } catch (_err) {
+                return null;
+            }
+        }
+
+        async function dockBoundsRelativeToAppWindow() {
+            const rect = $('dockTarget').getBoundingClientRect();
+            let offsetX = 0;
+            let offsetY = 0;
+            let usedFrameElement = false;
+            try {
+                if (window.frameElement && typeof window.frameElement.getBoundingClientRect === 'function') {
+                    const frameRect = window.frameElement.getBoundingClientRect();
+                    offsetX = frameRect.left || 0;
+                    offsetY = frameRect.top || 0;
+                    usedFrameElement = true;
+                }
+            } catch (_err) {}
+            if ((!usedFrameElement || (offsetX === 0 && offsetY === 0)) && window.top && window.top !== window) {
+                const bridged = await getFrameBoundsFromShell();
+                if (bridged && bridged.success !== false && bridged.frame) {
+                    if (bridged.active === false || bridged.frame.active === false) {
+                        throw new Error('Abra a aba Acesso Remoto para encaixar a janela.');
+                    }
+                    offsetX = Number(bridged.frame.x || 0);
+                    offsetY = Number(bridged.frame.y || 0);
+                }
+            }
+            return {
+                x: rect.left + offsetX,
+                y: rect.top + offsetY,
+                width: rect.width,
+                height: rect.height
+            };
+        }
+
+        async function getNativeWindowHandle() {
+            try {
+                if (window.top && window.top !== window) {
+                    const requestId = 'rustdesk-hwnd-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+                    const bridged = await new Promise((resolve) => {
+                        const timer = window.setTimeout(() => {
+                            window.removeEventListener('message', listener);
+                            resolve(null);
+                        }, 1800);
+                        function listener(event) {
+                            const data = event.data || {};
+                            if (data.channel !== 'jk-native-window-handle-response' || data.requestId !== requestId) return;
+                            window.clearTimeout(timer);
+                            window.removeEventListener('message', listener);
+                            resolve(data.payload || null);
+                        }
+                        window.addEventListener('message', listener);
+                        window.top.postMessage({ channel: 'jk-native-window-handle-request', requestId }, '*');
+                    });
+                    if (bridged && bridged.success && bridged.hwnd) return bridged;
+                }
+            } catch (_err) {}
+            const api = nativeApi();
+            if (api && typeof api.getNativeWindowHandle === 'function') {
+                const handle = await api.getNativeWindowHandle().catch(() => null);
+                if (handle && handle.success && handle.hwnd) return handle;
+            }
+            return null;
+        }
+
+        async function callRustDeskElectron(action, payload) {
+            const token = authToken();
+            const api = nativeApi();
+            const methodName = action === 'hide'
+                ? 'hideRustDeskInApp'
+                : (action === 'dock' ? 'dockRustDeskInApp' : 'openRustDeskInApp');
+            if (api && typeof api[methodName] === 'function') {
+                return await api[methodName](payload || {}, token).catch((err) => ({
+                    success: false,
+                    message: err && err.message ? err.message : String(err)
+                }));
+            }
+            try {
+                if (!window.top || window.top === window) return null;
+                const requestId = 'rustdesk-ipc-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+                const result = await new Promise((resolve) => {
+                    const timer = window.setTimeout(() => {
+                        window.removeEventListener('message', listener);
+                        resolve(null);
+                    }, 2200);
+                    function listener(event) {
+                        const data = event.data || {};
+                        if (data.channel !== 'jk-rustdesk-in-app-response' || data.requestId !== requestId) return;
+                        window.clearTimeout(timer);
+                        window.removeEventListener('message', listener);
+                        resolve(data.payload || null);
+                    }
+                    window.addEventListener('message', listener);
+                    window.top.postMessage({
+                        channel: 'jk-rustdesk-in-app-request',
+                        requestId,
+                        payload: { action, dockPayload: payload || {}, authToken: token }
+                    }, '*');
+                });
+                if (
+                    result
+                    && result.success === false
+                    && /electron api.*(rustdesk|acesso remoto).*indisponivel/i.test(String(result.message || ''))
+                ) {
+                    return null;
+                }
+                return result;
+            } catch (_err) {
+                return null;
+            }
+        }
+
+        async function dockPayload() {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            if (!readyForDock()) {
+                throw new Error('Abra a aba Acesso Remoto para iniciar o suporte remoto.');
+            }
+            const payload = {
+                dock: true,
+                parent_mode: 'render_widget',
+                reset_stale_children: true,
+                bounds: await dockBoundsRelativeToAppWindow(),
+                device_pixel_ratio: window.devicePixelRatio || 1,
+                page_visible: !document.hidden && document.visibilityState !== 'hidden'
+            };
+            const handle = await getNativeWindowHandle();
+            if (handle && handle.success && handle.hwnd) payload.parent_hwnd = handle.hwnd;
+            if (!payload.parent_hwnd) {
+                throw new Error('Reinicie o JK Sistema para ativar o Acesso Remoto interno.');
+            }
+            return payload;
+        }
+
+        async function hidePayload() {
+            const payload = {
+                parent_mode: 'render_widget',
+                allow_hide: true,
+                reason: 'tab-inactive'
+            };
+            const handle = await getNativeWindowHandle();
+            if (handle && handle.success && handle.hwnd) payload.parent_hwnd = handle.hwnd;
+            return payload;
+        }
+
+        async function hideRustDesk(reason = 'tab-inactive') {
+            window.clearInterval(watchTimer);
+            watchTimer = null;
+            window.clearTimeout(resizeTimer);
+            resizeTimer = null;
+            docked = false;
+            try {
+                const payload = await hidePayload();
+                payload.reason = reason;
+                let data = await callRustDeskElectron('hide', payload);
+                if (!data) {
+                    await fetch('/api/sala-reuniao/rustdesk/ocultar', {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    }).catch(() => null);
+                }
+            } catch (_err) {}
+        }
+
+        async function dockRustDesk(options = {}) {
+            const quiet = !!options.quiet;
+            if (busy) return;
+            if (quiet && !startRequested && !docked) return;
+            if (!tabActive) return;
+            if (!quiet) startRequested = true;
+            busy = true;
+            if (!quiet) setDockButton('Abrindo...', true);
+            try {
+                if (!quiet) setStatus('Abrindo Acesso Remoto...');
+                if (!quiet) setDockMessage('Abrindo Acesso Remoto', 'A janela sera maximizada dentro do JK Sistema.');
+                const payload = await dockPayload();
+                let data = await callRustDeskElectron('open', payload);
+                if (!data) {
+                    const resp = await fetch('/api/sala-reuniao/rustdesk/abrir', {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) throw new Error(data.detail || data.message || 'Nao foi possivel abrir o Acesso Remoto.');
+                }
+                if (data.success === false) throw new Error(data.detail || data.message || 'Nao foi possivel abrir o Acesso Remoto.');
+                if (!tabActive) {
+                    await hideRustDesk('inactive-after-open');
+                    return;
+                }
+                docked = !!data.docked;
+                if (docked) {
+                    setStatus('Acesso Remoto maximizado dentro do JK Sistema.');
+                    if (!quiet) setDockMessage('Acesso Remoto encaixado', 'Se a tela do Acesso Remoto nao apareceu por cima desta mensagem, clique em Reencaixar.');
+                    if (!quiet) setDockButton('Reencaixar', false);
+                    startDockWatch();
+                } else if (!quiet) {
+                    const message = backendMessage(data, 'Nao foi possivel encaixar o Acesso Remoto dentro do JK Sistema.');
+                    setStatus(message, 'error');
+                    setDockMessage('Nao foi possivel mostrar o Acesso Remoto', message, 'error');
+                    setDockButton('Tentar novamente', false);
+                }
+            } catch (err) {
+                docked = false;
+                if (!quiet) {
+                    const message = (err && err.message) || 'Nao foi possivel abrir o Acesso Remoto.';
+                    setStatus(message, 'error');
+                    setDockMessage('Nao foi possivel mostrar o Acesso Remoto', message, 'error');
+                    setDockButton('Tentar novamente', false);
+                }
+            } finally {
+                busy = false;
+            }
+        }
+
+        async function redockQuiet(options = {}) {
+            if (!tabActive || !docked || !readyForDock()) return;
+            if (redockBusy) return;
+            const now = Date.now();
+            if (!options.force && now - lastRedockAt < 2500) return;
+            redockBusy = true;
+            lastRedockAt = now;
+            try {
+                const payload = await dockPayload();
+                let data = await callRustDeskElectron('dock', payload);
+                if (!data) {
+                    const resp = await fetch('/api/sala-reuniao/rustdesk/acoplar', {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    data = await resp.json().catch(() => ({}));
+                    if (resp.ok && data.docked) docked = true;
+                    return;
+                }
+                if (data.success !== false && data.docked) docked = true;
+            } catch (_err) {
+            } finally {
+                redockBusy = false;
+            }
+        }
+
+        function startDockWatch() {
+            window.clearInterval(watchTimer);
+            watchTimer = null;
+        }
+
+        function scheduleResizeDock() {
+            if (!docked) return;
+            window.clearTimeout(resizeTimer);
+            resizeTimer = window.setTimeout(() => redockQuiet({ force: true }), 220);
+        }
+
+        $('dockBtn').addEventListener('click', () => dockRustDesk());
+        window.addEventListener('resize', scheduleResizeDock);
+        window.addEventListener('scroll', scheduleResizeDock, true);
+        window.addEventListener('message', (event) => {
+            const data = event.data || {};
+            if (data.channel !== 'jk-rustdesk-tab-visibility') return;
+            const isActive = data.active !== false;
+            if (isActive === tabActive) return;
+            tabActive = isActive;
+            if (!tabActive) {
+                window.clearInterval(watchTimer);
+                watchTimer = null;
+                if (data.payload && data.payload.anotherRustDeskActive) {
+                    docked = false;
+                    return;
+                }
+                hideRustDesk(data.payload && data.payload.closing ? 'tab-closing' : 'tab-inactive');
+                return;
+            }
+            window.setTimeout(() => {
+                if (!tabActive) return;
+                if (docked) redockQuiet({ force: true });
+                else if (startRequested) dockRustDesk({ quiet: true });
+            }, 180);
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && docked) redockQuiet({ force: true });
+        });
+        markReadyToStart();
+    </script>
+</body>
+</html>

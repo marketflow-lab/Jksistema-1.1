@@ -36,6 +36,15 @@
         .page-btn:disabled { opacity:0.5; cursor:not-allowed; }
         .page-info { color:#9bd1ff; font-size:0.92rem; }
         #btnSync:disabled { opacity:0.6; cursor:not-allowed; }
+        .tabs { display:flex; gap:8px; margin:0 0 14px 0; flex-wrap:wrap; }
+        .tab-btn { padding:9px 14px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; font-weight:700; }
+        .tab-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; }
+        .aba-conteudo.hidden { display:none; }
+        .filters label, .history-actions label { display:flex; align-items:center; gap:6px; color:#9bd1ff; font-size:0.92rem; }
+        .history-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:15px; }
+        .history-table th, .history-table td { text-align:right; }
+        .history-table th:first-child, .history-table td:first-child { text-align:left; }
+        #btnHistoricoSync:disabled, #btnHistoricoCarregar:disabled { opacity:0.6; cursor:not-allowed; }
     </style>
     <script src="/auth.js?v=20260618-persist-login"></script>
     <script src="/ncm-sync.js"></script>
@@ -53,35 +62,64 @@
 
     <div id="status" class="status-bar"></div>
 
+    <div class="tabs">
+        <button id="tabAtual" class="tab-btn active" type="button">Estoque atual</button>
+        <button id="tabHistorico" class="tab-btn" type="button">Histórico de estoque</button>
+    </div>
+
     <div class="filters">
         <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
-        <button id="btnSync" class="back-btn" style="background:#28a745;">Atualizar estoque</button>
-        <input type="text" id="filtroTexto" placeholder="Buscar por SKU, título ou código" aria-label="Filtro de texto">
-        <select id="ordenarPor" aria-label="Organizar SKUs">
-            <option value="loja_az">Loja (A-Z)</option>
-            <option value="loja_za">Loja (Z-A)</option>
-            <option value="data_atual">Data da atualização (atual)</option>
-            <option value="sku_az">SKU alfabético (A-Z)</option>
-            <option value="sku_desc">SKU maior para menor</option>
-            <option value="estoque_desc">Estoque maior para menor</option>
-            <option value="estoque_asc">Estoque menor para maior</option>
-        </select>
     </div>
 
-    <div class="summary" id="resumo"></div>
+    <section id="abaAtual" class="aba-conteudo">
+        <div class="filters">
+            <button id="btnSync" class="back-btn" style="background:#28a745;">Atualizar estoque</button>
+            <input type="text" id="filtroTexto" placeholder="Buscar por SKU, título ou código" aria-label="Filtro de texto">
+            <select id="ordenarPor" aria-label="Organizar SKUs">
+                <option value="loja_az">Loja (A-Z)</option>
+                <option value="loja_za">Loja (Z-A)</option>
+                <option value="data_atual">Data da atualização (atual)</option>
+                <option value="sku_az">SKU alfabético (A-Z)</option>
+                <option value="sku_desc">SKU maior para menor</option>
+                <option value="estoque_desc">Estoque maior para menor</option>
+                <option value="estoque_asc">Estoque menor para maior</option>
+            </select>
+        </div>
 
-    <div class="table-wrapper">
-        <table>
-            <thead id="tHead"></thead>
-            <tbody id="tBody"></tbody>
-        </table>
-    </div>
+        <div class="summary" id="resumo"></div>
 
-    <div class="paginacao" id="paginacao" style="display:none;">
-        <button id="btnPaginaAnterior" class="page-btn">Anterior</button>
-        <span id="pageInfo" class="page-info"></span>
-        <button id="btnPaginaProxima" class="page-btn">Próxima</button>
-    </div>
+        <div class="table-wrapper">
+            <table>
+                <thead id="tHead"></thead>
+                <tbody id="tBody"></tbody>
+            </table>
+        </div>
+
+        <div class="paginacao" id="paginacao" style="display:none;">
+            <button id="btnPaginaAnterior" class="page-btn">Anterior</button>
+            <span id="pageInfo" class="page-info"></span>
+            <button id="btnPaginaProxima" class="page-btn">Próxima</button>
+        </div>
+    </section>
+
+    <section id="abaHistorico" class="aba-conteudo hidden">
+        <div class="history-actions">
+            <label>Início <input type="date" id="histDataInicio"></label>
+            <label>Fim <input type="date" id="histDataFim"></label>
+            <button id="btnHistoricoCarregar" class="back-btn" type="button">Carregar histórico</button>
+            <button id="btnHistoricoSync" class="back-btn" style="background:#28a745;" type="button">Sincronizar registros</button>
+        </div>
+
+        <div id="historicoStatus" class="status-bar"></div>
+        <div class="summary" id="historicoResumo"></div>
+
+        <div class="table-wrapper">
+            <table class="history-table">
+                <thead id="historicoTHead"></thead>
+                <tbody id="historicoTBody"></tbody>
+            </table>
+        </div>
+    </section>
 </div>
 
 <script>
@@ -97,6 +135,18 @@
     const btnPaginaAnterior = document.getElementById('btnPaginaAnterior');
     const btnPaginaProxima = document.getElementById('btnPaginaProxima');
     const pageInfo = document.getElementById('pageInfo');
+    const tabAtual = document.getElementById('tabAtual');
+    const tabHistorico = document.getElementById('tabHistorico');
+    const abaAtual = document.getElementById('abaAtual');
+    const abaHistorico = document.getElementById('abaHistorico');
+    const histDataInicio = document.getElementById('histDataInicio');
+    const histDataFim = document.getElementById('histDataFim');
+    const btnHistoricoCarregar = document.getElementById('btnHistoricoCarregar');
+    const btnHistoricoSync = document.getElementById('btnHistoricoSync');
+    const historicoStatus = document.getElementById('historicoStatus');
+    const historicoResumo = document.getElementById('historicoResumo');
+    const historicoTHead = document.getElementById('historicoTHead');
+    const historicoTBody = document.getElementById('historicoTBody');
     const spinnerHtml = '<span class="spinner"></span>';
     let dados = [];
     let clientId = null;
@@ -104,10 +154,17 @@
     let lojasDisponiveis = [];
     let paginaAtual = 1;
     const ITENS_POR_PAGINA = 50;
+    const SYNC_SOLICITACAO_TIMEOUT_MS = 15000;
+    const SYNC_PROGRESS_TIMEOUT_MS = 8000;
     let syncEmAndamento = false;
+    let solicitandoSync = false;
     let progressTimer = null;
     let autoSyncSolicitado = false;
     let janelaAutoSyncMinutos = 30;
+    let abaAtiva = 'atual';
+    let historicoSyncEmAndamento = false;
+    let historicoSolicitandoSync = false;
+    let historicoProgressTimer = null;
 
     async function carregarConfiguracoesGlobais() {
         try {
@@ -126,6 +183,31 @@
     function setSyncButton(isSyncing) {
         btnSync.disabled = isSyncing;
         btnSync.textContent = isSyncing ? 'Atualizando...' : 'Atualizar estoque';
+    }
+
+    function setHistoricoButtons(isSyncing) {
+        btnHistoricoSync.disabled = isSyncing;
+        btnHistoricoCarregar.disabled = isSyncing;
+        btnHistoricoSync.textContent = isSyncing ? 'Sincronizando...' : 'Sincronizar registros';
+    }
+
+    function mostrarStatusCarregando(mensagem) {
+        statusEl.className = 'status-bar loading';
+        statusEl.innerHTML = spinnerHtml;
+        statusEl.appendChild(document.createTextNode(mensagem));
+    }
+
+    async function fetchComTimeout(url, options = {}, timeoutMs = SYNC_SOLICITACAO_TIMEOUT_MS) {
+        if (!window.AbortController) {
+            return fetch(url, options);
+        }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     function renderProgresso(progress, logs) {
@@ -150,18 +232,19 @@
 
     async function verificarProgressoEstoque() {
         try {
-            const resp = await fetch('/api/estoque/sync/progress', { headers: obterAuthHeaders(), cache: 'no-store' });
-            if (!resp.ok) return;
+            const resp = await fetchComTimeout('/api/estoque/sync/progress', { headers: obterAuthHeaders(), cache: 'no-store' }, SYNC_PROGRESS_TIMEOUT_MS);
+            if (!resp.ok) return null;
             const payload = await resp.json();
             const progress = payload.progress;
-            if (progress) {
+            const active = !!payload.active;
+            if (progress && (active || !solicitandoSync)) {
                 renderProgresso(progress, payload.logs || []);
             }
 
-            syncEmAndamento = !!payload.active;
-            setSyncButton(syncEmAndamento);
+            syncEmAndamento = active;
+            setSyncButton(syncEmAndamento || solicitandoSync);
 
-            if (!payload.active && progress) {
+            if (!active && progress && !solicitandoSync) {
                 if (Number(progress.percentual || 0) >= 100) {
                     statusEl.className = 'status-bar success';
                     statusEl.textContent = `${progress.mensagem || 'Estoque atualizado.'}`;
@@ -175,9 +258,17 @@
                     statusEl.textContent = `${progress.mensagem || 'Falha na atualização do estoque.'}`;
                 }
                 pararMonitoramentoProgresso();
+            } else if (!active && !progress && !solicitandoSync && progressTimer) {
+                pararMonitoramentoProgresso();
+                if (statusEl.classList.contains('loading')) {
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = '';
+                }
             }
+            return payload;
         } catch (_e) {
             // Falha momentânea de rede durante polling; tenta novamente no próximo ciclo.
+            return null;
         }
     }
 
@@ -185,6 +276,38 @@
         pararMonitoramentoProgresso();
         progressTimer = setInterval(verificarProgressoEstoque, 2500);
         verificarProgressoEstoque();
+    }
+
+    function formatarDataInput(dt) {
+        const yyyy = dt.getFullYear();
+        const mm = String(dt.getMonth() + 1).padStart(2, '0');
+        const dd = String(dt.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+    }
+
+    function inicializarDatasHistorico() {
+        const fim = new Date();
+        const inicio = new Date();
+        inicio.setFullYear(inicio.getFullYear() - 1);
+        histDataInicio.value = formatarDataInput(inicio);
+        histDataFim.value = formatarDataInput(fim);
+    }
+
+    function mudarAba(nome) {
+        abaAtiva = nome === 'historico' ? 'historico' : 'atual';
+        const historicoAtivo = abaAtiva === 'historico';
+        tabAtual.classList.toggle('active', !historicoAtivo);
+        tabHistorico.classList.toggle('active', historicoAtivo);
+        abaAtual.classList.toggle('hidden', historicoAtivo);
+        abaHistorico.classList.toggle('hidden', !historicoAtivo);
+        if (historicoAtivo) {
+            if (!lojaSelecionada || lojaSelecionada === '__todas') {
+                historicoStatus.className = 'status-bar empty';
+                historicoStatus.textContent = 'Selecione uma loja para ver o histórico de estoque.';
+            } else if (!historicoTBody.children.length) {
+                carregarHistorico(false);
+            }
+        }
     }
 
     function parseDataHoraAtualizacao(valor) {
@@ -237,11 +360,15 @@
             return;
         }
 
+        solicitandoSync = true;
+        setSyncButton(true);
+        iniciarMonitoramentoProgresso();
+
         statusEl.className = 'status-bar loading';
         statusEl.innerHTML = `${spinnerHtml}${isAuto ? 'Solicitando atualização automática...' : 'Solicitando atualização manual...'}`;
 
         try {
-            const resp = await fetch('/api/estoque/sync', {
+            const resp = await fetchComTimeout('/api/estoque/sync', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -255,14 +382,34 @@
                 throw new Error(data.detail || `HTTP ${resp.status}`);
             }
 
+            solicitandoSync = false;
             if (data.started || data.already_running) {
                 syncEmAndamento = true;
                 setSyncButton(true);
+                if (data.already_running && data.message) {
+                    mostrarStatusCarregando(data.message);
+                }
                 iniciarMonitoramentoProgresso();
+                return;
             }
-        } catch (e) {
+
+            syncEmAndamento = false;
+            pararMonitoramentoProgresso();
             statusEl.className = 'status-bar error';
-            statusEl.textContent = `Erro ao sincronizar: ${e.message}`;
+            statusEl.textContent = data.message || 'Atualizacao de estoque nao foi iniciada.';
+            setSyncButton(false);
+        } catch (e) {
+            solicitandoSync = false;
+            const payload = await verificarProgressoEstoque();
+            if (payload && payload.active) {
+                return;
+            }
+            syncEmAndamento = false;
+            pararMonitoramentoProgresso();
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = e.name === 'AbortError'
+                ? 'A solicitacao de estoque demorou demais e nao ha atualizacao ativa. Tente novamente em alguns instantes.'
+                : `Erro ao sincronizar: ${e.message}`;
             setSyncButton(false);
         }
     }
@@ -305,6 +452,223 @@
             div.innerHTML = `<h3>${c.label}</h3><div class="val">${c.value}</div>`;
             resumo.appendChild(div);
         });
+    }
+
+    function formatarQtd(valor) {
+        const numero = Number(valor || 0);
+        if (!Number.isFinite(numero)) return '0';
+        return numero.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+    }
+
+    function renderHistoricoResumo(payload) {
+        historicoResumo.innerHTML = '';
+        const cards = [
+            { label: 'Loja', value: payload.loja || lojaSelecionada || '-' },
+            { label: 'Base', value: payload.base_snapshot_data || '-' },
+            { label: 'SKUs', value: formatarQtd(payload.total_skus || 0) },
+        ];
+        cards.forEach(c => {
+            const div = document.createElement('div');
+            div.className = 'card';
+            div.innerHTML = `<h3>${c.label}</h3><div class="val">${c.value}</div>`;
+            historicoResumo.appendChild(div);
+        });
+    }
+
+    function renderHistorico(payload) {
+        historicoTHead.innerHTML = '';
+        historicoTBody.innerHTML = '';
+        renderHistoricoResumo(payload || {});
+
+        const labels = Array.isArray(payload?.labels) ? payload.labels : [];
+        const saldos = Array.isArray(payload?.saldo_retroativo) ? payload.saldo_retroativo : [];
+        const entradas = Array.isArray(payload?.entradas) ? payload.entradas : [];
+        const saidas = Array.isArray(payload?.saidas) ? payload.saidas : [];
+
+        if (!labels.length) {
+            historicoStatus.className = 'status-bar empty';
+            historicoStatus.textContent = payload?.detail || 'Sem histórico para o período selecionado.';
+            return;
+        }
+
+        const trHead = document.createElement('tr');
+        ['Mês', 'Saldo loja', 'Entradas', 'Saídas', 'Variação'].forEach(label => {
+            const th = document.createElement('th');
+            th.textContent = label;
+            trHead.appendChild(th);
+        });
+        historicoTHead.appendChild(trHead);
+
+        const frag = document.createDocumentFragment();
+        labels.forEach((label, idx) => {
+            const entrada = Number(entradas[idx] || 0);
+            const saida = Number(saidas[idx] || 0);
+            const tr = document.createElement('tr');
+            [label, formatarQtd(saldos[idx]), formatarQtd(entrada), formatarQtd(saida), formatarQtd(entrada - saida)].forEach(valor => {
+                const td = document.createElement('td');
+                td.textContent = valor;
+                tr.appendChild(td);
+            });
+            frag.appendChild(tr);
+        });
+        historicoTBody.appendChild(frag);
+
+        historicoStatus.className = 'status-bar success';
+        historicoStatus.textContent = `Histórico carregado: ${labels.length} mês(es).`;
+    }
+
+    async function carregarHistorico(exibirStatus = true) {
+        if (!lojaSelecionada || lojaSelecionada === '__todas') {
+            historicoStatus.className = 'status-bar empty';
+            historicoStatus.textContent = 'Selecione uma loja para ver o histórico de estoque.';
+            return;
+        }
+        if (exibirStatus) {
+            historicoStatus.className = 'status-bar loading';
+            historicoStatus.innerHTML = `${spinnerHtml}Carregando histórico mensal...`;
+        }
+        try {
+            const params = new URLSearchParams({
+                loja: lojaSelecionada,
+                periodo: 'max',
+                intervalo: 'mes',
+                fonte: 'lancamentos',
+                data_inicio: histDataInicio.value || '',
+                data_fim: histDataFim.value || ''
+            });
+            const resp = await fetch(`/api/estoque/serie-retroativa?${params.toString()}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store'
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                throw new Error(data.detail || `HTTP ${resp.status}`);
+            }
+            renderHistorico(data);
+        } catch (e) {
+            historicoStatus.className = 'status-bar error';
+            historicoStatus.textContent = `Erro ao carregar histórico: ${e.message}`;
+        }
+    }
+
+    function renderHistoricoProgresso(progress, logs) {
+        if (!progress) return;
+        const percent = Math.max(0, Math.min(100, Number(progress.percentual || 0)));
+        const logsList = (logs || []).slice(-8).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${l}</div>`).join('');
+        historicoStatus.className = 'status-bar loading';
+        historicoStatus.innerHTML = `${spinnerHtml}<strong>${progress.mensagem || 'Sincronizando histórico...'}</strong>
+            <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
+                <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
+            </div>
+            <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percent}%</div>
+            <div style="margin-top:8px;font-size:0.85rem;">${logsList}</div>`;
+    }
+
+    function pararMonitoramentoHistorico() {
+        if (historicoProgressTimer) {
+            clearInterval(historicoProgressTimer);
+            historicoProgressTimer = null;
+        }
+    }
+
+    async function verificarProgressoHistorico() {
+        try {
+            const resp = await fetchComTimeout('/api/estoque/lancamentos/sync-lote/progress', { headers: obterAuthHeaders(), cache: 'no-store' }, SYNC_PROGRESS_TIMEOUT_MS);
+            if (!resp.ok) return null;
+            const payload = await resp.json();
+            const progress = payload.progress;
+            const active = !!payload.active;
+            if (progress && (active || !historicoSolicitandoSync)) {
+                renderHistoricoProgresso(progress, payload.logs || []);
+            }
+
+            historicoSyncEmAndamento = active;
+            setHistoricoButtons(historicoSyncEmAndamento || historicoSolicitandoSync);
+
+            if (!active && progress && !historicoSolicitandoSync) {
+                if (Number(progress.percentual || 0) >= 100) {
+                    historicoStatus.className = 'status-bar success';
+                    historicoStatus.textContent = `${progress.mensagem || 'Registros sincronizados.'}`;
+                    await carregarHistorico(false);
+                } else if ((progress.etapa || '').toLowerCase() === 'erro') {
+                    historicoStatus.className = 'status-bar error';
+                    historicoStatus.textContent = `${progress.mensagem || 'Falha ao sincronizar histórico.'}`;
+                }
+                pararMonitoramentoHistorico();
+            }
+            return payload;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    function iniciarMonitoramentoHistorico() {
+        pararMonitoramentoHistorico();
+        historicoProgressTimer = setInterval(verificarProgressoHistorico, 2500);
+        verificarProgressoHistorico();
+    }
+
+    async function sincronizarHistorico() {
+        if (!lojaSelecionada || lojaSelecionada === '__todas') {
+            historicoStatus.className = 'status-bar empty';
+            historicoStatus.textContent = 'Selecione uma loja para sincronizar os registros históricos.';
+            return;
+        }
+
+        historicoSolicitandoSync = true;
+        setHistoricoButtons(true);
+        iniciarMonitoramentoHistorico();
+        historicoStatus.className = 'status-bar loading';
+        historicoStatus.innerHTML = `${spinnerHtml}Solicitando sincronização de registros...`;
+
+        try {
+            const resp = await fetchComTimeout('/api/estoque/lancamentos/sync-lote', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...obterAuthHeaders()
+                },
+                body: JSON.stringify({
+                    loja: lojaSelecionada,
+                    data_inicio: histDataInicio.value || null,
+                    data_fim: histDataFim.value || null
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                throw new Error(data.detail || `HTTP ${resp.status}`);
+            }
+
+            historicoSolicitandoSync = false;
+            if (data.started || data.already_running) {
+                historicoSyncEmAndamento = true;
+                if (data.already_running && data.message) {
+                    historicoStatus.className = 'status-bar loading';
+                    historicoStatus.innerHTML = `${spinnerHtml}${data.message}`;
+                }
+                iniciarMonitoramentoHistorico();
+                return;
+            }
+
+            historicoSyncEmAndamento = false;
+            pararMonitoramentoHistorico();
+            historicoStatus.className = 'status-bar error';
+            historicoStatus.textContent = data.message || 'Sincronização de registros não foi iniciada.';
+            setHistoricoButtons(false);
+        } catch (e) {
+            historicoSolicitandoSync = false;
+            const payload = await verificarProgressoHistorico();
+            if (payload && payload.active) {
+                return;
+            }
+            historicoSyncEmAndamento = false;
+            pararMonitoramentoHistorico();
+            historicoStatus.className = 'status-bar error';
+            historicoStatus.textContent = e.name === 'AbortError'
+                ? 'A solicitação demorou demais e não há sincronização ativa. Tente novamente.'
+                : `Erro ao sincronizar registros: ${e.message}`;
+            setHistoricoButtons(false);
+        }
     }
 
     function renderTabela(lista) {
@@ -521,6 +885,15 @@
             btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
         });
         filtrar();
+        if (abaAtiva === 'historico') {
+            historicoTHead.innerHTML = '';
+            historicoTBody.innerHTML = '';
+            historicoResumo.innerHTML = '';
+            historicoStatus.className = 'status-bar empty';
+            historicoStatus.textContent = lojaSelecionada === '__todas'
+                ? 'Selecione uma loja para ver o histórico de estoque.'
+                : 'Loja alterada. Clique em carregar histórico.';
+        }
     }
 
     async function carregarLojas() {
@@ -592,8 +965,13 @@
     btnSync.addEventListener('click', async () => {
         await solicitarSyncEstoque(lojaSelecionada, false);
     });
+    tabAtual.addEventListener('click', () => mudarAba('atual'));
+    tabHistorico.addEventListener('click', () => mudarAba('historico'));
+    btnHistoricoCarregar.addEventListener('click', () => carregarHistorico(true));
+    btnHistoricoSync.addEventListener('click', () => sincronizarHistorico());
 
     async function inicializarPaginaEstoque() {
+        inicializarDatasHistorico();
         await carregarConfiguracoesGlobais();
         await carregarLojas();
         await carregar();
@@ -624,4 +1002,3 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-

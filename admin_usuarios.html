@@ -2058,7 +2058,7 @@
             grid.innerHTML = '<div class="user-share-empty">Nenhum tipo de dado disponível.</div>';
             return;
         }
-        const preferidos = new Set(['cadastro', 'lojas_integracoes', 'vendas', 'favoritos_historico', 'sku_campos_pesquisa', 'anuncios_ml']);
+        const preferidos = new Set(['cadastro', 'lojas_integracoes', 'vendas', 'favoritos_historico', 'sku_campos_pesquisa', 'favoritos_planilhas', 'anuncios_ml']);
         grid.innerHTML = keys.map(scope => {
             const item = scopes[scope] || {};
             return `

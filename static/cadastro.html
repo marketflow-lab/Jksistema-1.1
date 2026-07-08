@@ -217,7 +217,11 @@
     ]);
 
     function colunaEhIndesejada(coluna) {
-        const n = String(coluna || '').trim().toLowerCase().replace(/_/g, ' ');
+        const raw = String(coluna || '').trim();
+        if (!raw) return true;
+        if (raw.length > 120) return true;
+        if (/^\d{1,2}\/\d{1,2}\/\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(raw)) return true;
+        const n = raw.toLowerCase().replace(/_/g, ' ');
         if (n.includes('unnamed')) return true;
         if (n === 'sku key' || n === 'cg sku') return true;
         if (n === 'custoattr' || n === 'custo attr') return true;

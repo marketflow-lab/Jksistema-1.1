@@ -174,6 +174,7 @@
     let colunas = [];
     let fotoPendenteDataUrl = '';
     let fotoPendenteFilename = '';
+    const CAMPO_M3_INDIVIDUAL = 'm3 individual';
 
     function setStatus(msg, cls) {
         statusEl.className = 'status ' + (cls || '');
@@ -181,7 +182,7 @@
     }
 
     function ordemCampos(campos) {
-        const prioridade = ['sku', 'nome', 'categoria', 'marca', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
+        const prioridade = ['sku', 'nome', 'categoria', 'marca', CAMPO_M3_INDIVIDUAL, 'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
         const score = (c) => {
             const i = prioridade.indexOf(c);
             return i === -1 ? 999 : i;
@@ -221,6 +222,10 @@
     }
 
     function formatarNomeCampo(chave) {
+        const c = String(chave || '').trim().toLowerCase();
+        if (c === CAMPO_M3_INDIVIDUAL || c === 'm3' || c === 'cg_m3 individual' || c === 'cg_m³ individual') {
+            return 'M3 individual (m³ por unidade)';
+        }
         return String(chave || '')
             .replace(/^cg_/i, '')
             .replace(/_/g, ' ')
@@ -278,6 +283,11 @@
         input.id = `f_${chave}`;
         input.name = chave;
         input.value = '';
+        if (String(chave || '').trim().toLowerCase() === CAMPO_M3_INDIVIDUAL) {
+            input.inputMode = 'decimal';
+            input.placeholder = 'Ex.: 0,000054';
+            input.title = 'Informe o M³ de uma unidade. A importação multiplica pela quantidade.';
+        }
 
         if (chave === 'sku') {
             input.required = true;
@@ -395,6 +405,7 @@
             if (!resp.ok) throw new Error(payload?.detail || `HTTP ${resp.status}`);
             colunas = Array.isArray(payload.colunas) ? payload.colunas : [];
             if (!colunas.includes('sku')) colunas.unshift('sku');
+            if (!colunas.includes(CAMPO_M3_INDIVIDUAL)) colunas.push(CAMPO_M3_INDIVIDUAL);
             montarFormulario();
             setStatus('Preencha os dados para incluir um novo SKU.', 'success');
         } catch (e) {
@@ -500,7 +511,6 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
 
 
 

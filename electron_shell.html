@@ -435,6 +435,67 @@
         .tab-detach-hint.is-active {
             display: block;
         }
+        .favoritos-worker-bar {
+            align-items: center;
+            background: rgba(15, 23, 42, 0.94);
+            border: 1px solid rgba(96, 165, 250, 0.55);
+            border-radius: 10px;
+            box-shadow: 0 14px 34px rgba(15, 23, 42, 0.28);
+            color: #ffffff;
+            display: flex;
+            gap: 10px;
+            left: 50%;
+            max-width: min(920px, calc(100vw - 32px));
+            min-height: 38px;
+            padding: 7px 10px 7px 12px;
+            position: fixed;
+            top: 52px;
+            transform: translateX(-50%);
+            width: max-content;
+            z-index: 126;
+        }
+        .favoritos-worker-bar.hidden {
+            display: none;
+        }
+        .favoritos-worker-label {
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0;
+            white-space: nowrap;
+        }
+        .favoritos-worker-message {
+            color: #dbeafe;
+            font-size: 12px;
+            line-height: 1.25;
+            max-width: min(560px, 48vw);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .favoritos-worker-actions {
+            align-items: center;
+            display: flex;
+            gap: 6px;
+        }
+        .favoritos-worker-btn {
+            background: #ffffff;
+            border: 1px solid #bfdbfe;
+            border-radius: 999px;
+            color: #0f172a;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 800;
+            height: 24px;
+            padding: 0 10px;
+            white-space: nowrap;
+        }
+        .favoritos-worker-btn:hover {
+            background: #eff6ff;
+        }
+        .favoritos-worker-btn.danger {
+            border-color: #fecaca;
+            color: #b91c1c;
+        }
     </style>
 </head>
 <body>
@@ -447,6 +508,16 @@
             <button id="new-tab" type="button" class="toolbar-btn" title="Abrir nova aba">+ Aba</button>
             <button id="reload-tab" type="button" class="toolbar-btn" title="Atualizar a aba atual">Atualizar</button>
         </header>
+        <div id="favoritos-worker-bar" class="favoritos-worker-bar hidden" aria-live="polite">
+            <span class="favoritos-worker-label">Favoritos rodando:</span>
+            <span id="favoritos-worker-message" class="favoritos-worker-message">Preparando coleta.</span>
+            <div class="favoritos-worker-actions">
+                <button id="favoritos-worker-show" class="favoritos-worker-btn" type="button">Ver</button>
+                <button id="favoritos-worker-hide" class="favoritos-worker-btn" type="button">Ocultar</button>
+                <button id="favoritos-worker-pause" class="favoritos-worker-btn" type="button">Pausar</button>
+                <button id="favoritos-worker-cancel" class="favoritos-worker-btn danger" type="button">Cancelar</button>
+            </div>
+        </div>
         <section id="views" class="views">
             <div id="empty" class="empty-state">Nenhuma aba aberta.</div>
         </section>
@@ -508,6 +579,12 @@
         const updateToastActions = document.getElementById('update-toast-actions');
         const updateToastAction = document.getElementById('update-toast-action');
         const tabDetachHint = document.getElementById('tab-detach-hint');
+        const favoritosWorkerBar = document.getElementById('favoritos-worker-bar');
+        const favoritosWorkerMessage = document.getElementById('favoritos-worker-message');
+        const favoritosWorkerShowBtn = document.getElementById('favoritos-worker-show');
+        const favoritosWorkerHideBtn = document.getElementById('favoritos-worker-hide');
+        const favoritosWorkerPauseBtn = document.getElementById('favoritos-worker-pause');
+        const favoritosWorkerCancelBtn = document.getElementById('favoritos-worker-cancel');
         const tabs = new Map();
         const pendingUpdateSaveRequests = new Map();
         let activeId = '';
@@ -515,6 +592,10 @@
         let toolbarAutoHideTimer = null;
         let updateToastTimer = null;
         let updateToastActionHandler = null;
+        let favoritosWorkerBarHideTimer = null;
+        let favoritosWorkerBrowserActive = false;
+        let favoritosWorkerBrowserPaused = false;
+        let favoritosWorkerLastStatus = null;
         let mlBrowserWebview = null;
         let mlBrowserOwnerId = '';
         let tabDragState = null;
@@ -706,6 +787,237 @@
                     tab.webview.contentWindow.postMessage(message, '*');
                 }
             } catch (_err) {}
+        }
+
+        function isFavoritosTab(tab) {
+            const url = String((tab && (tab.url || tab.webview?.src)) || '').toLowerCase();
+            const title = String((tab && tab.title) || '').toLowerCase();
+            return url.includes('/favoritos.html') || title.includes('favoritos');
+        }
+
+        function findFavoritosTabs() {
+            return Array.from(tabs.values()).filter(isFavoritosTab);
+        }
+
+        function postToFavoritosTabs(message) {
+            findFavoritosTabs().forEach(tab => postToTab(tab, message));
+        }
+
+        function shouldUseFavoritosWorker(payload, found) {
+            if (payload && payload.worker) return true;
+            return false;
+        }
+
+        function setFavoritosWorkerBar(payload = {}) {
+            const status = String(payload.status || '').toLowerCase();
+            const message = String(payload.message || payload.mensagem || payload.label || '').trim();
+            const isFinal = ['done', 'stopped', 'closed', 'canceled', 'cancelled', 'error'].includes(status);
+            favoritosWorkerLastStatus = { ...(favoritosWorkerLastStatus || {}), ...(payload || {}) };
+            favoritosWorkerBrowserActive = payload.active === false || isFinal ? false : !!(payload.active || message || favoritosWorkerBrowserActive);
+            favoritosWorkerBrowserPaused = !!(payload.paused || status === 'paused');
+            if (favoritosWorkerPauseBtn) favoritosWorkerPauseBtn.textContent = favoritosWorkerBrowserPaused ? 'Retomar' : 'Pausar';
+            if (favoritosWorkerMessage) {
+                favoritosWorkerMessage.textContent = message || (favoritosWorkerBrowserPaused
+                    ? 'Favoritos pausado.'
+                    : 'Coleta do Favoritos em andamento.');
+            }
+            if (!favoritosWorkerBar) return;
+            if (favoritosWorkerBarHideTimer) {
+                clearTimeout(favoritosWorkerBarHideTimer);
+                favoritosWorkerBarHideTimer = null;
+            }
+            favoritosWorkerBar.classList.toggle('hidden', !favoritosWorkerBrowserActive && !message);
+            if (isFinal) {
+                favoritosWorkerBarHideTimer = setTimeout(() => {
+                    favoritosWorkerBar.classList.add('hidden');
+                    favoritosWorkerBarHideTimer = null;
+                }, status === 'error' ? 12000 : 7000);
+            }
+        }
+
+        function enviarAcaoFavoritosWorker(action) {
+            const normalized = String(action || '').toLowerCase();
+            if (!normalized) return;
+            postToFavoritosTabs({
+                channel: 'jk-favoritos-worker-action',
+                action: normalized
+            });
+            const api = window.electronAPI || null;
+            if (!api) return;
+            if (normalized === 'pause' && typeof api.pauseFavoritosWorkerBrowser === 'function') {
+                api.pauseFavoritosWorkerBrowser().catch(() => {});
+            } else if (normalized === 'resume' && typeof api.resumeFavoritosWorkerBrowser === 'function') {
+                api.resumeFavoritosWorkerBrowser().catch(() => {});
+            } else if (normalized === 'cancel' && typeof api.cancelFavoritosWorkerBrowser === 'function') {
+                api.cancelFavoritosWorkerBrowser().catch(() => {});
+            }
+        }
+
+        function configurarBarraFavoritosWorker() {
+            if (favoritosWorkerShowBtn) {
+                favoritosWorkerShowBtn.addEventListener('click', () => {
+                    const api = window.electronAPI || null;
+                    if (api && typeof api.showFavoritosWorkerBrowser === 'function') {
+                        api.showFavoritosWorkerBrowser().then(setFavoritosWorkerBar).catch(() => {});
+                    }
+                });
+            }
+            if (favoritosWorkerHideBtn) {
+                favoritosWorkerHideBtn.addEventListener('click', () => {
+                    const api = window.electronAPI || null;
+                    if (api && typeof api.hideFavoritosWorkerBrowser === 'function') {
+                        api.hideFavoritosWorkerBrowser().then(setFavoritosWorkerBar).catch(() => {});
+                    }
+                });
+            }
+            if (favoritosWorkerPauseBtn) {
+                favoritosWorkerPauseBtn.addEventListener('click', () => {
+                    enviarAcaoFavoritosWorker(favoritosWorkerBrowserPaused ? 'resume' : 'pause');
+                });
+            }
+            if (favoritosWorkerCancelBtn) {
+                favoritosWorkerCancelBtn.addEventListener('click', () => {
+                    if (!confirm('Cancelar o Favoritos em andamento?')) return;
+                    enviarAcaoFavoritosWorker('cancel');
+                    setFavoritosWorkerBar({
+                        active: true,
+                        status: 'cancel_requested',
+                        message: 'Cancelamento solicitado. A etapa atual sera interrompida.'
+                    });
+                });
+            }
+            const api = window.electronAPI || null;
+            if (api && typeof api.onFavoritosWorkerProgress === 'function') {
+                api.onFavoritosWorkerProgress(setFavoritosWorkerBar);
+            }
+            if (api && typeof api.onFavoritosWorkerDone === 'function') {
+                api.onFavoritosWorkerDone(payload => setFavoritosWorkerBar({
+                    ...(payload || {}),
+                    active: false,
+                    status: payload && payload.status || 'done'
+                }));
+            }
+            if (api && typeof api.onFavoritosWorkerError === 'function') {
+                api.onFavoritosWorkerError(payload => setFavoritosWorkerBar({
+                    ...(payload || {}),
+                    active: false,
+                    status: 'error',
+                    message: payload && (payload.message || payload.mensagem) || 'Favoritos encontrou um erro.'
+                }));
+            }
+            if (api && typeof api.getFavoritosWorkerBrowserStatus === 'function') {
+                api.getFavoritosWorkerBrowserStatus()
+                    .then(status => {
+                        if (status && status.active) setFavoritosWorkerBar(status);
+                    })
+                    .catch(() => {});
+            }
+        }
+
+        configurarBarraFavoritosWorker();
+
+        function isRustDeskUrl(url, title = '') {
+            const urlText = String(url || '').toLowerCase();
+            const titleText = String(title || '').toLowerCase();
+            return urlText.includes('/rustdesk.html') || titleText.includes('rustdesk') || titleText.includes('acesso remoto');
+        }
+
+        function isRustDeskTab(tab) {
+            const url = String((tab && (tab.url || tab.webview?.src)) || '');
+            const title = String((tab && tab.title) || '');
+            return isRustDeskUrl(url, title);
+        }
+
+        function findRustDeskTab() {
+            if (activeId && tabs.has(activeId) && isRustDeskTab(tabs.get(activeId))) {
+                return { id: activeId, tab: tabs.get(activeId) };
+            }
+            for (const [id, tab] of tabs) {
+                if (isRustDeskTab(tab)) return { id, tab };
+            }
+            return null;
+        }
+
+        function rustDeskTabIds() {
+            return Array.from(tabs.entries())
+                .filter(([, tab]) => isRustDeskTab(tab))
+                .map(([id]) => id);
+        }
+
+        function hasAnotherRustDeskTab(id) {
+            return rustDeskTabIds().some(tabId => tabId !== id);
+        }
+
+        function dedupeRustDeskTabs(keepId) {
+            const ids = rustDeskTabIds();
+            ids.forEach(id => {
+                if (id !== keepId) closeTab(id);
+            });
+        }
+
+        function isActiveRustDeskTab() {
+            return !!(activeId && isRustDeskTab(tabs.get(activeId)));
+        }
+
+        let rustDeskShellHideTimer = null;
+        let rustDeskShellHideLastAt = 0;
+
+        async function hideRustDeskFromShell(reason = 'rustdesk-tab-inactive') {
+            const api = window.electronAPI || null;
+            if (!api || typeof api.hideRustDeskInApp !== 'function') return;
+            const now = Date.now();
+            if (now - rustDeskShellHideLastAt < 500) return;
+            rustDeskShellHideLastAt = now;
+            const payload = {
+                allow_hide: true,
+                parent_mode: 'window',
+                reason
+            };
+            try {
+                if (typeof api.getNativeWindowHandle === 'function') {
+                    const handle = await api.getNativeWindowHandle().catch(() => null);
+                    if (handle && handle.success && handle.hwnd) {
+                        payload.parent_hwnd = handle.hwnd;
+                    }
+                }
+                await api.hideRustDeskInApp(payload, '').catch(() => null);
+            } catch (_err) {}
+        }
+
+        function scheduleRustDeskShellHide(reason = 'rustdesk-tab-inactive') {
+            window.clearTimeout(rustDeskShellHideTimer);
+            rustDeskShellHideTimer = window.setTimeout(() => {
+                if (isActiveRustDeskTab()) return;
+                hideRustDeskFromShell(reason);
+            }, 450);
+        }
+
+        function tabFrameBounds(tab, id) {
+            if (!tab || !tab.webview || typeof tab.webview.getBoundingClientRect !== 'function') return null;
+            const rect = tab.webview.getBoundingClientRect();
+            return {
+                x: rect.left,
+                y: rect.top,
+                width: rect.width,
+                height: rect.height,
+                active: String(id || tab.id || '') === String(activeId || '')
+            };
+        }
+
+        function notifyRustDeskTabVisibility() {
+            const activeRustDesk = isActiveRustDeskTab();
+            tabs.forEach((tab, id) => {
+                if (!isRustDeskTab(tab)) return;
+                const active = id === activeId;
+                postToTab(tab, {
+                    channel: 'jk-rustdesk-tab-visibility',
+                    active,
+                    payload: {
+                        frame: tabFrameBounds(tab, id),
+                        anotherRustDeskActive: !active && activeRustDesk
+                    }
+                });
+            });
         }
 
         function getTabIdFromButton(button) {
@@ -1334,6 +1646,12 @@
             if (mlBrowserWebview) mlBrowserWebview.classList.remove('is-active');
         }
 
+        function hideEmbeddedMlBrowserShell(options = {}) {
+            const embeddedApi = getEmbeddedMlBrowserApi();
+            if (!embeddedApi) return;
+            embeddedApi.hideEmbeddedMlBrowser(options || {}).catch(() => {});
+        }
+
         function updateVisibleState() {
             const hasTabs = tabs.size > 0;
             emptyEl.classList.toggle('is-active', !hasTabs);
@@ -1348,6 +1666,12 @@
                     tab.loadState.classList.toggle('is-active', active && !tab.loaded);
                 }
             });
+            notifyRustDeskTabVisibility();
+            if (isActiveRustDeskTab()) {
+                window.clearTimeout(rustDeskShellHideTimer);
+            } else {
+                scheduleRustDeskShellHide('no-active-rustdesk-tab');
+            }
             const activeMlBounds = activeId ? mlBrowserBoundsByTab.get(activeId) : null;
             const activeMlBackground = !!(activeMlBounds && activeMlBounds.background);
             const activeHasMlState = !!(activeId && mlBrowserUrlByTab.get(activeId));
@@ -1362,7 +1686,7 @@
             }
             const embeddedApi = getEmbeddedMlBrowserApi();
             if ((!activeHasMlState || !activeMlVisible || activeMlBackground) && embeddedApi) {
-                embeddedApi.hideEmbeddedMlBrowser().catch(() => {});
+                hideEmbeddedMlBrowserShell();
                 hideMlBrowserShell();
             } else {
                 restaurarEmbeddedMlBrowserSeAtivo();
@@ -1381,8 +1705,24 @@
         function closeTab(id) {
             const tab = tabs.get(id);
             if (!tab) return;
+            if (isRustDeskTab(tab)) {
+                const anotherRustDesk = hasAnotherRustDeskTab(id);
+                postToTab(tab, {
+                    channel: 'jk-rustdesk-tab-visibility',
+                    active: false,
+                    payload: {
+                        closing: true,
+                        frame: tabFrameBounds(tab, id),
+                        anotherRustDeskActive: anotherRustDesk
+                    }
+                });
+                if (!anotherRustDesk) {
+                    hideRustDeskFromShell('rustdesk-tab-close');
+                }
+            }
             if (mlBrowserOwnerId === id) {
                 mlBrowserOwnerId = '';
+                hideEmbeddedMlBrowserShell({ destroy: true, reason: 'tab-close' });
                 hideMlBrowserShell();
             }
             mlBrowserBoundsByTab.delete(id);
@@ -1403,6 +1743,18 @@
 
         function createTab(url, title = 'JK Sistema', options = {}) {
             const targetUrl = String(url || appUrl);
+            if (isRustDeskUrl(targetUrl, title)) {
+                const existingRustDesk = findRustDeskTab();
+                if (existingRustDesk) {
+                    dedupeRustDeskTabs(existingRustDesk.id);
+                    if (!sameUrlWithoutCache(existingRustDesk.tab.url || existingRustDesk.tab.webview?.src || '', targetUrl)) {
+                        reloadTab(existingRustDesk.id, { url: targetUrl });
+                        setTabTitle(existingRustDesk.id, title || existingRustDesk.tab.title || 'Acesso Remoto');
+                    }
+                    activateTab(existingRustDesk.id);
+                    return existingRustDesk.id;
+                }
+            }
             if (options.reuseExisting) {
                 for (const [id, tab] of tabs) {
                     if (sameUrlWithoutCache(tab.url, targetUrl)) {
@@ -1583,14 +1935,79 @@
                 return;
             }
 
+            if (
+                data.channel === 'jk-favoritos-worker-enable'
+                || data.channel === 'jk-favoritos-worker-progress'
+                || data.channel === 'jk-favoritos-worker-done'
+            ) {
+                const payload = data.payload || {};
+                setFavoritosWorkerBar({
+                    ...payload,
+                    active: data.channel === 'jk-favoritos-worker-done' ? false : payload.active !== false,
+                    status: payload.status || (data.channel === 'jk-favoritos-worker-done' ? 'done' : 'running')
+                });
+                return;
+            }
+
             if (data.channel === 'jk-ml-browser-show' || data.channel === 'jk-ml-browser-position') {
                 const payload = data.payload || {};
                 const sourceTab = findTabBySource(event.source);
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (shouldUseFavoritosWorker(payload, sourceTab)) {
+                    favoritosWorkerBrowserActive = true;
+                    mlBrowserOwnerId = sourceTab ? sourceTab.id : mlBrowserOwnerId;
+                    if (sourceTab && payload.url && /^https?:\/\//i.test(payload.url)) {
+                        mlBrowserUrlByTab.set(sourceTab.id, payload.url);
+                    }
+                    if (!embeddedApi || typeof embeddedApi.startFavoritosWorkerBrowser !== 'function') {
+                        postToTab(sourceTab && sourceTab.tab, {
+                            channel: 'jk-ml-browser-event',
+                            event: 'did-fail-load',
+                            url: payload.url || '',
+                            errorDescription: 'Navegador trabalhador do Favoritos indisponivel.',
+                            errorCode: -1
+                        });
+                        return;
+                    }
+                    const action = data.channel === 'jk-ml-browser-show'
+                        ? embeddedApi.startFavoritosWorkerBrowser(payload.url || mlBrowserUrlByTab.get(sourceTab && sourceTab.id) || '')
+                        : Promise.resolve({ success: true, worker: true, url: payload.url || '' });
+                    action
+                        .then(result => {
+                            setFavoritosWorkerBar({
+                                active: true,
+                                status: 'running',
+                                url: result && result.url || payload.url || '',
+                                message: 'Favoritos rodando em segundo plano.'
+                            });
+                            if (payload.forceVisible && typeof embeddedApi.showFavoritosWorkerBrowser === 'function') {
+                                embeddedApi.showFavoritosWorkerBrowser().catch(() => {});
+                            }
+                            if (data.channel === 'jk-ml-browser-show') {
+                                postToTab(sourceTab && sourceTab.tab, {
+                                    channel: 'jk-ml-browser-event',
+                                    event: result && result.success === false ? 'did-fail-load' : 'did-finish-load',
+                                    url: result && result.url || payload.url || '',
+                                    warning: result && result.loadWarning || '',
+                                    errorDescription: result && result.reason || ''
+                                });
+                            }
+                        })
+                        .catch(err => {
+                            postToTab(sourceTab && sourceTab.tab, {
+                                channel: 'jk-ml-browser-event',
+                                event: 'did-fail-load',
+                                url: payload.url || '',
+                                errorDescription: err && err.message ? err.message : String(err),
+                                errorCode: -1
+                            });
+                        });
+                    return;
+                }
                 const boundsPayload = sourceTab && sourceTab.id !== activeId
                     ? { ...(payload.bounds || {}), background: true }
                     : (payload.bounds || null);
                 const embedded = getMlBrowserBoundsForMainWindow(event.source, boundsPayload);
-                const embeddedApi = getEmbeddedMlBrowserApi();
                 if (embedded && embeddedApi) {
                     mlBrowserOwnerId = embedded.found.id;
                     mlBrowserBoundsByTab.set(embedded.found.id, boundsPayload || null);
@@ -1598,21 +2015,27 @@
                     if (payload.url && /^https?:\/\//i.test(payload.url)) {
                         mlBrowserUrlByTab.set(embedded.found.id, payload.url);
                     }
-                    if (data.channel === 'jk-ml-browser-position' && embedded.bounds && embedded.bounds.background) {
-                        embeddedApi.hideEmbeddedMlBrowser().catch(() => {});
-                        hideMlBrowserShell();
-                        return;
-                    }
                     const action = data.channel === 'jk-ml-browser-show'
                         ? embeddedApi.showEmbeddedMlBrowser(mlBrowserUrlByTab.get(embedded.found.id) || payload.url, embedded.bounds)
                         : embeddedApi.positionEmbeddedMlBrowser(embedded.bounds);
                     action
                         .then(result => {
                             if (data.channel === 'jk-ml-browser-show') {
+                                if (result && result.success === false) {
+                                    postToTab(embedded.found.tab, {
+                                        channel: 'jk-ml-browser-event',
+                                        event: 'did-fail-load',
+                                        url: result.url || payload.url || '',
+                                        errorDescription: result.loadWarning || result.reason || 'Falha ao carregar o Mercado Livre no navegador interno.',
+                                        errorCode: -1
+                                    });
+                                    return;
+                                }
                                 postToTab(embedded.found.tab, {
                                     channel: 'jk-ml-browser-event',
                                     event: 'did-finish-load',
-                                    url: result && result.url || payload.url || ''
+                                    url: result && result.url || payload.url || '',
+                                    warning: result && result.loadWarning || ''
                                 });
                             }
                         })
@@ -1654,18 +2077,62 @@
             }
 
             if (data.channel === 'jk-ml-browser-hide') {
+                const payload = data.payload || {};
                 const found = findTabBySource(event.source);
+                if (shouldUseFavoritosWorker(payload, found)) {
+                    const api = window.electronAPI || null;
+                    if (api && typeof api.hideFavoritosWorkerBrowser === 'function') {
+                        api.hideFavoritosWorkerBrowser().then(setFavoritosWorkerBar).catch(() => {});
+                    }
+                    if (found) mlBrowserVisibleByTab.set(found.id, false);
+                    return;
+                }
                 if (found) {
                     mlBrowserVisibleByTab.set(found.id, false);
+                    if (payload.destroy || payload.unload) {
+                        mlBrowserBoundsByTab.delete(found.id);
+                        mlBrowserUrlByTab.delete(found.id);
+                    }
                 } else if (mlBrowserOwnerId) {
                     mlBrowserVisibleByTab.set(mlBrowserOwnerId, false);
+                    if (payload.destroy || payload.unload) {
+                        mlBrowserBoundsByTab.delete(mlBrowserOwnerId);
+                        mlBrowserUrlByTab.delete(mlBrowserOwnerId);
+                    }
                 }
-                const embeddedApi = getEmbeddedMlBrowserApi();
-                if (found && found.id === mlBrowserOwnerId && embeddedApi) {
-                    embeddedApi.hideEmbeddedMlBrowser().catch(() => {});
+                if (found && found.id === mlBrowserOwnerId) {
+                    const hideOptions = {
+                        ...(payload || {}),
+                        reason: payload.reason || 'favoritos-hide'
+                    };
+                    if (payload.destroy || payload.unload) {
+                        hideOptions.destroy = true;
+                    }
+                    hideEmbeddedMlBrowserShell(hideOptions);
                 }
                 if (found && found.id === mlBrowserOwnerId) hideMlBrowserShell();
                 return;
+            }
+
+            function restaurarMlBrowserParaComando(found, embeddedApi) {
+                if (!found || !embeddedApi) return Promise.resolve(false);
+                if (found.id !== mlBrowserOwnerId && !mlBrowserUrlByTab.has(found.id) && mlBrowserOwnerId) {
+                    return Promise.resolve(false);
+                }
+                mlBrowserOwnerId = found.id;
+                const boundsSalvos = mlBrowserBoundsByTab.get(found.id) || null;
+                const urlSalva = mlBrowserUrlByTab.get(found.id) || '';
+                if (!mlBrowserVisibleByTab.has(found.id)) {
+                    mlBrowserVisibleByTab.set(found.id, true);
+                }
+                if (!urlSalva || typeof embeddedApi.showEmbeddedMlBrowser !== 'function') {
+                    return Promise.resolve(true);
+                }
+                const dataBounds = getMlBrowserBoundsForTab(found.tab, boundsSalvos);
+                if (!dataBounds || !dataBounds.bounds) return Promise.resolve(true);
+                return embeddedApi.showEmbeddedMlBrowser(urlSalva, dataBounds.bounds)
+                    .then(() => true)
+                    .catch(() => true);
             }
 
             if (data.channel === 'jk-ml-browser-execute') {
@@ -1674,8 +2141,36 @@
                 const code = payload.code || '';
                 const found = findTabBySource(event.source);
                 const embeddedApi = getEmbeddedMlBrowserApi();
-                if (found && found.id === mlBrowserOwnerId && embeddedApi) {
-                    embeddedApi.executeEmbeddedMlBrowser(code)
+                if (shouldUseFavoritosWorker(payload, found)) {
+                    if (!embeddedApi || typeof embeddedApi.executeFavoritosWorkerBrowser !== 'function') {
+                        postToTab(found && found.tab, {
+                            channel: 'jk-ml-browser-execute-result',
+                            requestId,
+                            error: 'Navegador trabalhador do Favoritos indisponivel.'
+                        });
+                        return;
+                    }
+                    embeddedApi.executeFavoritosWorkerBrowser(code)
+                        .then(result => {
+                            postToTab(found && found.tab, { channel: 'jk-ml-browser-execute-result', requestId, result });
+                        })
+                        .catch(err => {
+                            postToTab(found && found.tab, {
+                                channel: 'jk-ml-browser-execute-result',
+                                requestId,
+                                error: err && err.message ? err.message : String(err)
+                            });
+                        });
+                    return;
+                }
+                if (found && embeddedApi) {
+                    restaurarMlBrowserParaComando(found, embeddedApi)
+                        .then((podeExecutar) => {
+                            if (!podeExecutar) {
+                                throw new Error('Navegador do Mercado Livre indisponivel.');
+                            }
+                            return embeddedApi.executeEmbeddedMlBrowser(code);
+                        })
                         .then(result => {
                             postToTab(found.tab, { channel: 'jk-ml-browser-execute-result', requestId, result });
                         })
@@ -1706,13 +2201,226 @@
                             requestId,
                             error: err && err.message ? err.message : String(err)
                         });
+                });
+                return;
+            }
+
+            if (data.channel === 'jk-ml-browser-click') {
+                const payload = data.payload || {};
+                const requestId = payload.requestId;
+                const point = payload.point || {};
+                const found = findTabBySource(event.source);
+                const responder = (result) => {
+                    postToTab(found && found.tab, {
+                        channel: 'jk-ml-browser-click-result',
+                        requestId,
+                        ...(result || {})
                     });
+                };
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (shouldUseFavoritosWorker(payload, found)) {
+                    if (!embeddedApi || typeof embeddedApi.clickFavoritosWorkerBrowser !== 'function') {
+                        responder({ error: 'Navegador trabalhador do Favoritos indisponivel para clique.' });
+                        return;
+                    }
+                    embeddedApi.clickFavoritosWorkerBrowser(point)
+                        .then(result => responder({ result }))
+                        .catch(err => responder({
+                            error: err && err.message ? err.message : String(err)
+                        }));
+                    return;
+                }
+                if (found && embeddedApi && typeof embeddedApi.clickEmbeddedMlBrowser === 'function') {
+                    restaurarMlBrowserParaComando(found, embeddedApi)
+                        .then((podeClicar) => {
+                            if (!podeClicar) {
+                                throw new Error('Navegador do Mercado Livre indisponivel para clique.');
+                            }
+                            return embeddedApi.clickEmbeddedMlBrowser(point);
+                        })
+                        .then(result => responder({ result }))
+                        .catch(err => responder({
+                            error: err && err.message ? err.message : String(err)
+                        }));
+                    return;
+                }
+                if (!found || found.id !== mlBrowserOwnerId || !mlBrowserWebview || typeof mlBrowserWebview.sendInputEvent !== 'function') {
+                    responder({ error: 'Navegador do Mercado Livre indisponivel para clique.' });
+                    return;
+                }
+                try {
+                    const x = Math.max(1, Math.round(Number(point.x ?? point.left ?? 0)));
+                    const y = Math.max(1, Math.round(Number(point.y ?? point.top ?? 0)));
+                    mlBrowserWebview.sendInputEvent({ type: 'mouseMove', x, y, movementX: 0, movementY: 0 });
+                    mlBrowserWebview.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+                    setTimeout(() => {
+                        try {
+                            mlBrowserWebview.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+                            responder({ result: { success: true, x, y } });
+                        } catch (err) {
+                            responder({ error: err && err.message ? err.message : String(err) });
+                        }
+                    }, 45);
+                } catch (err) {
+                    responder({ error: err && err.message ? err.message : String(err) });
+                }
+                return;
+            }
+
+            if (data.channel === 'jk-ml-browser-type') {
+                const payload = data.payload || {};
+                const requestId = payload.requestId;
+                const found = findTabBySource(event.source);
+                const responder = (result) => {
+                    postToTab(found && found.tab, {
+                        channel: 'jk-ml-browser-type-result',
+                        requestId,
+                        ...(result || {})
+                    });
+                };
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (shouldUseFavoritosWorker(payload, found)) {
+                    if (!embeddedApi || typeof embeddedApi.typeFavoritosWorkerBrowser !== 'function') {
+                        responder({ error: 'Navegador trabalhador do Favoritos indisponivel para digitacao.' });
+                        return;
+                    }
+                    embeddedApi.typeFavoritosWorkerBrowser(payload)
+                        .then(result => responder({ result }))
+                        .catch(err => responder({
+                            error: err && err.message ? err.message : String(err)
+                        }));
+                    return;
+                }
+                if (found && embeddedApi && typeof embeddedApi.typeEmbeddedMlBrowser === 'function') {
+                    restaurarMlBrowserParaComando(found, embeddedApi)
+                        .then((podeDigitar) => {
+                            if (!podeDigitar) {
+                                throw new Error('Navegador do Mercado Livre indisponivel para digitacao.');
+                            }
+                            return embeddedApi.typeEmbeddedMlBrowser(payload);
+                        })
+                        .then(result => responder({ result }))
+                        .catch(err => responder({
+                            error: err && err.message ? err.message : String(err)
+                        }));
+                    return;
+                }
+                if (!found || found.id !== mlBrowserOwnerId || !mlBrowserWebview || typeof mlBrowserWebview.sendInputEvent !== 'function') {
+                    responder({ error: 'Navegador do Mercado Livre indisponivel para digitacao.' });
+                    return;
+                }
+                (async () => {
+                    const text = String(payload.text ?? payload.value ?? '');
+                    const clearFirst = payload.clearFirst !== false;
+                    const pressEnter = payload.pressEnter === true || payload.enter === true;
+                    const tapKey = async (keyCode, modifiers = []) => {
+                        mlBrowserWebview.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+                        await new Promise(resolve => setTimeout(resolve, 25));
+                        mlBrowserWebview.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+                    };
+                    try { mlBrowserWebview.focus(); } catch (_err) {}
+                    if (clearFirst) {
+                        await tapKey('A', ['control']);
+                        await new Promise(resolve => setTimeout(resolve, 20));
+                        await tapKey('Backspace');
+                    }
+                    if (text) {
+                        if (typeof mlBrowserWebview.insertText === 'function') {
+                            await Promise.resolve(mlBrowserWebview.insertText(text));
+                        } else {
+                            for (const ch of text) {
+                                mlBrowserWebview.sendInputEvent({ type: 'char', keyCode: ch });
+                                await new Promise(resolve => setTimeout(resolve, 2));
+                            }
+                        }
+                    }
+                    if (pressEnter) {
+                        await new Promise(resolve => setTimeout(resolve, 80));
+                        await tapKey('Enter');
+                    }
+                    return { success: true, typed: text.length, enter: pressEnter };
+                })()
+                    .then(result => responder({ result }))
+                    .catch(err => responder({ error: err && err.message ? err.message : String(err) }));
                 return;
             }
 
             if (data.channel === 'jk-open-module-tab') {
                 const payload = data.payload || {};
                 if (payload.url) createTab(payload.url, payload.title || 'Modulo', { reuseExisting: true });
+                return;
+            }
+
+            if (data.channel === 'jk-native-window-handle-request') {
+                const requestId = data.requestId || data.payload?.requestId || '';
+                const reply = (payload) => {
+                    try {
+                        event.source?.postMessage({
+                            channel: 'jk-native-window-handle-response',
+                            requestId,
+                            payload
+                        }, '*');
+                    } catch (_err) {}
+                };
+                if (!window.electronAPI || typeof window.electronAPI.getNativeWindowHandle !== 'function') {
+                    reply({ success: false, message: 'Electron API indisponivel.' });
+                    return;
+                }
+                window.electronAPI.getNativeWindowHandle()
+                    .then((result) => reply(result || { success: false, message: 'Handle indisponivel.' }))
+                    .catch((err) => reply({ success: false, message: err && err.message ? err.message : String(err) }));
+                return;
+            }
+
+            if (data.channel === 'jk-tab-frame-bounds-request') {
+                const requestId = data.requestId || data.payload?.requestId || '';
+                const found = findTabBySource(event.source);
+                const reply = (payload) => {
+                    try {
+                        event.source?.postMessage({
+                            channel: 'jk-tab-frame-bounds-response',
+                            requestId,
+                            payload
+                        }, '*');
+                    } catch (_err) {}
+                };
+                if (!found) {
+                    reply({ success: false, message: 'Aba nao encontrada.' });
+                    return;
+                }
+                const frame = tabFrameBounds(found.tab, found.id);
+                reply({
+                    success: !!frame,
+                    frame,
+                    active: found.id === activeId
+                });
+                return;
+            }
+
+            if (data.channel === 'jk-rustdesk-in-app-request') {
+                const requestId = data.requestId || data.payload?.requestId || '';
+                const payload = data.payload || {};
+                const action = payload.action === 'hide' ? 'hide' : (payload.action === 'dock' ? 'dock' : 'open');
+                const reply = (result) => {
+                    try {
+                        event.source?.postMessage({
+                            channel: 'jk-rustdesk-in-app-response',
+                            requestId,
+                            payload: result
+                        }, '*');
+                    } catch (_err) {}
+                };
+                const api = window.electronAPI || null;
+                const method = action === 'hide'
+                    ? api?.hideRustDeskInApp
+                    : (action === 'dock' ? api?.dockRustDeskInApp : api?.openRustDeskInApp);
+                if (typeof method !== 'function') {
+                    reply({ success: false, message: 'Electron API do Acesso Remoto indisponivel.' });
+                    return;
+                }
+                method(payload.dockPayload || {}, payload.authToken || '')
+                    .then((result) => reply(result || { success: false, message: 'Resposta vazia do Electron.' }))
+                    .catch((err) => reply({ success: false, message: err && err.message ? err.message : String(err) }));
                 return;
             }
 
@@ -1729,14 +2437,6 @@
                         break;
                     }
                 }
-                if (!handled && activeId) {
-                    const tab = tabs.get(activeId);
-                    if (tab) {
-                        markTabReady(activeId);
-                        if (payload.url) tab.url = normalizeTabUrl(payload.url, tab.url);
-                        setTabTitle(activeId, incomingTitle || titleFromUrl(tab.url) || tab.title);
-                    }
-                }
                 return;
             }
 
@@ -1747,14 +2447,6 @@
                     const payload = data.payload || {};
                     if (payload.url) found.tab.url = normalizeTabUrl(payload.url, found.tab.url);
                     if (payload.title) setTabTitle(found.id, payload.title);
-                } else if (activeId) {
-                    const tab = tabs.get(activeId);
-                    const payload = data.payload || {};
-                    if (tab) {
-                        markTabReady(activeId);
-                        if (payload.url) tab.url = normalizeTabUrl(payload.url, tab.url);
-                        if (payload.title) setTabTitle(activeId, payload.title);
-                    }
                 }
             }
         });

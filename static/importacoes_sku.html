@@ -699,6 +699,11 @@
         const LS_CARD_ORDER_CONTEXT = 'global';
         const LS_RESUMO_EDITAVEL_KEY = 'importacoes_lista_resumo_editavel';
         const LS_PROPORCAO_KEY = 'importacoes_sku_proporcao_v1';
+        const CUSTOS_FIXOS_IMPORTACAO_USD = Object.freeze({
+            blFee: 80,
+            desconsolidacao: 100,
+            handling: 100,
+        });
 
         function carregarProporcaoLocal(listaId, sku) {
             if (!listaId || !sku) return 100;
@@ -792,6 +797,8 @@
             return String(v || '')
                 .normalize('NFD')
                 .replace(/[\u0300-\u036f]/g, '')
+                .replace(/\u00b3/g, '3')
+                .replace(/\u00b2/g, '2')
                 .toLowerCase()
                 .replace(/[^a-z0-9]+/g, ' ')
                 .trim();
@@ -1166,19 +1173,80 @@
             }
         }
 
-        function obterM3TotalItem(item) {
-            const qtd = getNumber(item && (item.Quantidade || item.Qtd));
-            const m3Total = getNumber(item && (item['M³'] || item['M?'] || item.M3 || item.m3 || item.CBM));
-            const m3Individual = getNumber(item && (item['M³ Individual'] || item['M? Individual'] || item['M3 Individual'] || item.m3_individual));
+        function registrarM3CadastroPorSku(mapa, skuRaw, m3Val) {
+            if (!mapa || typeof mapa.set !== 'function') return;
+            const m3 = getNumber(m3Val);
+            if (m3 === null || m3 <= 0) return;
 
-            if (m3Total !== null && m3Total > 0) return m3Total;
-            if (m3Individual !== null && m3Individual > 0 && qtd !== null && qtd > 0) {
-                return m3Individual * qtd;
+            const skuNorm = normalizarSkuComparacao(skuRaw);
+            if (!skuNorm) return;
+
+            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
+            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
+
+            if (!mapa.has(skuNorm)) mapa.set(skuNorm, m3);
+            if (chaveCompacta && !mapa.has(chaveCompacta)) mapa.set(chaveCompacta, m3);
+            if (chaveNumSoft && !mapa.has(chaveNumSoft)) mapa.set(chaveNumSoft, m3);
+        }
+
+        function obterM3IndividualCadastroPorSku(mapa, skuRaw) {
+            if (!mapa || typeof mapa.get !== 'function') return 0;
+
+            const skuNorm = normalizarSkuComparacao(skuRaw);
+            if (!skuNorm) return 0;
+
+            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
+            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
+
+            return (
+                mapa.get(skuNorm)
+                || mapa.get(chaveCompacta)
+                || mapa.get(chaveNumSoft)
+                || 0
+            );
+        }
+
+        function obterM3IndividualItemLista(item) {
+            const m3 = getNumber(getField(item, [
+                'cg m3 individual',
+                'cg_m3 individual',
+                'M3 individual',
+                'm3 individual'
+            ], ''));
+            return (m3 !== null && m3 > 0) ? m3 : 0;
+        }
+
+        function obterM3TotalItemCadastro(item, mapaM3Cadastro) {
+            const qtd = getNumber(item && (item.Quantidade || item.Qtd)) || 0;
+            const m3Individual = obterM3IndividualCadastroPorSku(mapaM3Cadastro, item && item.SKU)
+                || obterM3IndividualItemLista(item);
+            if (m3Individual > 0 && qtd > 0) {
+                const totalCalc = m3Individual * qtd;
+                return Number.isFinite(totalCalc) ? totalCalc : 0;
             }
             return 0;
         }
 
-        function calcularValorPorM3PeloCabecalho(lista, itens) {
+        async function carregarMapaM3Cadastro() {
+            const mapa = new Map();
+            try {
+                const resp = await fetch('/api/cadastro/produtos', {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store'
+                });
+                if (!resp.ok) return mapa;
+                const produtos = await resp.json().catch(() => ([]));
+                (Array.isArray(produtos) ? produtos : []).forEach((p) => {
+                    registrarM3CadastroPorSku(mapa, p && p.sku, obterM3IndividualProdutoCadastro(p));
+                });
+            } catch (_e) {
+                // Sem cadastro carregado, a tela mantém M3 zerado.
+            }
+            return mapa;
+        }
+
+        function calcularValorPorM3PeloCabecalho(lista, itens, mapaM3Cadastro) {
             const dados = Array.isArray(itens) ? itens : [];
             if (!dados.length) return null;
 
@@ -1189,14 +1257,14 @@
                 return acc + (total !== null && total > 0 ? total : ((qtd || 0) * (unit || 0)));
             }, 0);
 
-            const totalM3 = dados.reduce((acc, row) => acc + obterM3TotalItem(row), 0);
+            const totalM3 = dados.reduce((acc, row) => acc + obterM3TotalItemCadastro(row, mapaM3Cadastro), 0);
             if (totalUsd > 0 && totalM3 > 0) {
                 return totalUsd / totalM3;
             }
             return null;
         }
 
-        function obterValorPorM3Usd(lista, item, itensLista) {
+        function obterValorPorM3Usd(lista, item, itensLista, mapaM3Cadastro) {
             const listaId = String((lista && lista.id) || getParams().listaId || '').trim();
             const resumoEditavel = carregarResumoEditavelLista(listaId);
 
@@ -1213,7 +1281,7 @@
             const num = getNumber(bruto);
             if (num !== null && num > 0) return num;
 
-            const calcCabecalho = calcularValorPorM3PeloCabecalho(lista, itensLista);
+            const calcCabecalho = calcularValorPorM3PeloCabecalho(lista, itensLista, mapaM3Cadastro);
             if (calcCabecalho !== null && calcCabecalho > 0) return calcCabecalho;
 
             return null;
@@ -1463,6 +1531,15 @@
             if (el) el.textContent = String(value || '-');
         }
 
+        function setTextComSub(id, value, subValue) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const principal = String(value || '-');
+            const secundario = String(subValue || '').trim();
+            el.innerHTML = escaparHtml(principal)
+                + (secundario ? '<span class="value-sub">' + escaparHtml(secundario) + '</span>' : '');
+        }
+
         function setNcmDescricao(value) {
             const texto = String(value || '-').trim() || '-';
             const el = document.getElementById('vNcmDesc');
@@ -1479,10 +1556,15 @@
             }
         }
 
-        function setFreteInternacional(valor, formulaHover) {
+        function setFreteInternacional(valor, valorUsd, formulaHover) {
             const el = document.getElementById('vFreteInternacional');
             if (!el) return;
-            el.textContent = String(valor || '-');
+            const principal = String(valor || '-');
+            const secundario = String(valorUsd || '').trim();
+            const formula = String(formulaHover || '').trim();
+            el.innerHTML = escaparHtml(principal)
+                + (secundario ? '<span class="value-sub">' + escaparHtml(secundario) + '</span>' : '')
+                + (formula ? '<span class="value-sub hover-info">' + escaparHtml(formula) + '</span>' : '');
         }
 
         function setLink(id, value) {
@@ -1544,7 +1626,7 @@
             return '/api/cadastro/foto-arquivo/' + encodeURIComponent(nomeArquivo);
         }
 
-        function preencherCampos(item, lista, cad, itensLista) {
+        function preencherCampos(item, lista, cad, itensLista, mapaM3Cadastro) {
             const sku = getField(item, ['SKU']);
             const proporcao = getField(item, ['Proporção', 'Proporcao', 'Propor??o']);
             const foto = getField(item, ['Foto', 'Imagem', 'Image'], '');
@@ -1572,13 +1654,13 @@
             const valorDolar = getField(item, ['Valor em dolar', 'Valor em dólar', 'Valor em d?lar', 'Valor unidade', 'Valor unitário em dólar', 'Valor unitario em dolar', 'Valor unit?rio em d?lar']);
             const quantidade = getField(item, ['Quantidade', 'Qtd']);
             const valorTotalDolar = getField(item, ['Valor total em dolar', 'Valor total em dólar', 'Valor total em d?lar', 'Valor total']);
-            const m3Base = getField(item, ['M³', 'M?', 'M3', 'm3', 'CBM']);
             const peso = getField(item, ['Peso']);
             const ii = getField(item, ['II']);
             const ipi = getField(item, ['IPI']);
             const pis = getField(item, ['Pis', 'PIS']);
             const cofins = getField(item, ['Cofins', 'COFINS']);
             const freteImp = getField(item, ['Frete + imposto', 'Frete+imposto', 'Frete e imposto', 'Frete/imposto']);
+            const freteInternacionalBruto = getFieldItemOuLista(item, lista, ['Frete Internacional', 'Frete internacional', 'International freight'], '');
             const seguroInternacionalBruto = getFieldItemOuLista(item, lista, ['Seguro Internacional 0,28%', 'Seguro Internacional']);
             const icms = getField(item, ['ICMS']);
             const afrm = getField(item, ['AFRM', 'Afrm']);
@@ -1594,9 +1676,9 @@
             const mvaAjustado = getFieldItemOuLista(item, lista, ['MVA ajustado', 'MVA Ajustado', 'MVA_ajustado']);
             const taxaSiscomex = getFieldItemOuLista(item, lista, ['Taxa Siscomex']);
             const capatazia = getFieldItemOuLista(item, lista, ['Capatazia']);
-            const blFee = getFieldItemOuLista(item, lista, ['BL Fee', 'BL fee']);
-            const desconsolidacao = getFieldItemOuLista(item, lista, ['Desconsolidação', 'Desconsolida??o', 'Desconsolidacao']);
-            const handling = getFieldItemOuLista(item, lista, ['Handling']);
+            const blFee = fmtUsd(CUSTOS_FIXOS_IMPORTACAO_USD.blFee);
+            const desconsolidacao = fmtUsd(CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao);
+            const handling = fmtUsd(CUSTOS_FIXOS_IMPORTACAO_USD.handling);
             const concorrente1 = getFieldItemOuLista(item, lista, ['Concorrente 1', 'Concorrente1', 'Concorrente_1']);
             const concorrente2 = getFieldItemOuLista(item, lista, ['Concorrente 2', 'Concorrente2', 'Concorrente_2']);
             const concorrente3 = getFieldItemOuLista(item, lista, ['Concorrente 3', 'Concorrente3', 'Concorrente_3']);
@@ -1605,10 +1687,12 @@
             const link = getField(item, ['Link', 'URL', 'Url']);
 
             const qtdNum = getNumber(quantidade) || 0;
-            let m3Num = getNumber(m3Base);
-            if (cad && Number(cad.m3Individual || 0) > 0 && qtdNum > 0) {
-                m3Num = Number(cad.m3Individual) * qtdNum;
-            }
+            const m3IndividualCadastro = (cad && Number(cad.m3Individual || 0) > 0)
+                ? Number(cad.m3Individual)
+                : (obterM3IndividualCadastroPorSku(mapaM3Cadastro, sku) || obterM3IndividualItemLista(item));
+            const m3Num = (m3IndividualCadastro > 0 && qtdNum > 0)
+                ? (m3IndividualCadastro * qtdNum)
+                : 0;
 
             // --- Proporção: carrega do localStorage ou usa 100% como padrão ---
             const { listaId: listaIdParam } = getParams();
@@ -1624,7 +1708,7 @@
                 ? cad.ncmDescricao
                 : getFieldItemOuLista(item, lista, ['Descrição do NCM', 'Descri??o do NCM', 'Descricao do NCM', 'Descrição NCM', 'Descri??o NCM', 'Descricao NCM'], '-');
 
-            const valorPorM3Usd = obterValorPorM3Usd(lista, item, itensLista);
+            const valorPorM3Usd = obterValorPorM3Usd(lista, item, itensLista, mapaM3Cadastro);
             const dolarCompra = getNumber(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
             const dolarBase = (dolarCompra !== null && dolarCompra > 0) ? dolarCompra : cotacaoDolarHoje;
             ultimaCotacaoBase = (dolarBase !== null && dolarBase > 0) ? dolarBase : 0;
@@ -1639,6 +1723,9 @@
             const freteInternacionalExibicao = freteInternacionalBrlCalc !== null
                 ? fmtBRL(freteInternacionalBrlCalc)
                 : '-';
+            const freteInternacionalUsdExibicao = freteInternacionalUsd !== null
+                ? fmtUsd(freteInternacionalUsd)
+                : '';
             const formulaFreteInternacional = freteInternacionalBrlCalc !== null
                 ? (fmtUsd(valorPorM3Usd) + ' × ' + fmtBRL(dolarBase) + ' × ' + fmtM3(m3Num) + ' m³')
                 : '';
@@ -1657,14 +1744,14 @@
                 : null;
             setText('vValorTotalBrl', valorTotalBrlCalc !== null ? fmtBRL(valorTotalBrlCalc) : '-');
             setText('vQtd', fmtQty(quantidade));
-            setText('vM3', fmtM3(m3Num !== null ? m3Num : m3Base));
+            setText('vM3', fmtM3(m3Num));
             // Exibe o mesmo valor que aparece no cabeçalho da lista: editável → cálculo total (não usa campo do item)
             const { listaId: listaIdParamDisplay } = getParams();
             const resumoEditavelDisplay = carregarResumoEditavelLista(listaIdParamDisplay);
             const valorPorM3EditadoDisplay = getNumber(resumoEditavelDisplay && resumoEditavelDisplay.valor_por_m3);
             const valorPorM3Display = (valorPorM3EditadoDisplay !== null && valorPorM3EditadoDisplay > 0)
                 ? valorPorM3EditadoDisplay
-                : calcularValorPorM3PeloCabecalho(lista, itensLista);
+                : calcularValorPorM3PeloCabecalho(lista, itensLista, mapaM3Cadastro);
             setText('vValorPorM3', valorPorM3Display !== null ? fmtUsd(valorPorM3Display) : '-');
             setText('vDolarCompra', dolarBase !== null && dolarBase > 0 ? fmtBRL(dolarBase) : '-');
             setText('vPeso', fmtQty(peso));
@@ -1674,9 +1761,23 @@
             const freteBrlBase = (freteInternacionalBrlCalc !== null)
                 ? freteInternacionalBrlCalc
                 : getNumber(freteInternacionalBruto);
-            const seguroInternacionalBrlCalc = (valorTotalDolarNum !== null && dolarBase !== null && freteBrlBase !== null)
-                ? (((valorTotalDolarNum * dolarBase) + freteBrlBase) * 0.0028)
+            const freteUsdBase = (freteInternacionalUsd !== null)
+                ? freteInternacionalUsd
+                : ((freteBrlBase !== null && dolarBase !== null && dolarBase > 0) ? (freteBrlBase / dolarBase) : null);
+            const seguroInternacionalUsdCalc = (valorTotalDolarNum !== null && freteUsdBase !== null)
+                ? ((valorTotalDolarNum + freteUsdBase) * 0.0028)
                 : null;
+            const seguroInternacionalBrlCalc = (seguroInternacionalUsdCalc !== null && dolarBase !== null && dolarBase > 0)
+                ? (seguroInternacionalUsdCalc * dolarBase)
+                : null;
+            const vmldSkuBrlCalc = (
+                valorTotalBrlCalc !== null
+                && freteInternacionalBrlCalc !== null
+                && seguroInternacionalBrlCalc !== null
+            )
+                ? (valorTotalBrlCalc + freteInternacionalBrlCalc + seguroInternacionalBrlCalc)
+                : null;
+            const armazenagemCalc = vmldSkuBrlCalc !== null ? (vmldSkuBrlCalc * 0.035) : null;
 
             const iiPct = getNumber(ii);
             const ipiPct = getNumber(ipi);
@@ -1727,11 +1828,15 @@
             ultimoPercentualCofins = cofins;
             atualizarCardsIiIpiComValor(valorTotalDolarCalc, freteInternacionalUsd, ii, ipi, pis, cofins, propLocal, qtdNum || 1);
             setText('vFreteImp', freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : freteImp);
-            setFreteInternacional(freteInternacionalExibicao, formulaFreteInternacional);
-            setText('vSeguroInternacional', seguroInternacionalBrlCalc !== null ? fmtBRL(seguroInternacionalBrlCalc) : seguroInternacionalBruto);
+            setFreteInternacional(freteInternacionalExibicao, freteInternacionalUsdExibicao, formulaFreteInternacional);
+            setTextComSub(
+                'vSeguroInternacional',
+                seguroInternacionalBrlCalc !== null ? fmtBRL(seguroInternacionalBrlCalc) : seguroInternacionalBruto,
+                seguroInternacionalUsdCalc !== null ? fmtUsd(seguroInternacionalUsdCalc) : ''
+            );
             setText('vIcms', icms);
             setText('vAfrm', afrm);
-            setText('vArmazenagem', armazenagem);
+            setText('vArmazenagem', armazenagemCalc !== null ? fmtBRL(armazenagemCalc) : armazenagem);
             setText('vTaxasFixas', taxasFixas);
             setText('vMonofasico', monofasico);
             const usaStMgLocal = possuiRespostaSim(stMinas);
@@ -1944,17 +2049,80 @@
             }
         }
 
+        function obterM3IndividualProdutoCadastro(produto) {
+            const m3 = getNumber(pickCadastro(produto, [
+                'cg m3 individual',
+                'cg_m3 individual',
+                'm3 individual',
+                'm3'
+            ]));
+            return (m3 !== null && m3 > 0) ? m3 : 0;
+        }
+
+        function montarDadosCadastroSku(produto) {
+            if (!produto) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+            const tituloPt = pickCadastro(produto, [
+                'produto_bling',
+                'nome_bling',
+                'produtos blig',
+                'produto blig',
+                'produtos bling',
+                'produto bling',
+                'nome',
+                'produto'
+            ]);
+            const ncm = pickCadastro(produto, ['ncm', 'NCM']);
+            const cest = pickCadastro(produto, ['cest', 'CEST']);
+            const ncmDescricao = pickCadastro(produto, ['descricao_ncm', 'descricao ncm', 'ncm descricao', 'desc ncm', 'ncm desc']);
+            const m3Individual = obterM3IndividualProdutoCadastro(produto);
+            return { tituloPt, ncm, cest, m3Individual, ncmDescricao };
+        }
+
+        function mesclarDadosCadastroSku(principal, fallback) {
+            const a = principal || {};
+            const b = fallback || {};
+            return {
+                tituloPt: a.tituloPt || b.tituloPt || '',
+                ncm: a.ncm || b.ncm || '',
+                cest: a.cest || b.cest || '',
+                m3Individual: a.m3Individual || b.m3Individual || 0,
+                ncmDescricao: a.ncmDescricao || b.ncmDescricao || ''
+            };
+        }
+
         async function buscarDadosNoCadastro(sku) {
             const skuNorm = normSku(sku);
             const skuCmp = normalizarSkuComparacao(sku);
-            if (!skuNorm) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+            const dadosVazios = { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+            if (!skuNorm) return dadosVazios;
+            let dadosDiretos = dadosVazios;
+
+            try {
+                const respSku = await fetch('/api/cadastro/produto?sku=' + encodeURIComponent(skuNorm), {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() },
+                    cache: 'no-store'
+                });
+                if (respSku.ok) {
+                    const dataSku = await respSku.json().catch(() => ({}));
+                    const produtoDireto = dataSku && dataSku.produto ? dataSku.produto : null;
+                    if (produtoDireto) {
+                        dadosDiretos = montarDadosCadastroSku(produtoDireto);
+                        if (dadosDiretos.tituloPt && dadosDiretos.ncm) {
+                            return dadosDiretos;
+                        }
+                    }
+                }
+            } catch (_e) {
+                // fallback para a lista completa abaixo
+            }
 
             try {
                 const resp = await fetch('/api/cadastro/produtos', {
                     method: 'GET',
                     headers: { ...obterAuthHeaders() }
                 });
-                if (!resp.ok) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+                if (!resp.ok) return dadosDiretos;
 
                 const produtos = await resp.json();
                 const lista = Array.isArray(produtos) ? produtos : [];
@@ -1962,13 +2130,16 @@
                 if (!produto && skuCmp) {
                     produto = lista.find((p) => normalizarSkuComparacao(p && p.sku) === skuCmp);
                 }
-                if (!produto) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+                if (!produto) return dadosDiretos;
 
                 const tituloPt = pickCadastro(produto, [
+                    'produto_bling',
+                    'nome_bling',
                     'produtos blig',
                     'produto blig',
                     'produtos bling',
                     'produto bling',
+                    'nome',
                     'produto'
                 ]);
 
@@ -1982,12 +2153,9 @@
                     'desc ncm',
                     'ncm desc'
                 ]);
-                const m3Individual = getNumber(
-                    pickCadastro(produto, ['cg_m³ individual', 'cg_m3 individual', 'm³ individual', 'm3 individual', 'm3'])
-                ) || 0;
-                return { tituloPt, ncm, cest, m3Individual, ncmDescricao };
+                return mesclarDadosCadastroSku(dadosDiretos, montarDadosCadastroSku(produto));
             } catch (_e) {
-                return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+                return dadosDiretos;
             }
         }
 
@@ -2086,7 +2254,11 @@
                 }
 
                 const cad = await buscarDadosNoCadastro(skuNorm);
-                preencherCampos(item, lista, cad, itens);
+                const mapaM3Cadastro = await carregarMapaM3Cadastro();
+                if (cad && Number(cad.m3Individual || 0) > 0) {
+                    registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
+                }
+                preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
 
                 const linksConc = await buscarLinksConcorrentes(skuNorm);
                 setLinkConcorrente('lblConcorrente1', 'Concorrente 1', linksConc.links.concorrente_1);
@@ -2156,5 +2328,3 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
-

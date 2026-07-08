@@ -184,6 +184,7 @@
     let produtoAtual = null;
     let fotoPendenteDataUrl = '';
     let fotoPendenteFilename = '';
+    const CAMPO_M3_INDIVIDUAL = 'm3 individual';
 
     function setStatus(msg, cls) {
         statusEl.className = 'status ' + (cls || '');
@@ -191,7 +192,7 @@
     }
 
     function ordemCampos(campos) {
-        const prioridade = ['sku', 'nome', 'categoria', 'marca', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
+        const prioridade = ['sku', 'nome', 'categoria', 'marca', CAMPO_M3_INDIVIDUAL, 'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
         const score = (c) => {
             const i = prioridade.indexOf(c);
             return i === -1 ? 999 : i;
@@ -232,6 +233,10 @@
     }
 
     function formatarNomeCampo(chave) {
+        const c = String(chave || '').trim().toLowerCase();
+        if (c === CAMPO_M3_INDIVIDUAL || c === 'm3' || c === 'cg_m3 individual' || c === 'cg_m³ individual') {
+            return 'M3 individual (m³ por unidade)';
+        }
         return String(chave || '')
             .replace(/^cg_/i, '')
             .replace(/_/g, ' ')
@@ -257,6 +262,11 @@
         }
         input.id = `f_${chave}`;
         input.name = chave;
+        if (String(chave || '').trim().toLowerCase() === CAMPO_M3_INDIVIDUAL) {
+            input.inputMode = 'decimal';
+            input.placeholder = 'Ex.: 0,000054';
+            input.title = 'Informe o M³ de uma unidade. A importação multiplica pela quantidade.';
+        }
         if (chave === 'custo') {
             input.value = numericParaBRL(v);
             input.setAttribute('data-tipo', 'moeda');
@@ -276,7 +286,7 @@
 
         if (['sku', 'nome', 'produto', 'produto_bling', 'categoria', 'marca'].includes(c)) return 'identificacao';
         if (['fabricante', 'fornecedor', 'modelo', 'linha'].includes(c) || c.includes('fabricante') || c.includes('fornecedor')) return 'fabricante';
-        if (['ncm', 'cest', 'imposto'].includes(c)) return 'fiscal';
+        if (['ncm', 'cest', 'imposto', CAMPO_M3_INDIVIDUAL, 'm3'].includes(c)) return 'fiscal';
         if (['custo', 'preco'].includes(c)) return 'precos';
         if (['mlb_ids', 'custos_frete_mlb', 'mlb_principal', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'modalidades_mlb', 'gtins_mlb'].includes(c)) return 'anuncios';
         if (['descricao', 'foto', 'link', 'url'].includes(c) || c.includes('descricao') || c.includes('link') || c.includes('url')) return 'identificacao';
@@ -402,6 +412,7 @@
         if (!produto) return;
 
         const camposBase = colunasCadastro.length ? [...colunasCadastro] : [];
+        if (!camposBase.includes(CAMPO_M3_INDIVIDUAL)) camposBase.push(CAMPO_M3_INDIVIDUAL);
         Object.keys(produto).forEach(c => {
             if (!camposBase.includes(c)) camposBase.push(c);
         });

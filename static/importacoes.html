@@ -213,6 +213,92 @@
             z-index: 1;
         }
 
+        .loja-filtro-area {
+            position: relative;
+            z-index: 1;
+            margin: -2px 0 8px;
+        }
+
+        .loja-filtro-label {
+            color: #b8d9ff;
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 5px;
+        }
+
+        .loja-filtro-grid {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .loja-filtro-card {
+            display: inline-flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 7px;
+            min-height: 32px;
+            max-width: 100%;
+            padding: 5px 9px;
+            border: 1px solid rgba(99, 187, 255, 0.36);
+            border-radius: 999px;
+            background: linear-gradient(180deg, rgba(13, 35, 62, 0.88), rgba(10, 21, 38, 0.96));
+            color: #eaf3ff;
+            cursor: pointer;
+            text-align: left;
+            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.08);
+            transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+        }
+
+        .loja-filtro-card:hover {
+            transform: translateY(-1px);
+            border-color: rgba(126, 203, 255, 0.72);
+            box-shadow: 0 12px 22px rgba(28, 162, 255, 0.16);
+        }
+
+        .loja-filtro-card.active {
+            border-color: rgba(126, 203, 255, 0.96);
+            background: linear-gradient(135deg, rgba(28, 162, 255, 0.92), rgba(99, 187, 255, 0.78));
+            color: #061626;
+            box-shadow: 0 8px 18px rgba(28, 162, 255, 0.22);
+        }
+
+        .loja-filtro-chip {
+            display: none;
+        }
+
+        .loja-filtro-nome {
+            max-width: 190px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.9rem;
+            font-weight: 900;
+            line-height: 1.05;
+        }
+
+        .loja-filtro-contagem {
+            display: inline-flex;
+            align-items: center;
+            min-height: 19px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(126, 203, 255, 0.11);
+            color: #9cb7d7;
+            font-size: 0.7rem;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .loja-filtro-card.active .loja-filtro-contagem {
+            background: rgba(6, 22, 38, 0.14);
+            color: #10334f;
+        }
+
         .btn {
             border: 1px solid rgba(126, 203, 255, 0.36);
             border-radius: 11px;
@@ -374,6 +460,42 @@
 
         .meta-invoice strong { color: #ffd89a; }
 
+        .meta-loja {
+            border-color: rgba(126, 203, 255, 0.42);
+            background: rgba(10, 38, 64, 0.86);
+        }
+
+        .meta-loja strong { color: #9edcff; }
+
+        .meta-loja-editavel {
+            cursor: text;
+        }
+
+        .meta-loja-editavel:hover {
+            border-color: rgba(126, 203, 255, 0.72);
+            box-shadow: 0 0 0 1px rgba(126, 203, 255, 0.16);
+        }
+
+        .meta-loja-input {
+            width: 180px;
+            max-width: min(42vw, 220px);
+            border: 0;
+            outline: 0;
+            border-radius: 999px;
+            padding: 2px 8px;
+            background: rgba(240, 247, 255, 0.96);
+            color: #07172d;
+            font: inherit;
+            font-weight: 800;
+        }
+
+        .lista-loja-sufixo {
+            color: #9edcff;
+            font-size: 0.82rem;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
         .meta-m3 {
             border-color: rgba(145, 237, 183, 0.35);
             background: rgba(14, 48, 30, 0.82);
@@ -497,6 +619,19 @@
 
             .toolbar {
                 gap: 8px;
+            }
+
+            .loja-filtro-grid {
+                gap: 5px;
+            }
+
+            .loja-filtro-card {
+                flex: 1 1 132px;
+                justify-content: space-between;
+            }
+
+            .loja-filtro-nome {
+                max-width: 150px;
             }
 
             .btn,
@@ -730,6 +865,9 @@
             font-size: 0.84rem;
             font-weight: 700;
         }
+        .emb-inv-pill .lista-loja-sufixo {
+            margin-left: 6px;
+        }
         .modal-overlay {
             display: none;
             position: fixed;
@@ -892,6 +1030,10 @@
                 <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
                 <span class="badge">Status monitorado: Analisando orçamento</span>
             </div>
+            <div class="loja-filtro-area" aria-label="Filtrar listas por loja">
+                <div class="loja-filtro-label">Filtrar listas por loja</div>
+                <div id="lojaFiltroListas" class="loja-filtro-grid"></div>
+            </div>
             <div id="status" class="muted">Carregando listas...</div>
 
             <!-- Vista: detalhe de embarque -->
@@ -951,6 +1093,9 @@
 
         let cotacaoDolarAtual = 0;
         let todasListasCache = [];
+        let lojasImportacoesCache = null;
+        let lojasImportacoesPromise = null;
+        let lojaFiltroImportacoes = '__todas';
         let _embarqueEditandoId = null;
 
         function formatarDataHoraLocal(isoTexto) {
@@ -971,10 +1116,146 @@
             return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
+        const CUSTOS_FIXOS_IMPORTACAO_USD = Object.freeze({
+            blFee: 80,
+            desconsolidacao: 100,
+            handling: 100,
+        });
+        const CUSTOS_FIXOS_IMPORTACAO_BRL = Object.freeze({
+            desembaraco: 900,
+            expediente: 300,
+        });
+        const PICKUP_ORIGEM_USD_POR_M3 = 25.47;
+        const PICKUP_ORIGEM_USD_FIXO = 351.04;
+        const TAXAS_ORIGEM_USD_POR_M3 = 12.74;
+        const TAXAS_ORIGEM_USD_FIXO = 350.52;
+        const TRANSPORTE_RODOVIARIO_BRL_POR_M3 = 509.42;
+        const TRANSPORTE_RODOVIARIO_BRL_FIXO = 1021;
+        const CAPATAZIA_BRL_POR_M3 = 30;
+
+        function calcularPickupOrigemBrl(totalM3, dolar) {
+            const m3 = Number(totalM3 || 0);
+            const cotacao = Number(dolar || 0);
+            if (!Number.isFinite(m3) || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
+            return ((m3 * PICKUP_ORIGEM_USD_POR_M3) + PICKUP_ORIGEM_USD_FIXO) * cotacao;
+        }
+
+        function calcularTaxasOrigemBrl(totalM3, dolar) {
+            const m3 = Number(totalM3 || 0);
+            const cotacao = Number(dolar || 0);
+            if (!Number.isFinite(m3) || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
+            return ((m3 * TAXAS_ORIGEM_USD_POR_M3) + TAXAS_ORIGEM_USD_FIXO) * cotacao;
+        }
+
+        function calcularTransporteRodoviarioBrl(totalM3) {
+            const m3 = Number(totalM3 || 0);
+            if (!Number.isFinite(m3)) return 0;
+            return (m3 * TRANSPORTE_RODOVIARIO_BRL_POR_M3) + TRANSPORTE_RODOVIARIO_BRL_FIXO;
+        }
+
+        function calcularCapataziaBrl(totalM3) {
+            const m3 = Number(totalM3 || 0);
+            if (!Number.isFinite(m3)) return 0;
+            return m3 * CAPATAZIA_BRL_POR_M3;
+        }
+
         function formatarM3(v) {
             const n = Number(v || 0);
             if (!n) return '-';
             return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' m³';
+        }
+
+        function escaparHtml(valor) {
+            return String(valor || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function obterLojaLista(lista) {
+            const loja = String((lista && lista.loja) || '').trim();
+            if (!loja || loja === '__todas') return 'Nao definida';
+            return loja;
+        }
+
+        function metaLojaListaHtml(lista) {
+            return '<span class="meta-pill meta-loja meta-loja-editavel" data-loja-pill title="Clique duas vezes para incluir ou alterar a loja">Loja: <strong>' + escaparHtml(obterLojaLista(lista)) + '</strong></span>';
+        }
+
+        function rotuloListaComLoja(lista, principal) {
+            const base = String(principal || (lista && lista.nome_lista) || 'Sem nome').trim() || 'Sem nome';
+            return base + ' - ' + obterLojaLista(lista);
+        }
+
+        function chaveLojaFiltroLista(lista) {
+            const loja = String((lista && lista.loja) || '').trim();
+            if (!loja || loja === '__todas') return '__sem_loja';
+            return loja;
+        }
+
+        function nomeLojaFiltro(chave) {
+            if (chave === '__todas') return 'Todas as lojas';
+            if (chave === '__sem_loja') return 'Nao definida';
+            return chave;
+        }
+
+        function listasFiltradasPorLoja() {
+            const listas = Array.isArray(todasListasCache) ? todasListasCache : [];
+            if (lojaFiltroImportacoes === '__todas') return listas;
+            return listas.filter((l) => chaveLojaFiltroLista(l) === lojaFiltroImportacoes);
+        }
+
+        function renderFiltroLojasImportacoes(listas) {
+            const box = document.getElementById('lojaFiltroListas');
+            if (!box) return;
+
+            const base = Array.isArray(listas) ? listas : [];
+            const contagens = new Map();
+            base.forEach((lista) => {
+                const chave = chaveLojaFiltroLista(lista);
+                contagens.set(chave, (contagens.get(chave) || 0) + 1);
+            });
+
+            if (lojaFiltroImportacoes !== '__todas' && !contagens.has(lojaFiltroImportacoes)) {
+                lojaFiltroImportacoes = '__todas';
+            }
+
+            const entradas = [{ chave: '__todas', nome: 'Todas as lojas', total: base.length }];
+            Array.from(contagens.keys())
+                .sort((a, b) => nomeLojaFiltro(a).localeCompare(nomeLojaFiltro(b), 'pt-BR', { sensitivity: 'base' }))
+                .forEach((chave) => {
+                    entradas.push({ chave, nome: nomeLojaFiltro(chave), total: contagens.get(chave) || 0 });
+                });
+
+            box.innerHTML = '';
+            entradas.forEach((entrada) => {
+                const ativo = lojaFiltroImportacoes === entrada.chave;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'loja-filtro-card' + (ativo ? ' active' : '');
+                btn.setAttribute('aria-pressed', ativo ? 'true' : 'false');
+                btn.innerHTML =
+                    '<span class="loja-filtro-chip">Loja</span>' +
+                    '<span class="loja-filtro-nome">' + escaparHtml(entrada.nome) + '</span>' +
+                    '<span class="loja-filtro-contagem">' + numero(entrada.total) + ' lista(s)</span>';
+                btn.addEventListener('click', () => {
+                    lojaFiltroImportacoes = entrada.chave;
+                    renderFiltroLojasImportacoes(todasListasCache);
+                    aplicarFiltroListasImportacoes();
+                });
+                box.appendChild(btn);
+            });
+        }
+
+        function aplicarFiltroListasImportacoes() {
+            const filtradas = listasFiltradasPorLoja();
+            renderListas(filtradas);
+            renderEmbarques(todasListasCache);
+            const nomeFiltro = nomeLojaFiltro(lojaFiltroImportacoes);
+            const sufixo = lojaFiltroImportacoes === '__todas' ? '' : ' | Loja: ' + nomeFiltro;
+            setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s)' + sufixo + '.');
         }
 
         function carregarInvoiceLocal(listaId) {
@@ -1064,58 +1345,82 @@
             if (el) el.textContent = msg || '';
         }
 
-        function marcarStatusCanceladoLocal(listaId) {
-            if (!listaId) return;
-            const chave = 'jk_lista_status_cancelado_override';
-            let mapa = {};
+        function removerChaveMapaLocal(storageKey, listaId) {
+            const id = String(listaId || '').trim();
+            if (!id || !storageKey) return;
             try {
-                mapa = JSON.parse(localStorage.getItem(chave) || '{}');
-            } catch (_e) {
-                mapa = {};
-            }
-            mapa[String(listaId)] = true;
-            localStorage.setItem(chave, JSON.stringify(mapa));
+                const mapa = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+                if (Object.prototype.hasOwnProperty.call(mapa, id)) {
+                    delete mapa[id];
+                    localStorage.setItem(storageKey, JSON.stringify(mapa));
+                }
+            } catch (_e) {}
         }
 
-        async function cancelarPedidoLista(listaId, nomeLista, btn) {
+        function limparReferenciasListaExcluida(listaId) {
+            const id = String(listaId || '').trim();
+            if (!id) return;
+
+            removerChaveMapaLocal('jk_lista_status_cancelado_override', id);
+            removerChaveMapaLocal('importacoes_lista_resumo_editavel', id);
+
+            try {
+                const embarques = carregarEmbarques();
+                const origem = Array.isArray(embarques) ? embarques : [];
+                let alterou = false;
+                const atualizados = origem.map((emb) => {
+                    const idsAntes = Array.isArray(emb.lista_ids) ? emb.lista_ids.map(String) : [];
+                    const idsDepois = idsAntes.filter((listaIdItem) => String(listaIdItem) !== id);
+                    if (idsDepois.length !== idsAntes.length) {
+                        alterou = true;
+                        return { ...emb, lista_ids: idsDepois, updated_at: new Date().toISOString() };
+                    }
+                    return emb;
+                }).filter((emb) => Array.isArray(emb.lista_ids) && emb.lista_ids.length > 0);
+
+                if (alterou || atualizados.length !== origem.length) {
+                    salvarEmbarquesStorage(atualizados);
+                }
+            } catch (_e) {}
+        }
+
+        async function excluirListaDefinitiva(listaId, nomeLista, btn) {
             if (!listaId) return;
 
-            const confirmar = window.confirm('Deseja cancelar o pedido da lista "' + String(nomeLista || 'Sem nome') + '"?');
+            const confirmar = window.confirm('Excluir definitivamente a lista "' + String(nomeLista || 'Sem nome') + '"? Ela sera removida do sistema e nao aparecera mais em Importacoes ou Medias e Pedidos.');
             if (!confirmar) return;
 
             const textoOriginal = btn ? btn.textContent : '';
             try {
                 if (btn) {
                     btn.disabled = true;
-                    btn.textContent = 'Cancelando...';
+                    btn.textContent = 'Excluindo...';
                 }
 
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/status', {
-                    method: 'PATCH',
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                    method: 'DELETE',
                     headers: {
                         ...obterAuthHeaders(),
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ status: 'Pedido cancelado' })
+                        'x-jk-delete-origin': 'importacoes'
+                    }
                 });
 
-                if (!resp.ok) {
+                if (!resp.ok && resp.status !== 404) {
                     const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Não foi possível cancelar o pedido.');
+                    throw new Error(err.detail || 'Nao foi possivel excluir a lista.');
                 }
 
-                const retorno = await resp.json().catch(() => ({}));
-                const statusRetornado = String(retorno && retorno.lista ? retorno.lista.status || '' : '').trim();
-                if (statusRetornado !== 'Pedido cancelado') {
-                    marcarStatusCanceladoLocal(listaId);
-                }
-
-                window.location.href = 'medias_compras.html';
+                limparReferenciasListaExcluida(listaId);
+                todasListasCache = (Array.isArray(todasListasCache) ? todasListasCache : []).filter((l) => String(l.id || '') !== String(listaId));
+                renderFiltroLojasImportacoes(todasListasCache);
+                aplicarFiltroListasImportacoes();
+                setStatus('Lista excluida definitivamente do sistema.');
+                await carregarListasImportacoes();
             } catch (e) {
-                setStatus(e.message || 'Erro ao cancelar pedido.');
+                setStatus(e.message || 'Erro ao excluir lista.');
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = textoOriginal || 'Cancelar pedido';
+                    btn.textContent = textoOriginal || 'Excluir lista';
                 }
             }
         }
@@ -1136,6 +1441,229 @@
             }
 
             return resp.json().catch(() => ({}));
+        }
+
+        async function atualizarLojaLista(listaId, lojaLista) {
+            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                method: 'PUT',
+                headers: {
+                    ...obterAuthHeaders(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ loja: normalizarLojaParaSalvar(lojaLista) })
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Nao foi possivel atualizar a loja da lista.');
+            }
+
+            return resp.json().catch(() => ({}));
+        }
+
+        function normalizarLojaParaSalvar(valor) {
+            const loja = String(valor || '').trim();
+            const lojaNorm = loja.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+            if (!loja || loja === '__todas' || lojaNorm === 'nao definida') return '__todas';
+            return loja;
+        }
+
+        function extrairNomeLojaImportacoes(item) {
+            if (!item) return '';
+            if (typeof item === 'string') return item.trim();
+            const candidatos = [
+                item.nome,
+                item.nome_loja,
+                item.loja,
+                item.label,
+                item.apelido,
+                item.name,
+            ];
+            for (const valor of candidatos) {
+                const nome = String(valor || '').trim();
+                if (nome && nome !== '__todas') return nome;
+            }
+            return '';
+        }
+
+        async function carregarOpcoesLojasImportacoes() {
+            if (Array.isArray(lojasImportacoesCache)) return lojasImportacoesCache;
+            if (lojasImportacoesPromise) return lojasImportacoesPromise;
+
+            lojasImportacoesPromise = fetch('/api/lojas', {
+                method: 'GET',
+                headers: { ...obterAuthHeaders() }
+            })
+                .then((resp) => resp.ok ? resp.json() : [])
+                .then((data) => {
+                    const origem = Array.isArray(data) ? data : (Array.isArray(data.lojas) ? data.lojas : []);
+                    lojasImportacoesCache = origem
+                        .map(extrairNomeLojaImportacoes)
+                        .filter(Boolean);
+                    return lojasImportacoesCache;
+                })
+                .catch(() => {
+                    lojasImportacoesCache = [];
+                    return lojasImportacoesCache;
+                })
+                .finally(() => {
+                    lojasImportacoesPromise = null;
+                });
+
+            return lojasImportacoesPromise;
+        }
+
+        function listarLojasConhecidasImportacoes(extraLoja) {
+            const mapa = new Map();
+            const adicionar = (nome) => {
+                const valor = String(nome || '').trim();
+                if (!valor || valor === '__todas') return;
+                mapa.set(valor.toLowerCase(), valor);
+            };
+
+            adicionar(extraLoja);
+            (Array.isArray(lojasImportacoesCache) ? lojasImportacoesCache : []).forEach(adicionar);
+            (Array.isArray(todasListasCache) ? todasListasCache : []).forEach((lista) => adicionar(lista && lista.loja));
+
+            return Array.from(mapa.values())
+                .filter((nome) => normalizarLojaParaSalvar(nome) !== '__todas')
+                .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+        }
+
+        function preencherDatalistLojasImportacoes(datalist, lojaAtual) {
+            if (!datalist) return;
+            datalist.innerHTML = '';
+            listarLojasConhecidasImportacoes(lojaAtual).forEach((nome) => {
+                const opt = document.createElement('option');
+                opt.value = nome;
+                datalist.appendChild(opt);
+            });
+        }
+
+        function atualizarListaCacheImportacoes(listaId, listaAtualizada, lojaFallback) {
+            const id = String(listaId || '').trim();
+            const lojaFinal = String((listaAtualizada && listaAtualizada.loja) || normalizarLojaParaSalvar(lojaFallback) || '__todas').trim() || '__todas';
+            let listaFinal = { ...(listaAtualizada || {}), id, loja: lojaFinal };
+
+            todasListasCache = (Array.isArray(todasListasCache) ? todasListasCache : []).map((lista) => {
+                if (String((lista || {}).id || '') !== id) return lista;
+                listaFinal = { ...(lista || {}), ...listaFinal };
+                return listaFinal;
+            });
+
+            return listaFinal;
+        }
+
+        function restaurarPillLojaImportacoes(pill, lista, lojaValor) {
+            if (!pill || !lista) return;
+            lista.loja = String(lojaValor || '').trim() || '__todas';
+            pill.dataset.editandoLoja = '0';
+            pill.innerHTML = 'Loja: <strong>' + escaparHtml(obterLojaLista(lista)) + '</strong>';
+        }
+
+        function iniciarEdicaoLojaLista(pill, listaId, lista, opcoes) {
+            if (!pill || !listaId || pill.dataset.editandoLoja === '1') return;
+
+            const lojaOriginal = String((lista && lista.loja) || '').trim();
+            const valorOriginal = normalizarLojaParaSalvar(lojaOriginal);
+            const input = document.createElement('input');
+            const datalist = document.createElement('datalist');
+            const datalistId = 'lojasImportacoes_' + String(listaId).replace(/[^A-Za-z0-9_-]+/g, '_') + '_' + Date.now();
+            let encerrado = false;
+            let salvando = false;
+
+            input.type = 'text';
+            input.className = 'meta-loja-input';
+            input.maxLength = 80;
+            input.value = valorOriginal === '__todas' ? '' : lojaOriginal;
+            input.setAttribute('list', datalistId);
+            input.placeholder = 'Nao definida';
+            datalist.id = datalistId;
+            preencherDatalistLojasImportacoes(datalist, lojaOriginal);
+
+            pill.dataset.editandoLoja = '1';
+            pill.innerHTML = 'Loja: ';
+            pill.appendChild(input);
+            pill.appendChild(datalist);
+
+            carregarOpcoesLojasImportacoes().then(() => {
+                if (!encerrado && pill.dataset.editandoLoja === '1') {
+                    preencherDatalistLojasImportacoes(datalist, input.value || lojaOriginal);
+                }
+            });
+
+            const cancelar = () => {
+                if (encerrado) return;
+                encerrado = true;
+                restaurarPillLojaImportacoes(pill, lista, lojaOriginal || '__todas');
+            };
+
+            const salvar = async () => {
+                if (encerrado || salvando) return;
+                const lojaNova = String(input.value || '').trim();
+                const valorNovo = normalizarLojaParaSalvar(lojaNova);
+                if (valorNovo.toLowerCase() === valorOriginal.toLowerCase()) {
+                    cancelar();
+                    return;
+                }
+
+                salvando = true;
+                input.disabled = true;
+                setStatus('Atualizando loja da lista...');
+
+                try {
+                    const data = await atualizarLojaLista(listaId, valorNovo);
+                    const listaAtualizada = atualizarListaCacheImportacoes(listaId, data && data.lista ? data.lista : {}, valorNovo);
+                    Object.assign(lista, listaAtualizada);
+                    encerrado = true;
+                    restaurarPillLojaImportacoes(pill, lista, listaAtualizada.loja);
+                    renderFiltroLojasImportacoes(todasListasCache);
+                    if (opcoes && opcoes.reaplicarFiltro) {
+                        aplicarFiltroListasImportacoes();
+                    } else {
+                        renderEmbarques(todasListasCache);
+                    }
+                    setStatus('Loja da lista atualizada com sucesso.');
+                } catch (e) {
+                    salvando = false;
+                    input.disabled = false;
+                    setStatus(e.message || 'Erro ao atualizar loja da lista.');
+                    input.focus();
+                    input.select();
+                }
+            };
+
+            input.addEventListener('click', (ev) => ev.stopPropagation());
+            input.addEventListener('dblclick', (ev) => ev.stopPropagation());
+            input.addEventListener('keydown', (ev) => {
+                ev.stopPropagation();
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    salvar();
+                } else if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    cancelar();
+                }
+            });
+            input.addEventListener('blur', () => {
+                if (!encerrado) salvar();
+            });
+
+            input.focus();
+            input.select();
+        }
+
+        function ativarEdicaoLojaLista(pill, listaId, lista, opcoes) {
+            if (!pill || !listaId) return;
+            pill.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+            });
+            pill.addEventListener('dblclick', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                iniciarEdicaoLojaLista(pill, listaId, lista, opcoes || {});
+            });
         }
 
         async function importarPedidoPorExcel(btn) {
@@ -1215,6 +1743,7 @@
                 el.className = 'lista-item';
                 const listaId = String(l.id || '').trim();
                 const nomeLista = String(l.nome_lista || 'Sem nome');
+                const lojaPill = metaLojaListaHtml(l);
                 el.setAttribute('role', 'button');
                 el.setAttribute('tabindex', '0');
                 el.innerHTML =
@@ -1222,12 +1751,13 @@
                         '<div class="nome-lista">' + nomeLista + '</div>' +
                         '<div class="acoes-direita">' +
                             '<span class="status">Analisando orçamento</span>' +
-                            '<button type="button" class="btn-cancelar">Cancelar pedido</button>' +
+                            '<button type="button" class="btn-cancelar">Excluir lista</button>' +
                         '</div>' +
                     '</div>' +
                     '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
                     '<div class="meta-resumo">' +
                         '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (carregarInvoiceLocal(listaId) || (l.numero_invoice ? String(l.numero_invoice) : '-')) + '</strong></span>' +
+                        lojaPill +
                         '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                         '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
                         '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
@@ -1238,13 +1768,13 @@
                     btnCancelar.addEventListener('click', (ev) => {
                         ev.preventDefault();
                         ev.stopPropagation();
-                        cancelarPedidoLista(listaId, nomeLista, btnCancelar);
+                        excluirListaDefinitiva(listaId, nomeLista, btnCancelar);
                     });
                 }
                 if (listaId) {
                     const abrirDetalhe = (ev) => {
                         if (el.dataset.editandoNome === '1') return;
-                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input')) {
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input')) {
                             return;
                         }
                         window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
@@ -1256,6 +1786,11 @@
                             abrirDetalhe();
                         }
                     });
+                }
+
+                const lojaEl = el.querySelector('[data-loja-pill]');
+                if (lojaEl && listaId) {
+                    ativarEdicaoLojaLista(lojaEl, listaId, l, { reaplicarFiltro: true });
                 }
 
                 const nomeEl = el.querySelector('.nome-lista');
@@ -1356,12 +1891,12 @@
                 const todas = Array.isArray(data.listas) ? data.listas : [];
                 const filtradas = todas.filter(l => String(l.status || '').trim() === 'Analisando orçamento');
                 todasListasCache = filtradas;
-                renderListas(filtradas);
-                renderEmbarques(filtradas);
-                setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s).');
+                renderFiltroLojasImportacoes(filtradas);
+                aplicarFiltroListasImportacoes();
             } catch (e) {
                 setStatus(e.message || 'Erro ao carregar listas para importações.');
                 todasListasCache = [];
+                renderFiltroLojasImportacoes([]);
                 renderListas([]);
                 renderEmbarques([]);
             }
@@ -1408,6 +1943,29 @@
         function embSomarFrete(itens) {
             return (itens || []).reduce((s, it) => s + Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0), 0);
         }
+        function embNormalizarNcm(valor) {
+            return String(valor || '').replace(/\D/g, '');
+        }
+        function embObterNcmItem(item) {
+            const obj = item || {};
+            const aliases = ['ncm', 'codigo ncm', 'código ncm', 'codigo_ncm', 'código_ncm'];
+            for (const k of Object.keys(obj)) {
+                const nk = embNormTxt(k);
+                if (aliases.some(a => nk === a || nk.includes(a))) {
+                    const ncm = embNormalizarNcm(obj[k]);
+                    if (ncm) return ncm;
+                }
+            }
+            return '';
+        }
+        function embContarNcmsDiferentes(itens) {
+            const setNcms = new Set();
+            (Array.isArray(itens) ? itens : []).forEach(function(it) {
+                const ncm = embObterNcmItem(it);
+                if (ncm) setNcms.add(ncm);
+            });
+            return setNcms.size;
+        }
         function embMediaPct(itens, aliases) {
             if (!itens || !itens.length) return 0;
             let soma = 0;
@@ -1422,14 +1980,14 @@
             return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
         }
         function embCalcTaxaSiscomex(totalNcm) {
-            const n = Math.max(0, Number(totalNcm) || 0);
-            if (n === 0) return 115.67;
-            if (n <= 2) return 115.67 + n * 38.56;
-            if (n <= 5) return 192.79 + (n - 2) * 30.85;
-            if (n <= 10) return 285.34 + (n - 5) * 23.14;
-            if (n <= 20) return 401.04 + (n - 10) * 15.42;
-            if (n <= 50) return 555.24 + (n - 20) * 7.71;
-            return 786.54 + (n - 50) * 3.86;
+            const o36 = Math.max(0, Number(totalNcm) || 0);
+            if (o36 === 0) return 115.67;
+            if (o36 <= 2) return 115.67 + (o36 * 38.56);
+            if (o36 <= 5) return 192.79 + ((o36 - 2) * 30.85);
+            if (o36 <= 10) return 285.34 + ((o36 - 5) * 23.14);
+            if (o36 <= 20) return 401.04 + ((o36 - 10) * 15.42);
+            if (o36 <= 50) return 555.24 + ((o36 - 20) * 7.71);
+            return 786.54 + ((o36 - 50) * 3.86);
         }
         function embObterValorResumo(lista, itens, aliases, fallback) {
             fallback = fallback !== undefined ? fallback : '-';
@@ -1467,8 +2025,7 @@
             }, 0);
             var totalM3 = dados.reduce(function(s, it) { return s + embObterM3TotalItem(it); }, 0);
             var valorPorM3 = totalM3 > 0 ? (totalUsd / totalM3) : 0;
-            var ncmSet = new Set(dados.map(function(it) { return String((it && it.NCM) || '').replace(/\D/g, ''); }).filter(Boolean));
-            var totalNcm = ncmSet.size;
+            var totalNcm = embContarNcmsDiferentes(dados);
 
             var vmleUsd = totalUsd > 0 ? formatarUSD(totalUsd) : '-';
             var vmleBrlNum = (totalUsd > 0 && dolar > 0) ? (totalUsd * dolar) : 0;
@@ -1476,9 +2033,23 @@
             var freteNum = embSomarFrete(dados);
             var freteBrlNum = (freteNum > 0 && dolar > 0) ? (freteNum * dolar) : 0;
             var frete = freteBrlNum > 0 ? formatarMoedaBRL(freteBrlNum) : '-';
-            var seguroNum = (totalUsd > 0 && freteNum > 0 && dolar > 0)
-                ? (((totalUsd + freteNum) * 0.0028) * dolar) : 0;
+            var freteUsd = freteNum > 0 ? formatarUSD(freteNum) : '';
+            var seguroUsdNum = (totalUsd > 0 && freteNum > 0) ? ((totalUsd + freteNum) * 0.0028) : 0;
+            var seguroNum = (seguroUsdNum > 0 && dolar > 0)
+                ? (seguroUsdNum * dolar) : 0;
             var seguro = seguroNum > 0 ? formatarMoedaBRL(seguroNum) : '-';
+            var seguroUsd = seguroUsdNum > 0 ? formatarUSD(seguroUsdNum) : '';
+            var vmldBrlNum = vmleBrlNum + freteBrlNum + seguroNum;
+            var vmld = vmldBrlNum > 0 ? formatarMoedaBRL(vmldBrlNum) : '-';
+            var armazenagem = vmldBrlNum > 0 ? formatarMoedaBRL(vmldBrlNum * 0.035) : '-';
+            var pickupOrigemNum = calcularPickupOrigemBrl(totalM3, dolar);
+            var pickupOrigem = pickupOrigemNum > 0 ? formatarMoedaBRL(pickupOrigemNum) : '-';
+            var taxasOrigemNum = calcularTaxasOrigemBrl(totalM3, dolar);
+            var taxasOrigem = taxasOrigemNum > 0 ? formatarMoedaBRL(taxasOrigemNum) : '-';
+            var transporteRodoviarioNum = calcularTransporteRodoviarioBrl(totalM3);
+            var transporteRodoviario = transporteRodoviarioNum > 0 ? formatarMoedaBRL(transporteRodoviarioNum) : '-';
+            var capataziaNum = calcularCapataziaBrl(totalM3);
+            var capatazia = capataziaNum > 0 ? formatarMoedaBRL(capataziaNum) : '-';
             var afrmm = (freteNum > 0 && dolar > 0) ? formatarMoedaBRL(freteNum * 0.08 * dolar) : '-';
             var taxaSis = formatarMoedaBRL(embCalcTaxaSiscomex(totalNcm));
 
@@ -1536,26 +2107,26 @@
                 { label: 'M³ Total', value: formatarM3(totalM3) },
                 { label: 'Valor por M³', value: valorPorM3 > 0 ? formatarUSD(valorPorM3) : '-' },
                 { label: 'VMLE', value: vmleUsd, sub: vmleBrl },
-                { label: 'Frete Internacional', value: frete },
-                { label: 'Seguro Internacional 0,28%', value: seguro },
+                { label: 'Frete Internacional', value: frete, sub: freteUsd },
+                { label: 'Seguro Internacional 0,28%', value: seguro, sub: seguroUsd },
                 { label: 'Cotação na Compra', value: dolar > 0 ? formatarMoedaBRL(dolar) : '-', cotacao: true },
-                { label: 'VMLD', value: '-' },
+                { label: 'VMLD', value: vmld },
                 { label: 'II', value: embFormatarPct(mIi), sub: totTrib.ii > 0 ? formatarMoedaBRL(totTrib.ii) : '-' },
                 { label: 'IPI', value: embFormatarPct(mIpi), sub: totTrib.ipi > 0 ? formatarMoedaBRL(totTrib.ipi) : '-' },
                 { label: 'PIS', value: embFormatarPct(mPis), sub: totTrib.pis > 0 ? formatarMoedaBRL(totTrib.pis) : '-' },
                 { label: 'COFINS', value: embFormatarPct(mCof), sub: totTrib.cofins > 0 ? formatarMoedaBRL(totTrib.cofins) : '-' },
                 { label: 'ICMS', value: embFormatarPct(mIcms), sub: totTrib.icms > 0 ? formatarMoedaBRL(totTrib.icms) : '-' },
-                { label: 'Armazenagem', value: lerCusto('armazenagem') },
-                { label: 'Pick-up Origem', value: lerCusto('pickup_origem') },
-                { label: 'Taxas de Origem', value: lerCusto('taxas_origem') },
-                { label: 'Capatazia', value: lerCusto('capatazia') },
-                { label: 'BL Fee', value: lerCusto('bl_fee') },
-                { label: 'Desconsolidação', value: lerCusto('desconsolidacao') },
-                { label: 'Handling', value: lerCusto('handling') },
+                { label: 'Armazenagem', value: armazenagem },
+                { label: 'Pick-up Origem', value: pickupOrigem },
+                { label: 'Taxas de Origem', value: taxasOrigem },
+                { label: 'Capatazia', value: capatazia },
+                { label: 'BL Fee', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.blFee) },
+                { label: 'Desconsolidação', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao) },
+                { label: 'Handling', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.handling) },
                 { label: 'Honorários Trading', value: honorariosTrading },
-                { label: 'Transporte Rodoviário', value: lerCusto('transporte_rodoviario') },
-                { label: 'Desembaraço', value: lerCusto('desembaraco') },
-                { label: 'Expediente', value: lerCusto('expediente') },
+                { label: 'Transporte Rodoviário', value: transporteRodoviario },
+                { label: 'Desembaraço', value: formatarMoedaBRL(CUSTOS_FIXOS_IMPORTACAO_BRL.desembaraco) },
+                { label: 'Expediente', value: formatarMoedaBRL(CUSTOS_FIXOS_IMPORTACAO_BRL.expediente) },
                 { label: 'Taxa Siscomex', value: taxaSis },
                 { label: 'AFRMM', value: afrmm },
                 { label: 'Total NCM', value: totalNcm > 0 ? totalNcm.toLocaleString('pt-BR') : '-' },
@@ -1625,7 +2196,7 @@
                             var pills = totais.listas.map(function(l) {
                                 var inv = (carregarInvoiceLocal(String(l.id || '')) || String(l.numero_invoice || '')).trim();
                                 var label = inv || String(l.nome_lista || 'Sem nome');
-                                return '<span class="meta-pill meta-invoice"><strong>' + label + '</strong></span>';
+                                return '<span class="meta-pill meta-invoice"><strong>' + escaparHtml(label) + '</strong><span class="lista-loja-sufixo">' + escaparHtml(obterLojaLista(l)) + '</span></span>';
                             });
                             return pills.length ? '<div class="meta-resumo meta-linha-invoice"><span class="emb-inv-label">N\u00b0 Invoice:</span>' + pills.join('') + '</div>' : '';
                         })() +
@@ -1688,7 +2259,7 @@
             var identificadores = totais.listas.map(function(l) {
                 var listaId = String(l.id || '');
                 var invoice = (carregarInvoiceLocal(listaId) || String(l.numero_invoice || '')).trim();
-                return invoice || String(l.nome_lista || 'Sem nome');
+                return rotuloListaComLoja(l, invoice || String(l.nome_lista || 'Sem nome'));
             });
 
             // Linha exclusiva dos N° de Invoice
@@ -1697,7 +2268,7 @@
                 if (identificadores.length) {
                     invLine.innerHTML = '<span class="emb-inv-label">N° Invoice:</span>' +
                         identificadores.map(function(id) {
-                            return '<span class="emb-inv-pill">' + id + '</span>';
+                            return '<span class="emb-inv-pill">' + escaparHtml(id) + '</span>';
                         }).join('');
                 } else {
                     invLine.innerHTML = '';
@@ -1740,6 +2311,7 @@
                 totais.listas.forEach(function(l) {
                     var listaId = String(l.id || '');
                     var nomeLista = String(l.nome_lista || 'Sem nome');
+                    var lojaPill = metaLojaListaHtml(l);
                     var elL = document.createElement('div');
                     elL.className = 'lista-item';
                     elL.setAttribute('role', 'button');
@@ -1750,17 +2322,25 @@
                         '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
                         '<div class="meta-resumo">' +
                             '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (carregarInvoiceLocal(listaId) || (l.numero_invoice ? String(l.numero_invoice) : '-')) + '</strong></span>' +
+                            lojaPill +
                             '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
                             '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
                         '</div>';
                     if (listaId) {
                         var embarqueId = embarque.id || '';
-                        var ir = function() { window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId) + (embarqueId ? '&from_embarque=' + encodeURIComponent(embarqueId) : ''); };
+                        var ir = function(ev) {
+                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input')) return;
+                            window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId) + (embarqueId ? '&from_embarque=' + encodeURIComponent(embarqueId) : '');
+                        };
                         elL.addEventListener('click', ir);
                         elL.addEventListener('keydown', function(ev) {
                             if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ir(); }
                         });
+                    }
+                    var lojaElL = elL.querySelector('[data-loja-pill]');
+                    if (lojaElL && listaId) {
+                        ativarEdicaoLojaLista(lojaElL, listaId, l, { reaplicarFiltro: false });
                     }
                     listasBox.appendChild(elL);
                 });
@@ -1801,13 +2381,14 @@
             } else {
                 todasListas.forEach(function(l) {
                     var listaId = String(l.id || '');
+                    var lojaLista = obterLojaLista(l);
                     var div = document.createElement('label');
                     div.className = 'check-item';
                     div.innerHTML =
                         '<input type="checkbox" value="' + listaId + '"' + (idsAtivos.has(listaId) ? ' checked' : '') + ' />' +
                         '<div>' +
-                            '<div class="check-item-nome">' + (l.nome_lista || 'Sem nome') + '</div>' +
-                            '<div class="check-item-meta">Itens: ' + numero(l.total_itens || 0) + ' | Qtd: ' + numero(l.total_quantidade || 0) + (l.total_usd > 0 ? ' | ' + formatarUSD(l.total_usd) : '') + '</div>' +
+                            '<div class="check-item-nome">' + escaparHtml(l.nome_lista || 'Sem nome') + '</div>' +
+                            '<div class="check-item-meta">Loja: <span class="lista-loja-sufixo">' + escaparHtml(lojaLista) + '</span> | Itens: ' + numero(l.total_itens || 0) + ' | Qtd: ' + numero(l.total_quantidade || 0) + (l.total_usd > 0 ? ' | ' + formatarUSD(l.total_usd) : '') + '</div>' +
                         '</div>';
                     listaCheck.appendChild(div);
                 });
@@ -1933,9 +2514,3 @@
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>
-
-
-
-
-
-
