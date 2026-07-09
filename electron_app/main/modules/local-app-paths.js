@@ -52,13 +52,25 @@ let localBackendProcess = null;
 let localBackendStartupPromise = null;
 
 function resolveAppRootDir() {
-    const candidates = [
-        process.env.JK_APP_ROOT_DIR,
-        app.isPackaged ? process.resourcesPath : null,
-        fs.existsSync(path.join(__dirname, 'backend_api.py')) ? __dirname : null,
-        path.resolve(__dirname, '..'),
-        __dirname
-    ].filter(Boolean);
+    const packagedRoot = app.isPackaged && process.resourcesPath
+        ? path.join(process.resourcesPath, JK_LOCAL_BACKEND_DIR_NAME)
+        : null;
+    const envRoot = process.env.JK_APP_ROOT_DIR;
+    const candidates = app.isPackaged
+        ? [
+            packagedRoot,
+            app.isPackaged ? process.resourcesPath : null,
+            fs.existsSync(path.join(__dirname, 'backend_api.py')) ? __dirname : null,
+            path.resolve(__dirname, '..'),
+            envRoot,
+            __dirname
+        ].filter(Boolean)
+        : [
+            envRoot,
+            fs.existsSync(path.join(__dirname, 'backend_api.py')) ? __dirname : null,
+            path.resolve(__dirname, '..'),
+            __dirname
+        ].filter(Boolean);
 
     for (const candidate of candidates) {
         const root = path.resolve(candidate);

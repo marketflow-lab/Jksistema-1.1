@@ -309,13 +309,46 @@ function getAppRootDir() {
     return JK_APP_ROOT_DIR;
 }
 
+function sameResolvedPath(left, right) {
+    if (!left || !right) return false;
+    try {
+        return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+    } catch (_err) {
+        return false;
+    }
+}
+
+function getPackagedLocalBackendSourceDir() {
+    if (!app.isPackaged || !process.resourcesPath) return '';
+    const candidate = path.join(process.resourcesPath, JK_LOCAL_BACKEND_DIR_NAME);
+    return fs.existsSync(path.join(candidate, 'backend_api.py')) ? candidate : '';
+}
+
+function getEnvLocalBackendSourceDir() {
+    const rawSourceDir = process.env.JK_LOCAL_BACKEND_SOURCE_DIR;
+    if (!rawSourceDir) return '';
+    const resolved = path.resolve(rawSourceDir);
+    if (app.isPackaged && sameResolvedPath(resolved, getLocalBackendRuntimeDir())) {
+        return '';
+    }
+    return resolved;
+}
+
 function getBundledLocalBackendDir() {
-    const candidates = [
-        process.env.JK_LOCAL_BACKEND_SOURCE_DIR,
-        path.join(getAppRootDir(), JK_LOCAL_BACKEND_DIR_NAME),
-        fs.existsSync(path.join(getAppRootDir(), 'backend_api.py')) ? getAppRootDir() : '',
-        path.resolve(__dirname, '..')
-    ].filter(Boolean);
+    const candidates = app.isPackaged
+        ? [
+            getPackagedLocalBackendSourceDir(),
+            getEnvLocalBackendSourceDir(),
+            path.join(getAppRootDir(), JK_LOCAL_BACKEND_DIR_NAME),
+            fs.existsSync(path.join(getAppRootDir(), 'backend_api.py')) ? getAppRootDir() : '',
+            path.resolve(__dirname, '..')
+        ].filter(Boolean)
+        : [
+            getEnvLocalBackendSourceDir(),
+            path.join(getAppRootDir(), JK_LOCAL_BACKEND_DIR_NAME),
+            fs.existsSync(path.join(getAppRootDir(), 'backend_api.py')) ? getAppRootDir() : '',
+            path.resolve(__dirname, '..')
+        ].filter(Boolean);
     for (const candidate of candidates) {
         const resolved = path.resolve(candidate);
         if (fs.existsSync(path.join(resolved, 'backend_api.py'))) return resolved;
@@ -799,7 +832,7 @@ function ensureLocalBackendStarted() {
         }
 
         logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
-        const child = spawn('cmd.exe', ['/d', '/c', `"${launcherPath}"`], {
+        const child = spawn('cmd.exe', ['/d', '/c', launcherPath], {
             cwd: localAppDir,
             env: {
                 ...process.env,
