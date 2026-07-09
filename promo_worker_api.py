@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import io
 import json
@@ -15,6 +16,15 @@ from backend_api import (
 
 
 app = FastAPI(title="JK Sistema Promo Worker")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+    ],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 QUEUE_STALE_TIMEOUT_SEC = 45
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +44,31 @@ class PromoJobCancelled(Exception):
 
 def _job_path(job_id: str) -> str:
     return os.path.join(JOBS_DIR, f"{job_id}.json")
+
+
+def _candidate_job_paths(job_id: str) -> list[str]:
+    filename = f"{job_id}.json"
+    info_dirs = [
+        INFO_DIR,
+        os.path.join(BASE_DIR, "info"),
+        os.path.join(os.getcwd(), "info"),
+    ]
+    appdata = os.getenv("APPDATA") or ""
+    if appdata:
+        info_dirs.append(os.path.join(appdata, "JK Sistema Cliente", "local_app", "info"))
+
+    paths = []
+    seen = set()
+    for info_dir in info_dirs:
+        if not info_dir:
+            continue
+        path = os.path.abspath(os.path.join(info_dir, "promo_worker_jobs", filename))
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
 
 
 def _job_set(job_id: str, **kwargs):
@@ -75,11 +110,23 @@ def _job_get(job_id: str) -> dict:
         job = dict(JOBS_CACHE.get(job_id) or {})
     if job:
         return job
-    path = _job_path(job_id)
-    if not os.path.exists(path):
+    path = ""
+    for candidate in _candidate_job_paths(job_id):
+        if os.path.exists(candidate):
+            path = candidate
+            break
+    if not path:
         return {}
     with open(path, "r", encoding="utf-8") as fh:
         job = json.load(fh) or {}
+    primary = _job_path(job_id)
+    if os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(primary)):
+        try:
+            os.makedirs(os.path.dirname(primary), exist_ok=True)
+            with open(primary, "w", encoding="utf-8") as fh:
+                json.dump(job, fh, ensure_ascii=False)
+        except Exception:
+            pass
     with JOBS_LOCK:
         JOBS_CACHE[job_id] = job
     return job

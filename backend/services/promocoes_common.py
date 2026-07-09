@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -173,13 +174,56 @@ def _promo_worker_healthcheck() -> bool:
         return False
 
 
+def _promo_worker_target() -> tuple[str, int]:
+    parsed = urlparse(PROMO_WORKER_URL if "://" in PROMO_WORKER_URL else f"http://{PROMO_WORKER_URL}")
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8011
+    return host, int(port)
+
+
+def _promo_worker_app_dir() -> str:
+    services_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.getcwd(),
+        os.path.abspath(os.path.join(services_dir, "..", "..")),
+        os.path.abspath(os.path.join(services_dir, "..")),
+        services_dir,
+    ]
+    seen = set()
+    for path in candidates:
+        path = os.path.abspath(path)
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.exists(os.path.join(path, "promo_worker_api.py")):
+            return path
+    return os.path.abspath(os.path.join(services_dir, "..", ".."))
+
+
+def _promo_worker_log_handles(app_dir: str):
+    logs_dir = os.path.join(app_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    stdout_path = os.path.join(logs_dir, "promo_worker_stdout.log")
+    stderr_path = os.path.join(logs_dir, "promo_worker_stderr.log")
+    return open(stdout_path, "ab"), open(stderr_path, "ab")
+
+
 def _ensure_promo_worker_running() -> bool:
     if _promo_worker_healthcheck():
         return True
     with PROMO_WORKER_LOCK:
         if _promo_worker_healthcheck():
             return True
+        app_dir = _promo_worker_app_dir()
+        host, port = _promo_worker_target()
+        stdout_fh = None
+        stderr_fh = None
         try:
+            stdout_fh, stderr_fh = _promo_worker_log_handles(app_dir)
+            env = os.environ.copy()
+            env["JK_INFO_DIR"] = os.path.abspath(PASTA_INFO)
+            env["PROMO_WORKER_URL"] = PROMO_WORKER_URL
             subprocess.Popen(
                 [
                     sys.executable,
@@ -187,17 +231,25 @@ def _ensure_promo_worker_running() -> bool:
                     "uvicorn",
                     "promo_worker_api:app",
                     "--host",
-                    "127.0.0.1",
+                    host,
                     "--port",
-                    "8011",
+                    str(port),
                 ],
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                cwd=app_dir,
+                env=env,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
             )
         except Exception:
             logger.exception("[PROMO WORKER] Falha ao iniciar worker dedicado")
             return False
+        finally:
+            for fh in (stdout_fh, stderr_fh):
+                try:
+                    if fh:
+                        fh.close()
+                except Exception:
+                    pass
 
     for _ in range(30):
         time.sleep(0.5)

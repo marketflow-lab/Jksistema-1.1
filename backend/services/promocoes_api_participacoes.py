@@ -63,6 +63,8 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 
+_PROMOCOES_RUNTIME_GET_TENANT_ID = None
+
 
 def configure_promocoes_api_participacoes_runtime(runtime_module=None, peers=None):
     _configure_common = globals().get("configure_promocoes_common_runtime")
@@ -72,8 +74,11 @@ def configure_promocoes_api_participacoes_runtime(runtime_module=None, peers=Non
         except TypeError:
             _configure_common()
     runtime = bind_runtime_globals(globals(), runtime_module)
+    runtime_get_tenant_id = getattr(runtime, "get_tenant_id", None) if runtime is not None else None
+    if callable(runtime_get_tenant_id):
+        globals()["_PROMOCOES_RUNTIME_GET_TENANT_ID"] = runtime_get_tenant_id
     if peers:
-        globals().update(peers)
+        globals().update({name: value for name, value in peers.items() if name != "get_tenant_id"})
     return runtime
 
 
@@ -81,7 +86,19 @@ configure_promocoes_api_participacoes_runtime()
 
 
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
-    raise RuntimeError("Promocoes API runtime was not configured.")
+    resolver = globals().get("_PROMOCOES_RUNTIME_GET_TENANT_ID")
+    if resolver is None:
+        runtime = globals().get("_runtime")
+        resolver = getattr(runtime, "get_tenant_id", None) if runtime is not None else None
+    if not callable(resolver) or resolver is globals().get("_PROMOCOES_PLACEHOLDER_GET_TENANT_ID"):
+        raise RuntimeError("Promocoes API runtime was not configured.")
+    result = resolver(request, authorization)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+_PROMOCOES_PLACEHOLDER_GET_TENANT_ID = get_tenant_id
 
 
 def _promo_aplicar_item_participacao_ml(
