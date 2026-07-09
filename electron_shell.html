@@ -789,6 +789,16 @@
             } catch (_err) {}
         }
 
+        function postToSourceOrTab(sourceWindow, tab, message) {
+            try {
+                if (sourceWindow && typeof sourceWindow.postMessage === 'function') {
+                    sourceWindow.postMessage(message, '*');
+                    return;
+                }
+            } catch (_err) {}
+            postToTab(tab, message);
+        }
+
         function isFavoritosTab(tab) {
             const url = String((tab && (tab.url || tab.webview?.src)) || '').toLowerCase();
             const title = String((tab && tab.title) || '').toLowerCase();
@@ -805,7 +815,11 @@
 
         function shouldUseFavoritosWorker(payload, found) {
             if (payload && payload.worker) return true;
-            return false;
+            if (!favoritosWorkerBrowserActive && !(favoritosWorkerLastStatus && favoritosWorkerLastStatus.active)) {
+                return false;
+            }
+            if (!found || !found.tab) return true;
+            return isFavoritosTab(found.tab);
         }
 
         function setFavoritosWorkerBar(payload = {}) {
@@ -1952,6 +1966,7 @@
             if (data.channel === 'jk-ml-browser-show' || data.channel === 'jk-ml-browser-position') {
                 const payload = data.payload || {};
                 const sourceTab = findTabBySource(event.source);
+                const sourceWindow = event.source;
                 const embeddedApi = getEmbeddedMlBrowserApi();
                 if (shouldUseFavoritosWorker(payload, sourceTab)) {
                     favoritosWorkerBrowserActive = true;
@@ -1960,7 +1975,7 @@
                         mlBrowserUrlByTab.set(sourceTab.id, payload.url);
                     }
                     if (!embeddedApi || typeof embeddedApi.startFavoritosWorkerBrowser !== 'function') {
-                        postToTab(sourceTab && sourceTab.tab, {
+                        postToSourceOrTab(sourceWindow, sourceTab && sourceTab.tab, {
                             channel: 'jk-ml-browser-event',
                             event: 'did-fail-load',
                             url: payload.url || '',
@@ -1984,7 +1999,7 @@
                                 embeddedApi.showFavoritosWorkerBrowser().catch(() => {});
                             }
                             if (data.channel === 'jk-ml-browser-show') {
-                                postToTab(sourceTab && sourceTab.tab, {
+                                postToSourceOrTab(sourceWindow, sourceTab && sourceTab.tab, {
                                     channel: 'jk-ml-browser-event',
                                     event: result && result.success === false ? 'did-fail-load' : 'did-finish-load',
                                     url: result && result.url || payload.url || '',
@@ -1994,7 +2009,7 @@
                             }
                         })
                         .catch(err => {
-                            postToTab(sourceTab && sourceTab.tab, {
+                            postToSourceOrTab(sourceWindow, sourceTab && sourceTab.tab, {
                                 channel: 'jk-ml-browser-event',
                                 event: 'did-fail-load',
                                 url: payload.url || '',
@@ -2140,26 +2155,26 @@
                 const requestId = payload.requestId;
                 const code = payload.code || '';
                 const found = findTabBySource(event.source);
+                const sourceWindow = event.source;
                 const embeddedApi = getEmbeddedMlBrowserApi();
+                const responderWorker = (result) => {
+                    postToSourceOrTab(sourceWindow, found && found.tab, {
+                        channel: 'jk-ml-browser-execute-result',
+                        requestId,
+                        ...(result || {})
+                    });
+                };
                 if (shouldUseFavoritosWorker(payload, found)) {
                     if (!embeddedApi || typeof embeddedApi.executeFavoritosWorkerBrowser !== 'function') {
-                        postToTab(found && found.tab, {
-                            channel: 'jk-ml-browser-execute-result',
-                            requestId,
-                            error: 'Navegador trabalhador do Favoritos indisponivel.'
-                        });
+                        responderWorker({ error: 'Navegador trabalhador do Favoritos indisponivel.' });
                         return;
                     }
                     embeddedApi.executeFavoritosWorkerBrowser(code)
                         .then(result => {
-                            postToTab(found && found.tab, { channel: 'jk-ml-browser-execute-result', requestId, result });
+                            responderWorker({ result });
                         })
                         .catch(err => {
-                            postToTab(found && found.tab, {
-                                channel: 'jk-ml-browser-execute-result',
-                                requestId,
-                                error: err && err.message ? err.message : String(err)
-                            });
+                            responderWorker({ error: err && err.message ? err.message : String(err) });
                         });
                     return;
                 }
@@ -2210,8 +2225,9 @@
                 const requestId = payload.requestId;
                 const point = payload.point || {};
                 const found = findTabBySource(event.source);
+                const sourceWindow = event.source;
                 const responder = (result) => {
-                    postToTab(found && found.tab, {
+                    postToSourceOrTab(sourceWindow, found && found.tab, {
                         channel: 'jk-ml-browser-click-result',
                         requestId,
                         ...(result || {})
@@ -2271,8 +2287,9 @@
                 const payload = data.payload || {};
                 const requestId = payload.requestId;
                 const found = findTabBySource(event.source);
+                const sourceWindow = event.source;
                 const responder = (result) => {
-                    postToTab(found && found.tab, {
+                    postToSourceOrTab(sourceWindow, found && found.tab, {
                         channel: 'jk-ml-browser-type-result',
                         requestId,
                         ...(result || {})

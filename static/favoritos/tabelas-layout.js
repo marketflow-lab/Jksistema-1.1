@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260708-fav-historico-favoritos-v12';
+  const VERSION = '20260708-fav-historico-favoritos-v12-20260709-fav-worker-direct-v1';
   const CHUNKS = [
     "01-ml-base-busca.js",
     "02-ia-datas-selecao.js",

@@ -359,6 +359,20 @@
             vertical-align: middle;
         }
 
+        .kv.cost {
+            border-color: #4da6ff;
+            background: linear-gradient(180deg, #173c6a, #112d52);
+        }
+
+        .kv.cost .label {
+            color: #b0d6ff;
+        }
+
+        .kv.cost .value {
+            color: #7ecfff;
+            font-size: 1.08rem;
+        }
+
         .kv.prop input.prop-input {
             width: 100%;
             background: rgba(8, 4, 14, 0.9);
@@ -612,6 +626,8 @@
                         <div class="kv" data-card-id="kv_valor_dolar"><div class="label">Valor em dólar</div><div id="vDolar" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_total_dolar"><div class="label">Total em Dólar</div><div id="vValorTotalDolar" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_total_reais"><div class="label">Valor total em reais</div><div id="vValorTotalBrl" class="value">-</div></div>
+                        <div class="kv cost" data-card-id="kv_custo_total_produto"><div class="label">Custo total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
+                        <div class="kv cost" data-card-id="kv_valor_unitario_produto"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_por_m3"><div class="label">Valor por M³</div><div id="vValorPorM3" class="value">-</div></div>
@@ -626,8 +642,6 @@
             <section class="card">
                 <h2>Impostos e Custos</h2>
                 <div class="section-grid">
-                    <div class="tile blue-strong compact-top" data-card-id="custo_total_produto"><div class="label">Custo Total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
-                    <div class="tile blue-strong compact-top" data-card-id="custo_valor_unitario"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
                     <div class="tile green" data-card-id="custo_ii"><div id="lblIi" class="label">II</div><div id="vIi" class="value">-</div></div>
                     <div class="tile green" data-card-id="custo_ipi"><div id="lblIpi" class="label">IPI</div><div id="vIpi" class="value">-</div></div>
                     <div class="tile green" data-card-id="custo_ipi_pb_mg"><div class="label">IPI PB&gt;MG</div><div id="vIpiPbMg" class="value">-</div></div>
@@ -934,9 +948,20 @@
             if (!container || !Array.isArray(ordem) || !ordem.length) return;
             const cards = Array.from(container.children).filter((el) => el && el.dataset && el.dataset.cardId);
             const mapa = new Map(cards.map((el) => [el.dataset.cardId, el]));
+            const aplicados = new Set();
             ordem.forEach((cardId) => {
-                const el = mapa.get(String(cardId || '').trim());
-                if (el) container.appendChild(el);
+                const id = String(cardId || '').trim();
+                const el = mapa.get(id);
+                if (el) {
+                    container.appendChild(el);
+                    aplicados.add(id);
+                }
+            });
+            cards.forEach((el) => {
+                const id = String((el.dataset && el.dataset.cardId) || '').trim();
+                if (id && !aplicados.has(id)) {
+                    container.appendChild(el);
+                }
             });
         }
 
@@ -1356,6 +1381,38 @@
             } catch (_e) { el.textContent = '--:--:--'; }
         }
 
+        let ultimosComponentesCustoProduto = null;
+
+        function atualizarCustoTotalProduto(icmsValor) {
+            const c = ultimosComponentesCustoProduto;
+            const elCustoTotal = document.getElementById('vCustoTotalProduto');
+            const elValUnit = document.getElementById('vValorUnitarioProduto');
+            const elDespesasNacionais = document.getElementById('vDespesasNacionais');
+            if (!c || !(c.prodBrl > 0)) {
+                if (elCustoTotal) elCustoTotal.textContent = '-';
+                if (elValUnit) elValUnit.textContent = '-';
+                if (elDespesasNacionais) elDespesasNacionais.textContent = '-';
+                return null;
+            }
+
+            const icmsBrl = getNumber(icmsValor) || 0;
+            const baseCusto = c.prodBrl
+                + (c.iiEmReais || 0)
+                + (c.ipiEmReais || 0)
+                + (c.pisEmReais || 0)
+                + (c.cofinsEmReais || 0)
+                + (c.freteBrl || 0)
+                + (c.seguroBrl || 0)
+                + icmsBrl;
+            const custoTotal = baseCusto / 0.90;
+            const despesasNacionais = custoTotal * 0.10;
+
+            if (elCustoTotal) elCustoTotal.textContent = fmtBRL(custoTotal);
+            if (elValUnit) elValUnit.textContent = c.qtd > 0 ? fmtBRL(custoTotal / c.qtd) : '-';
+            if (elDespesasNacionais) elDespesasNacionais.textContent = fmtBRL(despesasNacionais);
+            return custoTotal;
+        }
+
         async function carregarFxTopo() {
             try {
                 const resp = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL', {
@@ -1481,6 +1538,16 @@
             if (elPis) elPis.textContent = pisEmReais !== null ? fmtBRL(pisEmReais) : '-';
             if (elCofins) elCofins.textContent = cofinsEmReais !== null ? fmtBRL(cofinsEmReais) : '-';
             if (elIcmsRetidoNfe) elIcmsRetidoNfe.textContent = icmsRetidoNfeEmReais !== null ? fmtBRL(icmsRetidoNfeEmReais) : '-';
+            ultimosComponentesCustoProduto = {
+                prodBrl,
+                iiEmReais: iiEmReais || 0,
+                ipiEmReais: ipiEmReais || 0,
+                pisEmReais: pisEmReais || 0,
+                cofinsEmReais: cofinsEmReais || 0,
+                freteBrl,
+                seguroBrl,
+                qtd
+            };
             atualizarCardIcmsCalculado(
                 document.getElementById('vBaseIcms')?.textContent || '-',
                 document.getElementById('vBaseCstMg')?.textContent || '-',
@@ -1493,18 +1560,6 @@
 
             const baseTrade = (prodBrl * propFactor) + freteBrl + seguroBrl;
             const tradeBrl = baseTrade > 0 ? (baseTrade * 0.03) : null;
-            const baseCusto = (prodBrl > 0)
-                ? (prodBrl + (iiEmReais || 0) + (ipiEmReais || 0) + (pisEmReais || 0) + (cofinsEmReais || 0) + freteBrl + seguroBrl)
-                : null;
-            // Despesas Nacionais = 10% do Custo Total final → custoTotal = baseCusto / 0.90
-            const custoTotal = baseCusto !== null ? (baseCusto / 0.90) : null;
-            const despesasNacionais = custoTotal !== null ? (custoTotal * 0.10) : null;
-            const elCustoTotal = document.getElementById('vCustoTotalProduto');
-            const elValUnit = document.getElementById('vValorUnitarioProduto');
-            const elDespesasNacionais = document.getElementById('vDespesasNacionais');
-            if (elCustoTotal) elCustoTotal.textContent = custoTotal !== null ? fmtBRL(custoTotal) : '-';
-            if (elValUnit) elValUnit.textContent = (custoTotal !== null && qtd > 0) ? fmtBRL(custoTotal / qtd) : '-';
-            if (elDespesasNacionais) elDespesasNacionais.textContent = despesasNacionais !== null ? fmtBRL(despesasNacionais) : '-';
             if (elTrade) elTrade.textContent = tradeBrl !== null ? fmtBRL(tradeBrl) : '-';
         }
 
@@ -1944,7 +1999,10 @@
                 ? ((baseCalculo * 0.18) - icmsRetidoNum)
                 : null;
 
+            const icmsFinal = icmsCalculado !== null ? icmsCalculado : getNumber(fallbackValor);
             setText('vIcms', icmsCalculado !== null ? fmtBRL(icmsCalculado) : (fallbackValor || '-'));
+            atualizarCustoTotalProduto(icmsFinal);
+            return icmsFinal;
         }
 
         async function carregarMapaProdutosImpostos() {

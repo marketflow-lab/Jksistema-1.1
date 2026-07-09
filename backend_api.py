@@ -634,7 +634,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.83"
+VERSAO_MINIMA_APP_PADRAO = "1.0.89"
 
 
 def versao_minima_app_backend() -> str:

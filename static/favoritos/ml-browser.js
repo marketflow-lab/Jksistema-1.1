@@ -294,8 +294,18 @@
         let mlFavoritosAvantSnapshotPromise = null;
         let mlFavoritosAvantSnapshotAt = 0;
 
+        function obterElectronApiFavoritosMlBrowser() {
+            try {
+                if (window.electronAPI) return window.electronAPI;
+            } catch (_err) {}
+            try {
+                if (window.top && window.top !== window && window.top.electronAPI) return window.top.electronAPI;
+            } catch (_err) {}
+            return null;
+        }
+
         function salvarMemoriaAvantProConfirmadaFavoritos(reason = 'favoritos_login_confirmado') {
-            const api = window.electronAPI || null;
+            const api = obterElectronApiFavoritosMlBrowser();
             if (!api || typeof api.saveAvantProStorageSnapshot !== 'function') {
                 return Promise.resolve(null);
             }
@@ -814,7 +824,10 @@
         }
 
         function navegadorMlEmSegundoPlano() {
-            return !!(mlFavoritosEmExecucao && mlFavoritosExecucaoEmSegundoPlano);
+            return !!(
+                (mlFavoritosEmExecucao && mlFavoritosExecucaoEmSegundoPlano)
+                || window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE === true
+            );
         }
 
         function abrirBalaoResultadosMl(opcoes = {}) {
@@ -890,6 +903,26 @@
         }
 
         function criarMlWebview() {
+            const deveUsarWorkerFavoritos = navegadorMlEmSegundoPlano()
+                && usarNavegadorMlNoShellElectron();
+            if (deveUsarWorkerFavoritos) {
+                if (mlWebviewEl && !mlWebviewEl.__isShellBrowserProxy) {
+                    try {
+                        if (mlWebviewEl.parentNode) mlWebviewEl.parentNode.removeChild(mlWebviewEl);
+                    } catch (_removeErr) {}
+                    mlWebviewEl = null;
+                }
+                mlBrowserHost.innerHTML = `
+                    <div class="browser-warning">
+                        <strong>Favoritos rodando no navegador trabalhador.</strong>
+                        <span>Use o botao Ver para acompanhar a coleta.</span>
+                    </div>
+                `;
+                mlWebviewEl = criarProxyNavegadorMlShell();
+                aplicarScrollbarsDiscretasNoWebview(mlWebviewEl);
+                return mlWebviewEl;
+            }
+
             if (mlWebviewEl && mlWebviewEl.parentNode) {
                 aplicarScrollbarsDiscretasNoWebview(mlWebviewEl);
                 return mlWebviewEl;
@@ -1954,7 +1987,12 @@
                     var seen = {};
                     var cardMaisProximo = function (anchor) {
                         if (!anchor || !anchor.closest) return anchor;
-                        return anchor.closest([
+                        var atual = anchor;
+                        for (var nivel = 0; atual && nivel < 10; nivel += 1) {
+                            if (temSinalProdutoVisual(atual)) return atual;
+                            atual = atual.parentElement;
+                        }
+                        var candidato = anchor.closest([
                             'li.ui-search-layout__item',
                             'div.ui-search-result__wrapper',
                             'div.ui-search-result',
@@ -1975,6 +2013,8 @@
                             'article',
                             'section'
                         ].join(',')) || anchor;
+                        if (temSinalProdutoVisual(candidato)) return candidato;
+                        return anchor;
                     };
                     var cards = queryAllDeep(selectors);
                     queryAllDeep('a[href]').forEach(function (anchor) {
@@ -2265,7 +2305,15 @@
         }
 
         function usarNavegadorMlNoShellElectron() {
-            return !!window.FavoritosV2?.browser?.shellBridge?.usarNavegadorMlNoShellElectron?.();
+            if (window.FavoritosV2?.browser?.shellBridge?.usarNavegadorMlNoShellElectron?.()) return true;
+            try {
+                return !!(window.electronAPI && (
+                    typeof window.electronAPI.startFavoritosWorkerBrowser === 'function'
+                    || typeof window.electronAPI.showEmbeddedMlBrowser === 'function'
+                ));
+            } catch (_err) {
+                return false;
+            }
         }
 
         function obterBoundsNavegadorMl() {
@@ -2361,6 +2409,32 @@
 
         function criarProxyNavegadorMlShell() {
             return favoritosBrowserShellBridge?.criarProxy() || null;
+        }
+
+        function forcarProxyNavegadorFavoritosWorker(urlAtual = '') {
+            window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE = true;
+            const url = String(urlAtual || '').trim();
+            if (mlWebviewEl && mlWebviewEl.__isShellBrowserProxy) {
+                if (url) mlWebviewEl.currentUrl = url;
+                return mlWebviewEl;
+            }
+            if (mlWebviewEl && !mlWebviewEl.__isShellBrowserProxy) {
+                try {
+                    if (mlWebviewEl.parentNode) mlWebviewEl.parentNode.removeChild(mlWebviewEl);
+                } catch (_removeErr) {}
+            }
+            if (mlBrowserHost) {
+                mlBrowserHost.innerHTML = `
+                    <div class="browser-warning">
+                        <strong>Favoritos rodando no navegador trabalhador.</strong>
+                        <span>Use o botao Ver para acompanhar a coleta.</span>
+                    </div>
+                `;
+            }
+            mlWebviewEl = criarProxyNavegadorMlShell();
+            if (mlWebviewEl && url) mlWebviewEl.currentUrl = url;
+            aplicarScrollbarsDiscretasNoWebview(mlWebviewEl);
+            return mlWebviewEl;
         }
 
         window.addEventListener('message', (event) => {
@@ -3844,7 +3918,7 @@
                 mlWebviewEl.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
                 return { success: true, x, y };
             }
-            const api = window.electronAPI || null;
+            const api = obterElectronApiFavoritosMlBrowser();
             if (api && typeof api.clickEmbeddedMlBrowser === 'function') {
                 return await api.clickEmbeddedMlBrowser(payload);
             }
@@ -4141,7 +4215,7 @@
                 }
                 return { success: true, typed: payload.text.length, enter: payload.pressEnter };
             }
-            const api = window.electronAPI || null;
+            const api = obterElectronApiFavoritosMlBrowser();
             if (api && typeof api.typeEmbeddedMlBrowser === 'function') {
                 return await api.typeEmbeddedMlBrowser(payload);
             }
@@ -4152,7 +4226,7 @@
             const email = typeof AVANT_PRO_LOGIN_EMAIL !== 'undefined' ? String(AVANT_PRO_LOGIN_EMAIL || '').trim() : '';
             const termo = String(opcoes.termo || '').trim();
             if (!email) return { success: false, reason: 'email_avant_indisponivel' };
-            const api = window.electronAPI || null;
+            const api = obterElectronApiFavoritosMlBrowser();
             if (!api || typeof api.loginAvantProEmbeddedBrowser !== 'function') {
                 return { success: false, reason: 'login_avant_electron_indisponivel' };
             }
@@ -5692,18 +5766,21 @@
                     var isProductUrl = function (href) {
                         var url = cleanUrl(href);
                         if (!url || url.toLowerCase().indexOf('mercadolivre.com.br') < 0) return false;
-                        if (/https?:\\/\\/lista\\.mercadolivre\\.com\\.br\\//i.test(url)) return false;
-                        if (/\\/(?:ajuda|ofertas|cupons|categorias|supermercado|moda|mercado-play|vender|contato|compras|favoritos|login|registration|cart|publicidade|navigation|perfil|stores?|loja|post-purchase)\\b/i.test(url)) return false;
-                        return /\\bMLB-?\\d{6,}\\b/i.test(url)
+                        var hasExplicitItemSignal = /\\bMLB-?\\d{6,}\\b/i.test(url)
                             || /[?&](?:wid|item_id)=MLB\\d{6,}/i.test(url)
                             || /\\/p\\/MLB/i.test(url)
-                            || /\\/up\\/MLB/i.test(url)
+                            || /\\/up\\/MLB[A-Z0-9]*/i.test(url)
                             || /produto\\.mercadolivre\\.com\\.br/i.test(url);
+                        if (/https?:\\/\\/lista\\.mercadolivre\\.com\\.br\\//i.test(url)) return hasExplicitItemSignal;
+                        if (/\\/(?:ajuda|ofertas|cupons|categorias|supermercado|moda|mercado-play|vender|contato|compras|favoritos|login|registration|cart|publicidade|navigation|perfil|stores?|loja|post-purchase)\\b/i.test(url)) return false;
+                        return hasExplicitItemSignal;
                     };
                     var tituloDoHref = function (href) {
                         var text = String(href || '');
                         try { text = decodeURIComponent(text); } catch (_err) {}
-                        var match = text.match(/\\/MLB-?\\d+-([^?#]+?)(?:-_?JM|_JM|$)/i);
+                        var match = text.match(/\\/MLB-?\\d+-([^?#]+?)(?:-_?JM|_JM|$)/i)
+                            || text.match(/mercadolivre\\.com\\.br\\/([^/?#]+?)\\/up\\/MLB[A-Z0-9]+/i)
+                            || text.match(/\\/([^/?#]+?)\\/up\\/MLB[A-Z0-9]+/i);
                         if (!match || !match[1]) return '';
                         return String(match[1])
                             .replace(/[-_]+/g, ' ')
@@ -6391,15 +6468,16 @@
                         var url = cleanUrl(href);
                         if (!url || url.toLowerCase().indexOf('mercadolivre.com.br') < 0) return false;
                         var urlLower = url.toLowerCase();
-                        if (urlLower.indexOf('https://lista.mercadolivre.com.br/') === 0 || urlLower.indexOf('http://lista.mercadolivre.com.br/') === 0) return false;
-                        if (/\\/(?:ajuda|ofertas|cupons|categorias|supermercado|moda|mercado-play|vender|contato|compras|favoritos|gz|jms|login|registration|cart|publicidade|navigation|perfil|stores?|loja|post-purchase)\\b/i.test(url)) return false;
-                        return (
+                        var hasExplicitItemSignal = (
                             /\\bMLB-?\\d{6,}\\b/i.test(url) ||
                             /\\/p\\/MLB/i.test(url) ||
-                            /\\/up\\/MLB/i.test(url) ||
+                            /\\/up\\/MLB[A-Z0-9]*/i.test(url) ||
                             /[?&](?:wid|item_id)=MLB\\d{6,}/i.test(url) ||
                             /produto\\.mercadolivre\\.com\\.br/i.test(url)
                         );
+                        if (urlLower.indexOf('https://lista.mercadolivre.com.br/') === 0 || urlLower.indexOf('http://lista.mercadolivre.com.br/') === 0) return hasExplicitItemSignal;
+                        if (/\\/(?:ajuda|ofertas|cupons|categorias|supermercado|moda|mercado-play|vender|contato|compras|favoritos|gz|jms|login|registration|cart|publicidade|navigation|perfil|stores?|loja|post-purchase)\\b/i.test(url)) return false;
+                        return hasExplicitItemSignal;
                     };
                     var isNavUrl = function (href) {
                         var url = cleanUrl(href).toLowerCase();
@@ -6415,7 +6493,9 @@
                     var tituloDoHref = function (href) {
                         var text = String(href || '');
                         try { text = decodeURIComponent(text); } catch (e) {}
-                        var match = text.match(/\\/MLB-?\\d+-([^?#]+?)(?:-_?JM|_JM|$)/i);
+                        var match = text.match(/\\/MLB-?\\d+-([^?#]+?)(?:-_?JM|_JM|$)/i)
+                            || text.match(/mercadolivre\\.com\\.br\\/([^/?#]+?)\\/up\\/MLB[A-Z0-9]+/i)
+                            || text.match(/\\/([^/?#]+?)\\/up\\/MLB[A-Z0-9]+/i);
                         if (!match || !match[1]) return '';
                         var titulo = String(match[1])
                             .replace(/[-_]+/g, ' ')
@@ -6452,6 +6532,54 @@
                             if (!isNavUrl(rawHref)) return rawHref;
                         }
                         return '';
+                    };
+                    var linksProdutoDe = function (root) {
+                        var links = [];
+                        try {
+                            if (root && root.matches && root.matches('a[href]')) links.push(root);
+                        } catch (_selfLinkErr) {}
+                        try {
+                            links = links.concat(Array.prototype.slice.call(root && root.querySelectorAll ? root.querySelectorAll('a[href], [data-href], [data-url]') : []));
+                        } catch (_linksErr) {}
+                        var vistosLinks = {};
+                        return links.map(function (node) {
+                            return cleanUrl(node && (
+                                node.href
+                                || node.getAttribute && (node.getAttribute('href') || node.getAttribute('data-href') || node.getAttribute('data-url'))
+                                || ''
+                            ) || '');
+                        }).filter(function (href) {
+                            if (!href || isNavUrl(href)) return false;
+                            var limpo = cleanProductUrl(href, extrairId(href)).toLowerCase();
+                            if (!limpo || vistosLinks[limpo]) return false;
+                            vistosLinks[limpo] = true;
+                            return true;
+                        });
+                    };
+                    var quantidadeLinksProduto = function (root) {
+                        return linksProdutoDe(root).length;
+                    };
+                    var rootMuitoGenerico = function (root) {
+                        if (!root || root === document || root === document.body || root === document.documentElement) return true;
+                        var tag = String(root.tagName || '').toUpperCase();
+                        if (/^(HTML|BODY|MAIN|OL|UL|NAV|HEADER|FOOTER|FORM)$/.test(tag)) return true;
+                        try {
+                            var rect = root.getBoundingClientRect && root.getBoundingClientRect();
+                            var area = rect ? Math.max(0, rect.width) * Math.max(0, rect.height) : 0;
+                            var viewportArea = Math.max(1, (window.innerWidth || 1280) * (window.innerHeight || 900));
+                            if (area > viewportArea * 1.8 && quantidadeLinksProduto(root) > 1) return true;
+                        } catch (_areaErr) {}
+                        return false;
+                    };
+                    var temSinalProdutoVisual = function (root) {
+                        if (!root || rootMuitoGenerico(root)) return false;
+                        var texto = normalizar(root.innerText || root.textContent || '');
+                        if (/categorias|ofertas|cupons|compras|favoritos|ordenar por|dados carregados|avantpro control/.test(texto) && quantidadeLinksProduto(root) !== 1) return false;
+                        var temTitulo = !!tituloDe(root, linksProdutoDe(root)[0] || '');
+                        var temImagem = !!imagemDe(root);
+                        var precos = precosDe(root);
+                        var temPreco = precos && precos.preco !== null && precos.preco !== undefined;
+                        return quantidadeLinksProduto(root) === 1 && (temTitulo || temImagem || temPreco);
                     };
                     var imagemValida = function (url) {
                         var text = String(url || '').trim();
@@ -6655,15 +6783,15 @@
                     });
                     var vistos = {};
                     var out = [];
-                    for (var c = 0; c < cards.length && out.length < limite; c += 1) {
-                        var card = cards[c];
-                        var href = hrefDe(card);
+                    var adicionarCardAoResultado = function (card, hrefPreferencial, origem) {
+                        if (!card || out.length >= limite) return false;
+                        var href = hrefPreferencial || hrefDe(card);
                         var id = extrairId(href || card.outerHTML || '');
                         href = cleanProductUrl(href, id);
                         var titulo = tituloDe(card, href);
-                        if (!href && !id) continue;
+                        if (!href && !id) return false;
                         var key = id ? ('mlb:' + id) : (href ? ('link:' + href.toLowerCase()) : '');
-                        if (!key || vistos[key]) continue;
+                        if (!key || vistos[key]) return false;
                         vistos[key] = true;
                         var imagem = imagemDe(card);
                         var precos = precosDe(card);
@@ -6687,15 +6815,166 @@
                             promotional_price: precos.preco_promocional,
                             moeda: precos.moeda,
                             currency_id: precos.moeda,
-                            tituloFonte: titulo ? 'mercado_livre_dom' : '',
-                            fotoFonte: imagem ? 'mercado_livre_dom' : '',
-                            linkFonte: href ? 'mercado_livre_dom' : '',
-                            precoFonte: precos.preco !== null ? 'mercado_livre_dom' : '',
-                            fonte_preco: precos.preco !== null ? 'mercado_livre_dom' : '',
+                            tituloFonte: titulo ? origem : '',
+                            fotoFonte: imagem ? origem : '',
+                            linkFonte: href ? origem : '',
+                            precoFonte: precos.preco !== null ? origem : '',
+                            fonte_preco: precos.preco !== null ? origem : '',
                             chave_canonica: key,
                             link_normalizado: href,
-                            origem_dados: 'mercadolivre_card_visivel'
+                            origem_dados: origem
                         });
+                        return true;
+                    };
+                    var adicionarItemDireto = function (item, origem) {
+                        if (!item || out.length >= limite) return false;
+                        var href = cleanProductUrl(item.url || item.permalink || item.link || '', item.id || item.mlb || '');
+                        var id = extrairId(item.id || item.mlb || href || '');
+                        href = cleanProductUrl(href, id);
+                        if (!href && !id) return false;
+                        var key = id ? ('mlb:' + id) : (href ? ('link:' + href.toLowerCase()) : '');
+                        if (!key || vistos[key]) return false;
+                        var titulo = String(item.titulo || item.title || item.name || '').replace(/\\s+/g, ' ').trim();
+                        if (tituloFraco(titulo)) titulo = tituloDoHref(href);
+                        var imagem = '';
+                        if (Array.isArray(item.imagem || item.image)) {
+                            imagem = (item.imagem || item.image).filter(imagemValida)[0] || '';
+                        } else {
+                            imagem = String(item.imagem || item.image || item.thumbnail || item.foto || '').trim();
+                        }
+                        if (!imagemValida(imagem)) imagem = '';
+                        var preco = item.preco;
+                        if (preco === null || preco === undefined || preco === '') preco = item.price;
+                        if (preco === null || preco === undefined || preco === '') preco = item.offers && item.offers.price;
+                        if (preco === null || preco === undefined || preco === '') preco = null;
+                        preco = preco === null || preco === undefined || preco === '' ? null : Number(String(preco).replace(/\\./g, '').replace(',', '.').replace(/[^\\d.]/g, ''));
+                        if (!Number.isFinite(preco) || preco <= 0) preco = null;
+                        vistos[key] = true;
+                        out.push({
+                            posicao: out.length + 1,
+                            id: id,
+                            mlb: id,
+                            url: href,
+                            permalink: href,
+                            link: href,
+                            titulo: titulo,
+                            title: titulo,
+                            imagem: imagem,
+                            thumbnail: imagem,
+                            foto: imagem,
+                            preco: preco,
+                            price: preco,
+                            preco_original: '',
+                            original_price: '',
+                            preco_promocional: '',
+                            promotional_price: '',
+                            moeda: preco ? 'BRL' : '',
+                            currency_id: preco ? 'BRL' : '',
+                            tituloFonte: titulo ? origem : '',
+                            fotoFonte: imagem ? origem : '',
+                            linkFonte: href ? origem : '',
+                            precoFonte: preco !== null ? origem : '',
+                            fonte_preco: preco !== null ? origem : '',
+                            chave_canonica: key,
+                            link_normalizado: href,
+                            origem_dados: origem
+                        });
+                        return true;
+                    };
+                    for (var c = 0; c < cards.length && out.length < limite; c += 1) {
+                        adicionarCardAoResultado(cards[c], '', 'mercado_livre_dom');
+                    }
+                    if (out.length < limite) {
+                        queryAllDeep('article, section, li, div, [role="listitem"], [class*="result"], [class*="card"]').slice(0, 2500).forEach(function (root) {
+                            if (out.length >= limite || !temSinalProdutoVisual(root)) return;
+                            adicionarCardAoResultado(root, linksProdutoDe(root)[0] || '', 'mercado_livre_dom_bloco_visual');
+                        });
+                    }
+                    if (out.length < limite) {
+                        var caminharJson = function (value, depth) {
+                            if (!value || depth > 7 || out.length >= limite) return;
+                            if (Array.isArray(value)) {
+                                value.forEach(function (item) { caminharJson(item, depth + 1); });
+                                return;
+                            }
+                            if (typeof value !== 'object') return;
+                            var candidato = value.item && typeof value.item === 'object' ? value.item : value;
+                            var href = candidato.url || candidato.permalink || candidato.link || value.url || '';
+                            var nome = candidato.name || candidato.title || value.name || value.title || '';
+                            var image = candidato.image || candidato.thumbnail || value.image || value.thumbnail || '';
+                            var offers = candidato.offers || value.offers || {};
+                            var preco = candidato.price || value.price || offers.price || '';
+                            if (href && isProductUrlBasico(href)) {
+                                adicionarItemDireto({
+                                    url: href,
+                                    titulo: nome,
+                                    title: nome,
+                                    imagem: image,
+                                    image: image,
+                                    preco: preco,
+                                    price: preco
+                                }, 'mercado_livre_json_ld');
+                            }
+                            Object.keys(value).slice(0, 80).forEach(function (key) {
+                                caminharJson(value[key], depth + 1);
+                            });
+                        };
+                        queryAllDeep('script[type="application/ld+json"], script[type="application/json"]').slice(0, 80).forEach(function (script) {
+                            if (out.length >= limite) return;
+                            var text = String(script && script.textContent || '').trim();
+                            if (!text || text.length > 120000 || !/(MLB|mercadolivre|offers|ItemList|Product)/i.test(text)) return;
+                            try {
+                                caminharJson(JSON.parse(text), 0);
+                            } catch (_jsonErr) {}
+                        });
+                        [
+                            '__PRELOADED_STATE__',
+                            '__STATE__',
+                            '__APOLLO_STATE__',
+                            '__NEXT_DATA__',
+                            '__MELI_STATE__'
+                        ].forEach(function (globalName) {
+                            if (out.length >= limite) return;
+                            try {
+                                if (window[globalName]) caminharJson(window[globalName], 0);
+                            } catch (_globalJsonErr) {}
+                        });
+                    }
+                    if (out.length < limite) {
+                        var textoParaLinks = '';
+                        try {
+                            textoParaLinks = [
+                                document.documentElement && document.documentElement.innerHTML,
+                                queryAllDeep('script').slice(0, 120).map(function (script) {
+                                    return String(script && script.textContent || '').slice(0, 220000);
+                                }).join(' ')
+                            ].filter(Boolean).join(' ');
+                        } catch (_htmlErr) {
+                            textoParaLinks = '';
+                        }
+                        textoParaLinks = String(textoParaLinks || '')
+                            .replace(/\\u002F/g, '/')
+                            .replace(/\\\\\\\//g, '/')
+                            .replace(/&amp;/g, '&')
+                            .replace(/\\u0026/g, '&');
+                        var regexUrls = /https?:\\/\\/(?:www\\.|lista\\.)?mercadolivre\\.com\\.br\\/[^"'<>\\s]*?(?:MLB-?\\d{6,}|\\/p\\/MLB\\d+|\\/up\\/MLB[A-Z0-9]+|item_id(?:%3A|:|=)MLB\\d+|wid=MLB\\d+)[^"'<>\\s]*/ig;
+                        var regexRelativas = /\\/[A-Za-z0-9][^"'<>\\s]{8,}?\\/up\\/MLB[A-Z0-9]+[^"'<>\\s]*/ig;
+                        var coletarRegex = function (regex) {
+                            var match = null;
+                            var guard = 0;
+                            while (out.length < limite && guard < 400 && (match = regex.exec(textoParaLinks))) {
+                                guard += 1;
+                                var href = match && match[0] ? match[0] : '';
+                                href = cleanProductUrl(href, extrairId(href));
+                                if (!href || !isProductUrlBasico(href)) continue;
+                                adicionarItemDireto({
+                                    url: href,
+                                    titulo: tituloDoHref(href)
+                                }, 'mercado_livre_html_links');
+                            }
+                        };
+                        coletarRegex(regexUrls);
+                        coletarRegex(regexRelativas);
                     }
                     return {
                         success: true,
@@ -6704,6 +6983,9 @@
                         debug: {
                             cardCount: cards.length,
                             linkCount: document.links ? document.links.length : 0,
+                            productLinkCount: queryAllDeep('a[href], [data-href], [data-url]').filter(function (node) {
+                                return linksProdutoDe(node).length > 0;
+                            }).length,
                             title: document.title || '',
                             url: location.href
                         }
@@ -6823,9 +7105,43 @@
                     };
                 }
 
+                const statusVisiveis = Math.min(limite, Math.max(
+                    Number(ultimoStatus && ultimoStatus.cardCount) || 0,
+                    Number(ultimoStatus && ultimoStatus.productLinkCount) || 0
+                ));
+                const paginaProntaSemBase = !!(
+                    ultimoStatus
+                    && !ultimoStatus.loadingScreen
+                    && !ultimoStatus.needsLogin
+                    && !ultimoStatus.noResults
+                    && (
+                        statusVisiveis > 0
+                        || ultimoStatus.hasAvantData
+                        || Number(ultimoStatus.avantLabels || 0) >= 2
+                    )
+                );
+                if (paginaProntaSemBase) {
+                    const emergencia = await extrairBaseMercadoLivreEmergencialWebview({
+                        limite,
+                        timeoutMs: Math.min(5000, Math.max(1200, deadline - Date.now()))
+                    }).catch(() => null);
+                    const emergenciaAnuncios = Array.isArray(emergencia && emergencia.anuncios) ? emergencia.anuncios : [];
+                    if (emergenciaAnuncios.length) {
+                        return {
+                            ...(emergencia || {}),
+                            success: true,
+                            ready: true,
+                            total: emergenciaAnuncios.length,
+                            anuncios: emergenciaAnuncios,
+                            status: ultimoStatus,
+                            elapsedMs: Date.now() - inicio
+                        };
+                    }
+                }
+
                 emitirProgressoPrimeiraPaginaFavoritos(onProgress, {
                     etapa: 'aguardando_cards',
-                    visiveis: 0,
+                    visiveis: statusVisiveis,
                     coletados: 0,
                     com_titulo: 0,
                     com_foto: 0,
@@ -6837,7 +7153,14 @@
                     loadingScreen: !!(ultimoStatus && ultimoStatus.loadingScreen),
                     noResults: !!(ultimoStatus && ultimoStatus.noResults),
                     needsLogin: !!(ultimoStatus && ultimoStatus.needsLogin),
-                    url: ultimoStatus && ultimoStatus.url || ''
+                    url: ultimoStatus && ultimoStatus.url || '',
+                    diagnostico: {
+                        cardCount: Number(ultimoStatus && ultimoStatus.cardCount) || 0,
+                        productLinkCount: Number(ultimoStatus && ultimoStatus.productLinkCount) || 0,
+                        avantLabels: Number(ultimoStatus && ultimoStatus.avantLabels) || 0,
+                        basicoCardCount: Number(ultimoBasico && ultimoBasico.debug && ultimoBasico.debug.cardCount) || 0,
+                        basicoProductLinkCount: Number(ultimoBasico && ultimoBasico.debug && ultimoBasico.debug.productLinkCount) || 0
+                    }
                 });
 
                 if (ultimoStatus && (ultimoStatus.noResults || ultimoStatus.needsLogin)) {

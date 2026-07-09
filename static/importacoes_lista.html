@@ -1236,6 +1236,30 @@
             return m3 * CAPATAZIA_BRL_POR_M3;
         }
 
+        function calcularTaxasFixasBrl(totalNcm, dolar) {
+            const cotacao = Number(dolar || 0);
+            if (!Number.isFinite(cotacao) || cotacao <= 0) return 0;
+            const fixosUsd = CUSTOS_FIXOS_IMPORTACAO_USD.blFee
+                + CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao
+                + CUSTOS_FIXOS_IMPORTACAO_USD.handling
+                + PICKUP_ORIGEM_USD_FIXO
+                + TAXAS_ORIGEM_USD_FIXO;
+            const fixosBrl = CUSTOS_FIXOS_IMPORTACAO_BRL.desembaraco
+                + CUSTOS_FIXOS_IMPORTACAO_BRL.expediente
+                + TRANSPORTE_RODOVIARIO_BRL_FIXO
+                + calcularTaxaSiscomexPorTotalNcm(totalNcm);
+            return (fixosUsd * cotacao) + fixosBrl;
+        }
+
+        function calcularTaxasSobreM3Brl(totalM3, dolar) {
+            const m3 = Number(totalM3 || 0);
+            const cotacao = Number(dolar || 0);
+            if (!Number.isFinite(m3) || m3 <= 0 || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
+            const taxasUsdPorM3 = PICKUP_ORIGEM_USD_POR_M3 + TAXAS_ORIGEM_USD_POR_M3;
+            const taxasBrlPorM3 = TRANSPORTE_RODOVIARIO_BRL_POR_M3 + CAPATAZIA_BRL_POR_M3;
+            return (m3 * taxasUsdPorM3 * cotacao) + (m3 * taxasBrlPorM3);
+        }
+
         const LS_RESUMO_EDITAVEL_KEY = 'importacoes_lista_resumo_editavel';
         const RESUMO_CARDS_EDITAVEIS = {
             'Nº Invoice': 'numero_invoice',
@@ -1670,6 +1694,10 @@
             const pickupOrigem = pickupOrigemBrlNum > 0 ? formatarMoedaBR(pickupOrigemBrlNum) : '-';
             const taxasOrigemBrlNum = calcularTaxasOrigemBrl(totalM3, dolarBaseCalc);
             const taxasOrigem = taxasOrigemBrlNum > 0 ? formatarMoedaBR(taxasOrigemBrlNum) : '-';
+            const taxasFixasBrlNum = calcularTaxasFixasBrl(totalNcm, dolarBaseCalc);
+            const taxasFixas = taxasFixasBrlNum > 0 ? formatarMoedaBR(taxasFixasBrlNum) : '-';
+            const taxasSobreM3BrlNum = calcularTaxasSobreM3Brl(totalM3, dolarBaseCalc);
+            const taxasSobreM3 = taxasSobreM3BrlNum > 0 ? formatarMoedaBR(taxasSobreM3BrlNum) : '-';
             const capataziaBrlNum = calcularCapataziaBrl(totalM3);
             const capatazia = capataziaBrlNum > 0 ? formatarMoedaBR(capataziaBrlNum) : '-';
             const blFee = formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.blFee);
@@ -1709,6 +1737,8 @@
                 { label: 'Armazenagem', value: armazenagem },
                 { label: 'Pick-up Origem', value: pickupOrigem },
                 { label: 'Taxas de Origem', value: taxasOrigem },
+                { label: 'Taxas fixas', value: taxasFixas },
+                { label: 'Taxas sobre m³', value: taxasSobreM3 },
                 { label: 'Capatazia', value: capatazia },
                 { label: 'BL Fee', value: blFee },
                 { label: 'Desconsolidação', value: desconsolidacao },

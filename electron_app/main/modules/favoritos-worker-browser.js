@@ -82,6 +82,9 @@ function ensureFavoritosWorkerBrowser(parent = null) {
 
     favoritosWorkerBrowserWindow.setMenuBarVisibility(false);
     try {
+        favoritosWorkerBrowserWindow.setAlwaysOnTop(false);
+    } catch (_err) {}
+    try {
         favoritosWorkerBrowserWindow.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
     } catch (_err) {}
     try {
@@ -261,7 +264,34 @@ async function hideFavoritosWorkerBrowser() {
 
 async function executeFavoritosWorkerBrowser(code) {
     const worker = ensureFavoritosWorkerBrowser(mainWindow);
-    return worker.webContents.executeJavaScript(String(code || ''), true);
+    const currentUrl = worker.webContents.getURL();
+    try {
+        const result = await worker.webContents.executeJavaScript(String(code || ''), true);
+        if (
+            result &&
+            typeof result === 'object' &&
+            (
+                Object.prototype.hasOwnProperty.call(result, 'total') ||
+                Object.prototype.hasOwnProperty.call(result, 'totalVisiveis') ||
+                Object.prototype.hasOwnProperty.call(result, 'debug') ||
+                Array.isArray(result.anuncios)
+            )
+        ) {
+            logElectronLifecycle('favoritos-worker-browser-execute-result', {
+                url: worker.webContents.getURL() || currentUrl || '',
+                total: Number(result.total ?? result.totalVisiveis ?? 0) || 0,
+                anuncios: Array.isArray(result.anuncios) ? result.anuncios.length : 0,
+                debug: result.debug || null
+            });
+        }
+        return result;
+    } catch (err) {
+        logElectronLifecycle('favoritos-worker-browser-execute-error', {
+            url: worker.webContents.getURL() || currentUrl || '',
+            error: err && err.message ? err.message : String(err)
+        });
+        throw err;
+    }
 }
 
 async function typeFavoritosWorkerBrowser(payload) {

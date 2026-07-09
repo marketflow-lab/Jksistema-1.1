@@ -7,6 +7,14 @@
 
   function usarNavegadorMlNoShellElectron() {
     try {
+      if (window.electronAPI && (
+        typeof window.electronAPI.startFavoritosWorkerBrowser === 'function'
+        || typeof window.electronAPI.showEmbeddedMlBrowser === 'function'
+      )) {
+        return true;
+      }
+    } catch (_err) {}
+    try {
       return !!(window.top && window.top !== window && typeof window.top.postMessage === 'function');
     } catch (_err) {
       return false;
@@ -38,6 +46,24 @@
     const getBounds = () => call('getBounds', [], null);
     const areUrlsEquivalent = (a, b) => !!call('areUrlsEquivalent', [a, b], false);
     const usarWorkerFavoritos = () => !!window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE;
+    const electronApi = () => {
+      try {
+        if (window.electronAPI) return window.electronAPI;
+      } catch (_err) {}
+      try {
+        if (window.top && window.top !== window && window.top.electronAPI) return window.top.electronAPI;
+      } catch (_err) {}
+      return null;
+    };
+    const chamarWorkerDireto = (name, args = []) => {
+      const api = electronApi();
+      if (!usarWorkerFavoritos() || !api || typeof api[name] !== 'function') return null;
+      try {
+        return Promise.resolve(api[name].apply(api, args));
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    };
 
     function enviar(channel, payload = {}) {
       if (!usarNavegadorMlNoShellElectron()) return;
@@ -150,6 +176,8 @@
           return proxy.currentUrl || '';
         },
         executeJavaScript(code) {
+          const direto = chamarWorkerDireto('executeFavoritosWorkerBrowser', [code]);
+          if (direto) return direto;
           const req = `ml-shell-${Date.now()}-${++requestId}`;
           return new Promise((resolve, reject) => {
             pending.set(req, { resolve, reject });
@@ -162,6 +190,8 @@
           });
         },
         clickAt(point) {
+          const direto = chamarWorkerDireto('clickFavoritosWorkerBrowser', [point || {}]);
+          if (direto) return direto;
           const req = `ml-shell-click-${Date.now()}-${++requestId}`;
           return new Promise((resolve, reject) => {
             pending.set(req, { resolve, reject });
@@ -174,6 +204,8 @@
           });
         },
         typeText(payload) {
+          const direto = chamarWorkerDireto('typeFavoritosWorkerBrowser', [payload || {}]);
+          if (direto) return direto;
           const req = `ml-shell-type-${Date.now()}-${++requestId}`;
           return new Promise((resolve, reject) => {
             pending.set(req, { resolve, reject });
@@ -215,6 +247,27 @@
           }
           proxy.currentUrl = proximaUrl;
           proxy.__visible = !segundoPlano;
+          const direto = chamarWorkerDireto('startFavoritosWorkerBrowser', [proxy.currentUrl]);
+          if (direto) {
+            direto
+              .then(result => {
+                const urlFinal = result && result.url || proxy.currentUrl;
+                proxy.currentUrl = urlFinal;
+                proxy.dispatchEvent(result && result.success === false ? 'did-fail-load' : 'did-finish-load', {
+                  url: urlFinal,
+                  warning: result && result.loadWarning || '',
+                  errorDescription: result && result.reason || ''
+                });
+              })
+              .catch(err => {
+                proxy.dispatchEvent('did-fail-load', {
+                  url: proxy.currentUrl,
+                  errorDescription: err && err.message ? err.message : String(err),
+                  errorCode: -1
+                });
+              });
+            return;
+          }
           const bounds = getBounds();
           enviar('jk-ml-browser-show', { url: proxy.currentUrl, bounds });
           if (!segundoPlano) setTimeout(atualizarPosicao, 120);
