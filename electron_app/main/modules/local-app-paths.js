@@ -22,9 +22,35 @@ const { spawn } = require('child_process');
 const nodeNet = require('net');
 const http = require('http');
 const { pathToFileURL } = require('url');
+
+function loadElectronUpdaterModule() {
+    const candidates = ['electron-updater'];
+    if (process.resourcesPath) {
+        candidates.push(
+            path.join(process.resourcesPath, 'app.asar', 'node_modules', 'electron-updater'),
+            path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'electron-updater'),
+            path.join(process.resourcesPath, 'node_modules', 'electron-updater')
+        );
+    }
+    candidates.push(
+        path.join(__dirname, 'electron_app', 'node_modules', 'electron-updater'),
+        path.join(__dirname, '..', 'electron_app', 'node_modules', 'electron-updater')
+    );
+
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            return require(candidate);
+        } catch (err) {
+            lastError = err;
+        }
+    }
+    throw lastError || new Error('electron-updater nao encontrado.');
+}
+
 let autoUpdater = null;
 try {
-    ({ autoUpdater } = require('electron-updater'));
+    ({ autoUpdater } = loadElectronUpdaterModule());
 } catch (err) {
     console.warn('[Atualizacao] electron-updater indisponivel:', err && err.message ? err.message : err);
 }
