@@ -850,6 +850,42 @@ def _favoritos_normalizar_anuncio_alteracao_historico(anuncio: Any) -> dict:
         "original_price": preco_original,
         "preco_promocional": preco_promocional,
         "promotional_price": preco_promocional,
+        "custo": _favoritos_numero_historico(
+            anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("custo_produto")
+            or anuncio.get("preco_custo")
+            or anuncio.get("valor_custo")
+        ),
+        "custo_unitario": _favoritos_numero_historico(
+            anuncio.get("custo_unitario")
+            or anuncio.get("custo")
+            or anuncio.get("custo_produto")
+            or anuncio.get("preco_custo")
+            or anuncio.get("valor_custo")
+        ),
+        "custo_produto": _favoritos_numero_historico(
+            anuncio.get("custo_produto")
+            or anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("preco_custo")
+            or anuncio.get("valor_custo")
+        ),
+        "preco_custo": _favoritos_numero_historico(
+            anuncio.get("preco_custo")
+            or anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("custo_produto")
+            or anuncio.get("valor_custo")
+        ),
+        "valor_custo": _favoritos_numero_historico(
+            anuncio.get("valor_custo")
+            or anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("custo_produto")
+            or anuncio.get("preco_custo")
+        ),
+        "custo_frete": _favoritos_numero_historico(anuncio.get("custo_frete")),
         "discount_pct": _favoritos_numero_historico(anuncio.get("discount_pct") or anuncio.get("discount_percent") or anuncio.get("discount_percentage")),
         "moeda": _favoritos_limpar_texto_historico(anuncio.get("moeda") or anuncio.get("currency_id") or "BRL", 12),
         "currency_id": _favoritos_limpar_texto_historico(anuncio.get("currency_id") or anuncio.get("moeda") or "BRL", 12),
@@ -871,6 +907,42 @@ def _favoritos_normalizar_simulacao_alteracao_historico(raw: Any) -> dict:
         "preco_aplicado": _favoritos_numero_historico(raw.get("preco_aplicado")),
         "preco_promocional_aplicado": _favoritos_numero_historico(raw.get("preco_promocional_aplicado")),
         "margem_prevista": _favoritos_numero_historico(raw.get("margem_prevista")),
+        "margem_aplicada": _favoritos_numero_historico(raw.get("margem_aplicada") or raw.get("margem_estimada_contingencia")),
+        "custo": _favoritos_numero_historico(
+            raw.get("custo")
+            or raw.get("custo_base")
+            or raw.get("custo_unitario")
+            or raw.get("custo_produto")
+            or raw.get("preco_custo")
+            or raw.get("valor_custo")
+        ),
+        "custo_base": _favoritos_numero_historico(
+            raw.get("custo_base")
+            or raw.get("custo")
+            or raw.get("custo_unitario")
+            or raw.get("custo_produto")
+            or raw.get("preco_custo")
+            or raw.get("valor_custo")
+        ),
+        "custo_unitario": _favoritos_numero_historico(
+            raw.get("custo_unitario")
+            or raw.get("custo")
+            or raw.get("custo_base")
+            or raw.get("custo_produto")
+            or raw.get("preco_custo")
+            or raw.get("valor_custo")
+        ),
+        "limite_margem_aplicado": bool(raw.get("limite_margem_aplicado") or raw.get("limiteMargemAplicado")),
+        "preco_minimo_margem": _favoritos_numero_historico(raw.get("preco_minimo_margem") or raw.get("precoMinimoMargem")),
+        "preco_alvo_custo_ideal": _favoritos_numero_historico(raw.get("preco_alvo_custo_ideal") or raw.get("precoAlvoCustoIdeal")),
+        "custo_ideal_abaixo_base": _favoritos_numero_historico(
+            raw.get("custo_ideal_abaixo_base")
+            or raw.get("custoIdealAbaixoBase")
+            or raw.get("preco_custo_necessario")
+            or raw.get("custo_para_concorrer")
+            or raw.get("custo_maximo_para_concorrer")
+        ),
+        "reducao_custo_ideal": _favoritos_numero_historico(raw.get("reducao_custo_ideal") or raw.get("reducaoCustoIdeal")),
         "tipo_anuncio_atual": _favoritos_limpar_texto_historico(raw.get("tipo_anuncio_atual"), 80),
         "tipo_anuncio_alvo": _favoritos_limpar_texto_historico(raw.get("tipo_anuncio_alvo"), 80),
         "campanha_id": _favoritos_limpar_texto_historico(raw.get("campanha_id"), 120),

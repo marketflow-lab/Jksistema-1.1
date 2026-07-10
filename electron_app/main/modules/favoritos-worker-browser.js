@@ -378,8 +378,19 @@ function resumeFavoritosWorkerBrowser() {
 }
 
 function cancelFavoritosWorkerBrowser() {
+    if (
+        favoritosWorkerBrowserWindow &&
+        !favoritosWorkerBrowserWindow.isDestroyed() &&
+        favoritosWorkerBrowserWindow.webContents &&
+        !favoritosWorkerBrowserWindow.webContents.isDestroyed()
+    ) {
+        try {
+            favoritosWorkerBrowserWindow.webContents.stop();
+        } catch (_err) {}
+    }
     return setFavoritosWorkerBrowserState({
         cancelRequested: true,
+        paused: false,
         status: 'cancel_requested',
         message: 'Cancelamento solicitado para o Favoritos.'
     });

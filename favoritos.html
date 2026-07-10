@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Favoritos ML - JK Sistema</title>
 
-    <link rel="stylesheet" href="/favoritos/styles.css?v=20260708-fav-historico-favoritos-v13">
+    <link rel="stylesheet" href="/favoritos/styles.css?v=20260709-fav-colar-pos-alteracao-v1">
     <script src="/auth.js?v=20260618-persist-login"></script>
 </head>
 <body class="favoritos-store-pending">
@@ -248,7 +248,10 @@
 
         <div id="aba-anuncios-ignorados" class="aba-conteudo">
             <div class="panel">
-                <h3 class="section-title">An&uacute;ncios ignorados por SKU</h3>
+                <div class="ml-ignored-page-toolbar">
+                    <h3 class="section-title">An&uacute;ncios ignorados por SKU</h3>
+                    <button id="ml-anuncios-ignorados-voltar-geral" type="button" class="btn-back ml-ignored-page-back-btn" hidden>Voltar</button>
+                </div>
                 <div id="ml-anuncios-ignorados-status" class="status"></div>
                 <div id="ml-anuncios-ignorados-empty" class="muted">Nenhum an&uacute;ncio ignorado por SKU.</div>
                 <div id="ml-anuncios-ignorados-list" class="ml-ignored-page-list"></div>
@@ -422,13 +425,16 @@
     <script src="/favoritos/ml-browser.js?v=20260709-fav-worker-proxy-v1"></script>
 
 
-    <script src="/favoritos/ranking.js?v=20260708-fav-historico-price-discount-v2"></script>
+    <script src="/favoritos/ranking.js?v=20260709-fav-ignorados-voltar-v1"></script>
 
 
     <script src="/favoritos/promocoes-efetivacao.js?v=20260708-fav-historico-alteracoes-v3"></script>
 
 
-    <script src="/favoritos/tabelas-layout.js?v=20260708-fav-historico-favoritos-v12-20260709-fav-worker-direct-v1"></script>
+    <script src="/favoritos/planilhas-colar-historico.js?v=20260709-fav-colar-planilha-v1"></script>
+
+
+    <script src="/favoritos/tabelas-layout.js?v=20260709-fav-colar-planilha-v1"></script>
 
 
     <script src="/favoritos/init.js?v=20260626-fav-avant-ready-v8"></script>

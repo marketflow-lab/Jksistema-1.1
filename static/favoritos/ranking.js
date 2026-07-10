@@ -415,6 +415,22 @@
             renderizarAnunciosIgnoradosSku();
         }
 
+        function voltarAnunciosIgnoradosSkuGeral() {
+            if (!mlAnunciosIgnoradosSkuExpandidos.size) return;
+            mlAnunciosIgnoradosSkuExpandidos.clear();
+            renderizarAnunciosIgnoradosSku();
+        }
+
+        function atualizarBotaoVoltarAnunciosIgnoradosSku() {
+            const voltarBtn = document.getElementById('ml-anuncios-ignorados-voltar-geral');
+            if (!voltarBtn) return;
+            if (!voltarBtn.dataset.boundVoltarGeral) {
+                voltarBtn.dataset.boundVoltarGeral = '1';
+                voltarBtn.addEventListener('click', voltarAnunciosIgnoradosSkuGeral);
+            }
+            voltarBtn.hidden = mlAnunciosIgnoradosSkuExpandidos.size === 0;
+        }
+
         function renderizarAnunciosIgnoradosSku() {
             if (!mlAnunciosIgnoradosListEl || !mlAnunciosIgnoradosEmptyEl) return;
             const mapa = obterAnunciosIgnoradosSku();
@@ -429,6 +445,7 @@
             Array.from(mlAnunciosIgnoradosSkuExpandidos).forEach(chave => {
                 if (!chavesAtuais.has(chave)) mlAnunciosIgnoradosSkuExpandidos.delete(chave);
             });
+            atualizarBotaoVoltarAnunciosIgnoradosSku();
             if (mlAnunciosIgnoradosStatusEl) {
                 mlAnunciosIgnoradosStatusEl.textContent = total ? `${total} anuncio(s) ignorado(s) em ${entradas.length} SKU(s).` : '';
             }

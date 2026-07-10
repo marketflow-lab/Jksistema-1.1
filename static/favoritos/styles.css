@@ -51,7 +51,7 @@ body {
         .header-title-row {
             display: flex;
             align-items: center;
-            flex: 1 1 520px;
+            flex: 1 1 720px;
             gap: 8px;
             flex-wrap: wrap;
             min-width: 0;
@@ -63,9 +63,9 @@ body {
         }
         .module-store-card-row {
             display: flex;
-            align-items: center;
-            flex: 1 1 420px;
-            gap: 8px;
+            align-items: stretch;
+            flex: 1 1 620px;
+            gap: 6px;
             flex-wrap: wrap;
             min-width: 0;
         }
@@ -77,37 +77,56 @@ body {
             border-radius: 8px;
             background: #fff;
             box-sizing: border-box;
-            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+            box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
             cursor: pointer;
-            flex: 1 1 170px;
+            flex: 1 1 128px;
+            line-height: 1.08;
             max-width: 100%;
-            min-width: 160px;
-            padding: 6px 10px;
+            min-height: 42px;
+            min-width: 118px;
+            padding: 4px 8px;
             text-align: left;
             transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
         }
         .module-store-card:hover {
             border-color: #4facfe;
-            box-shadow: 0 6px 16px rgba(79, 172, 254, 0.18);
+            box-shadow: 0 4px 12px rgba(79, 172, 254, 0.14);
             transform: translateY(-1px);
         }
         .module-store-card.active {
             border-color: #0b83d8;
-            box-shadow: 0 0 0 2px rgba(79, 172, 254, 0.22);
+            box-shadow: 0 0 0 1px rgba(79, 172, 254, 0.28);
         }
         .module-store-card-label {
             color: #64748b;
             display: block;
-            font-size: 11px;
+            font-size: 9px;
             font-weight: 700;
+            letter-spacing: 0.02em;
+            line-height: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
             text-transform: uppercase;
+            white-space: nowrap;
         }
         .module-store-card-name {
             color: #111827;
             display: block;
+            font-size: 13px;
             font-weight: 800;
-            margin-top: 2px;
-            overflow-wrap: anywhere;
+            line-height: 1.1;
+            margin-top: 1px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .module-store-card .sku-store-meta {
+            font-size: 10.5px;
+            line-height: 1.05;
+            margin-top: 1px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .btn-back {
             padding: 6px 10px;
@@ -2529,6 +2548,40 @@ body {
         .ml-favoritos-comparacao-table .is-money {
             white-space: nowrap;
         }
+        .ml-favoritos-resultado-planilha {
+            align-items: flex-start;
+            border-top: 1px solid #dbeafe;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+        }
+        .ml-favoritos-resultado-planilha.is-compact {
+            border-top: 0;
+            margin-top: 0;
+            padding-top: 0;
+        }
+        .ml-favoritos-resultado-planilha-btn {
+            flex: 0 0 auto;
+        }
+        .ml-favoritos-resultado-planilha-status {
+            color: #1e3a8a;
+            flex: 1 1 220px;
+            font-size: 10px;
+            line-height: 1.25;
+            min-width: 160px;
+            overflow-wrap: anywhere;
+            padding-top: 5px;
+        }
+        .ml-favoritos-resultado-planilha-status.is-error {
+            color: #991b1b;
+            font-weight: 700;
+        }
+        .ml-favoritos-resultado-planilha-status.is-success {
+            color: #166534;
+            font-weight: 700;
+        }
         .ml-favoritos-simulador-status {
             color: #64748b;
             display: block;
@@ -2640,6 +2693,9 @@ body {
         }
         .ml-favoritos-historico-toolbar .section-title {
             margin: 0;
+        }
+        .ml-favoritos-historico-voltar-btn {
+            margin-left: auto;
         }
         .ml-favoritos-historico-list {
             display: flex;
@@ -2763,8 +2819,8 @@ body {
             border: 1px solid #d9e6fb;
             border-radius: 8px;
             overflow-x: hidden;
-            overflow-y: auto;
-            max-height: calc(100vh - 310px);
+            overflow-y: visible;
+            max-height: none;
         }
         .ml-links-alinhados-table {
             border-collapse: collapse;
@@ -3383,6 +3439,19 @@ body {
             align-items: center;
             display: flex;
             gap: 8px;
+        }
+        .ml-ignored-page-toolbar {
+            align-items: center;
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .ml-ignored-page-toolbar .section-title {
+            margin: 0;
+        }
+        .ml-ignored-page-back-btn {
+            margin-left: auto;
         }
         .favoritos-sheets-panel {
             display: grid;

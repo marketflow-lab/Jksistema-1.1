@@ -122,7 +122,8 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     perf_t0 = time.perf_counter()
     contexto = payload.context if isinstance(payload.context, dict) else {}
     mensagem_original = str(payload.message or "").strip()
-    modo_rapido_sidebar = bool(isinstance(contexto, dict) and contexto.get("modo_rapido_sidebar")) or _ia_chat_eh_pedido_rapido_sidebar(
+    fallback_read_only = bool(payload.fallback_read_only)
+    modo_rapido_sidebar = fallback_read_only or bool(isinstance(contexto, dict) and contexto.get("modo_rapido_sidebar")) or _ia_chat_eh_pedido_rapido_sidebar(
         mensagem_original,
         contexto if isinstance(contexto, dict) else {},
         payload.attachments or [],
@@ -154,6 +155,12 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     if modo_rapido_sidebar:
         contexto = dict(contexto)
         contexto["modo_rapido_sidebar"] = True
+        if fallback_read_only:
+            contexto["fallback_read_only"] = True
+            contexto["restricao_fallback"] = (
+                "Fallback estritamente de leitura: responda apenas em texto; nao execute ferramentas, "
+                "nao gere arquivos ou imagens e nao proponha como concluida nenhuma alteracao externa."
+            )
         payload.context = contexto
 
     try:
@@ -161,6 +168,13 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     except AttributeError:
         payload_execucao = payload.copy(deep=True)
     payload_execucao.message = mensagem_original if modo_rapido_sidebar else _ia_chat_mensagem_contextual(payload)
+    if fallback_read_only:
+        payload_execucao.message = (
+            "MODO FALLBACK ESTRITAMENTE DE LEITURA. Responda somente em texto. "
+            "Nao execute nem alegue ter executado alteracoes, ferramentas, envios, arquivos ou imagens.\n\n"
+            f"Pedido do usuario: {mensagem_original}"
+        )
+        payload.message = payload_execucao.message
 
     perf_tools_t0 = time.perf_counter()
     if modo_rapido_sidebar:
@@ -181,7 +195,7 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     payload.model = model_req
     # GeraÃƒÂ§ÃƒÂ£o de imagem deve considerar apenas a mensagem atual.
     # O payload_execucao inclui histÃƒÂ³rico recente e pode herdar pedidos antigos como "gere uma imagem".
-    resposta_imagem = _ia_gerar_imagem_sku_resposta(payload, client_id)
+    resposta_imagem = None if fallback_read_only else _ia_gerar_imagem_sku_resposta(payload, client_id)
     perf_provider_t0 = time.perf_counter()
     if resposta_imagem:
         resposta = resposta_imagem

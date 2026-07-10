@@ -595,6 +595,12 @@
                 preco_promocional: precos.promocional,
                 promotional_price: precos.promocional,
                 discount_pct: precos.desconto || '',
+                custo: anuncio && (anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? ''),
+                custo_unitario: anuncio && (anuncio.custo_unitario ?? anuncio.custo ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? ''),
+                custo_produto: anuncio && (anuncio.custo_produto ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.preco_custo ?? anuncio.valor_custo ?? ''),
+                preco_custo: anuncio && (anuncio.preco_custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.valor_custo ?? ''),
+                valor_custo: anuncio && (anuncio.valor_custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? ''),
+                custo_frete: anuncio && (anuncio.custo_frete ?? anuncio.frete_ml ?? anuncio.shipping_cost ?? anuncio.shipping_seller_cost ?? ''),
                 fonte_preco: fontePrecoFavoritos(anuncio),
                 precoFonte: anuncio && (anuncio.precoFonte || anuncio.preco_fonte || anuncio.fonte_preco || ''),
                 preco_fonte: anuncio && (anuncio.precoFonte || anuncio.preco_fonte || anuncio.fonte_preco || ''),
@@ -752,6 +758,54 @@
             // Historico de ranqueamento deve ser compartilhado entre lojas.
             // O filtro por loja continua valendo apenas para os anuncios atuais do SKU.
             return lista;
+        }
+
+        function lojaAtualHistoricoFavoritosEstaticoNormalizada() {
+            const lojaAtual = typeof favoritosLojaSelecionadaParaApi === 'function'
+                ? favoritosLojaSelecionadaParaApi()
+                : (mlSkuLojaSelecionada || skuLojaSelecionada || '');
+            if (!lojaAtual || (typeof favoritosEhTodasLojas === 'function' && favoritosEhTodasLojas(lojaAtual))) return '';
+            return skuNormalizarLoja(lojaAtual);
+        }
+
+        function nomeLojaAtualHistoricoFavoritosEstatico() {
+            const lojaAtual = typeof favoritosLojaSelecionadaParaApi === 'function'
+                ? favoritosLojaSelecionadaParaApi()
+                : (mlSkuLojaSelecionada || skuLojaSelecionada || '');
+            if (!lojaAtual || (typeof favoritosEhTodasLojas === 'function' && favoritosEhTodasLojas(lojaAtual))) return '';
+            return String(lojaAtual || '').trim();
+        }
+
+        function coletarLojasHistoricoFavoritosEstaticoFonte(fonte, lojas) {
+            if (!fonte || typeof fonte !== 'object') return;
+            [
+                fonte.loja,
+                fonte.loja_sync,
+                fonte.lojaSync,
+                fonte.nome_loja,
+                fonte.nomeLoja,
+                fonte.conta,
+                fonte.conta_ml,
+                fonte.contaMl,
+                fonte.descricao_ml_loja,
+                fonte.descricaoMlLoja
+            ].forEach(valor => {
+                const texto = String(valor || '').trim();
+                if (texto) lojas.push(texto);
+            });
+        }
+
+        function historicoFavoritoEstaticoPertenceLojaAtual(entrada, snapshot) {
+            const lojaAtualNorm = lojaAtualHistoricoFavoritosEstaticoNormalizada();
+            if (!lojaAtualNorm) return true;
+            const lojas = [];
+            coletarLojasHistoricoFavoritosEstaticoFonte(entrada, lojas);
+            coletarLojasHistoricoFavoritosEstaticoFonte(snapshot, lojas);
+            (Array.isArray(snapshot && snapshot.vinculos) ? snapshot.vinculos : []).forEach(vinculo => {
+                coletarLojasHistoricoFavoritosEstaticoFonte(vinculo, lojas);
+                coletarLojasHistoricoFavoritosEstaticoFonte(vinculo && vinculo.nosso, lojas);
+            });
+            return lojas.some(loja => skuNormalizarLoja(loja) === lojaAtualNorm);
         }
 
         function obterHistoricoMaisRecenteSku(sku) {
@@ -1095,10 +1149,11 @@
 
         function montarHistoricosFavoritosAlteracoesEstaticas(limite = 80) {
             const saida = [];
-            const historico = filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos());
+            const historico = lerHistoricoFavoritos();
             for (const entrada of historico) {
                 const alteracoes = Array.isArray(entrada && entrada.alteracoes_favoritos) ? entrada.alteracoes_favoritos : [];
                 for (const snapshot of alteracoes) {
+                    if (!historicoFavoritoEstaticoPertenceLojaAtual(entrada, snapshot)) continue;
                     const vinculos = (Array.isArray(snapshot && snapshot.vinculos) ? snapshot.vinculos : [])
                         .filter(vinculoHistoricoFavoritoRelacionado)
                         .map((vinculo, index) => ({
@@ -1671,6 +1726,10 @@
             tituloWrap.appendChild(titulo);
             tituloWrap.appendChild(meta);
             head.appendChild(tituloWrap);
+            if (typeof window.favoritosCriarBotaoColarHistoricoPlanilha === 'function') {
+                const botaoColarPlanilha = window.favoritosCriarBotaoColarHistoricoPlanilha(item);
+                if (botaoColarPlanilha) head.appendChild(botaoColarPlanilha);
+            }
             bloco.appendChild(head);
 
             if (item.mensagem_final) {
@@ -1757,9 +1816,11 @@
             mlLinksAlinhadosEmptyEl.classList.toggle('hidden', historicos.length > 0);
             if (mlLinksAlinhadosStatusEl) {
                 const totalVinculos = historicos.reduce((acc, item) => acc + item.vinculos.length, 0);
+                const lojaAtual = nomeLojaAtualHistoricoFavoritosEstatico();
+                const sufixoLoja = lojaAtual ? ` para ${lojaAtual}` : '';
                 mlLinksAlinhadosStatusEl.textContent = historicos.length
-                    ? `${historicos.length} execucao(oes) estatica(s) | ${totalVinculos} anuncio(s) relacionado(s).`
-                    : 'Nenhuma alteracao de favoritos salva com anuncios relacionados.';
+                    ? `${historicos.length} execucao(oes) estatica(s)${sufixoLoja} | ${totalVinculos} anuncio(s) relacionado(s).`
+                    : `Nenhuma alteracao de favoritos salva${sufixoLoja} com anuncios relacionados.`;
             }
             if (historicos.length > 1) {
                 agruparHistoricosFavoritosPorSku(historicos).forEach(grupo => {

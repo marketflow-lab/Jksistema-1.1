@@ -873,10 +873,11 @@ function validarFluxoFavoritosAvantProSemReload() {
   assert.doesNotMatch(renderAvantMercadoLivre, /atualizarDadosAvantAutomaticamente/, 'atualizacao automatica antiga nao deve existir com o nome publico');
   assert.match(renderAvantMercadoLivre, /function agendarAtualizacaoAvantAutomatica[\s\S]*desativado:\s*true/, 'agendador antigo deve ser no-op seguro');
   assert.match(favoritosHtml, /\/favoritos\/v2\/ui\/status-modal\.js[\s\S]*\/favoritos\/v2\/browser\/url-utils\.js[\s\S]*\/favoritos\/v2\/browser\/shell-bridge\.js[\s\S]*\/favoritos\/v2\/browser\/avant-cache\.js[\s\S]*\/favoritos\/ml-browser\.js/, 'HTML deve carregar V2 do browser antes da fachada ml-browser');
-  assert.match(favoritosHtml, /tabelas-layout\.js\?v=20260708-fav-historico-favoritos-v12/, 'HTML servido deve usar cache-buster novo do loader de telas');
-  assert.match(favoritosHtml, /ranking\.js\?v=20260708-fav-historico-price-discount-v2/, 'ranking deve usar cache-buster da exibicao de desconto no preco');
+  assert.match(favoritosHtml, /planilhas-colar-historico\.js\?v=20260709-fav-colar-planilha-v1/, 'HTML servido deve carregar o modulo de colar historico na planilha');
+  assert.match(favoritosHtml, /tabelas-layout\.js\?v=20260709-fav-colar-planilha-v1/, 'HTML servido deve usar cache-buster novo do loader de telas');
+  assert.match(favoritosHtml, /ranking\.js\?v=20260709-fav-ignorados-voltar-v1/, 'ranking deve usar cache-buster atual');
   assert.match(favoritosHtml, /promocoes-efetivacao\.js\?v=20260708-fav-historico-alteracoes-v3/, 'efetivacao deve usar cache-buster da contagem de processados');
-  assert.match(tabelasLayout, /20260708-fav-historico-favoritos-v12/, 'loader das tabelas deve usar cache-buster novo');
+  assert.match(tabelasLayout, /20260709-fav-colar-planilha-v1/, 'loader das tabelas deve usar cache-buster novo');
 }
 
 function run() {

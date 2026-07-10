@@ -86,8 +86,7 @@
         });
         notificacao.onclick = () => {
           try { window.focus(); } catch (_) {}
-          mostrarChat();
-          togglePanel(true);
+          _adicionarNotificacaoAprovacao(approval, { abrirPainel: true });
           try { notificacao.close(); } catch (_) {}
         };
         setTimeout(() => {
@@ -148,7 +147,7 @@
     }
 
     function _perguntasMonitorLimitePorCiclo() {
-      return panelAberto === true
+      return panelAberto === true || codexPanelAberto === true
         ? PERGUNTAS_MONITOR_MAX_NOTIFICACOES_ABERTO
         : PERGUNTAS_MONITOR_MAX_NOTIFICACOES_FECHADO;
     }
@@ -158,7 +157,7 @@
     }
 
     async function _perguntasMonitorBuscarAprovacoes() {
-      if (perguntasMonitorRodando || !_token()) return;
+      if (!_usuarioLocalEhFull() || perguntasMonitorRodando || !_token()) return;
       if (!_perguntasMonitorAssumirLideranca()) return;
       perguntasMonitorRodando = true;
       try {
@@ -174,7 +173,7 @@
           const id = _perguntasApprovalId(approval);
           return id && !conhecidos.has(id);
         });
-        const base = novas.length ? novas : (panelAberto === true ? pendentes : []);
+        const base = novas.length ? novas : ((panelAberto === true || codexPanelAberto === true) ? pendentes : []);
         if (!base.length) return;
         const limite = Math.max(1, _perguntasMonitorLimitePorCiclo());
         const processar = base.slice(0, limite);
@@ -191,7 +190,7 @@
     }
 
     function _perguntasIniciarMonitorGlobal() {
-      if (perguntasMonitorTimer || perguntasMonitorStartTimer || !_token()) return;
+      if (!_usuarioLocalEhFull() || perguntasMonitorTimer || perguntasMonitorStartTimer || !_token()) return;
       perguntasMonitorStartTimer = setTimeout(() => {
         perguntasMonitorStartTimer = null;
         void _perguntasMonitorBuscarAprovacoes();

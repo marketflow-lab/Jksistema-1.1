@@ -775,6 +775,11 @@
     function garantirSidebar() {
         if (document.getElementById('jk-global-ai-sidebar')) return document.getElementById('jk-global-ai-sidebar');
 
+        // A sidebar universal e a fonte unica do Black Jhon. Nao monte o widget legado por cima dela.
+        if (document.getElementById('jk-ia-panel') || document.getElementById('jk-ia-fab') || document.getElementById('jk-ia-light-fab')) {
+            return null;
+        }
+
         if (!document.getElementById('jk-ia-panel') && !document.getElementById('jk-ia-fab')) {
             const jaExisteScript = Array.from(document.querySelectorAll('script[src]')).some((s) => {
                 const src = String(s.getAttribute('src') || '');
@@ -994,13 +999,13 @@
 
         const sidebar = document.createElement('aside');
         sidebar.id = 'jk-global-ai-sidebar';
-        sidebar.setAttribute('aria-label', 'Assistente IA');
+        sidebar.setAttribute('aria-label', 'Black Jhon');
         sidebar.innerHTML = `
             <div class="jk-ai-head">
-                <h3>Assistente IA</h3>
-                <button type="button" class="jk-ai-close" aria-label="Fechar assistente">×</button>
+                <h3>Black Jhon</h3>
+                <button type="button" class="jk-ai-close" aria-label="Fechar Black Jhon">×</button>
             </div>
-            <div class="jk-ai-status">Assistente conectado ao contexto da tela atual.</div>
+            <div class="jk-ai-status">Black Jhon conectado ao contexto da tela atual.</div>
             <div class="jk-ai-chat" aria-live="polite">
                 <div class="jk-ai-msg assistant">Olá. Posso resumir esta tela, apontar dados importantes ou sugerir a próxima análise.</div>
             </div>
@@ -1018,8 +1023,8 @@
         const tab = document.createElement('button');
         tab.id = 'jk-global-ai-tab';
         tab.type = 'button';
-        tab.textContent = 'IA';
-        tab.setAttribute('aria-label', 'Abrir assistente IA');
+        tab.textContent = 'BJ';
+        tab.setAttribute('aria-label', 'Abrir Black Jhon');
 
         document.body.appendChild(sidebar);
         document.body.appendChild(tab);

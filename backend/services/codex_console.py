@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 import time
+import tomllib
 import unicodedata
 import uuid
 from math import ceil
@@ -28,6 +29,7 @@ CODEX_SANDBOXES = {"read_only", "workspace_write", "full_access"}
 CODEX_TASKS: dict[str, dict[str, Any]] = {}
 CODEX_TASKS_LOCK = threading.RLock()
 CODEX_FULL_ACCESS_LOCK = threading.Lock()
+BLACK_JHON_DISPLAY_NAME = "Black Jhon"
 CODEX_DEFAULT_MODEL = "gpt-5.5"
 CODEX_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 CODEX_SPEEDS = {"standard", "fast"}
@@ -227,7 +229,7 @@ def _codex_local_request_allowed(request: Request) -> bool:
         host = str(request.client.host if request.client else "").strip().lower()
     except Exception:
         host = ""
-    return host in {"", "127.0.0.1", "::1", "localhost"}
+    return host in {"127.0.0.1", "::1", "localhost"}
 
 
 def _codex_payload_sessao(authorization: Optional[str]) -> dict[str, Any]:
@@ -236,7 +238,7 @@ def _codex_payload_sessao(authorization: Optional[str]) -> dict[str, Any]:
     return _payload_sessao_por_authorization(authorization)
 
 
-def _codex_require_full_admin(
+def _codex_require_authenticated(
     request: Request,
     authorization: Optional[str],
 ) -> dict[str, Any]:
@@ -245,11 +247,27 @@ def _codex_require_full_admin(
 
     sessao = _codex_payload_sessao(authorization)
     username = str(sessao.get("username") or "").strip().lower()
-    client_id = str(sessao.get("client_id") or "default").strip() or "default"
+    client_id = str(sessao.get("client_id") or "").strip()
+    if not username or not client_id:
+        raise HTTPException(status_code=401, detail="Sessao invalida para usar o Black Jhon.")
     permissoes = _carregar_permissoes_usuario(username, client_id)
+    return {
+        "username": username,
+        "client_id": client_id,
+        "permissions": permissoes,
+        "is_full": permissoes.get("full") is True,
+    }
+
+
+def _codex_require_full_admin(
+    request: Request,
+    authorization: Optional[str],
+) -> dict[str, Any]:
+    sessao = _codex_require_authenticated(request, authorization)
+    permissoes = sessao.get("permissions") if isinstance(sessao.get("permissions"), dict) else {}
     if permissoes.get("full") is not True:
         raise HTTPException(status_code=403, detail="Apenas administradores full podem usar o Codex.")
-    return {"username": username, "client_id": client_id, "permissions": permissoes}
+    return sessao
 
 
 def _codex_status_payload() -> dict[str, Any]:
@@ -259,9 +277,9 @@ def _codex_status_payload() -> dict[str, Any]:
     auth_file = _codex_auth_file_path()
     auth_file_exists = _codex_auth_detected()
     ready = bool(enabled and sdk_ok)
-    message = "Codex Console pronto."
+    message = f"{BLACK_JHON_DISPLAY_NAME} pronto com Codex como IA principal."
     if not enabled:
-        message = "Defina JK_CODEX_CONSOLE_ENABLED=true para liberar o Codex Console."
+        message = f"{BLACK_JHON_DISPLAY_NAME} esta com o Codex desabilitado pela configuracao local."
     elif not sdk_ok:
         message = "Instale a dependencia openai-codex no runtime Python."
     elif not auth_file_exists:
@@ -287,6 +305,30 @@ def _codex_status_payload() -> dict[str, Any]:
         },
         "message": message,
     }
+
+
+def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
+    payload = _codex_status_payload()
+    is_full = bool(sessao.get("is_full"))
+    payload["access"] = {
+        "mode": "full" if is_full else "read_only",
+        "can_mutate": is_full,
+        "can_approve": is_full,
+        "can_upload": is_full,
+    }
+    if not is_full:
+        payload.pop("cli_path", None)
+        payload.pop("auth_file_path", None)
+        payload.pop("cwd", None)
+        defaults = payload.get("defaults") if isinstance(payload.get("defaults"), dict) else {}
+        defaults.update(
+            {
+                "approval_mode": "read_only",
+                "sandbox": "read_only",
+            }
+        )
+        payload["defaults"] = defaults
+    return payload
 
 
 def _codex_observability_from_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -357,6 +399,7 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "thread_id": task.get("thread_id"),
         "conversation_id": task.get("conversation_id") or task.get("thread_id") or task.get("task_id"),
         "prompt": task.get("prompt"),
+        "mutable_intent": bool(task.get("mutable_intent")),
         "model": task.get("model"),
         "approval_mode": task.get("approval_mode"),
         "reasoning_effort": task.get("reasoning_effort"),
@@ -398,8 +441,38 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "completed_at": task.get("completed_at"),
         "created_by": task.get("created_by"),
         "client_id": task.get("client_id"),
+        "access_mode": task.get("access_mode") or ("full" if task.get("sandbox") != "read_only" else "read_only"),
         "approval_required": bool(task.get("approval_required")),
         "approved": bool(task.get("approved")),
+    }
+
+
+def _codex_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+    prompt = str(task.get("prompt") or "")
+    response = str(
+        task.get("final_response")
+        or task.get("live_answer")
+        or task.get("error")
+        or ""
+    )
+    return {
+        "task_id": task.get("task_id"),
+        "client_id": task.get("client_id"),
+        "created_by": task.get("created_by"),
+        "status": task.get("status"),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "completed_at": task.get("completed_at"),
+        "model": task.get("model"),
+        "conversation_id": task.get("conversation_id") or task.get("thread_id") or task.get("task_id"),
+        "thread_id": task.get("thread_id") or "",
+        "prompt_preview": prompt[:240],
+        "response_preview": response[:600],
+        "message_kind": task.get("message_kind") or "",
+        "report_id": task.get("report_id") or "",
+        "report_formats": list(task.get("report_formats") or []),
+        "context_stats": task.get("context_stats") if isinstance(task.get("context_stats"), dict) else {},
+        "token_usage": task.get("token_usage") if isinstance(task.get("token_usage"), dict) else {},
     }
 
 
@@ -420,7 +493,7 @@ def codex_register_report_history(
     now = _codex_now()
     created_at = str((report or {}).get("created_at") or now)
     chat_text = str((report or {}).get("chat_text") or "").strip()
-    title = str((report or {}).get("title") or "Relatorio Joao Pretinho").strip()
+    title = str((report or {}).get("title") or f"Relatorio {BLACK_JHON_DISPLAY_NAME}").strip()
     formats = []
     if isinstance((report or {}).get("chat_download_formats"), list):
         formats = [str(fmt or "").strip().lower() for fmt in report.get("chat_download_formats") or [] if str(fmt or "").strip()]
@@ -465,7 +538,7 @@ def codex_register_report_history(
         "message_kind": "report",
         "report_id": report_id,
         "report_formats": formats,
-        "logs": [{"at": now, "text": "Relatorio Joao Pretinho gerado e persistido no historico.", "kind": "report"}],
+        "logs": [{"at": now, "text": f"Relatorio {BLACK_JHON_DISPLAY_NAME} gerado e persistido no historico.", "kind": "report"}],
         "created_at": created_at,
         "started_at": created_at,
         "completed_at": created_at,
@@ -483,6 +556,31 @@ def codex_register_report_history(
 def _codex_safe_id(value: str, fallback: str = "default") -> str:
     safe_id = "".join(ch for ch in str(value or "") if ch.isalnum() or ch in {"-", "_"})[:80]
     return safe_id or fallback
+
+
+def _codex_task_belongs_to_session(task: Any, sessao: dict[str, Any]) -> bool:
+    if not isinstance(task, dict):
+        return False
+    task_client = str(task.get("client_id") or "").strip()
+    task_owner = str(task.get("created_by") or "").strip().lower()
+    session_client = str(sessao.get("client_id") or "").strip()
+    session_owner = str(sessao.get("username") or "").strip().lower()
+    return bool(
+        task_client
+        and task_owner
+        and session_client
+        and session_owner
+        and task_client == session_client
+        and task_owner == session_owner
+    )
+
+
+def _codex_require_owned_task(task_id: str, sessao: dict[str, Any]) -> dict[str, Any]:
+    task = _codex_load_task(task_id)
+    if not task or not _codex_task_belongs_to_session(task, sessao):
+        # 404 evita revelar a existencia de tarefas de outro usuario/cliente.
+        raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada.")
+    return task
 
 
 def _codex_safe_filename(value: str, fallback: str = "arquivo") -> str:
@@ -506,14 +604,18 @@ def _codex_attachments_base_dir() -> Path:
     return path
 
 
-def _codex_attachment_dir(client_id: str, conversation_id: str) -> Path:
-    date_part = time.strftime("%Y-%m-%d", time.localtime())
-    path = (
+def _codex_attachment_conversation_dir(client_id: str, username: str, conversation_id: str) -> Path:
+    return (
         _codex_attachments_base_dir()
         / _codex_safe_id(client_id)
+        / _codex_safe_id(username, "user")
         / _codex_safe_id(conversation_id)
-        / date_part
     )
+
+
+def _codex_attachment_dir(client_id: str, username: str, conversation_id: str) -> Path:
+    date_part = time.strftime("%Y-%m-%d", time.localtime())
+    path = _codex_attachment_conversation_dir(client_id, username, conversation_id) / date_part
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -546,7 +648,7 @@ def _codex_attachment_public_payload(path: Path, original_name: str, mime_type: 
         "name": original_name,
         "mime_type": mime_type or "application/octet-stream",
         "size": int(size or 0),
-        "path": str(absolute),
+        "path": rel,
         "relative_path": rel,
     }
 
@@ -571,22 +673,27 @@ def _codex_resolve_new_conversation_id(sessao: dict[str, Any], requested: Any = 
     )
 
 
-def _codex_conversation_dir(client_id: str) -> Path:
-    path = Path(_codex_info_dir()) / "conversations" / _codex_safe_id(client_id)
+def _codex_conversation_dir(client_id: str, username: str) -> Path:
+    path = (
+        Path(_codex_info_dir())
+        / "conversations"
+        / _codex_safe_id(client_id)
+        / _codex_safe_id(username, "user")
+    )
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _codex_conversation_path(client_id: str, conversation_id: str) -> Path:
-    return _codex_conversation_dir(client_id) / f"{_codex_safe_id(conversation_id)}.json"
+def _codex_conversation_path(client_id: str, username: str, conversation_id: str) -> Path:
+    return _codex_conversation_dir(client_id, username) / f"{_codex_safe_id(conversation_id)}.json"
 
 
-def _codex_deleted_conversations_path(client_id: str) -> Path:
-    return _codex_conversation_dir(client_id) / "_deleted_conversations.json"
+def _codex_deleted_conversations_path(client_id: str, username: str) -> Path:
+    return _codex_conversation_dir(client_id, username) / "_deleted_conversations.json"
 
 
-def _codex_load_deleted_conversations(client_id: str) -> dict[str, Any]:
-    path = _codex_deleted_conversations_path(client_id)
+def _codex_load_deleted_conversations(client_id: str, username: str) -> dict[str, Any]:
+    path = _codex_deleted_conversations_path(client_id, username)
     if not path.exists():
         return {"deleted": {}}
     try:
@@ -601,23 +708,23 @@ def _codex_load_deleted_conversations(client_id: str) -> dict[str, Any]:
     return {"deleted": {}}
 
 
-def _codex_deleted_conversation_ids(client_id: str) -> set[str]:
-    payload = _codex_load_deleted_conversations(client_id)
+def _codex_deleted_conversation_ids(client_id: str, username: str) -> set[str]:
+    payload = _codex_load_deleted_conversations(client_id, username)
     deleted = payload.get("deleted") if isinstance(payload.get("deleted"), dict) else {}
     return {str(item or "").strip() for item in deleted.keys() if str(item or "").strip()}
 
 
-def _codex_is_conversation_deleted(client_id: str, conversation_id: str) -> bool:
+def _codex_is_conversation_deleted(client_id: str, username: str, conversation_id: str) -> bool:
     conv_id = _codex_safe_id(str(conversation_id or "").strip(), "")
-    return bool(conv_id and conv_id in _codex_deleted_conversation_ids(client_id))
+    return bool(conv_id and conv_id in _codex_deleted_conversation_ids(client_id, username))
 
 
 def _codex_mark_conversation_deleted(client_id: str, conversation_id: str, username: str = "", task_ids: Optional[list[str]] = None) -> None:
     conv_id = _codex_safe_id(str(conversation_id or "").strip(), "")
     if not conv_id:
         return
-    path = _codex_deleted_conversations_path(client_id)
-    payload = _codex_load_deleted_conversations(client_id)
+    path = _codex_deleted_conversations_path(client_id, username)
+    payload = _codex_load_deleted_conversations(client_id, username)
     deleted = payload.setdefault("deleted", {})
     if not isinstance(deleted, dict):
         deleted = {}
@@ -656,8 +763,8 @@ def _codex_normalizar_history(value: Any, limit: int = 40) -> list[dict[str, str
     return normalized
 
 
-def _codex_load_conversation_summary(client_id: str, conversation_id: str) -> dict[str, Any]:
-    path = _codex_conversation_path(client_id, conversation_id)
+def _codex_load_conversation_summary(client_id: str, username: str, conversation_id: str) -> dict[str, Any]:
+    path = _codex_conversation_path(client_id, username, conversation_id)
     if not path.exists():
         return {}
     try:
@@ -668,8 +775,8 @@ def _codex_load_conversation_summary(client_id: str, conversation_id: str) -> di
         return {}
 
 
-def _codex_save_conversation_summary(client_id: str, conversation_id: str, payload: dict[str, Any]) -> None:
-    path = _codex_conversation_path(client_id, conversation_id)
+def _codex_save_conversation_summary(client_id: str, username: str, conversation_id: str, payload: dict[str, Any]) -> None:
+    path = _codex_conversation_path(client_id, username, conversation_id)
     with path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
 
@@ -708,9 +815,16 @@ def _codex_task_history_messages(task: dict[str, Any]) -> list[dict[str, str]]:
     return messages
 
 
-def _codex_recent_persisted_messages(client_id: str, conversation_id: str, exclude_task_id: str = "", limit: int = 40) -> list[dict[str, str]]:
+def _codex_recent_persisted_messages(
+    client_id: str,
+    username: str,
+    conversation_id: str,
+    exclude_task_id: str = "",
+    limit: int = 40,
+) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
-    if _codex_is_conversation_deleted(client_id, conversation_id):
+    username_norm = str(username or "").strip().lower()
+    if _codex_is_conversation_deleted(client_id, username_norm, conversation_id):
         return []
     try:
         paths = sorted(Path(_codex_info_dir()).glob("*.json"), key=lambda item: item.stat().st_mtime)
@@ -725,6 +839,8 @@ def _codex_recent_persisted_messages(client_id: str, conversation_id: str, exclu
         if not isinstance(task, dict):
             continue
         if str(task.get("client_id") or "") != str(client_id or ""):
+            continue
+        if str(task.get("created_by") or "").strip().lower() != username_norm:
             continue
         if str(task.get("task_id") or "") == str(exclude_task_id or ""):
             continue
@@ -759,7 +875,7 @@ def _codex_compact_summary(existing_summary: str, older_messages: list[dict[str,
     if keywords.get("reports"):
         lines.append("Relatorios citados: " + ", ".join(keywords["reports"][:12]))
     for item in older_messages[-60:]:
-        role = "Usuario" if item.get("role") == "user" else "Joao Pretinho"
+        role = "Usuario" if item.get("role") == "user" else BLACK_JHON_DISPLAY_NAME
         text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
         if text:
             lines.append(f"- {role}: {text[:520]}")
@@ -771,11 +887,18 @@ def _codex_compact_summary(existing_summary: str, older_messages: list[dict[str,
 
 def _codex_prepare_conversation_context(task: dict[str, Any]) -> dict[str, Any]:
     client_id = str(task.get("client_id") or "default")
+    username = str(task.get("created_by") or "").strip().lower()
     conversation_id = _codex_task_conversation_id(task)
-    stored = _codex_load_conversation_summary(client_id, conversation_id)
+    stored = _codex_load_conversation_summary(client_id, username, conversation_id)
     summary = str(stored.get("summary") or "").strip()
     browser_history = _codex_normalizar_history(task.get("history"))
-    persisted = _codex_recent_persisted_messages(client_id, conversation_id, str(task.get("task_id") or ""), 60)
+    persisted = _codex_recent_persisted_messages(
+        client_id,
+        username,
+        conversation_id,
+        str(task.get("task_id") or ""),
+        60,
+    )
     recent_messages = (persisted + browser_history)[-max(4, CODEX_CONVERSATION_RECENT_MESSAGES):]
     raw_context = json.dumps({"summary": summary, "recent_messages": recent_messages}, ensure_ascii=False, default=str)
     estimated_before = _codex_estimar_tokens(raw_context)
@@ -790,13 +913,14 @@ def _codex_prepare_conversation_context(task: dict[str, Any]) -> dict[str, Any]:
         payload = {
             "conversation_id": conversation_id,
             "client_id": client_id,
+            "created_by": username,
             "summary": summary,
             "compacted_until": _codex_now(),
             "summary_updated_at": _codex_now(),
             "estimated_tokens_before": estimated_before,
             "estimated_tokens_after": _codex_estimar_tokens(json.dumps({"summary": summary, "recent_messages": recent_messages}, ensure_ascii=False, default=str)),
         }
-        _codex_save_conversation_summary(client_id, conversation_id, payload)
+        _codex_save_conversation_summary(client_id, username, conversation_id, payload)
         stored = payload
     return {
         "conversation_id": conversation_id,
@@ -820,10 +944,17 @@ def _codex_update_conversation_memory(task_id: str) -> dict[str, Any]:
     if not task:
         return {}
     client_id = str(task.get("client_id") or "default")
+    username = str(task.get("created_by") or "").strip().lower()
     conversation_id = _codex_task_conversation_id(task)
-    stored = _codex_load_conversation_summary(client_id, conversation_id)
+    stored = _codex_load_conversation_summary(client_id, username, conversation_id)
     summary = str(stored.get("summary") or "").strip()
-    messages = _codex_recent_persisted_messages(client_id, conversation_id, str(task.get("task_id") or ""), 160)
+    messages = _codex_recent_persisted_messages(
+        client_id,
+        username,
+        conversation_id,
+        str(task.get("task_id") or ""),
+        160,
+    )
     messages.extend(_codex_task_history_messages(task))
     keep = max(4, CODEX_CONVERSATION_RECENT_MESSAGES)
     raw = json.dumps({"summary": summary, "messages": messages}, ensure_ascii=False, default=str)
@@ -835,6 +966,7 @@ def _codex_update_conversation_memory(task_id: str) -> dict[str, Any]:
     payload = {
         "conversation_id": conversation_id,
         "client_id": client_id,
+        "created_by": username,
         "summary": summary,
         "recent_messages": recent_messages,
         "compacted_until": _codex_now() if compacted else str(stored.get("compacted_until") or ""),
@@ -842,12 +974,13 @@ def _codex_update_conversation_memory(task_id: str) -> dict[str, Any]:
         "estimated_tokens_before": estimated_before,
         "estimated_tokens_after": _codex_estimar_tokens(json.dumps({"summary": summary, "recent_messages": recent_messages}, ensure_ascii=False, default=str)),
     }
-    _codex_save_conversation_summary(client_id, conversation_id, payload)
+    _codex_save_conversation_summary(client_id, username, conversation_id, payload)
     return payload
 
 
 def _codex_delete_conversation_memory_if_unused(task: dict[str, Any]) -> None:
     client_id = str(task.get("client_id") or "default")
+    username = str(task.get("created_by") or "").strip().lower()
     conversation_id = _codex_task_conversation_id(task)
     current_task_id = str(task.get("task_id") or "")
     try:
@@ -858,9 +991,13 @@ def _codex_delete_conversation_memory_if_unused(task: dict[str, Any]) -> None:
                 continue
             if str(other.get("task_id") or "") == current_task_id:
                 continue
-            if str(other.get("client_id") or "") == client_id and _codex_safe_id(conversation_id) in _codex_task_conversation_keys(other):
+            if (
+                str(other.get("client_id") or "") == client_id
+                and str(other.get("created_by") or "").strip().lower() == username
+                and _codex_safe_id(conversation_id) in _codex_task_conversation_keys(other)
+            ):
                 return
-        summary_path = _codex_conversation_path(client_id, conversation_id)
+        summary_path = _codex_conversation_path(client_id, username, conversation_id)
         if summary_path.exists():
             summary_path.unlink()
     except Exception:
@@ -873,21 +1010,32 @@ def _codex_assistant_reports_dir(client_id: str) -> Path:
 
 def _codex_backfill_assistant_report_tasks(client_id: str, username: str = "", limit: int = 30) -> None:
     max_reports = max(1, min(100, int(limit or 30)))
+    username_norm = str(username or "").strip().lower()
 
     def backfill_report(report: dict[str, Any], fallback_report_id: str = "") -> None:
         if not isinstance(report, dict):
             return
+        report_owner = str(
+            report.get("created_by")
+            or report.get("username")
+            or report.get("owner")
+            or ""
+        ).strip().lower()
+        # Relatorio legado sem dono nao pode ser apropriado pelo primeiro
+        # usuario que abrir o historico.
+        if not report_owner or report_owner != username_norm:
+            return
         report_id = str(report.get("report_id") or fallback_report_id).strip()
         conversation_id = str(report.get("conversation_id") or report.get("thread_id") or report_id).strip()
-        if _codex_is_conversation_deleted(client_id, conversation_id) or _codex_is_conversation_deleted(client_id, report_id):
+        if _codex_is_conversation_deleted(client_id, username, conversation_id) or _codex_is_conversation_deleted(client_id, username, report_id):
             return
         if not report_id or os.path.exists(_codex_task_path(report_id)):
             return
         report["report_id"] = report_id
         codex_register_report_history(
             client_id=client_id,
-            username=username,
-            prompt=str(report.get("prompt") or report.get("title") or "Relatorio Joao Pretinho"),
+            username=report_owner,
+            prompt=str(report.get("prompt") or report.get("title") or f"Relatorio {BLACK_JHON_DISPLAY_NAME}"),
             report=report,
             thread_id=str(report.get("thread_id") or ""),
             conversation_id=conversation_id,
@@ -1068,9 +1216,22 @@ def _codex_screen_context_json(screen_context: Any, limit: int = 18000) -> str:
     return text[:limit]
 
 
-def _codex_app_data_context(prompt: str, screen_context: Any, client_id: str) -> dict[str, Any]:
+def _codex_app_data_context(
+    prompt: str,
+    screen_context: Any,
+    client_id: str,
+    permissions: Any = None,
+) -> dict[str, Any]:
     if not _codex_bool_env("JK_CODEX_APP_DATA_CONTEXT_ENABLED", True):
         return {}
+    permissions = permissions if isinstance(permissions, dict) else {}
+    if permissions.get("full") is not True:
+        return {
+            "enabled": True,
+            "permission_filtered": True,
+            "tool_results_count": 0,
+            "tool_context": "",
+        }
     mensagem = str(prompt or "").strip()
     tenant = str(client_id or "").strip()
     if not mensagem or not tenant:
@@ -1324,11 +1485,11 @@ def _codex_agent_screen_summary(screen_context: Any) -> dict[str, Any]:
     }
 
 
-def _codex_agent_tool_catalog() -> list[dict[str, Any]]:
+def _codex_agent_tool_catalog(permissions: Any = None) -> list[dict[str, Any]]:
     try:
         from backend.services import codex_assistant
 
-        tools = codex_assistant._assistant_tools_public()
+        tools = codex_assistant._assistant_tools_public(permissions)
     except Exception:
         tools = []
     compact: list[dict[str, Any]] = []
@@ -1349,7 +1510,15 @@ def _codex_agent_tool_catalog() -> list[dict[str, Any]]:
     return compact
 
 
-def _codex_agent_capability_catalog(client_id: str = "") -> dict[str, Any]:
+def _codex_agent_capability_catalog(client_id: str = "", permissions: Any = None) -> dict[str, Any]:
+    permissions = permissions if isinstance(permissions, dict) else {}
+    if permissions.get("full") is not True:
+        return {
+            "version": "permission-filtered",
+            "total_capabilities": 0,
+            "modules": [],
+            "capabilities": [],
+        }
     try:
         return codex_capabilities.compact_capability_catalog(client_id=str(client_id or ""), limit=80)
     except Exception as exc:
@@ -1371,14 +1540,15 @@ def _codex_agent_initial_prompt(
     screen_context: Any,
     conversation_context: Any,
     client_id: str,
+    permissions: Any,
     sandbox: str,
     model: str,
     reasoning_effort: str,
     speed: str,
     approval_profile: str,
 ) -> str:
-    catalog = _codex_agent_tool_catalog()
-    capabilities = _codex_agent_capability_catalog(client_id)
+    catalog = _codex_agent_tool_catalog(permissions)
+    capabilities = _codex_agent_capability_catalog(client_id, permissions)
     screen_summary = _codex_agent_screen_summary(screen_context)
     conversation_context = conversation_context if isinstance(conversation_context, dict) else {}
     conversation_summary = str(conversation_context.get("summary") or "").strip()
@@ -1392,18 +1562,20 @@ def _codex_agent_initial_prompt(
     )
     max_calls = _codex_int_env("JK_CODEX_AGENT_MAX_TOOL_CALLS_PER_CYCLE", CODEX_AGENT_MAX_TOOL_CALLS_PER_CYCLE, 1, 10)
     memory_parts: list[str] = []
-    try:
-        operational_memory = codex_operational_memory.compact_context(
-            client_id=str(client_id or "default"),
-            message=str(prompt or ""),
-            limit_chars=6000,
-        )
-    except Exception:
-        operational_memory = {}
+    operational_memory: dict[str, Any] = {}
+    if isinstance(permissions, dict) and permissions.get("full") is True:
+        try:
+            operational_memory = codex_operational_memory.compact_context(
+                client_id=str(client_id or "default"),
+                message=str(prompt or ""),
+                limit_chars=6000,
+            )
+        except Exception:
+            operational_memory = {}
     operational_summary = str((operational_memory or {}).get("summary") or "").strip()
     if operational_summary:
         memory_parts.append(
-            "Memoria operacional persistida do Joao Pretinho:\n"
+            f"Memoria operacional persistida do {BLACK_JHON_DISPLAY_NAME}:\n"
             f"{operational_summary[:6000]}"
         )
     if conversation_summary:
@@ -1418,7 +1590,8 @@ def _codex_agent_initial_prompt(
         )
     memory_text = "\n\n".join(memory_parts) if memory_parts else "Sem historico persistido relevante para esta conversa."
     return (
-        "Voce e o Joao Pretinho, assistente interno do JK Sistema.\n"
+        f"Voce e o {BLACK_JHON_DISPLAY_NAME}, assistente interno unificado do JK Sistema. "
+        "O Codex e sua IA principal de raciocinio e execucao.\n"
         "Trabalhe em modo agente: primeiro entenda a pergunta, depois solicite somente as ferramentas read-only necessarias. "
         "Nao invente dados e nao dependa da tela atual quando houver ferramenta de dados mais apropriada.\n\n"
         "Regras de seguranca:\n"
@@ -1427,9 +1600,9 @@ def _codex_agent_initial_prompt(
         "- Se os dados vierem vazios, peca fallbacks do catalogo antes de responder, respeitando os limites.\n"
         "- Depois de cada resultado, confira tool_validation.dados_suficientes. Se for falso e houver proximas_fontes, peca outra ferramenta antes de concluir.\n"
         "- Para dados que nao estejam na tela, use fontes read-only: banco local, CSV, cache, logs de sync, Bling, Mercado Livre, perguntas, anuncios e fiscal.\n\n"
-        "Antes de responder que nao consegue fazer algo, use a ferramenta capability_resolve ou program_functions_catalog para verificar se existe capacidade, relatorio ou acao aprovavel. "
-        "Depois tente uma ferramenta especializada. Se vier vazio, use source_discovery e as ferramentas universais local_database_query, local_csv_query, local_cache_query, sync_logs_query, mercado_livre_readonly, questions_post_sale_query ou fiscal_local_query. "
-        "Se a capacidade exigir acao mutavel, prepare a proposta e peca somente os parametros faltantes.\n\n"
+        "Use somente as ferramentas presentes no catalogo deste turno; ferramentas omitidas nao estao autorizadas para este usuario. "
+        "Depois tente uma ferramenta especializada permitida. Se vier vazio, use apenas os fallbacks que tambem aparecem no catalogo. "
+        "Nunca tente descobrir, enumerar ou consultar fontes, capacidades, acoes ou modulos ausentes do catalogo.\n\n"
         "Regra de comunicacao com o usuario:\n"
         "- Use os IDs de ferramentas apenas dentro do bloco jk_tool_calls.\n"
         "- Na resposta final, status e relatorios, nunca mostre nomes internos como local_database_query, source_discovery, stock_data, function, executor ou nomes de arquivos tecnicos.\n"
@@ -1634,6 +1807,7 @@ def _codex_agent_run_loop(
                     args=args,
                     screen_context=screen_context if isinstance(screen_context, dict) else {},
                     previous_results=previous_results + cycle_results,
+                    permissions=task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
                 )
             except Exception as exc:
                 result = {
@@ -2066,6 +2240,42 @@ def _codex_resolver_paths(raw_paths: Optional[list[str]], allow_external_for_tas
     return paths
 
 
+def _codex_resolver_paths_for_session(
+    raw_paths: Optional[list[str]],
+    sessao: dict[str, Any],
+    conversation_id: str,
+    *,
+    allow_external_for_admin: bool = False,
+) -> list[str]:
+    if bool(sessao.get("is_full")):
+        return _codex_resolver_paths(raw_paths, allow_external_for_admin)
+    if not raw_paths:
+        return []
+    raise HTTPException(
+        status_code=403,
+        detail="Anexos e caminhos do sistema exigem permissao de administrador full.",
+    )
+
+
+def _codex_readonly_cwd_for_session(sessao: dict[str, Any], conversation_id: str) -> str:
+    # Fica fora do codigo e dos dados do app para que a descoberta de projeto do
+    # Codex nunca transforme o repositorio inteiro em workspace legivel.
+    local_root = str(os.getenv("LOCALAPPDATA") or "").strip()
+    root = (
+        Path(local_root) / "JK Sistema Cliente" / "black_jhon_readonly"
+        if local_root
+        else Path.home() / ".jk-sistema" / "black_jhon_readonly"
+    )
+    path = (
+        root
+        / _codex_safe_id(str(sessao.get("client_id") or "default"))
+        / _codex_safe_id(str(sessao.get("username") or "user"), "user")
+        / _codex_safe_id(conversation_id)
+    )
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path.resolve())
+
+
 def _codex_resolver_cwd(raw: Optional[str]) -> str:
     base = _codex_base_dir()
     if not raw or not _codex_bool_env("JK_CODEX_ALLOW_CUSTOM_CWD", False):
@@ -2455,6 +2665,81 @@ def _codex_sdk_env() -> dict[str, str]:
     return {key: "" for key in CODEX_API_AUTH_ENV_KEYS}
 
 
+def _codex_config_file_path() -> Path:
+    codex_home = str(os.getenv("CODEX_HOME") or "").strip()
+    root = Path(os.path.expanduser(codex_home)) if codex_home else Path.home() / ".codex"
+    return root / "config.toml"
+
+
+def _codex_configured_mcp_server_names() -> list[str]:
+    names: set[str] = {"node_repl", "openaiDeveloperDocs"}
+    path = _codex_config_file_path()
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except Exception:
+        text = ""
+    if text:
+        try:
+            parsed = tomllib.loads(text)
+            servers = parsed.get("mcp_servers") if isinstance(parsed, dict) else {}
+            if isinstance(servers, dict):
+                names.update(str(name).strip() for name in servers if str(name).strip())
+        except Exception:
+            for match in re.finditer(r"(?m)^\s*\[mcp_servers\.([^\]]+)\]\s*$", text):
+                raw = str(match.group(1) or "").strip()
+                name = raw.split(".", 1)[0].strip().strip('"').strip("'")
+                if name:
+                    names.add(name)
+    return sorted(names)
+
+
+def _codex_nonfull_config_overrides() -> tuple[str, ...]:
+    overrides = [
+        'default_permissions="jk_black_jhon_readonly"',
+        'permissions.jk_black_jhon_readonly.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"}}',
+        "permissions.jk_black_jhon_readonly.network={enabled=false}",
+        "features.shell_tool=false",
+        "features.shell_snapshot=false",
+        "features.unified_exec=false",
+        "features.apps=false",
+        "features.auth_elicitation=false",
+        "features.browser_use=false",
+        "features.browser_use_external=false",
+        "features.browser_use_full_cdp_access=false",
+        "features.computer_use=false",
+        "features.fast_mode=false",
+        "features.guardian_approval=false",
+        "features.image_generation=false",
+        "features.in_app_browser=false",
+        "features.plugins=false",
+        "features.plugin_sharing=false",
+        "features.multi_agent=false",
+        "features.memories=false",
+        "features.goals=false",
+        "features.hooks=false",
+        "features.remote_plugin=false",
+        "features.skill_mcp_dependency_install=false",
+        "features.network_proxy=false",
+        "features.tool_call_mcp_elicitation=false",
+        "features.tool_suggest=false",
+        "features.workspace_dependencies=false",
+        "apps._default.enabled=false",
+        "tools.web_search=false",
+        "tools.view_image=false",
+        'web_search="disabled"',
+        'history.persistence="none"',
+        'shell_environment_policy.inherit="none"',
+        "notify=[]",
+    ]
+    for name in _codex_configured_mcp_server_names():
+        if re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            key = name
+        else:
+            key = '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        overrides.append(f"mcp_servers.{key}.enabled=false")
+    return tuple(overrides)
+
+
 def _codex_run_worker(task_id: str) -> None:
     task = _codex_load_task(task_id)
     if not task:
@@ -2481,14 +2766,39 @@ def _codex_run_worker(task_id: str) -> None:
         approval_profile = _codex_normalizar_approval_profile(task.get("approval_mode"), sandbox)
         approval_mode = _codex_approval_mode_enum(approval_profile, sandbox)
         sandbox_enum = _codex_sandbox_enum(sandbox)
+        task_permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
+        is_full_task = task_permissions.get("full") is True
         prompt = str(task.get("prompt") or "").strip()
         cwd = str(task.get("cwd") or _codex_base_dir())
-        thread_id = str(task.get("thread_id") or "").strip()
+        thread_id = str(task.get("thread_id") or "").strip() if is_full_task else ""
         goal = _codex_clean_text(task.get("goal"), 1200)
         paths = list(task.get("paths") or [])
+        if not is_full_task:
+            # Recalcula a fronteira no worker; uma tarefa persistida nunca pode
+            # elevar cwd, modelo, tier ou recursos alterando seu JSON.
+            sandbox = "read_only"
+            model = _codex_normalizar_model(None)
+            reasoning_effort = _codex_reasoning_effort_enum(None)
+            speed = _codex_normalizar_speed(None)
+            service_tier = _codex_normalizar_service_tier(None, speed)
+            approval_profile = "read_only"
+            approval_mode = _codex_approval_mode_enum(approval_profile, sandbox)
+            cwd = _codex_readonly_cwd_for_session(
+                {
+                    "client_id": str(task.get("client_id") or "default"),
+                    "username": str(task.get("created_by") or "user"),
+                },
+                _codex_conversation_id(
+                    str(task.get("conversation_id") or ""),
+                    str(task.get("task_id") or ""),
+                ),
+            )
+            thread_id = ""
+            goal = ""
+            paths = []
         screen_context = task.get("screen_context") if isinstance(task.get("screen_context"), dict) else {}
         scope = task.get("scope") if isinstance(task.get("scope"), dict) else {}
-        if not scope:
+        if not is_full_task or not scope:
             scope = _codex_build_scope(
                 prompt=prompt,
                 sandbox=sandbox,
@@ -2509,6 +2819,7 @@ def _codex_run_worker(task_id: str) -> None:
                 screen_context,
                 conversation_context,
                 str(task.get("client_id") or "default"),
+                task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
                 sandbox,
                 model,
                 _codex_normalizar_reasoning_effort(task.get("reasoning_effort")),
@@ -2536,7 +2847,11 @@ def _codex_run_worker(task_id: str) -> None:
                     "enabled": True,
                     "agent_mode": True,
                     "tool_results_count": 0,
-                    "catalog_tools_count": len(_codex_agent_tool_catalog()),
+                    "catalog_tools_count": len(
+                        _codex_agent_tool_catalog(
+                            task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
+                        )
+                    ),
                     "error": "",
                 },
                 live_status="interpretando pergunta",
@@ -2546,7 +2861,12 @@ def _codex_run_worker(task_id: str) -> None:
                 _codex_log(task, "Historico da conversa anexado em formato compacto.", "status")
         else:
             _codex_update_live(task_id, agent_mode=False, live_status="Interpretando pedido e consultando dados internos.")
-            app_data_context = _codex_app_data_context(prompt, screen_context, str(task.get("client_id") or ""))
+            app_data_context = _codex_app_data_context(
+                prompt,
+                screen_context,
+                str(task.get("client_id") or ""),
+                task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
+            )
             run_prompt = _codex_prompt_com_contexto_tela(prompt, screen_context, app_data_context)
             context_stats = _codex_context_stats(prompt, screen_context, app_data_context)
             status_steps = app_data_context.get("status_steps") if isinstance(app_data_context, dict) and isinstance(app_data_context.get("status_steps"), list) else []
@@ -2600,14 +2920,25 @@ def _codex_run_worker(task_id: str) -> None:
             "Quando o usuario pedir relatorio, gere um relatorio em Markdown com titulo, periodo/filtros usados, dados principais, analise e proximas acoes. "
             "Se os dados internos anexados forem insuficientes, declare a lacuna em vez de completar por suposicao."
         )
+        if is_full_task:
+            access_instruction = (
+                "Voce esta dentro do JK Sistema em modo interno administrativo. "
+                "Quando alterar arquivos, mantenha o escopo no pedido atual. "
+            )
+        else:
+            access_instruction = (
+                "Voce atende um usuario autenticado sem acesso administrativo full. "
+                "A tarefa e estritamente read-only e limitada aos modulos/ferramentas autorizados no catalogo deste turno. "
+                "Nao leia, enumere ou descreva arquivos, fontes, modulos ou capacidades omitidos do catalogo. "
+            )
         developer_instructions = (
-            "Voce esta dentro do JK Sistema em modo interno/admin. "
-            "Respeite o pedido do usuario, nao exponha segredos, e explique qualquer alteracao relevante. "
-            "Quando alterar arquivos, mantenha o escopo no pedido atual.\n\n"
+            access_instruction
+            + "Respeite o pedido do usuario, nao exponha segredos e explique limites de acesso com clareza.\n\n"
             + "\n".join(extra_instructions)
         )
 
-        with Codex(CodexConfig(env=_codex_sdk_env(), cwd=cwd)) as codex:
+        config_overrides = () if is_full_task else _codex_nonfull_config_overrides()
+        with Codex(CodexConfig(env=_codex_sdk_env(), cwd=cwd, config_overrides=config_overrides)) as codex:
             thread_kwargs = {
                 "cwd": cwd,
                 "model": model,
@@ -2615,6 +2946,11 @@ def _codex_run_worker(task_id: str) -> None:
                 "approval_mode": approval_mode,
                 "developer_instructions": developer_instructions,
             }
+            if not is_full_task:
+                # O perfil de permissions e a fronteira de leitura. Passar
+                # sandbox aqui substituiria partes desse perfil.
+                thread_kwargs.pop("sandbox", None)
+                thread_kwargs["ephemeral"] = True
             if service_tier:
                 thread_kwargs["service_tier"] = service_tier
             if thread_id:
@@ -2629,6 +2965,8 @@ def _codex_run_worker(task_id: str) -> None:
                 "effort": reasoning_effort,
                 "summary": ReasoningSummary.model_validate("auto"),
             }
+            if not is_full_task:
+                run_kwargs.pop("sandbox", None)
             if service_tier:
                 run_kwargs["service_tier"] = service_tier
             if agent_mode:
@@ -2725,21 +3063,23 @@ def _codex_run_worker(task_id: str) -> None:
             scope_violations=scope_violations,
             error="",
         )
-        try:
-            operational_memory_result = codex_operational_memory.remember_from_interaction(
-                client_id=str(task.get("client_id") or "default"),
-                prompt=str(prompt or ""),
-                final_answer=final_response or "",
-                trace=agent_trace if isinstance(agent_trace, dict) else {},
-                task={**task, "task_id": task_id},
-            )
-            if operational_memory_result.get("added_count"):
-                _codex_update_task(task_id, operational_memory=operational_memory_result)
-        except Exception as exc:
-            _codex_update_task(
-                task_id,
-                warnings=(list(task.get("warnings") or []) + [f"Falha ao atualizar memoria operacional: {exc}"])[-80:],
-            )
+        task_permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
+        if task_permissions.get("full") is True:
+            try:
+                operational_memory_result = codex_operational_memory.remember_from_interaction(
+                    client_id=str(task.get("client_id") or "default"),
+                    prompt=str(prompt or ""),
+                    final_answer=final_response or "",
+                    trace=agent_trace if isinstance(agent_trace, dict) else {},
+                    task={**task, "task_id": task_id},
+                )
+                if operational_memory_result.get("added_count"):
+                    _codex_update_task(task_id, operational_memory=operational_memory_result)
+            except Exception as exc:
+                _codex_update_task(
+                    task_id,
+                    warnings=(list(task.get("warnings") or []) + [f"Falha ao atualizar memoria operacional: {exc}"])[-80:],
+                )
         if agent_mode:
             memory_payload = _codex_update_conversation_memory(task_id)
             if memory_payload:
@@ -2777,8 +3117,8 @@ def _codex_start_thread(task_id: str) -> None:
 
 
 def codex_status(request: Request, authorization: Optional[str] = Header(default=None)):
-    _codex_require_full_admin(request, authorization)
-    return _codex_status_payload()
+    sessao = _codex_require_authenticated(request, authorization)
+    return _codex_status_for_session(sessao)
 
 
 async def codex_upload_attachments(
@@ -2804,7 +3144,7 @@ async def codex_upload_attachments(
     total_bytes = 0
     try:
         _codex_cleanup_old_attachments()
-        target_dir = _codex_attachment_dir(client_id, conv_id)
+        target_dir = _codex_attachment_dir(client_id, username, conv_id)
         for upload in uploads:
             original_name = _codex_safe_filename(upload.filename or "arquivo")
             content = await upload.read()
@@ -2859,7 +3199,7 @@ def codex_criar_tarefa(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    sessao = _codex_require_full_admin(request, authorization)
+    sessao = _codex_require_authenticated(request, authorization)
     _codex_cleanup_old_attachments()
     if not _codex_enabled():
         raise HTTPException(status_code=503, detail="Codex Console desabilitado. Defina JK_CODEX_CONSOLE_ENABLED=true.")
@@ -2870,6 +3210,7 @@ def codex_criar_tarefa(
     if not prompt:
         raise HTTPException(status_code=400, detail="Informe uma mensagem para o Codex.")
 
+    is_full = bool(sessao.get("is_full"))
     sandbox = _codex_normalizar_sandbox(payload.sandbox)
     model = _codex_normalizar_model(payload.model)
     reasoning_effort = _codex_normalizar_reasoning_effort(payload.reasoning_effort)
@@ -2880,9 +3221,27 @@ def codex_criar_tarefa(
         sandbox = "full_access"
     elif approval_profile == "read_only":
         sandbox = "read_only"
-    cwd = _codex_resolver_cwd(payload.cwd)
-    paths = _codex_resolver_paths(payload.paths, sandbox == "full_access")
-    goal = _codex_clean_text(payload.goal, 1200)
+    if not is_full:
+        # O cliente nunca escolhe elevar permissao: o servidor rebaixa a tarefa.
+        sandbox = "read_only"
+        approval_profile = "read_only"
+        model = _codex_normalizar_model(None)
+        reasoning_effort = _codex_normalizar_reasoning_effort(None)
+        speed = _codex_normalizar_speed(None)
+        service_tier = _codex_normalizar_service_tier(None, speed)
+    conversation_id = _codex_resolve_new_conversation_id(sessao, payload.conversation_id)
+    cwd = (
+        _codex_resolver_cwd(payload.cwd)
+        if is_full
+        else _codex_readonly_cwd_for_session(sessao, conversation_id)
+    )
+    paths = _codex_resolver_paths_for_session(
+        payload.paths,
+        sessao,
+        conversation_id,
+        allow_external_for_admin=sandbox == "full_access",
+    )
+    goal = _codex_clean_text(payload.goal, 1200) if is_full else ""
     screen_context = _codex_normalizar_screen_context(payload.screen_context)
     context_stats = _codex_context_stats(prompt, screen_context)
     history = _codex_normalizar_history(payload.history)
@@ -2897,14 +3256,16 @@ def codex_criar_tarefa(
         cwd=cwd,
     )
     task_id = uuid.uuid4().hex
-    conversation_id = _codex_resolve_new_conversation_id(sessao, payload.conversation_id)
-    approval_required = sandbox == "full_access" or (approval_profile == "request" and mutable_intent)
+    approval_required = bool(
+        is_full
+        and (sandbox == "full_access" or (approval_profile == "request" and mutable_intent))
+    )
     task = {
         "task_id": task_id,
         "status": "awaiting_approval" if approval_required else "queued",
         "sandbox": sandbox,
         "cwd": cwd,
-        "thread_id": str(payload.thread_id or "").strip(),
+        "thread_id": str(payload.thread_id or "").strip() if is_full else "",
         "conversation_id": conversation_id,
         "prompt": prompt,
         "model": model,
@@ -2913,7 +3274,7 @@ def codex_criar_tarefa(
         "speed": speed,
         "service_tier": service_tier or "",
         "goal": goal,
-        "planning_mode": bool(payload.planning_mode),
+        "planning_mode": bool(payload.planning_mode) if is_full else False,
         "paths": paths,
         "scope": scope,
         "scope_violations": [],
@@ -2943,6 +3304,12 @@ def codex_criar_tarefa(
         "completed_at": "",
         "created_by": sessao["username"],
         "client_id": sessao["client_id"],
+        "access_mode": "full" if is_full else "read_only",
+        "permissions": {
+            str(key): value is True
+            for key, value in (sessao.get("permissions") or {}).items()
+            if str(key or "").strip()
+        },
         "approval_required": approval_required,
         "approved": not approval_required,
     }
@@ -2950,6 +3317,8 @@ def codex_criar_tarefa(
         CODEX_TASKS[task_id] = task
         _codex_persist_task(task)
     _codex_log(task, "Tarefa criada.")
+    if not is_full:
+        _codex_log(task, "Acesso do usuario limitado pelo servidor a leitura e aos modulos autorizados.")
     if approval_profile == "request" and not mutable_intent:
         _codex_log(task, "Modo solicitar aprovacao executado em leitura porque a tarefa nao pediu alteracao de arquivos.")
     if approval_required:
@@ -2963,16 +3332,18 @@ def codex_listar_tarefas(
     request: Request,
     authorization: Optional[str] = Header(default=None),
     limit: int = 20,
+    summary: bool = False,
 ):
-    sessao = _codex_require_full_admin(request, authorization)
+    sessao = _codex_require_authenticated(request, authorization)
     client_id = str(sessao.get("client_id") or "default")
     username = str(sessao.get("username") or "").strip().lower()
     max_items = max(1, min(100, int(limit or 20)))
-    _codex_backfill_assistant_report_tasks(
-        client_id,
-        str(sessao.get("username") or ""),
-        max_items,
-    )
+    if bool(sessao.get("is_full")):
+        _codex_backfill_assistant_report_tasks(
+            client_id,
+            str(sessao.get("username") or ""),
+            max_items,
+        )
     tasks: list[dict[str, Any]] = []
     try:
         paths = sorted(
@@ -2983,19 +3354,22 @@ def codex_listar_tarefas(
     except Exception:
         paths = []
 
-    for path in paths[:max_items]:
+    deleted_ids = _codex_deleted_conversation_ids(client_id, username)
+    for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 task = json.load(fh)
             if isinstance(task, dict):
                 if str(task.get("client_id") or "default") != client_id:
                     continue
-                if _codex_task_conversation_keys(task) & _codex_deleted_conversation_ids(client_id):
+                if _codex_task_conversation_keys(task) & deleted_ids:
                     continue
                 created_by = str(task.get("created_by") or "").strip().lower()
-                if created_by and username and created_by != username:
+                if not created_by or created_by != username:
                     continue
-                tasks.append(_codex_public_task(task))
+                tasks.append(_codex_task_summary(task) if summary else _codex_public_task(task))
+                if len(tasks) >= max_items:
+                    break
         except Exception:
             continue
     return {"success": True, "tasks": tasks}
@@ -3006,10 +3380,8 @@ def codex_obter_tarefa(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    _codex_require_full_admin(request, authorization)
-    task = _codex_load_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada.")
+    sessao = _codex_require_authenticated(request, authorization)
+    task = _codex_require_owned_task(task_id, sessao)
     return {"success": True, "task": _codex_public_task(task)}
 
 
@@ -3018,10 +3390,8 @@ def codex_deletar_tarefa(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    _codex_require_full_admin(request, authorization)
-    task = _codex_load_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada.")
+    sessao = _codex_require_authenticated(request, authorization)
+    task = _codex_require_owned_task(task_id, sessao)
     if str(task.get("status") or "") in {"queued", "running", "awaiting_approval", "cancel_requested"}:
         raise HTTPException(status_code=409, detail="Cancele ou aguarde a tarefa terminar antes de excluir.")
     public = _codex_public_task(task)
@@ -3042,7 +3412,7 @@ def codex_deletar_conversa(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    sessao = _codex_require_full_admin(request, authorization)
+    sessao = _codex_require_authenticated(request, authorization)
     client_id = str(sessao.get("client_id") or "default")
     username = str(sessao.get("username") or "").strip().lower()
     conv_id = _codex_safe_id(str(conversation_id or "").strip(), "")
@@ -3067,7 +3437,7 @@ def codex_deletar_conversa(
         if str(task.get("client_id") or "default") != client_id:
             continue
         created_by = str(task.get("created_by") or "").strip().lower()
-        if created_by and username and created_by != username:
+        if not created_by or created_by != username:
             continue
         task_id = str(task.get("task_id") or path.stem).strip()
         if conv_id not in _codex_task_conversation_keys(task):
@@ -3100,7 +3470,7 @@ def codex_deletar_conversa(
             raise HTTPException(status_code=500, detail=f"Nao foi possivel excluir a conversa: {exc}") from exc
 
     try:
-        summary_path = _codex_conversation_path(client_id, conv_id)
+        summary_path = _codex_conversation_path(client_id, username, conv_id)
         if summary_path.exists():
             summary_path.unlink()
     except Exception:
@@ -3120,10 +3490,8 @@ def codex_aprovar_tarefa(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    _codex_require_full_admin(request, authorization)
-    task = _codex_load_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada.")
+    sessao = _codex_require_full_admin(request, authorization)
+    task = _codex_require_owned_task(task_id, sessao)
     if task.get("status") != "awaiting_approval":
         return {"success": True, "task": _codex_public_task(task)}
     _codex_update_task(task_id, status="queued", approved=True)
@@ -3138,10 +3506,8 @@ def codex_cancelar_tarefa(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    _codex_require_full_admin(request, authorization)
-    task = _codex_load_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada.")
+    sessao = _codex_require_authenticated(request, authorization)
+    task = _codex_require_owned_task(task_id, sessao)
     if task.get("status") in {"completed", "failed", "canceled"}:
         return {"success": True, "task": _codex_public_task(task)}
     status = "canceled" if task.get("status") != "running" else "cancel_requested"

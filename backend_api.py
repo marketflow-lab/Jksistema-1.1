@@ -218,6 +218,7 @@ from backend.services.favoritos import (
     _favoritos_usuario_slug,
     configure_favoritos_context,
 )
+from backend.services.favoritos_planilhas_colar import favoritos_colar_historico_planilha
 from backend.services import favoritos_endpoints as favoritos_endpoint_service
 from backend.services import perguntas_pos_venda_endpoints as perguntas_pos_venda_endpoint_service
 for _endpoint_name in perguntas_pos_venda_endpoint_service.PERGUNTAS_POS_VENDA_ENDPOINTS:
@@ -465,6 +466,7 @@ from backend.schemas import (
     FavoritosHistoricoRealtimeSyncRequest,
     FavoritosPlanilhaLojaItem,
     FavoritosPlanilhasLojasRequest,
+    FavoritosPlanilhaColarHistoricoRequest,
     IASalvarConversaRequest,
     SiscomexAliquotasRequest,
 )
@@ -634,7 +636,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.92"
+VERSAO_MINIMA_APP_PADRAO = "1.0.93"
 
 
 def versao_minima_app_backend() -> str:

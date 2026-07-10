@@ -20,27 +20,39 @@
     let msgPanelAberto = false;
     let codexPanelAberto = false;
     let codexTaskAtual = null;
-    let codexThreadId = localStorage.getItem('jk_codex_thread_id') || '';
+    let codexInitialTaskId = '';
+    let codexThreadId = '';
     let codexConversationId = '';
     let codexPollTimer = null;
+    let codexPollGeneration = 0;
     let codexActionPollTimer = null;
     let codexActionRunAtual = null;
     let codexHistoryVisible = false;
     let codexHistoryTasks = [];
     let codexPollFailures = {};
     let codexRenderedFinalTasks = new Set();
+    let codexFallbackTasks = new Set();
     let codexPaths = [];
     let codexUploadedAttachments = [];
     let codexMessagesAtuais = [];
     let codexAssistantTimer = null;
     let codexAssistantLastReportId = '';
-    let codexAssistantAutoReportRunning = false;
+    let codexAssistantCoordinatorStarted = false;
+    let codexAssistantCoordinatorRunning = false;
+    let codexAssistantLastActivityAt = Date.now();
+    let codexManualContextCache = { at: 0, value: null };
+    let codexManualContextSequence = 0;
+    const codexFullTextCache = new Map();
     let codexLazyStarted = false;
+    let blackJhonUsandoIaSecundaria = false;
     let msgChatAberto = false;
     let msgUsuarioSelecionado = null;
     let msgRefreshTimer = null;
     let msgCarregando = false;
     let iaTemMensagemNaoVista = false;
+    let iaModelosLazyStarted = false;
+    let codexTemMensagemNaoVista = false;
+    let codexAprovacaoNaoVista = false;
     let msgTemMensagemNaoVista = false;
     let msgNotificacoesConhecidas = null;
     let msgNaoLidasPorUsuario = new Map();
@@ -67,16 +79,28 @@
     const CODEX_PANEL_MIN_WIDTH = 330;
     const CODEX_PANEL_MAX_WIDTH = 920;
     const MSG_NOTIFICACOES_KEY = 'jk_msg_notificacoes_exibidas_v1';
-    const CODEX_SETTINGS_KEY = 'jk_codex_settings_v1';
+    const CODEX_SETTINGS_KEY = 'jk_codex_settings_v2';
+    const CODEX_SETTINGS_LEGACY_KEY = 'jk_codex_settings_v1';
+    const CODEX_THREAD_KEY_PREFIX = 'jk_codex_thread_id_v2';
+    const CODEX_THREAD_LEGACY_KEY = 'jk_codex_thread_id';
     const CODEX_HISTORY_KEY = 'jk_codex_history_v1';
     const CODEX_ACTIVE_CONVERSATION_KEY = 'jk_codex_active_conversation_id_v2';
     const CODEX_HISTORY_PREFIX = 'jk_codex_history_v2';
     const CODEX_PANEL_STATE_PREFIX = 'jk_codex_panel_state_v2';
     const CODEX_ASSISTANT_SEEN_KEY = 'jk_codex_assistant_seen_v1';
-    const CODEX_ASSISTANT_REPORTED_KEY = 'jk_codex_assistant_reported_v2';
     const CODEX_HISTORY_LIMIT = 120;
     const CODEX_PROACTIVE_INTERVAL_MS = 30 * 60 * 1000;
-    const CODEX_ASSISTANT_DISPLAY_NAME = 'João Pretinho';
+    const CODEX_COORDINATOR_FIRST_DELAY_MS = 60 * 1000;
+    const CODEX_COORDINATOR_RETRY_MS = 30 * 1000;
+    const CODEX_COORDINATOR_IDLE_MS = 15 * 1000;
+    const CODEX_MANUAL_CONTEXT_CACHE_MS = 5 * 1000;
+    const CODEX_MANUAL_DOM_MAX_ELEMENTS = 300;
+    const CODEX_LONG_RESPONSE_THRESHOLD = 12 * 1000;
+    const CODEX_LONG_RESPONSE_PREVIEW = 4000;
+    const CODEX_REPORT_PREVIEW = 600;
+    const CODEX_FULL_TEXT_CACHE_MAX = 4;
+    const CODEX_ASSISTANT_DISPLAY_NAME = 'Black Jhon';
+    const BLACK_JHON_PRIMARY_AI = 'codex';
     const CODEX_UPLOAD_MAX_COUNT = 20;
     const CODEX_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
     const CODEX_UPLOAD_TOTAL_MAX_BYTES = 100 * 1024 * 1024;
@@ -490,10 +514,12 @@
 
     function _sidebarAtualizarAlertas() {
       const iaAlerta = iaTemMensagemNaoVista && !panelAberto;
+      const codexAlerta = (codexTemMensagemNaoVista || codexAprovacaoNaoVista) && !codexPanelAberto;
+      const blackJhonAlerta = iaAlerta || codexAlerta;
       const msgAlerta = msgTemMensagemNaoVista && !msgPanelAberto;
-      document.getElementById('jk-ia-fab')?.classList.toggle('piscando', iaAlerta);
+      document.getElementById('jk-ia-fab')?.classList.toggle('piscando', blackJhonAlerta);
       document.getElementById('jk-msg-fab')?.classList.toggle('piscando', msgAlerta);
-      document.getElementById('jk-right-sidebar-hotspot')?.classList.toggle('tem-alerta', iaAlerta || msgAlerta);
+      document.getElementById('jk-right-sidebar-hotspot')?.classList.toggle('tem-alerta', blackJhonAlerta || msgAlerta);
     }
 
     function _iaAvisarMensagemRecebida() {
@@ -503,7 +529,15 @@
 
     function _codexReadStoredSettings() {
       try {
-        const data = JSON.parse(localStorage.getItem(CODEX_SETTINGS_KEY) || '{}') || {};
+        const scopedKey = _codexSettingsStorageKey();
+        let raw = localStorage.getItem(scopedKey);
+        if (!raw && _usuarioLocalEhFull()) {
+          raw = localStorage.getItem(CODEX_SETTINGS_LEGACY_KEY);
+          if (raw) {
+            try { localStorage.setItem(scopedKey, raw); } catch (_) {}
+          }
+        }
+        const data = JSON.parse(raw || '{}') || {};
         return data && typeof data === 'object' ? data : {};
       } catch (_) {
         return {};
@@ -655,6 +689,10 @@
     }
 
     async function _codexUploadArquivos(files) {
+      if (!_usuarioLocalEhFull()) {
+        _codexSetStatus('Seu perfil permite somente consultas em modo leitura.', true);
+        return;
+      }
       const lista = Array.from(files || []).filter(Boolean);
       if (!lista.length) return;
       const ativos = codexUploadedAttachments.filter(item => item && item.status !== 'error').length;
@@ -715,7 +753,7 @@
     }
 
     function _codexInstalarDropZone(el) {
-      if (!el || el.dataset.codexDropzone === '1') return;
+      if (!_usuarioLocalEhFull() || !el || el.dataset.codexDropzone === '1') return;
       el.dataset.codexDropzone = '1';
       ['dragenter', 'dragover'].forEach(type => {
         el.addEventListener(type, event => {
@@ -740,17 +778,19 @@
     }
 
     function _codexAplicarSettings() {
-      const saved = _codexReadStoredSettings();
-      _codexSetSelectValue('jk-codex-access', saved.access || 'read_only');
-      _codexSetSelectValue('jk-codex-model', saved.model || 'gpt-5.5');
-      _codexSetSelectValue('jk-codex-reasoning', saved.reasoning_effort || 'xhigh');
-      _codexSetSelectValue('jk-codex-speed', saved.speed || 'standard');
-      codexPaths = Array.isArray(saved.paths) ? saved.paths.map(String).filter(Boolean).slice(0, 20) : [];
+      const full = _usuarioLocalEhFull();
+      const saved = full ? _codexReadStoredSettings() : {};
+      // Perfis mutaveis nunca atravessam sessoes: Black Jhon sempre reabre em leitura.
+      _codexSetSelectValue('jk-codex-access', 'read_only');
+      _codexSetSelectValue('jk-codex-model', full ? (saved.model || 'gpt-5.5') : 'gpt-5.5');
+      _codexSetSelectValue('jk-codex-reasoning', full ? (saved.reasoning_effort || 'xhigh') : 'xhigh');
+      _codexSetSelectValue('jk-codex-speed', full ? (saved.speed || 'standard') : 'standard');
+      codexPaths = full && Array.isArray(saved.paths) ? saved.paths.map(String).filter(Boolean).slice(0, 20) : [];
       const goal = document.getElementById('jk-codex-goal-input');
-      if (goal) goal.value = String(saved.goal || '');
+      if (goal) goal.value = full ? String(saved.goal || '') : '';
       const plan = document.getElementById('jk-codex-plan-toggle');
       if (plan) {
-        const ativo = saved.planning_mode === true;
+        const ativo = full && saved.planning_mode === true;
         plan.classList.toggle('is-active', ativo);
         plan.setAttribute('aria-pressed', ativo ? 'true' : 'false');
       }
@@ -766,29 +806,31 @@
     }
 
     function _codexCollectSettings(forcedAccess = '') {
+      const full = _usuarioLocalEhFull();
       const accessEl = document.getElementById('jk-codex-access');
-      const access = forcedAccess || accessEl?.value || 'read_only';
+      const access = full ? (forcedAccess || accessEl?.value || 'read_only') : 'read_only';
       const runtime = _codexAccessToRuntime(access);
-      const speed = document.getElementById('jk-codex-speed')?.value || 'standard';
+      const speed = full ? (document.getElementById('jk-codex-speed')?.value || 'standard') : 'standard';
       return {
         access: runtime.access,
         sandbox: runtime.sandbox,
         approval_mode: runtime.approval_mode,
-        model: document.getElementById('jk-codex-model')?.value || 'gpt-5.5',
-        reasoning_effort: document.getElementById('jk-codex-reasoning')?.value || 'xhigh',
+        model: full ? (document.getElementById('jk-codex-model')?.value || 'gpt-5.5') : 'gpt-5.5',
+        reasoning_effort: full ? (document.getElementById('jk-codex-reasoning')?.value || 'xhigh') : 'xhigh',
         speed,
         service_tier: speed === 'fast' ? 'priority' : '',
-        goal: String(document.getElementById('jk-codex-goal-input')?.value || '').trim(),
-        planning_mode: document.getElementById('jk-codex-plan-toggle')?.classList.contains('is-active') === true,
-        paths: codexPaths.slice(0, 20),
+        goal: full ? String(document.getElementById('jk-codex-goal-input')?.value || '').trim() : '',
+        planning_mode: full && document.getElementById('jk-codex-plan-toggle')?.classList.contains('is-active') === true,
+        paths: full ? codexPaths.slice(0, 20) : [],
       };
     }
 
     function _codexPersistSettings() {
       try {
+        if (!_usuarioLocalEhFull()) return;
         const settings = _codexCollectSettings();
-        localStorage.setItem(CODEX_SETTINGS_KEY, JSON.stringify({
-          access: settings.access,
+        localStorage.setItem(_codexSettingsStorageKey(), JSON.stringify({
+          access: 'read_only',
           model: settings.model,
           reasoning_effort: settings.reasoning_effort,
           speed: settings.speed,
@@ -800,6 +842,10 @@
     }
 
     function _codexAdicionarPathAtual() {
+      if (!_usuarioLocalEhFull()) {
+        _codexSetStatus('Seu perfil permite somente consultas em modo leitura.', true);
+        return;
+      }
       const input = document.getElementById('jk-codex-path-input');
       const path = String(input?.value || '').trim();
       if (!path) return;
@@ -863,38 +909,75 @@
       return '';
     }
 
-    function _codexControlesVisiveisTela() {
-      const controles = [];
-      document.querySelectorAll('button,a,input,select,textarea,[role="button"],[aria-label]').forEach(el => {
-        if (controles.length >= 60 || !_codexElementoVisivelTela(el)) return;
-        const tag = String(el.tagName || '').toLowerCase();
-        const label = _codexLabelControleTela(el);
-        const value = _codexValorControleTela(el);
-        const role = el.getAttribute('role') || tag;
-        if (!label && !value) return;
-        controles.push({
-          role,
-          label,
-          value,
-          href: tag === 'a' ? String(el.getAttribute('href') || '').slice(0, 240) : '',
-        });
-      });
-      return controles;
+    function _codexUrlSeguraTela(rawUrl = '') {
+      const source = String(rawUrl || '');
+      try {
+        const parsed = new URL(source || location.href, location.href);
+        const origin = parsed.origin && parsed.origin !== 'null' ? parsed.origin : '';
+        return `${origin}${parsed.pathname}`.slice(0, 800);
+      } catch (_) {
+        return source.split(/[?#]/, 1)[0].slice(0, 800);
+      }
     }
 
-    function _codexTextoVisivelTela(limit = 6000) {
+    function _codexContextoBasicoTela() {
+      const safeUrl = _codexUrlSeguraTela(location.href);
+      return {
+        context_mode: 'background',
+        title: document.title,
+        url: location.pathname,
+        url_completa: safeUrl,
+        pathname: location.pathname,
+        modulo_atual: _modulo(),
+        viewport: {
+          width: Math.round(window.innerWidth || 0),
+          height: Math.round(window.innerHeight || 0),
+          scroll_x: Math.round(window.scrollX || 0),
+          scroll_y: Math.round(window.scrollY || 0),
+        },
+      };
+    }
+
+    function _codexEscanearContextoManual() {
+      const controles = [];
       const chunks = [];
       const seen = new Set();
-      const selectors = [
-        'h1,h2,h3,h4,h5,h6',
-        'p,label,button,a,summary',
-        'th,td,li',
-        '[role="heading"],[aria-label]',
-        'input,select,textarea',
-      ].join(',');
-      document.querySelectorAll(selectors).forEach(el => {
-        if (chunks.join('\n').length >= limit || !_codexElementoVisivelTela(el)) return;
+      const root = document.body || document.documentElement;
+      const walker = root && document.createTreeWalker
+        ? document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+        : null;
+      const controlTags = new Set(['button', 'a', 'input', 'select', 'textarea']);
+      const textTags = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'label', 'button', 'a', 'summary', 'th', 'td', 'li', 'input', 'select', 'textarea']);
+      let scanned = 0;
+      let included = 0;
+      let textLength = 0;
+      let el = walker ? walker.nextNode() : null;
+      while (el && scanned < CODEX_MANUAL_DOM_MAX_ELEMENTS) {
+        scanned += 1;
+        if (!_codexElementoVisivelTela(el)) {
+          el = walker.nextNode();
+          continue;
+        }
         const tag = String(el.tagName || '').toLowerCase();
+        const role = String(el.getAttribute('role') || '').toLowerCase();
+        const hasAria = !!String(el.getAttribute('aria-label') || '').trim();
+        const isControl = controlTags.has(tag) || role === 'button' || hasAria;
+        if (isControl && controles.length < 60) {
+          const label = _codexLabelControleTela(el);
+          const value = _codexValorControleTela(el);
+          if (label || value) {
+            controles.push({
+              role: role || tag,
+              label,
+              value,
+              href: tag === 'a' ? _codexUrlSeguraTela(el.getAttribute('href') || '').slice(0, 240) : '',
+            });
+          }
+        }
+        if (!textTags.has(tag) && role !== 'heading' && !hasAria) {
+          el = walker.nextNode();
+          continue;
+        }
         let text = '';
         if (tag === 'input' || tag === 'select' || tag === 'textarea') {
           const label = _codexLabelControleTela(el);
@@ -903,19 +986,37 @@
         } else {
           text = _codexTextoLimpoTela(el.innerText || el.textContent || el.getAttribute('aria-label') || '', 320);
         }
-        if (!text || seen.has(text)) return;
-        seen.add(text);
-        chunks.push(text);
-      });
-      return chunks.join('\n').slice(0, limit);
+        if (text && !seen.has(text) && textLength < 6000) {
+          seen.add(text);
+          chunks.push(text);
+          textLength += text.length + 1;
+          included += 1;
+        }
+        el = walker.nextNode();
+      }
+      codexManualContextSequence += 1;
+      return {
+        visible_text: chunks.join('\n').slice(0, 6000),
+        controls: controles,
+        dom_scan: {
+          sequence: codexManualContextSequence,
+          scanned_elements: scanned,
+          included_elements: included,
+          max_elements: CODEX_MANUAL_DOM_MAX_ELEMENTS,
+          cache_hit: false,
+        },
+      };
     }
 
-    function _codexObterContextoTelaAtual() {
-      let base = {};
-      try {
-        base = _obterContextoTela();
-      } catch (_) {
-        base = {};
+    function _codexObterContextoTelaAtual(options = {}) {
+      if (options && options.background === true) return _codexContextoBasicoTela();
+      const now = Date.now();
+      if (codexManualContextCache.value && now - codexManualContextCache.at < CODEX_MANUAL_CONTEXT_CACHE_MS) {
+        const cached = codexManualContextCache.value;
+        return {
+          ...cached,
+          dom_scan: { ...(cached.dom_scan || {}), cache_hit: true },
+        };
       }
       let selection = '';
       try {
@@ -923,15 +1024,16 @@
       } catch (_) {
         selection = '';
       }
-      return {
-        ...base,
+      const domContext = _codexEscanearContextoManual();
+      const safeUrl = _codexUrlSeguraTela(location.href);
+      const context = {
+        context_mode: 'manual',
         title: document.title,
         url: location.pathname,
-        url_completa: location.href,
+        url_completa: safeUrl,
         pathname: location.pathname,
         modulo_atual: _modulo(),
-        visible_text: _codexTextoVisivelTela(6000),
-        controls: _codexControlesVisiveisTela(),
+        ...domContext,
         selection,
         viewport: {
           width: Math.round(window.innerWidth || 0),
@@ -940,6 +1042,8 @@
           scroll_y: Math.round(window.scrollY || 0),
         },
       };
+      codexManualContextCache = { at: now, value: context };
+      return context;
     }
 
     function _codexApiUrls(path) {
@@ -969,10 +1073,15 @@
 
     function _codexTextoVisual(texto) {
       return String(texto || '')
+        .replace(/João Pretinho/gi, CODEX_ASSISTANT_DISPLAY_NAME)
+        .replace(/Joao Pretinho/gi, CODEX_ASSISTANT_DISPLAY_NAME)
         .replace(/Codex interno/g, CODEX_ASSISTANT_DISPLAY_NAME)
         .replace(/Codex Console/g, CODEX_ASSISTANT_DISPLAY_NAME)
-        .replace(/codex_assistant/g, 'joao_pretinho')
-        .replace(/\bCodex\b/g, CODEX_ASSISTANT_DISPLAY_NAME);
+        .replace(/\bsales_ranking\b/gi, 'Ranking de vendas')
+        .replace(/\bsales_summary\b/gi, 'Resumo de vendas')
+        .replace(/\bprofit_summary\b/gi, 'Resumo de margem')
+        .replace(/\breturns_summary\b/gi, 'Resumo de devolucoes')
+        .replace(/codex_assistant/g, 'black_jhon');
     }
 
     function _codexSetStatus(texto, erro = false) {
@@ -1148,7 +1257,7 @@
       if (falhas.length) add('warning', falhas.slice(0, 2).join(' | '));
       const fallbacks = Array.isArray(obs.next_fallbacks) ? obs.next_fallbacks.filter(Boolean) : [];
       if (fallbacks.length) add('fallback', fallbacks.slice(0, 5).join(', '));
-      if (!linhas.length) add('status', liveStatus || 'Joao Pretinho pronto.');
+      if (!linhas.length) add('status', liveStatus || 'Black Jhon pronto.');
       return linhas.slice(0, 7);
     }
 
@@ -1243,6 +1352,36 @@
       return _codexSafeStorageId(`${_clientId()}_${usuario}`);
     }
 
+    function _codexSettingsStorageKey() {
+      return `${CODEX_SETTINGS_KEY}_${_codexUsuarioEscopo()}`;
+    }
+
+    function _codexThreadStorageKey() {
+      return `${CODEX_THREAD_KEY_PREFIX}_${_codexUsuarioEscopo()}`;
+    }
+
+    function _codexLerThreadId() {
+      try {
+        let value = String(localStorage.getItem(_codexThreadStorageKey()) || '').trim();
+        if (!value && _usuarioLocalEhFull()) {
+          value = String(localStorage.getItem(CODEX_THREAD_LEGACY_KEY) || '').trim();
+          if (value) localStorage.setItem(_codexThreadStorageKey(), value);
+        }
+        return value;
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function _codexSetThreadId(value) {
+      codexThreadId = String(value || '').trim();
+      try {
+        if (codexThreadId) localStorage.setItem(_codexThreadStorageKey(), codexThreadId);
+        else localStorage.removeItem(_codexThreadStorageKey());
+      } catch (_) {}
+      return codexThreadId;
+    }
+
     function _codexLerMapaConversaAtiva() {
       try {
         const raw = JSON.parse(localStorage.getItem(CODEX_ACTIVE_CONVERSATION_KEY) || '{}');
@@ -1293,6 +1432,120 @@
       return `${CODEX_PANEL_STATE_PREFIX}_${_codexUsuarioEscopo()}`;
     }
 
+    function _codexFullTextKey(kind, id) {
+      const safeKind = _codexSafeStorageId(kind || 'task');
+      const safeId = _codexSafeStorageId(id || '', '');
+      return safeId ? `${safeKind}:${safeId}` : '';
+    }
+
+    function _codexCacheFullText(cacheKey, text) {
+      const key = String(cacheKey || '').trim();
+      const value = String(text || '');
+      if (!key || !value) return;
+      if (codexFullTextCache.has(key)) codexFullTextCache.delete(key);
+      codexFullTextCache.set(key, value);
+      while (codexFullTextCache.size > CODEX_FULL_TEXT_CACHE_MAX) {
+        const oldest = codexFullTextCache.keys().next().value;
+        if (!oldest) break;
+        codexFullTextCache.delete(oldest);
+      }
+    }
+
+    function _codexGetCachedFullText(cacheKey) {
+      const key = String(cacheKey || '').trim();
+      if (!key || !codexFullTextCache.has(key)) return '';
+      const value = codexFullTextCache.get(key);
+      codexFullTextCache.delete(key);
+      codexFullTextCache.set(key, value);
+      return value;
+    }
+
+    function _codexPrepararConteudoMensagem(role, texto, options = {}) {
+      const source = String(texto || '');
+      const contentKind = String(options.content_kind || (String(options.kind || '') === 'report' ? 'report' : 'task')).trim() || 'task';
+      let contentId = String(options.content_id || options.task_id || '').trim();
+      const hasExplicitFullText = options.full_text !== undefined && options.full_text !== null;
+      const fullText = hasExplicitFullText
+        ? String(options.full_text || '')
+        : source;
+      const fullLength = Math.max(Number(options.full_length || 0), fullText.length, source.length);
+      const truncated = options.truncated === true || fullLength > CODEX_LONG_RESPONSE_THRESHOLD;
+      if (truncated && !contentId) contentId = `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const limit = Math.max(200, Number(options.preview_limit || CODEX_LONG_RESPONSE_PREVIEW));
+      let preview = source;
+      if (truncated && options.prepared !== true) {
+        preview = String(options.preview_text !== undefined ? options.preview_text : source).slice(0, limit).trimEnd();
+        if (fullLength > preview.length) preview += `\n\nPrevia exibida (${preview.length} de ${fullLength} caracteres).`;
+      }
+      const cacheKey = _codexFullTextKey(contentKind, contentId);
+      if (truncated && cacheKey && contentId.startsWith('local_') && fullText.length > preview.length && (hasExplicitFullText || fullLength === source.length)) {
+        _codexCacheFullText(cacheKey, fullText);
+      }
+      return {
+        text: preview,
+        content_id: contentId,
+        content_kind: contentKind,
+        truncated,
+        full_length: fullLength,
+      };
+    }
+
+    async function _codexResolverTextoCompleto(item) {
+      const contentId = String(item && item.content_id || '').trim();
+      const contentKind = String(item && item.content_kind || 'task').trim();
+      const cacheKey = _codexFullTextKey(contentKind, contentId);
+      const cached = _codexGetCachedFullText(cacheKey);
+      if (cached) return cached;
+      if (!contentId || contentId.startsWith('local_')) throw new Error('O texto completo nao esta mais disponivel nesta sessao.');
+      let text = '';
+      if (contentKind === 'report') {
+        const data = await _codexFetchJson('/api/admin/codex/assistant/reports/' + encodeURIComponent(contentId));
+        text = String(data && data.report && (data.report.chat_text || data.report.chat_text_preview) || '');
+      } else {
+        const data = await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(contentId));
+        const task = data && data.task || {};
+        text = String(contentKind === 'task_prompt' ? task.prompt : (task.final_response || task.error || task.live_answer || ''));
+      }
+      if (!text) throw new Error('O servidor nao retornou o texto completo.');
+      if (cacheKey) _codexCacheFullText(cacheKey, text);
+      return text;
+    }
+
+    async function _codexAbrirTextoCompleto(item) {
+      const viewer = window.open('about:blank', '_blank');
+      if (viewer) {
+        try {
+          viewer.opener = null;
+          viewer.document.title = 'Texto completo - Black Jhon';
+          viewer.document.body.textContent = 'Carregando texto completo...';
+        } catch (_) {}
+      }
+      try {
+        const text = await _codexResolverTextoCompleto(item);
+        if (!viewer || viewer.closed) throw new Error('A janela de texto completo foi bloqueada.');
+        const pre = viewer.document.createElement('pre');
+        pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:24px;font:14px/1.55 ui-monospace,Consolas,monospace;color:#e5e7eb;background:#07131f;min-height:100vh;box-sizing:border-box;';
+        pre.textContent = text;
+        viewer.document.body.replaceChildren(pre);
+      } catch (err) {
+        if (viewer && !viewer.closed) viewer.document.body.textContent = _codexErroCurto(err, 'Nao foi possivel abrir o texto completo.');
+        else _codexSetStatus(_codexErroCurto(err, 'Nao foi possivel abrir o texto completo.'), true);
+      }
+    }
+
+    function _codexAppendFullTextAction(msg, item) {
+      if (!msg || !item || item.truncated !== true || !item.content_id || msg.querySelector('.jk-codex-open-fulltext')) return;
+      const actions = document.createElement('div');
+      actions.className = 'jk-codex-msg-actions jk-codex-fulltext-actions';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'jk-codex-tool jk-codex-open-fulltext';
+      open.textContent = 'Abrir texto completo';
+      open.addEventListener('click', () => { void _codexAbrirTextoCompleto(item); });
+      actions.appendChild(open);
+      msg.appendChild(actions);
+    }
+
     function _codexLerEstadoPainel() {
       try {
         const raw = JSON.parse(localStorage.getItem(_codexPanelStateStorageKey()) || '{}');
@@ -1311,7 +1564,9 @@
           ...extra,
           conversation_id: _codexGetActiveConversationId(true),
           thread_id: codexThreadId || '',
-          task_id: String(codexTaskAtual?.task_id || atual.task_id || ''),
+          task_id: Object.prototype.hasOwnProperty.call(extra, 'task_id')
+            ? String(extra.task_id || '')
+            : String(codexTaskAtual?.task_id || atual.task_id || ''),
           panel_open: !!codexPanelAberto,
           history_visible: !!codexHistoryVisible,
           scroll_top: lista ? lista.scrollTop : Number(atual.scroll_top || 0),
@@ -1325,7 +1580,7 @@
       try {
         const key = _codexHistoricoStorageKey();
         let rawText = localStorage.getItem(key);
-        if (!rawText && _codexGetActiveConversationId(true) === _codexDefaultConversationId()) {
+        if (!rawText && _usuarioLocalEhFull() && _codexGetActiveConversationId(true) === _codexDefaultConversationId()) {
           rawText = localStorage.getItem(CODEX_HISTORY_KEY);
           if (rawText) {
             try { localStorage.setItem(key, rawText); } catch (_) {}
@@ -1333,14 +1588,28 @@
         }
         const raw = JSON.parse(rawText || '[]') || [];
         if (!Array.isArray(raw)) return [];
-        return raw.map(item => ({
-          role: String(item?.role || 'assistant'),
-          text: String(item?.text || ''),
-          classExtra: String(item?.classExtra || ''),
-          task_id: String(item?.task_id || ''),
-          report_formats: Array.isArray(item?.report_formats) ? item.report_formats.map(fmt => String(fmt || '').trim()).filter(Boolean) : [],
-          at: String(item?.at || ''),
-        })).filter(item => item.text && !_codexEhStatusEnvioObsoleto(item.role, item.text)).slice(-CODEX_HISTORY_LIMIT);
+        return raw.map(item => {
+          const role = String(item?.role || 'assistant');
+          const taskId = String(item?.task_id || '');
+          const prepared = _codexPrepararConteudoMensagem(role, String(item?.text || ''), {
+            prepared: item?.truncated === true,
+            task_id: taskId,
+            content_id: String(item?.content_id || taskId),
+            content_kind: String(item?.content_kind || (String(item?.kind || '') === 'report' ? 'report' : 'task')),
+            truncated: item?.truncated === true,
+            full_length: Number(item?.full_length || 0),
+          });
+          return {
+            role,
+            ...prepared,
+            classExtra: String(item?.classExtra || ''),
+            kind: String(item?.kind || ''),
+            approval_payload: item?.approval_payload && typeof item.approval_payload === 'object' ? item.approval_payload : null,
+            task_id: taskId,
+            report_formats: Array.isArray(item?.report_formats) ? item.report_formats.map(fmt => String(fmt || '').trim()).filter(Boolean) : [],
+            at: String(item?.at || ''),
+          };
+        }).filter(item => item.text && !_codexEhStatusEnvioObsoleto(item.role, item.text)).slice(-CODEX_HISTORY_LIMIT);
       } catch (_) {
         return [];
       }
@@ -1366,7 +1635,19 @@
         return;
       }
       codexMessagesAtuais.forEach(item => {
-        const msg = _codexAddMsg(item.role, item.text, item.classExtra || '', { persist: false });
+        const msg = _codexAddMsg(item.role, item.text, item.classExtra || '', {
+          persist: false,
+          prepared: true,
+          task_id: item.task_id,
+          content_id: item.content_id,
+          content_kind: item.content_kind,
+          truncated: item.truncated,
+          full_length: item.full_length,
+        });
+        if (msg && item.kind === 'approval' && item.approval_payload) {
+          msg.innerHTML = '';
+          _approvalMontarCard(msg, item.approval_payload);
+        }
         if (msg && String(item.classExtra || '').includes('codex-report')) {
           _codexAppendReportActions(msg, item.task_id, item.report_formats);
         }
@@ -1391,6 +1672,36 @@
       return '';
     }
 
+    function _codexCompactTaskForMemory(task) {
+      if (!task || typeof task !== 'object') return task;
+      const compact = { ...task };
+      const prompt = String(compact.prompt || '');
+      if (prompt.length > CODEX_LONG_RESPONSE_THRESHOLD) {
+        compact.prompt_length = Math.max(Number(compact.prompt_length || 0), prompt.length);
+        compact.prompt_preview = String(compact.prompt_preview || prompt.slice(0, CODEX_LONG_RESPONSE_PREVIEW));
+        compact.prompt = compact.prompt_preview;
+        compact.prompt_truncated = true;
+      }
+      const response = String(compact.final_response || compact.live_answer || '');
+      if (response.length > CODEX_LONG_RESPONSE_THRESHOLD) {
+        compact.response_length = Math.max(Number(compact.response_length || 0), response.length);
+        compact.response_preview = String(compact.response_preview || response.slice(0, CODEX_LONG_RESPONSE_PREVIEW));
+        if (compact.final_response) compact.final_response = compact.response_preview;
+        if (compact.live_answer) compact.live_answer = compact.response_preview;
+        compact.response_truncated = true;
+      }
+      if (['completed', 'failed', 'canceled'].includes(String(compact.status || ''))) {
+        delete compact.screen_context;
+        if (Array.isArray(compact.logs)) {
+          compact.logs = compact.logs.slice(-12).map(log => ({
+            ...log,
+            text: String(log && log.text || '').slice(0, 600),
+          }));
+        }
+      }
+      return compact;
+    }
+
     function _codexHistoricoFromTasks(tasks) {
       const lista = Array.isArray(tasks)
         ? tasks.slice().sort((a, b) => _codexTaskTimeMs(a, 'created_at') - _codexTaskTimeMs(b, 'created_at'))
@@ -1398,23 +1709,51 @@
       const entries = [];
       lista.forEach(task => {
         const taskId = String(task?.task_id || '');
-        const prompt = String(task?.prompt || '').trim();
-        const finalResponse = String(task?.final_response || '').trim();
+        const prompt = String(task?.prompt || task?.prompt_preview || '').trim();
+        const finalResponse = String(task?.final_response || task?.response_preview || '').trim();
         const error = String(task?.error || '').trim();
         const status = String(task?.status || '').trim();
         if (task?.thread_id && !codexThreadId) {
-          codexThreadId = String(task.thread_id || '').trim();
-          if (codexThreadId) localStorage.setItem('jk_codex_thread_id', codexThreadId);
+          _codexSetThreadId(task.thread_id);
         }
         const reportId = String(task?.report_id || '').trim();
         const taskRefId = reportId || taskId;
         const reportFormats = Array.isArray(task?.report_formats) ? task.report_formats : [];
         if (prompt) entries.push({ role: 'user', text: prompt, classExtra: '', task_id: taskId, at: task?.created_at || '' });
-        if (finalResponse) entries.push({ role: 'assistant', text: finalResponse, classExtra: _codexTaskMessageClass(task), task_id: taskRefId, report_formats: reportFormats, at: task?.completed_at || '' });
-        else if (error) entries.push({ role: 'assistant', text: error, classExtra: '', task_id: taskId, at: task?.completed_at || '' });
+        if (finalResponse) {
+          const report = !!reportId || _codexTaskMessageClass(task) === 'codex-report';
+          const prepared = _codexPrepararConteudoMensagem('assistant', finalResponse, {
+            task_id: taskRefId,
+            content_id: taskRefId,
+            content_kind: report ? 'report' : 'task',
+            preview_limit: report ? CODEX_REPORT_PREVIEW : CODEX_LONG_RESPONSE_PREVIEW,
+            preview_text: String(task?.response_preview || finalResponse),
+            full_length: Math.max(Number(task?.response_length || 0), finalResponse.length),
+            truncated: task?.response_truncated === true,
+          });
+          entries.push({ role: 'assistant', ...prepared, classExtra: _codexTaskMessageClass(task), task_id: taskRefId, report_formats: reportFormats, at: task?.completed_at || '' });
+        } else if (error) {
+          const prepared = _codexPrepararConteudoMensagem('assistant', error, { task_id: taskId, content_id: taskId, content_kind: 'task' });
+          entries.push({ role: 'assistant', ...prepared, classExtra: '', task_id: taskId, at: task?.completed_at || '' });
+        }
         else if (status === 'awaiting_approval') entries.push({ role: 'status', text: 'Tarefa aguardando confirmacao para executar.', classExtra: '', task_id: taskId, at: task?.created_at || '' });
       });
       return entries.slice(-CODEX_HISTORY_LIMIT);
+    }
+
+    function _codexMesclarHistoricoComEspeciais(historico, especiaisFonte = null) {
+      const base = Array.isArray(historico) ? historico.slice() : [];
+      const fonte = Array.isArray(especiaisFonte) ? especiaisFonte : _codexLerHistoricoLocal();
+      const especiais = fonte.filter(item => ['approval', 'fallback', 'fallback_user'].includes(String(item?.kind || '')));
+      const chaves = new Set(base.map(item => `${item.role}|${item.task_id}|${item.text}`));
+      especiais.forEach(item => {
+        const chave = `${item.role}|${item.task_id}|${item.text}`;
+        if (!chaves.has(chave)) {
+          chaves.add(chave);
+          base.push(item);
+        }
+      });
+      return base.slice(-CODEX_HISTORY_LIMIT);
     }
 
     function _codexTaskTimeMs(task, preferredKey = '') {
@@ -1492,9 +1831,9 @@
     }
 
     function _codexTaskTitulo(task) {
-      const prompt = String(task?.prompt || '').replace(/\s+/g, ' ').trim();
+      const prompt = String(task?.prompt || task?.prompt_preview || '').replace(/\s+/g, ' ').trim();
       if (prompt) return prompt.slice(0, 120);
-      const response = String(task?.final_response || task?.error || '').replace(/\s+/g, ' ').trim();
+      const response = String(task?.final_response || task?.response_preview || task?.error || '').replace(/\s+/g, ' ').trim();
       return response ? response.slice(0, 120) : 'Conversa sem titulo';
     }
 
@@ -1555,8 +1894,8 @@
 
     async function _codexCarregarListaHistorico() {
       try {
-        const data = await _codexFetchJson('/api/admin/codex/tasks?limit=100');
-        codexHistoryTasks = Array.isArray(data && data.tasks) ? data.tasks : [];
+        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true');
+        codexHistoryTasks = Array.isArray(data && data.tasks) ? data.tasks.map(_codexCompactTaskForMemory) : [];
         _codexRenderHistoricoTasks(codexHistoryTasks);
         return codexHistoryTasks;
       } catch (err) {
@@ -1572,6 +1911,26 @@
       }
     }
 
+    async function _codexRestaurarTarefaAtiva(taskId) {
+      const id = String(taskId || '').trim();
+      if (!id) return null;
+      const pollGeneration = _codexInvalidarPollAtual();
+      try {
+        const data = await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(id));
+        const task = data && data.task;
+        if (!task) return null;
+        _codexAplicarTask(task);
+        const status = String(task.status || '');
+        if (task.task_id && ['queued', 'running', 'awaiting_approval', 'cancel_requested'].includes(status)) {
+          _codexPollTask(task.task_id, pollGeneration);
+        }
+        return task;
+      } catch (err) {
+        _codexSetStatus(_codexErroCurto(err, 'Nao foi possivel restaurar a tarefa ativa.'), true);
+        return null;
+      }
+    }
+
     async function _codexToggleHistorico(force) {
       const panel = document.getElementById('jk-codex-history-panel');
       if (!panel) return;
@@ -1584,28 +1943,49 @@
     async function _codexAbrirTarefaHistorico(conversationId) {
       const id = String(conversationId || '').trim();
       if (!id) return;
+      const pollGeneration = _codexInvalidarPollAtual();
       try {
         let group = _codexFindConversationGroup(id);
         if (!group && (id.startsWith('task:') || id.startsWith('task_'))) {
           const taskId = id.startsWith('task:') ? id.slice(5) : id.slice(5);
-          const data = await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId));
+          const data = await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(taskId));
           const task = data && data.task;
           if (task) group = { conversation_id: id, thread_id: String(task.thread_id || ''), tasks: [task], latest: task };
         }
         if (!group || !group.tasks.length) return;
+        if (group.tasks.some(task => task && task.task_id && !Object.prototype.hasOwnProperty.call(task, 'prompt'))) {
+          const detalhadas = [];
+          for (const item of group.tasks) {
+            if (item && item.task_id && !Object.prototype.hasOwnProperty.call(item, 'prompt')) {
+              const detail = await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(item.task_id));
+              detalhadas.push(detail && detail.task ? detail.task : item);
+            } else {
+              detalhadas.push(item);
+            }
+          }
+          group = {
+            ...group,
+            tasks: detalhadas,
+            latest: detalhadas[detalhadas.length - 1] || group.latest,
+            thread_id: String(detalhadas.find(item => item && item.thread_id)?.thread_id || group.thread_id || ''),
+          };
+        }
         const latest = group.latest || group.tasks[group.tasks.length - 1];
-        codexTaskAtual = latest;
+        codexTaskAtual = _codexCompactTaskForMemory(latest);
         const activeConversation = String(latest.conversation_id || group.conversation_id || '').trim();
         if (activeConversation) _codexSetActiveConversationId(activeConversation);
         if (group.thread_id || latest.thread_id) {
-          codexThreadId = String(group.thread_id || latest.thread_id || '');
-          localStorage.setItem('jk_codex_thread_id', codexThreadId);
+          _codexSetThreadId(group.thread_id || latest.thread_id);
         }
-        codexMessagesAtuais = _codexHistoricoFromTasks(group.tasks);
+        codexMessagesAtuais = _codexMesclarHistoricoComEspeciais(_codexHistoricoFromTasks(group.tasks));
         _codexSalvarHistoricoLocal();
         _codexRenderizarHistoricoLocal();
         _codexMostrarAprovacao(latest);
         _codexRenderRuntime(latest);
+        const latestStatus = String(latest && latest.status || '');
+        if (latest.task_id && ['queued', 'running', 'awaiting_approval', 'cancel_requested'].includes(latestStatus)) {
+          _codexPollTask(latest.task_id, pollGeneration);
+        }
         _codexSalvarEstadoPainel({ task_id: String(latest.task_id || '') });
         _codexSetStatus('Conversa carregada do historico.');
         _codexRenderHistoricoTasks(codexHistoryTasks);
@@ -1625,15 +2005,16 @@
       try {
         let deletedIds = ids.slice();
         try {
-          const data = await _codexFetchJson('/api/admin/codex/conversations/' + encodeURIComponent(id), { method: 'DELETE' });
+          const data = await _codexFetchJson('/api/codex/conversations/' + encodeURIComponent(id), { method: 'DELETE' });
           if (Array.isArray(data && data.task_ids)) deletedIds = data.task_ids.map(item => String(item || '').trim()).filter(Boolean);
         } catch (err) {
           if (!ids.length) throw err;
           for (const taskId of ids) {
-            await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId), { method: 'DELETE' });
+            await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(taskId), { method: 'DELETE' });
           }
         }
         const idSet = new Set(deletedIds.length ? deletedIds : ids);
+        codexFullTextCache.clear();
         codexHistoryTasks = codexHistoryTasks.filter(task => {
           const taskId = String(task?.task_id || '');
           return _codexConversationKey(task) !== id && !idSet.has(taskId);
@@ -1641,13 +2022,11 @@
         try { localStorage.removeItem(_codexHistoricoStorageKey(id)); } catch (_) {}
         const eraAtiva = id === _codexGetActiveConversationId(false) || (codexTaskAtual && (_codexConversationKey(codexTaskAtual) === id || idSet.has(String(codexTaskAtual.task_id || ''))));
         if (eraAtiva) {
+          _codexInvalidarPollAtual();
           codexTaskAtual = null;
-          codexThreadId = '';
+          _codexSetThreadId('');
           codexMessagesAtuais = [];
           _codexSetActiveConversationId(_codexNovoConversationId());
-          try {
-            localStorage.removeItem('jk_codex_thread_id');
-          } catch (_) {}
           _codexRenderRuntime(null);
           _codexMostrarAprovacao(null);
           document.getElementById('jk-codex-messages')?.replaceChildren();
@@ -1661,44 +2040,18 @@
       }
     }
 
-    async function _codexCarregarHistoricoPersistido() {
-      const deveAtualizarHistorico = codexMessagesAtuais.length <= 1;
-      try {
-        const data = await _codexFetchJson('/api/admin/codex/tasks?limit=100');
-        const tasks = Array.isArray(data && data.tasks) ? data.tasks : [];
-        codexHistoryTasks = tasks;
-        if (codexHistoryVisible) _codexRenderHistoricoTasks(codexHistoryTasks);
-        const groups = _codexConversationGroups(tasks);
-        const activeId = _codexGetActiveConversationId(false);
-        let selectedGroup = activeId ? groups.find(group => String(group.conversation_id || '') === activeId) || null : null;
-        if (!selectedGroup && !activeId && deveAtualizarHistorico) selectedGroup = groups[0] || null;
-        if (selectedGroup && selectedGroup.conversation_id) _codexSetActiveConversationId(selectedGroup.conversation_id);
-        const latest = selectedGroup ? selectedGroup.latest : null;
-        if (latest) {
-          codexTaskAtual = latest;
-          if (latest.thread_id) {
-            codexThreadId = String(latest.thread_id || '');
-            localStorage.setItem('jk_codex_thread_id', codexThreadId);
-          }
-          _codexMostrarAprovacao(latest);
-          _codexRenderRuntime(latest);
-          const latestStatus = String(latest.status || '');
-          if (latest.task_id && ['queued', 'running', 'awaiting_approval', 'cancel_requested'].includes(latestStatus)) {
-            _codexPollTask(latest.task_id);
-          }
-          _codexSalvarEstadoPainel({ task_id: String(latest.task_id || '') });
-        }
-        if (!deveAtualizarHistorico) return;
-        const historico = _codexHistoricoFromTasks(selectedGroup ? selectedGroup.tasks : (latest ? [latest] : []));
-        if (!historico.length) return;
-        codexMessagesAtuais = historico;
-        _codexSalvarHistoricoLocal();
-        _codexRenderizarHistoricoLocal();
-      } catch (_) {}
+    function _codexInvalidarPollAtual() {
+      codexPollGeneration += 1;
+      if (codexPollTimer) clearTimeout(codexPollTimer);
+      codexPollTimer = null;
+      return codexPollGeneration;
     }
 
     function _codexNovaConversa() {
-      codexThreadId = '';
+      _codexInvalidarPollAtual();
+      codexInitialTaskId = '';
+      codexFullTextCache.clear();
+      _codexSetThreadId('');
       _codexSetActiveConversationId(_codexNovoConversationId());
       codexTaskAtual = null;
       codexActionRunAtual = null;
@@ -1706,9 +2059,10 @@
       codexActionPollTimer = null;
       codexPollFailures = {};
       codexRenderedFinalTasks = new Set();
+      codexFallbackTasks = new Set();
       codexMessagesAtuais = [];
+      _codexSetSelectValue('jk-codex-access', 'read_only');
       try {
-        localStorage.removeItem('jk_codex_thread_id');
         localStorage.removeItem(_codexHistoricoStorageKey());
       } catch (_) {}
       document.getElementById('jk-codex-messages')?.replaceChildren();
@@ -1723,7 +2077,14 @@
       const lista = document.getElementById('jk-codex-messages');
       if (!lista) return null;
       const rawText = String(texto || '');
-      const text = role === 'user' ? rawText : _codexTextoVisual(rawText);
+      const sourceText = role === 'user' ? rawText : _codexTextoVisual(rawText);
+      const prepared = _codexPrepararConteudoMensagem(role, sourceText, {
+        ...options,
+        full_text: options.full_text !== undefined
+          ? (role === 'user' ? String(options.full_text || '') : _codexTextoVisual(options.full_text || ''))
+          : undefined,
+      });
+      const text = prepared.text;
       if (_codexEhStatusEnvioObsoleto(role, text)) return null;
       const div = document.createElement('div');
       div.className = `jk-codex-msg ${role || 'assistant'} ${classExtra || ''}`.trim();
@@ -1733,14 +2094,21 @@
         div.textContent = text;
       }
       lista.appendChild(div);
+      _codexAppendFullTextAction(div, prepared);
       lista.scrollTop = lista.scrollHeight + 9999;
       if (options.persist !== false && text) {
         codexMessagesAtuais.push({
           role: String(role || 'assistant'),
           text,
           classExtra: String(classExtra || ''),
+          kind: String(options.kind || ''),
+          approval_payload: options.approval_payload && typeof options.approval_payload === 'object' ? options.approval_payload : null,
           task_id: String(options.task_id || ''),
           report_formats: Array.isArray(options.report_formats) ? options.report_formats.map(fmt => String(fmt || '').trim()).filter(Boolean) : [],
+          content_id: prepared.content_id,
+          content_kind: prepared.content_kind,
+          truncated: prepared.truncated,
+          full_length: prepared.full_length,
           at: new Date().toISOString(),
         });
         codexMessagesAtuais = codexMessagesAtuais.slice(-CODEX_HISTORY_LIMIT);
@@ -1755,9 +2123,15 @@
       const urls = _codexApiUrls(path);
       for (const url of urls) {
         try {
+          const requestHeaders = { ..._authHeaders(), ...(options.headers || {}) };
+          if (typeof FormData !== 'undefined' && options.body instanceof FormData) {
+            Object.keys(requestHeaders).forEach(key => {
+              if (String(key).toLowerCase() === 'content-type') delete requestHeaders[key];
+            });
+          }
           const resp = await window.__JK_IA_SIDEBAR_FETCH__(url, {
             ...options,
-            headers: { ..._authHeaders(), ...(options.headers || {}) },
+            headers: requestHeaders,
             cache: 'no-store',
           });
           const data = await resp.json().catch(() => ({}));
@@ -1796,19 +2170,6 @@
       try { localStorage.setItem(CODEX_ASSISTANT_SEEN_KEY, JSON.stringify(data || {})); } catch (_) {}
     }
 
-    function _codexAssistantReported() {
-      try {
-        const data = JSON.parse(localStorage.getItem(CODEX_ASSISTANT_REPORTED_KEY) || '{}') || {};
-        return data && typeof data === 'object' ? data : {};
-      } catch (_) {
-        return {};
-      }
-    }
-
-    function _codexAssistantSaveReported(data) {
-      try { localStorage.setItem(CODEX_ASSISTANT_REPORTED_KEY, JSON.stringify(data || {})); } catch (_) {}
-    }
-
     function _codexSuggestionId(item) {
       const direct = String(item && item.id || '').trim();
       if (direct) return direct;
@@ -1835,59 +2196,6 @@
         const id = _codexSuggestionId(item);
         return id && !seen[id] && String(item.severity || '') !== 'ok';
       });
-    }
-
-    function _codexSuggestionReportPrompt(items) {
-      const alerts = (Array.isArray(items) ? items : []).filter(Boolean);
-      const lines = [
-        'Gere um relatorio operacional completo destes alertas proativos e mostre o relatorio integral no chat.',
-        'Liste todos os SKUs envolvidos em tabelas, sem resumir somente os primeiros.',
-        'Para cada SKU, explique motivo, impacto comercial, dados usados e acao recomendada.',
-        'Quando falar de ruptura ou reposicao, considere apenas saldo de loja; nao use estoque Full no calculo.',
-        'Explique em linguagem simples onde consultou os dados, periodo, loja/conta, quantidade de registros e avisos de dados incompletos. Nao mostre codigos internos de ferramentas.',
-      ];
-      alerts.forEach((item, index) => {
-        const title = String(item && item.title || 'Alerta Codex').trim();
-        const detail = String(item && item.detail || '').trim();
-        const recommendation = String(item && item.recommendation || '').trim();
-        lines.push('');
-        lines.push(`Alerta ${index + 1}: ${title}`);
-        if (detail) lines.push(`Detalhe: ${detail}`);
-        if (recommendation) lines.push(`Acao sugerida: ${recommendation}`);
-        if (item && item.source) lines.push(`Fonte: ${item.source}`);
-        if (item && item.created_at) lines.push(`Horario do alerta: ${item.created_at}`);
-      });
-      return lines.filter(Boolean).join('\n');
-    }
-
-    async function _codexGerarRelatorioAutomaticoAlertas(items) {
-      if (codexAssistantAutoReportRunning) return;
-      const alerts = (Array.isArray(items) ? items : []).filter(item => {
-        const id = _codexSuggestionId(item);
-        return id && String(item && item.severity || '') !== 'ok';
-      });
-      if (!alerts.length) return;
-      const reported = _codexAssistantReported();
-      const novos = alerts.filter(item => {
-        const id = _codexSuggestionId(item);
-        return id && !reported[id];
-      });
-      if (!novos.length) return;
-      codexAssistantAutoReportRunning = true;
-      try {
-        _codexSetStatus('Gerando relatorio completo dos alertas no chat...');
-        const report = await _codexGerarRelatorioAssistente(_codexSuggestionReportPrompt(novos));
-        if (report) {
-          const now = new Date().toISOString();
-          novos.forEach(item => {
-            const id = _codexSuggestionId(item);
-            if (id) reported[id] = now;
-          });
-          _codexAssistantSaveReported(reported);
-        }
-      } finally {
-        codexAssistantAutoReportRunning = false;
-      }
     }
 
     function _codexAddSuggestionMsg(item, seen) {
@@ -1945,39 +2253,40 @@
         if (_codexAddSuggestionMsg(item, seen)) added = true;
       });
       if (added) _codexAssistantSaveSeen(seen);
-      void _codexGerarRelatorioAutomaticoAlertas(items);
-      document.getElementById('jk-codex-fab')?.classList.toggle('piscando', unseen);
-      document.getElementById('jk-right-sidebar-hotspot')?.classList.toggle('tem-alerta', unseen || iaTemMensagemNaoVista || msgTemMensagemNaoVista);
+      codexTemMensagemNaoVista = unseen;
+      _sidebarAtualizarAlertas();
     }
 
     async function _codexCarregarSugestoes() {
-      if (!_codexAtualizarVisibilidade()) return [];
+      if (!_usuarioLocalEhFull()) return [];
       try {
         const data = await _codexFetchJson('/api/admin/codex/assistant/suggestions');
         const suggestions = Array.isArray(data && data.suggestions) ? data.suggestions : [];
         _codexRenderSugestoes(suggestions);
         return suggestions;
-      } catch (_) {
-        return [];
+      } catch (err) {
+        throw err;
       }
     }
 
     async function _codexRodarProativo(force = false) {
-      if (!_codexAtualizarVisibilidade()) return;
+      if (!_usuarioLocalEhFull()) return;
       try {
         _codexSetStatus(force ? 'Codex verificando dados proativamente...' : 'Codex verificando alertas de 30 minutos...');
         const data = await _codexFetchJson('/api/admin/codex/assistant/proactive/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ force: !!force, screen_context: _codexObterContextoTelaAtual() }),
+          body: JSON.stringify({ force: !!force, compact: true, screen_context: _codexObterContextoTelaAtual({ background: true }) }),
         });
         const suggestions = Array.isArray(data && data.suggestions) ? data.suggestions : [];
         _codexRenderSugestoes(suggestions);
         if (data && data.status === 'completed') {
           _codexSetStatus('Codex verificou alertas proativos.');
         }
+        return data;
       } catch (err) {
         _codexSetStatus(_codexErroCurto(err, 'Falha ao verificar alertas proativos.'), true);
+        throw err;
       }
     }
 
@@ -2001,8 +2310,8 @@
       if (viewer) {
         try {
           viewer.opener = null;
-          viewer.document.title = 'Abrindo relatorio João Pretinho...';
-          viewer.document.body.innerHTML = '<p style="font-family:Arial,sans-serif;padding:24px;">Abrindo relatorio João Pretinho...</p>';
+          viewer.document.title = 'Abrindo relatorio Black Jhon...';
+          viewer.document.body.innerHTML = '<p style="font-family:Arial,sans-serif;padding:24px;">Abrindo relatorio Black Jhon...</p>';
         } catch (_) {}
       }
       let ultimoErro = null;
@@ -2031,7 +2340,7 @@
       }
       if (viewer && !viewer.closed) {
         try {
-          viewer.document.body.innerHTML = '<p style="font-family:Arial,sans-serif;padding:24px;color:#991b1b;">Nao foi possivel abrir o relatorio João Pretinho.</p>';
+          viewer.document.body.innerHTML = '<p style="font-family:Arial,sans-serif;padding:24px;color:#991b1b;">Nao foi possivel abrir o relatorio Black Jhon.</p>';
         } catch (_) {}
       }
       throw ultimoErro || new Error('Falha ao abrir relatorio.');
@@ -2051,7 +2360,7 @@
           const objectUrl = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = objectUrl;
-          a.download = `joao_pretinho_${id}.${format}`;
+          a.download = `black_jhon_${id}.${format}`;
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -2072,28 +2381,35 @@
     }
 
     function _codexReportChatText(report, intro) {
-      const reportId = _codexRelatorioId(report);
-      const title = String(report && report.title || 'Relatorio Joao Pretinho').trim();
-      const text = String(report && report.chat_text || '').trim();
-      if (text) return text;
+      const title = String(report && report.title || 'Relatorio Black Jhon').trim();
+      const fullText = String(report && report.chat_text || '').trim();
+      const serverPreview = String(report && report.chat_text_preview || '').trim();
+      const preview = (serverPreview || fullText.slice(0, CODEX_REPORT_PREVIEW)).slice(0, CODEX_REPORT_PREVIEW).trim();
+      const total = Math.max(Number(report && report.chat_text_length || 0), fullText.length, preview.length);
       return [
-        intro || 'Relatorio Joao Pretinho gerado.',
+        intro || 'Relatorio Black Jhon gerado.',
         '',
         `# ${title}`,
-        reportId ? `ID: \`${reportId}\`` : '',
-        '',
-        'O conteudo detalhado nao veio no metadata deste relatorio antigo. Use os botoes abaixo para baixar PDF ou planilha.'
+        preview,
+        total > preview.length ? `Cartao compacto: ${preview.length} de ${total} caracteres.` : '',
+        !preview ? 'Use Abrir relatorio para consultar o conteudo completo.' : '',
       ].filter(Boolean).join('\n');
     }
 
     function _codexAppendReportActions(msg, reportId, formats = null) {
+      if (!_usuarioLocalEhFull()) return;
       const id = String(reportId || '').trim();
       if (!msg || !id || msg.querySelector('.jk-codex-report-downloads')) return;
       const rawFormats = Array.isArray(formats) && formats.length ? formats : ['pdf', 'xlsx'];
       const unique = Array.from(new Set(rawFormats.map(fmt => String(fmt || '').trim().toLowerCase()).filter(fmt => ['pdf', 'xlsx', 'html'].includes(fmt))));
-      if (!unique.length) return;
       const actions = document.createElement('div');
       actions.className = 'jk-codex-msg-actions jk-codex-report-downloads';
+      const openReport = document.createElement('button');
+      openReport.type = 'button';
+      openReport.className = 'jk-codex-tool jk-codex-open-report';
+      openReport.textContent = 'Abrir relatorio';
+      openReport.addEventListener('click', () => { void _codexAbrirRelatorio(id, 'html'); });
+      actions.appendChild(openReport);
       unique.forEach(fmt => {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -2117,7 +2433,26 @@
       const reportId = _codexRelatorioId(report);
       if (!reportId) return;
       const reportFormats = _codexReportFormats(report);
-      const msg = _codexAddMsg('assistant', _codexReportChatText(report, intro), 'codex-report', { task_id: reportId, report_formats: reportFormats });
+      const fullText = String(report && report.chat_text || '');
+      const serverPreview = String(report && report.chat_text_preview || '');
+      const previewText = _codexReportChatText(report, intro);
+      const fullLength = Math.max(Number(report && report.chat_text_length || 0), fullText.length, serverPreview.length);
+      const truncated = report && report.chat_text_truncated === true
+        || fullText.length > CODEX_REPORT_PREVIEW
+        || (!!serverPreview && fullLength > serverPreview.length);
+      const msg = _codexAddMsg('assistant', previewText, 'codex-report', {
+        task_id: reportId,
+        report_formats: reportFormats,
+        kind: 'report',
+        content_id: reportId,
+        content_kind: 'report',
+        prepared: true,
+        preview_text: previewText,
+        preview_limit: CODEX_REPORT_PREVIEW,
+        full_text: fullText || undefined,
+        full_length: fullLength,
+        truncated,
+      });
       if (!msg) return;
       _codexAppendReportActions(msg, reportId, reportFormats);
       const lista = document.getElementById('jk-codex-messages');
@@ -2125,14 +2460,14 @@
     }
 
     async function _codexGerarRelatorioAssistente(prompt = '') {
-      if (!_codexAtualizarVisibilidade()) return;
+      if (!_usuarioLocalEhFull()) return;
       try {
         _codexSetStatus('Interpretando pedido e consultando dados...');
         const data = await _codexFetchJson('/api/admin/codex/assistant/reports', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            prompt: String(prompt || document.getElementById('jk-codex-input')?.value || 'relatorio operacional João Pretinho').trim(),
+            prompt: String(prompt || document.getElementById('jk-codex-input')?.value || 'relatorio operacional Black Jhon').trim(),
             screen_context: _codexObterContextoTelaAtual(),
             thread_id: codexThreadId || '',
             conversation_id: _codexGetActiveConversationId(true),
@@ -2152,12 +2487,12 @@
     }
 
     async function _codexMostrarCapacidades() {
-      if (!_codexAtualizarVisibilidade()) return;
+      if (!_usuarioLocalEhFull()) return;
       try {
         _codexSetStatus('Carregando capacidades...');
         const data = await _codexFetchJson('/api/admin/codex/capabilities/modules');
         const modules = Array.isArray(data?.modules) ? data.modules : [];
-        const linhas = ['O que o Joao Pretinho sabe fazer:'];
+        const linhas = ['O que o Black Jhon sabe fazer:'];
         modules.slice(0, 14).forEach(mod => {
           const total = Number(mod?.total || 0);
           if (!total) return;
@@ -2179,12 +2514,12 @@
     }
 
     async function _codexRodarAnaliseDiaria(force = false) {
-      if (!_codexAtualizarVisibilidade()) return;
+      if (!_usuarioLocalEhFull()) return;
       try {
         const data = await _codexFetchJson('/api/admin/codex/assistant/daily-analysis/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ force: !!force, screen_context: _codexObterContextoTelaAtual() }),
+          body: JSON.stringify({ force: !!force, compact: true, screen_context: _codexObterContextoTelaAtual({ background: true }) }),
         });
         if (data && data.suggestions) _codexRenderSugestoes(data.suggestions);
         const report = data && data.report;
@@ -2196,35 +2531,168 @@
           const lastStep = steps.length ? String(steps[steps.length - 1] || '').trim() : '';
           if (lastStep) _codexSetStatus(`Analise diaria pronta: ${lastStep}`);
         }
-      } catch (_) {}
+        return data;
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    function _codexRegistrarAtividadeCoordenador(event) {
+      if (event && event.isTrusted === false) return;
+      if (event && event.type === 'scroll') {
+        const panel = document.getElementById('jk-codex-panel');
+        const target = event.target;
+        const scrollDoPainelFechado = panel
+          && target
+          && (target === panel || panel.contains(target))
+          && !panel.classList.contains('aberto');
+        if (scrollDoPainelFechado) return;
+      }
+      codexAssistantLastActivityAt = Date.now();
+    }
+
+    function _codexCoordenadorElegivel() {
+      const panelVisivel = codexPanelAberto
+        || document.getElementById('jk-codex-panel')?.classList.contains('aberto') === true;
+      return _usuarioLocalEhFull()
+        && !panelVisivel
+        && !document.hidden
+        && String(document.visibilityState || 'visible') === 'visible'
+        && Date.now() - codexAssistantLastActivityAt >= CODEX_COORDINATOR_IDLE_MS;
+    }
+
+    function _codexAgendarCoordenador(delayMs) {
+      if (!_usuarioLocalEhFull()) return;
+      if (codexAssistantTimer) clearTimeout(codexAssistantTimer);
+      codexAssistantTimer = setTimeout(() => {
+        codexAssistantTimer = null;
+        void _codexExecutarCoordenador();
+      }, Math.max(0, Number(delayMs || 0)));
+    }
+
+    async function _codexExecutarCoordenador() {
+      if (!_usuarioLocalEhFull()) return false;
+      if (codexAssistantCoordinatorRunning) {
+        _codexAgendarCoordenador(CODEX_COORDINATOR_RETRY_MS);
+        return false;
+      }
+      if (!_codexCoordenadorElegivel()) {
+        _codexAgendarCoordenador(CODEX_COORDINATOR_RETRY_MS);
+        return false;
+      }
+      codexAssistantCoordinatorRunning = true;
+      try {
+        await _codexCarregarSugestoes();
+        if (!_codexCoordenadorElegivel()) throw new Error('Coordenador pausado por atividade do usuario.');
+        await _codexRodarProativo(false);
+        if (!_codexCoordenadorElegivel()) throw new Error('Coordenador pausado por atividade do usuario.');
+        await _codexRodarAnaliseDiaria(false);
+        _codexAgendarCoordenador(CODEX_PROACTIVE_INTERVAL_MS);
+        return true;
+      } catch (_) {
+        _codexAgendarCoordenador(CODEX_COORDINATOR_RETRY_MS);
+        return false;
+      } finally {
+        codexAssistantCoordinatorRunning = false;
+      }
     }
 
     function _codexIniciarAssistenteProativo() {
-      if (!_codexAtualizarVisibilidade() || codexAssistantTimer) return;
-      void _codexCarregarSugestoes();
-      void _codexRodarProativo(false);
-      void _codexRodarAnaliseDiaria(false);
-      codexAssistantTimer = setInterval(() => {
-        void _codexRodarProativo(false);
-        void _codexRodarAnaliseDiaria(false);
-      }, CODEX_PROACTIVE_INTERVAL_MS);
+      if (!_usuarioLocalEhFull() || codexAssistantCoordinatorStarted) return;
+      codexAssistantCoordinatorStarted = true;
+      codexAssistantLastActivityAt = Date.now();
+      document.addEventListener('keydown', _codexRegistrarAtividadeCoordenador, { capture: true });
+      document.addEventListener('mousemove', _codexRegistrarAtividadeCoordenador, { capture: true, passive: true });
+      document.addEventListener('scroll', _codexRegistrarAtividadeCoordenador, { capture: true, passive: true });
+      _codexAgendarCoordenador(CODEX_COORDINATOR_FIRST_DELAY_MS);
+    }
+
+    function _codexPararAssistenteProativo() {
+      if (codexAssistantTimer) clearTimeout(codexAssistantTimer);
+      codexAssistantTimer = null;
+      codexAssistantCoordinatorStarted = false;
+      document.removeEventListener('keydown', _codexRegistrarAtividadeCoordenador, { capture: true });
+      document.removeEventListener('mousemove', _codexRegistrarAtividadeCoordenador, { capture: true });
+      document.removeEventListener('scroll', _codexRegistrarAtividadeCoordenador, { capture: true });
+    }
+
+    if (window.__JK_CODEX_TEST_MODE__ === true) {
+      window.__JK_CODEX_COORDINATOR_TEST__ = {
+        runNow: () => _codexExecutarCoordenador(),
+        state: () => ({
+          started: codexAssistantCoordinatorStarted,
+          running: codexAssistantCoordinatorRunning,
+          timer_active: !!codexAssistantTimer,
+          last_activity_at: codexAssistantLastActivityAt,
+          now: Date.now(),
+          eligible: _codexCoordenadorElegivel(),
+          panel_open: codexPanelAberto || document.getElementById('jk-codex-panel')?.classList.contains('aberto') === true,
+          full_text_cache_size: codexFullTextCache.size,
+          full_text_cache_max: CODEX_FULL_TEXT_CACHE_MAX,
+        }),
+      };
     }
 
     function _codexAtualizarVisibilidade() {
       const full = _usuarioLocalEhFull();
-      document.getElementById('jk-codex-fab')?.classList.toggle('is-hidden', !full);
-      if (!full && codexPanelAberto) setCodexPanelAberto(false);
-      return full;
+      const panel = document.getElementById('jk-codex-panel');
+      if (panel) {
+        panel.dataset.accessProfile = full ? 'full' : 'read_only';
+        panel.classList.toggle('jk-codex-readonly-user', !full);
+      }
+      const toolbar = document.getElementById('jk-codex-toolbar');
+      if (toolbar) {
+        toolbar.hidden = !full;
+        toolbar.style.display = full ? '' : 'none';
+      }
+      const pathChips = document.getElementById('jk-codex-path-chips');
+      if (pathChips) {
+        pathChips.hidden = !full;
+        pathChips.style.display = full ? '' : 'none';
+      }
+      const attachmentChips = document.getElementById('jk-codex-attachment-chips');
+      if (attachmentChips) {
+        attachmentChips.hidden = !full;
+        attachmentChips.style.display = full ? '' : 'none';
+      }
+      const approval = document.getElementById('jk-codex-approval');
+      if (approval) {
+        approval.hidden = !full;
+        approval.style.display = full ? '' : 'none';
+        if (!full) approval.classList.remove('ativo');
+      }
+      const subtitle = document.querySelector('#jk-codex-header > div:nth-child(2) > span');
+      if (subtitle) subtitle.textContent = full
+        ? 'Codex principal · IA integrada do sistema'
+        : 'Codex principal · somente leitura';
+      if (!full) {
+        ['jk-codex-add-menu', 'jk-codex-path-row', 'jk-codex-goal-row', 'jk-codex-suggestions'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.hidden = true;
+        });
+        _codexSetSelectValue('jk-codex-access', 'read_only');
+        codexPaths = [];
+        codexUploadedAttachments = [];
+        _codexAtualizarPathChips();
+        _codexRenderAttachmentChips();
+        const status = document.getElementById('jk-codex-status');
+        if (status && /apenas para administrador full/i.test(status.textContent || '')) {
+          _codexSetStatus('Black Jhon pronto para consultas em modo somente leitura.');
+        }
+      }
+      return true;
     }
 
     async function _codexCarregarStatus(silencioso = false) {
-      if (!_codexAtualizarVisibilidade()) {
-        _codexSetStatus('Codex disponivel apenas para administrador full.', true);
-        return null;
-      }
+      _codexAtualizarVisibilidade();
       if (!silencioso) _codexSetStatus('Verificando Codex...');
       try {
-        const data = await _codexFetchJson('/api/admin/codex/status');
+        const data = await _codexFetchJson('/api/codex/status');
+        const defaults = data && data.defaults && typeof data.defaults === 'object' ? data.defaults : {};
+        const saved = _codexReadStoredSettings();
+        if (!saved.model && defaults.model) _codexSetSelectValue('jk-codex-model', defaults.model);
+        if (!saved.reasoning_effort && defaults.reasoning_effort) _codexSetSelectValue('jk-codex-reasoning', defaults.reasoning_effort);
+        if (!saved.speed && defaults.speed) _codexSetSelectValue('jk-codex-speed', defaults.speed);
         const msg = data && data.message ? data.message : 'Status do Codex recebido.';
         _codexSetStatus(msg, !(data && data.ready));
         return data;
@@ -2238,19 +2706,20 @@
       const box = document.getElementById('jk-codex-approval');
       const text = document.getElementById('jk-codex-approval-text');
       if (!box) return;
-      const ativo = !!(task && task.status === 'awaiting_approval');
+      const ativo = _usuarioLocalEhFull() && !!(task && task.status === 'awaiting_approval');
       box.classList.toggle('ativo', ativo);
       if (ativo && text) {
-        text.textContent = `Confirmar execucao João Pretinho em ${task.sandbox || 'workspace_write'} para: ${(task.prompt || '').slice(0, 120)}`;
+        text.textContent = `Confirmar execucao Black Jhon em ${task.sandbox || 'workspace_write'} para: ${(task.prompt || '').slice(0, 120)}`;
       }
     }
 
     function _codexAplicarTask(task) {
       if (!task) return;
-      codexTaskAtual = task;
+      const memoryTask = _codexCompactTaskForMemory(task);
+      codexTaskAtual = memoryTask;
       if (task.conversation_id) _codexSetActiveConversationId(task.conversation_id);
       if (task.task_id) {
-        codexHistoryTasks = [task].concat(codexHistoryTasks.filter(item => String(item?.task_id || '') !== String(task.task_id || '')));
+        codexHistoryTasks = [memoryTask].concat(codexHistoryTasks.filter(item => String(item?.task_id || '') !== String(task.task_id || '')));
         if (codexHistoryVisible) _codexRenderHistoricoTasks(codexHistoryTasks);
       }
       if (task.task_id) codexPollFailures[task.task_id] = 0;
@@ -2264,16 +2733,36 @@
       } else if (status === 'running') {
         _codexSetStatus(_codexStatusComDetalhe('Codex trabalhando...', task));
       } else if (status === 'failed') {
-        _codexSetStatus(task.error || 'Codex falhou.', true);
-        if (!codexRenderedFinalTasks.has(task.task_id)) {
+        const erroTask = task.error || 'Codex falhou.';
+        const temAnexos = (Array.isArray(task.paths) ? task.paths : [])
+          .some(path => String(path || '').replace(/\\/g, '/').includes('.codex-remote-attachments/'));
+        const fallbackPermitido = _blackJhonPodeUsarIaSecundaria({
+          sandbox: task.sandbox,
+          prompt: task.prompt,
+          temAnexos,
+          mutableIntent: task.mutable_intent === true,
+          error: erroTask,
+        });
+        if (fallbackPermitido && !codexFallbackTasks.has(task.task_id)) {
+          codexFallbackTasks.add(task.task_id);
           codexRenderedFinalTasks.add(task.task_id);
-          _codexAddMsg('assistant', task.error || 'Codex falhou.', '', { task_id: task.task_id });
+          _codexSetStatus('Codex principal indisponivel. Ativando fallback de leitura...');
+          void _blackJhonResponderComIaSecundaria(task.prompt, task.screen_context, erroTask).catch((fallbackError) => {
+            const msg = _codexErroCurto(fallbackError, erroTask);
+            _codexSetStatus(msg, true);
+            _codexAddMsg('assistant', msg, '', { task_id: task.task_id });
+          });
+        } else {
+          _codexSetStatus(erroTask, true);
+          if (!codexRenderedFinalTasks.has(task.task_id)) {
+            codexRenderedFinalTasks.add(task.task_id);
+            _codexAddMsg('assistant', erroTask, '', { task_id: task.task_id });
+          }
         }
       } else if (status === 'completed') {
         _codexSetStatus('Codex concluiu.');
         if (task.thread_id) {
-          codexThreadId = String(task.thread_id || '');
-          localStorage.setItem('jk_codex_thread_id', codexThreadId);
+          _codexSetThreadId(task.thread_id);
         }
         if (!codexRenderedFinalTasks.has(task.task_id)) {
           codexRenderedFinalTasks.add(task.task_id);
@@ -2285,19 +2774,22 @@
       _codexSalvarEstadoPainel({ task_id: String(task.task_id || '') });
     }
 
-    async function _codexPollTask(taskId) {
+    async function _codexPollTask(taskId, generation = codexPollGeneration) {
       if (!taskId) return;
       if (codexPollTimer) clearTimeout(codexPollTimer);
       try {
-        const data = await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId));
+        const data = await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(taskId));
+        if (generation !== codexPollGeneration) return;
+        if (codexTaskAtual && codexTaskAtual.task_id && String(codexTaskAtual.task_id) !== String(taskId)) return;
         const task = data && data.task;
         codexPollFailures[taskId] = 0;
         _codexAplicarTask(task);
         const status = task && String(task.status || '');
         if (['queued', 'running', 'awaiting_approval', 'cancel_requested'].includes(status)) {
-          codexPollTimer = setTimeout(() => _codexPollTask(taskId), status === 'awaiting_approval' ? 3500 : 1800);
+          codexPollTimer = setTimeout(() => _codexPollTask(taskId, generation), status === 'awaiting_approval' ? 3500 : 1800);
         }
       } catch (err) {
+        if (generation !== codexPollGeneration) return;
         const failures = (codexPollFailures[taskId] || 0) + 1;
         codexPollFailures[taskId] = failures;
         const baseTask = codexTaskAtual && codexTaskAtual.task_id === taskId
@@ -2314,7 +2806,7 @@
         _codexRenderRuntime(baseTask);
         _codexSetStatus(reconectando ? 'Reconectando ao Codex local...' : msg, !reconectando);
         if (reconectando) {
-          codexPollTimer = setTimeout(() => _codexPollTask(taskId), 2500);
+          codexPollTimer = setTimeout(() => _codexPollTask(taskId, generation), 2500);
         }
       }
     }
@@ -2349,6 +2841,7 @@
     }
 
     function _codexRenderActionRun(run) {
+      if (!_usuarioLocalEhFull()) return null;
       if (!run || !run.run_id) return null;
       const lista = document.getElementById('jk-codex-messages');
       if (!lista) return null;
@@ -2450,6 +2943,7 @@
     }
 
     function _codexRenderActionProposal(proposal) {
+      if (!_usuarioLocalEhFull()) return;
       if (!proposal || !proposal.proposal_id) return;
       const msg = _codexAddMsg('assistant', ' ', 'codex-action-proposal', { persist: false, task_id: proposal.proposal_id });
       if (!msg) return;
@@ -2545,14 +3039,14 @@
     }
 
     function _codexHistoryForActionProposal() {
-      return (codexMessagesAtuais || []).slice(-14).map(item => ({
+      return (codexMessagesAtuais || []).filter(item => item && item.kind !== 'approval').slice(-14).map(item => ({
         role: String(item && item.role || ''),
         text: String(item && item.text || '').slice(0, 1000),
       })).filter(item => item.text);
     }
 
     function _codexHistoryForPrompt() {
-      return (codexMessagesAtuais || []).slice(-24).map(item => ({
+      return (codexMessagesAtuais || []).filter(item => item && item.kind !== 'approval').slice(-24).map(item => ({
         role: String(item && item.role || ''),
         text: String(item && item.text || '').slice(0, 2400),
         task_id: String(item && item.task_id || ''),
@@ -2578,7 +3072,68 @@
       return /\b(sincronize|sincronizar|sincroniza|sicronize|sicronizar|baixar|baixe|atualize|atualizar|altere|alterar|ajuste|ajustar|corrija|corrigir|mude|mudar|forcar|force|re-sincronizar|reprocessar|salve|salvar|remova|remover|exclua|excluir|limpe|limpar|cancele|cancelar|execute|executar|rode|rodar)\b/.test(text);
     }
 
+    function _blackJhonErroPermiteFallback(error) {
+      const status = Number(error && error.status || 0);
+      const texto = String(error && error.message || error || '');
+      if ([401, 403].includes(status)) return false;
+      if ([502, 503, 504].includes(status)) return true;
+      return /codex console desabilitado|openai-codex|codex login|credencial(?:\s+do)?\s+codex|codex credential|codex auth file|failed to fetch|load failed|networkerror|backend do codex/i.test(texto);
+    }
+
+    function _blackJhonPromptTemPossivelMutacao(prompt) {
+      const text = _codexNormalizarTextoAcao(prompt);
+      return /\b(altere|alterar|alteracao|ajuste|ajustar|corrija|corrigir|correcao|implemente|implementar|crie|criar|adicione|adicionar|inclua|incluir|edite|editar|modifique|modificar|troque|trocar|substitua|substituir|remova|remover|apague|apagar|delete|deletar|exclua|excluir|salve|salvar|grave|gravar|atualize|atualizar|sincronize|sincronizar|instale|instalar|publique|publicar|envie|enviar|aprove|aprovar|execute|executar|rode|rodar|gere|gerar|change|edit|fix|implement|create|add|remove|update|save|write|modify|patch|install|publish|send|approve|execute|run|generate)\b/.test(text);
+    }
+
+    function _blackJhonPodeUsarIaSecundaria({ sandbox = 'read_only', prompt = '', temAnexos = false, mutableIntent = false, error = null } = {}) {
+      return String(sandbox || 'read_only') === 'read_only'
+        && !temAnexos
+        && !mutableIntent
+        && !_blackJhonPromptTemPossivelMutacao(prompt)
+        && _blackJhonErroPermiteFallback(error);
+    }
+
+    async function _blackJhonResponderComIaSecundaria(prompt, screenContext, motivo = '') {
+      const promptSeguro = String(prompt || '').trim();
+      for (let i = codexMessagesAtuais.length - 1; i >= 0; i -= 1) {
+        const item = codexMessagesAtuais[i];
+        if (item && item.role === 'user' && String(item.text || '').trim() === promptSeguro) {
+          item.kind = 'fallback_user';
+          break;
+        }
+      }
+      _codexSetStatus('Codex principal indisponivel. Consultando a IA secundaria do sistema...');
+      const data = await _codexFetchJson('/api/ia/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: promptSeguro,
+          page: _modulo(),
+          model: '',
+          context: {
+            title: String((screenContext && screenContext.title) || document.title || '').slice(0, 240),
+            pathname: String((screenContext && screenContext.pathname) || location.pathname || '').slice(0, 500),
+            modulo_atual: String((screenContext && screenContext.modulo_atual) || _modulo()).slice(0, 120),
+            fallback_read_only: true,
+          },
+          history: [],
+          attachments: [],
+          fallback_read_only: true,
+          conversa_id: _codexGetActiveConversationId(true),
+          modulo: IA_GLOBAL_MODULO,
+          conversa_mensagens: [{ role: 'user', text: promptSeguro }],
+        }),
+      });
+      const resposta = String(data && data.resposta || '').trim();
+      if (!resposta) throw new Error('A IA secundaria do sistema nao retornou resposta.');
+      _codexAddMsg('assistant', resposta, 'black-jhon-fallback', { kind: 'fallback' });
+      _codexSetStatus('Resposta concluida pela IA secundaria; o Codex continua configurado como principal.');
+      if (motivo) console.warn('[Black Jhon] Fallback de leitura acionado:', motivo);
+      return true;
+    }
+
     async function _codexTryCriarActionProposal(prompt, screenContext) {
+      if (!_usuarioLocalEhFull()) return false;
       if (!_codexPedidoPareceAcaoMutavel(prompt)) return false;
       try {
         const data = await _codexFetchJson('/api/admin/codex/actions/proposals', {
@@ -2611,6 +3166,7 @@
     }
 
     async function _codexAprovarActionProposal(proposalId, card) {
+      if (!_usuarioLocalEhFull()) return;
       const id = String(proposalId || '').trim();
       if (!id) return;
       if (card) {
@@ -2635,6 +3191,7 @@
     }
 
     async function _codexPollActionRun(runId) {
+      if (!_usuarioLocalEhFull()) return;
       const id = String(runId || '').trim();
       if (!id) return;
       if (codexActionPollTimer) clearTimeout(codexActionPollTimer);
@@ -2659,6 +3216,7 @@
     }
 
     async function _codexCancelarActionRun(runId) {
+      if (!_usuarioLocalEhFull()) return;
       const id = String(runId || '').trim();
       if (!id) return;
       try {
@@ -2672,6 +3230,61 @@
       }
     }
 
+    function _blackJhonPrepararAcaoLocalFavoritos(prompt) {
+      if (!_usuarioLocalEhFull()) return false;
+      if (!_devePreencherPesquisasFavoritos(prompt)) return false;
+      const msg = _codexAddMsg('assistant', ' ', 'black-jhon-local-action', { persist: false });
+      if (!msg) return false;
+      msg.innerHTML = '';
+      const card = document.createElement('div');
+      card.className = 'jk-codex-action-card';
+      const title = document.createElement('strong');
+      title.className = 'jk-codex-action-title';
+      title.textContent = 'Confirmar preenchimento em Favoritos';
+      const detail = document.createElement('div');
+      detail.className = 'jk-codex-action-detail';
+      detail.textContent = 'O Black Jhon vai preencher e salvar Pesquisa 1 e Pesquisa 2 nos SKUs solicitados. Confirme para executar.';
+      const actions = document.createElement('div');
+      actions.className = 'jk-codex-msg-actions';
+      const confirm = document.createElement('button');
+      confirm.type = 'button';
+      confirm.className = 'jk-codex-btn primary';
+      confirm.textContent = 'Confirmar e executar';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'jk-codex-btn danger';
+      cancel.textContent = 'Cancelar';
+      actions.append(confirm, cancel);
+      card.append(title, detail, actions);
+      msg.appendChild(card);
+      _codexSetStatus('Aguardando confirmacao para preencher as pesquisas de Favoritos.');
+
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        cancel.disabled = true;
+        _codexSetStatus('Executando preenchimento confirmado em Favoritos...');
+        try {
+          const resultado = await _executarAcaoLocal(prompt);
+          const texto = String(resultado && resultado.text || 'A acao local nao retornou resultado.');
+          _codexAddMsg('assistant', texto);
+          _codexSetStatus(texto, !(resultado && resultado.handled));
+          card.dataset.resolved = '1';
+          actions.remove();
+        } catch (error) {
+          const texto = `Nao consegui executar o preenchimento confirmado: ${error && error.message ? error.message : error}`;
+          _codexAddMsg('assistant', texto);
+          _codexSetStatus(texto, true);
+          confirm.disabled = false;
+          cancel.disabled = false;
+        }
+      });
+      cancel.addEventListener('click', () => {
+        card.remove();
+        _codexSetStatus('Preenchimento de Favoritos cancelado.');
+      });
+      return true;
+    }
+
     async function _codexCriarTarefa(forcedAccess = '') {
       const input = document.getElementById('jk-codex-input');
       const promptDigitado = String(input && input.value || '').trim();
@@ -2679,9 +3292,10 @@
         _codexSetStatus('Aguarde o envio dos anexos antes de enviar a tarefa.', true);
         return;
       }
-      const settings = _codexCollectSettings(forcedAccess);
-      const pathsParaTarefa = _codexPathsParaTarefa(settings.paths);
-      const temAnexos = _codexAttachmentPaths().length > 0;
+      const full = _usuarioLocalEhFull();
+      const settings = _codexCollectSettings(full ? forcedAccess : 'read_only');
+      const pathsParaTarefa = full ? _codexPathsParaTarefa(settings.paths) : [];
+      const temAnexos = full && _codexAttachmentPaths().length > 0;
       const prompt = promptDigitado || (temAnexos ? 'Analise os arquivos enviados.' : '');
       if (!prompt) return;
       if (!forcedAccess) _codexPersistSettings();
@@ -2689,14 +3303,22 @@
       _codexGetActiveConversationId(true);
       _codexAddMsg('user', prompt);
       if (input) input.value = '';
-      if (!temAnexos && _codexPedidoPareceAcaoMutavel(prompt)) {
+      if (!full && _codexPedidoPareceAcaoMutavel(prompt)) {
+        const aviso = 'Seu perfil permite somente consultas e analises em modo leitura. Solicite a um administrador full para executar alteracoes.';
+        _codexAddMsg('assistant', aviso);
+        _codexSetStatus(aviso, true);
+        return;
+      }
+      if (!temAnexos && _blackJhonPrepararAcaoLocalFavoritos(prompt)) return;
+      if (full && !temAnexos && _codexPedidoPareceAcaoMutavel(prompt)) {
         _codexSetStatus('Verificando se o pedido corresponde a uma acao aprovavel...');
         const actionHandled = await _codexTryCriarActionProposal(prompt, screenContext);
         if (actionHandled) return;
       }
       _codexSetStatus('Enviando tarefa ao Codex com contexto da tela...');
+      const taskPollGeneration = _codexInvalidarPollAtual();
       try {
-        const data = await _codexFetchJson('/api/admin/codex/tasks', {
+        const data = await _codexFetchJson('/api/codex/tasks', {
           method: 'POST',
           body: JSON.stringify({
             prompt,
@@ -2725,29 +3347,47 @@
             }
           }
           _codexSalvarHistoricoLocal();
-          codexHistoryTasks = [task].concat(codexHistoryTasks.filter(t => String(t?.task_id || '') !== String(task.task_id || '')));
+          codexHistoryTasks = [_codexCompactTaskForMemory(task)].concat(codexHistoryTasks.filter(t => String(t?.task_id || '') !== String(task.task_id || '')));
           if (codexHistoryVisible) _codexRenderHistoricoTasks(codexHistoryTasks);
         }
         _codexAplicarTask(task);
         codexUploadedAttachments = [];
         _codexRenderAttachmentChips();
-        if (task && task.task_id) _codexPollTask(task.task_id);
+        if (task && task.task_id) _codexPollTask(task.task_id, taskPollGeneration);
       } catch (err) {
-        const msg = _codexErroCurto(err, 'Falha ao criar tarefa Codex.');
+        let erroFinal = err;
+        const fallbackPermitido = _blackJhonPodeUsarIaSecundaria({
+          sandbox: settings.sandbox,
+          prompt,
+          temAnexos,
+          mutableIntent: _codexPedidoPareceAcaoMutavel(prompt),
+          error: err,
+        });
+        if (fallbackPermitido) {
+          try {
+            await _blackJhonResponderComIaSecundaria(prompt, screenContext, err && err.message);
+            return;
+          } catch (fallbackError) {
+            erroFinal = fallbackError;
+          }
+        }
+        const msg = _codexErroCurto(erroFinal, 'Falha ao criar tarefa Codex.');
         _codexSetStatus(msg, true);
         _codexAddMsg('assistant', msg);
       }
     }
 
     async function _codexAprovarAtual() {
+      if (!_usuarioLocalEhFull()) return;
       const taskId = codexTaskAtual && codexTaskAtual.task_id;
       if (!taskId) return;
+      const pollGeneration = _codexInvalidarPollAtual();
       _codexSetStatus('Confirmando execucao Codex...');
       try {
         const data = await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId) + '/approve', { method: 'POST' });
         const task = data && data.task;
         _codexAplicarTask(task);
-        _codexPollTask(taskId);
+        _codexPollTask(taskId, pollGeneration);
       } catch (err) {
         _codexSetStatus(_codexErroCurto(err, 'Falha ao aprovar tarefa Codex.'), true);
       }
@@ -2756,8 +3396,9 @@
     async function _codexCancelarAtual() {
       const taskId = codexTaskAtual && codexTaskAtual.task_id;
       if (!taskId) return;
+      _codexInvalidarPollAtual();
       try {
-        const data = await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId) + '/cancel', { method: 'POST' });
+        const data = await _codexFetchJson('/api/codex/tasks/' + encodeURIComponent(taskId) + '/cancel', { method: 'POST' });
         _codexAplicarTask(data && data.task);
         _codexMostrarAprovacao(null);
       } catch (err) {

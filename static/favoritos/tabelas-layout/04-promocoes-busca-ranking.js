@@ -869,15 +869,49 @@
             return erro;
         }
 
+        function aplicarEstadoWorkerFavoritos(status = {}) {
+            const dados = status && typeof status === 'object' ? status : {};
+            const statusTexto = String(dados.status || '').toLowerCase();
+            const cancelado = dados.cancelRequested === true
+                || statusTexto === 'cancel_requested'
+                || statusTexto === 'canceling'
+                || statusTexto === 'canceled'
+                || statusTexto === 'cancelled';
+            if (cancelado && mlFavoritosEmExecucao) {
+                mlFavoritosCancelado = true;
+                mlFavoritosPausado = false;
+                if (mlFavoritosAbortController) {
+                    try {
+                        mlFavoritosAbortController.abort();
+                    } catch (_err) {}
+                }
+            }
+            return cancelado;
+        }
+
         function verificarCancelamentoFavoritos() {
             if (mlFavoritosCancelado) {
                 throw criarErroFavoritosCancelado();
             }
         }
 
+        async function sincronizarEstadoWorkerFavoritos() {
+            const api = obterElectronApiFavoritosExecucao();
+            if (!api || typeof api.getFavoritosWorkerBrowserStatus !== 'function') return null;
+            try {
+                const status = await api.getFavoritosWorkerBrowserStatus();
+                aplicarEstadoWorkerFavoritos(status);
+                return status;
+            } catch (_err) {
+                return null;
+            }
+        }
+
         async function aguardarControleFavoritos() {
+            await sincronizarEstadoWorkerFavoritos();
             verificarCancelamentoFavoritos();
             while (mlFavoritosPausado && !mlFavoritosCancelado) {
+                await sincronizarEstadoWorkerFavoritos();
                 await new Promise(resolve => setTimeout(resolve, 180));
             }
             verificarCancelamentoFavoritos();
@@ -905,6 +939,21 @@
             mostrarBalaoFavoritosStatus('Cancelando favoritos... a etapa atual sera interrompida assim que possivel.', {
                 tempoMs: 4500
             });
+        }
+
+        function inicializarSincronizacaoWorkerFavoritos() {
+            const api = obterElectronApiFavoritosExecucao();
+            if (!api || window.__favoritosCancelSyncReady) return;
+            window.__favoritosCancelSyncReady = true;
+            const ouvir = (nome, handler) => {
+                if (typeof api[nome] !== 'function') return;
+                try {
+                    api[nome](handler);
+                } catch (_err) {}
+            };
+            ouvir('onFavoritosWorkerProgress', (status) => aplicarEstadoWorkerFavoritos(status));
+            ouvir('onFavoritosWorkerDone', (status) => aplicarEstadoWorkerFavoritos(status));
+            ouvir('onFavoritosWorkerError', (status) => aplicarEstadoWorkerFavoritos(status));
         }
 
         function obterCadastroSkuFavoritos(sku, loja = '') {

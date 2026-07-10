@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import html
 import io
@@ -582,7 +583,7 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
     {
         "id": "operational_memory_query",
         "module": "memoria_operacional",
-        "description": "Consulta preferencias, lojas, SKUs, decisoes, relatorios e contexto operacional salvo do Joao Pretinho.",
+        "description": "Consulta preferencias, lojas, SKUs, decisoes, relatorios e contexto operacional salvo do Black Jhon.",
         "intent_examples": ["o que voce lembra", "preferencias da loja", "skus frequentes", "relatorios anteriores"],
         "executor": "codex_operational_memory.query_memory",
         "external": False,
@@ -642,6 +643,72 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# Permissoes de dados exigidas por ferramenta. A checagem e cumulativa: quando
+# uma ferramenta combina dominios (por exemplo, vendas + estoque), o usuario
+# precisa ter acesso a todos eles. `full` continua sendo o override explicito.
+#
+# Ferramentas universais capazes de descobrir/consultar arquivos, enumerar o
+# programa, preparar acoes ou ler memoria compartilhada ficam full-only. Elas
+# nao podem ser liberadas apenas pelo `module` informado pelo modelo, pois
+# `source_id`, fallbacks e classificacoes heuristicas permitiriam atravessar a
+# fronteira de um modulo.
+ASSISTANT_TOOL_PERMISSION_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "sales_returns_query": ("vendas",),
+    "sales_ranking": ("vendas",),
+    "sales_summary": ("vendas",),
+    "returns_summary": ("vendas",),
+    "return_rate": ("vendas",),
+    "profit_summary": ("vendas", "cadastro", "impostos"),
+    "product_costs_and_margin": ("vendas", "cadastro", "impostos"),
+    "stockout_forecast": ("estoque", "vendas"),
+    "stale_stock": ("estoque", "vendas"),
+    "avg_ticket": ("vendas",),
+    "period_comparison": ("vendas",),
+    "sales_timeseries": ("vendas",),
+    "sales_anomalies": ("vendas",),
+    "integrations_status": ("integracao",),
+    "mercado_livre_listing": ("anuncios_ml",),
+    "bling_product": ("integracao", "cadastro"),
+    "bling_status": ("integracao",),
+    "bling_products": ("integracao", "cadastro"),
+    "bling_fiscal_product": ("integracao", "impostos"),
+    "bling_stock_balances": ("integracao", "estoque"),
+    "bling_deposits": ("integracao", "estoque"),
+    "bling_sales_orders": ("integracao", "vendas"),
+    "bling_sales_order_detail": ("integracao", "vendas"),
+    "bling_fiscal_nfe": ("integracao", "impostos"),
+    "bling_fiscal_nfe_detail": ("integracao", "impostos"),
+    "bling_operation_natures": ("integracao", "impostos"),
+    "bling_lots": ("integracao", "estoque"),
+    "bling_lot_movements": ("integracao", "estoque"),
+    "product_data": ("cadastro",),
+    "product_registry": ("cadastro",),
+    "stock_data": ("estoque",),
+    "product_margin": ("cadastro", "impostos"),
+    "product_image": ("cadastro",),
+    "sync_logs_query": ("integracao",),
+    "mercado_livre_readonly": ("anuncios_ml", "perguntas_pos_venda"),
+    "questions_post_sale_query": ("perguntas_pos_venda",),
+    "fiscal_local_query": ("impostos",),
+}
+
+ASSISTANT_FULL_ONLY_TOOLS = frozenset(
+    {
+        "bling_finance_summary",
+        "bling_resource_query",
+        "source_discovery",
+        "local_database_query",
+        "local_csv_query",
+        "local_cache_query",
+        "operational_memory_query",
+        "program_functions_catalog",
+        "capability_resolve",
+        "program_action_match",
+        "operational_dispatcher",
+    }
+)
+
+
 class CodexAssistantChatRequest(BaseModel):
     message: str
     screen_context: Optional[dict[str, Any]] = None
@@ -652,6 +719,7 @@ class CodexAssistantChatRequest(BaseModel):
 class CodexAssistantRunRequest(BaseModel):
     screen_context: Optional[dict[str, Any]] = None
     force: bool = False
+    compact: bool = False
 
 
 class CodexAssistantReportRequest(BaseModel):
@@ -895,21 +963,83 @@ def _assistant_call_ia_tool(func_name: str, *args: Any, **kwargs: Any) -> Option
         }
 
 
-def _assistant_tools_public() -> list[dict[str, Any]]:
+def _assistant_normalize_permissions(permissions: Any) -> dict[str, bool]:
+    if not isinstance(permissions, dict):
+        return {}
+    return {
+        str(key or "").strip().lower(): value is True
+        for key, value in permissions.items()
+        if str(key or "").strip()
+    }
+
+
+def _assistant_tool_access(tool_id: str, permissions: Any) -> dict[str, Any]:
+    tool_id = str(tool_id or "").strip()
+    normalized = _assistant_normalize_permissions(permissions)
+    if normalized.get("full") is True:
+        return {
+            "allowed": True,
+            "full": True,
+            "required_permissions": [],
+            "missing_permissions": [],
+            "reason": "full",
+        }
+    if tool_id in ASSISTANT_FULL_ONLY_TOOLS:
+        return {
+            "allowed": False,
+            "full": False,
+            "required_permissions": ["full"],
+            "missing_permissions": ["full"],
+            "reason": "full_only",
+        }
+    required = list(ASSISTANT_TOOL_PERMISSION_REQUIREMENTS.get(tool_id) or ())
+    if not required:
+        return {
+            "allowed": False,
+            "full": False,
+            "required_permissions": [],
+            "missing_permissions": [],
+            "reason": "unmapped_tool",
+        }
+    missing = [permission for permission in required if normalized.get(permission) is not True]
+    return {
+        "allowed": not missing,
+        "full": False,
+        "required_permissions": required,
+        "missing_permissions": missing,
+        "reason": "allowed" if not missing else "missing_permissions",
+    }
+
+
+def _assistant_tool_allowed(tool_id: str, permissions: Any) -> bool:
+    return bool(_assistant_tool_access(tool_id, permissions).get("allowed"))
+
+
+def _assistant_tools_public(permissions: Any = None) -> list[dict[str, Any]]:
     public = []
     for tool in CODEX_DATA_TOOLS:
+        tool_id = str(tool.get("id") or "").strip()
+        access = _assistant_tool_access(tool_id, permissions)
+        if not access.get("allowed"):
+            continue
+        fallbacks = [
+            str(fallback or "").strip()
+            for fallback in (tool.get("fallbacks") or [])
+            if str(fallback or "").strip() and _assistant_tool_allowed(str(fallback or "").strip(), permissions)
+        ]
         public.append(
             {
-                "id": tool.get("id"),
+                "id": tool_id,
                 "module": tool.get("module"),
                 "description": tool.get("description"),
                 "intent_examples": tool.get("intent_examples") or [],
-                "input_schema": _assistant_tool_input_schema(str(tool.get("id") or "")),
+                "input_schema": _assistant_tool_input_schema(tool_id),
                 "executor": tool.get("executor"),
                 "external": bool(tool.get("external")),
                 "cache_ttl_seconds": int(tool.get("cache_ttl_seconds") or EXTERNAL_CACHE_SECONDS),
                 "output_fields": tool.get("output_fields") or [],
-                "fallbacks": tool.get("fallbacks") or [],
+                "fallbacks": fallbacks,
+                "required_permissions": list(access.get("required_permissions") or []),
                 "read_only": True,
                 "mutating_requires_approval": True,
             }
@@ -1097,8 +1227,8 @@ _ASSISTANT_SOURCE_LABELS: dict[str, str] = {
     "bling_resource_query": "consulta read-only na Bling",
     "program_functions_catalog": "catalogo de funcoes do JK Sistema",
     "program_action_match": "catalogo de acoes aprovaveis",
-    "capability_resolve": "catalogo de capacidades do Joao Pretinho",
-    "operational_memory_query": "memoria operacional do Joao Pretinho",
+    "capability_resolve": "catalogo de capacidades do Black Jhon",
+    "operational_memory_query": "memoria operacional do Black Jhon",
     "operational_dispatcher": "leitores operacionais do JK Sistema",
     "get_integrations_status": "status das integracoes cadastradas",
     "get_stockout_forecast": "analise de ruptura de estoque",
@@ -2924,6 +3054,7 @@ def _assistant_agent_result_package(
     raw_results: list[dict[str, Any]],
     registry_results: list[dict[str, Any]],
     warnings: list[str],
+    permissions: Any = None,
 ) -> dict[str, Any]:
     meta = _assistant_tool_meta(tool_id)
     rows: list[Any] = []
@@ -2965,7 +3096,11 @@ def _assistant_agent_result_package(
             empty_reasons.append(empty_reason)
         for fallback in item.get("next_fallbacks") or []:
             fallback_id = str(fallback or "").strip()
-            if fallback_id and fallback_id not in next_fallbacks:
+            if (
+                fallback_id
+                and fallback_id not in next_fallbacks
+                and _assistant_tool_allowed(fallback_id, permissions)
+            ):
                 next_fallbacks.append(fallback_id)
 
     if not sources:
@@ -3021,6 +3156,7 @@ def codex_assistant_execute_tool_call(
     args: Optional[dict[str, Any]] = None,
     screen_context: Any = None,
     previous_results: Optional[list[dict[str, Any]]] = None,
+    permissions: Any = None,
 ) -> dict[str, Any]:
     """Execute one registered read-only data tool for the Codex agent loop."""
 
@@ -3039,6 +3175,20 @@ def codex_assistant_execute_tool_call(
             "success": False,
             "tool_id": tool_id,
             "error": "Ferramenta mutavel bloqueada. Acoes mutaveis exigem aprovacao explicita.",
+            "generated_at": _assistant_now(),
+        }
+    access = _assistant_tool_access(tool_id, permissions)
+    if not access.get("allowed"):
+        return {
+            "success": False,
+            "tool_id": tool_id,
+            "module": meta.get("module") or "",
+            "error": "Acesso negado: usuario sem permissao para consultar esta fonte de dados.",
+            "error_code": "tool_permission_denied",
+            "required_permissions": list(access.get("required_permissions") or []),
+            "missing_permissions": list(access.get("missing_permissions") or []),
+            "records": 0,
+            "read_only": True,
             "generated_at": _assistant_now(),
         }
 
@@ -3114,6 +3264,9 @@ def codex_assistant_execute_tool_call(
         prereq_ids = ["product_data", "product_registry", "bling_product"]
 
     for prereq_id in prereq_ids:
+        if not _assistant_tool_allowed(prereq_id, permissions):
+            warnings.append(f"Pre-requisito omitido por permissao insuficiente: {prereq_id}.")
+            continue
         executed_tool_ids.add(prereq_id)
         raw, registry, local_warnings = _assistant_execute_registry_tool(
             client_id,
@@ -3158,7 +3311,11 @@ def codex_assistant_execute_tool_call(
             if fallback_id in executed_tool_ids:
                 continue
             fallback_meta = _assistant_tool_meta(fallback_id)
-            if not fallback_meta.get("id") or fallback_meta.get("read_only") is False:
+            if (
+                not fallback_meta.get("id")
+                or fallback_meta.get("read_only") is False
+                or not _assistant_tool_allowed(fallback_id, permissions)
+            ):
                 continue
             executed_tool_ids.add(fallback_id)
             fallback_count += 1
@@ -3177,7 +3334,15 @@ def codex_assistant_execute_tool_call(
             if any(int(item.get("records") or 0) > 0 for item in registry):
                 break
 
-    return _assistant_agent_result_package(client_id, tool_id, args, raw_results, registry_results, warnings)
+    return _assistant_agent_result_package(
+        client_id,
+        tool_id,
+        args,
+        raw_results,
+        registry_results,
+        warnings,
+        permissions=permissions,
+    )
 
 
 def _assistant_execute_registry(
@@ -4425,7 +4590,7 @@ def _assistant_management_analysis(context: dict[str, Any]) -> dict[str, Any]:
                 f"{len(missing_cost)} SKU(s) vendidos nao tinham custo localizado no cadastro. Exemplos: {exemplos}.",
                 "Cadastrar custo por loja quando existir; se nao houver, preencher custo geral do produto para permitir margem real nos proximos relatorios.",
                 "warning",
-                "Sem custo cadastrado, o Joao Pretinho nao deve inventar lucro nem margem.",
+                "Sem custo cadastrado, o Black Jhon nao deve inventar lucro nem margem.",
                 "product_costs_and_margin",
             )
         elif incomplete:
@@ -5716,6 +5881,128 @@ def _assistant_ensure_report_chat_text(metadata: dict[str, Any]) -> dict[str, An
     return metadata
 
 
+def _assistant_compact_chat_text_response(payload: Any, preview_limit: int = 600) -> Any:
+    """Project proactive/daily responses without copying their large datasets."""
+
+    limit = max(1, min(int(preview_limit or 600), 600))
+    source = payload if isinstance(payload, dict) else {}
+
+    def scalar(value: Any, max_chars: int = 300) -> Any:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)[:max_chars]
+
+    def compact_status_steps(value: Any) -> list[Any]:
+        output: list[Any] = []
+        for item in (value if isinstance(value, list) else [])[:12]:
+            if isinstance(item, dict):
+                projected = {}
+                for key in ("status", "label", "at", "tool_id", "records", "success"):
+                    if key in item and isinstance(item.get(key), (str, bool, int, float, type(None))):
+                        projected[key] = scalar(item.get(key), 240)
+                if projected:
+                    output.append(projected)
+            else:
+                output.append(scalar(item, 240))
+        return output
+
+    def compact_report(value: Any) -> Optional[dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        chat_text = str(value.get("chat_text") or value.get("chat_text_preview") or "")
+        original_length = value.get("chat_text_length")
+        try:
+            chat_text_length = max(len(chat_text), int(original_length or 0))
+        except Exception:
+            chat_text_length = len(chat_text)
+        report: dict[str, Any] = {
+            "report_id": scalar(value.get("report_id"), 160) or "",
+            "title": scalar(value.get("title"), 240) or "",
+            "generated_at": scalar(value.get("generated_at"), 80) or "",
+            "created_at": scalar(value.get("created_at"), 80) or "",
+            "kind": scalar(value.get("kind"), 80) or "",
+            "status": scalar(value.get("status"), 80) or "",
+            "status_steps": compact_status_steps(value.get("status_steps")),
+            "warnings": [scalar(item, 300) for item in (value.get("warnings") if isinstance(value.get("warnings"), list) else [])[:12]],
+            "formats": {
+                str(key)[:24]: bool(enabled)
+                for key, enabled in list((value.get("formats") if isinstance(value.get("formats"), dict) else {}).items())[:8]
+            },
+            "downloads": {
+                str(key)[:24]: scalar(url, 600)
+                for key, url in list((value.get("downloads") if isinstance(value.get("downloads"), dict) else {}).items())[:8]
+                if isinstance(url, (str, int, float))
+            },
+            "chat_download_formats": [
+                str(item)[:24]
+                for item in (value.get("chat_download_formats") if isinstance(value.get("chat_download_formats"), list) else [])[:8]
+            ],
+            "chat_text_preview": chat_text[:limit],
+            "chat_text_length": chat_text_length,
+            "truncated": bool(value.get("truncated")) or chat_text_length > limit,
+        }
+        return report
+
+    def compact_scheduler(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        scheduler: dict[str, Any] = {}
+        for key in (
+            "last_proactive_ts",
+            "last_proactive_at",
+            "last_proactive_tool_results_count",
+            "last_daily_date",
+            "last_daily_at",
+            "last_daily_suggestions_count",
+        ):
+            item = value.get(key)
+            if isinstance(item, (str, bool, int, float, type(None))):
+                scheduler[key] = scalar(item, 120)
+        nested_report = value.get("last_daily_report")
+        if isinstance(nested_report, dict) and nested_report.get("report_id"):
+            scheduler["last_daily_report_id"] = scalar(nested_report.get("report_id"), 160)
+        sources = value.get("last_proactive_sources")
+        if isinstance(sources, list):
+            scheduler["last_proactive_sources_count"] = len(sources)
+        return scheduler
+
+    def compact_suggestion(value: Any) -> Optional[dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        suggestion: dict[str, Any] = {}
+        limits = {
+            "id": 120,
+            "kind": 80,
+            "title": 160,
+            "detail": 360,
+            "severity": 40,
+            "source": 160,
+            "recommendation": 360,
+            "created_at": 80,
+        }
+        for key, max_chars in limits.items():
+            if key in value and isinstance(value.get(key), (str, bool, int, float, type(None))):
+                suggestion[key] = scalar(value.get(key), max_chars)
+        return suggestion or None
+
+    result: dict[str, Any] = {"compact": True}
+    for key in ("success", "status", "due"):
+        if key in source and isinstance(source.get(key), (str, bool, int, float, type(None))):
+            result[key] = scalar(source.get(key), 120)
+    report = compact_report(source.get("report"))
+    if report is not None:
+        result["report"] = report
+    result["scheduler"] = compact_scheduler(source.get("scheduler"))
+    suggestions = []
+    for item in (source.get("suggestions") if isinstance(source.get("suggestions"), list) else [])[:20]:
+        projected = compact_suggestion(item)
+        if projected:
+            suggestions.append(projected)
+    if "suggestions" in source:
+        result["suggestions"] = suggestions
+    return result
+
+
 def _assistant_save_suggestions(client_id: str, suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     path = _assistant_path(client_id, "suggestions.json")
     existing = _assistant_read_json(path, [])
@@ -5796,8 +6083,8 @@ def codex_assistant_tools(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    _assistant_require_full_admin(request, authorization)
-    tools = _assistant_tools_public()
+    sessao = _assistant_require_full_admin(request, authorization)
+    tools = _assistant_tools_public(sessao.get("permissions") or {})
     modules = sorted({str(tool.get("module") or "") for tool in tools if tool.get("module")})
     return {
         "success": True,
@@ -6001,7 +6288,8 @@ def codex_assistant_proactive_run(
         due = bool(payload.force) or (time.time() - last_ts >= PROACTIVE_INTERVAL_SECONDS)
         if not due:
             suggestions = _assistant_read_json(_assistant_path(client_id, "suggestions.json"), [])
-            return {"success": True, "status": "skipped", "due": False, "suggestions": suggestions[:30], "scheduler": state}
+            response = {"success": True, "status": "skipped", "due": False, "suggestions": suggestions[:30], "scheduler": state}
+            return _assistant_compact_chat_text_response(response) if payload.compact else response
         context = _assistant_collect_data(
             client_id,
             "verificacao proativa de 30 minutos",
@@ -6019,7 +6307,8 @@ def codex_assistant_proactive_run(
             }
         )
         _assistant_save_scheduler_state(client_id, state)
-        return {"success": True, "status": "completed", "due": True, "suggestions": suggestions[:30], "scheduler": state}
+        response = {"success": True, "status": "completed", "due": True, "suggestions": suggestions[:30], "scheduler": state}
+        return _assistant_compact_chat_text_response(response) if payload.compact else response
 
 
 def _assistant_daily_due(state: dict[str, Any], force: bool = False) -> bool:
@@ -6043,9 +6332,11 @@ def codex_assistant_daily_analysis_run(
         state = _assistant_scheduler_state(client_id)
         if not _assistant_daily_due(state, bool(payload.force)):
             report = state.get("last_daily_report") if isinstance(state.get("last_daily_report"), dict) else None
-            if report:
+            if report and (not payload.compact or not report.get("chat_text")):
+                report = copy.deepcopy(report)
                 report = _assistant_ensure_report_chat_text(report)
-            return {"success": True, "status": "skipped", "due": False, "scheduler": state, "report": report}
+            response = {"success": True, "status": "skipped", "due": False, "scheduler": state, "report": report}
+            return _assistant_compact_chat_text_response(response) if payload.compact else response
         context = _assistant_collect_data(
             client_id,
             "analise diaria completa de vendas, estoque, devolucoes, margem, ruptura e oportunidades",
@@ -6078,7 +6369,7 @@ def codex_assistant_daily_analysis_run(
             }
         )
         _assistant_save_scheduler_state(client_id, state)
-        return {
+        response = {
             "success": True,
             "status": "completed",
             "due": True,
@@ -6086,6 +6377,7 @@ def codex_assistant_daily_analysis_run(
             "report": report,
             "scheduler": state,
         }
+        return _assistant_compact_chat_text_response(response) if payload.compact else response
 
 
 def codex_assistant_report_create(

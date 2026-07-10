@@ -18,7 +18,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 
-FAVORITOS_ENDPOINTS: tuple[str, ...] = ('favoritos_listar_skus', 'favoritos_skus_ocultos_get', 'favoritos_skus_ocultos_put', 'favoritos_vendedores_ignorados_get', 'favoritos_vendedores_ignorados_put', 'favoritos_anuncios_ignorados_get', 'favoritos_anuncios_ignorados_put', 'favoritos_historico_get', 'favoritos_historico_put', 'favoritos_historico_realtime_sync', 'favoritos_planilhas_lojas_get', 'favoritos_planilhas_lojas_put', 'favoritos_ml_listar_skus_anuncios', 'favoritos_ml_listar_promocoes_ativas', 'favoritos_ml_validar_efetivacao', 'favoritos_ml_efetivar_promocao', 'favoritos_ml_listar_anuncios_sku', 'favoritos_salvar_pesquisas_sku', 'favoritos_gerar_pesquisas_sku_ia', 'favoritos_filtrar_ranking_ia', 'favoritos_buscar_descricao_sku', 'favoritos_buscar_descricoes_skus', 'favoritos_ml_primeira_pagina', 'favoritos_ml_enriquecer_datas', 'favoritos_pesquisar')
+FAVORITOS_ENDPOINTS: tuple[str, ...] = ('favoritos_listar_skus', 'favoritos_skus_ocultos_get', 'favoritos_skus_ocultos_put', 'favoritos_vendedores_ignorados_get', 'favoritos_vendedores_ignorados_put', 'favoritos_anuncios_ignorados_get', 'favoritos_anuncios_ignorados_put', 'favoritos_historico_get', 'favoritos_historico_put', 'favoritos_historico_realtime_sync', 'favoritos_planilhas_lojas_get', 'favoritos_planilhas_lojas_put', 'favoritos_planilhas_colar_historico', 'favoritos_ml_listar_skus_anuncios', 'favoritos_ml_listar_promocoes_ativas', 'favoritos_ml_validar_efetivacao', 'favoritos_ml_efetivar_promocao', 'favoritos_ml_listar_anuncios_sku', 'favoritos_salvar_pesquisas_sku', 'favoritos_gerar_pesquisas_sku_ia', 'favoritos_filtrar_ranking_ia', 'favoritos_buscar_descricao_sku', 'favoritos_buscar_descricoes_skus', 'favoritos_ml_primeira_pagina', 'favoritos_ml_enriquecer_datas', 'favoritos_pesquisar')
 
 _TENANT_DEPENDENCY = None
 _PROTECTED_GLOBALS = {
@@ -268,6 +268,13 @@ def favoritos_planilhas_lojas_put(
         "atualizadas": payload.get("atualizadas") or [],
         "updated_at": payload.get("updated_at"),
     }
+
+
+def favoritos_planilhas_colar_historico(
+    req: FavoritosPlanilhaColarHistoricoRequest,
+    client_id: str = Depends(get_tenant_id),
+):
+    return favoritos_colar_historico_planilha(client_id, req.loja, req.historico or {})
 
 
 def favoritos_ml_listar_skus_anuncios(

@@ -63,6 +63,63 @@ def create_codex_console_router() -> APIRouter:
         methods=["POST"],
         name="codex_cancelar_tarefa",
     )
+    # Alias sem o prefixo administrativo para o chat universal do Black Jhon.
+    # As rotas antigas permanecem por compatibilidade; a autorizacao real fica
+    # nos handlers (leitura para autenticados, mutacoes/aprovacoes apenas full).
+    router.add_api_route(
+        "/api/codex/status",
+        codex_console.codex_status,
+        methods=["GET"],
+        name="codex_status_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks",
+        codex_console.codex_listar_tarefas,
+        methods=["GET"],
+        name="codex_listar_tarefas_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks",
+        codex_console.codex_criar_tarefa,
+        methods=["POST"],
+        name="codex_criar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/attachments",
+        codex_console.codex_upload_attachments,
+        methods=["POST"],
+        name="codex_upload_attachments_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}",
+        codex_console.codex_obter_tarefa,
+        methods=["GET"],
+        name="codex_obter_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}",
+        codex_console.codex_deletar_tarefa,
+        methods=["DELETE"],
+        name="codex_deletar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/conversations/{conversation_id}",
+        codex_console.codex_deletar_conversa,
+        methods=["DELETE"],
+        name="codex_deletar_conversa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}/approve",
+        codex_console.codex_aprovar_tarefa,
+        methods=["POST"],
+        name="codex_aprovar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}/cancel",
+        codex_console.codex_cancelar_tarefa,
+        methods=["POST"],
+        name="codex_cancelar_tarefa_user",
+    )
     router.add_api_route(
         "/api/admin/codex/actions",
         codex_console.codex_actions_listar,

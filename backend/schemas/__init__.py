@@ -86,6 +86,7 @@ from .favoritos import (
     FavoritosHistoricoRealtimeSyncRequest,
     FavoritosPlanilhaLojaItem,
     FavoritosPlanilhasLojasRequest,
+    FavoritosPlanilhaColarHistoricoRequest,
 )
 from .promocoes import (
     PromoAnaliseApiRequest,
@@ -261,6 +262,7 @@ __all__ = [
     "FavoritosHistoricoRealtimeSyncRequest",
     "FavoritosPlanilhaLojaItem",
     "FavoritosPlanilhasLojasRequest",
+    "FavoritosPlanilhaColarHistoricoRequest",
     "IASalvarConversaRequest",
     "EtiquetaAvulsaItem",
     "ImpressaoAvulsaPayload",

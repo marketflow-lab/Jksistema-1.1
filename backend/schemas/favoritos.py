@@ -163,6 +163,11 @@ class FavoritosPlanilhasLojasRequest(BaseModel):
     planilhas: list[FavoritosPlanilhaLojaItem] | None = None
 
 
+class FavoritosPlanilhaColarHistoricoRequest(BaseModel):
+    loja: str
+    historico: dict[str, Any] | None = None
+
+
 __all__ = [
     "FavoritosEfetivarPromocaoRequest",
     "FavoritosValidarEfetivacaoItemRequest",
@@ -186,4 +191,5 @@ __all__ = [
     "FavoritosHistoricoRealtimeSyncRequest",
     "FavoritosPlanilhaLojaItem",
     "FavoritosPlanilhasLojasRequest",
+    "FavoritosPlanilhaColarHistoricoRequest",
 ]

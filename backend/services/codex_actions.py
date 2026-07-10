@@ -1333,7 +1333,7 @@ def _merge_params(client_id: str, spec: CodexActionSpec, message: str, screen_co
         params.setdefault("dados", {})
         params.setdefault("alteracoes", params.get("dados") or {})
     if spec.id == "estoque.ajuste_manual" and "motivo" not in params:
-        params["motivo"] = "Solicitado pelo Joao Pretinho; revisar antes de executar."
+        params["motivo"] = "Solicitado pelo Black Jhon; revisar antes de executar."
     if spec.executor == "generic_route":
         params.setdefault("path_params", {})
         params.setdefault("query", {})

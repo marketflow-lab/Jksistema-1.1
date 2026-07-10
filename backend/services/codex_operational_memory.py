@@ -292,7 +292,7 @@ def remember_from_interaction(
             res = add_memory(
                 client_id,
                 category="skus_frequentes",
-                content=f"SKU citado em conversa do João Pretinho: {sku}",
+                content=f"SKU citado em conversa do Black Jhon: {sku}",
                 source="agent_interaction",
                 metadata={"sku": sku, "task_id": (task or {}).get("task_id")},
                 importance=2,

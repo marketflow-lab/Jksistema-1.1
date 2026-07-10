@@ -1,4 +1,4 @@
-"""Shared margin helpers for Favoritos and Joao Pretinho reports."""
+"""Shared margin helpers for Favoritos and Black Jhon reports."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def margem_calcular_anuncio(
     """Calculate ML-style margin using the same inputs expected by Favoritos.
 
     The result keeps the historical field names used by Favoritos, plus
-    margem_completa/faltando_margem for Joao Pretinho reports.
+    margem_completa/faltando_margem for Black Jhon reports.
     """
 
     data = dict(anuncio or {})

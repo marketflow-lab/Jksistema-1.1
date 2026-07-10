@@ -1,4 +1,4 @@
-"""Read-only data source discovery and query helpers for Joao Pretinho."""
+"""Read-only data source discovery and query helpers for Black Jhon."""
 
 from __future__ import annotations
 

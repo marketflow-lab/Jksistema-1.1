@@ -843,6 +843,7 @@ function ensureLocalBackendStarted() {
                 GOOGLE_LOGIN_REDIRECT_URI_LOCAL: process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback',
                 PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
                 JK_APP_VERSION: app.getVersion(),
+                JK_CODEX_CONSOLE_ENABLED: process.env.JK_CODEX_CONSOLE_ENABLED || 'true',
                 IA_RAG_ENABLED: 'true',
                 IA_RAG_BACKEND: 'local',
                 IA_RAG_TOP_K: '5',

@@ -961,6 +961,27 @@
             renderizarHistoricoFavoritos();
         }
 
+        function atualizarBotaoVoltarHistoricoFavoritos(mostrar) {
+            const toolbar = document.querySelector('.ml-favoritos-historico-toolbar');
+            if (!toolbar) return;
+            let voltarBtn = document.getElementById('ml-historico-favoritos-voltar-geral');
+            if (!voltarBtn) {
+                voltarBtn = document.createElement('button');
+                voltarBtn.id = 'ml-historico-favoritos-voltar-geral';
+                voltarBtn.type = 'button';
+                voltarBtn.className = 'btn-back ml-favoritos-historico-voltar-btn';
+                voltarBtn.textContent = 'Voltar ao historico geral';
+                voltarBtn.title = 'Voltar para a lista geral do historico.';
+                voltarBtn.addEventListener('click', limparHistoricoSkuSelecionado);
+                if (mlHistoricoFavoritosLimparEl && mlHistoricoFavoritosLimparEl.parentNode === toolbar) {
+                    toolbar.insertBefore(voltarBtn, mlHistoricoFavoritosLimparEl);
+                } else {
+                    toolbar.appendChild(voltarBtn);
+                }
+            }
+            voltarBtn.hidden = !mostrar;
+        }
+
         function prepararAbaHistoricoFavoritos() {
             renderizarHistoricoSkuSidebar();
             renderizarSkuSidebarMercadoLivre();
@@ -978,6 +999,7 @@
             const skuSelecionadoChave = skuChaveSku(skuSelecionado);
             const historico = filtrarHistoricoFavoritosPorLojaAtual(historicoCompleto, skuSelecionado);
             mlHistoricoFavoritosListEl.innerHTML = '';
+            atualizarBotaoVoltarHistoricoFavoritos(!!skuSelecionadoChave);
 
             if (!skuSelecionadoChave) {
                 const recentes = montarUltimosFavoritosRankeados(ML_FAVORITOS_HISTORICO_MAX, historico);

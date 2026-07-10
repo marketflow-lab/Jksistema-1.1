@@ -152,6 +152,9 @@
 
         inicializarBalaoResultadosMl();
         inicializarLarguraTabelasFavoritos();
+        if (typeof inicializarSincronizacaoWorkerFavoritos === 'function') {
+            inicializarSincronizacaoWorkerFavoritos();
+        }
         atualizarTabelasFavoritosEditaveis();
         renderizarVendedoresIgnoradosRanking();
         inicializarSincronizacaoSelecaoFavoritos();
