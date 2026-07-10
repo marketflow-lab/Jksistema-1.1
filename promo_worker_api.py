@@ -13,6 +13,7 @@ from backend_api import (
     analisar_promo_via_api_sem_arquivos,
     logger,
 )
+from backend.services.promocoes_common import PROMO_WORKER_PROTOCOL_VERSION
 
 
 app = FastAPI(title="JK Sistema Promo Worker")
@@ -244,7 +245,15 @@ def _run_job(
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    app_version = str(os.getenv("JK_APP_VERSION") or "").strip()
+    if app_version.lower().startswith("v"):
+        app_version = app_version[1:]
+    return {
+        "ok": True,
+        "appVersion": app_version,
+        "protocolVersion": PROMO_WORKER_PROTOCOL_VERSION,
+        "pid": os.getpid(),
+    }
 
 
 @app.post("/api/promo/jobs/start")

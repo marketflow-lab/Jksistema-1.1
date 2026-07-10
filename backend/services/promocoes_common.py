@@ -164,14 +164,37 @@ def _promo_job_get(job_id: str) -> dict:
 
 PROMO_WORKER_URL = os.getenv("PROMO_WORKER_URL", "http://127.0.0.1:8011").rstrip("/")
 PROMO_WORKER_LOCK = threading.Lock()
+PROMO_WORKER_PROTOCOL_VERSION = 2
+
+
+def _promo_worker_health_state() -> tuple[bool, bool, dict]:
+    try:
+        resp = requests.get(f"{PROMO_WORKER_URL}/health", timeout=1.5)
+        if not resp.ok:
+            return False, False, {}
+        payload = resp.json() if resp.content else {}
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            return True, False, {}
+        try:
+            protocol = int(payload.get("protocolVersion") or payload.get("protocol_version") or 0)
+        except (TypeError, ValueError):
+            protocol = 0
+        expected_version = str(os.getenv("JK_APP_VERSION") or "").strip()
+        worker_version = str(payload.get("appVersion") or payload.get("app_version") or "").strip()
+        if expected_version.lower().startswith("v"):
+            expected_version = expected_version[1:]
+        if worker_version.lower().startswith("v"):
+            worker_version = worker_version[1:]
+        compatible = protocol == PROMO_WORKER_PROTOCOL_VERSION
+        if expected_version:
+            compatible = compatible and worker_version == expected_version
+        return True, compatible, payload
+    except Exception:
+        return False, False, {}
 
 
 def _promo_worker_healthcheck() -> bool:
-    try:
-        resp = requests.get(f"{PROMO_WORKER_URL}/health", timeout=1.5)
-        return resp.ok
-    except Exception:
-        return False
+    return _promo_worker_health_state()[1]
 
 
 def _promo_worker_target() -> tuple[str, int]:
@@ -209,6 +232,39 @@ def _promo_worker_log_handles(app_dir: str):
     return open(stdout_path, "ab"), open(stderr_path, "ab")
 
 
+def _stop_stale_promo_worker(host: str, port: int) -> bool:
+    if str(host or "").strip().lower() not in {"127.0.0.1", "localhost", "::1"}:
+        logger.error("[PROMO WORKER] Worker incompativel em host remoto; reinicio automatico ignorado: %s", host)
+        return False
+    if os.name != "nt":
+        logger.error("[PROMO WORKER] Reinicio automatico do worker antigo indisponivel neste sistema operacional.")
+        return False
+    script = (
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        f"$pids = Get-NetTCPConnection -LocalPort {int(port)} -State Listen | "
+        "Select-Object -ExpandProperty OwningProcess -Unique; "
+        "foreach ($pidValue in $pids) { if ($pidValue) { Stop-Process -Id $pidValue -Force } }"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=12,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return False
+        for _ in range(20):
+            available, _, _ = _promo_worker_health_state()
+            if not available:
+                return True
+            time.sleep(0.25)
+    except Exception:
+        logger.exception("[PROMO WORKER] Falha ao encerrar worker incompativel")
+    return False
+
+
 def _ensure_promo_worker_running() -> bool:
     if _promo_worker_healthcheck():
         return True
@@ -217,6 +273,16 @@ def _ensure_promo_worker_running() -> bool:
             return True
         app_dir = _promo_worker_app_dir()
         host, port = _promo_worker_target()
+        worker_available, worker_compatible, worker_health = _promo_worker_health_state()
+        if worker_available and not worker_compatible:
+            logger.warning(
+                "[PROMO WORKER] Worker incompativel detectado; reiniciando. esperado=%s protocolo=%s health=%s",
+                str(os.getenv("JK_APP_VERSION") or ""),
+                PROMO_WORKER_PROTOCOL_VERSION,
+                worker_health,
+            )
+            if not _stop_stale_promo_worker(host, port):
+                return False
         stdout_fh = None
         stderr_fh = None
         try:
@@ -318,4 +384,4 @@ def _ler_arquivo_original_promo_job(client_id: str, job_id: str, arquivo_nome: s
     return None, None
 
 
-__all__ = ('PASTA_INFO', 'get_tenant_path', '_promo_txt_clean', '_promo_normalizar_mlb', '_extrair_mapa_promocao2_arquivo', '_promo_job_set', '_promo_job_get', 'PROMO_WORKER_URL', 'PROMO_WORKER_LOCK', '_promo_worker_healthcheck', '_ensure_promo_worker_running', '_safe_json_response', '_promo_original_uploads_dir', '_salvar_arquivos_originais_promo_job', '_ler_arquivo_original_promo_job', 'PROMO_ANALISE_JOBS', 'PROMO_ANALISE_JOBS_LOCK', 'PROMO_ANALISE_JOBS_DIR', 'PROMO_AUTOMACAO_LOCK', 'PROMO_AUTOMACAO_THREAD_STARTED', 'PROMO_AUTOMACAO_RUNNING', 'configure_promocoes_common_runtime')
+__all__ = ('PASTA_INFO', 'get_tenant_path', '_promo_txt_clean', '_promo_normalizar_mlb', '_extrair_mapa_promocao2_arquivo', '_promo_job_set', '_promo_job_get', 'PROMO_WORKER_URL', 'PROMO_WORKER_LOCK', 'PROMO_WORKER_PROTOCOL_VERSION', '_promo_worker_health_state', '_promo_worker_healthcheck', '_ensure_promo_worker_running', '_safe_json_response', '_promo_original_uploads_dir', '_salvar_arquivos_originais_promo_job', '_ler_arquivo_original_promo_job', 'PROMO_ANALISE_JOBS', 'PROMO_ANALISE_JOBS_LOCK', 'PROMO_ANALISE_JOBS_DIR', 'PROMO_AUTOMACAO_LOCK', 'PROMO_AUTOMACAO_THREAD_STARTED', 'PROMO_AUTOMACAO_RUNNING', 'configure_promocoes_common_runtime')

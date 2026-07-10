@@ -63,6 +63,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 
+logger = logging.getLogger("jk_sistema")
 _PROMOCOES_RUNTIME_GET_TENANT_ID = None
 
 
@@ -533,15 +534,24 @@ async def iniciar_analise_promo_via_api(
     promocoes_b_meta: str = Form(...),
     client_id: str = Depends(get_tenant_id),
 ):
-    return await asyncio.to_thread(
-        _promo_start_api_worker_job,
-        client_id=client_id,
-        loja=loja,
-        promocao_a_id=promocao_a_id,
-        promocao_a_type=promocao_a_type,
-        margem_minima=margem_minima,
-        promocoes_b_meta=promocoes_b_meta,
-    )
+    try:
+        return await asyncio.to_thread(
+            _promo_start_api_worker_job,
+            client_id=client_id,
+            loja=loja,
+            promocao_a_id=promocao_a_id,
+            promocao_a_type=promocao_a_type,
+            margem_minima=margem_minima,
+            promocoes_b_meta=promocoes_b_meta,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[PROMO WORKER] Falha inesperada ao iniciar job API")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Nao foi possivel iniciar a analise de promocoes: {exc}",
+        ) from exc
 
 
 async def iniciar_analise_promo_via_api_com_arquivos(

@@ -820,15 +820,18 @@ function ensureLocalBackendStarted() {
                     currentVersion: app.getVersion(),
                     health
                 });
-                return { success: true, alreadyRunning: true, staleMetadata: true, port: JK_LOCAL_BACKEND_PORT };
+            } else {
+                logElectronLifecycle('local-backend-stale-restart', {
+                    port: JK_LOCAL_BACKEND_PORT,
+                    currentVersion: app.getVersion(),
+                    health
+                });
             }
-            logElectronLifecycle('local-backend-stale-restart', {
-                port: JK_LOCAL_BACKEND_PORT,
-                currentVersion: app.getVersion(),
-                health
-            });
             await stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT);
-            await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
+            const backendStopped = await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
+            if (!backendStopped) {
+                throw new Error(`Nao foi possivel reiniciar o servidor local antigo na porta ${JK_LOCAL_BACKEND_PORT}.`);
+            }
         }
 
         logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
