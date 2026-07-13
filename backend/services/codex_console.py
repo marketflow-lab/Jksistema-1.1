@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import hashlib
 import json
@@ -14,6 +15,7 @@ import time
 import tomllib
 import unicodedata
 import uuid
+from datetime import datetime, timezone
 from math import ceil
 from pathlib import Path
 from typing import Any, Optional
@@ -29,6 +31,9 @@ CODEX_SANDBOXES = {"read_only", "workspace_write", "full_access"}
 CODEX_TASKS: dict[str, dict[str, Any]] = {}
 CODEX_TASKS_LOCK = threading.RLock()
 CODEX_FULL_ACCESS_LOCK = threading.Lock()
+CODEX_CONVERSATION_LOCK = threading.RLock()
+CODEX_QUEUE_LOCK = threading.RLock()
+CODEX_ACTIVE_QUEUES: set[str] = set()
 BLACK_JHON_DISPLAY_NAME = "Black Jhon"
 CODEX_DEFAULT_MODEL = "gpt-5.5"
 CODEX_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
@@ -58,6 +63,8 @@ CODEX_API_AUTH_ENV_KEYS = (
     "OPENAI_PROJECT",
     "OPENAI_PROJECT_ID",
 )
+CODEX_RUNTIME_BIN_LOCK = threading.Lock()
+CODEX_RUNTIME_BIN_CACHE: Optional[str] = None
 CODEX_SCOPE_TEXT_EXTENSIONS = {
     ".bat",
     ".cfg",
@@ -117,6 +124,15 @@ class CodexTaskRequest(BaseModel):
     paths: Optional[list[str]] = None
     screen_context: Optional[dict[str, Any]] = None
     history: Optional[list[dict[str, Any]]] = None
+
+
+class CodexTaskApprovalRequest(BaseModel):
+    paths: Optional[list[str]] = None
+    screen_context: Optional[dict[str, Any]] = None
+
+
+class CodexConversationResetRequest(BaseModel):
+    confirm: bool = False
 
 
 class CodexActionProposalRequest(BaseModel):
@@ -216,9 +232,97 @@ def _codex_auth_detected() -> bool:
 
 def _codex_cli_version() -> tuple[bool, str]:
     codex_bin = shutil.which("codex")
-    if not codex_bin:
-        return False, ""
-    return True, codex_bin
+    if codex_bin:
+        return True, codex_bin
+    try:
+        from codex_cli_bin import bundled_codex_path
+
+        bundled = str(Path(bundled_codex_path()).resolve())
+        if os.path.isfile(bundled):
+            return True, bundled
+    except Exception:
+        pass
+    return False, ""
+
+
+def _codex_bin_version(path: str | Path) -> tuple[int, ...]:
+    candidate = str(path or "").strip()
+    if not candidate or not os.path.isfile(candidate):
+        return ()
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        proc = subprocess.run(
+            [candidate, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+            creationflags=creation_flags,
+        )
+    except Exception:
+        return ()
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)(?:[^0-9]+(\d+))?", f"{proc.stdout}\n{proc.stderr}")
+    if not match:
+        return ()
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _codex_runtime_bin() -> Optional[str]:
+    """Prefere um Codex local mais novo que o runtime fixado pelo SDK Python."""
+    global CODEX_RUNTIME_BIN_CACHE
+    with CODEX_RUNTIME_BIN_LOCK:
+        if CODEX_RUNTIME_BIN_CACHE is not None:
+            return CODEX_RUNTIME_BIN_CACHE or None
+
+        candidates: list[Path] = []
+        for env_name in ("JK_CODEX_BIN", "CODEX_BIN"):
+            raw = str(os.getenv(env_name) or "").strip()
+            if raw:
+                candidates.append(Path(os.path.expandvars(os.path.expanduser(raw))))
+        path_bin = shutil.which("codex")
+        if path_bin:
+            candidates.append(Path(path_bin))
+
+        home = Path.home()
+        extension_roots = (
+            home / ".vscode" / "extensions",
+            home / ".vscode-insiders" / "extensions",
+            home / ".cursor" / "extensions",
+        )
+        platform_dir = "windows-x86_64" if os.name == "nt" else "linux-x86_64"
+        executable = "codex.exe" if os.name == "nt" else "codex"
+        for root in extension_roots:
+            if not root.is_dir():
+                continue
+            candidates.extend(root.glob(f"openai.chatgpt-*/bin/{platform_dir}/{executable}"))
+
+        try:
+            from codex_cli_bin import bundled_codex_path
+
+            bundled = Path(bundled_codex_path()).resolve()
+            bundled_version = _codex_bin_version(bundled)
+        except Exception:
+            bundled = None
+            bundled_version = ()
+
+        unique: dict[str, tuple[Path, tuple[int, ...]]] = {}
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                continue
+            if not resolved.is_file() or (bundled is not None and resolved == bundled):
+                continue
+            version = _codex_bin_version(resolved)
+            if version:
+                unique[str(resolved).lower()] = (resolved, version)
+
+        best = max(unique.values(), key=lambda item: item[1], default=None)
+        if best and (not bundled_version or best[1] > bundled_version):
+            CODEX_RUNTIME_BIN_CACHE = str(best[0])
+        else:
+            CODEX_RUNTIME_BIN_CACHE = ""
+        return CODEX_RUNTIME_BIN_CACHE or None
 
 
 def _codex_local_request_allowed(request: Request) -> bool:
@@ -277,6 +381,14 @@ def _codex_status_payload() -> dict[str, Any]:
     auth_file = _codex_auth_file_path()
     auth_file_exists = _codex_auth_detected()
     ready = bool(enabled and sdk_ok)
+    if not sdk_ok:
+        runtime_status = "dependency_missing"
+    elif not auth_file_exists:
+        runtime_status = "authentication_pending"
+    elif enabled:
+        runtime_status = "ready"
+    else:
+        runtime_status = "disabled"
     message = f"{BLACK_JHON_DISPLAY_NAME} pronto com Codex como IA principal."
     if not enabled:
         message = f"{BLACK_JHON_DISPLAY_NAME} esta com o Codex desabilitado pela configuracao local."
@@ -289,6 +401,8 @@ def _codex_status_payload() -> dict[str, Any]:
         "success": True,
         "enabled": enabled,
         "ready": ready,
+        "runtime_status": runtime_status,
+        "authentication_required": bool(sdk_ok and not auth_file_exists),
         "sdk_installed": sdk_ok,
         "cli_available": cli_ok,
         "cli_path": cli_path,
@@ -328,6 +442,31 @@ def _codex_status_for_session(sessao: dict[str, Any]) -> dict[str, Any]:
             }
         )
         payload["defaults"] = defaults
+    client_id = str(sessao.get("client_id") or "").strip()
+    username = str(sessao.get("username") or "").strip().lower()
+    if client_id and username:
+        state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
+        conversation_id = str(state.get("conversation_id") or "")
+        generation = int(state.get("generation") or 1)
+        active_statuses = {"queued", "running", "awaiting_approval", "cancel_requested"}
+        active_tasks = [
+            task
+            for task in _codex_owned_persisted_tasks(client_id, username)
+            if _codex_task_stored_conversation_id(task) == conversation_id
+            and int(task.get("conversation_generation") or 1) == generation
+            and str(task.get("status") or "") in active_statuses
+        ]
+        payload["conversation"] = {
+            "conversation_id": conversation_id,
+            "channel": "app",
+            "generation": generation,
+            "state": "active",
+            "queue": {
+                "running": sum(1 for task in active_tasks if str(task.get("status") or "") in {"running", "cancel_requested"}),
+                "pending": sum(1 for task in active_tasks if str(task.get("status") or "") in {"queued", "awaiting_approval"}),
+            },
+            "can_reset": not active_tasks,
+        }
     return payload
 
 
@@ -391,13 +530,18 @@ def _codex_observability_from_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
+    conversation = _codex_task_conversation_metadata(task)
     return {
         "task_id": task.get("task_id"),
         "status": task.get("status"),
         "sandbox": task.get("sandbox"),
         "cwd": task.get("cwd"),
         "thread_id": task.get("thread_id"),
-        "conversation_id": task.get("conversation_id") or task.get("thread_id") or task.get("task_id"),
+        "conversation_id": conversation.get("conversation_id") or task.get("conversation_id") or task.get("task_id"),
+        "conversation_generation": int(conversation.get("conversation_generation") or 1),
+        "conversation_state": conversation.get("conversation_state") or "archived",
+        "channel": conversation.get("channel") or "app",
+        "queue_position": _codex_task_queue_position(task),
         "prompt": task.get("prompt"),
         "mutable_intent": bool(task.get("mutable_intent")),
         "model": task.get("model"),
@@ -433,6 +577,7 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "final_response": task.get("final_response") or "",
         "error": task.get("error") or "",
         "message_kind": task.get("message_kind") or "",
+        "memory_excluded": bool(task.get("memory_excluded")),
         "report_id": task.get("report_id") or "",
         "report_formats": list(task.get("report_formats") or []),
         "logs": list(task.get("logs") or [])[-80:],
@@ -441,6 +586,13 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
         "completed_at": task.get("completed_at"),
         "created_by": task.get("created_by"),
         "client_id": task.get("client_id"),
+        "origin": task.get("origin") or "app",
+        "channel_message_id": task.get("channel_message_id") or "",
+        "channel_metadata": task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {},
+        "external_safe_mode": bool(task.get("external_safe_mode")),
+        "whatsapp_full_access": bool(task.get("whatsapp_full_access")),
+        "whatsapp_query_only": bool(task.get("whatsapp_query_only")),
+        "query_policy": task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {},
         "access_mode": task.get("access_mode") or ("full" if task.get("sandbox") != "read_only" else "read_only"),
         "approval_required": bool(task.get("approval_required")),
         "approved": bool(task.get("approved")),
@@ -448,6 +600,7 @@ def _codex_public_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _codex_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+    conversation = _codex_task_conversation_metadata(task)
     prompt = str(task.get("prompt") or "")
     response = str(
         task.get("final_response")
@@ -464,11 +617,16 @@ def _codex_task_summary(task: dict[str, Any]) -> dict[str, Any]:
         "started_at": task.get("started_at"),
         "completed_at": task.get("completed_at"),
         "model": task.get("model"),
-        "conversation_id": task.get("conversation_id") or task.get("thread_id") or task.get("task_id"),
+        "conversation_id": conversation.get("conversation_id") or task.get("conversation_id") or task.get("task_id"),
+        "conversation_generation": int(conversation.get("conversation_generation") or 1),
+        "conversation_state": conversation.get("conversation_state") or "archived",
+        "channel": conversation.get("channel") or "app",
+        "queue_position": _codex_task_queue_position(task),
         "thread_id": task.get("thread_id") or "",
         "prompt_preview": prompt[:240],
         "response_preview": response[:600],
         "message_kind": task.get("message_kind") or "",
+        "memory_excluded": bool(task.get("memory_excluded")),
         "report_id": task.get("report_id") or "",
         "report_formats": list(task.get("report_formats") or []),
         "context_stats": task.get("context_stats") if isinstance(task.get("context_stats"), dict) else {},
@@ -489,6 +647,12 @@ def codex_register_report_history(
     report_id = str((report or {}).get("report_id") or "").strip()
     if not report_id:
         return {}
+    state = _codex_load_or_create_conversation_state(
+        str(client_id or "default"),
+        str(username or "").strip().lower(),
+        channel="app",
+    )
+    canonical_conversation_id = str(state.get("conversation_id") or "")
     task_id = report_id
     now = _codex_now()
     created_at = str((report or {}).get("created_at") or now)
@@ -504,8 +668,9 @@ def codex_register_report_history(
         "status": "completed",
         "sandbox": "read_only",
         "cwd": _codex_base_dir(),
-        "thread_id": str(thread_id or "").strip(),
-        "conversation_id": _codex_safe_id(str(conversation_id or thread_id or report_id).strip()),
+        "thread_id": "",
+        "conversation_id": canonical_conversation_id,
+        "conversation_generation": int(state.get("generation") or 1),
         "prompt": str(prompt or title).strip() or title,
         "model": "codex-assistant-report",
         "approval_mode": "read_only",
@@ -536,6 +701,7 @@ def codex_register_report_history(
         "final_response": chat_text or title,
         "error": "",
         "message_kind": "report",
+        "memory_excluded": True,
         "report_id": report_id,
         "report_formats": formats,
         "logs": [{"at": now, "text": f"Relatorio {BLACK_JHON_DISPLAY_NAME} gerado e persistido no historico.", "kind": "report"}],
@@ -544,6 +710,8 @@ def codex_register_report_history(
         "completed_at": created_at,
         "created_by": str(username or ""),
         "client_id": str(client_id or "default"),
+        "origin": "app",
+        "channel_metadata": {},
         "approval_required": False,
         "approved": True,
     }
@@ -657,19 +825,64 @@ def _codex_conversation_id(thread_id: str = "", task_id: str = "") -> str:
     return _codex_safe_id(str(thread_id or "").strip() or str(task_id or "").strip() or uuid.uuid4().hex)
 
 
+def _codex_normalize_phone(value: Any) -> str:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if len(digits) < 8 or len(digits) > 15:
+        return ""
+    return digits
+
+
+def _codex_phone_identity(value: Any) -> str:
+    """Normaliza a identidade sem separar a variante brasileira com nono digito."""
+    digits = _codex_normalize_phone(value)
+    if digits.startswith("55") and len(digits) == 13 and digits[4] == "9":
+        return digits[:4] + digits[5:]
+    return digits
+
+
+def _codex_canonical_conversation_id(
+    client_id: str,
+    username: str,
+    *,
+    channel: str = "app",
+    phone: Any = "",
+) -> str:
+    channel_norm = "whatsapp" if str(channel or "").strip().lower() == "whatsapp" else "app"
+    client_norm = str(client_id or "default").strip().lower() or "default"
+    username_norm = str(username or "user").strip().lower() or "user"
+    phone_norm = _codex_phone_identity(phone) if channel_norm == "whatsapp" else ""
+    if channel_norm == "whatsapp" and not phone_norm:
+        raise HTTPException(
+            status_code=409,
+            detail="Nao foi possivel identificar com seguranca o telefone do WhatsApp.",
+        )
+    raw = f"{client_norm}:{username_norm}:{channel_norm}:{phone_norm}"
+    digest = hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:24]
+    return f"{'wa' if channel_norm == 'whatsapp' else 'app'}_{digest}"
+
+
 def _codex_universal_conversation_id(client_id: str, username: str) -> str:
-    raw = f"{str(client_id or 'default').strip().lower()}:{str(username or 'user').strip().lower()}"
-    digest = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
-    return f"universal_{digest}"
+    """Compatibilidade: a conversa universal antiga agora aponta para o canal app."""
+    return _codex_canonical_conversation_id(client_id, username, channel="app")
 
 
-def _codex_resolve_new_conversation_id(sessao: dict[str, Any], requested: Any = "") -> str:
-    explicit = _codex_safe_id(str(requested or "").strip(), "")
-    if explicit:
-        return explicit
-    return _codex_universal_conversation_id(
+def _codex_resolve_new_conversation_id(
+    sessao: dict[str, Any],
+    requested: Any = "",
+    *,
+    origin: str = "app",
+    channel_metadata: Optional[dict[str, Any]] = None,
+) -> str:
+    # `requested` permanece no contrato para clientes antigos, mas nunca define
+    # a identidade. Isso impede criar varias conversas trocando um ID no browser.
+    del requested
+    metadata = channel_metadata if isinstance(channel_metadata, dict) else {}
+    channel = "whatsapp" if str(origin or "").strip().lower() == "whatsapp" else "app"
+    return _codex_canonical_conversation_id(
         str(sessao.get("client_id") or "default"),
         str(sessao.get("username") or "user"),
+        channel=channel,
+        phone=metadata.get("wa_id") or metadata.get("phone"),
     )
 
 
@@ -686,6 +899,180 @@ def _codex_conversation_dir(client_id: str, username: str) -> Path:
 
 def _codex_conversation_path(client_id: str, username: str, conversation_id: str) -> Path:
     return _codex_conversation_dir(client_id, username) / f"{_codex_safe_id(conversation_id)}.json"
+
+
+def _codex_task_channel(task: dict[str, Any]) -> str:
+    return "whatsapp" if str(task.get("origin") or "").strip().lower() == "whatsapp" else "app"
+
+
+def _codex_task_phone(task: dict[str, Any]) -> str:
+    metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+    return _codex_normalize_phone(metadata.get("wa_id") or metadata.get("phone"))
+
+
+def _codex_task_stored_conversation_id(task: dict[str, Any]) -> str:
+    return _codex_safe_id(
+        str(task.get("conversation_id") or task.get("thread_id") or task.get("task_id") or "").strip(),
+        "",
+    )
+
+
+def _codex_find_latest_legacy_conversation(
+    client_id: str,
+    username: str,
+    *,
+    channel: str,
+    phone: str = "",
+    canonical_id: str,
+) -> tuple[str, dict[str, Any]]:
+    username_norm = str(username or "").strip().lower()
+    try:
+        paths = sorted(
+            Path(_codex_info_dir()).glob("*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        paths = []
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                task = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(task, dict):
+            continue
+        if str(task.get("client_id") or "") != str(client_id or ""):
+            continue
+        if str(task.get("created_by") or "").strip().lower() != username_norm:
+            continue
+        if _codex_task_channel(task) != channel:
+            continue
+        if channel == "whatsapp" and _codex_task_phone(task) != phone:
+            continue
+        if str(task.get("status") or "") != "completed":
+            continue
+        if str(task.get("message_kind") or "") == "report" or task.get("memory_excluded") is True:
+            continue
+        if not str(task.get("prompt") or "").strip() or not str(task.get("final_response") or "").strip():
+            continue
+        legacy_id = _codex_task_stored_conversation_id(task)
+        if legacy_id and legacy_id != canonical_id:
+            return legacy_id, task
+    return "", {}
+
+
+def _codex_load_or_create_conversation_state(
+    client_id: str,
+    username: str,
+    *,
+    channel: str = "app",
+    phone: Any = "",
+) -> dict[str, Any]:
+    channel_norm = "whatsapp" if str(channel or "").strip().lower() == "whatsapp" else "app"
+    phone_norm = _codex_normalize_phone(phone) if channel_norm == "whatsapp" else ""
+    conversation_id = _codex_canonical_conversation_id(
+        client_id,
+        username,
+        channel=channel_norm,
+        phone=phone_norm,
+    )
+    with CODEX_CONVERSATION_LOCK:
+        stored = _codex_load_conversation_summary(client_id, username, conversation_id)
+        if (
+            str(stored.get("conversation_id") or "") == conversation_id
+            and int(stored.get("generation") or 0) >= 1
+        ):
+            return stored
+
+        legacy_id, legacy_task = _codex_find_latest_legacy_conversation(
+            client_id,
+            username,
+            channel=channel_norm,
+            phone=phone_norm,
+            canonical_id=conversation_id,
+        )
+        legacy_summary = _codex_load_conversation_summary(client_id, username, legacy_id) if legacy_id else {}
+        now = _codex_now()
+        payload = {
+            "conversation_id": conversation_id,
+            "client_id": str(client_id or "default"),
+            "created_by": str(username or "").strip().lower(),
+            "channel": channel_norm,
+            "phone_fingerprint": hashlib.sha256(phone_norm.encode("utf-8")).hexdigest()[:16] if phone_norm else "",
+            "generation": 1,
+            "state": "active",
+            "summary": str(legacy_summary.get("summary") or ""),
+            "recent_messages": list(legacy_summary.get("recent_messages") or []),
+            "legacy_conversation_ids": [legacy_id] if legacy_id else [],
+            "latest_thread_id": str(legacy_task.get("thread_id") or "") if legacy_task else "",
+            "created_at": now,
+            "updated_at": now,
+            "reset_audit": [],
+        }
+        _codex_save_conversation_summary(client_id, username, conversation_id, payload)
+        return payload
+
+
+def _codex_conversation_state_for_task(task: dict[str, Any]) -> dict[str, Any]:
+    client_id = str(task.get("client_id") or "default")
+    username = str(task.get("created_by") or "").strip().lower()
+    channel = _codex_task_channel(task)
+    phone = _codex_task_phone(task)
+    if not client_id or not username or (channel == "whatsapp" and not phone):
+        return {}
+    return _codex_load_or_create_conversation_state(
+        client_id,
+        username,
+        channel=channel,
+        phone=phone,
+    )
+
+
+def _codex_save_conversation_state(task: dict[str, Any], **updates: Any) -> dict[str, Any]:
+    with CODEX_CONVERSATION_LOCK:
+        state = _codex_conversation_state_for_task(task)
+        if not state:
+            return {}
+        generation = int(task.get("conversation_generation") or 1)
+        if generation != int(state.get("generation") or 1):
+            return state
+        state.update(updates)
+        state["updated_at"] = _codex_now()
+        _codex_save_conversation_summary(
+            str(task.get("client_id") or "default"),
+            str(task.get("created_by") or "").strip().lower(),
+            str(state.get("conversation_id") or ""),
+            state,
+        )
+        return state
+
+
+def _codex_task_conversation_metadata(task: dict[str, Any]) -> dict[str, Any]:
+    stored_id = _codex_task_stored_conversation_id(task)
+    state = _codex_conversation_state_for_task(task)
+    if not state:
+        return {
+            "conversation_id": stored_id,
+            "conversation_generation": int(task.get("conversation_generation") or 1),
+            "conversation_state": "archived",
+            "channel": _codex_task_channel(task),
+        }
+    canonical_id = str(state.get("conversation_id") or stored_id)
+    generation = int(task.get("conversation_generation") or 1)
+    active_generation = int(state.get("generation") or 1)
+    aliases = {
+        _codex_safe_id(str(item or "").strip(), "")
+        for item in (state.get("legacy_conversation_ids") or [])
+        if str(item or "").strip()
+    }
+    selected = stored_id == canonical_id or (generation == 1 and stored_id in aliases)
+    return {
+        "conversation_id": canonical_id if selected else stored_id,
+        "conversation_generation": generation,
+        "conversation_state": "active" if selected and generation == active_generation else "archived",
+        "channel": str(state.get("channel") or _codex_task_channel(task)),
+    }
 
 
 def _codex_deleted_conversations_path(client_id: str, username: str) -> Path:
@@ -802,13 +1189,15 @@ def _codex_task_conversation_keys(task: dict[str, Any]) -> set[str]:
 
 
 def _codex_task_history_messages(task: dict[str, Any]) -> list[dict[str, str]]:
+    if str(task.get("status") or "") != "completed":
+        return []
+    if str(task.get("message_kind") or "") == "report" or task.get("memory_excluded") is True:
+        return []
     messages: list[dict[str, str]] = []
     prompt = str(task.get("prompt") or "").strip()
     if prompt:
         messages.append({"role": "user", "text": prompt[:2400], "task_id": str(task.get("task_id") or "")})
     final = str(task.get("final_response") or "").strip()
-    if not final and task.get("error"):
-        final = "Erro: " + str(task.get("error") or "")
     if final:
         kind = str(task.get("message_kind") or "")
         messages.append({"role": "assistant", "text": final[:3600], "task_id": str(task.get("task_id") or ""), "kind": kind})
@@ -821,6 +1210,8 @@ def _codex_recent_persisted_messages(
     conversation_id: str,
     exclude_task_id: str = "",
     limit: int = 40,
+    generation: int = 1,
+    aliases: Optional[list[str]] = None,
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     username_norm = str(username or "").strip().lower()
@@ -830,6 +1221,12 @@ def _codex_recent_persisted_messages(
         paths = sorted(Path(_codex_info_dir()).glob("*.json"), key=lambda item: item.stat().st_mtime)
     except Exception:
         paths = []
+    alias_ids = {
+        _codex_safe_id(str(item or "").strip(), "")
+        for item in (aliases or [])
+        if str(item or "").strip()
+    }
+    canonical_id = _codex_safe_id(conversation_id)
     for path in paths[-240:]:
         try:
             with path.open("r", encoding="utf-8") as fh:
@@ -844,7 +1241,11 @@ def _codex_recent_persisted_messages(
             continue
         if str(task.get("task_id") or "") == str(exclude_task_id or ""):
             continue
-        if _codex_safe_id(conversation_id) not in _codex_task_conversation_keys(task):
+        stored_id = _codex_task_stored_conversation_id(task)
+        task_generation = int(task.get("conversation_generation") or 1)
+        canonical_match = stored_id == canonical_id and task_generation == int(generation or 1)
+        legacy_match = int(generation or 1) == 1 and stored_id in alias_ids
+        if not canonical_match and not legacy_match:
             continue
         messages.extend(_codex_task_history_messages(task))
     return messages[-limit:]
@@ -891,13 +1292,19 @@ def _codex_prepare_conversation_context(task: dict[str, Any]) -> dict[str, Any]:
     conversation_id = _codex_task_conversation_id(task)
     stored = _codex_load_conversation_summary(client_id, username, conversation_id)
     summary = str(stored.get("summary") or "").strip()
-    browser_history = _codex_normalizar_history(task.get("history"))
+    generation = int(task.get("conversation_generation") or stored.get("generation") or 1)
+    aliases = list(stored.get("legacy_conversation_ids") or []) if generation == 1 else []
+    # O browser nao e fonte de autoridade do contexto. A memoria vem apenas de
+    # tarefas persistidas desta conversa/geracao no servidor.
+    browser_history: list[dict[str, str]] = []
     persisted = _codex_recent_persisted_messages(
         client_id,
         username,
         conversation_id,
         str(task.get("task_id") or ""),
         60,
+        generation,
+        aliases,
     )
     recent_messages = (persisted + browser_history)[-max(4, CODEX_CONVERSATION_RECENT_MESSAGES):]
     raw_context = json.dumps({"summary": summary, "recent_messages": recent_messages}, ensure_ascii=False, default=str)
@@ -911,6 +1318,7 @@ def _codex_prepare_conversation_context(task: dict[str, Any]) -> dict[str, Any]:
         summary = _codex_compact_summary(summary, older)
         compacted = True
         payload = {
+            **stored,
             "conversation_id": conversation_id,
             "client_id": client_id,
             "created_by": username,
@@ -948,12 +1356,16 @@ def _codex_update_conversation_memory(task_id: str) -> dict[str, Any]:
     conversation_id = _codex_task_conversation_id(task)
     stored = _codex_load_conversation_summary(client_id, username, conversation_id)
     summary = str(stored.get("summary") or "").strip()
+    generation = int(task.get("conversation_generation") or stored.get("generation") or 1)
+    aliases = list(stored.get("legacy_conversation_ids") or []) if generation == 1 else []
     messages = _codex_recent_persisted_messages(
         client_id,
         username,
         conversation_id,
         str(task.get("task_id") or ""),
         160,
+        generation,
+        aliases,
     )
     messages.extend(_codex_task_history_messages(task))
     keep = max(4, CODEX_CONVERSATION_RECENT_MESSAGES)
@@ -964,6 +1376,7 @@ def _codex_update_conversation_memory(task_id: str) -> dict[str, Any]:
         summary = _codex_compact_summary(summary, messages[:-keep])
     recent_messages = messages[-keep:]
     payload = {
+        **stored,
         "conversation_id": conversation_id,
         "client_id": client_id,
         "created_by": username,
@@ -1077,8 +1490,24 @@ def _codex_backfill_assistant_report_tasks(client_id: str, username: str = "", l
 
 def _codex_persist_task(task: dict[str, Any]) -> None:
     try:
+        payload = _codex_public_task(task)
+        # Metadados internos necessarios para retomar uma tarefa apos reinicio.
+        payload["permissions"] = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
+        payload["trusted_model_config"] = bool(task.get("trusted_model_config"))
+        payload["thread_resume_retried"] = bool(task.get("thread_resume_retried"))
+        # Artefatos visuais do WhatsApp sao privados: precisam sobreviver a um
+        # reinicio para a ponte concluir o envio, mas nunca saem em
+        # ``_codex_public_task`` nem chegam ao frontend.
+        payload["whatsapp_artifacts"] = [
+            dict(item)
+            for item in (task.get("whatsapp_artifacts") or [])
+            if isinstance(item, dict)
+        ][:3]
+        payload["whatsapp_chart_expected"] = bool(task.get("whatsapp_chart_expected"))
+        payload["whatsapp_chart_status"] = str(task.get("whatsapp_chart_status") or "")[:80]
+        payload["whatsapp_chart_error"] = str(task.get("whatsapp_chart_error") or "")[:500]
         with open(_codex_task_path(task.get("task_id")), "w", encoding="utf-8") as fh:
-            json.dump(_codex_public_task(task), fh, ensure_ascii=False, indent=2)
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
     except Exception as exc:
         try:
             logger.warning("[CODEX CONSOLE] Falha ao persistir tarefa: %s", exc)
@@ -1106,6 +1535,186 @@ def _codex_load_task(task_id: str) -> Optional[dict[str, Any]]:
     return None
 
 
+def _codex_owned_persisted_tasks(client_id: str, username: str) -> list[dict[str, Any]]:
+    username_norm = str(username or "").strip().lower()
+    tasks: dict[str, dict[str, Any]] = {}
+    try:
+        paths = list(Path(_codex_info_dir()).glob("*.json"))
+    except Exception:
+        paths = []
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                task = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(task, dict):
+            continue
+        if str(task.get("client_id") or "") != str(client_id or ""):
+            continue
+        if str(task.get("created_by") or "").strip().lower() != username_norm:
+            continue
+        task_id = str(task.get("task_id") or path.stem).strip()
+        if task_id:
+            tasks[task_id] = task
+    with CODEX_TASKS_LOCK:
+        for task_id, task in CODEX_TASKS.items():
+            if (
+                isinstance(task, dict)
+                and str(task.get("client_id") or "") == str(client_id or "")
+                and str(task.get("created_by") or "").strip().lower() == username_norm
+            ):
+                tasks[str(task_id)] = task
+    return list(tasks.values())
+
+
+def _codex_whatsapp_phone_display(phone: str) -> str:
+    digits = _codex_normalize_phone(phone)
+    if not digits:
+        return "Telefone indisponivel"
+    if digits.startswith("55") and len(digits) == 13:
+        return f"+55 ({digits[2:4]}) {digits[4:9]}-{digits[9:]}"
+    if digits.startswith("55") and len(digits) == 12:
+        return f"+55 ({digits[2:4]}) {digits[4:8]}-{digits[8:]}"
+    return f"+{digits}"
+
+
+def _codex_timestamp_from_seconds(value: Any) -> str:
+    try:
+        timestamp = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if timestamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _codex_registered_whatsapp_bindings(sessao: dict[str, Any]) -> list[dict[str, Any]]:
+    """Consulta os vinculos ativos para exibir tambem telefones ainda sem tarefa."""
+    client_id = str(sessao.get("client_id") or "default")
+    username = str(sessao.get("username") or "").strip().lower()
+    if not username:
+        return []
+    try:
+        # Importacao local evita o ciclo: whatsapp_bridge usa este modulo para
+        # criar e acompanhar as tarefas recebidas do gateway.
+        from backend.services import whatsapp_bridge
+
+        config = whatsapp_bridge._load_config()
+        worker = whatsapp_bridge._worker_health(config)
+        raw_bindings = worker.get("bindings") if isinstance(worker.get("bindings"), list) else []
+    except Exception:
+        return []
+
+    bindings: list[dict[str, Any]] = []
+    for item in raw_bindings:
+        if not isinstance(item, dict):
+            continue
+        binding_client_id = str(item.get("client_id") or "")
+        binding_username = str(item.get("username") or "").strip().lower()
+        if binding_client_id != client_id or binding_username != username:
+            continue
+        phone = _codex_normalize_phone(item.get("phone_number") or item.get("wa_id"))
+        if not phone:
+            continue
+        subject_id = str(item.get("subject_id") or "").strip()
+        try:
+            settings = whatsapp_bridge._phone_notification_settings(
+                config,
+                subject_id,
+                client_id=binding_client_id,
+                username=binding_username,
+            )
+        except Exception:
+            settings = {}
+        bindings.append(
+            {
+                "conversation_id": _codex_canonical_conversation_id(
+                    client_id,
+                    username,
+                    channel="whatsapp",
+                    phone=phone,
+                ),
+                "phone": phone,
+                "label": str(settings.get("label") or "").strip()[:60],
+                "registered_at": _codex_timestamp_from_seconds(item.get("created_at")),
+                "last_inbound_at": _codex_timestamp_from_seconds(item.get("last_inbound_at")),
+            }
+        )
+    return bindings
+
+
+def _codex_whatsapp_history_records(sessao: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retorna somente tarefas WhatsApp pertencentes ao usuario autenticado."""
+    client_id = str(sessao.get("client_id") or "default")
+    username = str(sessao.get("username") or "").strip().lower()
+    deleted_ids = _codex_deleted_conversation_ids(client_id, username)
+    records: list[dict[str, Any]] = []
+    for task in _codex_owned_persisted_tasks(client_id, username):
+        if _codex_task_channel(task) != "whatsapp":
+            continue
+        if str(task.get("message_kind") or "") == "report" or task.get("memory_excluded") is True:
+            continue
+        phone = _codex_task_phone(task)
+        if not phone:
+            # Nunca reunir historico sem telefone em um balde compartilhado.
+            continue
+        conversation_id = _codex_canonical_conversation_id(
+            client_id,
+            username,
+            channel="whatsapp",
+            phone=phone,
+        )
+        if conversation_id in deleted_ids or (_codex_task_conversation_keys(task) & deleted_ids):
+            continue
+        records.append(
+            {
+                "task": task,
+                "conversation_id": conversation_id,
+                "phone": phone,
+                "activity_at": str(
+                    task.get("completed_at")
+                    or task.get("started_at")
+                    or task.get("created_at")
+                    or ""
+                ),
+            }
+        )
+    records.sort(key=lambda item: str(item.get("activity_at") or ""), reverse=True)
+    return records
+
+
+def _codex_whatsapp_completed_exchange(task: dict[str, Any]) -> bool:
+    return bool(
+        str(task.get("status") or "") == "completed"
+        and str(task.get("prompt") or "").strip()
+        and str(task.get("final_response") or "").strip()
+        and str(task.get("message_kind") or "") != "report"
+        and task.get("memory_excluded") is not True
+    )
+
+
+def _codex_whatsapp_history_message_preview(task: dict[str, Any]) -> dict[str, Any]:
+    prompt = str(task.get("prompt") or "").strip()
+    response = str(task.get("final_response") or "").strip()
+    prompt_limit = 4000
+    response_limit = 12000
+    return {
+        "task_id": str(task.get("task_id") or ""),
+        "status": str(task.get("status") or ""),
+        "model": str(task.get("model") or ""),
+        "created_at": str(task.get("created_at") or ""),
+        "completed_at": str(task.get("completed_at") or ""),
+        "prompt": prompt[:prompt_limit],
+        "prompt_truncated": len(prompt) > prompt_limit,
+        "response": response[:response_limit],
+        "response_truncated": len(response) > response_limit,
+    }
+
+
 def _codex_update_task(task_id: str, **updates: Any) -> dict[str, Any]:
     with CODEX_TASKS_LOCK:
         task = CODEX_TASKS.get(task_id)
@@ -1128,6 +1737,112 @@ def _codex_normalizar_sandbox(value: str) -> str:
     if sandbox not in CODEX_SANDBOXES:
         raise HTTPException(status_code=400, detail="Sandbox invalido para Codex.")
     return sandbox
+
+
+def _codex_whatsapp_query_policy(origin: Any, channel_metadata: Any) -> dict[str, Any]:
+    if str(origin or "").strip().lower() != "whatsapp" or not isinstance(channel_metadata, dict):
+        return {}
+    raw = channel_metadata.get("query_policy")
+    if not isinstance(raw, dict) or str(raw.get("mode") or "").strip().lower() != "query_only":
+        return {}
+    allowed_domains = {"vendas", "anuncios_ml", "estoque", "mercado_full"}
+    domains = [
+        str(item or "").strip().lower()
+        for item in (raw.get("domains") or [])
+        if str(item or "").strip().lower() in allowed_domains
+    ]
+    if not domains:
+        return {}
+    policy: dict[str, Any] = {
+        "mode": "query_only",
+        "domains": list(dict.fromkeys(domains)),
+        "read_only": True,
+        "deny_approval": True,
+        "store_required": bool(raw.get("store_required")),
+        "store": _codex_clean_text(str(raw.get("store") or ""), 160),
+    }
+    raw_store_mode = str(raw.get("store_mode") or "").strip().lower()
+    raw_stores = [
+        _codex_clean_text(str(item or ""), 160)
+        for item in (raw.get("stores") or [])
+        if str(item or "").strip()
+    ]
+    raw_stores = list(dict.fromkeys(item for item in raw_stores if item))[:20]
+    if raw_store_mode == "all" and raw_stores:
+        policy["store_mode"] = "all"
+        policy["stores"] = raw_stores
+    source_raw = raw.get("source_policy") if isinstance(raw.get("source_policy"), dict) else {}
+    allowed_source_tools = {
+        "bling_stock_balances",
+        "mercado_livre_listing",
+        "mercado_livre_orders",
+        "mercado_livre_full_stock",
+    }
+    required_tools = [
+        str(item or "").strip()
+        for item in (source_raw.get("required_tools") or [])
+        if str(item or "").strip() in allowed_source_tools
+    ]
+    forbidden_tools = [
+        str(item or "").strip()
+        for item in (source_raw.get("forbidden_tools") or [])
+        if str(item or "").strip() in {
+            "bling_stock_balances", "bling_deposits", "stock_data", "product_data",
+            "bling_sales_orders", "mercado_livre_listing", "mercado_livre_orders", "mercado_livre_full_stock",
+        }
+    ]
+    if required_tools:
+        policy["source_policy"] = {
+            "version": _codex_clean_text(str(source_raw.get("version") or ""), 80),
+            "intent": _codex_clean_text(str(source_raw.get("intent") or ""), 240),
+            "required_tools": list(dict.fromkeys(required_tools)),
+            "forbidden_tools": list(dict.fromkeys(forbidden_tools)),
+            "preferred_providers": [
+                str(item or "").strip()
+                for item in (source_raw.get("preferred_providers") or [])
+                if str(item or "").strip() in {"bling", "mercado_livre"}
+            ],
+            "force_refresh": bool(source_raw.get("force_refresh")),
+            "include_listing_details": bool(source_raw.get("include_listing_details")),
+            "sum_requested": bool(source_raw.get("sum_requested")),
+            "full_exclusive": bool(source_raw.get("full_exclusive")),
+            "full_stock_provider": "mercado_livre_api_only",
+            "bling_stock_scope": "exclude_full",
+            "aggregation_policy": _codex_clean_text(str(source_raw.get("aggregation_policy") or ""), 120),
+        }
+    if raw.get("base_request"):
+        policy["base_request"] = _codex_clean_text(str(raw.get("base_request") or ""), 2000)
+    if str(raw.get("pagination") or "") == "next":
+        policy["pagination"] = "next"
+    if raw.get("inherited") is True:
+        policy["inherited"] = True
+        policy["base_request"] = _codex_clean_text(str(raw.get("base_request") or ""), 2000)
+    if raw.get("fresh") is True or raw.get("bypass_cache") is True:
+        policy["fresh"] = True
+        policy["bypass_cache"] = True
+    if raw.get("report_mode") is True and "mercado_livre_orders" in required_tools:
+        policy["report_mode"] = True
+    try:
+        if raw.get("offset") is not None:
+            policy["offset"] = max(0, min(int(raw.get("offset")), 100000))
+    except Exception:
+        pass
+    try:
+        if raw.get("limit") is not None:
+            maximum = 20000 if policy.get("report_mode") is True else 100
+            policy["limit"] = max(1, min(int(raw.get("limit")), maximum))
+    except Exception:
+        pass
+    return policy
+
+
+def _codex_task_whatsapp_query_only(task: Any) -> bool:
+    if not isinstance(task, dict) or str(task.get("origin") or "").strip().lower() != "whatsapp":
+        return False
+    if task.get("whatsapp_query_only") is True:
+        return True
+    metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+    return bool(_codex_whatsapp_query_policy("whatsapp", metadata))
 
 
 def _codex_clean_text(value: Optional[str], limit: int = 2000) -> str:
@@ -1485,16 +2200,39 @@ def _codex_agent_screen_summary(screen_context: Any) -> dict[str, Any]:
     }
 
 
-def _codex_agent_tool_catalog(permissions: Any = None) -> list[dict[str, Any]]:
+def _codex_agent_source_policy_from_screen(screen_context: Any) -> dict[str, Any]:
+    if not isinstance(screen_context, dict):
+        return {}
+    selection = screen_context.get("selection") if isinstance(screen_context.get("selection"), dict) else {}
+    query_policy = selection.get("query_policy") if isinstance(selection.get("query_policy"), dict) else {}
+    source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
+    return dict(source_policy)
+
+
+def _codex_agent_tool_catalog(
+    permissions: Any = None,
+    *,
+    read_only_only: bool = False,
+    source_policy: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
     try:
         from backend.services import codex_assistant
 
         tools = codex_assistant._assistant_tools_public(permissions)
     except Exception:
         tools = []
+    source_policy = source_policy if isinstance(source_policy, dict) else {}
+    forbidden_tools = {str(item or "").strip() for item in (source_policy.get("forbidden_tools") or []) if str(item or "").strip()}
     compact: list[dict[str, Any]] = []
     for tool in tools:
         if not isinstance(tool, dict):
+            continue
+        if read_only_only and (
+            tool.get("read_only") is not True
+            or str(tool.get("id") or "") in {"program_action_match", "operational_dispatcher"}
+        ):
+            continue
+        if str(tool.get("id") or "") in forbidden_tools:
             continue
         compact.append(
             {
@@ -1510,7 +2248,12 @@ def _codex_agent_tool_catalog(permissions: Any = None) -> list[dict[str, Any]]:
     return compact
 
 
-def _codex_agent_capability_catalog(client_id: str = "", permissions: Any = None) -> dict[str, Any]:
+def _codex_agent_capability_catalog(
+    client_id: str = "",
+    permissions: Any = None,
+    *,
+    read_only_only: bool = False,
+) -> dict[str, Any]:
     permissions = permissions if isinstance(permissions, dict) else {}
     if permissions.get("full") is not True:
         return {
@@ -1520,7 +2263,11 @@ def _codex_agent_capability_catalog(client_id: str = "", permissions: Any = None
             "capabilities": [],
         }
     try:
-        return codex_capabilities.compact_capability_catalog(client_id=str(client_id or ""), limit=80)
+        return codex_capabilities.compact_capability_catalog(
+            client_id=str(client_id or ""),
+            limit=80,
+            read_only_only=read_only_only,
+        )
     except Exception as exc:
         return {
             "version": "unavailable",
@@ -1546,9 +2293,20 @@ def _codex_agent_initial_prompt(
     reasoning_effort: str,
     speed: str,
     approval_profile: str,
+    external_safe_mode: bool = False,
+    whatsapp_full_access: bool = False,
 ) -> str:
-    catalog = _codex_agent_tool_catalog(permissions)
-    capabilities = _codex_agent_capability_catalog(client_id, permissions)
+    source_policy = _codex_agent_source_policy_from_screen(screen_context)
+    catalog = _codex_agent_tool_catalog(
+        permissions,
+        read_only_only=external_safe_mode,
+        source_policy=source_policy,
+    )
+    capabilities = _codex_agent_capability_catalog(
+        client_id,
+        permissions,
+        read_only_only=external_safe_mode,
+    )
     screen_summary = _codex_agent_screen_summary(screen_context)
     conversation_context = conversation_context if isinstance(conversation_context, dict) else {}
     conversation_summary = str(conversation_context.get("summary") or "").strip()
@@ -1589,6 +2347,43 @@ def _codex_agent_initial_prompt(
             f"{_codex_agent_json(recent_messages, CODEX_CONVERSATION_RECENT_CHAR_LIMIT)}"
         )
     memory_text = "\n\n".join(memory_parts) if memory_parts else "Sem historico persistido relevante para esta conversa."
+    approved_mobile_execution = bool(whatsapp_full_access and sandbox == "full_access")
+    mutable_rule = (
+        "- Esta tarefa mutavel ja foi confirmada fora do modelo por codigo unico no mesmo numero de WhatsApp. "
+        "Pode executar o pedido com as ferramentas nativas do Codex, sem solicitar uma segunda confirmacao. "
+        "O protocolo jk_tool_calls continua reservado a consultas e preparacao segura de dados.\n"
+        if approved_mobile_execution
+        else "- Acao mutavel nao pode ser executada por ferramenta: editar arquivo, comando, sincronizar, publicar, responder pergunta, alterar banco, Bling ou Mercado Livre exige aprovacao explicita.\n"
+    )
+    mobile_report_rule = (
+        "Estilo de conversa no WhatsApp:\n"
+        "- Fale de forma natural, cordial e descontraida, como um colega prestativo.\n"
+        "- Va direto ao ponto e varie a abertura; nao transforme toda resposta em comunicado formal.\n"
+        "- Nao coloque titulo em respostas simples, nao repita o nome Black Jhon e nao assine ao final.\n"
+        "- Use titulos e secoes somente quando ajudarem a organizar relatorios ou respostas realmente longas.\n"
+        "- Use emojis com moderacao e nunca sacrifique clareza dos dados.\n\n"
+        "Formato de relatorio para WhatsApp:\n"
+        "- Escreva para uma tela pequena, com frases curtas, espaco entre blocos e sem tabelas Markdown.\n"
+        "- Use nesta ordem: Relatorio, Dados principais, Mais vendidos quando houver ranking, Analise e Fontes e cobertura.\n"
+        "- Em Dados principais, mostre no maximo 8 indicadores objetivos. Em consultas comuns, use no maximo 5 itens; em relatorios completos, liste todos os SKUs e deixe o formatador dividir ate 8 por card.\n"
+        "- Para cada item do ranking, informe SKU, nome completo do produto, quantidade e valor; nao misture dois produtos no mesmo paragrafo e nao corte texto com reticencias.\n"
+        "- No relatorio do dia, use obrigatoriamente os pedidos da API do Mercado Livre e liste todos os SKUs vendidos, cada um com quantidade, valor unitario medio e total vendido.\n"
+        "- Deixe as fontes por ultimo, em linguagem simples, incluindo periodo, conta ou loja, quantidade de registros e eventual lacuna.\n\n"
+        if whatsapp_full_access
+        else ""
+    )
+    source_routing_rule = ""
+    if source_policy:
+        source_routing_rule = (
+            "Politica obrigatoria de origem dos dados para esta pergunta do WhatsApp:\n"
+            "- Execute primeiro todas as ferramentas de required_tools antes de qualquer fallback.\n"
+            "- Estoque comum vem da API atual da Bling, sempre sem depositos Full.\n"
+            "- Descricao de anuncios, pedidos e vendas vem primeiro da API do Mercado Livre.\n"
+            "- Estoque Full vem exclusivamente da API de inventario fulfillment do Mercado Livre.\n"
+            "- Nunca consulte nem use saldo Full da Bling ou saldo Full de cadastro/cache local.\n"
+            "- Se a soma combinar loja e Full, use loja=Bling sem Full e Full=Mercado Livre; se faltar uma fonte, nao estime.\n"
+            f"Politica calculada pelo servidor: {_codex_agent_json(source_policy, 4000)}\n\n"
+        )
     return (
         f"Voce e o {BLACK_JHON_DISPLAY_NAME}, assistente interno unificado do JK Sistema. "
         "O Codex e sua IA principal de raciocinio e execucao.\n"
@@ -1596,7 +2391,7 @@ def _codex_agent_initial_prompt(
         "Nao invente dados e nao dependa da tela atual quando houver ferramenta de dados mais apropriada.\n\n"
         "Regras de seguranca:\n"
         "- Consultas internas e externas read-only podem ser solicitadas pelo protocolo abaixo.\n"
-        "- Acao mutavel nao pode ser executada por ferramenta: editar arquivo, comando, sincronizar, publicar, responder pergunta, alterar banco, Bling ou Mercado Livre exige aprovacao explicita.\n"
+        f"{mutable_rule}"
         "- Se os dados vierem vazios, peca fallbacks do catalogo antes de responder, respeitando os limites.\n"
         "- Depois de cada resultado, confira tool_validation.dados_suficientes. Se for falso e houver proximas_fontes, peca outra ferramenta antes de concluir.\n"
         "- Para dados que nao estejam na tela, use fontes read-only: banco local, CSV, cache, logs de sync, Bling, Mercado Livre, perguntas, anuncios e fiscal.\n\n"
@@ -1607,6 +2402,8 @@ def _codex_agent_initial_prompt(
         "- Use os IDs de ferramentas apenas dentro do bloco jk_tool_calls.\n"
         "- Na resposta final, status e relatorios, nunca mostre nomes internos como local_database_query, source_discovery, stock_data, function, executor ou nomes de arquivos tecnicos.\n"
         "- Explique as fontes em linguagem simples: historico de vendas, historico de estoque, cadastro de produtos, status das integracoes, Bling ou Mercado Livre.\n\n"
+        f"{mobile_report_rule}"
+        f"{source_routing_rule}"
         "Protocolo de ferramenta:\n"
         "Quando precisar consultar dados, responda somente com um bloco JSON valido neste formato:\n"
         "<jk_tool_calls>\n"
@@ -1667,10 +2464,45 @@ def _codex_agent_tool_status(tool_id: str) -> str:
         return tool_id
 
 
+def _codex_agent_result_without_exact_transcripts(value: Any) -> Any:
+    """Mantem fatos da venda no prompt, mas reserva falas ao formatador servidor."""
+    if not isinstance(value, dict):
+        return value
+    safe = copy.deepcopy(value)
+    if not (safe.get("exact_metadata") or {}).get("exact_lookup"):
+        return safe
+    for rows_key in ("top_rows", "all_rows"):
+        rows = safe.get(rows_key)
+        if not isinstance(rows, list):
+            continue
+        compact_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            compact = copy.deepcopy(row)
+            conversations = compact.pop("conversations", {})
+            compact["conversation_counts"] = {
+                "total_messages": int((conversations or {}).get("total_messages") or 0),
+                "complete": bool((conversations or {}).get("complete")),
+            }
+            for claim in compact.get("claims") or []:
+                if isinstance(claim, dict):
+                    conversation = claim.pop("conversation", {})
+                    claim["conversation_count"] = int((conversation or {}).get("total_messages") or 0)
+            compact_rows.append(compact)
+        safe[rows_key] = compact_rows
+    return safe
+
+
 def _codex_agent_results_prompt(cycle: int, results: list[dict[str, Any]]) -> str:
+    prompt_results = [
+        _codex_agent_result_without_exact_transcripts(item)
+        for item in results
+        if isinstance(item, dict)
+    ]
     payload = {
         "cycle": cycle,
-        "tool_results": results,
+        "tool_results": prompt_results,
         "next_instruction": (
             "Analise estes resultados e leia tool_validation de cada ferramenta. Se dados_suficientes for falso "
             "e houver proximas_fontes, solicite novo bloco jk_tool_calls com esses fallbacks antes de concluir. "
@@ -1681,6 +2513,806 @@ def _codex_agent_results_prompt(cycle: int, results: list[dict[str, Any]]) -> st
         ),
     }
     return "Resultados compactos das ferramentas read-only:\n" + _codex_agent_json(payload, CODEX_AGENT_TOOL_RESULT_LIMIT)
+
+
+def _codex_whatsapp_number(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        number = 0.0
+    if number.is_integer():
+        return f"{int(number):,}".replace(",", ".")
+    return f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _codex_whatsapp_money(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        number = 0.0
+    return "R$ " + f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _codex_whatsapp_report_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", raw)
+    return f"{match.group(3)}/{match.group(2)}/{match.group(1)}" if match else raw
+
+
+def _codex_whatsapp_inline(value: Any, fallback: str = "") -> str:
+    """Normaliza apenas espacos; nunca corta nomes com reticencias."""
+    text = " ".join(str(value or "").split()).strip()
+    return text or fallback
+
+
+def _codex_whatsapp_user_request_text(task: dict[str, Any]) -> str:
+    """Extrai somente o pedido do usuario do envelope interno do WhatsApp."""
+    prompt = str(task.get("prompt") or "").strip()
+    marker = "Texto recebido:"
+    if marker not in prompt:
+        return prompt
+    prompt = prompt.split(marker, 1)[1].strip()
+    for suffix in (
+        "\nO usuario pediu explicitamente uma foto",
+        "\nAnexo local recebido pelo WhatsApp:",
+        "\nTranscricao local do audio:",
+    ):
+        if suffix in prompt:
+            prompt = prompt.split(suffix, 1)[0].strip()
+    return prompt
+
+
+def _codex_whatsapp_ml_report_requested(
+    task: dict[str, Any],
+    *,
+    tool_id: str = "",
+    args: Optional[dict[str, Any]] = None,
+    results: Optional[list[dict[str, Any]]] = None,
+) -> bool:
+    """Reconhece relatorio ML mesmo quando a continuacao perdeu query_policy."""
+    if str(task.get("origin") or "").strip().lower() != "whatsapp":
+        return False
+    query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
+    source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
+    args = dict(args or {}) if isinstance(args, dict) else {}
+    results = list(results or []) if isinstance(results, list) else []
+    result_matches = [
+        item for item in results
+        if isinstance(item, dict) and str(item.get("tool_id") or "") == "mercado_livre_orders"
+    ]
+    ml_orders_context = bool(
+        str(tool_id or "") == "mercado_livre_orders"
+        or "mercado_livre_orders" in (source_policy.get("required_tools") or [])
+        or result_matches
+    )
+    if not ml_orders_context:
+        return False
+    if query_policy.get("report_mode") is True:
+        return True
+    if str(args.get("mode") or args.get("modo") or "").strip().lower() in {"report", "daily", "relatorio"}:
+        return True
+    for item in result_matches:
+        result_args = item.get("args") if isinstance(item.get("args"), dict) else {}
+        if str(result_args.get("mode") or result_args.get("modo") or "").strip().lower() in {"report", "daily", "relatorio"}:
+            return True
+        for summary_item in item.get("summary") if isinstance(item.get("summary"), list) else []:
+            payload = summary_item.get("summary") if isinstance(summary_item, dict) and isinstance(summary_item.get("summary"), dict) else {}
+            paging = payload.get("paging") if isinstance(payload.get("paging"), dict) else {}
+            if paging.get("report_mode") is True:
+                return True
+    text = _codex_texto_sem_acentos(" ".join([
+        _codex_whatsapp_user_request_text(task),
+        str(query_policy.get("base_request") or ""),
+        str(args.get("message") or args.get("mensagem") or ""),
+    ]))
+    if re.search(r"\b(relatorio|analise|resumo|balanco|fechamento|consolidado)\b", text):
+        return True
+    months = (
+        r"janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|"
+        r"setembro|outubro|novembro|dezembro"
+    )
+    return bool(
+        re.search(rf"\bvendas?\b[^.]*\b(hoje|ontem|dia|semana|mes|periodo|{months})\b", text)
+        or re.search(rf"\b(hoje|ontem|dia|semana|mes|periodo|{months})\b[^.]*\bvendas?\b", text)
+    )
+
+
+def _codex_whatsapp_prepare_agent_tool_call(
+    task: dict[str, Any],
+    tool_id: str,
+    args: Optional[dict[str, Any]],
+    previous_results: Optional[list[dict[str, Any]]] = None,
+) -> tuple[dict[str, Any], bool]:
+    prepared = dict(args or {}) if isinstance(args, dict) else {}
+    complete_report = _codex_whatsapp_ml_report_requested(
+        task,
+        tool_id=tool_id,
+        args=prepared,
+        results=previous_results,
+    )
+    if complete_report and str(tool_id or "") == "mercado_livre_orders":
+        try:
+            requested_limit = int(prepared.get("limite") or prepared.get("limit") or 0)
+        except (TypeError, ValueError):
+            requested_limit = 0
+        try:
+            requested_pages = int(prepared.get("max_paginas") or prepared.get("max_pages") or 0)
+        except (TypeError, ValueError):
+            requested_pages = 0
+        prepared["mode"] = "report"
+        prepared["limite"] = max(20_000, requested_limit)
+        prepared["max_paginas"] = max(400, requested_pages)
+        prepared["force_refresh"] = True
+        prepared["status"] = "paid,partially_refunded"
+        prepared["statuses"] = "paid,partially_refunded"
+    return prepared, complete_report
+
+
+def _codex_whatsapp_deposit_reason(value: Any) -> str:
+    raw = _codex_whatsapp_inline(value)
+    normalized = _codex_texto_sem_acentos(raw)
+    if "full" in normalized or "fulfillment" in normalized:
+        return "excluído por ser Full/Fulfillment"
+    if "desconsiderarsaldo" in normalized or "desconsiderar saldo" in normalized:
+        return "desconsiderado pela configuração da Bling"
+    if "inativo" in normalized:
+        return "depósito inativo na Bling"
+    if "id nao encontrado" in normalized:
+        return "não classificado; ID não encontrado no catálogo de depósitos"
+    if "metadados insuficientes" in normalized:
+        return "não classificado; metadados insuficientes para calcular o saldo confiável"
+    return raw or "não classificado; não incluído no total confiável"
+
+
+def _codex_whatsapp_bling_stock_response(task: dict[str, Any], results: list[dict[str, Any]]) -> str:
+    """Formata o saldo Bling com cada deposito nomeado e sua classificacao."""
+    if str(task.get("origin") or "").strip().lower() != "whatsapp":
+        return ""
+    result = next(
+        (
+            item for item in results
+            if isinstance(item, dict)
+            and item.get("success") is True
+            and str(item.get("tool_id") or "") == "bling_stock_balances"
+        ),
+        None,
+    )
+    if not isinstance(result, dict):
+        return ""
+    rows = [row for row in (result.get("top_rows") or result.get("rows") or []) if isinstance(row, dict)]
+    if not rows:
+        return ""
+    blocks: list[str] = []
+    for row in rows:
+        store = _codex_whatsapp_inline(row.get("loja") or row.get("store"), "loja selecionada")
+        sku = _codex_whatsapp_inline(row.get("sku") or row.get("codigo"), "não informado")
+        product = _codex_whatsapp_inline(row.get("produto") or row.get("nome"), "Produto sem nome")
+        included = [item for item in (row.get("depositos") or []) if isinstance(item, dict)]
+        excluded = [item for item in (row.get("depositos_excluidos") or []) if isinstance(item, dict)]
+        gross = row.get("saldo_bruto_retornado")
+        if gross is None:
+            gross = sum(
+                float(item.get("saldo_fisico", item.get("saldoFisico", item.get("saldo", 0))) or 0)
+                for item in included + excluded
+            )
+        store_balance = row.get("saldo_loja_total", row.get("saldo_total"))
+        if store_balance is None:
+            store_balance_text = "indisponível — a classificação dos depósitos está incompleta"
+        else:
+            store_balance_text = f"{_codex_whatsapp_number(store_balance)} unidades"
+        lines = [
+            f"Na **{store}**, o SKU **{sku}** é **{product}**.",
+            "",
+            f"**Estoque disponível de loja na Bling:** {store_balance_text}",
+            f"**Saldo bruto retornado pela Bling:** {_codex_whatsapp_number(gross)} unidades",
+            "",
+            "**Depósitos incluídos no saldo de loja**",
+        ]
+        if not included:
+            lines.append("- Nenhum depósito pôde ser incluído com segurança.")
+        for deposit in included:
+            deposit_id = _codex_whatsapp_inline(deposit.get("id"))
+            name = _codex_whatsapp_inline(deposit.get("nome") or deposit.get("descricao"))
+            if not name or "nao classificado" in _codex_texto_sem_acentos(name):
+                name = f"Depósito ID {deposit_id or 'desconhecido'} — não classificado"
+            balance = deposit.get("saldo_fisico", deposit.get("saldoFisico", deposit.get("saldo", 0)))
+            lines.append(f"- **{name}:** {_codex_whatsapp_number(balance)} unidades — incluído")
+        lines.extend(["", "**Depósitos excluídos do saldo de loja**"])
+        if not excluded:
+            lines.append("- Nenhum depósito excluído.")
+        for deposit in excluded:
+            deposit_id = _codex_whatsapp_inline(deposit.get("id"))
+            name = _codex_whatsapp_inline(deposit.get("nome") or deposit.get("descricao"))
+            if not name or "nao classificado" in _codex_texto_sem_acentos(name):
+                name = f"Depósito ID {deposit_id or 'desconhecido'} — não classificado"
+            balance = deposit.get("saldo_fisico", deposit.get("saldoFisico", deposit.get("saldo", 0)))
+            reason = _codex_whatsapp_deposit_reason(
+                deposit.get("motivo") or deposit.get("reason") or deposit.get("motivo_exclusao")
+            )
+            lines.append(f"- **{name}:** {_codex_whatsapp_number(balance)} unidades — {reason}")
+        if row.get("cobertura_depositos_completa") is False:
+            lines.extend([
+                "",
+                "⚠️ A classificação dos depósitos está incompleta; depósitos não identificados não entraram no saldo disponível.",
+            ])
+        elif row.get("full_excluido") is True:
+            lines.extend(["", "O estoque Full foi excluído desta consulta."])
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks).strip()
+
+
+CODEX_EXACT_ORDER_HISTORY_MARKER = "<!-- JK_EXACT_ORDER_FULL_HISTORY -->"
+
+
+def _codex_exact_value(value: Any, fallback: str = "indisponível") -> str:
+    if value is None:
+        return fallback
+    text = " ".join(str(value).split()).strip()
+    return text if text else fallback
+
+
+def _codex_exact_money(value: Any) -> str:
+    return "indisponível" if value is None or value == "" else _codex_whatsapp_money(value)
+
+
+def _codex_exact_message_lines(messages: Any, seen: set[tuple[str, str, str]]) -> list[str]:
+    lines: list[str] = []
+    for message in messages if isinstance(messages, list) else []:
+        if not isinstance(message, dict):
+            continue
+        text = str(message.get("text") or "").strip()
+        attachments = [
+            _codex_whatsapp_inline(item.get("name") if isinstance(item, dict) else item)
+            for item in (message.get("attachments") or [])
+        ]
+        attachments = [item for item in attachments if item]
+        key = (
+            str(message.get("message_id") or message.get("date") or ""),
+            str(message.get("role") or ""),
+            text,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        label = _codex_exact_value(message.get("label"), "Participante")
+        date_label = _codex_whatsapp_report_date(message.get("date")) or "data indisponível"
+        if text:
+            quoted = "\n> ".join(line.rstrip() for line in text.replace("\r", "").split("\n"))
+            lines.append(f"- {date_label} — **{label}:**\n> {quoted}")
+        else:
+            lines.append(f"- {date_label} — **{label}:** mensagem sem texto disponível")
+        if attachments:
+            lines.append("  Anexos: " + ", ".join(attachments))
+        moderation = _codex_whatsapp_inline(message.get("moderation_status"))
+        if moderation and moderation.lower() not in {"available", "clean"}:
+            lines.append(f"  Moderação: {moderation}")
+    return lines
+
+
+def _codex_exact_status_label(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    return {
+        "confirmed": "Confirmado",
+        "payment_required": "Aguardando pagamento",
+        "payment_in_process": "Pagamento em análise",
+        "partially_paid": "Parcialmente pago",
+        "paid": "Pago",
+        "partially_refunded": "Parcialmente reembolsado",
+        "pending_cancel": "Cancelamento pendente",
+        "cancelled": "Cancelado",
+        "invalid": "Inválido",
+    }.get(key, _codex_exact_value(value))
+
+
+def _codex_exact_shipment_label(shipment: dict[str, Any]) -> str:
+    state = str(shipment.get("delivery_state") or "").strip().lower()
+    return {
+        "delivered": "Entregue",
+        "in_transit": "Em trânsito",
+        "preparing": "Em preparação",
+        "not_delivered": "Não entregue",
+        "cancelled": "Cancelado",
+        "unavailable": "Indisponível",
+    }.get(state, _codex_exact_value(shipment.get("delivery_state_label")))
+
+
+def _codex_exact_logistics_label(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    return {
+        "fulfillment": "Mercado Full",
+        "cross_docking": "Cross docking",
+        "xd_drop_off": "Cross docking com postagem",
+        "drop_off": "Postagem em agência",
+        "self_service": "Mercado Envios Flex",
+        "custom": "Logística própria",
+    }.get(key, _codex_exact_value(value))
+
+
+def _codex_exact_quantity(value: Any) -> str:
+    if value is None or value == "":
+        return "indisponível"
+    return _codex_whatsapp_number(value)
+
+
+def _codex_exact_ml_order_whatsapp_response(
+    metadata: dict[str, Any],
+    orders: list[dict[str, Any]],
+) -> str:
+    """Ficha móvel única; detalhes técnicos repetidos ficam fora do WhatsApp."""
+    requested_id = _codex_exact_value(metadata.get("requested_id"), "não informado")
+    stores = [str(item).strip() for item in (metadata.get("matched_stores") or []) if str(item).strip()]
+    store_label = ", ".join(stores) or "loja indisponível"
+    lines = [
+        CODEX_EXACT_ORDER_HISTORY_MARKER,
+        f"# Venda {requested_id} — {store_label}",
+    ]
+    multiple_orders = len(orders) > 1
+    seen_post_sale: set[tuple[str, str, str]] = set()
+
+    for index, order in enumerate(orders, start=1):
+        order_id = _codex_exact_value(order.get("order_id"))
+        pack_id = _codex_exact_value(order.get("pack_id"), "")
+        if multiple_orders:
+            lines.extend(["", f"## Pedido {index} — {order_id}"])
+        elif order_id != requested_id:
+            lines.append(f"Pedido: **{order_id}**")
+
+        sale_date = _codex_whatsapp_report_date(order.get("date_created"))
+        closed_date = _codex_whatsapp_report_date(order.get("date_closed"))
+        lines.extend([
+            f"**Status:** {_codex_exact_status_label(order.get('status'))}",
+            f"**Data da venda:** {_codex_exact_value(sale_date)}",
+        ])
+        if closed_date and closed_date != sale_date:
+            lines.append(f"**Fechamento:** {closed_date}")
+        if pack_id and pack_id not in {order_id, requested_id}:
+            lines.append(f"**Pack:** {pack_id}")
+
+        buyer = _codex_exact_value(order.get("buyer_name"), "")
+        nickname = _codex_exact_value(order.get("buyer_nickname"), "")
+        if buyer or nickname:
+            buyer_label = buyer or nickname
+            if buyer and nickname and buyer.lower() != nickname.lower():
+                buyer_label = f"{buyer} • usuário ML {nickname}"
+            lines.append(f"**Comprador:** {buyer_label}")
+
+        lines.extend(["", "## Produto"])
+        items = [item for item in (order.get("items") or []) if isinstance(item, dict)]
+        if not items:
+            lines.append("Produto indisponível na resposta da API.")
+        for item in items:
+            quantity = _codex_exact_quantity(item.get("quantity"))
+            sku = _codex_exact_value(item.get("sku"))
+            title = _codex_exact_value(item.get("title"), "Produto sem título")
+            lines.append(f"• **{quantity}x • SKU {sku}** — {title}")
+            price_line = f"  {_codex_exact_money(item.get('unit_price'))} por unidade"
+            try:
+                show_subtotal = float(item.get("quantity") or 0) > 1
+            except (TypeError, ValueError):
+                show_subtotal = False
+            if show_subtotal:
+                price_line += f" • subtotal {_codex_exact_money(item.get('gross_amount'))}"
+            lines.append(price_line)
+
+        lines.extend([
+            "",
+            "## Valores",
+            f"• **Venda:** {_codex_exact_money(order.get('gross_amount'))}",
+            f"• **Pago:** {_codex_exact_money(order.get('paid_amount'))}",
+            f"• **Reembolsado:** {_codex_exact_money(order.get('refund_amount'))}",
+            f"• **Líquido:** {_codex_exact_money(order.get('net_amount'))}",
+        ])
+
+        shipment = order.get("shipment") if isinstance(order.get("shipment"), dict) else {}
+        fulfillment = order.get("fulfillment") if isinstance(order.get("fulfillment"), dict) else {}
+        is_full = fulfillment.get("is_full")
+        full_label = "Sim" if is_full is True else ("Não" if is_full is False else "Indisponível")
+        logistic_type = fulfillment.get("logistic_type") or shipment.get("logistic_type")
+        delivery_date = shipment.get("date_delivered") or shipment.get("estimated_delivery")
+        lines.extend([
+            "",
+            "## Envio",
+            f"• **Situação:** {_codex_exact_shipment_label(shipment)}",
+            f"• **Logística:** {_codex_exact_logistics_label(logistic_type)}",
+            f"• **Full:** {full_label}",
+        ])
+        if shipment.get("shipment_id"):
+            lines.append(f"• **Código do envio:** {_codex_exact_value(shipment.get('shipment_id'))}")
+        if delivery_date:
+            lines.append(f"• **Entrega/previsão:** {_codex_whatsapp_report_date(delivery_date)}")
+
+        claims = [claim for claim in (order.get("claims") or []) if isinstance(claim, dict)]
+        claims_status = order.get("claims_status") if isinstance(order.get("claims_status"), dict) else {}
+        return_status = order.get("return_status") if isinstance(order.get("return_status"), dict) else {}
+        conversations = order.get("conversations") if isinstance(order.get("conversations"), dict) else {}
+        post_sale = conversations.get("post_sale") if isinstance(conversations.get("post_sale"), dict) else {}
+        total_messages = conversations.get("total_messages")
+        claims_label = (
+            "nenhuma"
+            if claims_status.get("available") is True and not claims
+            else str(len(claims))
+            if claims
+            else "indisponível"
+        )
+        return_label = _codex_exact_value(return_status.get("label"))
+        if total_messages is None:
+            messages_label = "indisponível"
+        elif int(total_messages or 0) > 0:
+            messages_label = str(int(total_messages or 0))
+        elif conversations.get("complete") is True and post_sale.get("available") is True:
+            messages_label = "nenhuma"
+        else:
+            messages_label = "indisponível"
+        lines.extend([
+            "",
+            "## Pós-venda",
+            f"• **Reclamações:** {claims_label}",
+            f"• **Devolução:** {return_label}",
+            f"• **Mensagens:** {messages_label}",
+        ])
+
+        for claim in claims:
+            detail = claim.get("detail") if isinstance(claim.get("detail"), dict) else {}
+            lines.append(
+                f"• **Reclamação {_codex_exact_value(claim.get('claim_id'))}:** "
+                f"{_codex_exact_value(detail.get('title') or claim.get('reason_id'))} — "
+                f"{_codex_exact_value(claim.get('status'))}"
+            )
+
+        post_lines = _codex_exact_message_lines(post_sale.get("messages"), seen_post_sale)
+        if post_lines:
+            lines.extend(["", "## Histórico pós-venda", *post_lines])
+        for claim in claims:
+            conversation = claim.get("conversation") if isinstance(claim.get("conversation"), dict) else {}
+            claim_lines = _codex_exact_message_lines(conversation.get("messages"), set())
+            if claim_lines:
+                lines.extend([
+                    "",
+                    f"## Histórico da reclamação {_codex_exact_value(claim.get('claim_id'))}",
+                    *claim_lines,
+                ])
+
+    partial = metadata.get("partial_response") is True or metadata.get("coverage_complete") is False
+    lines.extend([
+        "",
+        (
+            "⚠️ **Cobertura parcial:** alguma seção não foi disponibilizada pela API."
+            if partial
+            else "_Fonte: API do Mercado Livre • consulta atual • cobertura completa._"
+        ),
+    ])
+    return "\n".join(lines).strip()
+
+
+def _codex_exact_ml_order_response(
+    task: dict[str, Any],
+    results: list[dict[str, Any]],
+    ai_summary: str = "",
+) -> str:
+    """Anexa fatos e falas diretamente do resultado, sem reescrita pelo modelo."""
+    result = next(
+        (
+            item for item in results
+            if isinstance(item, dict)
+            and item.get("success") is True
+            and str(item.get("tool_id") or "") == "mercado_livre_orders"
+            and isinstance(item.get("exact_metadata"), dict)
+            and item.get("exact_metadata", {}).get("exact_lookup") is True
+        ),
+        None,
+    )
+    if not isinstance(result, dict):
+        return ""
+    metadata = result.get("exact_metadata") or {}
+    requested_id = _codex_exact_value(metadata.get("requested_id"), "não informado")
+    if not metadata.get("found"):
+        searched = [
+            _codex_exact_value(item.get("store"))
+            for item in (metadata.get("searched_stores") or [])
+            if isinstance(item, dict) and item.get("store")
+        ]
+        lines = [
+            CODEX_EXACT_ORDER_HISTORY_MARKER,
+            f"Não localizei o número **{requested_id}** como order nem como pack nas contas permitidas.",
+        ]
+        if searched:
+            lines.append("Lojas consultadas diretamente na API do Mercado Livre: " + ", ".join(dict.fromkeys(searched)) + ".")
+        message = _codex_whatsapp_inline(metadata.get("message"))
+        if message:
+            lines.append(message)
+        lines.append("O histórico local não foi usado para substituir essa consulta exata.")
+        return "\n\n".join(lines).strip()
+
+    orders = [row for row in (result.get("all_rows") or []) if isinstance(row, dict)]
+    if str(task.get("origin") or "").strip().lower() == "whatsapp":
+        return _codex_exact_ml_order_whatsapp_response(metadata, orders)
+    identifier_type = "pack" if metadata.get("identifier_type") == "pack" else "order"
+    matched_stores = [str(item) for item in (metadata.get("matched_stores") or []) if str(item).strip()]
+    lines = [
+        CODEX_EXACT_ORDER_HISTORY_MARKER,
+        f"# Venda específica {requested_id}",
+        f"Identificador reconhecido: **{identifier_type}**",
+    ]
+    if matched_stores:
+        lines.append("Loja: **" + ", ".join(matched_stores) + "**")
+    summary_text = str(ai_summary or "").strip().replace(CODEX_EXACT_ORDER_HISTORY_MARKER, "")
+    if summary_text:
+        lines.extend(["", "## Resumo da IA", summary_text])
+
+    seen_post_sale: set[tuple[str, str, str]] = set()
+    for index, order in enumerate(orders, start=1):
+        order_id = _codex_exact_value(order.get("order_id"))
+        pack_id = _codex_exact_value(order.get("pack_id"))
+        store = _codex_exact_value(order.get("store"), matched_stores[0] if matched_stores else "indisponível")
+        lines.extend([
+            "",
+            f"## Pedido {index} — order {order_id}",
+            f"- **Loja:** {store}",
+            f"- **Pack:** {pack_id}",
+            f"- **Status do pedido:** {_codex_exact_value(order.get('status'))}",
+            f"- **Data da venda:** {_codex_exact_value(_codex_whatsapp_report_date(order.get('date_created')))}",
+            f"- **Data de fechamento:** {_codex_exact_value(_codex_whatsapp_report_date(order.get('date_closed')))}",
+        ])
+        buyer = _codex_exact_value(order.get("buyer_name"), "")
+        nickname = _codex_exact_value(order.get("buyer_nickname"), "")
+        buyer_label = buyer or nickname or "indisponível"
+        if buyer and nickname and nickname.lower() != buyer.lower():
+            buyer_label = f"{buyer} ({nickname})"
+        lines.append(f"- **Comprador:** {buyer_label}")
+        lines.extend([
+            f"- **Total da venda:** {_codex_exact_money(order.get('gross_amount'))}",
+            f"- **Valor pago:** {_codex_exact_money(order.get('paid_amount'))}",
+            f"- **Valor reembolsado:** {_codex_exact_money(order.get('refund_amount'))}",
+            f"- **Valor líquido:** {_codex_exact_money(order.get('net_amount'))}",
+            "",
+            "### Produtos",
+        ])
+        items = [item for item in (order.get("items") or []) if isinstance(item, dict)]
+        if not items:
+            lines.append("- Produtos indisponíveis na resposta da API.")
+        for item in items:
+            variation = ", ".join(
+                f"{_codex_exact_value(attribute.get('name'))}: {_codex_exact_value(attribute.get('value'))}"
+                for attribute in (item.get("variation_attributes") or [])
+                if isinstance(attribute, dict)
+            )
+            lines.extend([
+                f"- **{_codex_exact_value(item.get('title'), 'Produto sem título')}**",
+                f"  SKU: {_codex_exact_value(item.get('sku'))} | Item: {_codex_exact_value(item.get('item_id'))}",
+                f"  Quantidade: {_codex_exact_value(item.get('quantity'))} | Preço unitário: {_codex_exact_money(item.get('unit_price'))}",
+            ])
+            if variation:
+                lines.append(f"  Variação: {variation}")
+
+        shipment = order.get("shipment") if isinstance(order.get("shipment"), dict) else {}
+        fulfillment = order.get("fulfillment") if isinstance(order.get("fulfillment"), dict) else {}
+        is_full = fulfillment.get("is_full")
+        full_label = "Sim" if is_full is True else ("Não" if is_full is False else "Indisponível")
+        delivery_date = shipment.get("date_delivered") or shipment.get("estimated_delivery")
+        lines.extend([
+            "",
+            "### Envio",
+            f"- **Atendido pelo Full:** {full_label}",
+            f"- **Situação:** {_codex_exact_value(shipment.get('delivery_state_label'))}",
+            f"- **Status/substatus:** {_codex_exact_value(shipment.get('status'))} / {_codex_exact_value(shipment.get('substatus'))}",
+            f"- **Entrega ou previsão:** {_codex_exact_value(_codex_whatsapp_report_date(delivery_date))}",
+        ])
+
+        return_status = order.get("return_status") if isinstance(order.get("return_status"), dict) else {}
+        claims = [claim for claim in (order.get("claims") or []) if isinstance(claim, dict)]
+        lines.extend([
+            "",
+            "### Reclamações e devolução",
+            f"- **Devolução:** {_codex_exact_value(return_status.get('label'))}",
+            f"- **Reclamações encontradas:** {len(claims)}",
+        ])
+        for claim in claims:
+            detail = claim.get("detail") if isinstance(claim.get("detail"), dict) else {}
+            lines.extend([
+                f"- **Reclamação { _codex_exact_value(claim.get('claim_id')) }:** {_codex_exact_value(claim.get('status'))}",
+                f"  Motivo: {_codex_exact_value(detail.get('title') or claim.get('reason_id'))}",
+                f"  Situação: {_codex_exact_value(claim.get('stage'))} | Atualização: {_codex_exact_value(_codex_whatsapp_report_date(claim.get('last_updated')))}",
+            ])
+            if detail.get("description") or detail.get("problem"):
+                lines.append("  Detalhe: " + _codex_exact_value(detail.get("description") or detail.get("problem")))
+
+        conversations = order.get("conversations") if isinstance(order.get("conversations"), dict) else {}
+        post_sale = conversations.get("post_sale") if isinstance(conversations.get("post_sale"), dict) else {}
+        post_lines = _codex_exact_message_lines(post_sale.get("messages"), seen_post_sale)
+        lines.extend(["", "### Histórico pós-venda do pack"])
+        if post_lines:
+            lines.extend(post_lines)
+        elif post_sale.get("available") is True:
+            lines.append("Nenhuma mensagem pós-venda foi retornada pela API.")
+        else:
+            lines.append("Histórico pós-venda indisponível na API.")
+
+        for claim in claims:
+            claim_id = _codex_exact_value(claim.get("claim_id"))
+            conversation = claim.get("conversation") if isinstance(claim.get("conversation"), dict) else {}
+            claim_lines = _codex_exact_message_lines(conversation.get("messages"), set())
+            lines.extend(["", f"### Histórico da reclamação {claim_id}"])
+            if claim_lines:
+                lines.extend(claim_lines)
+            elif conversation.get("available") is True:
+                lines.append("Nenhuma mensagem da reclamação foi retornada pela API.")
+            else:
+                lines.append("Histórico da reclamação indisponível na API.")
+
+    partial = metadata.get("partial_response") is True or metadata.get("coverage_complete") is False
+    lines.extend([
+        "",
+        "## Fontes e cobertura",
+        "Consulta read-only feita diretamente nos recursos de orders/packs, envio, reclamações, devoluções e mensagens pós-venda do Mercado Livre.",
+        "As mensagens foram preservadas em ordem cronológica; a consulta usou mark_as_read=false e não enviou respostas.",
+        (
+            "Cobertura parcial: uma ou mais seções ficaram indisponíveis; valores ausentes foram mantidos como indisponíveis."
+            if partial
+            else "Cobertura completa para todas as seções disponibilizadas pela API nesta consulta."
+        ),
+    ])
+    return "\n".join(lines).strip()
+
+
+def _codex_whatsapp_complete_ml_report(task: dict[str, Any], results: list[dict[str, Any]]) -> str:
+    """Gera o relatorio completo sem permitir que o modelo resuma o agregado por SKU."""
+    if str(task.get("origin") or "") != "whatsapp":
+        return ""
+    query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
+    if str(query_policy.get("store_mode") or "single") == "all":
+        return ""
+    if not _codex_whatsapp_ml_report_requested(task, results=results):
+        return ""
+    result = next(
+        (
+            item for item in results
+            if isinstance(item, dict)
+            and item.get("success") is True
+            and str(item.get("tool_id") or "") == "mercado_livre_orders"
+        ),
+        None,
+    )
+    if not isinstance(result, dict):
+        return ""
+    summaries = [item for item in (result.get("summary") or []) if isinstance(item, dict)]
+    primary = next(
+        (item for item in summaries if str(item.get("tool_id") or "") == "mercado_livre_orders"),
+        summaries[0] if summaries else {},
+    )
+    data = primary.get("summary") if isinstance(primary.get("summary"), dict) else {}
+    if data.get("api_consulted") is False or data.get("error"):
+        return ""
+    rows = [row for row in (result.get("all_rows") or result.get("top_rows") or []) if isinstance(row, dict)]
+    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    paging = data.get("paging") if isinstance(data.get("paging"), dict) else {}
+    period = data.get("period") if isinstance(data.get("period"), dict) else {}
+    requested = period.get("requested") if isinstance(period.get("requested"), dict) else {}
+    fallback_period = primary.get("periodo") if isinstance(primary.get("periodo"), dict) else {}
+    start = _codex_whatsapp_report_date(requested.get("from") or fallback_period.get("data_inicio"))
+    end = _codex_whatsapp_report_date(requested.get("to") or fallback_period.get("data_fim"))
+    period_label = start if start and start == end else f"{start} a {end}".strip(" a")
+    store = str(query_policy.get("store") or primary.get("loja") or data.get("store") or "").strip()
+
+    lines = [f"# Relatório de vendas — {store or 'Mercado Livre'}"]
+    if period_label:
+        lines.append(f"Período: {period_label}")
+    if store:
+        lines.append(f"Loja: {store}")
+    lines.extend([
+        "", "## Dados principais",
+        f"- **Pedidos pagos:** {_codex_whatsapp_number(totals.get('orders'))}",
+        f"- **Itens vendidos:** {_codex_whatsapp_number(totals.get('items_quantity'))}",
+        f"- **Valor bruto:** {_codex_whatsapp_money(totals.get('gross_amount'))}",
+        f"- **Valor pago:** {_codex_whatsapp_money(totals.get('paid_amount'))}",
+    ])
+    if totals.get("refund_amount") is None:
+        lines.extend(["- **Estornos:** indisponível", "- **Valor líquido:** indisponível"])
+    else:
+        lines.extend([
+            f"- **Estornos:** {_codex_whatsapp_money(totals.get('refund_amount'))}",
+            f"- **Valor líquido:** {_codex_whatsapp_money(totals.get('net_amount'))}",
+        ])
+    lines.extend(["", "## SKUs vendidos"])
+    if not rows:
+        lines.append("Nenhum SKU vendido no período consultado.")
+    for row in rows:
+        sku = _codex_whatsapp_inline(
+            row.get("sku") or row.get("seller_sku") or row.get("item_id") or row.get("mlb") or row.get("id"),
+            "não informado",
+        )
+        title = _codex_whatsapp_inline(row.get("title") or row.get("produto") or row.get("nome"), "Produto sem título")
+        try:
+            quantity = float(row.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0.0
+        try:
+            gross = float(row.get("gross_amount") or 0)
+        except (TypeError, ValueError):
+            gross = 0.0
+        unit = gross / quantity if quantity > 0 else 0.0
+        lines.extend([
+            f"- **SKU:** {sku}",
+            f"  **Produto:** {title}",
+            f"  **Qtd.:** {_codex_whatsapp_number(quantity)}",
+            f"  **Valor unitário médio:** {_codex_whatsapp_money(unit)}",
+            f"  **Total vendido:** {_codex_whatsapp_money(gross)}",
+        ])
+
+    has_more = bool(paging.get("has_more") or data.get("truncated") or data.get("coverage_complete") is False)
+    pages = int(paging.get("pages_fetched") or 0)
+    scanned = int(paging.get("scanned") or paging.get("returned") or totals.get("orders") or 0)
+    considered = int(totals.get("orders") or paging.get("returned") or 0)
+    lines.extend([
+        "", "## Fontes e cobertura",
+        (
+            f"Consulta direta à API do Mercado Livre da loja {store or 'selecionada'}, "
+            f"no período {period_label or 'informado'}, com {pages} página(s), "
+            f"{scanned} pedido(s) verificado(s), {considered} pedido(s) considerado(s) "
+            f"e {len(rows)} SKU(s) consolidado(s)."
+        ),
+        (
+            "Cobertura completa: todas as páginas disponíveis para o período foram consultadas."
+            if not has_more
+            else "Cobertura incompleta: a API ainda indicou páginas pendentes; nenhum valor ausente foi estimado."
+        ),
+    ])
+    return "\n".join(lines).strip()
+
+
+def _codex_generate_whatsapp_chart_artifacts(
+    task_id: str,
+    task: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create private PNG artifacts while structured tool results still exist."""
+
+    if str(task.get("origin") or "").strip().lower() != "whatsapp":
+        return {"expected": False, "status": "not_whatsapp", "artifacts": []}
+    try:
+        from backend.services import whatsapp_report_visuals
+
+        chart_query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
+        if not chart_query_policy:
+            channel_metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+            chart_query_policy = (
+                channel_metadata.get("query_policy")
+                if isinstance(channel_metadata.get("query_policy"), dict)
+                else {}
+            )
+        if not chart_query_policy:
+            screen_context = task.get("screen_context") if isinstance(task.get("screen_context"), dict) else {}
+            selection = screen_context.get("selection") if isinstance(screen_context.get("selection"), dict) else {}
+            chart_query_policy = (
+                selection.get("query_policy")
+                if isinstance(selection.get("query_policy"), dict)
+                else {}
+            )
+
+        outcome = whatsapp_report_visuals.generate_task_chart_artifacts(
+            base_info_dir=_codex_base_info_dir(),
+            client_id=task.get("client_id") or "default",
+            task_id=task_id,
+            prompt=_codex_whatsapp_user_request_text(task) or task.get("prompt") or "",
+            tool_results=results,
+            query_policy=chart_query_policy,
+            max_images=2,
+        )
+    except Exception as exc:
+        outcome = {
+            "expected": _codex_agent_is_report_request(str(task.get("prompt") or "")),
+            "status": "generation_failed",
+            "artifacts": [],
+            "error": str(exc)[:500],
+        }
+    if outcome.get("expected"):
+        _codex_update_task(
+            task_id,
+            whatsapp_artifacts=list(outcome.get("artifacts") or [])[:2],
+            whatsapp_chart_expected=True,
+            whatsapp_chart_status=str(outcome.get("status") or "")[:80],
+            whatsapp_chart_error=str(outcome.get("error") or "")[:500],
+        )
+    return outcome
 
 
 def _codex_agent_unique_extend(target: list[Any], values: Any) -> None:
@@ -1703,6 +3335,39 @@ def _codex_agent_update_trace(task_id: str, trace: dict[str, Any], **updates: An
     )
 
 
+def _codex_agent_source_policy_for_task(task: Any) -> dict[str, Any]:
+    if not isinstance(task, dict):
+        return {}
+    query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
+    source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
+    return dict(source_policy)
+
+
+def _codex_agent_source_policy_error(
+    tool_id: str,
+    source_policy: dict[str, Any],
+    previous_results: list[dict[str, Any]],
+) -> str:
+    if not source_policy:
+        return ""
+    tool_id = str(tool_id or "").strip()
+    required = [str(item or "").strip() for item in (source_policy.get("required_tools") or []) if str(item or "").strip()]
+    forbidden = {str(item or "").strip() for item in (source_policy.get("forbidden_tools") or []) if str(item or "").strip()}
+    if tool_id in forbidden:
+        return "Fonte bloqueada pela politica do WhatsApp para este tipo de dado."
+    if source_policy.get("full_exclusive") is True and tool_id not in set(required) | {"integrations_status"}:
+        return "Estoque Full aceita exclusivamente a ferramenta de inventario Full da API do Mercado Livre."
+    attempted = {
+        str(item.get("tool_id") or "").strip()
+        for item in previous_results
+        if isinstance(item, dict) and str(item.get("tool_id") or "").strip()
+    }
+    pending_required = [item for item in required if item not in attempted]
+    if pending_required and tool_id not in pending_required:
+        return "Antes de qualquer fallback, consulte as fontes obrigatorias: " + ", ".join(pending_required)
+    return ""
+
+
 def _codex_agent_run_loop(
     task_id: str,
     task: dict[str, Any],
@@ -1721,6 +3386,7 @@ def _codex_agent_run_loop(
     max_calls = _codex_int_env("JK_CODEX_AGENT_MAX_TOOL_CALLS_PER_CYCLE", CODEX_AGENT_MAX_TOOL_CALLS_PER_CYCLE, 1, 10)
     current_prompt = initial_prompt
     previous_results: list[dict[str, Any]] = []
+    api_query_deadline: Optional[float] = None
     trace: dict[str, Any] = {
         "agent_steps": [],
         "tool_calls": [],
@@ -1731,6 +3397,8 @@ def _codex_agent_run_loop(
     }
     final_state: dict[str, Any] = {"items": [], "live_answer": "", "reasoning_summary": "", "live_plan": ""}
     final_response = ""
+    source_policy = _codex_agent_source_policy_for_task(task)
+    query_policy = task.get("query_policy") if isinstance(task.get("query_policy"), dict) else {}
 
     for cycle in range(1, max_cycles + 1):
         status = "interpretando pergunta" if cycle == 1 else f"analisando resultados do ciclo {cycle - 1}"
@@ -1769,12 +3437,17 @@ def _codex_agent_run_loop(
             continue
 
         if not calls:
-            final_response = response
+            final_response = (
+                _codex_exact_ml_order_response(task, previous_results, response)
+                or _codex_whatsapp_complete_ml_report(task, previous_results)
+                or _codex_whatsapp_bling_stock_response(task, previous_results)
+                or response
+            )
             final_state = state
             break
 
         if cycle >= max_cycles:
-            final_response = (
+            final_response = _codex_exact_ml_order_response(task, previous_results) or (
                 "Nao consegui concluir a resposta dentro do limite de ciclos do agente. "
                 "Ferramentas solicitadas: "
                 + ", ".join(str(call.get("tool_id") or "") for call in calls)
@@ -1784,9 +3457,28 @@ def _codex_agent_run_loop(
             break
 
         cycle_results: list[dict[str, Any]] = []
+        external_safe_mode = bool(task.get("external_safe_mode"))
+        read_only_channel_mode = bool(external_safe_mode or _codex_task_whatsapp_query_only(task))
+        external_allowed_tools = {
+            str(item.get("id") or "")
+            for item in _codex_agent_tool_catalog(
+                task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
+                read_only_only=True,
+            )
+        } if read_only_channel_mode else set()
         for call in calls[:max_calls]:
             tool_id = str(call.get("tool_id") or "").strip()
-            args = call.get("args") if isinstance(call.get("args"), dict) else {}
+            args = dict(call.get("args") or {}) if isinstance(call.get("args"), dict) else {}
+            if tool_id in set(source_policy.get("required_tools") or []):
+                args["force_refresh"] = bool(source_policy.get("force_refresh", True))
+                if tool_id == "mercado_livre_listing" and source_policy.get("include_listing_details") is True:
+                    args["incluir_detalhes"] = True
+            args, call_complete_ml_report = _codex_whatsapp_prepare_agent_tool_call(
+                task,
+                tool_id,
+                args,
+                previous_results + cycle_results,
+            )
             label = _codex_agent_tool_status(tool_id)
             trace_call = {
                 "cycle": cycle,
@@ -1801,14 +3493,41 @@ def _codex_agent_run_loop(
             try:
                 from backend.services import codex_assistant
 
-                result = codex_assistant.codex_assistant_execute_tool_call(
-                    client_id=str(task.get("client_id") or ""),
-                    tool_id=tool_id,
-                    args=args,
-                    screen_context=screen_context if isinstance(screen_context, dict) else {},
-                    previous_results=previous_results + cycle_results,
-                    permissions=task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
-                )
+                if tool_id in {"bling_sales_orders", "mercado_livre_orders", "mercado_livre_listing"}:
+                    if call_complete_ml_report and tool_id == "mercado_livre_orders":
+                        api_query_deadline = time.monotonic() + 300
+                    elif api_query_deadline is None:
+                        api_query_deadline = time.monotonic() + 60
+                if read_only_channel_mode and tool_id not in external_allowed_tools:
+                    result = {
+                        "success": False,
+                        "tool_id": tool_id,
+                        "error": "Ferramenta bloqueada para tarefa originada fora do aplicativo.",
+                        "records": 0,
+                        "warnings": ["Somente consultas read-only sao permitidas no canal WhatsApp."],
+                        "generated_at": _codex_now(),
+                    }
+                elif _codex_agent_source_policy_error(tool_id, source_policy, previous_results + cycle_results):
+                    policy_error = _codex_agent_source_policy_error(tool_id, source_policy, previous_results + cycle_results)
+                    result = {
+                        "success": False,
+                        "tool_id": tool_id,
+                        "error": policy_error,
+                        "records": 0,
+                        "warnings": [policy_error],
+                        "generated_at": _codex_now(),
+                    }
+                else:
+                    result = codex_assistant.codex_assistant_execute_tool_call(
+                        client_id=str(task.get("client_id") or ""),
+                        tool_id=tool_id,
+                        args=args,
+                        screen_context=screen_context if isinstance(screen_context, dict) else {},
+                        previous_results=previous_results + cycle_results,
+                        permissions=task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
+                        audit_user=str(task.get("username") or task.get("created_by") or ""),
+                        query_deadline=api_query_deadline,
+                    )
             except Exception as exc:
                 result = {
                     "success": False,
@@ -1831,6 +3550,15 @@ def _codex_agent_run_loop(
                 if isinstance(result.get("tool_validation"), dict)
                 else list(result.get("next_fallbacks_human") or [])[:8]
             )
+            result_paging: dict[str, Any] = {}
+            for summary_item in result.get("summary") if isinstance(result.get("summary"), list) else []:
+                if not isinstance(summary_item, dict):
+                    continue
+                summary_payload = summary_item.get("summary") if isinstance(summary_item.get("summary"), dict) else {}
+                paging = summary_payload.get("paging") if isinstance(summary_payload.get("paging"), dict) else {}
+                if paging:
+                    result_paging = dict(paging)
+                    break
             result_summary = {
                 "cycle": cycle,
                 "tool_id": result.get("tool_id") or tool_id,
@@ -1856,6 +3584,7 @@ def _codex_agent_run_loop(
                     + [str(warning or "")[:300] for warning in list(result.get("warnings") or [])[:4]]
                     if str(item or "").strip()
                 ],
+                "paging": result_paging,
                 "generated_at": result.get("generated_at") or _codex_now(),
             }
             trace["tool_results_summary"].append(result_summary)
@@ -1895,6 +3624,9 @@ def _codex_agent_run_loop(
     if not final_response:
         final_response = "Nao consegui gerar uma resposta final nesta execucao do agente."
     trace["token_usage"] = final_state.get("token_usage") if isinstance(final_state.get("token_usage"), dict) else trace.get("token_usage") or {}
+    # Gere os graficos antes de descartar ``previous_results``. O texto final
+    # nunca e usado como fonte numerica e uma falha visual nao afeta a tarefa.
+    _codex_generate_whatsapp_chart_artifacts(task_id, task, previous_results)
     return final_response, final_state, trace
 
 
@@ -2157,6 +3889,35 @@ def _codex_reasoning_effort_enum(value: Optional[str]):
     from openai_codex.generated.v2_all import ReasoningEffort
 
     return getattr(ReasoningEffort, effort)
+
+
+def _codex_sdk_response_compat(value: Any) -> Any:
+    """Keep the beta Python SDK compatible with newer Codex protocol values."""
+    if isinstance(value, dict):
+        return {
+            key: ("xhigh" if key == "reasoningEffort" and item == "max" else _codex_sdk_response_compat(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_codex_sdk_response_compat(item) for item in value]
+    return value
+
+
+def _codex_apply_sdk_protocol_compat() -> None:
+    from openai_codex.client import CodexClient
+    from openai_codex.errors import CodexError
+
+    if getattr(CodexClient.request, "_jk_protocol_compat", False):
+        return
+
+    def request_compat(self, method, params, *, response_model):
+        result = self._request_raw(method, params)
+        if not isinstance(result, dict):
+            raise CodexError(f"{method} response must be a JSON object")
+        return response_model.model_validate(_codex_sdk_response_compat(result))
+
+    request_compat._jk_protocol_compat = True
+    CodexClient.request = request_compat
 
 
 def _codex_normalizar_speed(value: Optional[str]) -> str:
@@ -2740,12 +4501,96 @@ def _codex_nonfull_config_overrides() -> tuple[str, ...]:
     return tuple(overrides)
 
 
+def _codex_external_readonly_config_overrides() -> tuple[str, ...]:
+    overrides = [item for item in _codex_nonfull_config_overrides() if item != "tools.view_image=false"]
+    overrides.append("tools.view_image=true")
+    return tuple(overrides)
+
+
+def _codex_task_queue_key(task: dict[str, Any]) -> str:
+    identity = "|".join(
+        (
+            str(task.get("client_id") or "default").strip().lower(),
+            str(task.get("created_by") or "user").strip().lower(),
+            _codex_task_channel(task),
+            _codex_task_stored_conversation_id(task),
+            str(int(task.get("conversation_generation") or 1)),
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8", "ignore")).hexdigest()
+
+
+def _codex_task_queue_position(task: dict[str, Any]) -> int:
+    status = str(task.get("status") or "")
+    if status != "queued":
+        return 0
+    key = _codex_task_queue_key(task)
+    with CODEX_TASKS_LOCK:
+        queued = [
+            item
+            for item in CODEX_TASKS.values()
+            if isinstance(item, dict)
+            and str(item.get("status") or "") == "queued"
+            and _codex_task_queue_key(item) == key
+        ]
+    queued.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("task_id") or "")))
+    task_id = str(task.get("task_id") or "")
+    for index, item in enumerate(queued, start=1):
+        if str(item.get("task_id") or "") == task_id:
+            return index
+    return 0
+
+
+def _codex_next_queued_task_id(queue_key: str) -> str:
+    with CODEX_TASKS_LOCK:
+        queued = [
+            item
+            for item in CODEX_TASKS.values()
+            if isinstance(item, dict)
+            and str(item.get("status") or "") == "queued"
+            and _codex_task_queue_key(item) == queue_key
+        ]
+    queued.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("task_id") or "")))
+    return str(queued[0].get("task_id") or "") if queued else ""
+
+
+def _codex_run_conversation_queue(queue_key: str) -> None:
+    try:
+        while True:
+            task_id = _codex_next_queued_task_id(queue_key)
+            if not task_id:
+                return
+            _codex_run_worker(task_id)
+    finally:
+        with CODEX_QUEUE_LOCK:
+            CODEX_ACTIVE_QUEUES.discard(queue_key)
+        # Fecha a corrida entre a ultima leitura vazia e a remocao da fila ativa.
+        next_task_id = _codex_next_queued_task_id(queue_key)
+        if next_task_id:
+            _codex_start_thread(next_task_id)
+
+
+def _codex_thread_resume_failure(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(
+        text
+        and re.search(
+            r"(thread).*(not found|expired|invalid|does not exist|nao existe|expirad|inval)",
+            text,
+        )
+    )
+
+
 def _codex_run_worker(task_id: str) -> None:
     task = _codex_load_task(task_id)
     if not task:
         return
     sandbox = str(task.get("sandbox") or "read_only")
+    whatsapp_query_only = _codex_task_whatsapp_query_only(task)
+    if whatsapp_query_only:
+        sandbox = "read_only"
     acquired_full_lock = False
+    thread_id = ""
     try:
         if sandbox == "full_access":
             acquired_full_lock = CODEX_FULL_ACCESS_LOCK.acquire(blocking=False)
@@ -2756,6 +4601,7 @@ def _codex_run_worker(task_id: str) -> None:
         task = _codex_load_task(task_id) or task
         _codex_log(task, f"Iniciando Codex em {sandbox}.")
 
+        _codex_apply_sdk_protocol_compat()
         from openai_codex import Codex, CodexConfig
         from openai_codex.generated.v2_all import ReasoningSummary
 
@@ -2768,17 +4614,32 @@ def _codex_run_worker(task_id: str) -> None:
         sandbox_enum = _codex_sandbox_enum(sandbox)
         task_permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
         is_full_task = task_permissions.get("full") is True
+        trusted_model_config = bool(
+            str(task.get("origin") or "").strip().lower() == "whatsapp"
+            and task.get("trusted_model_config") is True
+        )
+        external_safe_mode = bool(task.get("external_safe_mode"))
+        whatsapp_full_access = bool(task.get("whatsapp_full_access"))
+        read_only_channel_mode = bool(external_safe_mode or whatsapp_query_only)
         prompt = str(task.get("prompt") or "").strip()
         cwd = str(task.get("cwd") or _codex_base_dir())
-        thread_id = str(task.get("thread_id") or "").strip() if is_full_task else ""
+        conversation_state = _codex_conversation_state_for_task(task)
+        thread_id = (
+            str(conversation_state.get("latest_thread_id") or "").strip()
+            if is_full_task
+            else ""
+        )
+        if thread_id != str(task.get("thread_id") or "").strip():
+            _codex_update_task(task_id, thread_id=thread_id)
         goal = _codex_clean_text(task.get("goal"), 1200)
         paths = list(task.get("paths") or [])
         if not is_full_task:
             # Recalcula a fronteira no worker; uma tarefa persistida nunca pode
             # elevar cwd, modelo, tier ou recursos alterando seu JSON.
             sandbox = "read_only"
-            model = _codex_normalizar_model(None)
-            reasoning_effort = _codex_reasoning_effort_enum(None)
+            if not trusted_model_config:
+                model = _codex_normalizar_model(None)
+                reasoning_effort = _codex_reasoning_effort_enum(None)
             speed = _codex_normalizar_speed(None)
             service_tier = _codex_normalizar_service_tier(None, speed)
             approval_profile = "read_only"
@@ -2825,6 +4686,8 @@ def _codex_run_worker(task_id: str) -> None:
                 _codex_normalizar_reasoning_effort(task.get("reasoning_effort")),
                 speed,
                 approval_profile,
+                read_only_channel_mode,
+                whatsapp_full_access,
             )
             context_stats = _codex_context_stats_from_prompt(
                 prompt,
@@ -2849,7 +4712,8 @@ def _codex_run_worker(task_id: str) -> None:
                     "tool_results_count": 0,
                     "catalog_tools_count": len(
                         _codex_agent_tool_catalog(
-                            task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
+                            task.get("permissions") if isinstance(task.get("permissions"), dict) else {},
+                            read_only_only=read_only_channel_mode,
                         )
                     ),
                     "error": "",
@@ -2885,6 +4749,15 @@ def _codex_run_worker(task_id: str) -> None:
             _codex_log(task, "Interpretando pedido e preparando Codex Data Tools.", "status")
 
         extra_instructions: list[str] = []
+        channel_metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+        phone_ai_behavior = _codex_clean_text(channel_metadata.get("phone_ai_behavior"), 2000)
+        if str(task.get("origin") or "").strip().lower() == "whatsapp" and phone_ai_behavior:
+            extra_instructions.append(
+                "Instrucao administrativa especifica para este numero de WhatsApp:\n"
+                + phone_ai_behavior
+                + "\nAplique esta instrucao ao tom, formato e forma de atendimento. "
+                "Ela nunca amplia permissoes, libera mutacoes, altera o escopo de lojas ou substitui regras de seguranca e fontes."
+            )
         if goal:
             extra_instructions.append(f"Meta definida pelo usuario: {goal}")
         if task.get("planning_mode"):
@@ -2916,11 +4789,36 @@ def _codex_run_worker(task_id: str) -> None:
             f"Configuracao Codex: modelo={model}, raciocinio={_codex_normalizar_reasoning_effort(task.get('reasoning_effort'))}, "
             f"velocidade={speed}, aprovacao={approval_profile}, sandbox={sandbox}."
         )
-        extra_instructions.append(
-            "Quando o usuario pedir relatorio, gere um relatorio em Markdown com titulo, periodo/filtros usados, dados principais, analise e proximas acoes. "
-            "Se os dados internos anexados forem insuficientes, declare a lacuna em vez de completar por suposicao."
-        )
-        if is_full_task:
+        if whatsapp_full_access:
+            extra_instructions.append(
+                "No WhatsApp, fale de forma natural, cordial e descontraida, como um colega prestativo. "
+                "Va direto ao ponto, varie a abertura, nao coloque titulo em respostas simples, nao repita o nome Black Jhon e nao assine ao final. "
+                "Use emojis com moderacao. Quando o usuario pedir relatorio pelo WhatsApp, use Markdown simples e estas secoes: "
+                "# Relatorio, ## Dados principais, ## Mais vendidos (se houver), ## Analise e ## Fontes e cobertura. "
+                "Nao use tabelas. Limite o resumo a 8 indicadores e o ranking a 5 itens, salvo pedido expresso por mais. "
+                "Separe cada produto do ranking em seu proprio bloco, com SKU, nome curto, quantidade e valor. "
+                "Nas fontes, informe em linguagem simples o periodo, a conta ou loja, a quantidade de registros e qualquer lacuna. "
+                "Se os dados forem insuficientes, declare a lacuna em vez de completar por suposicao."
+            )
+        else:
+            extra_instructions.append(
+                "Quando o usuario pedir relatorio, gere um relatorio em Markdown com titulo, periodo/filtros usados, dados principais, analise e proximas acoes. "
+                "Se os dados internos anexados forem insuficientes, declare a lacuna em vez de completar por suposicao."
+            )
+        if read_only_channel_mode:
+            access_instruction = (
+                "Esta tarefa veio do WhatsApp e foi vinculada a um usuario do JK Sistema. "
+                "Durante a execucao, use apenas consultas read-only do catalogo. "
+                "Nao crie propostas operacionais, nao execute acoes de negocio e nao tente aprovar a propria tarefa. "
+            )
+        elif whatsapp_full_access:
+            access_instruction = (
+                "Esta tarefa veio do WhatsApp de um usuario administrativo full. "
+                "Consultas podem usar todo o catalogo permitido ao usuario. "
+                "Se a tarefa for mutavel, ela ja foi confirmada por codigo unico no mesmo numero antes desta execucao. "
+                "Execute somente o pedido confirmado, preserve a auditoria e nunca exponha credenciais ou segredos. "
+            )
+        elif is_full_task:
             access_instruction = (
                 "Voce esta dentro do JK Sistema em modo interno administrativo. "
                 "Quando alterar arquivos, mantenha o escopo no pedido atual. "
@@ -2937,8 +4835,18 @@ def _codex_run_worker(task_id: str) -> None:
             + "\n".join(extra_instructions)
         )
 
-        config_overrides = () if is_full_task else _codex_nonfull_config_overrides()
-        with Codex(CodexConfig(env=_codex_sdk_env(), cwd=cwd, config_overrides=config_overrides)) as codex:
+        if read_only_channel_mode and sandbox == "read_only":
+            config_overrides = _codex_external_readonly_config_overrides()
+        else:
+            config_overrides = () if is_full_task else _codex_nonfull_config_overrides()
+        with Codex(
+            CodexConfig(
+                codex_bin=_codex_runtime_bin(),
+                env=_codex_sdk_env(),
+                cwd=cwd,
+                config_overrides=config_overrides,
+            )
+        ) as codex:
             thread_kwargs = {
                 "cwd": cwd,
                 "model": model,
@@ -2954,7 +4862,14 @@ def _codex_run_worker(task_id: str) -> None:
             if service_tier:
                 thread_kwargs["service_tier"] = service_tier
             if thread_id:
-                thread = codex.thread_resume(thread_id, **thread_kwargs)
+                try:
+                    thread = codex.thread_resume(thread_id, **thread_kwargs)
+                except Exception as exc:
+                    _codex_log(task, f"Thread tecnica anterior indisponivel; contexto logico preservado: {exc}", "warning")
+                    _codex_save_conversation_state(task, latest_thread_id="")
+                    _codex_update_task(task_id, thread_id="")
+                    thread_id = ""
+                    thread = codex.thread_start(**thread_kwargs)
             else:
                 thread = codex.thread_start(**thread_kwargs)
             run_kwargs = {
@@ -3063,6 +4978,8 @@ def _codex_run_worker(task_id: str) -> None:
             scope_violations=scope_violations,
             error="",
         )
+        if result_thread_id and is_full_task:
+            _codex_save_conversation_state(task, latest_thread_id=result_thread_id)
         task_permissions = task.get("permissions") if isinstance(task.get("permissions"), dict) else {}
         if task_permissions.get("full") is True:
             try:
@@ -3099,6 +5016,19 @@ def _codex_run_worker(task_id: str) -> None:
                     },
                 )
     except Exception as exc:
+        if thread_id and not bool(task.get("thread_resume_retried")) and _codex_thread_resume_failure(exc):
+            _codex_save_conversation_state(task, latest_thread_id="")
+            _codex_update_task(
+                task_id,
+                status="queued",
+                started_at="",
+                completed_at="",
+                thread_id="",
+                thread_resume_retried=True,
+                live_status="Renovando a thread tecnica sem perder o contexto.",
+                error="",
+            )
+            return
         _codex_update_task(
             task_id,
             status="failed",
@@ -3112,8 +5042,63 @@ def _codex_run_worker(task_id: str) -> None:
 
 
 def _codex_start_thread(task_id: str) -> None:
-    worker = threading.Thread(target=_codex_run_worker, args=(task_id,), daemon=True)
+    task = _codex_load_task(task_id)
+    if not task or str(task.get("status") or "") != "queued":
+        return
+    queue_key = _codex_task_queue_key(task)
+    with CODEX_QUEUE_LOCK:
+        if queue_key in CODEX_ACTIVE_QUEUES:
+            return
+        CODEX_ACTIVE_QUEUES.add(queue_key)
+    worker = threading.Thread(target=_codex_run_conversation_queue, args=(queue_key,), daemon=True)
     worker.start()
+
+
+def codex_console_recuperar_fila_background() -> dict[str, Any]:
+    queued_ids: list[str] = []
+    interrupted_ids: list[str] = []
+    try:
+        paths = sorted(Path(_codex_info_dir()).glob("*.json"), key=lambda item: item.stat().st_mtime)
+    except Exception:
+        paths = []
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                task = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(task, dict):
+            continue
+        task_id = str(task.get("task_id") or path.stem).strip()
+        if not task_id:
+            continue
+        status = str(task.get("status") or "")
+        if status in {"running", "cancel_requested"}:
+            task.update(
+                {
+                    "status": "failed",
+                    "completed_at": _codex_now(),
+                    "live_status": "Execucao interrompida pelo reinicio do aplicativo.",
+                    "error": "Execucao interrompida pelo reinicio; nenhuma resposta foi adicionada ao contexto.",
+                }
+            )
+            interrupted_ids.append(task_id)
+        elif status == "queued":
+            queued_ids.append(task_id)
+        else:
+            continue
+        with CODEX_TASKS_LOCK:
+            CODEX_TASKS[task_id] = task
+        _codex_persist_task(task)
+    for task_id in queued_ids:
+        _codex_start_thread(task_id)
+    return {
+        "success": True,
+        "queued": len(queued_ids),
+        "interrupted": len(interrupted_ids),
+        "queued_task_ids": queued_ids,
+        "interrupted_task_ids": interrupted_ids,
+    }
 
 
 def codex_status(request: Request, authorization: Optional[str] = Header(default=None)):
@@ -3136,9 +5121,11 @@ async def codex_upload_attachments(
 
     client_id = str(sessao.get("client_id") or "default")
     username = str(sessao.get("username") or "user")
-    conv_id = _codex_safe_id(str(conversation_id or "").strip(), "")
-    if not conv_id:
-        conv_id = _codex_universal_conversation_id(client_id, username)
+    # O campo continua aceito para clientes antigos, mas anexos sempre pertencem
+    # a conversa app canonica do usuario autenticado.
+    del conversation_id
+    state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
+    conv_id = str(state.get("conversation_id") or _codex_universal_conversation_id(client_id, username))
     saved: list[dict[str, Any]] = []
     saved_paths: list[Path] = []
     total_bytes = 0
@@ -3191,7 +5178,12 @@ async def codex_upload_attachments(
                 pass
         raise HTTPException(status_code=500, detail=f"Falha ao salvar anexo: {exc}") from exc
 
-    return {"success": True, "attachments": saved}
+    return {
+        "success": True,
+        "attachments": saved,
+        "conversation_id": conv_id,
+        "conversation_generation": int(state.get("generation") or 1),
+    }
 
 
 def codex_criar_tarefa(
@@ -3200,6 +5192,17 @@ def codex_criar_tarefa(
     authorization: Optional[str] = Header(default=None),
 ):
     sessao = _codex_require_authenticated(request, authorization)
+    return codex_criar_tarefa_para_sessao(payload, sessao)
+
+
+def codex_criar_tarefa_para_sessao(
+    payload: CodexTaskRequest,
+    sessao: dict[str, Any],
+    *,
+    origin: str = "app",
+    channel_metadata: Optional[dict[str, Any]] = None,
+    trusted_model_config: bool = False,
+):
     _codex_cleanup_old_attachments()
     if not _codex_enabled():
         raise HTTPException(status_code=503, detail="Codex Console desabilitado. Defina JK_CODEX_CONSOLE_ENABLED=true.")
@@ -3211,6 +5214,20 @@ def codex_criar_tarefa(
         raise HTTPException(status_code=400, detail="Informe uma mensagem para o Codex.")
 
     is_full = bool(sessao.get("is_full"))
+    origin = "whatsapp" if str(origin or "").strip().lower() == "whatsapp" else "app"
+    channel_metadata = dict(channel_metadata or {}) if isinstance(channel_metadata, dict) else {}
+    trusted_model_config = bool(
+        origin == "whatsapp"
+        and (trusted_model_config or channel_metadata.get("admin_configured_ai") is True)
+    )
+    query_policy = _codex_whatsapp_query_policy(origin, channel_metadata)
+    whatsapp_query_only = bool(query_policy)
+    whatsapp_full_access = bool(
+        origin == "whatsapp"
+        and is_full
+        and channel_metadata.get("mobile_full_access") is True
+    )
+    external_safe_mode = bool(origin == "whatsapp" and not whatsapp_full_access)
     sandbox = _codex_normalizar_sandbox(payload.sandbox)
     model = _codex_normalizar_model(payload.model)
     reasoning_effort = _codex_normalizar_reasoning_effort(payload.reasoning_effort)
@@ -3221,15 +5238,33 @@ def codex_criar_tarefa(
         sandbox = "full_access"
     elif approval_profile == "read_only":
         sandbox = "read_only"
+    if whatsapp_query_only:
+        # Defesa em profundidade: mesmo que um chamador tente elevar sandbox ou
+        # approval_mode, vendas/anuncios originados do WhatsApp permanecem leitura.
+        sandbox = "read_only"
+        approval_profile = "read_only"
     if not is_full:
         # O cliente nunca escolhe elevar permissao: o servidor rebaixa a tarefa.
         sandbox = "read_only"
         approval_profile = "read_only"
-        model = _codex_normalizar_model(None)
-        reasoning_effort = _codex_normalizar_reasoning_effort(None)
+        if not trusted_model_config:
+            model = _codex_normalizar_model(None)
+            reasoning_effort = _codex_normalizar_reasoning_effort(None)
         speed = _codex_normalizar_speed(None)
         service_tier = _codex_normalizar_service_tier(None, speed)
-    conversation_id = _codex_resolve_new_conversation_id(sessao, payload.conversation_id)
+    conversation_id = _codex_resolve_new_conversation_id(
+        sessao,
+        payload.conversation_id,
+        origin=origin,
+        channel_metadata=channel_metadata,
+    )
+    conversation_state = _codex_load_or_create_conversation_state(
+        str(sessao.get("client_id") or "default"),
+        str(sessao.get("username") or "user"),
+        channel=origin,
+        phone=channel_metadata.get("wa_id") if origin == "whatsapp" else "",
+    )
+    conversation_generation = int(conversation_state.get("generation") or 1)
     cwd = (
         _codex_resolver_cwd(payload.cwd)
         if is_full
@@ -3244,8 +5279,20 @@ def codex_criar_tarefa(
     goal = _codex_clean_text(payload.goal, 1200) if is_full else ""
     screen_context = _codex_normalizar_screen_context(payload.screen_context)
     context_stats = _codex_context_stats(prompt, screen_context)
-    history = _codex_normalizar_history(payload.history)
+    # Compatibilidade de entrada: `history` ainda e aceito, mas o contexto
+    # confiavel e reconstruido somente com tarefas persistidas no servidor.
+    history: list[dict[str, str]] = []
     mutable_intent = _codex_prompt_pede_alteracao(prompt)
+    if external_safe_mode:
+        if not is_full:
+            sandbox = "read_only"
+            approval_profile = "read_only"
+        elif mutable_intent:
+            sandbox = "workspace_write"
+            approval_profile = "request"
+        else:
+            sandbox = "read_only"
+            approval_profile = "read_only"
     if approval_profile == "request" and sandbox == "workspace_write" and not mutable_intent:
         sandbox = "read_only"
     scope = _codex_build_scope(
@@ -3257,16 +5304,23 @@ def codex_criar_tarefa(
     )
     task_id = uuid.uuid4().hex
     approval_required = bool(
-        is_full
-        and (sandbox == "full_access" or (approval_profile == "request" and mutable_intent))
+        not whatsapp_query_only
+        and (
+            (external_safe_mode and is_full and mutable_intent)
+            or (
+                is_full
+                and (sandbox == "full_access" or (approval_profile == "request" and mutable_intent))
+            )
+        )
     )
     task = {
         "task_id": task_id,
         "status": "awaiting_approval" if approval_required else "queued",
         "sandbox": sandbox,
         "cwd": cwd,
-        "thread_id": str(payload.thread_id or "").strip() if is_full else "",
+        "thread_id": str(conversation_state.get("latest_thread_id") or "").strip() if is_full else "",
         "conversation_id": conversation_id,
+        "conversation_generation": conversation_generation,
         "prompt": prompt,
         "model": model,
         "approval_mode": approval_profile,
@@ -3298,13 +5352,23 @@ def codex_criar_tarefa(
         "mutable_intent": mutable_intent,
         "final_response": "",
         "error": "",
+        "message_kind": "",
+        "memory_excluded": False,
         "logs": [],
         "created_at": _codex_now(),
         "started_at": "",
         "completed_at": "",
         "created_by": sessao["username"],
         "client_id": sessao["client_id"],
-        "access_mode": "full" if is_full else "read_only",
+        "origin": origin,
+        "channel_message_id": str(channel_metadata.get("message_id") or "")[:200],
+        "channel_metadata": channel_metadata,
+        "external_safe_mode": external_safe_mode,
+        "whatsapp_full_access": whatsapp_full_access,
+        "whatsapp_query_only": whatsapp_query_only,
+        "query_policy": query_policy,
+        "trusted_model_config": trusted_model_config,
+        "access_mode": "query_only" if whatsapp_query_only else ("full" if is_full else "read_only"),
         "permissions": {
             str(key): value is True
             for key, value in (sessao.get("permissions") or {}).items()
@@ -3319,10 +5383,16 @@ def codex_criar_tarefa(
     _codex_log(task, "Tarefa criada.")
     if not is_full:
         _codex_log(task, "Acesso do usuario limitado pelo servidor a leitura e aos modulos autorizados.")
+    if whatsapp_query_only:
+        _codex_log(task, "Politica WhatsApp query_only aplicada a vendas/anuncios; aprovacao e mutacoes desabilitadas.")
     if approval_profile == "request" and not mutable_intent:
         _codex_log(task, "Modo solicitar aprovacao executado em leitura porque a tarefa nao pediu alteracao de arquivos.")
     if approval_required:
         _codex_log(task, "Aguardando confirmacao para executar com permissao mutavel.")
+        if external_safe_mode:
+            _codex_log(task, "Aprovacao pelo WhatsApp e proibida; informe modulo ou caminhos no aplicativo.")
+        elif whatsapp_full_access:
+            _codex_log(task, "Aprovacao movel habilitada para o mesmo numero e usuario full que originaram a tarefa.")
     else:
         _codex_start_thread(task_id)
     return {"success": True, "task": _codex_public_task(task)}
@@ -3333,11 +5403,15 @@ def codex_listar_tarefas(
     authorization: Optional[str] = Header(default=None),
     limit: int = 20,
     summary: bool = False,
+    channel: str = "",
 ):
     sessao = _codex_require_authenticated(request, authorization)
     client_id = str(sessao.get("client_id") or "default")
     username = str(sessao.get("username") or "").strip().lower()
     max_items = max(1, min(100, int(limit or 20)))
+    channel_filter = str(channel or "").strip().lower()
+    if channel_filter not in {"", "app", "whatsapp"}:
+        raise HTTPException(status_code=400, detail="Canal de conversa invalido.")
     if bool(sessao.get("is_full")):
         _codex_backfill_assistant_report_tasks(
             client_id,
@@ -3367,12 +5441,201 @@ def codex_listar_tarefas(
                 created_by = str(task.get("created_by") or "").strip().lower()
                 if not created_by or created_by != username:
                     continue
+                if channel_filter and _codex_task_channel(task) != channel_filter:
+                    continue
                 tasks.append(_codex_task_summary(task) if summary else _codex_public_task(task))
                 if len(tasks) >= max_items:
                     break
         except Exception:
             continue
     return {"success": True, "tasks": tasks}
+
+
+def codex_listar_conversas_whatsapp(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 50,
+    offset: int = 0,
+):
+    sessao = _codex_require_authenticated(request, authorization)
+    max_items = max(1, min(100, int(limit or 50)))
+    page_offset = max(0, int(offset or 0))
+    client_id = str(sessao.get("client_id") or "default")
+    username = str(sessao.get("username") or "").strip().lower()
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for record in _codex_whatsapp_history_records(sessao):
+        task = record["task"]
+        conversation_id = str(record.get("conversation_id") or "")
+        phone = str(record.get("phone") or "")
+        group = grouped.get(conversation_id)
+        if group is None:
+            state = _codex_load_conversation_summary(client_id, username, conversation_id)
+            group = {
+                "conversation_id": conversation_id,
+                "channel": "whatsapp",
+                "phone": phone,
+                "phone_display": _codex_whatsapp_phone_display(phone),
+                "generation": int(state.get("generation") or task.get("conversation_generation") or 1),
+                "state": str(state.get("state") or "active"),
+                "updated_at": str(record.get("activity_at") or ""),
+                "exchange_count": 0,
+                "active_count": 0,
+                "failed_count": 0,
+                "last_prompt_preview": "",
+                "last_response_preview": "",
+                "registered": False,
+                "label": "",
+                "last_inbound_at": "",
+            }
+            grouped[conversation_id] = group
+        status = str(task.get("status") or "")
+        if status in {"queued", "running", "awaiting_approval", "cancel_requested"}:
+            group["active_count"] += 1
+        elif status in {"failed", "cancelled"}:
+            group["failed_count"] += 1
+        if _codex_whatsapp_completed_exchange(task):
+            group["exchange_count"] += 1
+            if not group["last_prompt_preview"]:
+                group["last_prompt_preview"] = str(task.get("prompt") or "").strip()[:180]
+                group["last_response_preview"] = str(task.get("final_response") or "").strip()[:240]
+
+    for binding in _codex_registered_whatsapp_bindings(sessao):
+        conversation_id = str(binding.get("conversation_id") or "")
+        if not conversation_id:
+            continue
+        registered_at = str(binding.get("registered_at") or "")
+        last_inbound_at = str(binding.get("last_inbound_at") or "")
+        activity_at = last_inbound_at or registered_at
+        group = grouped.get(conversation_id)
+        if group is None:
+            phone = str(binding.get("phone") or "")
+            state = _codex_load_conversation_summary(client_id, username, conversation_id)
+            group = {
+                "conversation_id": conversation_id,
+                "channel": "whatsapp",
+                "phone": phone,
+                "phone_display": _codex_whatsapp_phone_display(phone),
+                "generation": int(state.get("generation") or 1),
+                "state": str(state.get("state") or "active"),
+                "updated_at": activity_at,
+                "exchange_count": 0,
+                "active_count": 0,
+                "failed_count": 0,
+                "last_prompt_preview": "",
+                "last_response_preview": "",
+                "registered": True,
+                "label": str(binding.get("label") or ""),
+                "last_inbound_at": last_inbound_at,
+            }
+            grouped[conversation_id] = group
+        else:
+            # O numero do cadastro e preferido na apresentacao; a identidade
+            # canonica ja reuniu a variante Meta com ou sem o nono digito.
+            phone = str(binding.get("phone") or group.get("phone") or "")
+            group["phone"] = phone
+            group["phone_display"] = _codex_whatsapp_phone_display(phone)
+            group["registered"] = True
+            group["label"] = str(binding.get("label") or "")
+            group["last_inbound_at"] = last_inbound_at
+            if activity_at > str(group.get("updated_at") or ""):
+                group["updated_at"] = activity_at
+
+    conversations = sorted(
+        grouped.values(),
+        key=lambda item: str(item.get("updated_at") or ""),
+        reverse=True,
+    )
+    page = conversations[page_offset : page_offset + max_items]
+    return {
+        "success": True,
+        "channel": "whatsapp",
+        "conversations": page,
+        "total": len(conversations),
+        "limit": max_items,
+        "offset": page_offset,
+        "has_more": page_offset + len(page) < len(conversations),
+    }
+
+
+def codex_listar_mensagens_conversa_whatsapp(
+    conversation_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 20,
+    offset: int = 0,
+):
+    sessao = _codex_require_authenticated(request, authorization)
+    requested_id = _codex_safe_id(str(conversation_id or "").strip(), "")
+    if not requested_id or not requested_id.startswith("wa_"):
+        raise HTTPException(status_code=404, detail="Conversa do WhatsApp nao encontrada.")
+    matching = [
+        record
+        for record in _codex_whatsapp_history_records(sessao)
+        if str(record.get("conversation_id") or "") == requested_id
+    ]
+    registered = {
+        str(item.get("conversation_id") or ""): item
+        for item in _codex_registered_whatsapp_bindings(sessao)
+    }
+    binding = registered.get(requested_id)
+    if not matching and not binding:
+        raise HTTPException(status_code=404, detail="Conversa do WhatsApp nao encontrada para este usuario.")
+
+    completed = [record for record in matching if _codex_whatsapp_completed_exchange(record["task"])]
+    max_items = max(1, min(50, int(limit or 20)))
+    page_offset = max(0, int(offset or 0))
+    page = completed[page_offset : page_offset + max_items]
+    phone = str((binding or {}).get("phone") or (matching[0].get("phone") if matching else "") or "")
+    return {
+        "success": True,
+        "conversation": {
+            "conversation_id": requested_id,
+            "channel": "whatsapp",
+            "phone": phone,
+            "phone_display": _codex_whatsapp_phone_display(phone),
+            "registered": bool(binding),
+            "label": str((binding or {}).get("label") or ""),
+            "last_inbound_at": str((binding or {}).get("last_inbound_at") or ""),
+        },
+        "messages": [_codex_whatsapp_history_message_preview(record["task"]) for record in page],
+        "total": len(completed),
+        "limit": max_items,
+        "offset": page_offset,
+        "has_more": page_offset + len(page) < len(completed),
+    }
+
+
+def codex_obter_mensagem_conversa_whatsapp(
+    conversation_id: str,
+    task_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_authenticated(request, authorization)
+    requested_id = _codex_safe_id(str(conversation_id or "").strip(), "")
+    requested_task_id = str(task_id or "").strip()
+    if not requested_id or not requested_task_id:
+        raise HTTPException(status_code=404, detail="Mensagem do WhatsApp nao encontrada.")
+    for record in _codex_whatsapp_history_records(sessao):
+        task = record["task"]
+        if str(record.get("conversation_id") or "") != requested_id:
+            continue
+        if str(task.get("task_id") or "") != requested_task_id:
+            continue
+        if not _codex_whatsapp_completed_exchange(task):
+            raise HTTPException(status_code=409, detail="Esta conversa ainda nao possui uma resposta concluida.")
+        return {
+            "success": True,
+            "message": {
+                "task_id": requested_task_id,
+                "created_at": str(task.get("created_at") or ""),
+                "completed_at": str(task.get("completed_at") or ""),
+                "prompt": str(task.get("prompt") or "").strip(),
+                "response": str(task.get("final_response") or "").strip(),
+            },
+        }
+    raise HTTPException(status_code=404, detail="Mensagem do WhatsApp nao encontrada para este usuario.")
 
 
 def codex_obter_tarefa(
@@ -3418,6 +5681,28 @@ def codex_deletar_conversa(
     conv_id = _codex_safe_id(str(conversation_id or "").strip(), "")
     if not conv_id:
         raise HTTPException(status_code=400, detail="Informe a conversa para excluir.")
+    try:
+        state_paths = list(_codex_conversation_dir(client_id, username).glob("*.json"))
+    except Exception:
+        state_paths = []
+    for state_path in state_paths:
+        if state_path.name.startswith("_"):
+            continue
+        try:
+            with state_path.open("r", encoding="utf-8") as fh:
+                state_payload = json.load(fh)
+        except Exception:
+            continue
+        if (
+            isinstance(state_payload, dict)
+            and str(state_payload.get("conversation_id") or "") == conv_id
+            and str(state_payload.get("state") or "active") == "active"
+            and int(state_payload.get("generation") or 0) >= 1
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="A conversa ativa do Black Jhon nao pode ser excluida. Use Reiniciar memoria.",
+            )
 
     matches: list[dict[str, Any]] = []
     blocked: list[str] = []
@@ -3485,19 +5770,225 @@ def codex_deletar_conversa(
     }
 
 
-def codex_aprovar_tarefa(
-    task_id: str,
+def codex_reset_current_conversation(
+    payload: CodexConversationResetRequest,
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ):
-    sessao = _codex_require_full_admin(request, authorization)
+    sessao = _codex_require_authenticated(request, authorization)
+    if payload.confirm is not True:
+        raise HTTPException(status_code=400, detail="Confirme o reinicio da memoria do Black Jhon.")
+    client_id = str(sessao.get("client_id") or "default")
+    username = str(sessao.get("username") or "").strip().lower()
+    with CODEX_CONVERSATION_LOCK:
+        state = _codex_load_or_create_conversation_state(client_id, username, channel="app")
+        conversation_id = str(state.get("conversation_id") or "")
+        generation = int(state.get("generation") or 1)
+        active_statuses = {"queued", "running", "awaiting_approval", "cancel_requested"}
+        busy = [
+            task
+            for task in _codex_owned_persisted_tasks(client_id, username)
+            if _codex_task_stored_conversation_id(task) == conversation_id
+            and int(task.get("conversation_generation") or 1) == generation
+            and str(task.get("status") or "") in active_statuses
+        ]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail="Aguarde ou cancele as tarefas ativas antes de reiniciar a memoria.",
+            )
+        audit = list(state.get("reset_audit") or [])
+        audit.append(
+            {
+                "at": _codex_now(),
+                "by": username,
+                "archived_generation": generation,
+            }
+        )
+        state.update(
+            {
+                "generation": generation + 1,
+                "summary": "",
+                "recent_messages": [],
+                "legacy_conversation_ids": [],
+                "latest_thread_id": "",
+                "compacted_until": "",
+                "summary_updated_at": "",
+                "estimated_tokens_before": 0,
+                "estimated_tokens_after": 0,
+                "reset_audit": audit[-50:],
+                "updated_at": _codex_now(),
+            }
+        )
+        _codex_save_conversation_summary(client_id, username, conversation_id, state)
+    return {
+        "success": True,
+        "conversation": {
+            "conversation_id": conversation_id,
+            "channel": "app",
+            "generation": int(state.get("generation") or generation + 1),
+            "state": "active",
+            "can_reset": True,
+            "queue": {"running": 0, "pending": 0},
+        },
+    }
+
+
+def codex_aprovar_tarefa_para_sessao(
+    task_id: str,
+    sessao: dict[str, Any],
+    payload: Optional[CodexTaskApprovalRequest] = None,
+    *,
+    approval_source: str = "app",
+    subject_id: str = "",
+):
+    if not bool(sessao.get("is_full")) or (sessao.get("permissions") or {}).get("full") is not True:
+        raise HTTPException(status_code=403, detail="A aprovacao exige um usuario full ativo.")
     task = _codex_require_owned_task(task_id, sessao)
+    if _codex_task_whatsapp_query_only(task):
+        raise HTTPException(
+            status_code=403,
+            detail="Consultas de vendas e anuncios originadas do WhatsApp usam politica query_only e nao podem ser aprovadas para execucao mutavel.",
+        )
     if task.get("status") != "awaiting_approval":
         return {"success": True, "task": _codex_public_task(task)}
-    _codex_update_task(task_id, status="queued", approved=True)
+    source = str(approval_source or "app").strip().lower()
+    if source not in {"app", "whatsapp"}:
+        raise HTTPException(status_code=400, detail="Origem de aprovacao invalida.")
+    channel_metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+    mobile_approval = bool(
+        source == "whatsapp"
+        and str(task.get("origin") or "") == "whatsapp"
+        and task.get("whatsapp_full_access") is True
+    )
+    if source == "whatsapp" and not mobile_approval:
+        raise HTTPException(status_code=403, detail="Esta tarefa nao permite aprovacao pelo WhatsApp.")
+    if mobile_approval:
+        expected_subject = str(channel_metadata.get("subject_id") or "").strip()
+        actual_subject = str(subject_id or "").strip()
+        if not expected_subject or not actual_subject or expected_subject != actual_subject:
+            raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada para este numero.")
+        approval = payload or CodexTaskApprovalRequest()
+        screen_context = _codex_normalizar_screen_context(approval.screen_context)
+        scope = _codex_build_scope(
+            prompt=str(task.get("prompt") or ""),
+            sandbox="full_access",
+            paths=[],
+            screen_context=screen_context,
+            cwd=str(task.get("cwd") or _codex_base_dir()),
+        )
+        scope.update(
+            {
+                "enforced": False,
+                "reason": "whatsapp_full_user_approval",
+                "broad_request": True,
+                "approved_subject_fingerprint": hashlib.sha256(actual_subject.encode("utf-8")).hexdigest()[:16],
+            }
+        )
+        _codex_update_task(
+            task_id,
+            screen_context=screen_context or task.get("screen_context") or {},
+            scope=scope,
+            sandbox="full_access",
+            approval_mode="full_access",
+        )
+    elif str(task.get("origin") or "") == "whatsapp":
+        approval = payload or CodexTaskApprovalRequest()
+        screen_context = _codex_normalizar_screen_context(approval.screen_context)
+        conversation_id = _codex_task_conversation_id(task)
+        paths = _codex_resolver_paths_for_session(
+            approval.paths,
+            sessao,
+            conversation_id,
+            allow_external_for_admin=False,
+        )
+        attachment_root = _codex_attachments_base_dir().resolve()
+        scoped_paths: list[str] = []
+        for path in paths:
+            try:
+                if os.path.commonpath([str(attachment_root), str(Path(path).resolve())]) == str(attachment_root):
+                    continue
+            except Exception:
+                continue
+            scoped_paths.append(path)
+        modules = _codex_scope_modules_from_screen(screen_context)
+        if not scoped_paths and not modules:
+            raise HTTPException(
+                status_code=400,
+                detail="Tarefa do WhatsApp exige modulo da tela ou caminho explicito antes da aprovacao.",
+            )
+        scope = _codex_build_scope(
+            prompt=str(task.get("prompt") or ""),
+            sandbox="workspace_write",
+            paths=scoped_paths,
+            screen_context=screen_context,
+            cwd=str(task.get("cwd") or _codex_base_dir()),
+        )
+        if not scope.get("allowed_exact") and not scope.get("allowed_prefixes"):
+            raise HTTPException(status_code=400, detail="O escopo informado nao gerou nenhum caminho permitido.")
+        scope.update(
+            {
+                "enforced": True,
+                "reason": "whatsapp_app_approval",
+                "broad_request": False,
+            }
+        )
+        merged_paths = list(task.get("paths") or [])
+        for path in scoped_paths:
+            if path not in merged_paths:
+                merged_paths.append(path)
+        _codex_update_task(
+            task_id,
+            paths=merged_paths,
+            screen_context=screen_context,
+            scope=scope,
+            sandbox="workspace_write",
+            approval_mode="request",
+        )
+    _codex_update_task(
+        task_id,
+        status="queued",
+        approved=True,
+        approval_source=source,
+        approved_at=_codex_now(),
+        approved_by=str(sessao.get("username") or ""),
+    )
     task = _codex_load_task(task_id) or task
-    _codex_log(task, "Execucao aprovada pelo administrador.")
+    _codex_log(task, "Execucao aprovada pelo WhatsApp vinculado." if mobile_approval else "Execucao aprovada pelo administrador.")
     _codex_start_thread(task_id)
+    return {"success": True, "task": _codex_public_task(task)}
+
+
+def codex_aprovar_tarefa(
+    task_id: str,
+    request: Request,
+    payload: Optional[CodexTaskApprovalRequest] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _codex_require_full_admin(request, authorization)
+    return codex_aprovar_tarefa_para_sessao(task_id, sessao, payload, approval_source="app")
+
+
+def codex_cancelar_tarefa_para_sessao(
+    task_id: str,
+    sessao: dict[str, Any],
+    *,
+    cancel_source: str = "app",
+    subject_id: str = "",
+):
+    task = _codex_require_owned_task(task_id, sessao)
+    source = str(cancel_source or "app").strip().lower()
+    if source == "whatsapp":
+        metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+        expected_subject = str(metadata.get("subject_id") or "").strip()
+        if task.get("whatsapp_full_access") is not True or not expected_subject or expected_subject != str(subject_id or "").strip():
+            raise HTTPException(status_code=404, detail="Tarefa Codex nao encontrada para este numero.")
+    if task.get("status") in {"completed", "failed", "canceled"}:
+        return {"success": True, "task": _codex_public_task(task)}
+    status = "canceled" if task.get("status") != "running" else "cancel_requested"
+    _codex_update_task(task_id, status=status, completed_at=_codex_now(), cancel_source=source)
+    task = _codex_load_task(task_id) or task
+    _codex_log(task, "Cancelamento solicitado pelo WhatsApp vinculado." if source == "whatsapp" else "Cancelamento solicitado.")
     return {"success": True, "task": _codex_public_task(task)}
 
 
@@ -3507,14 +5998,7 @@ def codex_cancelar_tarefa(
     authorization: Optional[str] = Header(default=None),
 ):
     sessao = _codex_require_authenticated(request, authorization)
-    task = _codex_require_owned_task(task_id, sessao)
-    if task.get("status") in {"completed", "failed", "canceled"}:
-        return {"success": True, "task": _codex_public_task(task)}
-    status = "canceled" if task.get("status") != "running" else "cancel_requested"
-    _codex_update_task(task_id, status=status, completed_at=_codex_now())
-    task = _codex_load_task(task_id) or task
-    _codex_log(task, "Cancelamento solicitado.")
-    return {"success": True, "task": _codex_public_task(task)}
+    return codex_cancelar_tarefa_para_sessao(task_id, sessao, cancel_source="app")
 
 
 def codex_actions_listar(
@@ -3603,6 +6087,11 @@ def codex_actions_criar_proposta(
     message = str(payload.message or "").strip()
     if not message and not payload.action_id and not payload.capability_id:
         raise HTTPException(status_code=400, detail="Informe uma mensagem, action_id ou capability_id.")
+    conversation_state = _codex_load_or_create_conversation_state(
+        str(sessao.get("client_id") or "default"),
+        str(sessao.get("username") or ""),
+        channel="app",
+    )
     return codex_actions.create_proposal(
         client_id=str(sessao.get("client_id") or "default"),
         username=str(sessao.get("username") or ""),
@@ -3612,6 +6101,8 @@ def codex_actions_criar_proposta(
         params=payload.params if isinstance(payload.params, dict) else {},
         screen_context=payload.screen_context if isinstance(payload.screen_context, dict) else {},
         history=payload.history if isinstance(payload.history, list) else [],
+        conversation_id=str(conversation_state.get("conversation_id") or ""),
+        conversation_generation=int(conversation_state.get("generation") or 1),
     )
 
 
@@ -3652,6 +6143,7 @@ configure_codex_console_runtime()
 
 __all__ = [
     "CodexTaskRequest",
+    "CodexConversationResetRequest",
     "CodexActionProposalRequest",
     "CodexCapabilityResolveRequest",
     "configure_codex_console_runtime",
@@ -3659,8 +6151,13 @@ __all__ = [
     "codex_upload_attachments",
     "codex_criar_tarefa",
     "codex_listar_tarefas",
+    "codex_listar_conversas_whatsapp",
+    "codex_listar_mensagens_conversa_whatsapp",
+    "codex_obter_mensagem_conversa_whatsapp",
     "codex_obter_tarefa",
     "codex_deletar_tarefa",
+    "codex_deletar_conversa",
+    "codex_reset_current_conversation",
     "codex_aprovar_tarefa",
     "codex_cancelar_tarefa",
     "codex_program_functions",
@@ -3672,4 +6169,5 @@ __all__ = [
     "codex_actions_aprovar_proposta",
     "codex_actions_obter_execucao",
     "codex_actions_cancelar_execucao",
+    "codex_console_recuperar_fila_background",
 ]

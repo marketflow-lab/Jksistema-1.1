@@ -52,6 +52,7 @@ LEGACY_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
 
 JOB_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("POST", "/jobs", "favoritos_jobs_start"),
+    LegacyRouteSpec("GET", "/jobs/latest", "favoritos_jobs_latest"),
     LegacyRouteSpec("GET", "/jobs/{job_id}/status", "favoritos_jobs_status"),
     LegacyRouteSpec("GET", "/jobs/{job_id}/proxima-coleta", "favoritos_jobs_proxima_coleta"),
     LegacyRouteSpec("POST", "/jobs/{job_id}/coleta-termo", "favoritos_jobs_coleta_termo"),

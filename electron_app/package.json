@@ -1,17 +1,18 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.94",
+  "version": "1.0.95",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
-    "prestart": "npm run verify:package",
+    "prepare:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare_installer_runtime.ps1",
+    "prestart": "npm run prepare:runtime && npm run verify:package",
     "start": "electron .",
     "verify:package": "node scripts/verify-installer-package.js",
-    "verify:package:built": "node scripts/verify-installer-package.js --packaged dist-client-setup/win-unpacked/resources",
-    "predist": "npm run verify:package",
+    "verify:package:built": "node scripts/verify-installer-package.js --packaged dist-client-setup/win-unpacked/resources --deep-runtime",
+    "predist": "npm run prepare:runtime && npm run verify:package",
     "dist": "electron-builder",
     "postdist": "npm run verify:package:built",
-    "predist:publish": "npm run verify:package",
+    "predist:publish": "npm run prepare:runtime && npm run verify:package",
     "postdist:publish": "npm run verify:package:built",
     "dist:publish": "electron-builder --publish always"
   },
@@ -89,6 +90,18 @@
         ]
       },
       {
+        "from": "../.installer_runtime/black_jhon",
+        "to": "local_app/black_jhon_runtime"
+      },
+      {
+        "from": "../.installer_runtime/prerequisites",
+        "to": "local_app/prerequisites"
+      },
+      {
+        "from": "../.installer_runtime/runtime-manifest.json",
+        "to": "local_app/runtime-manifest.json"
+      },
+      {
         "from": "client-config.json",
         "to": "client-config.json"
       },
@@ -106,7 +119,7 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowElevation": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,

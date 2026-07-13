@@ -112,6 +112,8 @@ def _full_obter_estoque_fulfillment(
     loja: str,
     cfg: dict,
     inventory_id: str,
+    *,
+    force_refresh: bool = False,
 ) -> tuple[dict, dict]:
     inventory_id = str(inventory_id or "").strip()
     if not inventory_id:
@@ -120,9 +122,10 @@ def _full_obter_estoque_fulfillment(
         raise RuntimeError("Full Mercado Livre context was not configured.")
 
     cache_key = f"full:inventory_stock:{client_id}:{loja}:{inventory_id}"
-    cached = _ml_cache_get(cache_key, ttl=300)
-    if cached is not None:
-        return cached, cfg
+    if not force_refresh:
+        cached = _ml_cache_get(cache_key, ttl=300)
+        if cached is not None:
+            return cached, cfg
 
     url = f"https://api.mercadolibre.com/inventories/{quote(inventory_id)}/stock/fulfillment"
     resp, cfg_local = _ml_favoritos_api_request(client_id, loja, cfg, "GET", url, timeout=15)
@@ -160,7 +163,14 @@ def _full_obter_estoque_fulfillment(
     return payload, cfg_local
 
 
-def _full_normalizar_anuncio_ml(client_id: str, loja: str, cfg: dict, item: dict) -> tuple[dict, dict]:
+def _full_normalizar_anuncio_ml(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item: dict,
+    *,
+    force_refresh: bool = False,
+) -> tuple[dict, dict]:
     cfg_local = dict(cfg or {})
     variacoes = _ml_extrair_variacoes_resumo(item, client_id=client_id, loja=loja)
     skus_variacoes = [
@@ -188,6 +198,7 @@ def _full_normalizar_anuncio_ml(client_id: str, loja: str, cfg: dict, item: dict
                 loja,
                 cfg_local,
                 str(var_payload.get("inventory_id") or "").strip(),
+                force_refresh=force_refresh,
             )
             disponivel = _full_numero(estoque_info.get("available_quantity"))
             indisponivel = _full_numero(estoque_info.get("not_available_quantity"))
@@ -206,7 +217,13 @@ def _full_normalizar_anuncio_ml(client_id: str, loja: str, cfg: dict, item: dict
             variacoes_full.append(var_payload)
         variacoes = variacoes_full
     else:
-        estoque_info, cfg_local = _full_obter_estoque_fulfillment(client_id, loja, cfg_local, inventory_id)
+        estoque_info, cfg_local = _full_obter_estoque_fulfillment(
+            client_id,
+            loja,
+            cfg_local,
+            inventory_id,
+            force_refresh=force_refresh,
+        )
         estoque_total = _full_numero(estoque_info.get("available_quantity"))
         indisponivel_total = _full_numero(estoque_info.get("not_available_quantity"))
         estoque_total_geral = _full_numero(estoque_info.get("total_quantity")) or (estoque_total + indisponivel_total)
@@ -239,7 +256,13 @@ def _full_normalizar_anuncio_ml(client_id: str, loja: str, cfg: dict, item: dict
     return anuncio, cfg_local
 
 
-def listar_anuncios_full_mercadolivre_payload(client_id: str, loja: str, limite: int = 10000) -> dict:
+def listar_anuncios_full_mercadolivre_payload(
+    client_id: str,
+    loja: str,
+    limite: int = 10000,
+    *,
+    force_refresh: bool = False,
+) -> dict:
     """Busca no Mercado Livre todos os anuncios Full da loja selecionada."""
     if _ml_favoritos_listar_todos_itens_ativos_loja is None:
         raise RuntimeError("Full Mercado Livre context was not configured.")
@@ -249,9 +272,10 @@ def listar_anuncios_full_mercadolivre_payload(client_id: str, loja: str, limite:
 
     limite = max(100, min(int(limite or 10000), 20000))
     cache_key = f"full:v2:anuncios_ml:{client_id}:{nome_loja}:{limite}"
-    cached = _ml_cache_get(cache_key, ttl=600)
-    if cached is not None:
-        return cached
+    if not force_refresh:
+        cached = _ml_cache_get(cache_key, ttl=600)
+        if cached is not None:
+            return cached
 
     cfg = _obter_cfg_ml(client_id, nome_loja)
     itens, _cfg = _ml_favoritos_listar_todos_itens_ativos_loja(client_id, nome_loja, cfg, limite=limite)
@@ -260,7 +284,13 @@ def listar_anuncios_full_mercadolivre_payload(client_id: str, loja: str, limite:
     for item in (itens or []):
         if not isinstance(item, dict) or not _full_item_eh_full(item):
             continue
-        anuncio, cfg_local = _full_normalizar_anuncio_ml(client_id, nome_loja, cfg_local, item)
+        anuncio, cfg_local = _full_normalizar_anuncio_ml(
+            client_id,
+            nome_loja,
+            cfg_local,
+            item,
+            force_refresh=force_refresh,
+        )
         anuncios.append(anuncio)
     anuncios.sort(key=lambda item: (str(item.get("title") or "").lower(), str(item.get("id") or "")))
     resultado = jsonable_encoder({

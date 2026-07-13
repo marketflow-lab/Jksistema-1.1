@@ -118,6 +118,9 @@ class QuestionAnswerOrchestrator:
                     "item_id": listing.id,
                     "question_text": question.text,
                     "listing_link": listing.permalink,
+                    "listing_title": listing.title,
+                    "history_count": len(previous_questions),
+                    "history_source": "same_buyer_or_listing",
                     "category": classification.category.value,
                 },
             )

@@ -15,6 +15,10 @@ jkjkjk-*.json
 .env
 firebase-presence.env
 node_modules
+cloudflare/whatsapp-gateway/.wrangler/
+cloudflare/whatsapp-gateway/wrangler.toml
+cloudflare/whatsapp-gateway/.dev.vars
+cloudflare/whatsapp-gateway/coverage/
 node_modules
 bug-hunter-report/
 test-results/
@@ -61,6 +65,7 @@ __pycache__/
 .tmp_checks/
 python_runtime/
 python_wheels/
+.installer_runtime/
 
 # Logs
 logs/

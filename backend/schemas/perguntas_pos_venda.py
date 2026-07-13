@@ -9,6 +9,7 @@ class PerguntasLojaConfigRequest(BaseModel):
     loja: str
     responder_automaticamente: bool = False
     solicitar_aprovacao: bool = False
+    notificar_whatsapp_aprovacoes: bool = False
     habilitar_pos_venda_automatico: bool = False
     intervalo_minutos: Optional[float] = 10
 
@@ -28,6 +29,7 @@ class PerguntasGerarRespostaRequest(BaseModel):
     loja: str
     pergunta: dict
     resposta_atual: Optional[str] = ""
+    orientacao_usuario: Optional[str] = ""
 
 
 class PerguntasEnviarRespostaRequest(BaseModel):
@@ -67,6 +69,8 @@ class PosVendaGerarRespostaRequest(BaseModel):
     order_id: Optional[Any] = ""
     buyer_id: Optional[Any] = ""
     max_chars: Optional[int] = 350
+    resposta_atual: Optional[str] = ""
+    orientacao_usuario: Optional[str] = ""
 
 
 class MLDescricaoRequest(BaseModel):

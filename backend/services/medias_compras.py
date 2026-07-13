@@ -73,6 +73,7 @@ __all__ = [
     "api_medias_compras_preferencias_colunas_put",
     "api_medias_compras_concorrentes_links",
     "api_medias_compras_lista_pedido_detalhe",
+    "api_medias_compras_lista_pedido_custo_posto",
     "api_medias_compras_lista_pedido_editar",
     "api_medias_compras_lista_pedido_adicionar_sku",
     "api_medias_compras_lista_pedido_atualizar_status",

@@ -2,6 +2,7 @@ import json
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,6 +39,22 @@ def _report(chat_text: str) -> dict:
 
 
 class CodexAssistantCompactResponseTest(unittest.TestCase):
+    def test_weekly_is_due_once_after_monday_8am_even_if_app_opens_later(self):
+        monday = datetime(2026, 7, 13, 9, 0, 0)
+        with patch.object(codex_assistant, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = monday
+            mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            self.assertTrue(codex_assistant._assistant_weekly_due({}))
+            self.assertFalse(codex_assistant._assistant_weekly_due({"last_weekly_key": "2026-W29"}))
+            self.assertTrue(codex_assistant._assistant_weekly_due({"last_weekly_key": "2026-W29"}, force=True))
+
+        tuesday = datetime(2026, 7, 14, 14, 0, 0)
+        with patch.object(codex_assistant, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = tuesday
+            mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            self.assertTrue(codex_assistant._assistant_weekly_due({}))
+            self.assertFalse(codex_assistant._assistant_weekly_due({"last_weekly_key": "2026-W29"}))
+
     def test_daily_compact_omits_full_chat_text_without_mutating_scheduler_state(self):
         full_text = "R" * 1200
         state = {"last_daily_date": "2026-07-10", "last_daily_report": _report(full_text)}
@@ -51,9 +68,8 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
             result = codex_assistant.codex_assistant_daily_analysis_run(payload, _request("/daily"), "Bearer test")
 
         self.assertTrue(result["compact"])
-        self.assertNotIn("chat_text", result["report"])
-        self.assertEqual(len(result["report"]["chat_text_preview"]), 600)
-        self.assertEqual(result["report"]["chat_text_length"], 1200)
+        self.assertEqual(result["status"], "disabled_weekly_only")
+        self.assertNotIn("report", result)
         self.assertNotIn("last_daily_report", result["scheduler"])
         self.assertEqual(result["scheduler"]["last_daily_report_id"], "report-1")
         self.assertEqual(state["last_daily_report"]["chat_text"], full_text)
@@ -71,8 +87,8 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
             result = codex_assistant.codex_assistant_daily_analysis_run(payload, _request("/daily"), "Bearer test")
 
         self.assertNotIn("compact", result)
-        self.assertEqual(result["report"]["chat_text"], full_text)
-        self.assertNotIn("chat_text_preview", result["report"])
+        self.assertEqual(result["status"], "disabled_weekly_only")
+        self.assertIsNone(result["report"])
 
     def test_proactive_compact_also_compacts_nested_scheduler_report(self):
         full_text = "P" * 700
@@ -118,6 +134,7 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
                 "title": "Titulo " + ("X" * 500),
                 "detail": "Detalhe " + ("Y" * 10_000),
                 "recommendation": "Acao " + ("Z" * 10_000),
+                "report_prompt": "Relatorio " + ("P" * 10_000),
                 "internal_blob": "N" * 100_000,
             }
             for idx in range(30)
@@ -161,6 +178,12 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
                 "chat_text_preview",
                 "chat_text_length",
                 "truncated",
+                "report_type",
+                "scope",
+                "data_quality",
+                "financial_coverage",
+                "financial_summary",
+                "top_actions",
             },
         )
         self.assertNotIn("registry_results", result["report"])
@@ -172,7 +195,8 @@ class CodexAssistantCompactResponseTest(unittest.TestCase):
         self.assertNotIn("last_daily_report", result["scheduler"])
         self.assertLessEqual(len(result["suggestions"]), 20)
         self.assertNotIn("internal_blob", result["suggestions"][0])
-        self.assertLessEqual(len(result["suggestions"][0].get("detail", "")), 360)
+        self.assertLessEqual(len(result["suggestions"][0].get("detail", "")), 900)
+        self.assertLessEqual(len(result["suggestions"][0].get("report_prompt", "")), 1200)
         self.assertEqual(persisted["report"]["registry_results"][0]["rows"], "R" * 1_600_000)
         self.assertEqual(persisted["report"]["chat_text"], full_text)
 

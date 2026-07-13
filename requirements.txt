@@ -25,4 +25,6 @@ selenium
 webdriver-manager
 Pillow
 psycopg[binary]
-openai-codex
+openai-codex==0.1.0b3
+openai-codex-cli-bin==0.137.0a4
+faster-whisper==1.2.1

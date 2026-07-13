@@ -153,12 +153,24 @@ function loadActionTolerance() {
     } catch (_e) {
         actionTolerancePct = 0;
     }
+    const input = document.getElementById('apiMargemTolerancia');
+    if (input) input.value = String(actionTolerancePct);
 }
 
 function saveActionTolerance() {
     try {
         localStorage.setItem(getActionToleranceKey(), String(actionTolerancePct));
     } catch (_e) {}
+}
+
+function getActionTolerancePct() {
+    const input = document.getElementById('apiMargemTolerancia');
+    const raw = input ? input.value : actionTolerancePct;
+    const parsed = Number(String(raw ?? '').replace(',', '.'));
+    const sanitized = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
+    actionTolerancePct = sanitized;
+    if (input) input.value = String(sanitized);
+    return sanitized;
 }
 
 function extractApiPromoBIdsFromMeta(meta) {

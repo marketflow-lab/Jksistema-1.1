@@ -58,6 +58,7 @@ function startStaticServer() {
 async function newScenario(browser, baseUrl, options = {}) {
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.on('dialog', dialog => dialog.type() === 'confirm' ? dialog.accept() : dialog.dismiss());
   if (options.fakeClock === true) {
     await page.clock.install({ time: new Date('2026-07-10T12:00:00Z') });
   }
@@ -74,11 +75,16 @@ async function newScenario(browser, baseUrl, options = {}) {
     attachmentContentTypes: [],
     advancedAdmin: [],
     advancedPayloads: [],
+    activeAdvancedAdmin: 0,
+    maxActiveAdvancedAdmin: 0,
     reportGets: 0,
     iaModels: 0,
     historyDeletes: [],
+    memoryResets: 0,
     restoredTaskGets: 0,
     overlapOldGets: 0,
+    reportSettingsGets: 0,
+    reportSettingsPuts: [],
   };
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(String(error && error.message || error)));
@@ -123,11 +129,19 @@ async function newScenario(browser, baseUrl, options = {}) {
     const url = new URL(request.url());
     const pathname = url.pathname;
     const method = request.method().toUpperCase();
+    const canonicalConversationId = options.full === true ? 'app-admin-browser' : 'app-operador-browser';
     const json = (status, payload) => route.fulfill({
       status,
       contentType: 'application/json',
       body: JSON.stringify(payload),
     });
+    const trackedAdminJson = async (status, payload) => {
+      calls.activeAdvancedAdmin += 1;
+      calls.maxActiveAdvancedAdmin = Math.max(calls.maxActiveAdvancedAdmin, calls.activeAdvancedAdmin);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      calls.activeAdvancedAdmin -= 1;
+      return json(status, payload);
+    };
 
     if (pathname === '/api/codex/status') {
       calls.codexStatus += 1;
@@ -136,6 +150,7 @@ async function newScenario(browser, baseUrl, options = {}) {
         ready: options.statusReady !== false,
         message: options.statusReady === false ? 'Codex indisponivel no teste.' : 'Black Jhon pronto com Codex como IA principal.',
         defaults: { model: 'gpt-5.5', reasoning_effort: 'xhigh', speed: 'standard' },
+        conversation: { conversation_id: canonicalConversationId, channel: 'app', generation: 1, state: 'active', can_reset: true, queue: { running: 0, pending: 0 } },
       });
     }
     if (pathname === '/api/codex/tasks' && method === 'POST') {
@@ -155,7 +170,10 @@ async function newScenario(browser, baseUrl, options = {}) {
           success: true,
           task: {
             task_id: taskId,
-            conversation_id: payload.conversation_id,
+            conversation_id: canonicalConversationId,
+            conversation_generation: 1,
+            conversation_state: 'active',
+            channel: 'app',
             prompt: payload.prompt,
             sandbox: payload.sandbox,
             status: taskNumber === 1 ? 'running' : 'completed',
@@ -167,7 +185,10 @@ async function newScenario(browser, baseUrl, options = {}) {
         success: true,
         task: {
           task_id: 'task-browser-1',
-          conversation_id: payload.conversation_id,
+          conversation_id: canonicalConversationId,
+          conversation_generation: 1,
+          conversation_state: 'active',
+          channel: 'app',
           prompt: payload.prompt,
           sandbox: payload.sandbox,
           status: options.taskRunning === true ? 'running' : 'completed',
@@ -181,6 +202,13 @@ async function newScenario(browser, baseUrl, options = {}) {
       calls.codexTaskGetUrls.push(request.url());
       return json(200, { success: true, tasks: options.historyTasks || [] });
     }
+    if (pathname === '/api/codex/conversations/current/reset' && method === 'POST') {
+      calls.memoryResets += 1;
+      return json(200, {
+        success: true,
+        conversation: { conversation_id: canonicalConversationId, channel: 'app', generation: 2, state: 'active', can_reset: true, queue: { running: 0, pending: 0 } },
+      });
+    }
     if (pathname.startsWith('/api/codex/conversations/') && method === 'DELETE') {
       calls.historyDeletes.push(pathname);
       return json(200, { success: true, deleted: true, task_ids: ['history-task-1'] });
@@ -191,7 +219,10 @@ async function newScenario(browser, baseUrl, options = {}) {
         success: true,
         task: {
           task_id: options.seedActiveTask,
-          conversation_id: 'conversation-restored',
+          conversation_id: canonicalConversationId,
+          conversation_generation: 1,
+          conversation_state: 'active',
+          channel: 'app',
           thread_id: 'thread-restored',
           status: 'running',
           prompt: 'Tarefa restaurada',
@@ -206,7 +237,10 @@ async function newScenario(browser, baseUrl, options = {}) {
         success: true,
         task: {
           task_id: 'task-overlap-1',
-          conversation_id: 'conversation-overlap',
+          conversation_id: canonicalConversationId,
+          conversation_generation: 1,
+          conversation_state: 'active',
+          channel: 'app',
           thread_id: 'thread-antiga-invalida',
           status: 'completed',
           final_response: 'RESPOSTA ANTIGA NAO DEVE SOBRESCREVER',
@@ -233,7 +267,10 @@ async function newScenario(browser, baseUrl, options = {}) {
         success: true,
         task: {
           task_id: 'task-browser-1',
-          conversation_id: 'conversation-old-poll',
+          conversation_id: canonicalConversationId,
+          conversation_generation: 1,
+          conversation_state: 'active',
+          channel: 'app',
           thread_id: completed ? 'thread-old-poll' : '',
           status: options.taskRunning === true ? (completed ? 'completed' : 'running') : 'completed',
           final_response: options.taskResponse || options.largeTaskResponse || (completed ? 'RESPOSTA ANTIGA NAO DEVE VOLTAR' : 'Resposta primaria de teste.'),
@@ -258,22 +295,37 @@ async function newScenario(browser, baseUrl, options = {}) {
       calls.actionProposals.push(request.postDataJSON());
       return json(200, { success: true, matched: false });
     }
+    if (pathname === '/api/admin/codex/assistant/report-settings' && method === 'GET') {
+      calls.reportSettingsGets += 1;
+      return json(200, {
+        success: true,
+        settings: {
+          global: { margin_coverage_min: 0.95, default_lead_time_days: 180, review_cycle_days: 90, target_margin_pct: 20 },
+          stores: {}, suppliers: {}, skus: {},
+        },
+      });
+    }
+    if (pathname === '/api/admin/codex/assistant/report-settings' && method === 'PUT') {
+      const payload = request.postDataJSON();
+      calls.reportSettingsPuts.push(payload);
+      return json(200, { success: true, settings: payload.settings });
+    }
     if (pathname === '/api/admin/codex/assistant/suggestions') {
       calls.advancedAdmin.push(pathname);
       calls.advancedPayloads.push({ path: pathname, payload: null });
-      return json(200, { success: true, suggestions: options.coordinatorSuggestions || [] });
+      return trackedAdminJson(200, { success: true, suggestions: options.coordinatorSuggestions || [] });
     }
     if (pathname === '/api/admin/codex/assistant/proactive/run') {
       calls.advancedAdmin.push(pathname);
       calls.advancedPayloads.push({ path: pathname, payload: request.postDataJSON() });
-      return json(200, { success: true, suggestions: [] });
+      return trackedAdminJson(200, { success: true, suggestions: [] });
     }
     if (pathname === '/api/admin/codex/assistant/daily-analysis/run') {
       calls.advancedAdmin.push(pathname);
       const payload = request.postDataJSON();
       calls.advancedPayloads.push({ path: pathname, payload });
       if (options.largeDailyReport) {
-        return json(200, {
+        return trackedAdminJson(200, {
           success: true,
           status: 'completed',
           suggestions: [],
@@ -289,7 +341,29 @@ async function newScenario(browser, baseUrl, options = {}) {
           },
         });
       }
-      return json(200, { success: true, status: 'skipped', suggestions: [] });
+      return trackedAdminJson(200, { success: true, status: 'skipped', suggestions: [] });
+    }
+    if (pathname === '/api/admin/codex/assistant/weekly-analysis/run') {
+      calls.advancedAdmin.push(pathname);
+      calls.advancedPayloads.push({ path: pathname, payload: request.postDataJSON() });
+      if (options.largeDailyReport) {
+        return trackedAdminJson(200, {
+          success: true,
+          status: 'completed',
+          suggestions: [],
+          report: {
+            report_id: 'report-browser-large',
+            title: 'Relatorio grande de teste',
+            chat_text_preview: options.largeDailyReport.slice(0, 600),
+            chat_text_length: options.largeDailyReport.length,
+            chat_text_truncated: true,
+            chat_download_formats: [],
+            downloads: {},
+            status_steps: ['Relatorio compacto pronto'],
+          },
+        });
+      }
+      return trackedAdminJson(200, { success: true, status: 'skipped', suggestions: [] });
     }
     if (pathname === '/api/admin/codex/assistant/reports/report-browser-large' && method === 'GET') {
       calls.reportGets += 1;
@@ -349,6 +423,20 @@ async function run() {
       });
       const { context, page, calls, pageErrors } = scenario;
       await page.locator('#jk-codex-panel.aberto').waitFor();
+      const openingMetrics = await page.evaluate(async () => {
+        document.getElementById('jk-codex-close')?.click();
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const before = Number(performance.memory && performance.memory.usedJSHeapSize || 0);
+        const started = performance.now();
+        document.getElementById('jk-ia-fab')?.click();
+        while (!document.getElementById('jk-codex-panel')?.classList.contains('aberto') && performance.now() - started < 1000) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        const after = Number(performance.memory && performance.memory.usedJSHeapSize || 0);
+        return { elapsed: performance.now() - started, heapDelta: after - before };
+      });
+      assert.ok(openingMetrics.elapsed < 500, `painel levou ${openingMetrics.elapsed}ms para ficar visivel`);
+      assert.ok(openingMetrics.heapDelta < 100 * 1024 * 1024, `painel cresceu ${openingMetrics.heapDelta} bytes no heap`);
       assert.strictEqual(await page.locator('#jk-ia-fab').count(), 1);
       assert.strictEqual(await page.locator('#jk-ia-light-fab').count(), 0);
       assert.strictEqual(await page.locator('#jk-codex-fab').count(), 0);
@@ -360,8 +448,17 @@ async function run() {
       assert.deepStrictEqual(calls.advancedAdmin, [], 'abrir painel nao dispara rotinas administrativas');
       assert.strictEqual(calls.iaModels, 0, 'abrir Black Jhon nao carrega modelos do painel legado');
 
+      await page.locator('#jk-codex-report-settings').click();
+      await page.locator('#jk-codex-report-settings-dialog:not([hidden])').waitFor();
+      assert.strictEqual(calls.reportSettingsGets, 1);
+      await page.locator('#jk-report-target-margin').fill('24');
+      await page.locator('#jk-codex-report-settings-save').click();
+      await waitForCondition(() => calls.reportSettingsPuts.length === 1, 'configuracoes do relatorio nao foram salvas');
+      assert.strictEqual(calls.reportSettingsPuts[0].settings.global.target_margin_pct, 24);
+      await page.locator('#jk-codex-report-settings-dialog').waitFor({ state: 'hidden' });
+
       await page.locator('#jk-codex-input').fill('Responda apenas com um teste de leitura.');
-      await page.locator('#jk-codex-readonly').click();
+      await page.locator('#jk-codex-readonly').evaluate(button => button.click());
       await page.waitForFunction(() => document.querySelector('#jk-codex-messages')?.textContent.includes('Resposta primaria de teste.'));
       assert.strictEqual(calls.codexTasks.length, 1);
       assert.strictEqual(calls.codexTasks[0].sandbox, 'read_only');
@@ -373,13 +470,13 @@ async function run() {
       assert.strictEqual(calls.iaChat.length, 0);
 
       await page.locator('#jk-codex-input').fill('Segunda consulta para validar cache de contexto.');
-      await page.locator('#jk-codex-readonly').click();
+      await page.locator('#jk-codex-readonly').evaluate(button => button.click());
       await page.waitForFunction(() => document.querySelectorAll('#jk-codex-messages .jk-codex-msg.user').length >= 2);
       assert.strictEqual(calls.codexTasks.length, 2);
       assert.strictEqual(calls.codexTasks[1].screen_context.dom_scan.sequence, calls.codexTasks[0].screen_context.dom_scan.sequence);
       assert.strictEqual(calls.codexTasks[1].screen_context.dom_scan.cache_hit, true);
 
-      await page.locator('#jk-codex-history-toggle').click();
+      await page.locator('#jk-codex-history-toggle').evaluate(button => button.click());
       await page.waitForFunction(() => document.querySelector('#jk-codex-history-panel')?.classList.contains('ativo'));
       assert.strictEqual(calls.codexTaskGets, 1);
       assert.match(calls.codexTaskGetUrls[0], /[?&]summary=true(?:&|$)/);
@@ -435,6 +532,7 @@ async function run() {
       assert.strictEqual(await page.locator('#jk-codex-path-chips').isHidden(), true);
       assert.strictEqual(await page.locator('#jk-codex-attachment-chips').isHidden(), true);
       assert.strictEqual(await page.locator('#jk-codex-approval').isHidden(), true);
+      assert.strictEqual(await page.locator('#jk-codex-report-settings').isHidden(), true);
       assert.strictEqual(await page.locator('#jk-codex-header span').textContent(), 'Codex principal · somente leitura');
       assert.strictEqual(calls.iaModels, 0);
       assert.doesNotMatch(await page.locator('#jk-codex-messages').textContent(), /SEGREDO DO HISTORICO ADMIN/);
@@ -450,7 +548,7 @@ async function run() {
       assert.strictEqual(calls.codexTasks[0].sandbox, 'read_only');
       assert.strictEqual(calls.codexTasks[0].approval_mode, 'read_only');
       assert.strictEqual(calls.codexTasks[0].model, 'gpt-5.5');
-      assert.strictEqual(calls.codexTasks[0].thread_id, '');
+      assert.strictEqual(calls.codexTasks[0].thread_id, undefined);
       assert.deepStrictEqual(calls.codexTasks[0].paths, []);
       assert.strictEqual(calls.iaChat.length, 0);
       assert.strictEqual(await page.locator('#jk-codex-approve').isHidden(), true, 'aprovacao permanece oculta para usuario comum');
@@ -469,6 +567,8 @@ async function run() {
       assert.strictEqual(calls.codexTasks.length, 1, 'pedido mutavel de usuario comum deve ser bloqueado antes do Codex');
       assert.strictEqual(calls.actionProposals.length, 0);
       assert.deepStrictEqual(calls.advancedAdmin, [], 'usuario comum nao deve disparar recursos administrativos avancados');
+      assert.strictEqual(calls.reportSettingsGets, 0);
+      assert.strictEqual(calls.reportSettingsPuts.length, 0);
 
       await page.evaluate(() => window.JKIASidebarNotifyApproval({
         id: 'approval-common-user',
@@ -508,7 +608,10 @@ async function run() {
         statusReady: true,
         historyTasks: [{
           task_id: 'history-task-1',
-          conversation_id: 'history-conversation-1',
+          conversation_id: 'app-operador-browser',
+          conversation_generation: 1,
+          conversation_state: 'active',
+          channel: 'app',
           status: 'completed',
           prompt_preview: 'Conversa propria resumida',
           response_preview: 'Resposta resumida',
@@ -521,9 +624,8 @@ async function run() {
       assert.strictEqual(calls.codexTaskGets, 0);
       await page.locator('#jk-codex-history-toggle').click();
       await page.getByText('Conversa propria resumida').waitFor();
-      await page.locator('#jk-codex-history-list button.danger').click();
-      await waitForCondition(() => calls.historyDeletes.length === 1, 'exclusao da conversa propria nao foi chamada');
-      assert.deepStrictEqual(calls.historyDeletes, ['/api/codex/conversations/history-conversation-1']);
+      assert.strictEqual(await page.locator('#jk-codex-history-list button.danger').count(), 0, 'conversa ativa nao deve expor exclusao');
+      assert.deepStrictEqual(calls.historyDeletes, []);
       assert.deepStrictEqual(pageErrors, []);
       await context.close();
     }
@@ -680,11 +782,12 @@ async function run() {
       assert.deepStrictEqual(calls.advancedAdmin, [
         '/api/admin/codex/assistant/suggestions',
         '/api/admin/codex/assistant/proactive/run',
-        '/api/admin/codex/assistant/daily-analysis/run',
+        '/api/admin/codex/assistant/weekly-analysis/run',
       ]);
+      assert.strictEqual(calls.maxActiveAdvancedAdmin, 1, 'rotinas administrativas nao podem executar em paralelo');
       const proactivePayload = calls.advancedPayloads.find(item => item.path.endsWith('/proactive/run')).payload;
-      const dailyPayload = calls.advancedPayloads.find(item => item.path.endsWith('/daily-analysis/run')).payload;
-      [proactivePayload, dailyPayload].forEach(payload => {
+      const weeklyPayload = calls.advancedPayloads.find(item => item.path.endsWith('/weekly-analysis/run')).payload;
+      [proactivePayload, weeklyPayload].forEach(payload => {
         assert.strictEqual(payload.compact, true);
         assert.strictEqual(payload.screen_context.context_mode, 'background');
         assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.screen_context, 'visible_text'), false);
@@ -718,6 +821,7 @@ async function run() {
       await popup.close();
 
       await page.evaluate(() => document.getElementById('jk-codex-new')?.click());
+      await waitForCondition(() => calls.memoryResets === 1, 'reinicio de memoria nao foi chamado');
       assert.strictEqual(await page.evaluate(() => window.__JK_CODEX_COORDINATOR_TEST__.state().full_text_cache_size), 0);
       await page.locator('#jk-codex-close').click();
 
@@ -782,9 +886,10 @@ async function run() {
       assert.strictEqual(calls.codexTaskGets, 0, 'restaurar tarefa ativa nao deve listar historico completo');
       const restoredGets = calls.restoredTaskGets;
       await page.locator('#jk-codex-new').click();
+      await waitForCondition(() => calls.memoryResets === 1, 'reinicio de memoria da tarefa restaurada nao foi chamado');
       await page.clock.fastForward(5000);
       await new Promise(resolve => setTimeout(resolve, 30));
-      assert.strictEqual(calls.restoredTaskGets, restoredGets, 'nova conversa deve cancelar polls antigos');
+      assert.strictEqual(calls.restoredTaskGets, restoredGets, 'reinicio de memoria deve cancelar polls antigos');
       assert.doesNotMatch(await page.locator('#jk-codex-messages').textContent(), /RESPOSTA ANTIGA NAO DEVE VOLTAR/);
       assert.deepStrictEqual(pageErrors, []);
       await context.close();

@@ -39,6 +39,7 @@ function normalizeApiRowPercentAndAction(row) {
     row['Status'] = ativoPromo1 ? 'Ativo' : (programadoPromo1 ? 'Programada' : (elegivelPromo1 ? 'Elegível' : 'Sem Promo Fixa'));
     const margemMinima = Number(document.getElementById('apiMargemMinima')?.value || 15);
     const minPct = Number.isFinite(margemMinima) ? margemMinima : 15;
+    const toleranciaPct = getActionTolerancePct();
     const margem1 = parsePercentValue(row['Margem']);
     const margem2 = parsePercentValue(row['Margem ML']);
 
@@ -51,7 +52,7 @@ function normalizeApiRowPercentAndAction(row) {
         decisao = 'Não participar';
     } else if (margem2 === null || margem2 < minPct) {
         decisao = 'Não participar';
-    } else if (margem1 !== null && margem2 < margem1) {
+    } else if (margem1 !== null && margem2 < (margem1 - toleranciaPct)) {
         decisao = 'Não participar';
     }
 
@@ -162,6 +163,9 @@ function resolvePromoPercentDisplay(row) {
 }
 
 function aplicarRegraAutomaticaAcaoPorMargem() {
+    const margemMinima = Number(document.getElementById('apiMargemMinima')?.value || 15);
+    const minPct = Number.isFinite(margemMinima) ? margemMinima : 15;
+    const toleranciaPct = getActionTolerancePct();
     (currentData || []).forEach((r) => {
         const status = String(r['Status'] ?? '').trim().toLowerCase();
         if (status !== 'ativo') {
@@ -176,7 +180,7 @@ function aplicarRegraAutomaticaAcaoPorMargem() {
             r['Participar ou não'] = 'Não participar';
             return;
         }
-        const participar = margemMl > margem;
+        const participar = margem >= minPct && margemMl >= minPct && margemMl >= (margem - toleranciaPct);
         const decisao = participar ? 'Participar' : 'Não participar';
         r['Ação'] = decisao;
         r['Participar ou não'] = decisao;
@@ -193,6 +197,8 @@ function promptToleranciaAcao() {
         return;
     }
     actionTolerancePct = n;
+    const input = document.getElementById('apiMargemTolerancia');
+    if (input) input.value = String(actionTolerancePct);
     saveActionTolerance();
     aplicarRegraAutomaticaAcaoPorMargem();
     renderTable(currentData);

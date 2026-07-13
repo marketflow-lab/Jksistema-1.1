@@ -74,6 +74,10 @@ def configure_promocoes_core_custos_runtime(runtime_module=None, peers=None):
 
 configure_promocoes_core_custos_runtime()
 
+PROMO_CUSTOS_CACHE_LOCK = threading.RLock()
+PROMO_CUSTOS_BASE_CACHE: dict[tuple[str, bool], dict] = {}
+PROMO_CUSTOS_LOJA_CACHE: dict[tuple[str, str], dict] = {}
+
 
 def _listar_arquivos_cadastro_custos(client_id: str, incluir_custos_lojas: bool = True) -> list[str]:
     principal = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
@@ -140,99 +144,166 @@ def _iterar_dfs_cadastro_custos(client_id: str, incluir_custos_lojas: bool = Tru
         yield df, caminho
 
 
-def _carregar_custos_cadastro_por_sku(client_id: str, incluir_custos_lojas: bool = True) -> dict:
-    mapa = {}
-    chaves_exatas = set()
-    fontes_usadas = []
+def _fingerprint_arquivos_custos(client_id: str, incluir_custos_lojas: bool) -> tuple:
+    caminhos = list(_listar_arquivos_cadastro_custos(client_id, incluir_custos_lojas=incluir_custos_lojas))
+    if not incluir_custos_lojas:
+        try:
+            caminho_lojas = _cadastro_custos_lojas_path(client_id)
+            if caminho_lojas and caminho_lojas not in caminhos:
+                caminhos.append(caminho_lojas)
+        except Exception:
+            pass
+    fingerprint = []
+    for caminho in caminhos:
+        try:
+            stat = os.stat(caminho)
+            fingerprint.append((os.path.abspath(caminho), int(stat.st_size), int(stat.st_mtime_ns)))
+        except OSError:
+            fingerprint.append((os.path.abspath(caminho), -1, -1))
+    return tuple(fingerprint)
 
-    for df, caminho in _iterar_dfs_cadastro_custos(client_id, incluir_custos_lojas=incluir_custos_lojas):
+
+def invalidar_cache_custos_impostos(client_id: str | None = None) -> None:
+    client_key = str(client_id or "").strip()
+    with PROMO_CUSTOS_CACHE_LOCK:
+        if not client_key:
+            PROMO_CUSTOS_BASE_CACHE.clear()
+            PROMO_CUSTOS_LOJA_CACHE.clear()
+            return
+        for cache in (PROMO_CUSTOS_BASE_CACHE, PROMO_CUSTOS_LOJA_CACHE):
+            for key in list(cache):
+                if key and key[0] == client_key:
+                    cache.pop(key, None)
+
+
+def _adicionar_valor_sku(mapa: dict, chaves_exatas: set, sku: str, valor: float) -> None:
+    chave_exata = _normalizar_sku_mes(sku).upper()
+    if chave_exata and chave_exata not in chaves_exatas:
+        mapa[chave_exata] = float(valor)
+        chaves_exatas.add(chave_exata)
+    for key in _sku_lookup_variantes(sku):
+        if not key or key == chave_exata or key in chaves_exatas:
+            continue
+        mapa.setdefault(key, float(valor))
+
+
+def _carregar_custos_impostos_base(
+    client_id: str,
+    incluir_custos_lojas: bool = True,
+) -> tuple[dict, dict]:
+    client_key = str(client_id or "").strip()
+    cache_key = (client_key, bool(incluir_custos_lojas))
+    fingerprint = _fingerprint_arquivos_custos(client_key, bool(incluir_custos_lojas))
+    with PROMO_CUSTOS_CACHE_LOCK:
+        cached = PROMO_CUSTOS_BASE_CACHE.get(cache_key)
+        if cached and cached.get("fingerprint") == fingerprint:
+            logger.debug(
+                "[PROMO CADASTRO] cache_hit cliente=%s incluir_lojas=%s custos=%s impostos=%s",
+                client_key,
+                bool(incluir_custos_lojas),
+                len(cached.get("custos") or {}),
+                len(cached.get("impostos") or {}),
+            )
+            return dict(cached.get("custos") or {}), dict(cached.get("impostos") or {})
+
+    started = time.perf_counter()
+    custos: dict[str, float] = {}
+    impostos: dict[str, float] = {}
+    custos_exatos: set[str] = set()
+    impostos_exatos: set[str] = set()
+    fontes_usadas: list[str] = []
+    for df, caminho in _iterar_dfs_cadastro_custos(
+        client_key,
+        incluir_custos_lojas=incluir_custos_lojas,
+    ):
         if "sku" not in df.columns:
             continue
         col_custo = "custo" if "custo" in df.columns else None
-        if not col_custo:
+        col_imposto = next(
+            (
+                nome
+                for nome in ("imposto", "aliquota_imposto", "aliquota imposto", "aliquota")
+                if nome in df.columns
+            ),
+            None,
+        )
+        if not col_custo and not col_imposto:
             continue
-
-        antes = len(mapa)
-        for _, row in df.iterrows():
+        colunas = ["sku"] + [nome for nome in (col_custo, col_imposto) if nome and nome != "sku"]
+        antes = len(custos) + len(impostos)
+        for valores in df[colunas].itertuples(index=False, name=None):
+            row = dict(zip(colunas, valores))
             sku = str(row.get("sku", "") or "").strip()
             if not sku:
                 continue
-            custo = _parse_float_flex(row.get(col_custo, ""))
-            if custo is None:
-                continue
-            chave_exata = _normalizar_sku_mes(sku).upper()
-            if chave_exata and chave_exata not in chaves_exatas:
-                mapa[chave_exata] = float(custo)
-                chaves_exatas.add(chave_exata)
-            for key in _sku_lookup_variantes(sku):
-                if not key or key == chave_exata or key in chaves_exatas:
-                    continue
-                mapa.setdefault(key, float(custo))
-        if len(mapa) > antes:
+            if col_custo:
+                custo = _parse_float_flex(row.get(col_custo, ""))
+                if custo is not None:
+                    _adicionar_valor_sku(custos, custos_exatos, sku, float(custo))
+            if col_imposto:
+                imposto_rate = _to_rate_safe(row.get(col_imposto, ""))
+                if imposto_rate is not None:
+                    _adicionar_valor_sku(impostos, impostos_exatos, sku, float(imposto_rate))
+        if len(custos) + len(impostos) > antes:
             fontes_usadas.append(os.path.basename(caminho))
 
-    if mapa:
-        logger.info(
-            "[PROMO CADASTRO] Custos carregados: %s SKU-chave(s) | fontes: %s",
-            len(mapa),
-            ", ".join(fontes_usadas) or "-",
-        )
-    return mapa
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    with PROMO_CUSTOS_CACHE_LOCK:
+        PROMO_CUSTOS_BASE_CACHE[cache_key] = {
+            "fingerprint": fingerprint,
+            "custos": dict(custos),
+            "impostos": dict(impostos),
+            "loaded_at": time.time(),
+        }
+    logger.info(
+        "[PROMO CADASTRO] cache_miss cliente=%s incluir_lojas=%s custos=%s impostos=%s ms=%s fontes=%s",
+        client_key,
+        bool(incluir_custos_lojas),
+        len(custos),
+        len(impostos),
+        elapsed_ms,
+        ", ".join(fontes_usadas) or "-",
+    )
+    return dict(custos), dict(impostos)
+
+
+def _carregar_custos_cadastro_por_sku(client_id: str, incluir_custos_lojas: bool = True) -> dict:
+    custos, _impostos = _carregar_custos_impostos_base(client_id, incluir_custos_lojas)
+    return custos
 
 
 def _carregar_impostos_cadastro_por_sku(client_id: str, incluir_custos_lojas: bool = True) -> dict:
-    mapa = {}
-    chaves_exatas = set()
-    fontes_usadas = []
-
-    for df, caminho in _iterar_dfs_cadastro_custos(client_id, incluir_custos_lojas=incluir_custos_lojas):
-        if "sku" not in df.columns:
-            continue
-        col_imposto = "imposto" if "imposto" in df.columns else None
-        for nome in ("imposto", "aliquota_imposto", "aliquota imposto", "aliquota"):
-            if nome in df.columns:
-                col_imposto = nome
-                break
-        if not col_imposto:
-            continue
-
-        antes = len(mapa)
-        for _, row in df.iterrows():
-            sku = str(row.get("sku", "") or "").strip()
-            if not sku:
-                continue
-            imposto_rate = _to_rate_safe(row.get(col_imposto, ""))
-            if imposto_rate is None:
-                continue
-            chave_exata = _normalizar_sku_mes(sku).upper()
-            if chave_exata and chave_exata not in chaves_exatas:
-                mapa[chave_exata] = float(imposto_rate)
-                chaves_exatas.add(chave_exata)
-            for key in _sku_lookup_variantes(sku):
-                if not key or key == chave_exata or key in chaves_exatas:
-                    continue
-                mapa.setdefault(key, float(imposto_rate))
-        if len(mapa) > antes:
-            fontes_usadas.append(os.path.basename(caminho))
-
-    if mapa:
-        logger.info(
-            "[PROMO CADASTRO] Impostos carregados: %s SKU-chave(s) | fontes: %s",
-            len(mapa),
-            ", ".join(fontes_usadas) or "-",
-        )
-    return mapa
+    _custos, impostos = _carregar_custos_impostos_base(client_id, incluir_custos_lojas)
+    return impostos
 
 
 def _carregar_custos_impostos_cadastro_por_sku_loja(client_id: str, loja: str) -> tuple[dict, dict]:
-    custos_por_sku = _carregar_custos_cadastro_por_sku(client_id, incluir_custos_lojas=False)
-    impostos_por_sku = _carregar_impostos_cadastro_por_sku(client_id, incluir_custos_lojas=False)
+    client_key = str(client_id or "").strip()
     loja_key = _cadastro_norm_loja_custo(loja)
+    cache_key = (client_key, loja_key)
+    fingerprint = _fingerprint_arquivos_custos(client_key, incluir_custos_lojas=False)
+    with PROMO_CUSTOS_CACHE_LOCK:
+        cached = PROMO_CUSTOS_LOJA_CACHE.get(cache_key)
+        if cached and cached.get("fingerprint") == fingerprint:
+            logger.debug(
+                "[PROMO CADASTRO] cache_hit cliente=%s loja=%s custos=%s impostos=%s",
+                client_key,
+                loja_key or "-",
+                len(cached.get("custos") or {}),
+                len(cached.get("impostos") or {}),
+            )
+            return dict(cached.get("custos") or {}), dict(cached.get("impostos") or {})
+
+    custos_por_sku, impostos_por_sku = _carregar_custos_impostos_base(
+        client_key,
+        incluir_custos_lojas=False,
+    )
     if not loja_key:
         return custos_por_sku, impostos_por_sku
 
+    started = time.perf_counter()
     try:
-        mapa_lojas = _cadastro_mapa_custos_lojas(client_id)
+        mapa_lojas = _cadastro_mapa_custos_lojas(client_key)
     except Exception as exc:
         logger.warning("[PROMO CADASTRO] Falha ao carregar custos por loja para %s: %s", loja, exc)
         return custos_por_sku, impostos_por_sku
@@ -254,39 +325,21 @@ def _carregar_custos_impostos_cadastro_por_sku_loja(client_id: str, loja: str) -
             impostos_por_sku[sku_key] = float(imposto_rate)
             impostos_loja += 1
 
-    if custos_loja or impostos_loja:
-        logger.info(
-            "[PROMO CADASTRO] Custos/impostos por loja aplicados: loja=%s custos=%s impostos=%s",
-            loja,
-            custos_loja,
-            impostos_loja,
-        )
-    return custos_por_sku, impostos_por_sku
-
-    df = _carregar_df_cadastro_custos(client_id)
-    if "sku" not in df.columns:
-        return {}
-
-    col_imposto = "imposto" if "imposto" in df.columns else None
-    for nome in ("imposto", "aliquota_imposto", "alÃƒÂ­quota imposto", "aliquota", "alÃƒÂ­quota"):
-        if nome in df.columns:
-            col_imposto = nome
-            break
-    if not col_imposto:
-        return {}
-
-    mapa = {}
-    for _, row in df.iterrows():
-        sku = str(row.get("sku", "") or "").strip()
-        if not sku:
-            continue
-        imposto_rate = _to_rate_safe(row.get(col_imposto, ""))
-        if imposto_rate is None:
-            continue
-        for key in _sku_lookup_variantes(sku):
-            mapa[key] = float(imposto_rate)
-    return mapa
-
+    logger.info(
+        "[PROMO CADASTRO] cache_miss_loja loja=%s custos=%s impostos=%s ms=%s",
+        loja,
+        custos_loja,
+        impostos_loja,
+        int((time.perf_counter() - started) * 1000),
+    )
+    with PROMO_CUSTOS_CACHE_LOCK:
+        PROMO_CUSTOS_LOJA_CACHE[cache_key] = {
+            "fingerprint": fingerprint,
+            "custos": dict(custos_por_sku),
+            "impostos": dict(impostos_por_sku),
+            "loaded_at": time.time(),
+        }
+    return dict(custos_por_sku), dict(impostos_por_sku)
 
 def _resolver_custo_por_sku(custos_por_sku: dict, sku_bruto: str):
     if not sku_bruto:
@@ -373,7 +426,7 @@ def _to_rate_safe(v):
     # Aceita tanto 12 quanto 0.12 como entrada de percentual.
     return (float(x) / 100.0) if float(x) > 1.0 else float(x)
 
-PEER_EXPORTS = ['_listar_arquivos_cadastro_custos', '_iterar_dfs_cadastro_custos', '_carregar_custos_cadastro_por_sku', '_carregar_impostos_cadastro_por_sku', '_carregar_custos_impostos_cadastro_por_sku_loja', '_resolver_custo_por_sku', '_extrair_skus_para_custo', '_resolver_custo_medio_por_skus', '_resolver_imposto_rate_por_sku', '_to_float_safe', '_to_rate_safe']
+PEER_EXPORTS = ['_listar_arquivos_cadastro_custos', '_iterar_dfs_cadastro_custos', 'invalidar_cache_custos_impostos', '_carregar_custos_cadastro_por_sku', '_carregar_impostos_cadastro_por_sku', '_carregar_custos_impostos_cadastro_por_sku_loja', '_resolver_custo_por_sku', '_extrair_skus_para_custo', '_resolver_custo_medio_por_skus', '_resolver_imposto_rate_por_sku', '_to_float_safe', '_to_rate_safe']
 __all__ = PEER_EXPORTS + ["configure_promocoes_core_custos_runtime"]
 
 configure_promocoes_core_custos_runtime()

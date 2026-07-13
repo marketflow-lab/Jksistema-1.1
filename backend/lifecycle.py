@@ -17,6 +17,8 @@ STARTUP_EVENTS: tuple[StartupEventSpec, ...] = (
     StartupEventSpec("_promo_automacao_iniciar_background"),
     StartupEventSpec("_renovacao_iniciar_agendamento_background"),
     StartupEventSpec("_perguntas_automacao_iniciar_background"),
+    StartupEventSpec("_whatsapp_bridge_iniciar_background"),
+    StartupEventSpec("_codex_console_recuperar_fila_background"),
 )
 
 

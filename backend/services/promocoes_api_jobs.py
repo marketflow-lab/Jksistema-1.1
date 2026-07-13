@@ -109,6 +109,7 @@ def _promo_analise_background_worker(
     promocao_a_id: str,
     promocao_a_type: str,
     margem_minima: float,
+    margem_tolerancia: float,
     promocoes_b_meta: str,
     files_payload: list[dict],
     client_id: str,
@@ -130,6 +131,7 @@ def _promo_analise_background_worker(
                 promocao_a_id=promocao_a_id,
                 promocao_a_type=promocao_a_type,
                 margem_minima=margem_minima,
+                margem_tolerancia=margem_tolerancia,
                 promocoes_b_meta=promocoes_b_meta,
                 files=uploads,
                 client_id=client_id,
@@ -230,6 +232,7 @@ def _promo_automacao_sanitizar(payload: dict) -> dict:
                 "eligible_count": _promo_meta_contagem(meta, "eligible_count", "eligibleCount", "eligible", "elegiveis"),
             })
     next_raw = _parse_float_flex(payload.get("next_run_at") or payload.get("nextRunAt"))
+    tolerancia_raw = _parse_float_flex(payload.get("margem_tolerancia") or payload.get("margemTolerancia"))
     return {
         "enabled": bool(payload.get("enabled")),
         "approval_required": payload.get("approval_required", payload.get("approvalRequired", True)) is not False,
@@ -241,6 +244,7 @@ def _promo_automacao_sanitizar(payload: dict) -> dict:
         "promocao_a_id": str(payload.get("promocao_a_id") or payload.get("promocaoAId") or "").strip(),
         "promocao_a_type": str(payload.get("promocao_a_type") or payload.get("promocaoAType") or "").strip(),
         "margem_minima": _parse_float_flex(payload.get("margem_minima") or payload.get("margemMinima")) or 15.0,
+        "margem_tolerancia": max(0.0, min(100.0, float(tolerancia_raw or 0.0))),
         "promocoes_b_meta": promos_out,
     }
 
@@ -276,6 +280,7 @@ def _promo_start_api_worker_job(
     promocao_a_id: str,
     promocao_a_type: str = "",
     margem_minima: float = 15.0,
+    margem_tolerancia: float = 0.0,
     promocoes_b_meta: str = "[]",
 ) -> dict:
     if not _ensure_promo_worker_running():
@@ -286,6 +291,7 @@ def _promo_start_api_worker_job(
         "promocao_a_id": promocao_a_id,
         "promocao_a_type": promocao_a_type or "",
         "margem_minima": str(margem_minima),
+        "margem_tolerancia": str(max(0.0, min(100.0, float(margem_tolerancia or 0.0)))),
         "promocoes_b_meta": promocoes_b_meta,
         "client_id": client_id,
     }
@@ -468,6 +474,7 @@ def _promo_automacao_processar_tenant(client_id: str) -> None:
             promocao_a_id=str(cfg.get("promocao_a_id") or ""),
             promocao_a_type=str(cfg.get("promocao_a_type") or ""),
             margem_minima=float(cfg.get("margem_minima") or 15.0),
+            margem_tolerancia=float(cfg.get("margem_tolerancia") or 0.0),
             promocoes_b_meta=json.dumps(cfg.get("promocoes_b_meta") or [], ensure_ascii=False),
         )
         cfg["last_job_id"] = str(payload.get("job_id") or "")
@@ -531,6 +538,7 @@ async def iniciar_analise_promo_via_api(
     promocao_a_id: str = Form(...),
     promocao_a_type: str = Form(""),
     margem_minima: float = Form(15.0),
+    margem_tolerancia: float = Form(0.0),
     promocoes_b_meta: str = Form(...),
     client_id: str = Depends(get_tenant_id),
 ):
@@ -542,6 +550,7 @@ async def iniciar_analise_promo_via_api(
             promocao_a_id=promocao_a_id,
             promocao_a_type=promocao_a_type,
             margem_minima=margem_minima,
+            margem_tolerancia=margem_tolerancia,
             promocoes_b_meta=promocoes_b_meta,
         )
     except HTTPException:
@@ -559,6 +568,7 @@ async def iniciar_analise_promo_via_api_com_arquivos(
     promocao_a_id: str = Form(...),
     promocao_a_type: str = Form(""),
     margem_minima: float = Form(15.0),
+    margem_tolerancia: float = Form(0.0),
     promocoes_b_meta: str = Form(...),
     files: list[UploadFile] = File(...),
     client_id: str = Depends(get_tenant_id),
@@ -573,6 +583,7 @@ async def iniciar_analise_promo_via_api_com_arquivos(
         "promocao_a_id": promocao_a_id,
         "promocao_a_type": promocao_a_type,
         "margem_minima": str(margem_minima),
+        "margem_tolerancia": str(max(0.0, min(100.0, float(margem_tolerancia or 0.0)))),
         "promocoes_b_meta": promocoes_b_meta,
         "client_id": client_id,
     }

@@ -19,6 +19,7 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -34,13 +35,15 @@ from backend.services.runtime_bridge import bind_runtime_globals
 
 
 ASSISTANT_LOCK = threading.RLock()
+API_QUERY_AUDIT_LOCK = threading.RLock()
 PROACTIVE_INTERVAL_SECONDS = 30 * 60
-EXTERNAL_CACHE_SECONDS = 15 * 60
-DAILY_ANALYSIS_HOUR = int(os.getenv("JK_CODEX_DAILY_ANALYSIS_HOUR") or "8")
+EXTERNAL_CACHE_SECONDS = 120
+API_QUERY_TIMEOUT_SECONDS = 60
+DAILY_ANALYSIS_ENABLED = False
 REPORT_FORMATS = {"html", "xlsx", "pdf"}
 DEFAULT_RANKING_LIMIT = 50
 BLING_REPORT_LIMIT = 200
-CODEX_DATA_TOOLS_VERSION = "20260624-data-tools-v9-specialist-observability"
+CODEX_DATA_TOOLS_VERSION = "20260713-data-tools-v17-exact-order-pack"
 CODEX_DATA_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_CONTEXT_CHAR_LIMIT") or "600000")
 CODEX_DATA_PREVIEW_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_PREVIEW_CHAR_LIMIT") or "600000")
 CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT") or "560000")
@@ -163,12 +166,21 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
     {
         "id": "stale_stock",
         "module": "estoque",
-        "description": "SKUs com saldo e sem venda recente.",
+        "description": "SKUs com saldo de loja e sem venda recente, com idade, custo cadastrado e capital estimado.",
         "intent_examples": ["estoque parado", "sem vender", "dias sem venda"],
         "executor": "_ia_tool_get_days_without_sale_top",
         "external": False,
         "cache_ttl_seconds": EXTERNAL_CACHE_SECONDS,
-        "output_fields": ["sku", "produto", "saldo_total", "dias_sem_vender"],
+        "output_fields": [
+            "sku",
+            "produto",
+            "saldo_loja",
+            "saldo_full",
+            "ultima_venda",
+            "dias_sem_vender",
+            "custo_unitario",
+            "valor_custo_estoque_loja",
+        ],
         "fallbacks": ["stock_data"],
         "status": "procurando estoque parado",
     },
@@ -243,6 +255,56 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
         "output_fields": ["id", "title", "status", "seller_sku", "price", "available_quantity", "sold_quantity", "health"],
         "fallbacks": ["integrations_status"],
         "status": "consultando Mercado Livre read-only",
+    },
+    {
+        "id": "mercado_livre_orders",
+        "module": "vendas_mercado_livre",
+        "description": "Consulta read-only de pedidos e vendas pela API do Mercado Livre.",
+        "intent_examples": ["pedidos mercado livre", "vendas via api mercado livre", "pedidos pagos por sku"],
+        "executor": "_ia_tool_get_mercado_livre_orders",
+        "external": True,
+        "read_only": True,
+        "cache_ttl_seconds": EXTERNAL_CACHE_SECONDS,
+        "output_fields": [
+            "order_id", "pack_id", "status", "date_created", "date_closed",
+            "items", "gross_amount", "paid_amount", "refund_amount", "net_amount",
+            "buyer_name", "buyer_nickname", "shipment", "fulfillment", "claims",
+            "returns", "conversations",
+        ],
+        "fallbacks": [],
+        "companion_tools": ["bling_sales_orders"],
+        "zero_is_authoritative": True,
+        "status": "consultando pedidos Mercado Livre read-only",
+    },
+    {
+        "id": "mercado_livre_returns",
+        "module": "vendas_mercado_livre",
+        "description": "Consulta devolucoes diretamente na API de claims/returns do Mercado Livre, ordenadas pela atualizacao mais recente.",
+        "intent_examples": ["ultima devolucao da loja", "devolucoes mercado livre", "retorno mais recente pela api"],
+        "executor": "_ia_tool_get_mercado_livre_returns",
+        "external": True,
+        "read_only": True,
+        "cache_ttl_seconds": 15,
+        "output_fields": ["claim_id", "order_id", "last_updated", "status", "reason_id", "order", "return_detail"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "status": "consultando devolucoes Mercado Livre read-only",
+    },
+    {
+        "id": "mercado_livre_full_stock",
+        "module": "mercado_full",
+        "description": "Estoque Full atual consultado exclusivamente na API de inventario do Mercado Livre.",
+        "intent_examples": ["estoque full", "saldo fulfillment", "somar estoque full por sku"],
+        "executor": "full_mercadolivre.listar_anuncios_full_mercadolivre_payload",
+        "external": True,
+        "read_only": True,
+        "cache_ttl_seconds": EXTERNAL_CACHE_SECONDS,
+        "output_fields": ["sku", "inventory_id", "full_available_quantity", "full_not_available_quantity", "full_total_quantity"],
+        "fallbacks": [],
+        "zero_is_authoritative": True,
+        "source_role": "primary_api",
+        "aggregation_policy": "full_mercado_livre_only",
+        "status": "consultando estoque Full no Mercado Livre",
     },
     {
         "id": "bling_product",
@@ -559,13 +621,13 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
     {
         "id": "questions_post_sale_query",
         "module": "perguntas_pos_venda",
-        "description": "Consulta perguntas/pos-venda, aprovacoes, memoria por SKU e eventos locais.",
+        "description": "Consulta a fila atual do Mercado Livre por loja e retorna perguntas, anuncio, produto e historico do comprador para auxiliar a resposta.",
         "intent_examples": ["perguntas abertas", "pos venda pendente", "perguntas respondidas", "aprovacoes ML"],
         "executor": "codex_readonly_sources.questions_post_sale_query",
-        "external": False,
-        "cache_ttl_seconds": EXTERNAL_CACHE_SECONDS,
-        "output_fields": ["records", "sources", "warnings"],
-        "fallbacks": ["mercado_livre_readonly", "local_cache_query"],
+        "external": True,
+        "cache_ttl_seconds": 15,
+        "output_fields": ["records", "questions_by_store", "coverage_complete", "sources", "warnings"],
+        "fallbacks": [],
         "status": "consultando perguntas e pos-venda",
     },
     {
@@ -642,6 +704,28 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+# O registro historico nasceu exclusivamente com leitores e varias entradas
+# antigas nao declaravam o campo. Materialize o contrato no proprio registro
+# para que catalogo e executor possam falhar fechados sem quebrar compatibilidade.
+for _tool_contract in CODEX_DATA_TOOLS:
+    _tool_contract.setdefault("read_only", True)
+
+# Consultas direcionadas a uma API devem preservar o zero retornado por essa
+# fonte. Um resultado vazio do provedor nao pode virar silenciosamente dados de
+# banco local ou de outra integracao.
+for _api_tool_id in {"mercado_livre_listing", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_full_stock", "bling_sales_orders", "questions_post_sale_query"}:
+    for _tool_contract in CODEX_DATA_TOOLS:
+        if str(_tool_contract.get("id") or "") == _api_tool_id:
+            _tool_contract["zero_is_authoritative"] = True
+            _tool_contract["fallbacks"] = []
+            _tool_contract["source_role"] = "primary_api"
+            _tool_contract["aggregation_policy"] = "separate_sources_no_sum"
+            if _api_tool_id == "bling_sales_orders":
+                _tool_contract["companion_tools"] = ["mercado_livre_orders"]
+            elif _api_tool_id == "mercado_livre_orders":
+                _tool_contract["companion_tools"] = ["bling_sales_orders"]
+            break
+
 
 # Permissoes de dados exigidas por ferramenta. A checagem e cumulativa: quando
 # uma ferramenta combina dominios (por exemplo, vendas + estoque), o usuario
@@ -668,6 +752,9 @@ ASSISTANT_TOOL_PERMISSION_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "sales_anomalies": ("vendas",),
     "integrations_status": ("integracao",),
     "mercado_livre_listing": ("anuncios_ml",),
+    "mercado_livre_orders": ("vendas", "anuncios_ml"),
+    "mercado_livre_returns": ("vendas", "anuncios_ml"),
+    "mercado_livre_full_stock": ("mercado_full",),
     "bling_product": ("integracao", "cadastro"),
     "bling_status": ("integracao",),
     "bling_products": ("integracao", "cadastro"),
@@ -729,6 +816,50 @@ class CodexAssistantReportRequest(BaseModel):
     conversation_id: Optional[str] = None
     format: Optional[str] = "html"
     force_refresh: bool = False
+    profile: Optional[str] = None
+    store: Optional[str] = None
+    import_list_id: Optional[str] = None
+
+
+class CodexAssistantReportSettingsRequest(BaseModel):
+    settings: dict[str, Any]
+
+
+class CodexAssistantFinancialAdjustmentRequest(BaseModel):
+    adjustment_id: Optional[str] = None
+    kind: str = "advertising"
+    store: str
+    period_start: str
+    period_end: str
+    amount: float
+    platform: str = "manual"
+    note: str = ""
+
+
+class CodexAssistantActionQueueRequest(BaseModel):
+    report_id: str = ""
+    action_id: str = ""
+    action_type: str
+    status: str = "queued"
+    store: str = ""
+    skus: list[str] = []
+    impact_brl: Optional[float] = None
+    confidence: str = ""
+    owner_username: str = ""
+    owner_role: str = ""
+    due_at: str = ""
+    title: str = ""
+    evidence: str = ""
+    recommendation: str = ""
+
+
+class CodexAssistantActionQueueUpdateRequest(BaseModel):
+    status: Optional[str] = None
+    owner_username: Optional[str] = None
+    owner_role: Optional[str] = None
+    due_at: Optional[str] = None
+    note: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
 
 
 class CodexAssistantEvaluationRequest(BaseModel):
@@ -907,6 +1038,188 @@ def _assistant_cache_set(client_id: str, key: str, payload: dict[str, Any]) -> N
     )
 
 
+_ASSISTANT_CACHE_SECRET_KEY_RE = re.compile(
+    r"(?:^|_)(?:access_?token|refresh_?token|token|secret|client_?secret|authorization|cookie|api_?key|password|senha)(?:$|_)",
+    flags=re.IGNORECASE,
+)
+
+
+def _assistant_cache_safe_payload(value: Any, depth: int = 0) -> Any:
+    """Copy a cache payload while dropping credential-shaped fields."""
+
+    if depth > 10:
+        return None
+    if isinstance(value, dict):
+        clean: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key or "")[:120]
+            if _ASSISTANT_CACHE_SECRET_KEY_RE.search(key_text):
+                continue
+            clean[key_text] = _assistant_cache_safe_payload(item, depth + 1)
+        return clean
+    if isinstance(value, list):
+        return [_assistant_cache_safe_payload(item, depth + 1) for item in value[:1000]]
+    if isinstance(value, tuple):
+        return [_assistant_cache_safe_payload(item, depth + 1) for item in value[:1000]]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)[:2000]
+
+
+def _assistant_external_cache_key(client_id: str, tool_id: str, plan: dict[str, Any]) -> str:
+    safe_contract = {
+        "client_id": str(client_id or "default"),
+        "tool_id": str(tool_id or ""),
+        "message": str(plan.get("message") or "")[:4000],
+        "loja": str(plan.get("loja") or "")[:200],
+        "data_inicio": str(plan.get("data_inicio") or ""),
+        "data_fim": str(plan.get("data_fim") or ""),
+        "status": str(plan.get("status") or "")[:120],
+        "sku": str(plan.get("sku") or "")[:80],
+        "item_id": str(plan.get("item_id") or "")[:40],
+        "id_pedido": str(plan.get("id_pedido") or "")[:60],
+        "offset": int(plan.get("offset") or 0),
+        "limite": int(plan.get("limite") or 0),
+        "mode": str(plan.get("mode") or "")[:20],
+        "max_paginas": int(plan.get("max_paginas") or 0),
+        "incluir_detalhes": bool(plan.get("incluir_detalhes")),
+        "tools_version": CODEX_DATA_TOOLS_VERSION,
+    }
+    raw = json.dumps(safe_contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "external_tool_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+
+_ASSISTANT_AUDITED_API_TOOLS = {
+    "bling_sales_orders",
+    "bling_stock_balances",
+    "mercado_livre_orders",
+    "mercado_livre_returns",
+    "mercado_livre_listing",
+    "mercado_livre_full_stock",
+    "questions_post_sale_query",
+}
+
+
+def _assistant_api_query_audit(
+    client_id: str,
+    tool_id: str,
+    plan: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    audit_user: str = "",
+    cache_hit: bool = False,
+) -> None:
+    """Append a credential-free audit event for commercial API reads."""
+
+    if str(tool_id or "") not in _ASSISTANT_AUDITED_API_TOOLS:
+        return
+    provider = "bling" if str(tool_id).startswith("bling_") else "mercado_livre"
+    summaries = result.get("summary") if isinstance(result.get("summary"), list) else []
+    provider_status = "ok"
+    fallback_used = False
+    for item in summaries:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_role") or "") == "supporting_local_history":
+            fallback_used = True
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        error = str(summary.get("error") or "").strip()
+        status = str(summary.get("status") or "").strip()
+        if error:
+            provider_status = error[:80]
+        elif status and status not in {"ok", "success"}:
+            provider_status = status[:80]
+        if summary.get("fallback_used") is True:
+            fallback_used = True
+    if any("fallback" in str(item or "").lower() for item in (result.get("warnings") or [])):
+        fallback_used = True
+    event = {
+        "timestamp": _assistant_now(),
+        "user": str(audit_user or "system")[:120],
+        "tenant": str(client_id or "default")[:120],
+        "store": str(plan.get("loja") or "")[:160],
+        "provider": provider,
+        "tool": str(tool_id or "")[:80],
+        "filters": {
+            "data_inicio": str(plan.get("data_inicio") or "")[:20],
+            "data_fim": str(plan.get("data_fim") or "")[:20],
+            "status": str(plan.get("status") or "")[:120],
+            "sku": str(plan.get("sku") or "")[:80],
+            "item_id": str(plan.get("item_id") or "")[:40],
+            "id_pedido": str(plan.get("id_pedido") or "")[:60],
+            "offset": int(plan.get("offset") or 0),
+            "limit": int(plan.get("limite") or 0),
+        },
+        "method": "GET",
+        "status": provider_status,
+        "records": max(0, int(result.get("records") or 0)),
+        "cache_hit": bool(cache_hit),
+        "fallback_used": bool(fallback_used),
+        "read_only": True,
+    }
+    exact = result.get("exact_metadata") if isinstance(result.get("exact_metadata"), dict) else {}
+    if exact.get("exact_lookup") is True:
+        event["exact_lookup"] = {
+            "requested_id": str(exact.get("requested_id") or "")[:60],
+            "identifier_type": str(exact.get("identifier_type") or "")[:20],
+            "matched_stores": [str(item)[:160] for item in (exact.get("matched_stores") or [])[:20]],
+            "resolved_order_ids": [str(item)[:60] for item in (exact.get("resolved_order_ids") or [])[:100]],
+            "resources": [str(item)[:160] for item in (exact.get("resources") or [])[:30]],
+            "stores_checked": [
+                {
+                    "store": str(item.get("store") or "")[:160],
+                    "order_http": item.get("order_http"),
+                    "pack_http": item.get("pack_http"),
+                    "result": str(item.get("result") or "")[:80],
+                }
+                for item in (exact.get("searched_stores") or [])[:20]
+                if isinstance(item, dict)
+            ],
+            "partial_response": bool(exact.get("partial_response")),
+        }
+    try:
+        path = _assistant_path(client_id, "api_query_audit.jsonl")
+        line = json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str)
+        with API_QUERY_AUDIT_LOCK:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+    except Exception:
+        logging.getLogger("codex_assistant.api_audit").exception("Falha ao registrar auditoria read-only")
+
+
+def _assistant_api_error_code(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "provider_unavailable"
+    for item in result.get("summary") if isinstance(result.get("summary"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        code = str(summary.get("error") or "").strip().lower()
+        if code:
+            return code
+    return str(result.get("error_code") or result.get("error") or "").strip().lower()
+
+
+def _assistant_retryable_api_error(result: Any) -> bool:
+    code = _assistant_api_error_code(result)
+    return bool(
+        code in {"rate_limited", "timeout", "provider_unavailable"}
+        or re.fullmatch(r"http_5\d\d", code or "")
+    )
+
+
+def _assistant_previous_contains_tool(previous_results: Any, tool_id: str) -> bool:
+    for result in previous_results if isinstance(previous_results, list) else []:
+        if not isinstance(result, dict):
+            continue
+        if str(result.get("tool_id") or "") == tool_id:
+            return True
+        for item in result.get("summary") if isinstance(result.get("summary"), list) else []:
+            if isinstance(item, dict) and str(item.get("tool_id") or "") == tool_id:
+                return True
+    return False
+
+
 def _assistant_context_page(screen_context: Any) -> str:
     if not isinstance(screen_context, dict):
         return "codex"
@@ -961,6 +1274,17 @@ def _assistant_call_ia_tool(func_name: str, *args: Any, **kwargs: Any) -> Option
             "arguments": {},
             "result": {"error": str(exc)[:300], "read_only": True},
         }
+
+
+def _assistant_tool_call_signature_error(raw: Any) -> bool:
+    result = raw.get("result") if isinstance(raw, dict) and isinstance(raw.get("result"), dict) else {}
+    error = _assistant_texto_norm(str(result.get("error") or ""))
+    return bool(
+        "unexpected keyword" in error
+        or "argumento de palavra-chave inesperado" in error
+        or "positional argument" in error
+        or "argumentos posicionais" in error
+    )
 
 
 def _assistant_normalize_permissions(permissions: Any) -> dict[str, bool]:
@@ -1039,8 +1363,16 @@ def _assistant_tools_public(permissions: Any = None) -> list[dict[str, Any]]:
                 "cache_ttl_seconds": int(tool.get("cache_ttl_seconds") or EXTERNAL_CACHE_SECONDS),
                 "output_fields": tool.get("output_fields") or [],
                 "fallbacks": fallbacks,
+                "companion_tools": [
+                    str(companion or "")
+                    for companion in (tool.get("companion_tools") or [])
+                    if str(companion or "") and _assistant_tool_allowed(str(companion or ""), permissions)
+                ],
+                "zero_is_authoritative": tool.get("zero_is_authoritative") is True,
+                "source_role": tool.get("source_role") or "context",
+                "aggregation_policy": tool.get("aggregation_policy") or "standard",
                 "required_permissions": list(access.get("required_permissions") or []),
-                "read_only": True,
+                "read_only": tool.get("read_only") is True,
                 "mutating_requires_approval": True,
             }
         )
@@ -1079,7 +1411,43 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
         "stockout_forecast": {"loja": "nome da loja/conta ou vazio", "lookback_days": 30, "limite": 100},
         "stale_stock": {"loja": "nome da loja/conta ou vazio", "limite": 50, "apenas_com_estoque": True},
         "integrations_status": {"loja": "nome da loja/conta ou vazio"},
-        "mercado_livre_listing": {"mensagem": "SKU, MLB, produto ou pedido de listagem", "loja": "nome da loja/conta ou vazio", "limite": 20},
+        "mercado_livre_listing": {
+            "mensagem": "SKU, MLB, produto ou pedido de listagem",
+            "loja": "nome da loja/conta ou vazio",
+            "status": "active|paused|closed",
+            "sku": "SKU opcional",
+            "item_id": "MLB opcional",
+            "offset": 0,
+            "limite": "1..100",
+            "incluir_detalhes": False,
+            "force_refresh": False,
+        },
+        "mercado_livre_orders": {
+            **period_schema,
+            "status": "paid,partially_refunded por padrao",
+            "sku": "SKU opcional",
+            "item_id": "MLB opcional",
+            "id_pedido": "ID opcional da order ou do pack Mercado Livre; quando preenchido ignora periodo e paginacao",
+            "offset": 0,
+            "limite": "1..100 em consultas comuns; 1..20000 em relatorios completos",
+            "max_paginas": "1..400 em relatorios completos; cada pagina consulta ate 50 pedidos",
+            "incluir_detalhes": False,
+            "force_refresh": False,
+        },
+        "mercado_livre_returns": {
+            **period_schema,
+            "offset": 0,
+            "limite": "1..100; use 1 para a ultima devolucao",
+            "force_refresh": True,
+        },
+        "mercado_livre_full_stock": {
+            "mensagem": "SKU, MLB, produto ou solicitacao de soma do Full",
+            "loja": "nome exato da loja/conta Mercado Livre",
+            "sku": "SKU opcional",
+            "item_id": "MLB opcional",
+            "limite": "1..20000",
+            "force_refresh": True,
+        },
         "bling_product": {"mensagem": "SKU, id Bling ou produto", "loja": "nome da loja/conta ou vazio"},
         "bling_status": {"loja": "nome da loja/conta ou vazio"},
         "bling_products": {"mensagem": "SKU, id, GTIN, EAN ou nome do produto", "loja": "nome da loja/conta ou vazio", "limite": 50},
@@ -1137,9 +1505,12 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
             "limite": 50,
         },
         "questions_post_sale_query": {
-            "mensagem": "pergunta, comprador, SKU, status ou aprovacao",
-            "source_id": "fonte de perguntas opcional",
+            "mensagem": "pergunta, comprador, SKU ou pedido para consultar a fila atual",
+            "loja": "nome exato da loja/conta; deixe vazio para todas as lojas conectadas",
+            "status": "UNANSWERED por padrao; ANSWERED, CLOSED_UNANSWERED ou vazio para historico completo",
+            "todas_lojas": "true para consultar e separar todas as contas conectadas",
             "limite": 50,
+            "force_refresh": "true para ignorar o cache curto e consultar agora",
         },
         "fiscal_local_query": {
             "mensagem": "SKU, NCM, CEST, produto ou regra fiscal",
@@ -1208,6 +1579,9 @@ _ASSISTANT_SOURCE_LABELS: dict[str, str] = {
     "integrations_status": "status das integracoes cadastradas",
     "mercado_livre_readonly": "dados do Mercado Livre",
     "mercado_livre_listing": "anuncios do Mercado Livre",
+    "mercado_livre_orders": "pedidos e vendas do Mercado Livre",
+    "mercado_livre_returns": "devolucoes da API do Mercado Livre",
+    "mercado_livre_full_stock": "estoque Full atual da API do Mercado Livre",
     "questions_post_sale_query": "perguntas e pos-venda do Mercado Livre",
     "fiscal_local_query": "cadastro fiscal local",
     "bling_status": "status da integracao Bling",
@@ -1383,6 +1757,12 @@ def _assistant_resolve_period(client_id: str, message: str, screen_context: Any)
         if re.match(r"^\d{4}-\d{2}-\d{2}$", data_inicio) and re.match(r"^\d{4}-\d{2}-\d{2}$", data_fim):
             return data_inicio, data_fim
     text = _assistant_texto_norm(message)
+    if (
+        re.search(r"\b(relatorio|resumo)\b", text)
+        and re.search(r"\b(do dia|diario|diaria|de hoje|hoje)\b", text)
+    ):
+        today = datetime.now(ZoneInfo("America/Sao_Paulo")).date().isoformat()
+        return today, today
     match_days = re.search(r"\bultimos?\s+(\d{1,3})\s+dias?\b", text)
     if not match_days:
         match_days = re.search(r"\b(\d{1,3})\s+dias?\b", text)
@@ -1539,8 +1919,69 @@ def _assistant_store_label(store_name: str) -> str:
     return raw.replace("_", " ").strip().title() or "Loja"
 
 
+def _assistant_calendar_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def _assistant_bool_arg(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return bool(default)
+    normalized = _assistant_texto_norm(str(value))
+    if normalized in {"1", "true", "sim", "yes", "on", "com", "incluir"}:
+        return True
+    if normalized in {"0", "false", "nao", "no", "off", "sem", "excluir"}:
+        return False
+    return bool(default)
+
+
+def _assistant_force_refresh_requested(args: Any, message: str) -> bool:
+    args = args if isinstance(args, dict) else {}
+    if _assistant_bool_arg(args.get("force_refresh", args.get("atualizar_cache")), False):
+        return True
+    text = _assistant_texto_norm(message)
+    return bool(re.search(r"\b(atualize agora|atualizar agora|consulte agora|sem cache|ignorar cache|force refresh)\b", text))
+
+
+def _assistant_normalize_api_status(value: Any, default: str = "") -> str:
+    raw_values = value if isinstance(value, (list, tuple, set)) else re.split(r"[,;|\s]+", str(value or ""))
+    statuses: list[str] = []
+    for item in raw_values:
+        status = re.sub(r"[^a-z0-9_-]+", "", _assistant_texto_norm(str(item or "")).replace(" ", "_"))
+        if status and status not in statuses:
+            statuses.append(status[:40])
+    return ",".join(statuses[:12]) or str(default or "")
+
+
+def _assistant_normalize_identifier(value: Any, limit: int = 60) -> str:
+    raw = str(value or "").strip()
+    match = re.search(r"[A-Za-z0-9][A-Za-z0-9._-]*", raw)
+    return str(match.group(0) if match else "")[:limit]
+
+
+def _assistant_normalize_ml_item_id(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    match = re.search(r"\bMLB[\s_-]?(\d{6,})\b", raw)
+    if match:
+        return "MLB" + match.group(1)
+    digits = re.sub(r"\D+", "", raw)
+    return ("MLB" + digits) if len(digits) >= 6 and re.fullmatch(r"[\d\s_-]+", raw or "") else ""
+
+
 def _assistant_normalize_sku(value: Any) -> str:
-    sku = str(value or "").strip().upper()
+    raw = str(value or "").strip()
+    if _assistant_calendar_date(raw):
+        return ""
+    sku = raw.upper()
     sku = re.sub(r"\s+", "", sku)
     return sku[:80]
 
@@ -1916,7 +2357,6 @@ def _assistant_sales_returns_query(
                             "valor": valor,
                             "situacao": str(row["situacao"] or ""),
                             "canal": str(row["canal"] or ""),
-                            "comprador": str(row["comprador"] or ""),
                             "unidade_negocio": str(row["unidade_negocio"] or ""),
                             "loja_conta": str(row["loja_conta"] or ""),
                         }
@@ -2040,7 +2480,6 @@ def _assistant_sales_returns_query(
                                 "valor_total": valor,
                                 "situacao": str(row["situacao"] or ""),
                                 "canal": str(row["canal"] or ""),
-                                "comprador": str(row["comprador"] or ""),
                                 "unidade_negocio": str(row["unidade_negocio"] or ""),
                                 "loja_conta": str(row["loja_conta"] or ""),
                                 "fonte": "vendas.devolucao",
@@ -2391,23 +2830,129 @@ def _assistant_sqlite_sales_by_period(
 
 def _assistant_message_has_product_ref(message: str) -> bool:
     text = _assistant_texto_norm(message)
+    text_without_dates = re.sub(r"\b\d{1,2}/\d{1,2}/\d{4}\b", " ", text)
     return bool(
-        re.search(r"\bsku\s+[a-z0-9._/-]{2,}\b", text)
-        or re.search(r"\bmlb\d{6,}\b", text)
-        or re.search(r"\bproduto\s+.{3,}", text)
-        or re.search(r"[a-z0-9]{2,}[-_/][a-z0-9]{1,}", text)
+        re.search(r"\bsku\s+[a-z0-9._/-]{2,}\b", text_without_dates)
+        or re.search(r"\bmlb[\s_-]?\d{6,}\b", text_without_dates)
+        or re.search(r"\bproduto\s+.{3,}", text_without_dates)
+        or re.search(r"[a-z0-9]{2,}[-_/][a-z0-9]{1,}", text_without_dates)
     )
+
+
+def _assistant_is_generic_sales_api_query(message: str) -> bool:
+    text = _assistant_texto_norm(message)
+    wants_sales = bool(re.search(r"\b(venda|vendas|vendido|vendidos|faturamento|pedido|pedidos|ranking|top)\b", text))
+    wants_api = bool(re.search(r"\b(api|apis|via api|pelas apis|pela api)\b", text))
+    names_provider = bool(re.search(r"\b(bling|mercado livre|mercadolivre|mlb\d+)\b", text))
+    return bool(wants_sales and wants_api and not names_provider)
+
+
+def _assistant_source_routing_policy(message: Any) -> dict[str, Any]:
+    """Contrato de origem para consultas operacionais do Black Jhon."""
+    text = _assistant_texto_norm(str(message or ""))
+    wants_stock = bool(re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque)\b", text))
+    wants_full = bool(wants_stock and re.search(r"\b(full|fulfillment|mercado envios)\b", text))
+    wants_sum = bool(wants_stock and re.search(r"\b(somar|some|soma|somatorio|totalizar|total geral|loja\s*\+\s*full|loja e full)\b", text))
+    combined_stock = bool(
+        wants_stock
+        and re.search(r"\b(loja\s*\+\s*full|loja e full|estoque total geral|saldo total geral)\b", text)
+    )
+    wants_listing_description = bool(
+        re.search(r"\b(anuncio|anuncios|mlb\d+)\b", text)
+        and re.search(r"\b(descricao|descricoes|detalhe|detalhes|atributo|atributos|ficha|conteudo)\b", text)
+    )
+    daily_sales_report = bool(
+        re.search(r"\b(relatorio|resumo)\b", text)
+        and re.search(r"\b(do dia|diario|diaria|de hoje|hoje)\b", text)
+    )
+    wants_ml_sales = bool(
+        daily_sales_report
+        or re.search(r"\b(pedido|pedidos|venda|vendas|vendido|vendidos|faturamento|ranking|mais vendido)\b", text)
+    )
+    wants_ml_returns = bool(re.search(r"\b(devolucao|devolucoes|devolvido|devolvidos|reembolso|reembolsos|estorno|estornos)\b", text))
+    latest_event = bool(re.search(r"\b(ultima|ultimo|mais recente|ultima ocorrencia|ultimo registro)\b", text))
+    required_tools: list[str] = []
+    forbidden_tools: list[str] = []
+    providers: list[str] = []
+    intents: list[str] = []
+
+    def add_unique(target: list[str], *items: str) -> None:
+        for item in items:
+            if item and item not in target:
+                target.append(item)
+
+    if combined_stock:
+        add_unique(required_tools, "bling_stock_balances", "mercado_livre_full_stock")
+        add_unique(forbidden_tools, "bling_deposits")
+        add_unique(providers, "bling", "mercado_livre")
+        intents.append("combined_store_and_full_stock")
+    elif wants_full:
+        add_unique(required_tools, "mercado_livre_full_stock")
+        add_unique(forbidden_tools, "bling_stock_balances", "bling_deposits", "stock_data")
+        add_unique(providers, "mercado_livre")
+        intents.append("full_stock")
+    elif wants_stock:
+        add_unique(required_tools, "bling_stock_balances")
+        add_unique(forbidden_tools, "bling_deposits")
+        add_unique(providers, "bling")
+        intents.append("current_store_stock")
+    if wants_listing_description:
+        add_unique(required_tools, "mercado_livre_listing")
+        add_unique(providers, "mercado_livre")
+        intents.append("listing_description")
+    if wants_ml_sales:
+        add_unique(required_tools, "mercado_livre_orders")
+        add_unique(providers, "mercado_livre")
+        intents.append("orders_and_sales")
+    if wants_ml_returns:
+        add_unique(required_tools, "mercado_livre_returns")
+        add_unique(providers, "mercado_livre")
+        intents.append("returns")
+    if latest_event and (wants_ml_sales or wants_ml_returns):
+        add_unique(
+            forbidden_tools,
+            "sales_returns_query",
+            "sales_ranking",
+            "sales_summary",
+            "returns_summary",
+            "return_rate",
+        )
+    if not required_tools:
+        return {}
+    return {
+        "version": "20260713-whatsapp-source-routing-v3-daily-ml-sales",
+        "intent": "+".join(intents),
+        "required_tools": required_tools,
+        "forbidden_tools": forbidden_tools,
+        "preferred_providers": providers,
+        "force_refresh": bool(wants_stock or wants_listing_description or wants_ml_sales or wants_ml_returns),
+        "include_listing_details": wants_listing_description,
+        "sum_requested": wants_sum,
+        "full_exclusive": bool(wants_full and not combined_stock),
+        "full_stock_provider": "mercado_livre_api_only",
+        "bling_stock_scope": "exclude_full",
+        "aggregation_policy": (
+            "sum_bling_store_plus_mercado_livre_full"
+            if combined_stock
+            else "sum_mercado_livre_full_only"
+            if wants_full and wants_sum
+            else "separate_sources_no_sum"
+        ),
+    }
 
 
 def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> list[str]:
     text = _assistant_texto_norm(message)
     page = _assistant_texto_norm(_assistant_context_page(screen_context))
     selected: list[str] = []
+    source_policy = _assistant_source_routing_policy(message)
 
     def add(*tool_ids: str) -> None:
         for tool_id in tool_ids:
             if tool_id not in selected:
                 selected.append(tool_id)
+
+    add(*list(source_policy.get("required_tools") or []))
 
     wants_report = mode in {"daily", "report"} or bool(re.search(r"\b(relatorio|analise|analisar|diagnostico|oportunidade|melhoria|melhorias)\b", text))
     wants_sales = wants_report or bool(re.search(r"\b(venda|vendas|vendido|vendidos|faturamento|pedido|pedidos|ranking|rank|top|mais vendido|mais vendeu)\b", text))
@@ -2415,7 +2960,8 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
     wants_stock = wants_report or bool(re.search(r"\b(estoque|ruptura|saldo|parado|sem vender|giro|reposicao)\b", text))
     wants_returns = wants_report or bool(re.search(r"\b(devolucao|devolucoes|devolvido|devolvidos|return)\b", text))
     wants_margin = wants_report or bool(re.search(r"\b(margem|lucro|rentabilidade|custo|imposto|preco)\b", text))
-    wants_external = bool(re.search(r"\b(mercado livre|mercadolivre|bling|anuncio|anuncios|integracao|integracoes|token|conta|loja)\b", text))
+    wants_api = bool(re.search(r"\b(api|apis|via api|pelas apis|pela api)\b", text))
+    wants_external = wants_api or bool(re.search(r"\b(mercado livre|mercadolivre|bling|anuncio|anuncios|integracao|integracoes|token|conta|loja)\b", text))
     wants_product = _assistant_message_has_product_ref(message) or bool(re.search(r"\b(produto|cadastro|imagem|foto|ncm|cest)\b", text))
     wants_operational = bool(re.search(r"\b(full|favoritos|pergunta|perguntas|pos venda|pos-venda|fiscal|simulador|importacao|importacoes|promocao)\b", text + " " + page))
     wants_program_catalog = bool(re.search(r"\b(funcoes|funcionalidades|o que o programa faz|o que voce consegue|modulos|rotas|telas|servicos|catalogo|inventario|saber fazer tudo|fazer tudo)\b", text))
@@ -2427,6 +2973,7 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
     )
     mentions_bling = "bling" in text
     mentions_ml = bool(re.search(r"\b(mercado livre|mercadolivre|mlb\d+|anuncio|anuncios)\b", text))
+    wants_generic_sales_apis = _assistant_is_generic_sales_api_query(message)
     wants_fiscal = bool(re.search(r"\b(fiscal|nota|notas|nf|nfe|nf-e|nfce|nfse|ncm|cest|tributacao|natureza|naturezas|cfop)\b", text))
     wants_finance = bool(re.search(r"\b(financeiro|contas? a receber|contas? a pagar|receber|pagar|caixa|banco|boleto|boletos)\b", text))
     wants_lots = bool(re.search(r"\b(lote|lotes|validade|lancamento|lancamentos|entrada|saida)\b", text))
@@ -2465,8 +3012,12 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
         add("integrations_status")
     if wants_external:
         add("integrations_status")
+        if wants_generic_sales_apis:
+            add("bling_sales_orders", "mercado_livre_orders")
         if mentions_ml:
             add("mercado_livre_readonly", "mercado_livre_listing")
+            if wants_sales:
+                add("mercado_livre_orders")
         if mentions_bling:
             add("bling_status")
             if wants_product:
@@ -2505,18 +3056,40 @@ def _assistant_select_tool_ids(message: str, mode: str, screen_context: Any) -> 
         add("fiscal_local_query")
     if wants_sources and not any(tool in selected for tool in ("local_database_query", "local_csv_query", "local_cache_query")):
         add("local_database_query", "local_csv_query", "local_cache_query")
+    if wants_generic_sales_apis:
+        primary = [tool for tool in ("bling_sales_orders", "mercado_livre_orders") if tool in selected]
+        supporting = [tool for tool in ("sales_returns_query", "sales_ranking", "sales_summary") if tool in selected]
+        selected = primary + supporting + [tool for tool in selected if tool not in primary and tool not in supporting]
     if not selected:
         add("operational_dispatcher", "integrations_status")
+    forbidden = {str(item or "") for item in (source_policy.get("forbidden_tools") or [])}
+    if forbidden:
+        selected = [tool for tool in selected if tool not in forbidden]
+    required = [str(item or "") for item in (source_policy.get("required_tools") or []) if str(item or "")]
+    if required:
+        selected = required + [tool for tool in selected if tool not in required]
     return selected[:28]
 
 
 def _assistant_registry_plan(client_id: str, message: str, screen_context: Any, mode: str) -> dict[str, Any]:
     data_inicio, data_fim = _assistant_resolve_period(client_id, message, screen_context)
+    text_norm = _assistant_texto_norm(message)
+    effective_mode = str(mode or "chat").strip().lower() or "chat"
+    if effective_mode == "chat" and re.search(r"\b(relatorio|relatorios)\b", text_norm):
+        effective_mode = "report"
+    if (
+        re.search(r"\b(ultima|ultimo|mais recente|ultima ocorrencia|ultimo registro)\b", text_norm)
+        and re.search(r"\b(venda|pedido|devolucao|devolvido|reembolso|estorno)\b", text_norm)
+        and not re.search(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\b", str(message or ""))
+    ):
+        data_inicio, data_fim = _assistant_periodo_padrao(365)
     prev_inicio, prev_fim = _assistant_previous_period(data_inicio, data_fim)
     loja = _assistant_resolve_loja(client_id, message, screen_context)
     sku = _assistant_extract_sku_filter(message, screen_context)
     separar_por_loja = _assistant_wants_store_breakdown(message, loja)
-    selected = _assistant_select_tool_ids(message, mode, screen_context)
+    selected = _assistant_select_tool_ids(message, effective_mode, screen_context)
+    source_policy = _assistant_source_routing_policy(message)
+    api_sales_query = _assistant_is_generic_sales_api_query(message)
     steps = ["interpretando pedido"]
     for tool_id in selected:
         status = str(_assistant_tool_meta(tool_id).get("status") or "").strip()
@@ -2524,8 +3097,8 @@ def _assistant_registry_plan(client_id: str, message: str, screen_context: Any, 
             steps.append(status)
     return {
         "client_id": str(client_id or "default"),
-        "intent": "sales_ranking" if "sales_ranking" in selected else ("report" if mode in {"daily", "report"} else "data_query"),
-        "mode": mode,
+        "intent": "sales_ranking" if "sales_ranking" in selected else ("report" if effective_mode in {"daily", "report"} else "data_query"),
+        "mode": effective_mode,
         "message": str(message or ""),
         "data_inicio": data_inicio,
         "data_fim": data_fim,
@@ -2536,6 +3109,20 @@ def _assistant_registry_plan(client_id: str, message: str, screen_context: Any, 
         "separar_por_loja": separar_por_loja,
         "incluir_registros": True,
         "selected_tools": selected,
+        "source_policy": source_policy,
+        "force_refresh": bool(source_policy.get("force_refresh")),
+        "api_sales_query": api_sales_query,
+        "source_roles": {
+            tool_id: (
+                "primary_api"
+                if tool_id in {"bling_sales_orders", "mercado_livre_orders", "mercado_livre_returns"}
+                else "supporting_local_history"
+                if api_sales_query and tool_id in {"sales_returns_query", "sales_ranking", "sales_summary"}
+                else "context"
+            )
+            for tool_id in selected
+        },
+        "aggregation_policy": "separate_sources_no_sum" if api_sales_query else "standard",
         "status_steps": steps,
     }
 
@@ -2547,6 +3134,7 @@ def _assistant_tool_rows(result: Any) -> list[Any]:
         return []
     for key in (
         "rows",
+        "by_sku",
         "por_sku",
         "vendas",
         "devolucoes",
@@ -2561,6 +3149,7 @@ def _assistant_tool_rows(result: Any) -> list[Any]:
         "saldos",
         "depositos",
         "pedidos",
+        "orders",
         "notas",
         "naturezas",
         "lotes",
@@ -2592,6 +3181,15 @@ def _assistant_tool_empty_reason(tool_id: str, records: int, result: Any, plan: 
         return ""
     if isinstance(result, dict) and result.get("error"):
         return str(result.get("error") or "")[:300]
+    if isinstance(result, dict) and result.get("live_query"):
+        if result.get("coverage_complete"):
+            return ""
+        failed = str(result.get("lojas_incompletas_text") or "").strip()
+        errors = result.get("errors_by_store") if isinstance(result.get("errors_by_store"), dict) else {}
+        affected = ", ".join([name for name in list(errors) + failed.split(", ") if str(name or "").strip()])
+        return (
+            f"Nao foi possivel confirmar toda a fila atual{f' de {affected}' if affected else ''}."
+        )[:300]
     if tool_id == "sales_ranking":
         return (
             "Nenhuma venda por SKU foi encontrada para "
@@ -2599,6 +3197,12 @@ def _assistant_tool_empty_reason(tool_id: str, records: int, result: Any, plan: 
         )
     if tool_id == "mercado_livre_listing":
         return "Nenhum anuncio Mercado Livre foi retornado para a consulta read-only."
+    if tool_id == "mercado_livre_orders":
+        return "A API do Mercado Livre retornou zero pedidos para os filtros informados."
+    if tool_id == "mercado_livre_returns":
+        return "A API do Mercado Livre retornou zero devolucoes para o periodo informado."
+    if tool_id == "mercado_livre_full_stock":
+        return "A API de inventario Full do Mercado Livre nao retornou saldo para os filtros informados."
     if tool_id == "bling_product":
         return "Nenhum produto Bling foi encontrado ou nao havia SKU/produto suficiente para consultar."
     if str(tool_id or "").startswith("bling_"):
@@ -2615,6 +3219,12 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
     raw = raw if isinstance(raw, dict) else {}
     result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
     rows = _assistant_tool_rows(result)
+    if (
+        tool_id == "mercado_livre_orders"
+        and result.get("exact_lookup") is True
+        and isinstance(result.get("orders"), list)
+    ):
+        rows = result.get("orders") or []
     records = _assistant_result_count(result)
     if rows and records == 0:
         records = len(rows)
@@ -2637,6 +3247,26 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
     source_raw = raw.get("function") or meta.get("executor") or tool_id
     tool_label = _assistant_human_tool_label(tool_id)
     source_label = _assistant_human_source_label(source_raw, tool_id)
+    exact_metadata = {}
+    if tool_id == "mercado_livre_orders" and result.get("exact_lookup") is True:
+        exact_metadata = {
+            "exact_lookup": True,
+            "requested_id": str(result.get("requested_id") or ""),
+            "identifier_type": str(result.get("identifier_type") or ""),
+            "matched_stores": copy.deepcopy(result.get("matched_stores") or []),
+            "resolved_order_ids": copy.deepcopy(result.get("resolved_order_ids") or []),
+            "searched_stores": copy.deepcopy(result.get("searched_stores") or []),
+            "resources": [
+                str(item.get("resource") or "")
+                for item in (result.get("sources") or [])
+                if isinstance(item, dict) and str(item.get("resource") or "").strip()
+            ],
+            "found": bool(result.get("found")),
+            "error": str(result.get("error") or ""),
+            "message": str(result.get("message") or ""),
+            "partial_response": bool(result.get("partial_response")),
+            "coverage_complete": bool(result.get("coverage_complete")),
+        }
     return {
         "tool_id": tool_id,
         "tool_label": tool_label,
@@ -2644,13 +3274,16 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
         "description": meta.get("description"),
         "executor": meta.get("executor"),
         "external": bool(meta.get("external")),
-        "read_only": True,
+        "read_only": meta.get("read_only") is True,
         "records": records,
         "rows": rows if tool_id == "sales_returns_query" and isinstance(rows, list) else (rows[:500] if isinstance(rows, list) else []),
         "summary": {key: value for key, value in result.items() if not isinstance(value, list)} if isinstance(result, dict) else {},
+        "exact_metadata": exact_metadata,
         "source": source_raw,
         "source_label": source_label,
         "sources_human": _assistant_human_source_list([source_raw], tool_id),
+        "source_role": str((plan.get("source_roles") or {}).get(tool_id) or plan.get("source_role") or "context"),
+        "aggregation_policy": str(plan.get("aggregation_policy") or "standard"),
         "arguments": raw.get("arguments") or {},
         "periodo": plan.get("periodo") or {},
         "loja": plan.get("loja") or "",
@@ -2658,6 +3291,77 @@ def _assistant_standard_result(tool_id: str, raw: Optional[dict[str, Any]], plan
         "next_fallbacks": meta.get("fallbacks") or [],
         "next_fallbacks_human": _assistant_human_fallback_list(meta.get("fallbacks") or []),
         "generated_at": _assistant_now(),
+    }
+
+
+def _assistant_mercado_livre_full_stock_raw(client_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+    from backend.services import full_mercadolivre
+
+    loja = str(plan.get("loja") or "").strip()
+    sku = _assistant_normalize_sku(plan.get("sku") or "")
+    item_id = _assistant_normalize_ml_item_id(plan.get("item_id") or plan.get("mlb") or "")
+    try:
+        limite = max(100, min(int(plan.get("limite") or plan.get("limit") or 10000), 20000))
+    except Exception:
+        limite = 10000
+    arguments = {
+        "loja": loja,
+        "sku": sku,
+        "item_id": item_id,
+        "limit": limite,
+        "force_refresh": bool(plan.get("force_refresh", True)),
+    }
+    payload = full_mercadolivre.listar_anuncios_full_mercadolivre_payload(
+        client_id,
+        loja,
+        limite,
+        force_refresh=bool(plan.get("force_refresh", True)),
+    )
+    rows = [item for item in (payload.get("results") or []) if isinstance(item, dict)]
+    if item_id:
+        rows = [item for item in rows if _assistant_normalize_ml_item_id(item.get("id")) == item_id]
+    if sku:
+        sku_key = _assistant_normalize_sku(sku)
+
+        def sku_matches(item: dict[str, Any]) -> bool:
+            candidates = [item.get("sku"), item.get("sku_display")]
+            for variation in item.get("variations") if isinstance(item.get("variations"), list) else []:
+                if isinstance(variation, dict):
+                    candidates.extend([variation.get("sku"), variation.get("seller_sku")])
+            return any(sku_key == _assistant_normalize_sku(value) for value in candidates if str(value or "").strip())
+
+        rows = [item for item in rows if sku_matches(item)]
+    warnings = []
+    for item in rows:
+        if str(item.get("stock_source") or "") != "fulfillment_stock":
+            warnings.append(
+                f"{item.get('id') or item.get('sku') or 'item'}: o inventario Full nao confirmou saldo atual."
+            )
+    available = sum(_assistant_float(item.get("full_available_quantity")) for item in rows)
+    unavailable = sum(_assistant_float(item.get("full_not_available_quantity")) for item in rows)
+    total = sum(_assistant_float(item.get("full_total_quantity")) for item in rows)
+    return {
+        "function": "get_mercado_livre_full_stock",
+        "arguments": arguments,
+        "result": {
+            "found": bool(rows),
+            "store": loja,
+            "matches": rows,
+            "records": len(rows),
+            "full_available_quantity_total": available,
+            "full_not_available_quantity_total": unavailable,
+            "full_total_quantity": total,
+            "stock_scope": "mercado_livre_fulfillment_only",
+            "api_consulted": True,
+            "sources": [{
+                "provider": "mercado_livre",
+                "resource": "inventories/{inventory_id}/stock/fulfillment",
+                "method": "GET",
+                "store": loja,
+            }],
+            "warnings": warnings,
+            "read_only": True,
+        },
     }
 
 
@@ -2680,12 +3384,15 @@ def _assistant_execute_registry_tool(
     incluir_registros = bool(plan.get("incluir_registros", True))
     prev = plan.get("periodo_anterior") if isinstance(plan.get("periodo_anterior"), dict) else {}
     mode = str(plan.get("mode") or "")
-    default_limit = BLING_REPORT_LIMIT if mode in {"daily", "report"} else DEFAULT_RANKING_LIMIT
+    report_mode = mode in {"daily", "report"}
+    default_limit = 20_000 if tool_id == "mercado_livre_orders" and report_mode else (
+        BLING_REPORT_LIMIT if report_mode else DEFAULT_RANKING_LIMIT
+    )
     try:
         limit_safe = int(plan.get("limite") or plan.get("limit") or default_limit)
     except Exception:
         limit_safe = default_limit
-    limit_safe = max(1, min(limit_safe, 500 if mode in {"daily", "report"} else 200))
+    limit_safe = max(1, min(limit_safe, 20_000 if tool_id == "mercado_livre_orders" and report_mode else (500 if report_mode else 200)))
 
     try:
         raw: Optional[dict[str, Any]] = None
@@ -2756,12 +3463,128 @@ def _assistant_execute_registry_tool(
         elif tool_id == "stockout_forecast":
             raw = _assistant_call_ia_tool("_ia_tool_get_stockout_forecast", client_id, message, None, loja, 30, 100)
         elif tool_id == "stale_stock":
-            raw = _assistant_call_ia_tool("_ia_tool_get_days_without_sale_top", client_id, loja, limit_safe, True, False)
+            raw = _assistant_call_ia_tool("_ia_tool_get_days_without_sale_top", client_id, loja, limit_safe, True, False, True)
         elif tool_id == "integrations_status":
             raw = _assistant_call_ia_tool("_ia_tool_get_integrations_status", client_id, loja)
         elif tool_id == "mercado_livre_listing":
             ml_message = message if re.search(r"\b(mercado livre|mercadolivre|mlb\d+|sku|anuncio|anuncios|listar)\b", _assistant_texto_norm(message)) else "listar anuncios ativos mercado livre"
-            raw = _assistant_call_ia_tool("_ia_tool_get_mercado_livre_listing", client_id, ml_message, loja, None, 20)
+            raw = _assistant_call_ia_tool(
+                "_ia_tool_get_mercado_livre_listing",
+                client_id,
+                ml_message,
+                loja=loja,
+                produto_tool=None,
+                limite=limit_safe,
+                incluir_descricao=bool(plan.get("incluir_detalhes")),
+                status=str(plan.get("status") or "active"),
+                sku=str(plan.get("sku") or ""),
+                item_id=str(plan.get("item_id") or ""),
+                offset=int(plan.get("offset") or 0),
+                incluir_detalhes=bool(plan.get("incluir_detalhes")),
+                force_refresh=bool(plan.get("force_refresh")),
+                query_deadline=plan.get("query_deadline"),
+            )
+            if _assistant_tool_call_signature_error(raw):
+                # Runtime anterior: mantenha a listagem basica enquanto a nova
+                # assinatura ainda nao estiver presente no espelho instalado.
+                raw = _assistant_call_ia_tool(
+                    "_ia_tool_get_mercado_livre_listing",
+                    client_id,
+                    ml_message,
+                    loja,
+                    None,
+                    limit_safe,
+                    bool(plan.get("incluir_detalhes")),
+                )
+        elif tool_id == "mercado_livre_orders":
+            raw = _assistant_call_ia_tool(
+                "_ia_tool_get_mercado_livre_orders",
+                client_id,
+                message,
+                loja=loja,
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+                status=str(plan.get("status") or "paid,partially_refunded"),
+                sku=str(plan.get("sku") or ""),
+                item_id=str(plan.get("item_id") or ""),
+                id_pedido=str(plan.get("id_pedido") or ""),
+                offset=int(plan.get("offset") or 0),
+                limite=limit_safe,
+                incluir_detalhes=bool(plan.get("incluir_detalhes")),
+                force_refresh=bool(plan.get("force_refresh")),
+                query_deadline=plan.get("query_deadline"),
+                modo_relatorio=report_mode,
+                max_paginas=int(plan.get("max_paginas") or (400 if report_mode else 2)),
+            )
+            if _assistant_tool_call_signature_error(raw):
+                raw = _assistant_call_ia_tool(
+                    "_ia_tool_get_mercado_livre_orders",
+                    client_id,
+                    message,
+                    loja=loja,
+                    data_inicio=data_inicio,
+                    data_fim=data_fim,
+                    status=str(plan.get("status") or "paid,partially_refunded"),
+                    sku=str(plan.get("sku") or ""),
+                    item_id=str(plan.get("item_id") or ""),
+                    id_pedido=str(plan.get("id_pedido") or ""),
+                    offset=int(plan.get("offset") or 0),
+                    limite=min(limit_safe, 100),
+                    incluir_detalhes=bool(plan.get("incluir_detalhes")),
+                    force_refresh=bool(plan.get("force_refresh")),
+                    query_deadline=plan.get("query_deadline"),
+                )
+            if raw is None:
+                raw = {
+                    "function": "get_mercado_livre_orders",
+                    "arguments": {
+                        "loja": loja or "",
+                        "data_inicio": data_inicio,
+                        "data_fim": data_fim,
+                        "status": str(plan.get("status") or "paid,partially_refunded"),
+                        "sku": str(plan.get("sku") or ""),
+                        "item_id": str(plan.get("item_id") or ""),
+                        "id_pedido": str(plan.get("id_pedido") or ""),
+                        "offset": int(plan.get("offset") or 0),
+                        "limite": limit_safe,
+                    },
+                    "result": {
+                        "error": "Consulta de pedidos Mercado Livre indisponivel neste runtime.",
+                        "pedidos": [],
+                        "read_only": True,
+                    },
+                }
+        elif tool_id == "mercado_livre_returns":
+            raw = _assistant_call_ia_tool(
+                "_ia_tool_get_mercado_livre_returns",
+                client_id,
+                message,
+                loja=loja,
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+                limite=limit_safe,
+                offset=int(plan.get("offset") or 0),
+                force_refresh=bool(plan.get("force_refresh")),
+                query_deadline=plan.get("query_deadline"),
+            )
+            if raw is None:
+                raw = {
+                    "function": "get_mercado_livre_returns",
+                    "arguments": {
+                        "loja": loja or "",
+                        "data_inicio": data_inicio,
+                        "data_fim": data_fim,
+                        "offset": int(plan.get("offset") or 0),
+                        "limite": limit_safe,
+                    },
+                    "result": {
+                        "error": "Consulta de devolucoes Mercado Livre indisponivel neste runtime.",
+                        "devolucoes": [],
+                        "read_only": True,
+                    },
+                }
+        elif tool_id == "mercado_livre_full_stock":
+            raw = _assistant_mercado_livre_full_stock_raw(client_id, plan)
         elif tool_id == "bling_product":
             bling_message = _assistant_bling_message_with_refs(message, plan, screen_context, existing_registry_results)
             raw = _assistant_call_ia_tool("_ia_tool_get_bling_product", client_id, bling_message, loja, None)
@@ -2769,6 +3592,8 @@ def _assistant_execute_registry_tool(
             from backend.services import codex_bling_tools
 
             bling_message = _assistant_bling_message_with_refs(message, plan, screen_context, existing_registry_results)
+            if tool_id == "bling_sales_order_detail" and str(plan.get("id_pedido") or ""):
+                bling_message = f"pedido {plan.get('id_pedido')} {bling_message}".strip()
             raw = codex_bling_tools.execute_bling_tool(
                 client_id=client_id,
                 tool_id=tool_id,
@@ -2777,6 +3602,13 @@ def _assistant_execute_registry_tool(
                 data_inicio=data_inicio,
                 data_fim=data_fim,
                 limit=limit_safe,
+                offset=int(plan.get("offset") or 0),
+                status=str(plan.get("status") or ""),
+                sku=str(plan.get("sku") or ""),
+                item_id=str(plan.get("item_id") or ""),
+                id_pedido=str(plan.get("id_pedido") or ""),
+                force_refresh=bool(plan.get("force_refresh")),
+                query_deadline=plan.get("query_deadline"),
             )
         elif tool_id == "product_data":
             raw = _assistant_call_ia_tool("_ia_tool_get_product_data", client_id, message, 10)
@@ -2831,6 +3663,8 @@ def _assistant_execute_registry_tool(
                     "module": str(plan.get("module_filter") or ""),
                     "type": str(plan.get("source_type") or ""),
                     "sql": str(plan.get("sql") or ""),
+                    "status": str(plan.get("status") or ""),
+                    "separar_por_loja": bool(plan.get("separar_por_loja")),
                 },
             )
             raw = {
@@ -2933,6 +3767,11 @@ def _assistant_execute_registry_tool(
             return raw_results, registry_results, warnings
         if isinstance(raw, dict):
             raw_results.append(raw)
+            raw_result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+            for warning in raw_result.get("warnings") if isinstance(raw_result.get("warnings"), list) else []:
+                warning_text = str(warning or "").strip()
+                if warning_text and warning_text not in warnings:
+                    warnings.append(warning_text[:600])
         registry_results.append(_assistant_standard_result(tool_id, raw, plan))
     except Exception as exc:
         warnings.append(f"{tool_id}: {str(exc)[:300]}")
@@ -2999,7 +3838,44 @@ def _assistant_tool_validation(
     if tool_id == "operational_memory_query" and records <= 0:
         enough = True
         fields_missing = []
-    confidence = "alta" if records > 0 and not empty_reasons else ("media" if records > 0 else "baixa")
+    live_question_summaries = []
+    for item in registry_results:
+        summary = item.get("summary") if isinstance(item, dict) and isinstance(item.get("summary"), dict) else {}
+        if summary.get("live_query"):
+            live_question_summaries.append(summary)
+    live_question_query = bool(live_question_summaries)
+    live_question_complete = live_question_query and all(bool(item.get("coverage_complete")) for item in live_question_summaries)
+    live_question_partial_with_records = live_question_query and records > 0
+    if live_question_query:
+        enough = live_question_complete or live_question_partial_with_records
+        fields_missing = [] if live_question_complete else ["cobertura_lojas"]
+        if records <= 0 and not live_question_complete:
+            fields_missing.insert(0, "registros")
+    confidence = (
+        "alta"
+        if live_question_complete
+        else "media"
+        if live_question_partial_with_records
+        else "alta"
+        if records > 0 and not empty_reasons
+        else "media"
+        if records > 0
+        else "baixa"
+    )
+    if live_question_query:
+        reason = (
+            "Fila atual do Mercado Livre confirmada em todas as lojas solicitadas."
+            if live_question_complete
+            else "Foram encontradas perguntas, mas uma ou mais lojas nao puderam ser confirmadas."
+            if live_question_partial_with_records
+            else "Nao foi possivel confirmar a fila atual em todas as lojas solicitadas."
+        )
+    else:
+        reason = (
+            "Dados suficientes para responder com as fontes retornadas."
+            if enough
+            else "Dados insuficientes; tentar fallback compativel antes de concluir."
+        )
     return {
         "dados_suficientes": enough,
         "enough_data": enough,
@@ -3013,11 +3889,7 @@ def _assistant_tool_validation(
         "proximas_fontes": next_fallbacks[:10] if not enough else [],
         "proximas_fontes_humanas": _assistant_human_fallback_list(next_fallbacks[:10]) if not enough else [],
         "confidence": confidence,
-        "motivo": (
-            "Dados suficientes para responder com as fontes retornadas."
-            if enough
-            else "Dados insuficientes; tentar fallback compativel antes de concluir."
-        ),
+        "motivo": reason,
         "tool_id": tool_id,
         "warnings": [_assistant_humanize_source_text(str(item or "")[:300]) for item in warnings[:8]],
     }
@@ -3058,6 +3930,7 @@ def _assistant_agent_result_package(
 ) -> dict[str, Any]:
     meta = _assistant_tool_meta(tool_id)
     rows: list[Any] = []
+    primary_rows: list[Any] = []
     records = 0
     summaries: list[dict[str, Any]] = []
     sources: list[str] = []
@@ -3071,6 +3944,8 @@ def _assistant_agent_result_package(
         records += int(item.get("records") or 0)
         item_rows = item.get("rows") if isinstance(item.get("rows"), list) else []
         rows.extend(item_rows)
+        if str(item.get("tool_id") or "") == tool_id:
+            primary_rows.extend(item_rows)
         summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
         summaries.append(
             {
@@ -3080,6 +3955,8 @@ def _assistant_agent_result_package(
                 "records": int(item.get("records") or 0),
                 "source": item.get("source") or "",
                 "source_label": item.get("source_label") or _assistant_human_source_label(item.get("source") or "", item.get("tool_id")),
+                "source_role": item.get("source_role") or "context",
+                "aggregation_policy": item.get("aggregation_policy") or "standard",
                 "periodo": item.get("periodo") or {},
                 "loja": item.get("loja") or "",
                 "summary": _assistant_agent_compact(summary),
@@ -3121,6 +3998,43 @@ def _assistant_agent_result_package(
         registry_results=registry_results,
     )
 
+    primary_exact_metadata = {}
+    for item in registry_results:
+        if not isinstance(item, dict) or str(item.get("tool_id") or "") != tool_id:
+            continue
+        candidate = item.get("exact_metadata")
+        if isinstance(candidate, dict) and candidate.get("exact_lookup") is True:
+            primary_exact_metadata = copy.deepcopy(candidate)
+            break
+
+    primary_chart_data: dict[str, Any] = {}
+    chart_function_aliases = {
+        "get_mercado_livre_orders": "mercado_livre_orders",
+        "get_mercado_livre_listing": "mercado_livre_listing",
+        "get_days_without_sale_top": "stale_stock",
+        "get_stockout_forecast": "stockout_forecast",
+        "get_sales_by_period": "sales_ranking",
+        "get_period_comparison": "period_comparison",
+        "get_sales_timeseries": "sales_timeseries",
+    }
+    matching_raw_results = [
+        raw
+        for raw in raw_results
+        if isinstance(raw, dict)
+        and chart_function_aliases.get(str(raw.get("function") or "").strip(), str(raw.get("function") or "").strip()) == tool_id
+    ]
+    if not matching_raw_results and len(raw_results) == 1:
+        matching_raw_results = list(raw_results)
+    for raw in matching_raw_results:
+        raw_payload = raw.get("result") if isinstance(raw, dict) and isinstance(raw.get("result"), dict) else {}
+        candidate = raw_payload.get("chart_data") if isinstance(raw_payload.get("chart_data"), dict) else {}
+        if candidate:
+            # Contrato agregado e sem PII produzido pelo provedor. Ele precisa
+            # chegar inteiro ao renderizador; o resumo conversacional limita
+            # listas e nao serve como fonte de uma serie completa.
+            primary_chart_data = copy.deepcopy(candidate)
+            break
+
     return {
         "success": True,
         "client_id": str(client_id or ""),
@@ -3129,15 +4043,34 @@ def _assistant_agent_result_package(
         "module": meta.get("module") or "",
         "description": meta.get("description") or "",
         "external": bool(meta.get("external")),
-        "read_only": True,
+        "read_only": meta.get("read_only") is True,
         "args": _assistant_agent_compact(args),
         "records": records,
         "top_rows": _assistant_agent_compact(rows[:CODEX_AGENT_TOP_ROWS_LIMIT]),
+        # O relatorio diario do WhatsApp precisa listar cada SKU retornado pela
+        # API, e nao apenas a amostra usada pelo agente conversacional.
+        "all_rows": copy.deepcopy(primary_rows[:20000]) if tool_id == "mercado_livre_orders" else [],
+        "chart_data": primary_chart_data,
+        "exact_metadata": primary_exact_metadata,
         "summary": summaries[:12],
         "sources": sources_human[:20],
         "sources_raw": sources[:20],
         "sources_human": sources_human[:20],
         "source_label": (sources_human[:1] or [_assistant_human_tool_label(tool_id)])[0],
+        "source_role": (
+            "primary_api"
+            if tool_id in {"bling_sales_orders", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_full_stock", "questions_post_sale_query"}
+            else "supporting_local_history"
+            if _assistant_is_generic_sales_api_query(str(args.get("message") or args.get("mensagem") or ""))
+            and tool_id in {"sales_returns_query", "sales_ranking", "sales_summary"}
+            else "context"
+        ),
+        "aggregation_policy": (
+            "separate_sources_no_sum"
+            if tool_id in {"bling_sales_orders", "bling_stock_balances", "mercado_livre_orders", "mercado_livre_returns", "mercado_livre_listing", "mercado_livre_full_stock", "questions_post_sale_query"}
+            or _assistant_is_generic_sales_api_query(str(args.get("message") or args.get("mensagem") or ""))
+            else "standard"
+        ),
         "warnings": [_assistant_humanize_source_text(str(item or "")[:600]) for item in warnings[:20]],
         "empty_reason": "; ".join(empty_reasons)[:900],
         "next_fallbacks": next_fallbacks[:10],
@@ -3157,6 +4090,8 @@ def codex_assistant_execute_tool_call(
     screen_context: Any = None,
     previous_results: Optional[list[dict[str, Any]]] = None,
     permissions: Any = None,
+    audit_user: str = "",
+    query_deadline: Optional[float] = None,
 ) -> dict[str, Any]:
     """Execute one registered read-only data tool for the Codex agent loop."""
 
@@ -3170,7 +4105,7 @@ def codex_assistant_execute_tool_call(
             "error": "Ferramenta inexistente no Codex Data Tools Registry.",
             "generated_at": _assistant_now(),
         }
-    if meta.get("read_only") is False:
+    if meta.get("read_only") is not True:
         return {
             "success": False,
             "tool_id": tool_id,
@@ -3205,22 +4140,101 @@ def codex_assistant_execute_tool_call(
         wants_report = bool(re.search(r"\b(relatorio|analise completa|ultimos?\s+\d+\s+dias?)\b", _assistant_texto_norm(message)))
         mode = "report" if wants_report else "chat"
 
-    data_inicio = str(args.get("data_inicio") or args.get("inicio") or args.get("start_date") or "").strip()
-    data_fim = str(args.get("data_fim") or args.get("fim") or args.get("end_date") or "").strip()
-    if not (re.match(r"^\d{4}-\d{2}-\d{2}$", data_inicio) and re.match(r"^\d{4}-\d{2}-\d{2}$", data_fim)):
+    data_inicio = _assistant_calendar_date(args.get("data_inicio") or args.get("inicio") or args.get("start_date"))
+    data_fim = _assistant_calendar_date(args.get("data_fim") or args.get("fim") or args.get("end_date"))
+    if not (data_inicio and data_fim):
         data_inicio, data_fim = _assistant_resolve_period(client_id, message, screen_context)
+    latest_ml_event = bool(
+        tool_id in {"mercado_livre_orders", "mercado_livre_returns"}
+        and re.search(r"\b(ultima|ultimo|mais recente|ultima ocorrencia|ultimo registro)\b", _assistant_texto_norm(message))
+        and not re.search(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\b", str(message or ""))
+    )
+    if latest_ml_event:
+        data_inicio, data_fim = _assistant_periodo_padrao(365)
     prev_inicio, prev_fim = _assistant_previous_period(data_inicio, data_fim)
+    if tool_id == "period_comparison":
+        explicit_a = (
+            _assistant_calendar_date(args.get("data_inicio_a") or args.get("inicio_a") or args.get("start_date_a")),
+            _assistant_calendar_date(args.get("data_fim_a") or args.get("fim_a") or args.get("end_date_a")),
+        )
+        explicit_b = (
+            _assistant_calendar_date(args.get("data_inicio_b") or args.get("inicio_b") or args.get("start_date_b")),
+            _assistant_calendar_date(args.get("data_fim_b") or args.get("fim_b") or args.get("end_date_b")),
+        )
+        if all((*explicit_a, *explicit_b)) and explicit_a[0] <= explicit_a[1] and explicit_b[0] <= explicit_b[1]:
+            # O agente pode chamar A=periodo atual e B=periodo anterior. Para
+            # que a variacao seja sempre intuitiva, a ferramenta recebe os
+            # periodos em ordem cronologica: anterior primeiro, atual depois.
+            if explicit_a[0] <= explicit_b[0]:
+                (prev_inicio, prev_fim), (data_inicio, data_fim) = explicit_a, explicit_b
+            else:
+                (prev_inicio, prev_fim), (data_inicio, data_fim) = explicit_b, explicit_a
     loja = str(args.get("loja") or args.get("conta") or args.get("store") or "").strip()
     if not loja:
         loja = _assistant_resolve_loja(client_id, message, screen_context)
     sku = _assistant_normalize_sku(args.get("sku") or args.get("codigo") or args.get("seller_sku") or "")
     if not sku:
         sku = _assistant_extract_sku_filter(message, screen_context)
+    item_id = _assistant_normalize_ml_item_id(args.get("item_id") or args.get("mlb") or args.get("id_anuncio"))
+    if not item_id:
+        item_match = re.search(r"\bMLB[\s_-]?\d{6,}\b", str(message or ""), flags=re.IGNORECASE)
+        item_id = _assistant_normalize_ml_item_id(item_match.group(0) if item_match else "")
+    id_pedido = _assistant_normalize_identifier(
+        args.get("id_pedido") or args.get("pedido_id") or args.get("order_id") or args.get("id_order")
+    )
+    if not id_pedido:
+        pedido_match = re.search(
+            r"\b(?:pedido|order)\s*(?:id|numero|n\.?|#)?\s*[:#-]?\s*(\d{3,})\b",
+            str(message or ""),
+            flags=re.IGNORECASE,
+        )
+        id_pedido = _assistant_normalize_identifier(pedido_match.group(1) if pedido_match else "")
+    if not id_pedido and tool_id == "mercado_livre_orders":
+        standalone_ids = re.findall(r"\b\d{10,20}\b", str(message or ""))
+        if (
+            len(standalone_ids) == 1
+            and re.search(r"\b(venda|pedido|order|pack|compra)\b", _assistant_texto_norm(message))
+        ):
+            id_pedido = _assistant_normalize_identifier(standalone_ids[0])
+    default_status = ""
+    if tool_id == "mercado_livre_listing":
+        default_status = "active"
+    elif tool_id == "mercado_livre_orders":
+        default_status = "paid,partially_refunded"
+    status = _assistant_normalize_api_status(args.get("status") or args.get("situacao"), default_status)
+    offset = _assistant_agent_int(args.get("offset"), 0, 0, 10000)
+    incluir_detalhes = _assistant_bool_arg(
+        args.get("incluir_detalhes", args.get("include_details", args.get("incluir_descricao"))),
+        False,
+    )
+    strict_latest_ml_event = bool(
+        latest_ml_event and tool_id in {"mercado_livre_orders", "mercado_livre_returns"}
+    )
+    force_refresh = bool(
+        _assistant_force_refresh_requested(args, message) or strict_latest_ml_event
+    )
+    if meta.get("external") is True and query_deadline is None:
+        query_deadline = time.monotonic() + API_QUERY_TIMEOUT_SECONDS
+    api_sales_query = _assistant_is_generic_sales_api_query(message)
     if tool_id in {"program_functions_catalog", "capability_resolve"}:
         default_limit = 1000
+        maximum_limit = 1000
+    elif tool_id == "mercado_livre_full_stock":
+        default_limit = 10000
+        maximum_limit = 20000
+    elif tool_id == "mercado_livre_returns":
+        default_limit = 1
+        maximum_limit = 100
+    elif tool_id == "mercado_livre_listing":
+        default_limit = 20
+        maximum_limit = 100
+    elif tool_id == "mercado_livre_orders":
+        default_limit = 20_000 if mode in {"report", "daily"} else 50
+        maximum_limit = 20_000 if mode in {"report", "daily"} else 100
     else:
         default_limit = CODEX_AGENT_REPORT_ROW_LIMIT if mode in {"report", "daily"} else CODEX_AGENT_NORMAL_ROW_LIMIT
-    limit_safe = _assistant_agent_int(args.get("limite") or args.get("limit"), default_limit, 1, 500)
+        maximum_limit = 500
+    limit_safe = _assistant_agent_int(args.get("limite") or args.get("limit"), default_limit, 1, maximum_limit)
 
     plan = {
         "intent": tool_id,
@@ -3232,7 +4246,30 @@ def codex_assistant_execute_tool_call(
         "periodo_anterior": {"data_inicio": prev_inicio, "data_fim": prev_fim},
         "loja": loja,
         "sku": sku,
+        "item_id": item_id,
+        "mlb": item_id,
+        "id_pedido": id_pedido,
+        "status": status,
+        "offset": offset,
+        "incluir_detalhes": incluir_detalhes,
+        "force_refresh": force_refresh,
+        "query_deadline": query_deadline,
+        "api_sales_query": api_sales_query,
+        "source_role": (
+            "primary_api"
+            if tool_id in {"bling_sales_orders", "mercado_livre_orders", "mercado_livre_returns"}
+            else "supporting_local_history"
+            if api_sales_query and tool_id in {"sales_returns_query", "sales_ranking", "sales_summary"}
+            else "context"
+        ),
+        "aggregation_policy": "separate_sources_no_sum" if api_sales_query else "standard",
         "limite": limit_safe,
+        "max_paginas": _assistant_agent_int(
+            args.get("max_paginas") or args.get("max_pages"),
+            400 if mode in {"report", "daily"} else 2,
+            1,
+            400 if mode in {"report", "daily"} else 2,
+        ),
         "module_filter": str(args.get("modulo") or args.get("module") or args.get("module_filter") or "").strip(),
         "category_filter": str(args.get("categoria") or args.get("category") or args.get("category_filter") or "").strip(),
         "capability_id": str(args.get("capability_id") or args.get("capacidade_id") or "").strip(),
@@ -3246,10 +4283,35 @@ def codex_assistant_execute_tool_call(
         "action_id": str(args.get("action_id") or "").strip(),
         "action_params": args.get("params") if isinstance(args.get("params"), dict) else {},
         "history": args.get("history") if isinstance(args.get("history"), list) else [],
-        "separar_por_loja": bool(args.get("separar_por_loja")) or _assistant_wants_store_breakdown(message, loja),
+        "separar_por_loja": bool(
+            args.get("separar_por_loja") or args.get("todas_lojas") or args.get("all_stores")
+        ) or _assistant_wants_store_breakdown(message, loja),
         "incluir_registros": bool(args.get("incluir_registros", True)),
         "selected_tools": [tool_id],
     }
+
+    external_cache_key = ""
+    external_cache_ttl = 0
+    recent_cached: Optional[dict[str, Any]] = None
+    if meta.get("external") is True:
+        external_cache_ttl = max(1, min(int(meta.get("cache_ttl_seconds") or EXTERNAL_CACHE_SECONDS), EXTERNAL_CACHE_SECONDS))
+        external_cache_key = _assistant_external_cache_key(client_id, tool_id, plan)
+        cached = _assistant_cache_get(client_id, external_cache_key, external_cache_ttl)
+        if isinstance(cached, dict) and str(cached.get("tool_id") or "") == tool_id:
+            recent_cached = copy.deepcopy(cached)
+            if not force_refresh:
+                cached_result = copy.deepcopy(cached)
+                cached_result["cache_hit"] = True
+                cached_result["cache_ttl_seconds"] = external_cache_ttl
+                _assistant_api_query_audit(
+                    client_id,
+                    tool_id,
+                    plan,
+                    cached_result,
+                    audit_user=audit_user,
+                    cache_hit=True,
+                )
+                return cached_result
 
     registry_seed = list(previous_results or []) if isinstance(previous_results, list) else []
     raw_results: list[dict[str, Any]] = []
@@ -3258,9 +4320,7 @@ def codex_assistant_execute_tool_call(
     executed_tool_ids: set[str] = set()
 
     prereq_ids: list[str] = []
-    if tool_id == "bling_stock_balances":
-        prereq_ids = ["product_data", "product_registry", "stock_data", "bling_product"]
-    elif tool_id in {"bling_fiscal_product", "bling_lots", "bling_lot_movements"}:
+    if tool_id in {"bling_fiscal_product", "bling_lots", "bling_lot_movements"}:
         prereq_ids = ["product_data", "product_registry", "bling_product"]
 
     for prereq_id in prereq_ids:
@@ -3279,7 +4339,6 @@ def codex_assistant_execute_tool_call(
         raw_results.extend(raw)
         registry_results.extend(registry)
         warnings.extend(local_warnings)
-
     executed_tool_ids.add(tool_id)
     raw, registry, local_warnings = _assistant_execute_registry_tool(
         client_id,
@@ -3302,7 +4361,40 @@ def codex_assistant_execute_tool_call(
             and str(item.get("tool_id") or "") not in {"capability_resolve", "program_action_match", "program_functions_catalog", "operational_memory_query"}
         ]
     has_records = any(int(item.get("records") or 0) > 0 for item in meaningful_results or registry_results)
-    if not has_records and tool_id != "operational_memory_query":
+    if (
+        not has_records
+        and tool_id in {"bling_sales_orders", "mercado_livre_orders"}
+        and not strict_latest_ml_event
+        and not (tool_id == "mercado_livre_orders" and bool(plan.get("id_pedido")))
+        and _assistant_tool_allowed("sales_returns_query", permissions)
+        and not _assistant_previous_contains_tool(previous_results, "sales_returns_query")
+    ):
+        warnings.append(
+            "A API primaria retornou zero ou falhou; o historico local foi consultado apenas como apoio separado, sem substituir nem somar os totais."
+        )
+        support_plan = {
+            **plan,
+            "selected_tools": ["sales_returns_query"],
+            "source_role": "supporting_local_history",
+            "source_roles": {"sales_returns_query": "supporting_local_history"},
+            "aggregation_policy": "separate_sources_no_sum",
+        }
+        raw, registry, local_warnings = _assistant_execute_registry_tool(
+            client_id,
+            "sales_returns_query",
+            message,
+            screen_context,
+            support_plan,
+            registry_seed + registry_results,
+        )
+        for support_item in registry:
+            if isinstance(support_item, dict):
+                support_item["next_fallbacks"] = []
+                support_item["next_fallbacks_human"] = []
+        raw_results.extend(raw)
+        registry_results.extend(registry)
+        warnings.extend(local_warnings)
+    if not has_records and tool_id != "operational_memory_query" and meta.get("zero_is_authoritative") is not True:
         fallback_limit = 5 if mode in {"report", "daily"} else 3
         fallback_count = 0
         for fallback_id in _assistant_agent_fallback_ids(tool_id, message):
@@ -3313,7 +4405,7 @@ def codex_assistant_execute_tool_call(
             fallback_meta = _assistant_tool_meta(fallback_id)
             if (
                 not fallback_meta.get("id")
-                or fallback_meta.get("read_only") is False
+                or fallback_meta.get("read_only") is not True
                 or not _assistant_tool_allowed(fallback_id, permissions)
             ):
                 continue
@@ -3334,7 +4426,7 @@ def codex_assistant_execute_tool_call(
             if any(int(item.get("records") or 0) > 0 for item in registry):
                 break
 
-    return _assistant_agent_result_package(
+    result_package = _assistant_agent_result_package(
         client_id,
         tool_id,
         args,
@@ -3343,6 +4435,45 @@ def codex_assistant_execute_tool_call(
         warnings,
         permissions=permissions,
     )
+    result_package["cache_hit"] = False
+    if recent_cached is not None and _assistant_retryable_api_error(result_package):
+        cached_result = copy.deepcopy(recent_cached)
+        cached_result["cache_hit"] = True
+        cached_result["cache_fallback"] = True
+        cached_result["cache_ttl_seconds"] = external_cache_ttl
+        cached_warnings = list(cached_result.get("warnings") or [])
+        cached_warnings.append(
+            "A atualizacao da API falhou temporariamente; usei o cache recente de ate 2 minutos e mantive a fonte identificada."
+        )
+        cached_result["warnings"] = cached_warnings[:20]
+        _assistant_api_query_audit(
+            client_id,
+            tool_id,
+            plan,
+            cached_result,
+            audit_user=audit_user,
+            cache_hit=True,
+        )
+        return cached_result
+    _assistant_api_query_audit(
+        client_id,
+        tool_id,
+        plan,
+        result_package,
+        audit_user=audit_user,
+        cache_hit=False,
+    )
+    if external_cache_key and external_cache_ttl and not _assistant_api_error_code(result_package):
+        result_package["cache_ttl_seconds"] = external_cache_ttl
+        safe_payload = _assistant_cache_safe_payload(result_package)
+        if isinstance(safe_payload, dict):
+            try:
+                _assistant_cache_set(client_id, external_cache_key, safe_payload)
+            except Exception:
+                # A consulta continua valida se o cache local estiver
+                # temporariamente indisponivel.
+                pass
+    return result_package
 
 
 def _assistant_execute_registry(
@@ -3352,6 +4483,8 @@ def _assistant_execute_registry(
     mode: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[str]]:
     plan = _assistant_registry_plan(client_id, message, screen_context, mode)
+    if any(str(item or "") in _ASSISTANT_AUDITED_API_TOOLS for item in (plan.get("selected_tools") or [])):
+        plan["query_deadline"] = time.monotonic() + API_QUERY_TIMEOUT_SECONDS
     raw_results: list[dict[str, Any]] = []
     registry_results: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -3360,14 +4493,6 @@ def _assistant_execute_registry(
     def run(tool_id: str) -> None:
         if tool_id in executed:
             return
-        if tool_id == "bling_stock_balances":
-            for prereq_id in ("product_data", "product_registry", "stock_data"):
-                run(prereq_id)
-            refs = _assistant_product_refs_from_context(screen_context, registry_results)
-            if not refs["skus"] and not refs["bling_ids"]:
-                warnings.append(
-                    "Saldo Bling: nao encontrei SKU/id Bling no texto, na tela ou no cadastro local antes da consulta externa."
-                )
         executed.add(tool_id)
         raw, registry, local_warnings = _assistant_execute_registry_tool(
             client_id,
@@ -3380,6 +4505,25 @@ def _assistant_execute_registry(
         raw_results.extend(raw)
         registry_results.extend(registry)
         warnings.extend(local_warnings)
+        if tool_id in _ASSISTANT_AUDITED_API_TOOLS:
+            audited_item = next(
+                (item for item in reversed(registry) if isinstance(item, dict) and str(item.get("tool_id") or "") == tool_id),
+                {},
+            )
+            audit_summary = audited_item.get("summary") if isinstance(audited_item.get("summary"), dict) else {}
+            selection = screen_context.get("selection") if isinstance(screen_context, dict) and isinstance(screen_context.get("selection"), dict) else {}
+            _assistant_api_query_audit(
+                client_id,
+                tool_id,
+                plan,
+                {
+                    "records": int(audited_item.get("records") or 0),
+                    "warnings": list(local_warnings or []),
+                    "summary": [{"tool_id": tool_id, "summary": audit_summary}],
+                },
+                audit_user=str(selection.get("username") or selection.get("user") or "system"),
+                cache_hit=False,
+            )
 
     for tool_id in plan.get("selected_tools") or []:
         run(str(tool_id))
@@ -3410,6 +4554,7 @@ def _assistant_execute_registry(
     any_empty_specialized = any(
         item.get("tool_id") not in source_tool_ids
         and item.get("tool_id") not in ignored_empty
+        and _assistant_tool_meta(str(item.get("tool_id") or "")).get("zero_is_authoritative") is not True
         and int(item.get("records") or 0) == 0
         for item in registry_results
     )
@@ -3478,14 +4623,14 @@ def _assistant_direct_tools(client_id: str, mode: str) -> list[dict[str, Any]]:
     anterior_inicio = (anterior_fim_date - timedelta(days=29)).isoformat()
     anterior_fim = anterior_fim_date.isoformat()
     estoque_limite = 100 if mode in {"daily", "report"} else 50
-    parado_limite = 100 if mode in {"daily", "report"} else 30
+    parado_limite = 500 if mode in {"daily", "report"} else 60
 
     candidates = [
         _assistant_call_ia_tool("_ia_tool_get_integrations_status", client_id, None),
         _assistant_call_ia_tool("_ia_tool_get_sales_by_period", client_id, inicio_30, fim, None, 10),
         _assistant_call_ia_tool("_ia_tool_get_returns_by_period", client_id, inicio_30, fim, None, 10),
         _assistant_call_ia_tool("_ia_tool_get_stockout_forecast", client_id, "previsao ruptura estoque", None, None, 30, estoque_limite),
-        _assistant_call_ia_tool("_ia_tool_get_days_without_sale_top", client_id, None, parado_limite, True, False),
+        _assistant_call_ia_tool("_ia_tool_get_days_without_sale_top", client_id, None, parado_limite, True, False, True),
     ]
     if mode in {"daily", "report"}:
         candidates.extend(
@@ -3588,8 +4733,14 @@ def _assistant_result_count(value: Any) -> int:
             return total_registros
     except Exception:
         pass
+    # Comparacoes validas sao agregados com dois objetos, nao listas. Sem
+    # este reconhecimento o executor marcava o resultado como vazio e
+    # disparava um fallback desnecessario para sales_ranking.
+    if isinstance(value.get("periodo_a"), dict) and isinstance(value.get("periodo_b"), dict):
+        return 2
     for key in (
         "rows",
+        "by_sku",
         "por_sku",
         "vendas",
         "devolucoes",
@@ -3604,6 +4755,7 @@ def _assistant_result_count(value: Any) -> int:
         "saldos",
         "depositos",
         "pedidos",
+        "orders",
         "notas",
         "naturezas",
         "lotes",
@@ -3895,14 +5047,73 @@ def _assistant_collect_stale_stock_rows(context: dict[str, Any], limit: int = 12
             dias = item.get("dias_sem_venda", item.get("dias", ""))
         produto = str(item.get("produto") or item.get("nome") or item.get("title") or "").strip()
         ultima_venda = str(item.get("ultima_venda") or item.get("data_ultima_venda") or item.get("last_sale_date") or "-").strip() or "-"
+        status = _assistant_texto_norm(item.get("status"))
+        nunca_vendeu = status == "nunca_vendeu" or (not str(dias if dias is not None else "").strip() and ultima_venda == "-")
+        dias_informado = str(dias if dias is not None else "").strip() not in {"", "-"}
+        dias_num = max(0, int(_assistant_float(dias))) if dias_informado else None
+        if not nunca_vendeu and dias_num is not None and dias_num < 30:
+            return
+
+        if nunca_vendeu:
+            situacao = "Nunca vendeu"
+            prioridade = "1 - Imediata"
+            motivo = "SKU possui saldo de loja, mas nao tem historico de venda localizado."
+            acao = "Validar cadastro e anuncio, bloquear nova compra e decidir entre lancamento, kit, transferencia ou liquidacao."
+        elif dias_num is None:
+            situacao = "Data da ultima venda indisponivel"
+            prioridade = "2 - Alta"
+            motivo = "SKU possui saldo de loja, mas a data da ultima venda nao pôde ser confirmada."
+            acao = "Conferir a sincronizacao do historico de vendas antes de comprar mais ou iniciar liquidacao."
+        elif dias_num >= 180:
+            situacao = f"{dias_num} dias sem venda"
+            prioridade = "1 - Imediata"
+            motivo = "SKU esta ha pelo menos 180 dias sem venda e continua ocupando estoque de loja."
+            acao = "Bloquear nova compra, revisar anuncio e preco e preparar liquidacao, kit ou transferencia de canal."
+        elif dias_num >= 90:
+            situacao = f"{dias_num} dias sem venda"
+            prioridade = "2 - Alta"
+            motivo = "SKU esta entre 90 e 179 dias sem venda, indicando perda relevante de giro."
+            acao = "Revisar preco, titulo, foto, frete e concorrencia; testar kit ou promocao com prazo definido."
+        elif dias_num >= 60:
+            situacao = f"{dias_num} dias sem venda"
+            prioridade = "3 - Atencao"
+            motivo = "SKU esta entre 60 e 89 dias sem venda e precisa de intervencao antes de virar estoque cronico."
+            acao = "Revisar anuncio e exposicao, testar ajuste comercial e acompanhar o giro nas proximas duas semanas."
+        else:
+            situacao = f"{dias_num or 0} dias sem venda"
+            prioridade = "4 - Monitorar"
+            motivo = "SKU possui saldo de loja e esta ha pelo menos 30 dias sem venda."
+            acao = "Monitorar o giro, revisar a oferta e evitar recomprar ate ocorrer nova venda."
+
+        saldo_full = item.get("saldo_full", 0)
+        custo_cadastrado = item.get("custo_cadastrado") is True or (
+            item.get("custo_cadastrado") is None and item.get("custo_unitario") not in (None, "")
+        )
+        custo_unitario = _assistant_float(item.get("custo_unitario")) if custo_cadastrado else None
+        custo_origem = str(item.get("custo_origem") or "cadastro").strip() if custo_cadastrado else ""
+        capital_custo = item.get("valor_custo_estoque_loja")
+        if capital_custo is None and custo_cadastrado:
+            capital_custo = saldo_num * float(custo_unitario or 0)
+        impacto = (
+            f"{_assistant_qty(saldo_num)} un. paradas; {_assistant_money(capital_custo)} pelo custo cadastrado ({custo_origem})."
+            if custo_cadastrado
+            else f"{_assistant_qty(saldo_num)} un. paradas; custo nao cadastrado para estimar o capital."
+        )
         row = {
             "sku": sku,
             "produto": produto,
             "saldo_loja": _assistant_qty(saldo_loja),
-            "dias_sem_vender": _assistant_qty(dias, 0) if str(dias or "").strip() else "-",
+            "saldo_full": _assistant_qty(saldo_full),
+            "dias_sem_vender": _assistant_qty(dias_num, 0) if dias_num is not None else "-",
             "ultima_venda": ultima_venda,
-            "motivo": "SKU possui saldo de loja e nao teve venda recente no periodo analisado.",
-            "acao_recomendada": "Revisar preco, titulo, foto, anuncio, kit/combo e estrategia de liquidacao antes de comprar mais unidades.",
+            "situacao": situacao,
+            "prioridade": prioridade,
+            "impacto_financeiro": impacto,
+            "custo_unitario": _assistant_money(custo_unitario) if custo_cadastrado else "nao cadastrado",
+            "custo_origem": custo_origem or "indisponivel",
+            "capital_custo": _assistant_money(capital_custo) if custo_cadastrado else "indisponivel",
+            "motivo": motivo,
+            "acao_recomendada": acao,
         }
         if loja:
             row["loja"] = loja
@@ -3925,6 +5136,8 @@ def _assistant_collect_stale_stock_rows(context: dict[str, Any], limit: int = 12
 
     rows.sort(
         key=lambda row: (
+            int(str(row.get("prioridade") or "9").split(" ", 1)[0]) if str(row.get("prioridade") or "").split(" ", 1)[0].isdigit() else 9,
+            0 if str(row.get("situacao") or "") == "Nunca vendeu" else 1,
             -_assistant_float(str(row.get("dias_sem_vender") or "0").replace(",", "."), 0),
             -_assistant_float(str(row.get("saldo_loja") or "0").replace(",", "."), 0),
             str(row.get("sku") or ""),
@@ -4400,6 +5613,20 @@ def _assistant_management_analysis(context: dict[str, Any]) -> dict[str, Any]:
     profit = _assistant_find_result(results, "get_profit_by_period")
     stockout = _assistant_find_result(results, "get_stockout_forecast")
     stale = _assistant_find_result(results, "get_days_without_sale_top")
+    stale_candidates = [
+        item.get("result") for item in results
+        if isinstance(item, dict)
+        and _assistant_function_name(item) == "get_days_without_sale_top"
+        and isinstance(item.get("result"), dict)
+    ]
+    if stale_candidates:
+        stale = max(
+            stale_candidates,
+            key=lambda value: int(
+                ((value.get("resumo_estoque_parado") or {}).get("total_skus") if isinstance(value.get("resumo_estoque_parado"), dict) else 0)
+                or len(_assistant_first_list(value, "itens"))
+            ),
+        )
     anomalies = _assistant_find_result(results, "detect_sales_anomalies")
     comparison = _assistant_find_result(results, "get_period_comparison")
     avg_ticket = _assistant_find_result(results, "get_avg_ticket_by_period")
@@ -4524,23 +5751,41 @@ def _assistant_management_analysis(context: dict[str, Any]) -> dict[str, Any]:
             )
 
     if profit:
-        margem = _assistant_float(profit.get("margem_percentual_estimada"))
-        lucro = _assistant_float(profit.get("lucro_estimado"))
+        margem_raw = profit.get("margem_percentual_estimada")
+        lucro_raw = profit.get("lucro_estimado")
+        margem = _assistant_float(margem_raw)
+        lucro = _assistant_float(lucro_raw)
         skus_considerados = int(_assistant_float(profit.get("skus_considerados")))
         skus_com_custo = int(_assistant_float(profit.get("skus_com_custo")))
-        cobertura = (skus_com_custo / skus_considerados * 100.0) if skus_considerados else 0.0
-        severity = "critical" if margem < 5 else "warning" if margem < 15 else "ok"
-        kpis.append({"label": "Lucro estimado", "value": _assistant_money(lucro), "detail": f"Margem {_assistant_percent(margem)}", "severity": severity})
-        _assistant_add_finding(
-            sections,
-            "Margem",
-            "Margem estimada do periodo",
-            f"Lucro estimado: {_assistant_money(lucro)}; margem: {_assistant_percent(margem)}; cobertura de custo: {_assistant_percent(cobertura)} dos SKUs considerados.",
-            "Priorizar revisao de preco/custo dos SKUs de maior faturamento e completar cadastro de custo dos SKUs sem custo para melhorar a confiabilidade da margem.",
-            severity,
-            "Margem baixa ou custo incompleto faz o relatorio de vendas superestimar o resultado real.",
-            "get_profit_by_period",
-        )
+        cobertura = _assistant_float(profit.get("cobertura_faturamento_percentual"))
+        if not cobertura:
+            cobertura = (skus_com_custo / skus_considerados * 100.0) if skus_considerados else 0.0
+        dados_suficientes = bool(profit.get("dados_suficientes")) if "dados_suficientes" in profit else cobertura >= 95.0
+        if dados_suficientes and margem_raw is not None and lucro_raw is not None:
+            severity = "critical" if margem < 5 else "warning" if margem < 15 else "ok"
+            kpis.append({"label": "Lucro estimado", "value": _assistant_money(lucro), "detail": f"Margem {_assistant_percent(margem)} | cobertura {_assistant_percent(cobertura)}", "severity": severity})
+            _assistant_add_finding(
+                sections,
+                "Margem",
+                "Margem estimada do periodo",
+                f"Lucro estimado: {_assistant_money(lucro)}; margem: {_assistant_percent(margem)}; cobertura ponderada pelo faturamento: {_assistant_percent(cobertura)}.",
+                "Priorizar revisao de preco/custo dos SKUs de maior faturamento e manter a cobertura acima de 95%.",
+                severity,
+                "A margem consolidada so e publicada quando a cobertura minima de dados e atendida.",
+                "get_profit_by_period",
+            )
+        else:
+            kpis.append({"label": "Margem consolidada", "value": "indisponivel", "detail": f"Cobertura {_assistant_percent(cobertura)}; minimo 95,0%", "severity": "warning"})
+            _assistant_add_finding(
+                sections,
+                "Margem",
+                "Margem consolidada indisponivel",
+                f"Cobertura ponderada pelo faturamento: {_assistant_percent(cobertura)}; minimo exigido: 95,0%.",
+                "Completar custo, imposto, frete e tarifa dos SKUs de maior faturamento antes de usar lucro ou margem na decisao.",
+                "warning",
+                "Dados ausentes nao foram tratados como custo zero e nenhum lucro consolidado foi inventado.",
+                "get_profit_by_period",
+            )
         if skus_considerados and cobertura < 80:
             _assistant_add_finding(
                 sections,
@@ -4635,14 +5880,15 @@ def _assistant_management_analysis(context: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, dict) and _assistant_float(item.get("saldo_loja", item.get("saldo_total"))) > 0
         ]
         if parados:
-            first = parados[0]
+            alert = _assistant_stale_stock_alert_payload(stale, parados)
+            evidence = alert["detail"].replace("**", "").replace("`", "")
             kpis.append({"label": "Estoque parado", "value": str(len(parados)), "detail": "SKU(s) com saldo sem venda recente", "severity": "warning"})
             _assistant_add_finding(
                 sections,
                 "Estoque",
                 "Capital parado em produtos sem giro",
-                f"{len(parados)} SKU(s) com saldo de loja e sem venda recente. Primeiro: {_assistant_sku_label(first)}; dias sem vender: {first.get('dias_sem_vender')}; saldo loja: {first.get('saldo_loja', first.get('saldo_total'))}.",
-                "Criar fila de acao: ajustar preco, revisar titulo/foto, montar kit, liquidar, transferir canal ou pausar compra ate recuperar giro.",
+                evidence,
+                alert["recommendation"],
                 "warning",
                 "Estoque parado consome capital e espaco, e mascara falta de verba para produtos de maior giro.",
                 "get_days_without_sale_top",
@@ -4792,26 +6038,175 @@ def _assistant_sources(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sources
 
 
+def _assistant_stale_stock_alert_payload(result: dict[str, Any], parados: list[dict[str, Any]]) -> dict[str, str]:
+    def dias_item(item: dict[str, Any]) -> Optional[int]:
+        value = item.get("dias_sem_vender")
+        if value is None or str(value).strip() == "":
+            return None
+        return max(0, int(_assistant_float(value)))
+
+    def nunca_vendeu(item: dict[str, Any]) -> bool:
+        return _assistant_texto_norm(item.get("status")) == "nunca_vendeu" or (
+            dias_item(item) is None and not str(item.get("ultima_venda") or "").strip()
+        )
+
+    ordered = sorted(
+        (item for item in parados if isinstance(item, dict)),
+        key=lambda item: (
+            0 if nunca_vendeu(item) else 1,
+            -(dias_item(item) or 0),
+            -_assistant_float(item.get("saldo_loja", item.get("saldo_total"))),
+            str(item.get("sku") or ""),
+        ),
+    )
+    summary = result.get("resumo_estoque_parado") if isinstance(result.get("resumo_estoque_parado"), dict) else {}
+    total_skus = int(summary.get("total_skus") or len(ordered))
+    total_units = _assistant_float(
+        summary.get("total_unidades_loja"),
+        sum(_assistant_float(item.get("saldo_loja", item.get("saldo_total"))) for item in ordered),
+    )
+    never_count = int(summary.get("nunca_venderam") or sum(1 for item in ordered if nunca_vendeu(item)))
+    over_180 = int(summary.get("dias_180_mais") or sum(1 for item in ordered if not nunca_vendeu(item) and (dias_item(item) or 0) >= 180))
+    between_90_179 = int(summary.get("dias_90_179") or sum(1 for item in ordered if 90 <= (dias_item(item) or -1) < 180))
+    between_30_89 = int(summary.get("dias_30_89") or sum(1 for item in ordered if 30 <= (dias_item(item) or -1) < 90))
+    unknown_dates = sum(1 for item in ordered if dias_item(item) is None and not nunca_vendeu(item))
+    known_cost = [
+        item for item in ordered
+        if item.get("custo_cadastrado") is True or (
+            item.get("custo_cadastrado") is None and item.get("custo_unitario") not in (None, "")
+        )
+    ]
+    known_cost_count = int(summary.get("custos_cobertos") or len(known_cost))
+    capital_known = _assistant_float(
+        summary.get("capital_custo_conhecido"),
+        sum(
+            _assistant_float(
+                item.get("valor_custo_estoque_loja")
+                if item.get("valor_custo_estoque_loja") is not None
+                else _assistant_float(item.get("saldo_loja", item.get("saldo_total"))) * _assistant_float(item.get("custo_unitario"))
+            )
+            for item in known_cost
+        ),
+    )
+
+    preview_lines: list[str] = []
+    for index, item in enumerate(ordered[:4], 1):
+        sku = str(item.get("sku") or "-").strip() or "-"
+        product = re.sub(r"\s+", " ", str(item.get("produto") or "Produto sem nome").strip())
+        if len(product) > 62:
+            product = product[:61].rstrip() + "…"
+        saldo = _assistant_qty(item.get("saldo_loja", item.get("saldo_total")))
+        days = dias_item(item)
+        age = "nunca vendeu" if nunca_vendeu(item) else (f"{days} dias sem venda" if days is not None else "ultima venda sem data")
+        last_sale = str(item.get("ultima_venda") or "").strip()
+        last_text = f" • ultima: {last_sale}" if last_sale else ""
+        preview_lines.append(f"{index}. `{sku}` — {product}\n   Saldo: {saldo} un. • {age}{last_text}")
+
+    age_parts = [
+        f"{never_count} nunca venderam",
+        f"{over_180} com 180+ dias",
+        f"{between_90_179} com 90–179 dias",
+        f"{between_30_89} com 30–89 dias",
+    ]
+    if unknown_dates:
+        age_parts.append(f"{unknown_dates} sem data confiavel")
+    if known_cost_count:
+        missing_cost = max(0, total_skus - known_cost_count)
+        capital_text = (
+            f"**Capital estimado pelo custo cadastrado:** {_assistant_money(capital_known)} em {known_cost_count}/{total_skus} SKU(s)"
+            + (f"; {missing_cost} sem custo." if missing_cost else ".")
+        )
+    else:
+        capital_text = f"**Capital:** indisponivel — os {total_skus} SKU(s) estao sem custo utilizavel."
+
+    scope = str(result.get("loja") or "todas as lojas").strip() or "todas as lojas"
+    reference_date = str(result.get("data_referencia") or _assistant_today()).strip()
+    detail = "\n\n".join(
+        [
+            f"**Resumo:** {total_skus} SKU(s) e {_assistant_qty(total_units)} unidade(s) paradas em estoque de loja.",
+            "**Idade do estoque:** " + " • ".join(age_parts) + ".",
+            capital_text,
+            "**Mais urgentes:**\n" + "\n".join(preview_lines),
+            f"**Base:** {scope} • posicao {reference_date}. No consolidado, o custo usa a media dos cadastros por loja; saldo Full e apenas contexto.",
+        ]
+    )
+    urgent_count = never_count + over_180
+    recommendation = (
+        f"Priorizar os {urgent_count or total_skus} SKU(s) sem historico ou com 180+ dias: bloquear recompra, validar cadastro/anuncio, "
+        "revisar preco e oferta e definir kit, transferencia ou liquidacao com prazo e responsavel."
+    )
+    report_prompt = (
+        "Gere um relatorio detalhado e focado somente no alerta de estoque parado com saldo de loja. "
+        "Reconsulte o historico de vendas, o estoque e o cadastro para listar todos os SKUs envolvidos, sem limitar aos primeiros. "
+        "Comece por um resumo com total de SKUs, total de unidades, faixas de 30–89, 90–179 e 180+ dias e itens que nunca venderam. "
+        "Para cada SKU, informe produto, saldo de loja, saldo Full apenas como contexto, ultima venda, dias parado, custo cadastrado, "
+        "capital estimado quando houver custo, prioridade, motivo e acao recomendada. Nao trate custo ausente como zero. "
+        "Finalize com uma fila de acao ordenada, prazo sugerido, responsavel recomendado e avisos de dados incompletos."
+    )
+    return {"detail": detail, "recommendation": recommendation, "report_prompt": report_prompt}
+
+
 def _assistant_suggestions_from_results(results: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
     suggestions: list[dict[str, Any]] = []
     today = _assistant_today()
 
-    def add(kind: str, title: str, detail: str, severity: str = "info", source: str = "", recommendation: str = "") -> None:
+    def add(
+        kind: str,
+        title: str,
+        detail: str,
+        severity: str = "info",
+        source: str = "",
+        recommendation: str = "",
+        report_prompt: str = "",
+    ) -> None:
         raw = f"{today}|{kind}|{title}|{detail}|{source}"
         sid = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
         source_label = _assistant_human_source_label(source, source)
-        suggestions.append(
-            {
-                "id": sid,
-                "kind": kind,
-                "title": title[:120],
-                "detail": detail[:420],
-                "severity": severity,
-                "source": source_label,
-                "source_raw": source,
-                "recommendation": recommendation[:420],
-                "created_at": _assistant_now(),
-            }
+        suggestion = {
+            "id": sid,
+            "kind": kind,
+            "title": title[:120],
+            "detail": detail[:1400],
+            "severity": severity,
+            "source": source_label,
+            "source_raw": source,
+            "recommendation": recommendation[:700],
+            "created_at": _assistant_now(),
+        }
+        if report_prompt:
+            suggestion["report_prompt"] = report_prompt[:1800]
+        suggestions.append(suggestion)
+
+    best_stale_result: dict[str, Any] = {}
+    best_stale_items: list[dict[str, Any]] = []
+    best_stale_score = -1
+    for candidate in results:
+        if not isinstance(candidate, dict) or _assistant_function_name(candidate) != "get_days_without_sale_top":
+            continue
+        candidate_result = candidate.get("result") if isinstance(candidate.get("result"), dict) else {}
+        candidate_items = candidate_result.get("itens") if isinstance(candidate_result.get("itens"), list) else []
+        candidate_stale = [
+            item for item in candidate_items
+            if isinstance(item, dict)
+            and _assistant_float(item.get("saldo_loja", item.get("saldo_total"))) > 0
+            and (item.get("dias_sem_vender") is None or _assistant_float(item.get("dias_sem_vender")) >= 30)
+        ]
+        candidate_summary = candidate_result.get("resumo_estoque_parado") if isinstance(candidate_result.get("resumo_estoque_parado"), dict) else {}
+        candidate_score = int(candidate_summary.get("total_skus") or len(candidate_stale))
+        if candidate_stale and candidate_score > best_stale_score:
+            best_stale_result = candidate_result
+            best_stale_items = candidate_stale
+            best_stale_score = candidate_score
+    if best_stale_items:
+        alert = _assistant_stale_stock_alert_payload(best_stale_result, best_stale_items)
+        add(
+            "stale_stock",
+            "Estoque parado com saldo",
+            alert["detail"],
+            "warning",
+            "get_days_without_sale_top",
+            alert["recommendation"],
+            alert["report_prompt"],
         )
 
     for item in results:
@@ -4851,17 +6246,7 @@ def _assistant_suggestions_from_results(results: list[dict[str, Any]], mode: str
                     "Gerar relatorio completo no chat com todos os SKUs, motivo por SKU e acao de reposicao de estoque de loja.",
                 )
         elif name == "get_days_without_sale_top":
-            itens = result.get("itens") if isinstance(result.get("itens"), list) else []
-            parados = [it for it in itens if _assistant_float(it.get("saldo_loja", it.get("saldo_total"))) > 0 and (it.get("dias_sem_vender") is None or int(it.get("dias_sem_vender") or 0) >= 30)]
-            if parados:
-                primeiro = parados[0]
-                add(
-                    "stale_stock",
-                    "Estoque parado com saldo",
-                    f"{len(parados)} SKU(s) com saldo de loja e sem venda recente. Primeiro: {primeiro.get('sku') or '-'} - {primeiro.get('produto') or ''}.",
-                    "info",
-                    name,
-                )
+            continue
         elif name == "detect_sales_anomalies":
             anomalias = []
             if isinstance(result.get("anomalias"), list):
@@ -4902,6 +6287,14 @@ def _assistant_collect_data(
     force_refresh: bool = False,
 ) -> dict[str, Any]:
     mode = str(mode or "chat").strip().lower() or "chat"
+    source_policy = _assistant_source_routing_policy(message)
+    if source_policy.get("force_refresh"):
+        force_refresh = True
+    strict_api_route = bool(
+        set(source_policy.get("forbidden_tools") or []).intersection(
+            {"sales_returns_query", "sales_ranking", "sales_summary", "returns_summary", "return_rate"}
+        )
+    )
     key = _assistant_cache_key(client_id, mode, message, screen_context)
     if not force_refresh:
         cached = _assistant_cache_get(client_id, key, EXTERNAL_CACHE_SECONDS)
@@ -4921,15 +6314,16 @@ def _assistant_collect_data(
     if registry_context:
         tool_context_parts.append(registry_context)
     broad_chat = bool(re.search(r"\b(analise|analisar|relatorio|melhoria|melhorias|oportunidade|vendas|estoque|ruptura|devolucao|devolucoes)\b", _assistant_texto_norm(message)))
-    if mode in {"proactive", "daily", "report"} or broad_chat:
+    if not strict_api_route and (mode in {"proactive", "daily", "report"} or broad_chat):
         all_results.extend(_assistant_direct_tools(client_id, mode if mode in {"proactive", "daily", "report"} else "report"))
 
-    for query in _assistant_prompt_queries(message, mode):
-        results, context_text, query_warnings = _assistant_execute_dispatcher(client_id, query, screen_context)
-        all_results.extend(results)
-        if context_text:
-            tool_context_parts.append(context_text)
-        warnings.extend(query_warnings)
+    if not strict_api_route:
+        for query in _assistant_prompt_queries(message, mode):
+            results, context_text, query_warnings = _assistant_execute_dispatcher(client_id, query, screen_context)
+            all_results.extend(results)
+            if context_text:
+                tool_context_parts.append(context_text)
+            warnings.extend(query_warnings)
 
     all_results = _assistant_dedupe_results(all_results)
     sources = _assistant_sources(all_results)
@@ -5109,7 +6503,92 @@ def _assistant_answer_from_context(message: str, context: dict[str, Any]) -> str
     return "\n".join(lines)
 
 
+def _assistant_advanced_report_chat_text(title: str, context: dict[str, Any], report_id: str = "") -> str:
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    quality = context.get("data_quality") if isinstance(context.get("data_quality"), dict) else {}
+    financial = context.get("financial_summary") if isinstance(context.get("financial_summary"), dict) else {}
+    coverage = context.get("financial_coverage") if isinstance(context.get("financial_coverage"), dict) else {}
+    actions = context.get("top_actions") if isinstance(context.get("top_actions"), list) else []
+    stores = context.get("store_summaries") if isinstance(context.get("store_summaries"), list) else []
+
+    def money_or_unavailable(value: Any) -> str:
+        return _assistant_money(value) if value is not None else "indisponivel"
+
+    margin_coverage_text = (
+        _assistant_percent(coverage.get("complete_margin_by_revenue_pct"))
+        if coverage.get("complete_margin_by_revenue_pct") is not None
+        else "indisponivel"
+    )
+
+    lines = [
+        f"# {str(title or 'Relatorio Black Jhon')[:140]}",
+        "",
+        (
+            f"Escopo: {scope.get('period_start') or '-'} a {scope.get('period_end') or '-'} | "
+            f"comparacao: {scope.get('comparison_start') or '-'} a {scope.get('comparison_end') or '-'} | "
+            f"loja: {scope.get('selected_store') or 'consolidado com blocos por loja'}"
+        ),
+        f"Confiabilidade: {quality.get('confidence') or 'baixa'} ({quality.get('score') or 0}/100) | estoque em: {scope.get('stock_as_of') or 'indisponivel'}",
+    ]
+    if report_id:
+        lines.append(f"Relatorio: {report_id}")
+    lines.extend(
+        [
+            "",
+            "## Resumo financeiro",
+            f"- Receita bruta: {money_or_unavailable(financial.get('gross_revenue_brl'))}",
+            f"- Devolucoes: {money_or_unavailable(financial.get('returns_brl'))}",
+            f"- Receita liquida: {money_or_unavailable(financial.get('net_revenue_brl'))}",
+            f"- Publicidade: {money_or_unavailable(financial.get('advertising_brl'))}",
+            f"- Margem de contribuicao consolidada: {money_or_unavailable(financial.get('contribution_profit_brl'))}",
+            f"- Lucro apos publicidade: {money_or_unavailable(financial.get('net_profit_after_ads_brl'))}",
+            (
+                f"- Cobertura de margem: {margin_coverage_text} "
+                f"(minimo {_assistant_percent(coverage.get('minimum_required_pct') or 95)}); status {coverage.get('status') or 'insufficient'}."
+            ),
+            "",
+            "## Decisoes prioritarias",
+        ]
+    )
+    if actions:
+        for index, action in enumerate(actions[:5], 1):
+            skus = ", ".join(str(item) for item in (action.get("skus") or [])[:8]) or "-"
+            lines.extend(
+                [
+                    f"{index}. **{action.get('title') or 'Acao recomendada'}**",
+                    f"   Loja: {action.get('store') or '-'} | SKUs: {skus}",
+                    f"   Impacto: {action.get('impact_label') or 'nao estimavel'} | urgencia: {action.get('urgency') or '-'} | confianca: {action.get('confidence') or '-'}",
+                    f"   Responsavel: {action.get('owner_username') or action.get('owner_role') or '-'} | prazo: {action.get('due_at') or '-'}",
+                    f"   Acao: {action.get('recommendation') or '-'}",
+                ]
+            )
+    else:
+        lines.append("- Nenhuma acao prioritaria foi produzida com os dados confiaveis disponiveis.")
+    if stores:
+        lines.extend(["", "## Lojas"])
+        for item in stores[:12]:
+            lines.append(
+                f"- {item.get('store') or '-'}: receita liquida {money_or_unavailable(item.get('net_revenue_brl'))}; "
+                f"variacao {_assistant_percent(item.get('trend_pct')) if item.get('trend_pct') is not None else 'indisponivel'}; "
+                f"meta {_assistant_percent(item.get('target_attainment_pct')) if item.get('target_attainment_pct') is not None else 'nao cadastrada'}."
+            )
+    sources = quality.get("source_health") if isinstance(quality.get("source_health"), list) else []
+    if sources:
+        lines.extend(["", "## Confiabilidade das fontes"])
+        for item in sources[:10]:
+            coverage_text = f" | cobertura {item.get('coverage_pct')}%" if item.get("coverage_pct") is not None else ""
+            lines.append(f"- {item.get('source') or 'Fonte'}: {item.get('status') or 'indisponivel'} | {item.get('records') or 0} registro(s){coverage_text}.")
+    warnings = quality.get("warnings") if isinstance(quality.get("warnings"), list) else []
+    if warnings:
+        lines.extend(["", "## Avisos de dados"])
+        lines.extend(f"- {str(item)[:420]}" for item in warnings[:6])
+    lines.extend(["", "Use Abrir relatorio para o HTML executivo ou baixe a Planilha XLSX para todos os SKUs."])
+    return "\n".join(lines).strip()
+
+
 def _assistant_report_chat_text(title: str, context: dict[str, Any], suggestions: list[dict[str, Any]], report_id: str = "") -> str:
+    if str(context.get("report_type") or "").strip():
+        return _assistant_advanced_report_chat_text(title, context, report_id)
     analysis = context.get("management_analysis") if isinstance(context.get("management_analysis"), dict) else _assistant_management_analysis(context)
     sources = context.get("sources") if isinstance(context.get("sources"), list) else []
     warnings = context.get("warnings") if isinstance(context.get("warnings"), list) else []
@@ -5236,9 +6715,9 @@ def _assistant_report_chat_text(title: str, context: dict[str, Any], suggestions
             [
                 "",
                 "## Estoque parado com saldo de loja",
-                "A analise considera saldo de loja e tempo sem venda recente. O estoque Full nao entra como saldo disponivel para esta acao.",
-                "| SKU | Produto | Saldo loja | Dias sem vender | Ultima venda | Motivo | Acao |",
-                "|---|---|---:|---:|---|---|---|",
+                "A fila esta ordenada por urgencia. O saldo Full aparece somente como contexto e nao reduz o estoque parado da loja.",
+                "| Prioridade | SKU | Produto | Saldo loja | Saldo Full* | Situacao | Ultima venda | Capital a custo | Origem do custo | Motivo | Acao |",
+                "|---|---|---|---:|---:|---|---|---:|---|---|---|",
             ]
         )
         for row in stale_rows:
@@ -5246,11 +6725,15 @@ def _assistant_report_chat_text(title: str, context: dict[str, Any], suggestions
                 "| "
                 + " | ".join(
                     [
+                        md(row.get("prioridade"), 80),
                         md(row.get("sku"), 80),
                         md(row.get("produto"), 180),
                         md(row.get("saldo_loja"), 50),
-                        md(row.get("dias_sem_vender"), 50),
+                        md(row.get("saldo_full"), 50),
+                        md(row.get("situacao"), 100),
                         md(row.get("ultima_venda"), 90),
+                        md(row.get("capital_custo"), 100),
+                        md(row.get("custo_origem"), 100),
                         md(row.get("motivo"), 280),
                         md(row.get("acao_recomendada"), 320),
                     ]
@@ -5418,7 +6901,146 @@ def _assistant_flatten_rows(results: list[dict[str, Any]]) -> list[dict[str, Any
     return rows[:5000]
 
 
+def _assistant_build_advanced_report_html(title: str, context: dict[str, Any]) -> str:
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    quality = context.get("data_quality") if isinstance(context.get("data_quality"), dict) else {}
+    financial = context.get("financial_summary") if isinstance(context.get("financial_summary"), dict) else {}
+    coverage = context.get("financial_coverage") if isinstance(context.get("financial_coverage"), dict) else {}
+    actions = context.get("top_actions") if isinstance(context.get("top_actions"), list) else []
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value if value is not None else ""))
+
+    def money(value: Any) -> str:
+        return _assistant_money(value) if value is not None else "Indisponivel"
+
+    margin_coverage_text = (
+        _assistant_percent(coverage.get("complete_margin_by_revenue_pct"))
+        if coverage.get("complete_margin_by_revenue_pct") is not None
+        else "Indisponivel"
+    )
+
+    def table(section_title: str, rows: Any, columns: list[tuple[str, str]]) -> str:
+        values = [item for item in (rows if isinstance(rows, list) else []) if isinstance(item, dict)][:20]
+        if not values:
+            return ""
+        parts = [f"<h2>{esc(section_title)}</h2><div class=\"table-wrap\"><table><thead><tr>"]
+        parts.extend(f"<th>{esc(label)}</th>" for key, label in columns)
+        parts.append("</tr></thead><tbody>")
+        for row in values:
+            parts.append("<tr>")
+            for key, _ in columns:
+                value = row.get(key)
+                if (key.endswith("_brl") or key in {"revenue", "impact_brl"}) and value is not None:
+                    value = _assistant_money(value)
+                elif key.endswith("_pct") and value is not None:
+                    value = _assistant_percent(value)
+                parts.append(f"<td>{esc(value if value is not None else 'Indisponivel')}</td>")
+            parts.append("</tr>")
+        parts.append("</tbody></table></div>")
+        return "".join(parts)
+
+    quality_class = "ok" if quality.get("confidence") == "alta" else "warning" if quality.get("confidence") == "média" else "critical"
+    parts = [
+        "<!doctype html><html><head><meta charset=\"utf-8\">",
+        f"<title>{esc(title)}</title>",
+        "<style>body{font-family:Arial,sans-serif;margin:28px;color:#13202c;background:#fff;line-height:1.42}h1{font-size:25px;margin:0 0 8px}h2{font-size:18px;margin:24px 0 10px;color:#0f3557}.meta{color:#526170;font-size:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px}.card{border:1px solid #d5dde6;border-radius:9px;padding:11px;background:#f8fbff}.card strong{display:block;font-size:17px;margin-top:3px}.quality{border-left:6px solid #d97706}.quality.ok{border-left-color:#059669}.quality.critical{border-left-color:#dc2626}.action{border:1px solid #d5dde6;border-left:5px solid #2563eb;border-radius:9px;padding:12px;margin:9px 0;background:#fbfdff}.action.immediate{border-left-color:#dc2626}.action.high{border-left-color:#ea580c}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#e8f5f2;color:#075d56;font-size:11px;font-weight:700;margin-right:5px}.table-wrap{overflow:auto;max-width:100%}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid #d5dde6;padding:7px;text-align:left;vertical-align:top}th{background:#eef5ff;color:#0f3557;white-space:nowrap}.warning-text{color:#9a3412}.footer{margin-top:26px;border-top:1px solid #d5dde6;padding-top:10px;color:#526170;font-size:11px}</style></head><body>",
+        f"<h1>{esc(title)}</h1>",
+        f"<p class=\"meta\">Gerado em {esc(scope.get('generated_at') or _assistant_now())}. Periodo {esc(scope.get('period_start') or '-')} a {esc(scope.get('period_end') or '-')}; comparacao {esc(scope.get('comparison_start') or '-')} a {esc(scope.get('comparison_end') or '-')}.</p>",
+        "<h2>Confiabilidade dos dados</h2>",
+        f"<div class=\"card quality {quality_class}\"><span class=\"pill\">{esc(quality.get('confidence') or 'baixa')}</span><strong>{esc(quality.get('score') or 0)}/100</strong><span>Estoque em {esc(scope.get('stock_as_of') or 'indisponivel')}; loja {esc(scope.get('selected_store') or 'consolidado com blocos por loja')}.</span></div>",
+        "<h2>Resumo financeiro</h2><div class=\"grid\">",
+    ]
+    financial_cards = [
+        ("Receita bruta", financial.get("gross_revenue_brl")),
+        ("Devolucoes", financial.get("returns_brl")),
+        ("Receita liquida", financial.get("net_revenue_brl")),
+        ("Publicidade", financial.get("advertising_brl")),
+        ("Margem de contribuicao", financial.get("contribution_profit_brl")),
+        ("Lucro apos publicidade", financial.get("net_profit_after_ads_brl")),
+    ]
+    for label, value in financial_cards:
+        parts.append(f"<div class=\"card\"><span>{esc(label)}</span><strong>{esc(money(value))}</strong></div>")
+    parts.append("</div>")
+    parts.append(
+        f"<p class=\"meta\">Cobertura completa de margem: {esc(margin_coverage_text)}; "
+        f"minimo exigido: {esc(_assistant_percent(coverage.get('minimum_required_pct') or 95))}. "
+        "Valores ausentes nao foram tratados como zero.</p>"
+    )
+    parts.append("<h2>Decisoes prioritarias</h2>")
+    if not actions:
+        parts.append("<p>Nenhuma acao prioritaria foi produzida com os dados confiaveis disponiveis.</p>")
+    for action in actions[:5]:
+        urgency = str(action.get("urgency") or "medium")
+        parts.append(f"<div class=\"action {esc(urgency)}\">")
+        parts.append(f"<strong>{esc(action.get('title') or 'Acao recomendada')}</strong>")
+        parts.append(
+            f"<p><span class=\"pill\">{esc(action.get('impact_label') or 'nao estimavel')}</span>"
+            f"<span class=\"pill\">urgencia {esc(urgency)}</span><span class=\"pill\">confianca {esc(action.get('confidence') or '-')}</span></p>"
+        )
+        parts.append(f"<p>{esc(action.get('evidence') or '')}</p><p><strong>Acao:</strong> {esc(action.get('recommendation') or '-')}</p>")
+        parts.append(f"<p class=\"meta\">Loja {esc(action.get('store') or '-')}; SKUs {esc(', '.join(str(item) for item in (action.get('skus') or [])[:12]) or '-')}; responsavel {esc(action.get('owner_username') or action.get('owner_role') or '-')}; prazo {esc(action.get('due_at') or '-')}.</p></div>")
+    parts.append(
+        table(
+            "Desempenho por loja",
+            context.get("store_summaries"),
+            [("store", "Loja"), ("net_revenue_brl", "Receita liquida"), ("trend_pct", "Variacao"), ("target_attainment_pct", "Meta"), ("orders", "Pedidos"), ("units", "Unidades")],
+        )
+    )
+    parts.append(
+        table(
+            "SKUs que puxam vendas",
+            context.get("sales_rows"),
+            [("store", "Loja"), ("sku", "SKU"), ("product", "Produto"), ("abc", "ABC"), ("revenue", "Receita"), ("revenue_share_pct", "Participacao"), ("trend_pct", "Tendencia")],
+        )
+    )
+    parts.append(
+        table(
+            "Planejamento de estoque",
+            context.get("inventory_rows"),
+            [("store", "Loja"), ("sku", "SKU"), ("abc", "ABC"), ("xyz", "XYZ"), ("local_stock", "Local"), ("full_stock", "Full"), ("coverage_days", "Cobertura dias"), ("reorder_point", "Ponto reposicao"), ("suggested_purchase", "Compra sugerida"), ("capital_tied_brl", "Capital parado")],
+        )
+    )
+    parts.append(
+        table(
+            "Compras e mercadoria em fluxo",
+            context.get("purchase_pipeline_rows"),
+            [("store", "Loja"), ("order_name", "Pedido"), ("supplier", "Fornecedor"), ("status", "Status"), ("sku", "SKU"), ("quantity", "Quantidade"), ("eta", "Previsao")],
+        )
+    )
+    import_analysis = context.get("import_analysis") if isinstance(context.get("import_analysis"), dict) else None
+    if import_analysis:
+        parts.append("<h2>Importacao</h2><div class=\"grid\">")
+        for label, value in (
+            ("FOB", f"US$ {_assistant_float(import_analysis.get('fob_usd')):,.2f}"),
+            ("Frete internacional", f"US$ {_assistant_float(import_analysis.get('freight_usd')):,.2f}"),
+            ("Caixa necessario", money(import_analysis.get("cash_required_brl"))),
+            ("Faixa tributaria", _assistant_percent(import_analysis.get("tax_band_pct") or 0)),
+        ):
+            parts.append(f"<div class=\"card\"><span>{esc(label)}</span><strong>{esc(value)}</strong></div>")
+        parts.append("</div>")
+        parts.append(
+            table(
+                "Custo posto por SKU",
+                import_analysis.get("items"),
+                [("sku", "SKU"), ("quantity", "Quantidade"), ("fob_usd", "FOB USD"), ("landed_total_brl", "Custo posto total"), ("landed_unit_brl", "Custo posto unitario"), ("minimum_sale_price_brl", "Preco minimo")],
+            )
+        )
+        parts.append(table("Cenarios", import_analysis.get("scenarios"), [("kind", "Cenario"), ("change_pct", "Variacao"), ("delay_days", "Atraso dias"), ("cash_required_brl", "Caixa necessario")]))
+    sources = quality.get("source_health") if isinstance(quality.get("source_health"), list) else []
+    parts.append(table("Fontes consultadas", sources, [("source", "Fonte"), ("status", "Status"), ("records", "Registros"), ("last_sync_at", "Atualizacao"), ("coverage_pct", "Cobertura")]))
+    warnings = quality.get("warnings") if isinstance(quality.get("warnings"), list) else []
+    if warnings:
+        parts.append("<h2>Avisos</h2><ul class=\"warning-text\">")
+        parts.extend(f"<li>{esc(item)}</li>" for item in warnings[:20])
+        parts.append("</ul>")
+    parts.append("<p class=\"footer\">Relatorio executivo read-only. A Planilha XLSX contem todos os SKUs. Acoes internas exigem aprovacao de administrador full e nunca alteram anuncios ou estoque externo.</p></body></html>")
+    return "".join(parts)
+
+
 def _assistant_build_report_html(title: str, context: dict[str, Any], suggestions: list[dict[str, Any]]) -> str:
+    if str(context.get("report_type") or "").strip():
+        return _assistant_build_advanced_report_html(title, context)
     generated = html.escape(str(context.get("generated_at") or _assistant_now()))
     sources = context.get("sources") if isinstance(context.get("sources"), list) else []
     warnings = context.get("warnings") if isinstance(context.get("warnings"), list) else []
@@ -5547,17 +7169,22 @@ def _assistant_build_report_html(title: str, context: dict[str, Any], suggestion
     if stale_rows:
         parts.append(
             "<h3>Estoque parado com saldo de loja</h3>"
-            "<p class=\"muted\">A tabela considera saldo de loja e dias sem venda recente. O estoque Full nao entra como saldo disponivel para esta acao.</p>"
-            "<table><thead><tr><th>SKU</th><th>Produto</th><th>Saldo loja</th><th>Dias sem vender</th><th>Ultima venda</th><th>Motivo</th><th>Acao recomendada</th></tr></thead><tbody>"
+            "<p class=\"muted\">Fila ordenada por urgencia. O saldo Full aparece somente como contexto e nao reduz o estoque parado da loja. Capital indisponivel significa custo ausente, nunca custo zero presumido.</p>"
+            "<table><thead><tr><th>Prioridade</th><th>SKU</th><th>Produto</th><th>Saldo loja</th><th>Saldo Full*</th><th>Situacao</th><th>Ultima venda</th><th>Capital a custo</th><th>Origem do custo</th><th>Motivo</th><th>Acao recomendada</th></tr></thead><tbody>"
         )
         for row in stale_rows:
+            priority_class = "critical-cell" if str(row.get("prioridade") or "").startswith("1") else ""
             parts.append(
                 "<tr>"
+                f"<td class=\"{priority_class}\">{esc(row.get('prioridade'))}</td>"
                 f"<td>{esc(row.get('sku'))}</td>"
                 f"<td>{esc(row.get('produto'))}</td>"
                 f"<td class=\"num\">{esc(row.get('saldo_loja'))}</td>"
-                f"<td class=\"num\">{esc(row.get('dias_sem_vender'))}</td>"
+                f"<td class=\"num\">{esc(row.get('saldo_full'))}</td>"
+                f"<td>{esc(row.get('situacao'))}</td>"
                 f"<td>{esc(row.get('ultima_venda'))}</td>"
+                f"<td class=\"num\">{esc(row.get('capital_custo'))}</td>"
+                f"<td>{esc(row.get('custo_origem'))}</td>"
                 f"<td>{esc(row.get('motivo'))}</td>"
                 f"<td>{esc(row.get('acao_recomendada'))}</td>"
                 "</tr>"
@@ -5664,7 +7291,66 @@ def _assistant_build_report_html(title: str, context: dict[str, Any], suggestion
     return "".join(parts)
 
 
+def _assistant_write_advanced_xlsx(path: str, context: dict[str, Any]) -> None:
+    import pandas as pd
+
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    quality = context.get("data_quality") if isinstance(context.get("data_quality"), dict) else {}
+    financial = context.get("financial_summary") if isinstance(context.get("financial_summary"), dict) else {}
+    coverage = context.get("financial_coverage") if isinstance(context.get("financial_coverage"), dict) else {}
+    summary_rows = [
+        {"Indicador": "Perfil", "Valor": context.get("report_type") or ""},
+        {"Indicador": "Periodo", "Valor": f"{scope.get('period_start') or '-'} a {scope.get('period_end') or '-'}"},
+        {"Indicador": "Comparacao", "Valor": f"{scope.get('comparison_start') or '-'} a {scope.get('comparison_end') or '-'}"},
+        {"Indicador": "Loja", "Valor": scope.get("selected_store") or "Consolidado"},
+        {"Indicador": "Estoque em", "Valor": scope.get("stock_as_of") or "Indisponivel"},
+        {"Indicador": "Confiabilidade", "Valor": f"{quality.get('confidence') or 'baixa'} ({quality.get('score') or 0}/100)"},
+    ]
+    summary_rows.extend({"Indicador": str(key), "Valor": value if value is not None else "Indisponivel"} for key, value in financial.items())
+    summary_rows.extend({"Indicador": f"cobertura_{key}", "Valor": value if value is not None else "Indisponivel"} for key, value in coverage.items())
+    actions = []
+    for action in context.get("top_actions") or []:
+        if not isinstance(action, dict):
+            continue
+        actions.append({**action, "skus": ", ".join(str(item) for item in action.get("skus") or [])})
+    import_analysis = context.get("import_analysis") if isinstance(context.get("import_analysis"), dict) else {}
+    import_rows = []
+    for item in import_analysis.get("items") or []:
+        if isinstance(item, dict):
+            import_rows.append({"record_type": "item", **item})
+    for item in import_analysis.get("scenarios") or []:
+        if isinstance(item, dict):
+            import_rows.append({"record_type": "scenario", **item})
+    sources = quality.get("source_health") if isinstance(quality.get("source_health"), list) else []
+    warnings = [{"Aviso": str(item)} for item in (quality.get("warnings") if isinstance(quality.get("warnings"), list) else [])]
+    sheets = {
+        "Resumo": summary_rows,
+        "Ações": actions,
+        "Lojas": context.get("store_summaries") or [],
+        "Vendas_SKU": context.get("sales_rows") or [],
+        "Estoque": context.get("inventory_rows") or [],
+        "Compras_Transito": context.get("purchase_pipeline_rows") or [],
+        "Importacao": import_rows,
+        "Fontes": sources,
+        "Avisos": warnings,
+    }
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        for sheet_name, rows in sheets.items():
+            frame = pd.DataFrame(rows or [{"Informacao": "Sem dados disponiveis"}])
+            frame.to_excel(writer, sheet_name=sheet_name, index=False)
+            worksheet = writer.book[sheet_name]
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+            for column_cells in worksheet.columns:
+                values = [str(cell.value or "") for cell in list(column_cells)[:200]]
+                width = min(60, max(10, max((len(value) for value in values), default=10) + 2))
+                worksheet.column_dimensions[column_cells[0].column_letter].width = width
+
+
 def _assistant_write_xlsx(path: str, context: dict[str, Any], suggestions: list[dict[str, Any]]) -> None:
+    if str(context.get("report_type") or "").strip():
+        _assistant_write_advanced_xlsx(path, context)
+        return
     import pandas as pd
 
     rows = _assistant_flatten_rows(context.get("tool_results") if isinstance(context.get("tool_results"), list) else [])
@@ -5701,7 +7387,96 @@ def _assistant_write_xlsx(path: str, context: dict[str, Any], suggestions: list[
         pd.DataFrame(rows or [{"info": "Sem dados tabulares"}]).to_excel(writer, sheet_name="dados", index=False)
 
 
+def _assistant_write_advanced_pdf(path: str, title: str, context: dict[str, Any]) -> None:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    styles = getSampleStyleSheet()
+    body = styles["BodyText"]
+    small = styles["BodyText"].clone("Small")
+    small.fontSize = 7
+    small.leading = 9
+    story: list[Any] = [Paragraph(html.escape(title), styles["Title"]), Spacer(1, 4 * mm)]
+    scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
+    quality = context.get("data_quality") if isinstance(context.get("data_quality"), dict) else {}
+    financial = context.get("financial_summary") if isinstance(context.get("financial_summary"), dict) else {}
+    story.append(
+        Paragraph(
+            html.escape(
+                f"Periodo {scope.get('period_start') or '-'} a {scope.get('period_end') or '-'}; "
+                f"comparacao {scope.get('comparison_start') or '-'} a {scope.get('comparison_end') or '-'}; "
+                f"confiabilidade {quality.get('confidence') or 'baixa'} ({quality.get('score') or 0}/100)."
+            ),
+            body,
+        )
+    )
+    story.append(Spacer(1, 3 * mm))
+    financial_rows = [["Indicador", "Valor"]]
+    labels = {
+        "gross_revenue_brl": "Receita bruta",
+        "returns_brl": "Devolucoes",
+        "net_revenue_brl": "Receita liquida",
+        "advertising_brl": "Publicidade",
+        "contribution_profit_brl": "Margem de contribuicao",
+        "net_profit_after_ads_brl": "Lucro apos publicidade",
+    }
+    for key, label in labels.items():
+        value = financial.get(key)
+        financial_rows.append([label, _assistant_money(value) if value is not None else "Indisponivel"])
+    table = Table(financial_rows, colWidths=[70 * mm, 55 * mm], repeatRows=1)
+    table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")), ("GRID", (0, 0), (-1, -1), .35, colors.grey), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 8), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.extend([Paragraph("Resumo financeiro", styles["Heading2"]), table, Spacer(1, 3 * mm), Paragraph("Decisoes prioritarias", styles["Heading2"])])
+    for index, action in enumerate((context.get("top_actions") or [])[:5], 1):
+        if not isinstance(action, dict):
+            continue
+        text_value = (
+            f"<b>{index}. {html.escape(str(action.get('title') or 'Acao recomendada'))}</b><br/>"
+            f"Loja {html.escape(str(action.get('store') or '-'))}; impacto {html.escape(str(action.get('impact_label') or 'nao estimavel'))}; "
+            f"urgencia {html.escape(str(action.get('urgency') or '-'))}; confianca {html.escape(str(action.get('confidence') or '-'))}.<br/>"
+            f"{html.escape(str(action.get('recommendation') or '-'))}<br/>"
+            f"Responsavel {html.escape(str(action.get('owner_username') or action.get('owner_role') or '-'))}; prazo {html.escape(str(action.get('due_at') or '-'))}."
+        )
+        story.extend([Paragraph(text_value, body), Spacer(1, 2 * mm)])
+
+    def add_table(title_value: str, rows: Any, columns: list[tuple[str, str]], limit: int = 20) -> None:
+        values = [item for item in (rows if isinstance(rows, list) else []) if isinstance(item, dict)][:limit]
+        if not values:
+            return
+        story.append(Paragraph(html.escape(title_value), styles["Heading2"]))
+        data: list[list[Any]] = [[Paragraph(html.escape(label), small) for _, label in columns]]
+        for row in values:
+            cells = []
+            for key, _ in columns:
+                value = row.get(key)
+                if (key.endswith("_brl") or key == "revenue") and value is not None:
+                    value = _assistant_money(value)
+                cells.append(Paragraph(html.escape(str(value if value is not None else "Indisponivel"))[:320], small))
+            data.append(cells)
+        widths = [landscape(A4)[0] / len(columns) - 8 * mm for _ in columns]
+        output = Table(data, colWidths=widths, repeatRows=1)
+        output.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbeafe")), ("GRID", (0, 0), (-1, -1), .25, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
+        story.extend([output, Spacer(1, 3 * mm)])
+
+    add_table("Lojas", context.get("store_summaries"), [("store", "Loja"), ("net_revenue_brl", "Receita liquida"), ("trend_pct", "Variacao"), ("target_attainment_pct", "Meta")])
+    add_table("Riscos de estoque", context.get("inventory_rows"), [("store", "Loja"), ("sku", "SKU"), ("abc", "ABC"), ("xyz", "XYZ"), ("coverage_days", "Cobertura"), ("suggested_purchase", "Comprar")])
+    import_analysis = context.get("import_analysis") if isinstance(context.get("import_analysis"), dict) else {}
+    add_table("Custo posto por SKU", import_analysis.get("items"), [("sku", "SKU"), ("quantity", "Qtd"), ("landed_unit_brl", "Custo posto"), ("minimum_sale_price_brl", "Preco minimo")])
+    warnings = quality.get("warnings") if isinstance(quality.get("warnings"), list) else []
+    if warnings:
+        story.append(Paragraph("Avisos de dados", styles["Heading2"]))
+        for warning in warnings[:12]:
+            story.append(Paragraph("- " + html.escape(str(warning)[:420]), small))
+    doc = SimpleDocTemplate(path, pagesize=landscape(A4), rightMargin=12 * mm, leftMargin=12 * mm, topMargin=12 * mm, bottomMargin=12 * mm)
+    doc.build(story)
+
+
 def _assistant_write_pdf(path: str, title: str, suggestions: list[dict[str, Any]], sources: list[dict[str, Any]], analysis: Optional[dict[str, Any]] = None, context: Optional[dict[str, Any]] = None) -> None:
+    if isinstance(context, dict) and str(context.get("report_type") or "").strip():
+        _assistant_write_advanced_pdf(path, title, context)
+        return
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
 
@@ -5769,8 +7544,8 @@ def _assistant_write_pdf(path: str, title: str, suggestions: list[dict[str, Any]
         line("Estoque parado com saldo de loja", True)
         for row in stale_rows[:12]:
             line(
-                f"- SKU {row.get('sku')} | saldo loja {row.get('saldo_loja')} | "
-                f"dias sem vender {row.get('dias_sem_vender')}"
+                f"- {row.get('prioridade')} | SKU {row.get('sku')} | saldo loja {row.get('saldo_loja')} | "
+                f"{row.get('situacao')} | capital {row.get('capital_custo')} | acao {row.get('acao_recomendada')}"
             )
     margin_rows = _assistant_collect_margin_rows(context or {}, limit=12)
     if margin_rows:
@@ -5790,10 +7565,26 @@ def _assistant_write_pdf(path: str, title: str, suggestions: list[dict[str, Any]
 
 def _assistant_create_report(client_id: str, title: str, context: dict[str, Any], prompt: str) -> dict[str, Any]:
     suggestions = context.get("suggestions") if isinstance(context.get("suggestions"), list) else []
-    if not isinstance(context.get("management_analysis"), dict):
+    advanced_report = bool(str(context.get("report_type") or "").strip())
+    if advanced_report:
+        financial = context.get("financial_summary") if isinstance(context.get("financial_summary"), dict) else {}
+        quality = context.get("data_quality") if isinstance(context.get("data_quality"), dict) else {}
+        net_revenue = financial.get("net_revenue_brl")
+        context["management_analysis"] = {
+            "generated_at": (context.get("scope") or {}).get("generated_at") if isinstance(context.get("scope"), dict) else _assistant_now(),
+            "executive_summary": [
+                f"Confiabilidade {quality.get('confidence') or 'baixa'} ({quality.get('score') or 0}/100).",
+                f"Receita liquida {_assistant_money(net_revenue) if net_revenue is not None else 'indisponivel'}.",
+            ],
+            "kpis": [],
+            "sections": [],
+            "priority_actions": [str(item.get("recommendation") or item.get("title") or "") for item in (context.get("top_actions") or [])[:5]],
+            "data_quality": quality,
+        }
+    elif not isinstance(context.get("management_analysis"), dict):
         context["management_analysis"] = _assistant_management_analysis(context)
     analysis = context.get("management_analysis") if isinstance(context.get("management_analysis"), dict) else {}
-    context["specialist_sku_diagnostics"] = _assistant_specialist_sku_diagnostics(context, limit=500)
+    context["specialist_sku_diagnostics"] = [] if advanced_report else _assistant_specialist_sku_diagnostics(context, limit=500)
     report_id = f"codex_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     report_dir = _assistant_report_dir(client_id, report_id)
     html_path = os.path.join(report_dir, "report.html")
@@ -5833,10 +7624,36 @@ def _assistant_create_report(client_id: str, title: str, context: dict[str, Any]
         "suggestions": suggestions,
         "management_analysis": analysis,
         "specialist_sku_diagnostics": context.get("specialist_sku_diagnostics") or [],
-        "registry_results": context.get("registry_results") or [],
+        "registry_results": (
+            [
+                {
+                    "tool_id": item.get("tool_id"),
+                    "tool_label": item.get("tool_label"),
+                    "records": item.get("records"),
+                    "sources_human": item.get("sources_human") or [],
+                    "warnings": item.get("warnings") or [],
+                }
+                for item in (context.get("registry_results") or [])[:50]
+                if isinstance(item, dict)
+            ]
+            if advanced_report
+            else context.get("registry_results") or []
+        ),
         "tool_plan": context.get("tool_plan") or {},
         "status_steps": context.get("status_steps") or [],
         "warnings": context.get("warnings") or [],
+        "report_type": context.get("report_type") or "",
+        "scope": context.get("scope") or {},
+        "data_quality": context.get("data_quality") or {},
+        "financial_coverage": context.get("financial_coverage") or {},
+        "financial_summary": context.get("financial_summary") or {},
+        "top_actions": (context.get("top_actions") or [])[:5],
+        "store_summaries": context.get("store_summaries") or [],
+        "sales_rows": context.get("sales_rows") or [],
+        "inventory_rows": context.get("inventory_rows") or [],
+        "purchase_pipeline_rows": context.get("purchase_pipeline_rows") or [],
+        "import_analysis": context.get("import_analysis"),
+        "supplier_performance": context.get("supplier_performance"),
         "chat_text": chat_text,
         "chat_download_formats": [fmt for fmt in ("pdf", "xlsx") if os.path.exists(os.path.join(report_dir, f"report.{fmt}"))],
     }
@@ -5868,6 +7685,18 @@ def _assistant_ensure_report_chat_text(metadata: dict[str, Any]) -> dict[str, An
         "tool_plan": metadata.get("tool_plan") or {},
         "status_steps": metadata.get("status_steps") or [],
         "warnings": metadata.get("warnings") or [],
+        "report_type": metadata.get("report_type") or "",
+        "scope": metadata.get("scope") or {},
+        "data_quality": metadata.get("data_quality") or {},
+        "financial_coverage": metadata.get("financial_coverage") or {},
+        "financial_summary": metadata.get("financial_summary") or {},
+        "top_actions": metadata.get("top_actions") or [],
+        "store_summaries": metadata.get("store_summaries") or [],
+        "sales_rows": metadata.get("sales_rows") or [],
+        "inventory_rows": metadata.get("inventory_rows") or [],
+        "purchase_pipeline_rows": metadata.get("purchase_pipeline_rows") or [],
+        "import_analysis": metadata.get("import_analysis"),
+        "supplier_performance": metadata.get("supplier_performance"),
     }
     suggestions = metadata.get("suggestions") if isinstance(metadata.get("suggestions"), list) else []
     metadata["chat_text"] = _assistant_report_chat_text(
@@ -5941,6 +7770,63 @@ def _assistant_compact_chat_text_response(payload: Any, preview_limit: int = 600
             "chat_text_length": chat_text_length,
             "truncated": bool(value.get("truncated")) or chat_text_length > limit,
         }
+        report_type = str(value.get("report_type") or "").strip()
+        if report_type:
+            report["report_type"] = report_type[:80]
+        scope = value.get("scope") if isinstance(value.get("scope"), dict) else {}
+        if scope:
+            report["scope"] = {
+                key: ([scalar(item, 120) for item in field[:20]] if isinstance(field, list) else scalar(field, 240))
+                for key in (
+                    "period_start", "period_end", "comparison_start", "comparison_end",
+                    "selected_store", "stores", "stock_as_of", "generated_at",
+                )
+                if (field := scope.get(key)) is not None
+            }
+        quality = value.get("data_quality") if isinstance(value.get("data_quality"), dict) else {}
+        if quality:
+            report["data_quality"] = {
+                "status": scalar(quality.get("status"), 40),
+                "score": quality.get("score"),
+                "confidence": scalar(quality.get("confidence"), 40),
+                "source_health": [
+                    {
+                        key: scalar(item.get(key), 180)
+                        for key in ("source", "status", "records", "last_sync_at", "coverage_pct")
+                        if item.get(key) is not None
+                    }
+                    for item in (quality.get("source_health") if isinstance(quality.get("source_health"), list) else [])[:8]
+                    if isinstance(item, dict)
+                ],
+                "warnings": [scalar(item, 260) for item in (quality.get("warnings") if isinstance(quality.get("warnings"), list) else [])[:6]],
+            }
+        for key in ("financial_coverage", "financial_summary"):
+            source_dict = value.get(key) if isinstance(value.get(key), dict) else {}
+            if source_dict:
+                report[key] = {
+                    str(item_key)[:80]: scalar(item_value, 160)
+                    for item_key, item_value in list(source_dict.items())[:30]
+                    if isinstance(item_value, (str, bool, int, float, type(None)))
+                }
+        actions = value.get("top_actions") if isinstance(value.get("top_actions"), list) else []
+        if actions:
+            report["top_actions"] = [
+                {
+                    key: (
+                        [scalar(entry, 80) for entry in item.get(key, [])[:20]]
+                        if key == "skus" and isinstance(item.get(key), list)
+                        else scalar(item.get(key), 500)
+                    )
+                    for key in (
+                        "action_id", "action_type", "title", "store", "skus", "impact_brl",
+                        "impact_label", "urgency", "confidence", "owner_username", "owner_role",
+                        "due_at", "evidence", "recommendation", "queueable",
+                    )
+                    if item.get(key) is not None
+                }
+                for item in actions[:5]
+                if isinstance(item, dict)
+            ]
         return report
 
     def compact_scheduler(value: Any) -> dict[str, Any]:
@@ -5954,6 +7840,8 @@ def _assistant_compact_chat_text_response(payload: Any, preview_limit: int = 600
             "last_daily_date",
             "last_daily_at",
             "last_daily_suggestions_count",
+            "last_weekly_key",
+            "last_weekly_at",
         ):
             item = value.get(key)
             if isinstance(item, (str, bool, int, float, type(None))):
@@ -5961,6 +7849,9 @@ def _assistant_compact_chat_text_response(payload: Any, preview_limit: int = 600
         nested_report = value.get("last_daily_report")
         if isinstance(nested_report, dict) and nested_report.get("report_id"):
             scheduler["last_daily_report_id"] = scalar(nested_report.get("report_id"), 160)
+        weekly_report = value.get("last_weekly_report")
+        if isinstance(weekly_report, dict) and weekly_report.get("report_id"):
+            scheduler["last_weekly_report_id"] = scalar(weekly_report.get("report_id"), 160)
         sources = value.get("last_proactive_sources")
         if isinstance(sources, list):
             scheduler["last_proactive_sources_count"] = len(sources)
@@ -5974,10 +7865,11 @@ def _assistant_compact_chat_text_response(payload: Any, preview_limit: int = 600
             "id": 120,
             "kind": 80,
             "title": 160,
-            "detail": 360,
+            "detail": 900,
             "severity": 40,
             "source": 160,
-            "recommendation": 360,
+            "recommendation": 600,
+            "report_prompt": 1200,
             "created_at": 80,
         }
         for key, max_chars in limits.items():
@@ -5994,7 +7886,7 @@ def _assistant_compact_chat_text_response(payload: Any, preview_limit: int = 600
         result["report"] = report
     result["scheduler"] = compact_scheduler(source.get("scheduler"))
     suggestions = []
-    for item in (source.get("suggestions") if isinstance(source.get("suggestions"), list) else [])[:20]:
+    for item in (source.get("suggestions") if isinstance(source.get("suggestions"), list) else [])[:12]:
         projected = compact_suggestion(item)
         if projected:
             suggestions.append(projected)
@@ -6312,13 +8204,56 @@ def codex_assistant_proactive_run(
 
 
 def _assistant_daily_due(state: dict[str, Any], force: bool = False) -> bool:
+    del state, force
+    return False
+
+
+def _assistant_weekly_due(state: dict[str, Any], force: bool = False) -> bool:
     if force:
         return True
     now = datetime.now()
-    today = now.date().isoformat()
-    if str(state.get("last_daily_date") or "") == today:
+    if now.weekday() == 0 and now.hour < 8:
         return False
-    return now.hour >= DAILY_ANALYSIS_HOUR
+    week_key = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
+    return str(state.get("last_weekly_key") or "") != week_key
+
+
+def _assistant_apply_advanced_profile(
+    client_id: str,
+    context: dict[str, Any],
+    profile: str,
+    *,
+    store: str = "",
+    import_list_id: str = "",
+) -> dict[str, Any]:
+    from backend.services import codex_reports_advanced
+
+    margin_rows = _assistant_collect_margin_rows(context, limit=500)
+    advanced = codex_reports_advanced.build_profile_context(
+        info_base=_assistant_info_base(),
+        client_id=client_id,
+        profile=profile,
+        store=store,
+        import_list_id=import_list_id,
+        context=context,
+        margin_rows=margin_rows,
+    )
+    context.update(advanced)
+    scope = advanced.get("scope") if isinstance(advanced.get("scope"), dict) else {}
+    tool_plan = context.get("tool_plan") if isinstance(context.get("tool_plan"), dict) else {}
+    context["tool_plan"] = {
+        **tool_plan,
+        "data_inicio": scope.get("period_start") or tool_plan.get("data_inicio"),
+        "data_fim": scope.get("period_end") or tool_plan.get("data_fim"),
+        "comparison_start": scope.get("comparison_start"),
+        "comparison_end": scope.get("comparison_end"),
+        "loja": scope.get("selected_store") or "todas",
+        "intent": profile,
+    }
+    quality_warnings = (advanced.get("data_quality") or {}).get("warnings") if isinstance(advanced.get("data_quality"), dict) else []
+    if quality_warnings:
+        context["warnings"] = list(dict.fromkeys(list(context.get("warnings") or []) + list(quality_warnings)))
+    return context
 
 
 def codex_assistant_daily_analysis_run(
@@ -6330,23 +8265,41 @@ def codex_assistant_daily_analysis_run(
     client_id = str(sessao.get("client_id") or "default")
     with ASSISTANT_LOCK:
         state = _assistant_scheduler_state(client_id)
-        if not _assistant_daily_due(state, bool(payload.force)):
-            report = state.get("last_daily_report") if isinstance(state.get("last_daily_report"), dict) else None
-            if report and (not payload.compact or not report.get("chat_text")):
-                report = copy.deepcopy(report)
-                report = _assistant_ensure_report_chat_text(report)
+        response = {
+            "success": True,
+            "status": "disabled_weekly_only",
+            "due": False,
+            "suggestions": [],
+            "report": None,
+            "scheduler": state,
+            "message": "Relatorios diarios desativados. O Black Jhon gera somente o relatorio semanal.",
+        }
+        return _assistant_compact_chat_text_response(response) if payload.compact else response
+
+
+def codex_assistant_weekly_analysis_run(
+    payload: CodexAssistantRunRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    client_id = str(sessao.get("client_id") or "default")
+    with ASSISTANT_LOCK:
+        state = _assistant_scheduler_state(client_id)
+        if not _assistant_weekly_due(state, bool(payload.force)):
+            report = state.get("last_weekly_report") if isinstance(state.get("last_weekly_report"), dict) else None
             response = {"success": True, "status": "skipped", "due": False, "scheduler": state, "report": report}
             return _assistant_compact_chat_text_response(response) if payload.compact else response
         context = _assistant_collect_data(
             client_id,
-            "analise diaria completa de vendas, estoque, devolucoes, margem, ruptura e oportunidades",
+            "relatorio semanal completo de vendas, estoque, compras e oportunidades",
             payload.screen_context,
-            mode="daily",
+            mode="report",
             force_refresh=True,
         )
-        suggestions = _assistant_save_suggestions(client_id, context.get("suggestions") or [])
-        title = "Analise diaria Codex - vendas e estoque"
-        report = _assistant_create_report(client_id, title, context, "daily")
+        context = _assistant_apply_advanced_profile(client_id, context, "weekly_sales_stock")
+        title = "Black Jhon - Semanal completo de vendas e estoque"
+        report = _assistant_create_report(client_id, title, context, "weekly")
         try:
             from backend.services import codex_console
 
@@ -6359,24 +8312,18 @@ def codex_assistant_daily_analysis_run(
                 screen_context=payload.screen_context if isinstance(payload.screen_context, dict) else {},
             )
         except Exception as exc:
-            report.setdefault("warnings", []).append(f"Falha ao persistir relatorio no historico Codex: {exc}")
+            report.setdefault("warnings", []).append(f"Falha ao persistir relatorio semanal no historico: {exc}")
+        now = datetime.now()
+        week_key = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
         state.update(
             {
-                "last_daily_date": _assistant_today(),
-                "last_daily_at": _assistant_now(),
-                "last_daily_report": report,
-                "last_daily_suggestions_count": len(context.get("suggestions") or []),
+                "last_weekly_key": week_key,
+                "last_weekly_at": _assistant_now(),
+                "last_weekly_report": report,
             }
         )
         _assistant_save_scheduler_state(client_id, state)
-        response = {
-            "success": True,
-            "status": "completed",
-            "due": True,
-            "suggestions": suggestions[:30],
-            "report": report,
-            "scheduler": state,
-        }
+        response = {"success": True, "status": "completed", "due": True, "report": report, "scheduler": state}
         return _assistant_compact_chat_text_response(response) if payload.compact else response
 
 
@@ -6388,6 +8335,11 @@ def codex_assistant_report_create(
     sessao = _assistant_require_full_admin(request, authorization)
     client_id = str(sessao.get("client_id") or "default")
     prompt = str(payload.prompt or "").strip() or "relatorio operacional solicitado ao Codex"
+    profile = str(payload.profile or "").strip()
+    if profile and profile not in {"daily_exceptions", "weekly_sales_stock", "import_order", "custom"}:
+        raise HTTPException(status_code=400, detail="Perfil de relatorio invalido.")
+    if profile == "import_order" and not str(payload.import_list_id or "").strip():
+        raise HTTPException(status_code=400, detail="Informe import_list_id para o relatorio de importacao.")
     context = _assistant_collect_data(
         client_id,
         prompt,
@@ -6395,7 +8347,21 @@ def codex_assistant_report_create(
         mode="report",
         force_refresh=bool(payload.force_refresh),
     )
-    report = _assistant_create_report(client_id, "Relatorio Codex Assistente", context, prompt)
+    if profile:
+        context = _assistant_apply_advanced_profile(
+            client_id,
+            context,
+            profile,
+            store=str(payload.store or ""),
+            import_list_id=str(payload.import_list_id or ""),
+        )
+    title = {
+        "daily_exceptions": "Black Jhon - Diario executivo de vendas e estoque",
+        "weekly_sales_stock": "Black Jhon - Semanal completo de vendas e estoque",
+        "import_order": "Black Jhon - Analise de importacao por pedido",
+        "custom": "Relatorio Black Jhon",
+    }.get(profile, "Relatorio Codex Assistente")
+    report = _assistant_create_report(client_id, title, context, prompt)
     thread_id = str(payload.thread_id or "").strip()
     conversation_id = str(payload.conversation_id or "").strip()
     if thread_id or conversation_id:
@@ -6448,6 +8414,161 @@ def codex_assistant_report_get(
     return {"success": True, "report": metadata}
 
 
+def codex_assistant_report_settings_get(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    from backend.services import codex_reports_advanced
+
+    settings = codex_reports_advanced.report_settings_get(
+        _assistant_info_base(),
+        str(sessao.get("client_id") or "default"),
+    )
+    return {"success": True, "settings": settings}
+
+
+def codex_assistant_report_settings_put(
+    payload: CodexAssistantReportSettingsRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    from backend.services import codex_reports_advanced
+
+    settings = codex_reports_advanced.report_settings_save(
+        _assistant_info_base(),
+        str(sessao.get("client_id") or "default"),
+        payload.settings,
+        str(sessao.get("username") or ""),
+    )
+    return {"success": True, "settings": settings}
+
+
+def codex_assistant_financial_adjustments_get(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    kind: str = "advertising",
+    store: str = "",
+    period_start: str = "",
+    period_end: str = "",
+    limit: int = 500,
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    items = codex_assistant_storage.codex_assistant_financial_adjustments_list(
+        _assistant_info_base(),
+        str(sessao.get("client_id") or "default"),
+        kind=kind,
+        store=store,
+        period_start=period_start,
+        period_end=period_end,
+        limit=limit,
+    )
+    return {"success": True, "adjustments": items}
+
+
+def codex_assistant_financial_adjustments_post(
+    payload: CodexAssistantFinancialAdjustmentRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    if payload.amount < 0:
+        raise HTTPException(status_code=400, detail="O valor do ajuste nao pode ser negativo.")
+    try:
+        start = date.fromisoformat(str(payload.period_start)[:10])
+        end = date.fromisoformat(str(payload.period_end)[:10])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Periodo do ajuste invalido.") from exc
+    if start > end:
+        raise HTTPException(status_code=400, detail="O inicio do ajuste deve ser anterior ao fim.")
+    item = codex_assistant_storage.codex_assistant_financial_adjustment_save(
+        _assistant_info_base(),
+        str(sessao.get("client_id") or "default"),
+        payload.model_dump() if hasattr(payload, "model_dump") else payload.dict(),
+        created_by=str(sessao.get("username") or ""),
+    )
+    return {"success": True, "adjustment": item}
+
+
+def codex_assistant_financial_adjustments_delete(
+    adjustment_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    removed = codex_assistant_storage.codex_assistant_financial_adjustment_delete(
+        _assistant_info_base(),
+        str(sessao.get("client_id") or "default"),
+        adjustment_id,
+    )
+    if not removed:
+        raise HTTPException(status_code=404, detail="Ajuste financeiro nao encontrado.")
+    return {"success": True, "deleted": True}
+
+
+def codex_assistant_action_queue_get(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    status: str = "",
+    action_type: str = "",
+    owner_username: str = "",
+    limit: int = 500,
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    from backend.services import codex_reports_advanced
+
+    actions = codex_reports_advanced.queue_actions_list(
+        _assistant_info_base(),
+        str(sessao.get("client_id") or "default"),
+        status=status,
+        action_type=action_type,
+        owner_username=owner_username,
+        limit=limit,
+    )
+    return {"success": True, "actions": actions}
+
+
+def codex_assistant_action_queue_post(
+    payload: CodexAssistantActionQueueRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    from backend.services import codex_reports_advanced
+
+    item = codex_reports_advanced.create_queue_action(
+        info_base=_assistant_info_base(),
+        client_id=str(sessao.get("client_id") or "default"),
+        username=str(sessao.get("username") or ""),
+        payload=payload.model_dump() if hasattr(payload, "model_dump") else payload.dict(),
+    )
+    return {"success": True, "action": item}
+
+
+def codex_assistant_action_queue_patch(
+    action_id: str,
+    payload: CodexAssistantActionQueueUpdateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    sessao = _assistant_require_full_admin(request, authorization)
+    from backend.services import codex_reports_advanced
+
+    raw_updates = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+    try:
+        item = codex_reports_advanced.update_queue_action(
+            info_base=_assistant_info_base(),
+            client_id=str(sessao.get("client_id") or "default"),
+            action_id=action_id,
+            username=str(sessao.get("username") or ""),
+            updates=raw_updates,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Acao interna nao encontrada.") from exc
+    return {"success": True, "action": item}
+
+
 def codex_assistant_report_download(
     report_id: str,
     request: Request,
@@ -6485,6 +8606,10 @@ __all__ = [
     "CodexAssistantChatRequest",
     "CodexAssistantRunRequest",
     "CodexAssistantReportRequest",
+    "CodexAssistantReportSettingsRequest",
+    "CodexAssistantFinancialAdjustmentRequest",
+    "CodexAssistantActionQueueRequest",
+    "CodexAssistantActionQueueUpdateRequest",
     "CodexAssistantEvaluationRequest",
     "CodexOperationalMemoryRequest",
     "configure_codex_assistant_runtime",
@@ -6502,7 +8627,16 @@ __all__ = [
     "codex_assistant_bling_resources",
     "codex_assistant_proactive_run",
     "codex_assistant_daily_analysis_run",
+    "codex_assistant_weekly_analysis_run",
     "codex_assistant_report_create",
     "codex_assistant_report_get",
+    "codex_assistant_report_settings_get",
+    "codex_assistant_report_settings_put",
+    "codex_assistant_financial_adjustments_get",
+    "codex_assistant_financial_adjustments_post",
+    "codex_assistant_financial_adjustments_delete",
+    "codex_assistant_action_queue_get",
+    "codex_assistant_action_queue_post",
+    "codex_assistant_action_queue_patch",
     "codex_assistant_report_download",
 ]

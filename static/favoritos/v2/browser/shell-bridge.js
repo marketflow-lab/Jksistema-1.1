@@ -56,6 +56,10 @@
       return null;
     };
     const chamarWorkerDireto = (name, args = []) => {
+      const controller = browser.workerController;
+      if (usarWorkerFavoritos() && controller && typeof controller.invoke === 'function') {
+        return controller.invoke(name, args);
+      }
       const api = electronApi();
       if (!usarWorkerFavoritos() || !api || typeof api[name] !== 'function') return null;
       try {

@@ -323,6 +323,11 @@ LISTA_PEDIDO_STATUS_VALIDOS = {
     "Em Orçamento",
     "Analisando orçamento",
     "Pedido Aprovado",
+    "Pedido emitido",
+    "Em produção",
+    "Em trânsito",
+    "Em desembaraço",
+    "Recebido",
     "Pedido cancelado",
 }
 
@@ -359,6 +364,11 @@ def _normalizar_status_lista_pedido(status: str | None) -> str:
         "em orcamento": "Em Orçamento",
         "analisando orcamento": "Analisando orçamento",
         "pedido aprovado": "Pedido Aprovado",
+        "pedido emitido": "Pedido emitido",
+        "em producao": "Em produção",
+        "em transito": "Em trânsito",
+        "em desembaraco": "Em desembaraço",
+        "recebido": "Recebido",
         "pedido cancelado": "Pedido cancelado",
     }
     return aliases.get(_status_key(texto), "Lista gerada")
@@ -382,7 +392,9 @@ def _mapa_estoque_em_transito_por_sku(client_id: str, loja: str = "__todas") -> 
     mapa: dict[str, float] = {}
 
     for lista in listas:
-        if _normalizar_status_lista_pedido((lista or {}).get("status")) != "Pedido Aprovado":
+        if _normalizar_status_lista_pedido((lista or {}).get("status")) not in {
+            "Pedido Aprovado", "Pedido emitido", "Em produção", "Em trânsito", "Em desembaraço"
+        }:
             continue
 
         loja_lista = str((lista or {}).get("loja") or "").strip().lower() or "__todas"
@@ -571,7 +583,12 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
     quantidade = _to_float(_primeiro_texto_item(item, ["Quantidade", "quantity", "Qtd", "Qtde", "Qty"]), 0.0)
     valor_unidade = _to_float(_primeiro_texto_item(item, ["Valor unidade", "Valor unitario", "Valor unitário", "Cost", "Custo", "Preco", "Preço"]), 0.0)
     valor_total = _to_float(_primeiro_texto_item(item, ["Valor total", "Sub-total(USD)", "Subtotal USD", "Sub total", "Subtotal"]), 0.0)
+    preservados = {
+        _corrigir_mojibake_texto(str(chave)): _corrigir_mojibake_texto(valor) if isinstance(valor, str) else valor
+        for chave, valor in item.items()
+    }
     normalizado = {
+        **preservados,
         "SKU": sku,
         "Foto": foto,
         TITULO_PRODUTO_INGLES_KEY: titulo,
@@ -586,6 +603,10 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
         EMBALAGEM_LISTA_PEDIDO_KEY: _primeiro_texto_item(item, [EMBALAGEM_LISTA_PEDIDO_KEY, "Packaging", "Embalagem individual", "Embalagem"]),
         "M3 individual": _primeiro_texto_item(item, ["M3 individual", "M3 Individual", "M³ individual", "M³ Individual", "m3_individual", "CBM individual"]),
         "Frete Internacional": max(0.0, _to_float(item.get("Frete Internacional", 0), 0.0)),
+        "MOQ": max(0.0, _to_float(_primeiro_texto_item(item, ["MOQ", "moq", "Quantidade minima", "Quantidade mínima"]), 0.0)),
+        "package_multiple": max(1.0, _to_float(_primeiro_texto_item(item, ["package_multiple", "Multiplo embalagem", "Múltiplo embalagem", "Packing multiple"]), 1.0)),
+        "received_quantity": max(0.0, _to_float(_primeiro_texto_item(item, ["received_quantity", "Quantidade recebida", "Qtd recebida"]), 0.0)),
+        "defective_quantity": max(0.0, _to_float(_primeiro_texto_item(item, ["defective_quantity", "Quantidade defeituosa", "Qtd defeituosa"]), 0.0)),
     }
 
     campos_preservar = {
@@ -649,6 +670,19 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
             if str(i.get("SKU", "") or "").strip()
         ],
         "numero_invoice": str(lista.get("numero_invoice") or lista.get("invoice") or "").strip(),
+        "supplier": str(lista.get("supplier") or lista.get("fornecedor") or "").strip(),
+        "currency": str(lista.get("currency") or "USD").strip(),
+        "incoterm": str(lista.get("incoterm") or "").strip(),
+        "exchange_rate": _to_float(lista.get("exchange_rate") or lista.get("dolar_hoje") or lista.get("cotacao_dolar"), 0.0),
+        "lead_time_days": int(_to_float(lista.get("lead_time_days"), 0.0)),
+        "moq_default": _to_float(lista.get("moq_default"), 0.0),
+        "package_multiple_default": max(1.0, _to_float(lista.get("package_multiple_default"), 1.0)),
+        "order_date": str(lista.get("order_date") or ""),
+        "promised_ship_date": str(lista.get("promised_ship_date") or ""),
+        "actual_ship_date": str(lista.get("actual_ship_date") or ""),
+        "eta_date": str(lista.get("eta_date") or ""),
+        "customs_clearance_date": str(lista.get("customs_clearance_date") or ""),
+        "received_at": str(lista.get("received_at") or ""),
     }
 
 

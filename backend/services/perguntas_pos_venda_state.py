@@ -156,6 +156,7 @@ def _perguntas_loja_config_normalizar(config: dict | None = None) -> dict:
     return {
         "responder_automaticamente": bool(config.get("responder_automaticamente")),
         "solicitar_aprovacao": bool(config.get("solicitar_aprovacao")),
+        "notificar_whatsapp_aprovacoes": bool(config.get("notificar_whatsapp_aprovacoes")),
         "habilitar_pos_venda_automatico": bool(pos_venda_raw),
         "intervalo_minutos": intervalo_minutos,
     }
@@ -189,6 +190,7 @@ def _perguntas_loja_config_salvar(
     loja: str,
     responder_automaticamente: bool,
     solicitar_aprovacao: bool,
+    notificar_whatsapp_aprovacoes: bool,
     habilitar_pos_venda_automatico: bool,
     intervalo_minutos: float | None = None,
 ) -> dict:
@@ -200,6 +202,7 @@ def _perguntas_loja_config_salvar(
     payload = {
         "responder_automaticamente": bool(responder_automaticamente),
         "solicitar_aprovacao": bool(solicitar_aprovacao),
+        "notificar_whatsapp_aprovacoes": bool(notificar_whatsapp_aprovacoes),
         "habilitar_pos_venda_automatico": bool(habilitar_pos_venda_automatico),
         "intervalo_minutos": intervalo_cfg["intervalo_minutos"],
         "updated_at": dt.datetime.now().isoformat(timespec="seconds"),

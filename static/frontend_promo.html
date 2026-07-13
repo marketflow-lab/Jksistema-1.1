@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Análise de Promoção - JK Sistema</title>
-    <link rel="stylesheet" href="/frontend_promo/styles.css?v=20260623-isolamento-promo">
+    <link rel="stylesheet" href="/frontend_promo/styles.css?v=20260713-tolerancia-margem">
 </head>
 <body>
 
@@ -57,6 +57,10 @@
             <div class="api-field">
                 <label for="apiPromoASelect">Promoção 1</label>
                 <select id="apiPromoASelect"></select>
+            </div>
+            <div class="api-field api-field--tolerancia">
+                <label for="apiMargemTolerancia">Tolerância de margem (%)</label>
+                <input id="apiMargemTolerancia" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal" title="Permite que a margem da Promoção 2 fique até este percentual abaixo da margem da Promoção 1.">
             </div>
             <div class="api-field api-field--promos">
                 <label for="apiPromoBSelect">Promoções 2</label>
@@ -193,11 +197,11 @@
 
 <script src="/table_columns.js"></script>
 <script src="/auth.js?v=20260618-persist-login"></script>
-<script src="/frontend_promo/runtime.js?v=20260623-isolamento-promo"></script>
-<script src="/frontend_promo/automacao-api.js?v=20260623-isolamento-promo"></script>
+<script src="/frontend_promo/runtime.js?v=20260713-tolerancia-margem"></script>
+<script src="/frontend_promo/automacao-api.js?v=20260713-tolerancia-margem"></script>
 <script src="/frontend_promo/participacao.js?v=20260623-isolamento-promo"></script>
-<script src="/frontend_promo/tabela-preferencias.js?v=20260623-isolamento-promo"></script>
-<script src="/frontend_promo/api-mercadolivre.js?v=20260623-isolamento-promo"></script>
+<script src="/frontend_promo/tabela-preferencias.js?v=20260713-tolerancia-margem"></script>
+<script src="/frontend_promo/api-mercadolivre.js?v=20260713-tolerancia-margem"></script>
 <script src="/frontend_promo/arquivos-render.js?v=20260623-isolamento-promo"></script>
 <script src="/frontend_promo/exportacao.js?v=20260623-isolamento-promo"></script>
 <script src="/frontend_promo/init.js?v=20260623-isolamento-promo"></script>

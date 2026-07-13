@@ -241,9 +241,11 @@
             return entradas.map(([chave, valor]) => `${chave}=${valor}`).join(', ');
         }
 
-        function montarResumoPesquisaFavoritos(numeroPesquisa, totalVisiveis, anuncios) {
+        function montarResumoPesquisaFavoritos(numeroPesquisa, totalVisiveis, anuncios, resumoColetaOriginal = null) {
             const lista = Array.isArray(anuncios) ? anuncios.filter(Boolean) : [];
-            const resumoColetor = Array.isArray(anuncios) && anuncios.__favoritosResumo && typeof anuncios.__favoritosResumo === 'object'
+            const resumoColetor = resumoColetaOriginal && typeof resumoColetaOriginal === 'object'
+                ? resumoColetaOriginal
+                : Array.isArray(anuncios) && anuncios.__favoritosResumo && typeof anuncios.__favoritosResumo === 'object'
                 ? anuncios.__favoritosResumo
                 : {};
             const temTitulo = (item) => typeof tituloValidoFavoritosCanonico === 'function'
@@ -290,6 +292,14 @@
                 suspeitos: Number(resumoColetor.suspeitos) || suspeitos,
                 avant_nao_vinculado: avantNaoVinculado,
                 login_avant_bloqueado: loginAvantBloqueado,
+                motivo_encerramento: String(resumoColetor.motivo_encerramento || ''),
+                passadas: Number(resumoColetor.passadas) || 0,
+                posicoes_percorridas: Number(resumoColetor.posicoes_percorridas) || 0,
+                cliques_avant: Number(resumoColetor.cliques_avant) || 0,
+                capturados_avant: Number(resumoColetor.capturados_avant) || 0,
+                tempo_materializacao_ms: Number(resumoColetor.tempo_materializacao_ms) || 0,
+                tempo_avant_ms: Number(resumoColetor.tempo_avant_ms) || 0,
+                tempo_finalizacao_ms: Number(resumoColetor.tempo_finalizacao_ms) || 0,
                 motivos_incompletos: auditoria.motivos_incompletos,
                 origens_dados: auditoria.origens_dados,
                 amostras_incompletos: auditoria.amostras_incompletos
@@ -382,8 +392,13 @@
             return base;
         }
 
-        function fecharNavegadorFavoritosAposColeta(reason = 'favoritos-coleta-finalizada') {
+        function fecharNavegadorFavoritosAposColeta(reason = 'favoritos-coleta-finalizada', opcoes = {}) {
             const api = obterElectronApiFavoritosExecucao();
+            const status = String(opcoes.status || 'done').toLowerCase();
+            const finishedAt = Number(opcoes.finishedAt) || 0;
+            const message = Object.prototype.hasOwnProperty.call(opcoes, 'message')
+                ? String(opcoes.message || '')
+                : (status === 'done' ? 'Favoritos finalizado.' : 'Favoritos encerrado com erro.');
             if (typeof fecharBalaoResultadosMl === 'function') {
                 fecharBalaoResultadosMl({
                     forcar: true,
@@ -404,7 +419,9 @@
                 api.stopFavoritosWorkerBrowser({
                     destroy: true,
                     reason,
-                    message: 'Favoritos finalizado.'
+                    status,
+                    message,
+                    finishedAt
                 }).catch(() => {});
             } else if (api && typeof api.stopFavoritosJobBrowserBackground === 'function') {
                 api.stopFavoritosJobBrowserBackground().catch(() => {});
@@ -413,8 +430,9 @@
                 window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE = false;
                 emitirEstadoWorkerFavoritosExecucao('jk-favoritos-worker-done', {
                     active: false,
-                    status: 'done',
-                    message: 'Favoritos finalizado.'
+                    status,
+                    message,
+                    finishedAt
                 });
             } catch (_err) {}
         }
@@ -476,13 +494,13 @@
                 if (urlConfirmada && /^https?:\/\//i.test(urlConfirmada)) {
                     mlWebviewEl.currentUrl = urlConfirmada;
                 }
-                await esperarNovaColetaFavoritos(700);
+                await esperarNovaColetaFavoritos(350);
             }
             if (!abriu) {
                 throw erroNovaColetaFavoritos(`Nao consegui abrir a pesquisa "${termo}" no navegador interno.`);
             }
 
-            await esperarNovaColetaFavoritos(1200);
+            await esperarNovaColetaFavoritos(700);
 
             mostrarBalaoFavoritosStatus(`Coletando todos os anuncios da primeira pagina de "${termo}"...`, {
                 manterNavegadorVisivel: true,
@@ -496,7 +514,9 @@
                     tempoLimiteMs: 180000,
                     maxPassadas: 3,
                     loteCliques: 6,
+                    signal: sinalFavoritosAtual(),
                     onProgress: (progresso) => {
+                        if (mlFavoritosCancelado || !mlFavoritosEmExecucao) return;
                         mostrarBalaoFavoritosStatus(formatarProgressoColetaPrimeiraPaginaFavoritos(pesquisa && pesquisa.campo || 1, progresso), {
                             manterNavegadorVisivel: true,
                             larga: true,
@@ -504,11 +524,12 @@
                         });
                     }
                 }).catch((err) => {
-                    if (err && err.loginMercadoLivreNecessario) throw err;
+                    if (mlFavoritosCancelado || (err && (err.loginMercadoLivreNecessario || err.name === 'AbortError'))) throw err;
                     console.warn('Coleta controlada da primeira pagina falhou:', err);
                     return null;
                 });
             }
+            verificarCancelamentoFavoritos();
 
             let anuncios = listaAnunciosResultadoColetaFavoritos(resultado);
             let totalVisiveis = totalVisiveisResultadoColetaFavoritos(resultado, anuncios);
@@ -610,6 +631,7 @@
                 return { success: false, reason: 'sem_skus' };
             }
 
+            mlFavoritosExecucaoIniciadaEmMs = Date.now();
             mlFavoritosEmExecucao = true;
             mlFavoritosExecucaoEmSegundoPlano = true;
             mlFavoritosCancelado = false;
@@ -632,6 +654,7 @@
             if (!termo) {
                 mlFavoritosEmExecucao = false;
                 mlFavoritosExecucaoEmSegundoPlano = false;
+                mlFavoritosExecucaoIniciadaEmMs = 0;
                 mlFavoritosAbortController = null;
                 mostrarBalaoFavoritosStatus('Avant Pro confirmado, mas nao encontrei termo para abrir a primeira pesquisa.', {
                     erro: true,
@@ -658,6 +681,10 @@
             });
 
             const grupos = [];
+            let duracaoExecucaoPersistidaMs = null;
+            const contextoEnriquecimentoFavoritos = typeof criarContextoEnriquecimentoFavoritosExecucao === 'function'
+                ? criarContextoEnriquecimentoFavoritosExecucao()
+                : null;
             try {
                 if (!Array.isArray(skuDados) || !skuDados.length) {
                     mostrarBalaoFavoritosStatus('Carregando dados dos SKUs antes da primeira pesquisa...');
@@ -700,13 +727,14 @@
                             maxAnuncios: limiteAnunciosPrimeiraPesquisa
                         });
                         let normalizadosPesquisa = anuncios.map(anuncio => normalizarAnuncioFavoritosPesquisa(anuncio, info.sku, pesquisa));
-                        await enriquecerAnunciosFavoritosRanking(normalizadosPesquisa);
+                        await enriquecerAnunciosFavoritosRanking(normalizadosPesquisa, contextoEnriquecimentoFavoritos);
                         normalizadosPesquisa = normalizadosPesquisa.map(anuncio => normalizarAnuncioFavoritosPesquisa(anuncio, info.sku, pesquisa));
                         normalizadosPesquisa.forEach(anuncio => coletados.push(anuncio));
                         const resumoPesquisa = montarResumoPesquisaFavoritos(
                             pesquisaIndex + 1,
                             Number(anuncios.__favoritosTotalVisiveis) || anuncios.length,
-                            normalizadosPesquisa
+                            normalizadosPesquisa,
+                            anuncios.__favoritosResumo
                         );
                         resumoPesquisa.tempo_esgotado = !!anuncios.__favoritosTempoEsgotado;
                         resumosColeta.push({
@@ -728,7 +756,7 @@
                         larga: true,
                         titulo: 'Ranking'
                     });
-                    await enriquecerAnunciosFavoritosRanking(unicos);
+                    await enriquecerAnunciosFavoritosRanking(unicos, contextoEnriquecimentoFavoritos, { fechamento: true });
                     await aguardarControleFavoritos();
 
                     const anunciosNovos = unicos.filter(anuncioFavoritosProdutoNovo);
@@ -774,6 +802,7 @@
                         ia_confirmados: filtroIa.confirmados || 0,
                         ia_max_confirmados: filtroIa.maxConfirmados || (usarIaRanking ? 8 : 0),
                         fonte_coleta: 'avantpro_primeira_pagina_nova',
+                        duracao_execucao_ms: Math.max(0, Date.now() - mlFavoritosExecucaoIniciadaEmMs),
                         resumo_coleta: resumosColeta,
                         total_coletado: unicos.length,
                         total_com_dados_avant: filtrarAnunciosFavoritosComDadosAvant(unicos).length
@@ -801,6 +830,17 @@
                         total: resumoHistorico.total,
                         salvos: resumoHistorico.salvos.length
                     });
+                    mostrarBalaoFavoritosStatus(`O ranking foi concluido, mas apenas ${resumoHistorico.salvos.length} de ${resumoHistorico.total} SKU(s) geraram historico.`, {
+                        erro: true,
+                        tempoMs: 12000,
+                        larga: true,
+                        titulo: 'Historico incompleto'
+                    });
+                    fecharNavegadorFavoritosAposColeta('favoritos-historico-parcial', {
+                        status: 'error',
+                        message: 'Favoritos encerrado: historico incompleto.'
+                    });
+                    return { success: false, reason: 'historico_parcial', grupos, resumo_historico: resumoHistorico };
                 }
                 if (!entradaHistorico && gruposComRanking.length) {
                     console.warn('Ranking de favoritos foi montado, mas o historico nao retornou entrada salva.', {
@@ -813,6 +853,11 @@
                         larga: true,
                         titulo: 'Ranking montado'
                     });
+                    fecharNavegadorFavoritosAposColeta('favoritos-historico-nao-confirmado', {
+                        status: 'error',
+                        message: 'Favoritos encerrado: o historico nao foi gerado.'
+                    });
+                    return { success: false, reason: 'historico_nao_confirmado', grupos };
                 }
                 if (!entradaHistorico && !gruposComRanking.length) {
                     if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Favoritos sem ranking salvo';
@@ -823,8 +868,64 @@
                         tempoMs: 9000,
                         larga: true
                     });
-                    fecharNavegadorFavoritosAposColeta('favoritos-coleta-sem-ranking');
+                    fecharNavegadorFavoritosAposColeta('favoritos-coleta-sem-ranking', {
+                        status: 'error',
+                        message: 'Favoritos encerrado sem ranking para salvar.'
+                    });
                     return { success: false, reason: 'sem_ranking', grupos };
+                }
+
+                if (entradaHistorico && (
+                    typeof confirmarSalvamentoHistoricoFavoritosServidor !== 'function'
+                    || typeof finalizarDuracaoExecucaoHistoricosFavoritos !== 'function'
+                )) {
+                    mostrarBalaoFavoritosStatus('O historico foi mantido localmente, mas o modulo de confirmacao do servidor nao esta disponivel.', {
+                        erro: true,
+                        tempoMs: 12000,
+                        larga: true,
+                        titulo: 'Falha ao confirmar historico'
+                    });
+                    fecharNavegadorFavoritosAposColeta('favoritos-confirmacao-historico-indisponivel', {
+                        status: 'error',
+                        message: 'Favoritos encerrado: confirmacao do historico indisponivel.'
+                    });
+                    return { success: false, reason: 'confirmacao_historico_indisponivel', grupos };
+                }
+
+                if (entradaHistorico) {
+                    const duracaoExecucaoProvisoriaMs = Math.max(0, Date.now() - mlFavoritosExecucaoIniciadaEmMs);
+                    mostrarBalaoFavoritosStatus(`Ranking concluido. Salvando o tempo total de ${formatarDuracaoExecucaoFavoritos(duracaoExecucaoProvisoriaMs)} no historico...`, {
+                        manterNavegadorVisivel: false,
+                        larga: true,
+                        titulo: 'Salvando historico'
+                    });
+                    const confirmacaoHistorico = await finalizarDuracaoExecucaoHistoricosFavoritos(
+                        entradaHistorico.ids || [],
+                        mlFavoritosExecucaoIniciadaEmMs
+                    );
+                    verificarCancelamentoFavoritos();
+                    if (!confirmacaoHistorico || confirmacaoHistorico.success !== true) {
+                        const detalhe = confirmacaoHistorico && confirmacaoHistorico.erro
+                            ? ` ${confirmacaoHistorico.erro}`
+                            : '';
+                        mostrarBalaoFavoritosStatus(`O ranking foi mantido localmente, mas o servidor nao confirmou o historico.${detalhe}`, {
+                            erro: true,
+                            tempoMs: 12000,
+                            larga: true,
+                            titulo: 'Falha ao salvar historico'
+                        });
+                        fecharNavegadorFavoritosAposColeta('favoritos-historico-servidor-falhou', {
+                            status: 'error',
+                            message: 'Favoritos encerrado: falha ao confirmar o historico.'
+                        });
+                        return {
+                            success: false,
+                            reason: 'historico_servidor_nao_confirmado',
+                            grupos,
+                            confirmacao_historico: confirmacaoHistorico || null
+                        };
+                    }
+                    duracaoExecucaoPersistidaMs = Number(confirmacaoHistorico.duracao_execucao_ms);
                 }
 
                 const grupoParaAbrir = gruposComRanking[0] || grupos.find(grupo => grupo && grupo.sku);
@@ -841,7 +942,7 @@
                 }
                 if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Favoritos concluidos';
                 if (mlWorkModalSubtitleEl) mlWorkModalSubtitleEl.textContent = `${gruposComRanking.length} SKU(s), ${totalAnuncios} anuncio(s) no ranking.`;
-                mostrarBalaoFavoritosStatus(`Favoritos concluido. Ranking salvo com ate ${limiteRankingFinal} anuncio(s) por SKU, em ordem de media de venda. A rotina antiga de coleta continua desligada.`, {
+                mostrarBalaoFavoritosStatus(`Favoritos concluido. Ranking salvo e historico confirmado com ate ${limiteRankingFinal} anuncio(s) por SKU, em ordem de media de venda. A rotina antiga de coleta continua desligada.`, {
                     tempoMs: 8000,
                     larga: true,
                     titulo: 'Ranking salvo'
@@ -849,15 +950,26 @@
                 if (typeof mudarAba === 'function') {
                     try { mudarAba('favoritos'); } catch (_err) {}
                 }
-                fecharNavegadorFavoritosAposColeta('favoritos-coleta-concluida');
+                if (contextoEnriquecimentoFavoritos && contextoEnriquecimentoFavoritos.estatisticas) {
+                    console.info('[Favoritos][Enriquecimento] execucao concluida', contextoEnriquecimentoFavoritos.estatisticas);
+                }
+                fecharNavegadorFavoritosAposColeta('favoritos-coleta-concluida', {
+                    finishedAt: Number.isFinite(duracaoExecucaoPersistidaMs)
+                        ? mlFavoritosExecucaoIniciadaEmMs + duracaoExecucaoPersistidaMs
+                        : Date.now()
+                });
                 return { success: true, termo, sku, grupos, entradaHistorico };
             } catch (err) {
                 if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) {
-                    mostrarBalaoFavoritosStatus('Favoritos cancelado pelo usuario.', {
-                        tempoMs: 5000,
-                        titulo: 'Favoritos cancelado'
+                    if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Favoritos cancelado';
+                    if (typeof limparStatusTerminalFavoritos === 'function') {
+                        limparStatusTerminalFavoritos({ status: 'canceled' });
+                    }
+                    pararNavegadorFavoritosBackground({
+                        status: 'canceled',
+                        message: '',
+                        reason: 'favoritos-coleta-cancelada'
                     });
-                    pararNavegadorFavoritosBackground();
                     return { success: false, reason: 'cancelado', grupos };
                 }
                 console.error('Falha na nova coleta de favoritos:', err);
@@ -868,10 +980,20 @@
                     tempoMs: 12000,
                     titulo: 'Erro ao fazer favoritos'
                 });
+                fecharNavegadorFavoritosAposColeta('favoritos-coleta-erro', {
+                    status: 'error',
+                    message: 'Favoritos encerrado com erro antes de salvar o historico.'
+                });
                 return { success: false, reason: 'erro', error: err && err.message ? err.message : String(err), grupos };
             } finally {
+                const canceladoAoFinal = !!mlFavoritosCancelado;
+                if (canceladoAoFinal && typeof limparStatusTerminalFavoritos === 'function') {
+                    limparStatusTerminalFavoritos({ status: 'canceled' });
+                }
                 mlFavoritosEmExecucao = false;
                 mlFavoritosExecucaoEmSegundoPlano = false;
+                mlFavoritosExecucaoIniciadaEmMs = 0;
+                mlFavoritosCancelado = false;
                 mlFavoritosPausado = false;
                 mlFavoritosAbortController = null;
                 mlFavoritosJobUltimoStatus = null;
@@ -883,6 +1005,8 @@
         async function fazerFavoritosSkusSelecionadosRendererAntigo(opcoes = {}) {
             if (opcoes && opcoes.type && opcoes.target) opcoes = {};
             if (mlFavoritosEmExecucao) return;
+            mlFavoritosCancelado = false;
+            mlFavoritosPausado = false;
             const selecionadosPayload = normalizarSelecionadosFavoritosExecucao(opcoes.selecionadosPayload);
             const selecionados = selecionadosPayload.length ? selecionadosPayload : obterSkusSelecionadosSidebar();
             if (!selecionados.length) {
@@ -1111,9 +1235,9 @@
             } catch (err) {
                 if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) {
                     if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Favoritos cancelado';
-                    mostrarBalaoFavoritosStatus('Favoritos cancelado pelo usuario.', {
-                        tempoMs: 5000
-                    });
+                    if (typeof limparStatusTerminalFavoritos === 'function') {
+                        limparStatusTerminalFavoritos({ status: 'canceled' });
+                    }
                 } else if (typeof erroEhLoginMercadoLivreFavoritos === 'function' && erroEhLoginMercadoLivreFavoritos(err)) {
                     manterNavegadorVisivelAposErro = true;
                     mlFavoritosExecucaoEmSegundoPlano = false;
@@ -1193,13 +1317,23 @@
                     });
                 }
             } finally {
+                const canceladoAoFinal = !!mlFavoritosCancelado;
+                if (canceladoAoFinal && typeof limparStatusTerminalFavoritos === 'function') {
+                    limparStatusTerminalFavoritos({ status: 'canceled' });
+                }
                 mlFavoritosEmExecucao = false;
                 mlFavoritosExecucaoEmSegundoPlano = false;
                 mlFavoritosCancelado = false;
                 mlFavoritosPausado = false;
                 mlFavoritosJobUltimoStatus = null;
                 mlFavoritosAbortController = null;
-                if (executarEmBackground && !manterNavegadorVisivelAposErro) pararNavegadorFavoritosBackground();
+                if (executarEmBackground && !manterNavegadorVisivelAposErro) {
+                    pararNavegadorFavoritosBackground(canceladoAoFinal ? {
+                        status: 'canceled',
+                        message: '',
+                        reason: 'favoritos-renderer-cancelado'
+                    } : {});
+                }
                 atualizarFiltroAzulFavoritos();
                 atualizarContadorSkuSidebarSelecionados();
             }
@@ -1445,6 +1579,12 @@
             const jobIdStatus = String(status && (status.job_id || status.jobId || '') || '').trim();
             if (jobIdStatus) mlFavoritosJobIdAtual = jobIdStatus;
             const estado = String(status && status.status || '').toLowerCase();
+            if (mlFavoritosCancelado && estado !== 'canceled') {
+                if (typeof limparStatusTerminalFavoritos === 'function') {
+                    limparStatusTerminalFavoritos({ status: 'canceled' });
+                }
+                return;
+            }
             const grupos = aplicarResultadosParciaisFavoritosJob(status);
             if (grupos.length !== mlFavoritosJobUltimaQtdRender || ['done', 'error', 'canceled'].includes(estado)) {
                 agendarRenderFavoritosJob(grupos);
@@ -1484,6 +1624,7 @@
             mlFavoritosJobFinalTratado = true;
             pararPollingFavoritosJob();
             const estado = String(status && status.status || '').toLowerCase();
+            const cancelado = estado === 'canceled' || !!(erro && erro.canceladoFavoritos);
             const finalizouEmSegundoPlano = mlFavoritosExecucaoEmSegundoPlano;
             const totalAnuncios = grupos.reduce((acc, grupo) => acc + (Array.isArray(grupo.anuncios) ? grupo.anuncios.length : 0), 0);
             if (!erro && estado === 'done') {
@@ -1523,18 +1664,22 @@
                 }
                 fecharNavegadorFavoritosAposColeta('favoritos-renderer-finalizado');
                 if (!finalizouEmSegundoPlano) mudarAba('favoritos');
-            } else if (estado === 'canceled' || (erro && erro.canceladoFavoritos)) {
+            } else if (cancelado) {
                 if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Favoritos cancelado';
-                mostrarBalaoFavoritosStatus('Favoritos cancelado pelo usuario.', {
-                    tempoMs: 5000
-                });
+                if (typeof limparStatusTerminalFavoritos === 'function') {
+                    limparStatusTerminalFavoritos({ status: 'canceled' });
+                }
             } else {
                 if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Erro ao fazer favoritos';
                 mostrarBalaoFavoritosStatus(`Erro ao fazer favoritos: ${erro && erro.message ? erro.message : (status && status.erro) || 'erro desconhecido'}`, {
                     erro: true
                 });
             }
-            pararNavegadorFavoritosBackground();
+            pararNavegadorFavoritosBackground(cancelado ? {
+                status: 'canceled',
+                message: '',
+                reason: 'favoritos-job-cancelado'
+            } : {});
             limparEstadoFavoritosJob();
         }
 
@@ -1548,8 +1693,11 @@
         }
 
         async function cancelarFavoritosJobAtualServidor() {
-            if (!mlFavoritosJobIdAtual) return null;
-            return enviarComandoFavoritosJobAtual('cancel');
+            const jobId = String(mlFavoritosJobIdAtual || '').trim();
+            if (!jobId) return null;
+            return fetchFavoritosJob(`/api/favoritos/jobs/${encodeURIComponent(jobId)}/cancel`, {
+                method: 'POST'
+            });
         }
 
         async function pausarFavoritosJobAtual() {
@@ -1603,6 +1751,8 @@
                 window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE = true;
                 emitirEstadoWorkerFavoritosExecucao('jk-favoritos-worker-enable', {
                     active: true,
+                    cancelRequested: false,
+                    startedAt: Number(mlFavoritosExecucaoIniciadaEmMs) || Date.now(),
                     status: 'running',
                     message: 'Favoritos rodando em segundo plano.'
                 });
@@ -1626,21 +1776,30 @@
             }
         }
 
-        function pararNavegadorFavoritosBackground() {
+        function pararNavegadorFavoritosBackground(opcoes = {}) {
             const api = obterElectronApiFavoritosExecucao();
+            const status = String(opcoes.status || 'stopped').toLowerCase();
+            const message = Object.prototype.hasOwnProperty.call(opcoes, 'message')
+                ? String(opcoes.message || '')
+                : 'Favoritos finalizado.';
+            const reason = String(opcoes.reason || 'favoritos-background-stop');
+            const finishedAt = Number(opcoes.finishedAt) || 0;
             try {
                 window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE = false;
                 emitirEstadoWorkerFavoritosExecucao('jk-favoritos-worker-done', {
                     active: false,
-                    status: 'stopped',
-                    message: 'Favoritos finalizado.'
+                    status,
+                    message,
+                    finishedAt
                 });
                 if (!api) return;
                 if (typeof api.stopFavoritosWorkerBrowser === 'function') {
                     api.stopFavoritosWorkerBrowser({
                         destroy: true,
-                        reason: 'favoritos-background-stop',
-                        message: 'Favoritos finalizado.'
+                        reason,
+                        status,
+                        message,
+                        finishedAt
                     }).catch(() => {});
                     return;
                 }
@@ -1649,12 +1808,21 @@
                     return;
                 }
                 if (typeof api.hideEmbeddedMlBrowser === 'function') {
-                    api.hideEmbeddedMlBrowser({ destroy: true, reason: 'favoritos-background-stop' }).catch(() => {});
+                    api.hideEmbeddedMlBrowser({ destroy: true, reason }).catch(() => {});
                 }
             } catch (_err) {}
         }
 
         window.addEventListener('message', (event) => {
+            const origemConhecida = event && (
+                event.source === window
+                || event.source === window.parent
+                || event.source === window.top
+            );
+            const origemCompativel = !event.origin
+                || event.origin === 'null'
+                || event.origin === window.location.origin;
+            if (!origemConhecida || !origemCompativel) return;
             const data = event && event.data ? event.data : {};
             if (!data || data.channel !== 'jk-favoritos-worker-action') return;
             const action = String(data.action || data.payload && data.payload.action || '').toLowerCase();
@@ -1679,6 +1847,8 @@
                 });
             }
             if (mlFavoritosEmExecucao) return;
+            mlFavoritosCancelado = false;
+            mlFavoritosPausado = false;
             const selecionadosPayload = normalizarSelecionadosFavoritosExecucao(opcoes.selecionadosPayload);
             const selecionados = selecionadosPayload.length ? selecionadosPayload : obterSkusSelecionadosSidebar();
             if (!selecionados.length) {
@@ -1821,6 +1991,7 @@
             const skuRanking = String(opcoes.sku || 'AVULSO').trim() || 'AVULSO';
             const rankingAvulso = opcoes.avulso !== undefined ? !!opcoes.avulso : skuChaveSku(skuRanking) === 'avulso';
             const tituloProcesso = opcoes.tituloProcesso || (rankingAvulso ? 'Ranqueamento avulso' : `Refazendo ranking ${skuRanking}`);
+            mlFavoritosExecucaoIniciadaEmMs = Date.now();
             mlFavoritosEmExecucao = true;
             mlFavoritosExecucaoEmSegundoPlano = false;
             mlFavoritosCancelado = false;
@@ -1839,6 +2010,9 @@
                 mlFavoritosEmptyEl.classList.remove('hidden');
             }
             mostrarBalaoFavoritosStatus(`Ranqueamento avulso iniciado com ${termos.length} pesquisa(s).`);
+            const contextoEnriquecimentoFavoritos = typeof criarContextoEnriquecimentoFavoritosExecucao === 'function'
+                ? criarContextoEnriquecimentoFavoritosExecucao()
+                : null;
 
             try {
                 const coletados = [];
@@ -1867,7 +2041,7 @@
                     });
                     verificarCancelamentoFavoritos();
                     let normalizadosPesquisa = anuncios.map(anuncio => normalizarAnuncioFavoritosPesquisa(anuncio, skuRanking, pesquisa));
-                    await enriquecerAnunciosFavoritosRanking(normalizadosPesquisa);
+                    await enriquecerAnunciosFavoritosRanking(normalizadosPesquisa, contextoEnriquecimentoFavoritos);
                     normalizadosPesquisa = normalizadosPesquisa.map(anuncio => normalizarAnuncioFavoritosPesquisa(anuncio, skuRanking, pesquisa));
                     normalizadosPesquisa.forEach(anuncio => {
                         coletados.push(anuncio);
@@ -1875,7 +2049,8 @@
                     const resumoPesquisa = montarResumoPesquisaFavoritos(
                         pesquisaIndex + 1,
                         Number(anuncios.__favoritosTotalVisiveis) || anuncios.length,
-                        normalizadosPesquisa
+                        normalizadosPesquisa,
+                        anuncios.__favoritosResumo
                     );
                     resumoPesquisa.tempo_esgotado = !!anuncios.__favoritosTempoEsgotado;
                     resumosColeta.push({
@@ -1894,7 +2069,7 @@
                     .filter(anuncioFavoritosCandidatoRanking);
                 mostrarBalaoFavoritosStatus(`Ranqueamento avulso: enriquecendo ${unicos.length} anuncio(s)...`);
                 verificarCancelamentoFavoritos();
-                await enriquecerAnunciosFavoritosRanking(unicos);
+                await enriquecerAnunciosFavoritosRanking(unicos, contextoEnriquecimentoFavoritos, { fechamento: true });
                 for (let i = 0; i < unicos.length; i += 1) {
                     const origem = Array.isArray(unicos[i].pesquisas_origem) && unicos[i].pesquisas_origem[0]
                         ? { termo: unicos[i].pesquisas_origem[0], campo: '' }
@@ -1940,12 +2115,23 @@
                     ia_confirmados: filtroIa.confirmados || 0,
                     ia_max_confirmados: filtroIa.maxConfirmados || 0,
                     fonte_coleta: 'avantpro_primeira_pagina_nova',
+                    duracao_execucao_ms: Math.max(0, Date.now() - mlFavoritosExecucaoIniciadaEmMs),
                     resumo_coleta: resumosColeta,
                     total_coletado: unicos.length,
                     total_com_dados_avant: filtrarAnunciosFavoritosComDadosAvant(unicos).length
                 };
                 guardarResultadoRankingFavorito(grupoRanking);
-                registrarHistoricoFavoritos([grupoRanking]);
+                const entradaHistoricoAvulso = registrarHistoricoFavoritos([grupoRanking]);
+                if (!entradaHistoricoAvulso) {
+                    throw new Error('O ranking foi concluido, mas o historico nao foi gerado.');
+                }
+                const confirmacaoHistoricoAvulso = await finalizarDuracaoExecucaoHistoricosFavoritos(
+                    [entradaHistoricoAvulso.id],
+                    mlFavoritosExecucaoIniciadaEmMs
+                );
+                if (!confirmacaoHistoricoAvulso || confirmacaoHistoricoAvulso.success !== true) {
+                    throw new Error(confirmacaoHistoricoAvulso && confirmacaoHistoricoAvulso.erro || 'O servidor nao confirmou o historico com o tempo de execucao.');
+                }
                 favMlSkuSelecionado = grupoRanking.sku;
                 favMlLojaSelecionada = grupoRanking.loja || favoritosLojaSelecionadaParaApi() || '';
                 favMlHistoricoExecucaoSelecionadaId = '';
@@ -1967,21 +2153,37 @@
                 mlFavoritosExecucaoEmSegundoPlano = false;
                 atualizarFiltroAzulFavoritos();
                 esconderBalaoFavoritosStatus();
-                fecharNavegadorFavoritosAposColeta('favoritos-avulso-concluido');
+                fecharNavegadorFavoritosAposColeta('favoritos-avulso-concluido', {
+                    finishedAt: mlFavoritosExecucaoIniciadaEmMs + Number(confirmacaoHistoricoAvulso.duracao_execucao_ms || 0)
+                });
                 if (!finalizouEmSegundoPlano) mudarAba('favoritos');
             } catch (err) {
                 if (mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'))) {
-                    mostrarBalaoFavoritosStatus('Ranqueamento avulso cancelado pelo usuario.', {
-                        tempoMs: 5000
+                    if (typeof limparStatusTerminalFavoritos === 'function') {
+                        limparStatusTerminalFavoritos({ status: 'canceled' });
+                    }
+                    pararNavegadorFavoritosBackground({
+                        status: 'canceled',
+                        message: '',
+                        reason: 'favoritos-avulso-cancelado'
                     });
                 } else {
                     mostrarBalaoFavoritosStatus(`Erro no rankeamento avulso: ${err && err.message ? err.message : err}`, {
                         erro: true
                     });
+                    fecharNavegadorFavoritosAposColeta('favoritos-avulso-erro', {
+                        status: 'error',
+                        message: 'Ranqueamento avulso encerrado com erro.'
+                    });
                 }
             } finally {
+                const canceladoAoFinal = !!mlFavoritosCancelado;
+                if (canceladoAoFinal && typeof limparStatusTerminalFavoritos === 'function') {
+                    limparStatusTerminalFavoritos({ status: 'canceled' });
+                }
                 mlFavoritosEmExecucao = false;
                 mlFavoritosExecucaoEmSegundoPlano = false;
+                mlFavoritosExecucaoIniciadaEmMs = 0;
                 mlFavoritosCancelado = false;
                 mlFavoritosAbortController = null;
                 atualizarFiltroAzulFavoritos();

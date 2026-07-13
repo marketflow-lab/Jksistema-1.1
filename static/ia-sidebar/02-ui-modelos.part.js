@@ -295,6 +295,30 @@
     .jk-codex-msg.assistant .jk-ia-table-responsive[data-columns="1"] td::before{display:none;}
   }
   .jk-codex-report-downloads{border-top:1px solid rgba(167,139,250,.2);padding-top:8px;justify-content:flex-start;}
+  .jk-codex-report-quality{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:center;margin-top:9px;border:1px solid rgba(20,184,166,.28);border-radius:10px;background:rgba(8,47,73,.32);padding:8px;white-space:normal;}
+  .jk-codex-report-quality strong{min-width:52px;border-radius:999px;background:rgba(20,184,166,.18);color:#bffef6;padding:4px 7px;text-align:center;font-size:.68rem;}
+  .jk-codex-report-quality span{min-width:0;color:#d8f7ff;font-size:.67rem;font-weight:800;line-height:1.35;overflow-wrap:anywhere;}
+  .jk-codex-report-decisions{display:grid;gap:7px;margin-top:9px;white-space:normal;}
+  .jk-codex-report-decision{display:grid;gap:5px;border:1px solid rgba(167,139,250,.24);border-left:4px solid #8b5cf6;border-radius:9px;background:rgba(15,23,42,.76);padding:8px;}
+  .jk-codex-report-decision[data-urgency="immediate"]{border-left-color:#ef4444;}
+  .jk-codex-report-decision[data-urgency="high"]{border-left-color:#f97316;}
+  .jk-codex-report-decision-title{color:#fff;font-size:.74rem;font-weight:900;line-height:1.25;overflow-wrap:anywhere;}
+  .jk-codex-report-decision-meta{color:#9ee8df;font-size:.61rem;font-weight:900;line-height:1.35;overflow-wrap:anywhere;}
+  .jk-codex-report-decision-text{color:#d8e6f5;font-size:.65rem;font-weight:700;line-height:1.35;overflow-wrap:anywhere;}
+  #jk-codex-report-settings-dialog{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;padding:18px;background:rgba(2,6,23,.76);backdrop-filter:blur(4px);}
+  #jk-codex-report-settings-dialog[hidden]{display:none!important;}
+  .jk-codex-report-settings-card{width:min(720px,calc(100vw - 28px));max-height:min(760px,calc(100vh - 28px));overflow:auto;border:1px solid rgba(45,212,191,.38);border-radius:16px;background:#071522;color:#e6f7ff;box-shadow:0 24px 80px rgba(0,0,0,.48);padding:16px;}
+  .jk-codex-report-settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;}
+  .jk-codex-report-settings-head h3{margin:0;color:#fff;font-size:1rem;}
+  .jk-codex-report-settings-head p{margin:4px 0 0;color:#9bc4d3;font-size:.72rem;line-height:1.4;}
+  .jk-codex-report-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+  .jk-codex-report-field{display:grid;gap:5px;min-width:0;color:#b8d9e5;font-size:.68rem;font-weight:800;}
+  .jk-codex-report-field.wide{grid-column:1/-1;}
+  .jk-codex-report-field input,.jk-codex-report-field textarea{box-sizing:border-box;width:100%;border:1px solid rgba(148,163,184,.34);border-radius:9px;background:#03101b;color:#effcff;padding:9px 10px;font:700 .72rem/1.35 Arial,sans-serif;outline:none;}
+  .jk-codex-report-field textarea{min-height:118px;resize:vertical;font-family:Consolas,monospace;font-weight:500;}
+  .jk-codex-report-field input:focus,.jk-codex-report-field textarea:focus{border-color:#2dd4bf;box-shadow:0 0 0 2px rgba(45,212,191,.12);}
+  .jk-codex-report-settings-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
+  @media (max-width:560px){.jk-codex-report-settings-grid{grid-template-columns:1fr}.jk-codex-report-field.wide{grid-column:auto}}
   .jk-codex-msg pre{max-width:100%;overflow:auto;white-space:pre;background:rgba(2,6,23,.7);border:1px solid rgba(167,139,250,.25);border-radius:8px;padding:8px;font-size:.74rem;}
   .jk-codex-msg code{background:rgba(2,6,23,.52);border:1px solid rgba(167,139,250,.22);border-radius:5px;padding:1px 5px;font-size:.75rem;}
   .jk-codex-msg a{color:#99f6e4;text-decoration:underline;text-underline-offset:2px;}
@@ -558,8 +582,9 @@
         <h3>Black Jhon</h3>
         <span>Codex principal &middot; IA integrada do sistema</span>
       </div>
-      <button class="jk-codex-hbtn" id="jk-codex-new" title="Nova conversa">&#9998;</button>
+      <button class="jk-codex-hbtn" id="jk-codex-new" title="Reiniciar memoria" aria-label="Reiniciar memoria do Black Jhon">&#8634;</button>
       <button class="jk-codex-hbtn" id="jk-codex-history-toggle" title="Historico">&#128340;</button>
+      <button class="jk-codex-hbtn" id="jk-codex-report-settings" title="Configuracoes dos relatorios">&#9881;</button>
       <button class="jk-codex-hbtn" id="jk-codex-refresh" title="Atualizar status">&#8635;</button>
       <button class="jk-codex-hbtn" id="jk-codex-close" title="Fechar">&times;</button>
     </div>
@@ -665,6 +690,35 @@
       <input type="file" id="jk-codex-file-input" multiple style="display:none">
     </div>
   </aside>
+  <div id="jk-codex-report-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="jk-codex-report-settings-title" hidden>
+    <div class="jk-codex-report-settings-card">
+      <div class="jk-codex-report-settings-head">
+        <div>
+          <h3 id="jk-codex-report-settings-title">Relatorios gerenciais</h3>
+          <p>Politica global e excecoes herdadas por loja, fornecedor e SKU. Somente administradores full podem alterar.</p>
+        </div>
+        <button class="jk-codex-hbtn" id="jk-codex-report-settings-close" type="button" title="Fechar">&times;</button>
+      </div>
+      <div class="jk-codex-report-settings-grid">
+        <label class="jk-codex-report-field">Cobertura minima para margem (%)<input id="jk-report-margin-coverage" type="number" min="0" max="100" step="0.1"></label>
+        <label class="jk-codex-report-field">Lead time padrao (dias)<input id="jk-report-lead-time" type="number" min="0" max="1460" step="1"></label>
+        <label class="jk-codex-report-field">Ciclo de revisao (dias)<input id="jk-report-review-cycle" type="number" min="0" max="365" step="1"></label>
+        <label class="jk-codex-report-field">Margem alvo (%)<input id="jk-report-target-margin" type="number" min="-100" max="100" step="0.1"></label>
+        <label class="jk-codex-report-field">Prazos imediata/alta/media/baixa (dias)<input id="jk-report-urgency-days" type="text" placeholder="1, 3, 7, 14"></label>
+        <label class="jk-codex-report-field">Cenarios de cambio (%)<input id="jk-report-scenario-exchange" type="text" placeholder="5, 10"></label>
+        <label class="jk-codex-report-field">Cenarios de frete (%)<input id="jk-report-scenario-freight" type="text" placeholder="10, 20"></label>
+        <label class="jk-codex-report-field">Cenarios de atraso (dias)<input id="jk-report-scenario-delay" type="text" placeholder="15, 30"></label>
+        <label class="jk-codex-report-field">Responsavel por reposicao<input id="jk-report-owner-replenishment" type="text" placeholder="usuario ou funcao"></label>
+        <label class="jk-codex-report-field">Responsavel por precos<input id="jk-report-owner-price" type="text" placeholder="usuario ou funcao"></label>
+        <label class="jk-codex-report-field">Responsavel por liquidacao<input id="jk-report-owner-liquidation" type="text" placeholder="usuario ou funcao"></label>
+        <label class="jk-codex-report-field wide">Excecoes por loja, fornecedor e SKU (JSON)<textarea id="jk-report-overrides" spellcheck="false" placeholder='{"stores":{"Loja 1":{"monthly_sales_target_brl":100000}},"suppliers":{},"skus":{}}'></textarea></label>
+      </div>
+      <div class="jk-codex-report-settings-actions">
+        <button class="jk-codex-tool" id="jk-codex-report-settings-cancel" type="button">Cancelar</button>
+        <button class="jk-codex-btn primary" id="jk-codex-report-settings-save" type="button">Salvar configuracoes</button>
+      </div>
+    </div>
+  </div>
   <aside id="jk-msg-panel" role="complementary" aria-label="Mensagens">
     <div id="jk-msg-header">
       <div class="jk-msg-title-wrap">

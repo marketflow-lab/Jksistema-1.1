@@ -23,6 +23,9 @@
     let codexInitialTaskId = '';
     let codexThreadId = '';
     let codexConversationId = '';
+    let codexConversationGeneration = 1;
+    let codexCanonicalConversationId = '';
+    let codexViewingArchive = false;
     let codexPollTimer = null;
     let codexPollGeneration = 0;
     let codexActionPollTimer = null;
@@ -40,6 +43,8 @@
     let codexAssistantCoordinatorStarted = false;
     let codexAssistantCoordinatorRunning = false;
     let codexAssistantLastActivityAt = Date.now();
+    let codexReportSettingsCache = null;
+    let codexReportSettingsScroll = null;
     let codexManualContextCache = { at: 0, value: null };
     let codexManualContextSequence = 0;
     const codexFullTextCache = new Map();
@@ -1395,15 +1400,14 @@
     }
 
     function _codexDefaultConversationId() {
-      return `universal_${_codexUsuarioEscopo()}`;
-    }
-
-    function _codexNovoConversationId() {
-      return `conv_${_codexUsuarioEscopo()}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      return codexCanonicalConversationId || `app_${_codexUsuarioEscopo()}`;
     }
 
     function _codexSetActiveConversationId(value) {
       const id = _codexSafeStorageId(value || _codexDefaultConversationId());
+      if (codexCanonicalConversationId && id !== codexCanonicalConversationId) {
+        return codexCanonicalConversationId;
+      }
       codexConversationId = id;
       const map = _codexLerMapaConversaAtiva();
       map[_codexUsuarioEscopo()] = id;
@@ -1425,7 +1429,7 @@
 
     function _codexHistoricoStorageKey(conversationId = '') {
       const id = _codexSafeStorageId(conversationId || _codexGetActiveConversationId(true));
-      return `${CODEX_HISTORY_PREFIX}_${_codexUsuarioEscopo()}_${id}`;
+      return `${CODEX_HISTORY_PREFIX}_${_codexUsuarioEscopo()}_${id}_g${Math.max(1, Number(codexConversationGeneration || 1))}`;
     }
 
     function _codexPanelStateStorageKey() {
@@ -1563,6 +1567,7 @@
           ...atual,
           ...extra,
           conversation_id: _codexGetActiveConversationId(true),
+          conversation_generation: Math.max(1, Number(codexConversationGeneration || 1)),
           thread_id: codexThreadId || '',
           task_id: Object.prototype.hasOwnProperty.call(extra, 'task_id')
             ? String(extra.task_id || '')
@@ -1625,11 +1630,11 @@
       } catch (_) {}
     }
 
-    function _codexRenderizarHistoricoLocal() {
+    function _codexRenderizarHistoricoLocal(entriesOverride = null) {
       const lista = document.getElementById('jk-codex-messages');
       if (!lista) return;
       lista.innerHTML = '';
-      codexMessagesAtuais = _codexLerHistoricoLocal();
+      codexMessagesAtuais = Array.isArray(entriesOverride) ? entriesOverride : _codexLerHistoricoLocal();
       if (!codexMessagesAtuais.length) {
         _codexAddMsg('status', 'Codex interno pronto para verificar o ambiente local.', '', { persist: false });
         return;
@@ -1783,9 +1788,14 @@
       const lista = Array.isArray(tasks) ? tasks.slice() : [];
       lista.forEach(task => {
         if (!task || typeof task !== 'object') return;
-        const key = _codexConversationKey(task);
+        const conversationId = _codexConversationKey(task);
+        const generation = Math.max(1, Number(task.conversation_generation || 1));
+        const key = `${conversationId}::g${generation}`;
         const group = map.get(key) || {
-          conversation_id: key,
+          group_id: key,
+          conversation_id: conversationId,
+          conversation_generation: generation,
+          conversation_state: String(task.conversation_state || 'archived'),
           thread_id: String(task.thread_id || ''),
           tasks: [],
           latest: task,
@@ -1801,6 +1811,7 @@
         const first = _codexTaskTimeMs(task, 'created_at');
         if (!group.first_at || (first && first < group.first_at)) group.first_at = first;
         if (!group.thread_id && task.thread_id) group.thread_id = String(task.thread_id || '');
+        if (String(task.conversation_state || '') === 'active') group.conversation_state = 'active';
         map.set(key, group);
       });
       return Array.from(map.values())
@@ -1814,7 +1825,7 @@
     function _codexFindConversationGroup(conversationId) {
       const id = String(conversationId || '').trim();
       if (!id) return null;
-      return _codexConversationGroups(codexHistoryTasks).find(group => group.conversation_id === id)
+      return _codexConversationGroups(codexHistoryTasks).find(group => group.group_id === id || group.conversation_id === id)
         || null;
     }
 
@@ -1853,9 +1864,13 @@
       groups.forEach(group => {
         const task = group.latest || {};
         const conversationId = String(group.conversation_id || '');
+        const groupId = String(group.group_id || conversationId);
+        const activeGroup = group.conversation_state === 'active'
+          && conversationId === _codexGetActiveConversationId(false)
+          && Number(group.conversation_generation || 1) === Number(codexConversationGeneration || 1);
         const row = document.createElement('div');
         row.className = 'jk-codex-history-item';
-        if (conversationId === _codexGetActiveConversationId(false) || (codexTaskAtual && _codexConversationKey(codexTaskAtual) === conversationId)) row.classList.add('is-active');
+        if (activeGroup) row.classList.add('is-active');
 
         const info = document.createElement('div');
         info.style.minWidth = '0';
@@ -1868,6 +1883,7 @@
         meta.textContent = [
           _codexDataCurta(task?.completed_at || task?.created_at),
           `${group.tasks.length} pergunta${group.tasks.length === 1 ? '' : 's'}`,
+          activeGroup ? 'conversa ativa' : `memoria arquivada g${group.conversation_generation || 1}`,
           String(task?.status || '').trim(),
           pct.pct ? pct.label : '',
         ].filter(Boolean).join(' | ');
@@ -1877,16 +1893,10 @@
         actions.className = 'jk-codex-history-actions';
         const open = document.createElement('button');
         open.type = 'button';
-        open.textContent = 'Abrir';
-        open.title = 'Abrir conversa';
-        open.addEventListener('click', () => _codexAbrirTarefaHistorico(conversationId));
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'danger';
-        del.textContent = 'Excluir';
-        del.title = 'Excluir conversa';
-        del.addEventListener('click', () => _codexExcluirTarefaHistorico(conversationId));
-        actions.append(open, del);
+        open.textContent = activeGroup ? 'Abrir' : 'Visualizar';
+        open.title = activeGroup ? 'Abrir conversa ativa' : 'Visualizar memoria arquivada em modo leitura';
+        open.addEventListener('click', () => _codexAbrirTarefaHistorico(groupId));
+        actions.append(open);
         row.append(info, actions);
         list.appendChild(row);
       });
@@ -1894,7 +1904,7 @@
 
     async function _codexCarregarListaHistorico() {
       try {
-        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true');
+        const data = await _codexFetchJson('/api/codex/tasks?limit=100&summary=true&channel=app');
         codexHistoryTasks = Array.isArray(data && data.tasks) ? data.tasks.map(_codexCompactTaskForMemory) : [];
         _codexRenderHistoricoTasks(codexHistoryTasks);
         return codexHistoryTasks;
@@ -1940,6 +1950,14 @@
       if (codexHistoryVisible) await _codexCarregarListaHistorico();
     }
 
+    function _codexSetArchiveView(active) {
+      codexViewingArchive = active === true;
+      const input = document.getElementById('jk-codex-input');
+      const send = document.getElementById('jk-codex-readonly');
+      if (input) input.disabled = codexViewingArchive;
+      if (send) send.disabled = codexViewingArchive;
+    }
+
     async function _codexAbrirTarefaHistorico(conversationId) {
       const id = String(conversationId || '').trim();
       if (!id) return;
@@ -1971,23 +1989,31 @@
           };
         }
         const latest = group.latest || group.tasks[group.tasks.length - 1];
-        codexTaskAtual = _codexCompactTaskForMemory(latest);
+        const archived = String(group.conversation_state || latest.conversation_state || '') !== 'active'
+          || Number(group.conversation_generation || latest.conversation_generation || 1) !== Number(codexConversationGeneration || 1);
+        codexTaskAtual = archived ? null : _codexCompactTaskForMemory(latest);
         const activeConversation = String(latest.conversation_id || group.conversation_id || '').trim();
-        if (activeConversation) _codexSetActiveConversationId(activeConversation);
-        if (group.thread_id || latest.thread_id) {
+        if (!archived && activeConversation) _codexSetActiveConversationId(activeConversation);
+        if (!archived && (group.thread_id || latest.thread_id)) {
           _codexSetThreadId(group.thread_id || latest.thread_id);
         }
-        codexMessagesAtuais = _codexMesclarHistoricoComEspeciais(_codexHistoricoFromTasks(group.tasks));
-        _codexSalvarHistoricoLocal();
-        _codexRenderizarHistoricoLocal();
-        _codexMostrarAprovacao(latest);
-        _codexRenderRuntime(latest);
+        const entries = _codexMesclarHistoricoComEspeciais(_codexHistoricoFromTasks(group.tasks));
+        _codexSetArchiveView(archived);
+        if (archived) {
+          _codexRenderizarHistoricoLocal(entries);
+        } else {
+          codexMessagesAtuais = entries;
+          _codexSalvarHistoricoLocal();
+          _codexRenderizarHistoricoLocal();
+        }
+        _codexMostrarAprovacao(archived ? null : latest);
+        _codexRenderRuntime(archived ? null : latest);
         const latestStatus = String(latest && latest.status || '');
-        if (latest.task_id && ['queued', 'running', 'awaiting_approval', 'cancel_requested'].includes(latestStatus)) {
+        if (!archived && latest.task_id && ['queued', 'running', 'awaiting_approval', 'cancel_requested'].includes(latestStatus)) {
           _codexPollTask(latest.task_id, pollGeneration);
         }
-        _codexSalvarEstadoPainel({ task_id: String(latest.task_id || '') });
-        _codexSetStatus('Conversa carregada do historico.');
+        _codexSalvarEstadoPainel({ task_id: archived ? '' : String(latest.task_id || '') });
+        _codexSetStatus(archived ? 'Memoria arquivada em modo somente leitura.' : 'Conversa ativa carregada.');
         _codexRenderHistoricoTasks(codexHistoryTasks);
       } catch (err) {
         _codexSetStatus(_codexErroCurto(err, 'Nao foi possivel abrir a conversa.'), true);
@@ -2026,7 +2052,7 @@
           codexTaskAtual = null;
           _codexSetThreadId('');
           codexMessagesAtuais = [];
-          _codexSetActiveConversationId(_codexNovoConversationId());
+          _codexSetActiveConversationId(codexCanonicalConversationId || _codexDefaultConversationId());
           _codexRenderRuntime(null);
           _codexMostrarAprovacao(null);
           document.getElementById('jk-codex-messages')?.replaceChildren();
@@ -2047,12 +2073,29 @@
       return codexPollGeneration;
     }
 
-    function _codexNovaConversa() {
+    async function _codexReiniciarMemoria() {
+      if (!window.confirm('Reiniciar a memoria do Black Jhon? O contexto atual sera arquivado e continuara disponivel somente para consulta.')) return;
       _codexInvalidarPollAtual();
+      const oldStorageKey = _codexHistoricoStorageKey();
+      try {
+        const data = await _codexFetchJson('/api/codex/conversations/current/reset', {
+          method: 'POST',
+          body: JSON.stringify({ confirm: true }),
+        });
+        const conversation = data && data.conversation && typeof data.conversation === 'object' ? data.conversation : {};
+        if (conversation.conversation_id) {
+          codexCanonicalConversationId = String(conversation.conversation_id || '');
+          codexConversationId = '';
+          _codexSetActiveConversationId(codexCanonicalConversationId);
+        }
+        codexConversationGeneration = Math.max(1, Number(conversation.generation || codexConversationGeneration + 1));
+      } catch (err) {
+        _codexSetStatus(_codexErroCurto(err, 'Nao foi possivel reiniciar a memoria.'), true);
+        return;
+      }
       codexInitialTaskId = '';
       codexFullTextCache.clear();
       _codexSetThreadId('');
-      _codexSetActiveConversationId(_codexNovoConversationId());
       codexTaskAtual = null;
       codexActionRunAtual = null;
       if (codexActionPollTimer) clearTimeout(codexActionPollTimer);
@@ -2061,16 +2104,19 @@
       codexRenderedFinalTasks = new Set();
       codexFallbackTasks = new Set();
       codexMessagesAtuais = [];
+      _codexSetArchiveView(false);
       _codexSetSelectValue('jk-codex-access', 'read_only');
       try {
+        localStorage.removeItem(oldStorageKey);
         localStorage.removeItem(_codexHistoricoStorageKey());
       } catch (_) {}
       document.getElementById('jk-codex-messages')?.replaceChildren();
       _codexMostrarAprovacao(null);
       _codexRenderRuntime(null);
       _codexSalvarEstadoPainel({ task_id: '', scroll_top: 0 });
-      _codexSetStatus('Nova conversa Codex pronta.');
-      _codexAddMsg('status', 'Nova conversa iniciada sem contexto anterior.', '', { persist: false });
+      _codexSetStatus('Memoria reiniciada. A conversa continua com o mesmo identificador.');
+      _codexAddMsg('status', 'Novo ciclo de memoria iniciado sem o contexto arquivado.', '', { persist: false });
+      if (codexHistoryVisible) await _codexCarregarListaHistorico();
     }
 
     function _codexAddMsg(role, texto, classExtra = '', options = {}) {
@@ -2218,14 +2264,15 @@
         const report = document.createElement('button');
         report.type = 'button';
         report.className = 'jk-codex-tool';
-        report.textContent = 'Relatorio completo';
-        report.title = 'Gerar relatorio completo deste alerta no chat';
+        report.textContent = 'Ver relatório detalhado';
+        report.title = 'Gerar relatório detalhado com todos os itens deste alerta';
         report.addEventListener('click', () => {
+          const reportPrompt = String(item && item.report_prompt || '').trim();
           const prompt = [
-            'Gere um relatorio operacional completo deste alerta e mostre o relatorio integral no chat.',
-            'Liste todos os SKUs envolvidos em tabela, sem resumir somente os primeiros.',
-            'Explique o motivo do risco, impacto comercial, dados usados e acao recomendada por SKU.',
-            'Quando falar de ruptura ou reposicao, considere apenas saldo de loja; nao use estoque Full no calculo.',
+            reportPrompt || 'Gere um relatorio operacional completo deste alerta e mostre o relatorio integral no chat.',
+            reportPrompt ? '' : 'Liste todos os SKUs envolvidos em tabela, sem resumir somente os primeiros.',
+            reportPrompt ? '' : 'Explique o motivo do risco, impacto comercial, dados usados e acao recomendada por SKU.',
+            reportPrompt ? '' : 'Quando falar de ruptura ou reposicao, considere apenas saldo de loja; nao use estoque Full no calculo.',
             `Alerta: ${title}`,
             `Detalhe: ${detail}`,
             recommendation ? `Acao sugerida: ${recommendation}` : '',
@@ -2396,6 +2443,131 @@
       ].filter(Boolean).join('\n');
     }
 
+    function _codexReportNumberList(value) {
+      return String(value || '').split(/[;,\s]+/).map(item => Number(item)).filter(item => Number.isFinite(item) && item >= 0);
+    }
+
+    function _codexReportSetField(id, value) {
+      const field = document.getElementById(id);
+      if (field) field.value = value == null ? '' : String(value);
+    }
+
+    function _codexFecharConfiguracoesRelatorio() {
+      const dialog = document.getElementById('jk-codex-report-settings-dialog');
+      if (dialog) dialog.hidden = true;
+      if (codexReportSettingsScroll) {
+        window.scrollTo(codexReportSettingsScroll.x, codexReportSettingsScroll.y);
+        codexReportSettingsScroll = null;
+      }
+    }
+
+    async function _codexAbrirConfiguracoesRelatorio() {
+      if (!_usuarioLocalEhFull()) return;
+      const dialog = document.getElementById('jk-codex-report-settings-dialog');
+      if (!dialog) return;
+      codexReportSettingsScroll = { x: window.scrollX || 0, y: window.scrollY || 0 };
+      dialog.hidden = false;
+      _codexSetStatus('Carregando configuracoes gerenciais...');
+      try {
+        const data = await _codexFetchJson('/api/admin/codex/assistant/report-settings');
+        const settings = data && data.settings && typeof data.settings === 'object' ? data.settings : {};
+        codexReportSettingsCache = settings;
+        const global = settings.global && typeof settings.global === 'object' ? settings.global : {};
+        const owners = global.owners && typeof global.owners === 'object' ? global.owners : {};
+        _codexReportSetField('jk-report-margin-coverage', Number(global.margin_coverage_min || .95) * 100);
+        _codexReportSetField('jk-report-lead-time', global.default_lead_time_days == null ? 180 : global.default_lead_time_days);
+        _codexReportSetField('jk-report-review-cycle', global.review_cycle_days == null ? 90 : global.review_cycle_days);
+        _codexReportSetField('jk-report-target-margin', global.target_margin_pct == null ? 20 : global.target_margin_pct);
+        const dueDays = global.urgency_due_days && typeof global.urgency_due_days === 'object' ? global.urgency_due_days : {};
+        _codexReportSetField('jk-report-urgency-days', [dueDays.immediate ?? 1, dueDays.high ?? 3, dueDays.medium ?? 7, dueDays.low ?? 14].join(', '));
+        _codexReportSetField('jk-report-scenario-exchange', (global.scenario_exchange_pct || [5, 10]).join(', '));
+        _codexReportSetField('jk-report-scenario-freight', (global.scenario_freight_pct || [10, 20]).join(', '));
+        _codexReportSetField('jk-report-scenario-delay', (global.scenario_delay_days || [15, 30]).join(', '));
+        _codexReportSetField('jk-report-owner-replenishment', owners.replenishment && owners.replenishment.username || '');
+        _codexReportSetField('jk-report-owner-price', owners.price_review && owners.price_review.username || '');
+        _codexReportSetField('jk-report-owner-liquidation', owners.liquidation && owners.liquidation.username || '');
+        _codexReportSetField('jk-report-overrides', JSON.stringify({
+          stores: settings.stores || {},
+          suppliers: settings.suppliers || {},
+          skus: settings.skus || {},
+        }, null, 2));
+        _codexSetStatus('Configuracoes gerenciais carregadas.');
+      } catch (err) {
+        _codexFecharConfiguracoesRelatorio();
+        _codexSetStatus(_codexErroCurto(err, 'Falha ao carregar configuracoes gerenciais.'), true);
+      }
+    }
+
+    async function _codexSalvarConfiguracoesRelatorio() {
+      if (!_usuarioLocalEhFull()) return;
+      const number = id => Number(document.getElementById(id)?.value || 0);
+      const text = id => String(document.getElementById(id)?.value || '').trim();
+      let overrides = {};
+      try {
+        overrides = JSON.parse(text('jk-report-overrides') || '{}');
+      } catch (_) {
+        _codexSetStatus('O JSON de excecoes por loja, fornecedor e SKU nao e valido.', true);
+        document.getElementById('jk-report-overrides')?.focus();
+        return;
+      }
+      const current = codexReportSettingsCache && typeof codexReportSettingsCache === 'object' ? codexReportSettingsCache : {};
+      const global = { ...(current.global || {}) };
+      global.margin_coverage_min = Math.min(1, Math.max(0, number('jk-report-margin-coverage') / 100));
+      global.default_lead_time_days = Math.max(0, Math.round(number('jk-report-lead-time')));
+      global.review_cycle_days = Math.max(0, Math.round(number('jk-report-review-cycle')));
+      global.target_margin_pct = number('jk-report-target-margin');
+      const urgencyDays = _codexReportNumberList(text('jk-report-urgency-days')).map(Math.round);
+      global.urgency_due_days = {
+        immediate: urgencyDays[0] ?? 1,
+        high: urgencyDays[1] ?? 3,
+        medium: urgencyDays[2] ?? 7,
+        low: urgencyDays[3] ?? 14,
+      };
+      global.scenario_exchange_pct = _codexReportNumberList(text('jk-report-scenario-exchange'));
+      global.scenario_freight_pct = _codexReportNumberList(text('jk-report-scenario-freight'));
+      global.scenario_delay_days = _codexReportNumberList(text('jk-report-scenario-delay')).map(Math.round);
+      const oldOwners = global.owners && typeof global.owners === 'object' ? global.owners : {};
+      global.owners = {
+        ...oldOwners,
+        replenishment: { ...(oldOwners.replenishment || {}), username: text('jk-report-owner-replenishment'), role: oldOwners.replenishment?.role || 'Compras' },
+        price_review: { ...(oldOwners.price_review || {}), username: text('jk-report-owner-price'), role: oldOwners.price_review?.role || 'Comercial' },
+        liquidation: { ...(oldOwners.liquidation || {}), username: text('jk-report-owner-liquidation'), role: oldOwners.liquidation?.role || 'Estoque' },
+      };
+      const settings = {
+        ...current,
+        global,
+        stores: overrides && typeof overrides.stores === 'object' ? overrides.stores : {},
+        suppliers: overrides && typeof overrides.suppliers === 'object' ? overrides.suppliers : {},
+        skus: overrides && typeof overrides.skus === 'object' ? overrides.skus : {},
+      };
+      const save = document.getElementById('jk-codex-report-settings-save');
+      if (save) save.disabled = true;
+      try {
+        const data = await _codexFetchJson('/api/admin/codex/assistant/report-settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings }),
+        });
+        codexReportSettingsCache = data && data.settings || settings;
+        _codexFecharConfiguracoesRelatorio();
+        _codexSetStatus('Configuracoes gerenciais salvas e auditadas.');
+      } catch (err) {
+        _codexSetStatus(_codexErroCurto(err, 'Falha ao salvar configuracoes gerenciais.'), true);
+      } finally {
+        if (save) save.disabled = false;
+      }
+    }
+
+    function _codexPerfilRelatorioAtual() {
+      const path = String(location.pathname || '').toLowerCase();
+      const params = new URLSearchParams(location.search || '');
+      const importListId = String(params.get('lista_id') || '').trim();
+      if (importListId && path.includes('importacoes_lista')) {
+        return { profile: 'import_order', import_list_id: importListId, store: String(params.get('loja') || '').trim() };
+      }
+      return { profile: 'weekly_sales_stock', import_list_id: '', store: String(params.get('loja') || params.get('store') || '').trim() };
+    }
+
     function _codexAppendReportActions(msg, reportId, formats = null) {
       if (!_usuarioLocalEhFull()) return;
       const id = String(reportId || '').trim();
@@ -2429,6 +2601,92 @@
       msg.appendChild(actions);
     }
 
+    function _codexReportQueueActionId(actionType) {
+      const type = String(actionType || '').trim();
+      if (type === 'replenishment') return 'reports.queue_replenishment';
+      if (type === 'price_review') return 'reports.queue_price_review';
+      if (type === 'liquidation') return 'reports.queue_liquidation';
+      return '';
+    }
+
+    async function _codexProporFilaRelatorio(reportId, reportAction, button) {
+      if (!_usuarioLocalEhFull()) return;
+      const actionId = _codexReportQueueActionId(reportAction && reportAction.action_type);
+      if (!actionId) return;
+      if (button) button.disabled = true;
+      try {
+        _codexSetStatus('Preparando aprovacao da fila interna...');
+        const data = await _codexFetchJson('/api/admin/codex/actions/proposals', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: `Criar fila interna a partir do relatorio ${reportId}`,
+            action_id: actionId,
+            params: { report_id: reportId, report_action: reportAction },
+            conversation_id: _codexGetActiveConversationId(true),
+            screen_context: _codexObterContextoTelaAtual({ background: true }),
+            history: [],
+          }),
+        });
+        if (!data || !data.proposal) throw new Error(data && data.message || 'A proposta nao foi criada.');
+        _codexRenderActionProposal(data.proposal);
+        _codexSetStatus('Revise e aprove a criacao da fila interna.');
+        if (button) button.textContent = 'Aguardando aprovacao';
+      } catch (err) {
+        if (button) button.disabled = false;
+        _codexSetStatus(_codexErroCurto(err, 'Falha ao preparar fila interna.'), true);
+      }
+    }
+
+    function _codexAppendReportDecisionCards(msg, report) {
+      if (!msg || !report || msg.querySelector('.jk-codex-report-decisions')) return;
+      const quality = report.data_quality && typeof report.data_quality === 'object' ? report.data_quality : {};
+      if (quality.confidence || Number.isFinite(Number(quality.score))) {
+        const panel = document.createElement('div');
+        panel.className = 'jk-codex-report-quality';
+        const score = document.createElement('strong');
+        score.textContent = `${Number(quality.score || 0)}/100`;
+        const detail = document.createElement('span');
+        detail.textContent = `Confiabilidade ${quality.confidence || 'baixa'}. Valores ausentes nao sao tratados como zero.`;
+        panel.append(score, detail);
+        msg.appendChild(panel);
+      }
+      const reportActions = Array.isArray(report.top_actions) ? report.top_actions.slice(0, 5) : [];
+      if (!reportActions.length) return;
+      const container = document.createElement('div');
+      container.className = 'jk-codex-report-decisions';
+      reportActions.forEach((action) => {
+        if (!action || typeof action !== 'object') return;
+        const card = document.createElement('div');
+        card.className = 'jk-codex-report-decision';
+        card.dataset.urgency = String(action.urgency || 'medium');
+        const title = document.createElement('div');
+        title.className = 'jk-codex-report-decision-title';
+        title.textContent = String(action.title || 'Acao recomendada');
+        const meta = document.createElement('div');
+        meta.className = 'jk-codex-report-decision-meta';
+        meta.textContent = `Impacto ${action.impact_label || 'nao estimavel'} | ${action.confidence || 'baixa'} | prazo ${action.due_at || '-'}`;
+        const text = document.createElement('div');
+        text.className = 'jk-codex-report-decision-text';
+        text.textContent = String(action.recommendation || action.evidence || '');
+        card.append(title, meta, text);
+        const actionId = _codexReportQueueActionId(action.action_type);
+        if (actionId && action.queueable !== false && _usuarioLocalEhFull()) {
+          const actions = document.createElement('div');
+          actions.className = 'jk-codex-msg-actions';
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'jk-codex-tool';
+          button.textContent = 'Enviar para aprovacao';
+          button.addEventListener('click', () => { void _codexProporFilaRelatorio(_codexRelatorioId(report), action, button); });
+          actions.appendChild(button);
+          card.appendChild(actions);
+        }
+        container.appendChild(card);
+      });
+      if (container.childElementCount) msg.appendChild(container);
+    }
+
     function _codexAddReportCard(report, intro = 'Relatorio Codex gerado.') {
       const reportId = _codexRelatorioId(report);
       if (!reportId) return;
@@ -2454,6 +2712,7 @@
         truncated,
       });
       if (!msg) return;
+      _codexAppendReportDecisionCards(msg, report);
       _codexAppendReportActions(msg, reportId, reportFormats);
       const lista = document.getElementById('jk-codex-messages');
       lista.scrollTop = lista.scrollHeight + 9999;
@@ -2463,14 +2722,16 @@
       if (!_usuarioLocalEhFull()) return;
       try {
         _codexSetStatus('Interpretando pedido e consultando dados...');
+        const profileScope = _codexPerfilRelatorioAtual();
         const data = await _codexFetchJson('/api/admin/codex/assistant/reports', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt: String(prompt || document.getElementById('jk-codex-input')?.value || 'relatorio operacional Black Jhon').trim(),
             screen_context: _codexObterContextoTelaAtual(),
-            thread_id: codexThreadId || '',
-            conversation_id: _codexGetActiveConversationId(true),
+            profile: profileScope.profile,
+            store: profileScope.store,
+            import_list_id: profileScope.import_list_id,
           }),
         });
         if (data && data.report) {
@@ -2537,6 +2798,23 @@
       }
     }
 
+    async function _codexRodarAnaliseSemanal(force = false) {
+      if (!_usuarioLocalEhFull()) return;
+      const data = await _codexFetchJson('/api/admin/codex/assistant/weekly-analysis/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: !!force, compact: true, screen_context: _codexObterContextoTelaAtual({ background: true }) }),
+      });
+      if (data && data.suggestions) _codexRenderSugestoes(data.suggestions);
+      const report = data && data.report;
+      const reportId = _codexRelatorioId(report);
+      if (data && data.status === 'completed' && reportId && reportId !== codexAssistantLastReportId) {
+        codexAssistantLastReportId = reportId;
+        _codexAddReportCard(report, 'Relatorio semanal completo concluido.');
+      }
+      return data;
+    }
+
     function _codexRegistrarAtividadeCoordenador(event) {
       if (event && event.isTrusted === false) return;
       if (event && event.type === 'scroll') {
@@ -2586,7 +2864,7 @@
         if (!_codexCoordenadorElegivel()) throw new Error('Coordenador pausado por atividade do usuario.');
         await _codexRodarProativo(false);
         if (!_codexCoordenadorElegivel()) throw new Error('Coordenador pausado por atividade do usuario.');
-        await _codexRodarAnaliseDiaria(false);
+        await _codexRodarAnaliseSemanal(false);
         _codexAgendarCoordenador(CODEX_PROACTIVE_INTERVAL_MS);
         return true;
       } catch (_) {
@@ -2645,6 +2923,12 @@
         toolbar.hidden = !full;
         toolbar.style.display = full ? '' : 'none';
       }
+      const reportSettings = document.getElementById('jk-codex-report-settings');
+      if (reportSettings) {
+        reportSettings.hidden = !full;
+        reportSettings.style.display = full ? '' : 'none';
+      }
+      if (!full) _codexFecharConfiguracoesRelatorio();
       const pathChips = document.getElementById('jk-codex-path-chips');
       if (pathChips) {
         pathChips.hidden = !full;
@@ -2688,6 +2972,13 @@
       if (!silencioso) _codexSetStatus('Verificando Codex...');
       try {
         const data = await _codexFetchJson('/api/codex/status');
+        const conversation = data && data.conversation && typeof data.conversation === 'object' ? data.conversation : {};
+        if (conversation.conversation_id) {
+          codexCanonicalConversationId = String(conversation.conversation_id || '');
+          codexConversationId = '';
+          _codexSetActiveConversationId(codexCanonicalConversationId);
+          codexConversationGeneration = Math.max(1, Number(conversation.generation || 1));
+        }
         const defaults = data && data.defaults && typeof data.defaults === 'object' ? data.defaults : {};
         const saved = _codexReadStoredSettings();
         if (!saved.model && defaults.model) _codexSetSelectValue('jk-codex-model', defaults.model);
@@ -2717,7 +3008,13 @@
       if (!task) return;
       const memoryTask = _codexCompactTaskForMemory(task);
       codexTaskAtual = memoryTask;
-      if (task.conversation_id) _codexSetActiveConversationId(task.conversation_id);
+      if (task.conversation_id && String(task.channel || 'app') === 'app' && String(task.conversation_state || 'active') === 'active') {
+        codexCanonicalConversationId = String(task.conversation_id || '');
+        codexConversationId = '';
+        _codexSetActiveConversationId(codexCanonicalConversationId);
+        codexConversationGeneration = Math.max(1, Number(task.conversation_generation || codexConversationGeneration || 1));
+        _codexSetArchiveView(false);
+      }
       if (task.task_id) {
         codexHistoryTasks = [memoryTask].concat(codexHistoryTasks.filter(item => String(item?.task_id || '') !== String(task.task_id || '')));
         if (codexHistoryVisible) _codexRenderHistoricoTasks(codexHistoryTasks);
@@ -3046,7 +3343,7 @@
     }
 
     function _codexHistoryForPrompt() {
-      return (codexMessagesAtuais || []).filter(item => item && item.kind !== 'approval').slice(-24).map(item => ({
+      return (codexMessagesAtuais || []).filter(item => item && item.kind !== 'approval' && item.kind !== 'report' && item.content_kind !== 'report').slice(-24).map(item => ({
         role: String(item && item.role || ''),
         text: String(item && item.text || '').slice(0, 2400),
         task_id: String(item && item.task_id || ''),
@@ -3333,8 +3630,6 @@
             paths: pathsParaTarefa,
             screen_context: screenContext,
             history: _codexHistoryForPrompt(),
-            thread_id: codexThreadId || '',
-            conversation_id: _codexGetActiveConversationId(true),
           }),
         });
         const task = data && data.task;
@@ -3381,10 +3676,25 @@
       if (!_usuarioLocalEhFull()) return;
       const taskId = codexTaskAtual && codexTaskAtual.task_id;
       if (!taskId) return;
+      const externalWhatsapp = String(codexTaskAtual && codexTaskAtual.origin || '').toLowerCase() === 'whatsapp';
+      let requestOptions = { method: 'POST' };
+      if (externalWhatsapp) {
+        const settings = _codexCollectSettings();
+        const screenContext = _codexObterContextoTelaAtual();
+        const paths = _codexPathsParaTarefa(settings.paths);
+        if (!String(screenContext && screenContext.modulo_atual || '').trim() && !paths.length) {
+          _codexSetStatus('Abra o modulo que sera alterado ou informe um caminho antes de aprovar.', true);
+          return;
+        }
+        requestOptions = {
+          method: 'POST',
+          body: JSON.stringify({ paths, screen_context: screenContext }),
+        };
+      }
       const pollGeneration = _codexInvalidarPollAtual();
       _codexSetStatus('Confirmando execucao Codex...');
       try {
-        const data = await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId) + '/approve', { method: 'POST' });
+        const data = await _codexFetchJson('/api/admin/codex/tasks/' + encodeURIComponent(taskId) + '/approve', requestOptions);
         const task = data && data.task;
         _codexAplicarTask(task);
         _codexPollTask(taskId, pollGeneration);

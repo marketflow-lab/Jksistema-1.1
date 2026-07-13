@@ -8,9 +8,9 @@ stable endpoint callables without registering monolith-local functions.
 from __future__ import annotations
 
 import asyncio
-import base64
 import inspect
-import json
+import threading
+import time
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -21,6 +21,13 @@ from fastapi.responses import StreamingResponse
 FAVORITOS_ENDPOINTS: tuple[str, ...] = ('favoritos_listar_skus', 'favoritos_skus_ocultos_get', 'favoritos_skus_ocultos_put', 'favoritos_vendedores_ignorados_get', 'favoritos_vendedores_ignorados_put', 'favoritos_anuncios_ignorados_get', 'favoritos_anuncios_ignorados_put', 'favoritos_historico_get', 'favoritos_historico_put', 'favoritos_historico_realtime_sync', 'favoritos_planilhas_lojas_get', 'favoritos_planilhas_lojas_put', 'favoritos_planilhas_colar_historico', 'favoritos_ml_listar_skus_anuncios', 'favoritos_ml_listar_promocoes_ativas', 'favoritos_ml_validar_efetivacao', 'favoritos_ml_efetivar_promocao', 'favoritos_ml_listar_anuncios_sku', 'favoritos_salvar_pesquisas_sku', 'favoritos_gerar_pesquisas_sku_ia', 'favoritos_filtrar_ranking_ia', 'favoritos_buscar_descricao_sku', 'favoritos_buscar_descricoes_skus', 'favoritos_ml_primeira_pagina', 'favoritos_ml_enriquecer_datas', 'favoritos_pesquisar')
 
 _TENANT_DEPENDENCY = None
+FAVORITOS_DESCRICAO_CACHE_LOCK = threading.RLock()
+FAVORITOS_DESCRICAO_CACHE: dict[tuple[str, str, str], dict] = {}
+FAVORITOS_DESCRICAO_INFLIGHT: dict[tuple[str, str, str], dict] = {}
+FAVORITOS_DESCRICAO_SEMAPHORES: dict[str, threading.BoundedSemaphore] = {}
+FAVORITOS_DESCRICAO_CACHE_TTL_OK_S = 30 * 60
+FAVORITOS_DESCRICAO_CACHE_TTL_EMPTY_S = 5 * 60
+FAVORITOS_DESCRICAO_CACHE_MAX = 5000
 _PROTECTED_GLOBALS = {
     "_TENANT_DEPENDENCY",
     "_PROTECTED_GLOBALS",
@@ -40,46 +47,14 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
 
 
 def _extrair_username_do_request(request: Request) -> str:
-    """Best-effort username for Favoritos per-user caches/preferences."""
+    """Return only the identity already verified by the auth dependency."""
     try:
-        for attr in ("username", "user", "usuario"):
-            value = getattr(getattr(request, "state", None), attr, "")
-            if value:
-                return str(value).strip() or "default"
+        value = getattr(getattr(request, "state", None), "username", "")
+        if value:
+            return str(value).strip()
     except Exception:
         pass
-
-    try:
-        headers = getattr(request, "headers", {}) or {}
-        for key in ("x-username", "x-user", "x-user-name", "x-usuario"):
-            value = headers.get(key)
-            if value:
-                return str(value).strip() or "default"
-
-        auth = str(headers.get("authorization") or "").strip()
-        if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
-            decoder = globals().get("decodificar_access_token")
-            if callable(decoder):
-                try:
-                    payload = decoder(token) or {}
-                    username = payload.get("sub") or payload.get("username") or payload.get("user")
-                    if username:
-                        return str(username).strip() or "default"
-                except Exception:
-                    pass
-
-            parts = token.split(".")
-            if len(parts) >= 2:
-                payload_raw = parts[1] + ("=" * (-len(parts[1]) % 4))
-                payload = json.loads(base64.urlsafe_b64decode(payload_raw.encode("ascii")).decode("utf-8"))
-                username = payload.get("sub") or payload.get("username") or payload.get("user")
-                if username:
-                    return str(username).strip() or "default"
-    except Exception:
-        pass
-
-    return "default"
+    raise HTTPException(status_code=401, detail="Identidade autenticada indisponivel. Faca o login novamente.")
 
 
 def _copy_runtime_globals(legacy_module) -> None:
@@ -94,6 +69,137 @@ def configure_favoritos_endpoints_runtime(legacy_module) -> None:
     global _TENANT_DEPENDENCY
     _TENANT_DEPENDENCY = getattr(legacy_module, "get_tenant_id")
     _copy_runtime_globals(legacy_module)
+
+
+def _favoritos_descricao_cache_key(
+    client_id: str,
+    loja: str,
+    item_id: str,
+) -> tuple[str, str, str]:
+    return (
+        str(client_id or "").strip(),
+        str(loja or "").strip().lower(),
+        str(item_id or "").strip().upper(),
+    )
+
+
+def _favoritos_descricao_sem(client_id: str) -> threading.BoundedSemaphore:
+    client_key = str(client_id or "").strip()
+    with FAVORITOS_DESCRICAO_CACHE_LOCK:
+        semaphore = FAVORITOS_DESCRICAO_SEMAPHORES.get(client_key)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(8)
+            FAVORITOS_DESCRICAO_SEMAPHORES[client_key] = semaphore
+        return semaphore
+
+
+def _favoritos_descricao_prune_cache(now: float | None = None) -> None:
+    timestamp = float(now or time.time())
+    with FAVORITOS_DESCRICAO_CACHE_LOCK:
+        for key, item in list(FAVORITOS_DESCRICAO_CACHE.items()):
+            if float((item or {}).get("expires_at") or 0) <= timestamp:
+                FAVORITOS_DESCRICAO_CACHE.pop(key, None)
+        if len(FAVORITOS_DESCRICAO_CACHE) <= FAVORITOS_DESCRICAO_CACHE_MAX:
+            return
+        excedentes = sorted(
+            FAVORITOS_DESCRICAO_CACHE.items(),
+            key=lambda pair: float((pair[1] or {}).get("stored_at") or 0),
+        )[: len(FAVORITOS_DESCRICAO_CACHE) - FAVORITOS_DESCRICAO_CACHE_MAX]
+        for key, _item in excedentes:
+            FAVORITOS_DESCRICAO_CACHE.pop(key, None)
+
+
+def _favoritos_obter_descricao_item_controlada(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    item: dict | None = None,
+    *,
+    rapida: bool = False,
+    force_refresh: bool = False,
+) -> dict:
+    modo = "rapida" if rapida else "completa"
+    cache_key = _favoritos_descricao_cache_key(client_id, loja, item_id)
+    now = time.time()
+    _favoritos_descricao_prune_cache(now)
+    with FAVORITOS_DESCRICAO_CACHE_LOCK:
+        cached = FAVORITOS_DESCRICAO_CACHE.get(cache_key)
+        if (
+            not force_refresh
+            and cached
+            and float(cached.get("expires_at") or 0) > now
+        ):
+            payload = dict(cached.get("payload") or {})
+            payload["cache_hit"] = True
+            payload["cache"] = {
+                "hit": True,
+                "ttl_seconds": max(0, int(float(cached.get("expires_at") or now) - now)),
+                "mode": modo,
+            }
+            return payload
+        inflight = FAVORITOS_DESCRICAO_INFLIGHT.get(cache_key)
+        if inflight is None:
+            inflight = {"event": threading.Event(), "started_at": now}
+            FAVORITOS_DESCRICAO_INFLIGHT[cache_key] = inflight
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        inflight["event"].wait(timeout=45)
+        with FAVORITOS_DESCRICAO_CACHE_LOCK:
+            cached = FAVORITOS_DESCRICAO_CACHE.get(cache_key)
+            if cached and float(cached.get("expires_at") or 0) > time.time():
+                payload = dict(cached.get("payload") or {})
+                payload["cache_hit"] = True
+                payload["cache"] = {"hit": True, "shared_inflight": True, "mode": modo}
+                return payload
+        return {
+            "descricao": "",
+            "description_info": {},
+            "erro": "Tempo limite aguardando consulta de descricao ja em andamento.",
+            "cache_hit": False,
+        }
+
+    try:
+        with _favoritos_descricao_sem(client_id):
+            if rapida:
+                payload = _ml_favoritos_obter_descricao_item_rapida(
+                    client_id,
+                    loja,
+                    dict(cfg or {}),
+                    item_id,
+                    item or {},
+                ) or {}
+            else:
+                payload = _ml_favoritos_obter_descricao_item(
+                    client_id,
+                    loja,
+                    dict(cfg or {}),
+                    item_id,
+                    item or {},
+                ) or {}
+        payload = dict(payload)
+        payload["cache_hit"] = False
+        descricao = str(payload.get("descricao") or "").strip()
+        erro = str(payload.get("erro") or "").strip()
+        ttl = FAVORITOS_DESCRICAO_CACHE_TTL_OK_S if descricao else FAVORITOS_DESCRICAO_CACHE_TTL_EMPTY_S
+        if not erro:
+            stored_at = time.time()
+            with FAVORITOS_DESCRICAO_CACHE_LOCK:
+                FAVORITOS_DESCRICAO_CACHE[cache_key] = {
+                    "payload": dict(payload),
+                    "stored_at": stored_at,
+                    "expires_at": stored_at + ttl,
+                }
+            payload["cache"] = {"hit": False, "ttl_seconds": ttl, "mode": modo}
+        return payload
+    finally:
+        with FAVORITOS_DESCRICAO_CACHE_LOCK:
+            current = FAVORITOS_DESCRICAO_INFLIGHT.pop(cache_key, None)
+            if current:
+                current["event"].set()
 
 
 def favoritos_listar_skus(client_id: str = Depends(get_tenant_id)):
@@ -188,7 +294,13 @@ def favoritos_historico_put(
     client_id: str = Depends(get_tenant_id),
 ):
     username = _extrair_username_do_request(request)
-    payload = _favoritos_salvar_historico(client_id, username, req.historico or [])
+    payload = _favoritos_salvar_historico(
+        client_id,
+        username,
+        req.historico or [],
+        finalizar_ids=req.finalizar_ids or [],
+        inicio_execucao_ms=req.inicio_execucao_ms,
+    )
     evento_publicado = False
     if _shared_sync_auto_enabled():
         realtime_sync = _favoritos_propagar_historico_para_usuarios(client_id, username, payload)
@@ -208,6 +320,9 @@ def favoritos_historico_put(
         "success": True,
         "historico": payload.get("historico") or [],
         "updated_at": payload.get("updated_at"),
+        "duracao_execucao_ms": payload.get("duracao_execucao_ms"),
+        "finalizados_ids": payload.get("finalizados_ids") or [],
+        "finalizado_em_ms": payload.get("finalizado_em_ms"),
         "realtime_sync": {
             **realtime_sync,
             "event_published": bool(evento_publicado),
@@ -1637,11 +1752,13 @@ def favoritos_buscar_descricoes_skus(req: FavoritosSkuDescricoesRequest, client_
                 with ThreadPoolExecutor(max_workers=min(8, max(1, len(item_para_skus_direto)))) as executor:
                     future_map = {
                         executor.submit(
-                            _ml_favoritos_obter_descricao_item,
+                            _favoritos_obter_descricao_item_controlada,
                             client_id,
                             nome_loja,
                             dict(cfg),
                             item_id,
+                            None,
+                            force_refresh=bool(req.force_refresh),
                         ): (item_id, skus_vinculados)
                         for item_id, skus_vinculados in item_para_skus_direto.items()
                     }
@@ -1664,6 +1781,8 @@ def favoritos_buscar_descricoes_skus(req: FavoritosSkuDescricoesRequest, client_
                             "descricao": descricao,
                             "erro": erro,
                             "fonte": "mercadolivre_api_item_id",
+                            "cache_hit": bool(desc_info.get("cache_hit")),
+                            "cache": desc_info.get("cache") or {},
                         }
 
                         for sku_norm in skus_vinculados:
@@ -1763,12 +1882,14 @@ def favoritos_buscar_descricoes_skus(req: FavoritosSkuDescricoesRequest, client_
             with ThreadPoolExecutor(max_workers=min(8, max(1, len(item_para_skus)))) as executor:
                 future_map = {
                     executor.submit(
-                        _ml_favoritos_obter_descricao_item_rapida,
+                        _favoritos_obter_descricao_item_controlada,
                         client_id,
                         nome_loja,
                         dict(cfg),
                         item_id,
                         item_por_id.get(item_id, {}),
+                        rapida=True,
+                        force_refresh=bool(req.force_refresh),
                     ): (item_id, skus_vinculados)
                     for item_id, skus_vinculados in item_para_skus.items()
                 }
@@ -1794,6 +1915,8 @@ def favoritos_buscar_descricoes_skus(req: FavoritosSkuDescricoesRequest, client_
                         "descricao": descricao,
                         "erro": erro,
                         "fonte": "mercadolivre_api",
+                        "cache_hit": bool(desc_info.get("cache_hit")),
+                        "cache": desc_info.get("cache") or {},
                     }
 
                     for sku_norm in skus_vinculados:
@@ -1848,6 +1971,7 @@ def favoritos_buscar_descricoes_skus(req: FavoritosSkuDescricoesRequest, client_
         "success": True,
         "results": list(resultados.values()),
         "total": len(resultados),
+        "cache_hits": sum(1 for item in resultados.values() if item.get("cache_hit")),
         "erros": erros[:5],
     }
 
@@ -1999,12 +2123,48 @@ async def favoritos_ml_enriquecer_datas(req: FavoritosEnriquecerDatasRequest, cl
             "fonte": anuncio.get("fonte"),
             "fonte_data_criacao": anuncio.get("fonte_data_criacao"),
             "data_criacao_confianca": anuncio.get("data_criacao_confianca"),
+            "sku": anuncio.get("sku"),
+            "listing_type_id": anuncio.get("listing_type_id") or anuncio.get("listingTypeId"),
+            "listing_type_name": anuncio.get("listing_type_name"),
+            "tipo_anuncio": anuncio.get("tipo_anuncio"),
+            "parcelamento_sem_juros": anuncio.get("parcelamento_sem_juros"),
+            "shipping": anuncio.get("shipping"),
+            "logistic_type": anuncio.get("logistic_type") or anuncio.get("logisticType"),
+            "shipping_mode": anuncio.get("shipping_mode") or anuncio.get("shippingMode"),
+            "is_full": anuncio.get("is_full"),
+            "condicao": anuncio.get("condicao"),
+            "condition": anuncio.get("condition"),
+            "item_condition": anuncio.get("item_condition"),
         })
+
+    cache_inicio = time.perf_counter()
+    datas_cache_local = _ml_datas_cache_local(client_id) if tarefas else {}
+    cache_ms = int((time.perf_counter() - cache_inicio) * 1000)
+    itens_api_precarregados = _ml_api_items_multiget_tenant(
+        client_id,
+        [tarefa.get("item_id") for tarefa in tarefas if tarefa.get("item_id")],
+    ) if tarefas else {}
+    logger.info(
+        "[Favoritos][Datas] cache_local_carregado tenant=%s entradas=%s ms=%s tarefas=%s",
+        client_id,
+        len(datas_cache_local),
+        cache_ms,
+        len(tarefas),
+    )
 
     def _processar(tarefa: dict):
         url = tarefa.get("url") or ""
         item_id = tarefa.get("item_id") or None
-        info = _extrair_info_anuncio(url, item_id, client_id=client_id, imagem=tarefa.get("imagem"), dados_base=tarefa)
+        info = _extrair_info_anuncio(
+            url,
+            item_id,
+            client_id=client_id,
+            imagem=tarefa.get("imagem"),
+            dados_base=tarefa,
+            datas_cache_local=datas_cache_local,
+            api_item_precarregado=itens_api_precarregados.get(item_id),
+            api_item_precarregado_tentado=True,
+        )
         return {
             "url": url,
             "id": item_id,

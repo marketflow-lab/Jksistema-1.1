@@ -17,8 +17,8 @@ def _slug(username):
     return re.sub(r"[^a-z0-9_-]+", "_", str(username or "default").strip().lower()) or "default"
 
 
-def _entry(entry_id, data_iso="2026-07-08T10:00:00", sku="001"):
-    return {
+def _entry(entry_id, data_iso="2026-07-08T10:00:00", sku="001", duracao_execucao_ms=None):
+    entry = {
         "id": entry_id,
         "tipo": "ranking",
         "data_iso": data_iso,
@@ -43,6 +43,10 @@ def _entry(entry_id, data_iso="2026-07-08T10:00:00", sku="001"):
             }
         ],
     }
+    if duracao_execucao_ms is not None:
+        entry["duracao_execucao_ms"] = duracao_execucao_ms
+        entry["grupos"][0]["duracao_execucao_ms"] = duracao_execucao_ms
+    return entry
 
 
 def _db_count(path):
@@ -127,7 +131,11 @@ class FavoritosHistoricoSqliteTest(unittest.TestCase):
         self.assertEqual(_db_count(db_path), 1)
 
     def test_shared_sync_usa_db_e_aceita_json_legado(self):
-        favoritos_storage._favoritos_salvar_historico("000002", "caio", [_entry("hist-1")])
+        favoritos_storage._favoritos_salvar_historico(
+            "000002",
+            "caio",
+            [_entry("hist-1", duracao_execucao_ms=90500)],
+        )
 
         entries, warnings = shared_sync_collect_files._shared_sync_coletar_arquivos(
             "000002",
@@ -157,6 +165,7 @@ class FavoritosHistoricoSqliteTest(unittest.TestCase):
         )
 
         self.assertEqual([item["id"] for item in merged["historico"]], ["hist-1"])
+        self.assertEqual(merged["historico"][0]["duracao_execucao_ms"], 90500)
 
         legado = json.dumps({"historico": [_entry("hist-2", "2026-07-08T11:00:00")]}, ensure_ascii=False).encode("utf-8")
         merged_legacy = shared_sync_merge_user_data._shared_sync_merge_historico_usuario(
@@ -166,6 +175,143 @@ class FavoritosHistoricoSqliteTest(unittest.TestCase):
         )
 
         self.assertEqual([item["id"] for item in merged_legacy["historico"]], ["hist-2", "hist-1"])
+
+    def test_preserva_duracao_execucao_sem_alterar_historico_legado(self):
+        payload = favoritos_storage._favoritos_salvar_historico(
+            "000002",
+            "caio",
+            [
+                _entry("hist-tempo", duracao_execucao_ms=90500),
+                _entry("hist-legado", "2026-07-08T09:00:00", "002"),
+            ],
+        )
+
+        com_tempo = next(item for item in payload["historico"] if item["id"] == "hist-tempo")
+        legado = next(item for item in payload["historico"] if item["id"] == "hist-legado")
+        self.assertEqual(com_tempo["duracao_execucao_ms"], 90500)
+        self.assertEqual(com_tempo["grupos"][0]["duracao_execucao_ms"], 90500)
+        self.assertNotIn("duracao_execucao_ms", legado)
+
+        recarregado = favoritos_storage._favoritos_carregar_historico("000002", "caio")
+        com_tempo_recarregado = next(item for item in recarregado["historico"] if item["id"] == "hist-tempo")
+        legado_recarregado = next(item for item in recarregado["historico"] if item["id"] == "hist-legado")
+        self.assertEqual(com_tempo_recarregado["duracao_execucao_ms"], 90500)
+        self.assertNotIn("duracao_execucao_ms", legado_recarregado)
+
+    def test_finaliza_duracao_no_commit_e_recarrega_entrada_e_grupo(self):
+        inicio_ms = 1_720_000_000_000
+        with patch.object(favoritos_storage.time, "time", return_value=(inicio_ms + 90_500) / 1000):
+            payload = favoritos_storage._favoritos_salvar_historico(
+                "000002",
+                "caio",
+                [_entry("hist-final")],
+                finalizar_ids=["hist-final"],
+                inicio_execucao_ms=inicio_ms,
+            )
+
+        self.assertEqual(payload["duracao_execucao_ms"], 90_500)
+        self.assertEqual(payload["finalizados_ids"], ["hist-final"])
+        self.assertEqual(payload["historico"][0]["duracao_execucao_ms"], 90_500)
+        self.assertEqual(payload["historico"][0]["grupos"][0]["duracao_execucao_ms"], 90_500)
+
+        recarregado = favoritos_storage._favoritos_carregar_historico("000002", "caio")
+        self.assertEqual(recarregado["historico"][0]["duracao_execucao_ms"], 90_500)
+        self.assertEqual(recarregado["historico"][0]["grupos"][0]["duracao_execucao_ms"], 90_500)
+
+    def test_preserva_telemetria_da_coleta_no_mesmo_historico(self):
+        entrada = _entry("hist-telemetria", duracao_execucao_ms=90_500)
+        entrada["grupos"][0]["resumo_coleta"] = [{
+            "pesquisa": 1,
+            "termo": "sensor cb500",
+            "campo": "titulo",
+            "visiveis": 80,
+            "coletados": 80,
+            "com_titulo": 80,
+            "com_foto": 80,
+            "com_preco": 79,
+            "com_link": 80,
+            "com_dados_avant": 78,
+            "incompletos": 2,
+            "suspeitos": 1,
+            "avant_nao_vinculado": 0,
+            "tempo_esgotado": False,
+            "login_avant_bloqueado": False,
+            "motivo_encerramento": "stable_plateau",
+            "passadas": 2,
+            "posicoes_percorridas": 24,
+            "cliques_avant": 4,
+            "capturados_avant": 3,
+            "tempo_materializacao_ms": 1_250,
+            "tempo_avant_ms": 8_400,
+            "tempo_finalizacao_ms": 350,
+            "motivos_incompletos": {"preco": 1, "avant": 2},
+            "origens_dados": {"dom": 80},
+            "amostras_incompletos": [{
+                "posicao": 7,
+                "mlb": "MLB123",
+                "titulo": "Anuncio incompleto",
+                "faltas": ["avant"],
+                "origem_dados": "dom",
+            }],
+            "campo_nao_permitido": "nao deve ser persistido",
+        }]
+
+        payload = favoritos_storage._favoritos_salvar_historico("000002", "caio", [entrada])
+        resumo = payload["historico"][0]["grupos"][0]["resumo_coleta"][0]
+        self.assertEqual(resumo["motivo_encerramento"], "stable_plateau")
+        self.assertEqual(resumo["tempo_avant_ms"], 8_400)
+        self.assertEqual(resumo["motivos_incompletos"], {"preco": 1, "avant": 2})
+        self.assertEqual(resumo["amostras_incompletos"][0]["faltas"], ["avant"])
+        self.assertNotIn("campo_nao_permitido", resumo)
+
+        recarregado = favoritos_storage._favoritos_carregar_historico("000002", "caio")
+        resumo_recarregado = recarregado["historico"][0]["grupos"][0]["resumo_coleta"][0]
+        self.assertEqual(resumo_recarregado, resumo)
+        self.assertEqual(recarregado["historico"][0]["duracao_execucao_ms"], 90_500)
+
+    def test_finalizacao_atomica_recusa_id_ausente_sem_substituir_historico(self):
+        favoritos_storage._favoritos_salvar_historico("000002", "caio", [_entry("hist-preservado")])
+        inicio_ms = 1_720_000_000_000
+        with patch.object(favoritos_storage.time, "time", return_value=(inicio_ms + 10_000) / 1000):
+            with self.assertRaises(Exception) as contexto:
+                favoritos_storage._favoritos_salvar_historico(
+                    "000002",
+                    "caio",
+                    [_entry("hist-preservado")],
+                    finalizar_ids=["hist-ausente"],
+                    inicio_execucao_ms=inicio_ms,
+                )
+        self.assertEqual(getattr(contexto.exception, "status_code", None), 409)
+        recarregado = favoritos_storage._favoritos_carregar_historico("000002", "caio")
+        self.assertEqual([item["id"] for item in recarregado["historico"]], ["hist-preservado"])
+
+    def test_merge_mesmo_id_nunca_apaga_duracao_execucao(self):
+        rica = _entry("hist-merge", duracao_execucao_ms=90500)
+        antiga = _entry("hist-merge")
+
+        for base, nova in (([rica], [antiga]), ([antiga], [rica])):
+            merged = favoritos_storage._favoritos_historico_merge_listas(base, nova)
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0]["duracao_execucao_ms"], 90500)
+            self.assertEqual(merged[0]["grupos"][0]["duracao_execucao_ms"], 90500)
+
+        mais_longa = _entry("hist-merge", duracao_execucao_ms=120000)
+        merged_max = favoritos_storage._favoritos_historico_merge_listas([rica], [mais_longa])
+        self.assertEqual(merged_max[0]["duracao_execucao_ms"], 120000)
+
+    def test_shared_sync_copia_antiga_nao_apaga_duracao_execucao(self):
+        rica = _entry("hist-sync", duracao_execucao_ms=90500)
+        favoritos_storage._favoritos_salvar_historico("000002", "ana", [rica])
+        pacote_antigo = json.dumps({"historico": [_entry("hist-sync")]}, ensure_ascii=False).encode("utf-8")
+
+        merged = shared_sync_merge_user_data._shared_sync_merge_historico_usuario(
+            "000002",
+            "ana",
+            [("favoritos_historico_caio.json", pacote_antigo)],
+        )
+
+        self.assertEqual(merged["historico"][0]["duracao_execucao_ms"], 90500)
+        self.assertEqual(merged["historico"][0]["grupos"][0]["duracao_execucao_ms"], 90500)
 
 
 if __name__ == "__main__":

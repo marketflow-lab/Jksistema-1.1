@@ -108,6 +108,7 @@ def ml_perguntas_salvar_config_loja(req: PerguntasLojaConfigRequest, client_id: 
         req.loja,
         req.responder_automaticamente,
         req.solicitar_aprovacao,
+        req.notificar_whatsapp_aprovacoes,
         req.habilitar_pos_venda_automatico,
         req.intervalo_minutos,
     )
@@ -138,6 +139,7 @@ def ml_perguntas_salvar_config_lojas_lote(req: PerguntasLojasConfigLoteRequest, 
             nome,
             config_atual.get("responder_automaticamente") is True,
             config_atual.get("solicitar_aprovacao") is True,
+            config_atual.get("notificar_whatsapp_aprovacoes") is True,
             config_atual.get("habilitar_pos_venda_automatico") is True,
             intervalo_minutos,
         )
@@ -273,6 +275,7 @@ def ml_perguntas_automacao_poll(
                         "item_id": contexto.get("item_id") or "",
                         "sku": contexto.get("sku") or "",
                         "titulo": contexto.get("titulo") or "",
+                        "permalink": contexto.get("permalink") or "",
                         "descricao_anuncio": str(contexto.get("descricao") or "")[:2500],
                         "pergunta": contexto.get("pergunta") or "",
                         "mensagens": _perguntas_ia_mensagens_aprovacao(pergunta, nome_loja),
@@ -628,6 +631,9 @@ def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, clien
     resposta_atual = str(req.resposta_atual or "").strip()
     if resposta_atual:
         pergunta = {**pergunta, "_resposta_atual": resposta_atual[:1200]}
+    orientacao_usuario = str(req.orientacao_usuario or "").strip()
+    if orientacao_usuario:
+        pergunta = {**pergunta, "_orientacao_usuario": orientacao_usuario[:1200]}
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
     if not str(pergunta.get("id") or "").strip():
@@ -817,7 +823,10 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     model_req = _normalizar_ia_modelo_padrao(str(req.model or "").strip() or _ia_modelo_perguntas_configurado())
     payload.model = model_req
 
-    if _modelo_eh_vertex_ai(model_req):
+    if _modelo_eh_codex(model_req):
+        resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
+    elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif _modelo_eh_gemini_api(model_req):
@@ -1271,6 +1280,10 @@ def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, clie
     )
     if req.buyer_id and not conversa.get("buyer_id"):
         conversa["buyer_id"] = str(req.buyer_id or "").strip()
+    if str(req.resposta_atual or "").strip():
+        conversa["_resposta_atual"] = str(req.resposta_atual or "").strip()[:1200]
+    if str(req.orientacao_usuario or "").strip():
+        conversa["_orientacao_usuario"] = str(req.orientacao_usuario or "").strip()[:1200]
     conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
     resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
     return jsonable_encoder({
@@ -1500,6 +1513,7 @@ def ml_pos_venda_automacao_poll(
                         "item_id": item.get("id") or "",
                         "sku": item.get("sku") or "",
                         "titulo": item.get("title") or conversa.get("item_title") or "",
+                        "permalink": item.get("permalink") or item.get("link") or item.get("url") or "",
                         "pergunta": last_text,
                         "conversa": conversa_aprovacao,
                         "mensagens": conversa_aprovacao["messages"],

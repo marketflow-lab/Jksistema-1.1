@@ -445,11 +445,18 @@
     document.getElementById('jk-ia-fab').addEventListener('click', () => toggleBlackJhonPanel());
     document.getElementById('jk-msg-fab').addEventListener('click', () => toggleMsgPanel());
     document.getElementById('jk-ia-btn-fechar').addEventListener('click', () => togglePanel(false));
-    document.getElementById('jk-codex-new').addEventListener('click', () => _codexNovaConversa());
+    document.getElementById('jk-codex-new').addEventListener('click', () => { void _codexReiniciarMemoria(); });
     document.getElementById('jk-codex-history-toggle')?.addEventListener('click', () => _codexToggleHistorico());
     document.getElementById('jk-codex-history-refresh')?.addEventListener('click', () => _codexCarregarListaHistorico());
     document.getElementById('jk-codex-close').addEventListener('click', () => toggleCodexPanel(false));
     document.getElementById('jk-codex-refresh').addEventListener('click', () => _codexCarregarStatus());
+    document.getElementById('jk-codex-report-settings')?.addEventListener('click', () => { void _codexAbrirConfiguracoesRelatorio(); });
+    document.getElementById('jk-codex-report-settings-close')?.addEventListener('click', () => _codexFecharConfiguracoesRelatorio());
+    document.getElementById('jk-codex-report-settings-cancel')?.addEventListener('click', () => _codexFecharConfiguracoesRelatorio());
+    document.getElementById('jk-codex-report-settings-save')?.addEventListener('click', () => { void _codexSalvarConfiguracoesRelatorio(); });
+    document.getElementById('jk-codex-report-settings-dialog')?.addEventListener('click', event => {
+      if (event.target === event.currentTarget) _codexFecharConfiguracoesRelatorio();
+    });
     _codexAplicarSettings();
     ['jk-codex-access', 'jk-codex-model', 'jk-codex-reasoning', 'jk-codex-speed'].forEach(id => {
       document.getElementById(id)?.addEventListener('change', () => {
@@ -611,10 +618,9 @@
     if (_usuarioLocalEhFull()) setTimeout(() => { _perguntasIniciarMonitorGlobal(); }, 2 * 60 * 1000);
     _codexAtualizarVisibilidade();
     const codexEstadoInicial = _codexLerEstadoPainel();
-    if (codexEstadoInicial.conversation_id) _codexSetActiveConversationId(codexEstadoInicial.conversation_id);
     codexInitialTaskId = String(codexEstadoInicial.task_id || '').trim();
-    const threadInicial = String(codexEstadoInicial.thread_id || _codexLerThreadId() || '').trim();
-    if (threadInicial) _codexSetThreadId(threadInicial);
+    codexConversationGeneration = Math.max(1, Number(codexEstadoInicial.conversation_generation || 1));
+    _codexSetThreadId('');
     codexHistoryVisible = false;
     document.getElementById('jk-codex-history-panel')?.classList.remove('ativo');
     if (_usuarioLocalEhFull()) _codexIniciarAssistenteProativo();

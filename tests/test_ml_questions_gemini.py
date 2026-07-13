@@ -87,7 +87,8 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             listing_obj=listing(attributes=[{"id": "VOLTAGE", "name": "Voltagem", "value_name": "220V"}]),
         )
         self.assertEqual(result.source, "gemini")
-        self.assertNotIn("220V", result.prompt)
+        self.assertIn("220V", result.prompt)
+        self.assertIn("PRODUTO_DO_ANUNCIO", result.prompt)
 
     def test_originality_requires_listing_evidence(self):
         result = process("E original?", ai="Produto original com garantia.", listing_obj=listing(title="Peca original com garantia"))
@@ -214,19 +215,17 @@ class MlQuestionsGeminiTests(unittest.TestCase):
         self.assertIn("Equipe Minha Loja agradece o seu contato.", prompt)
         self.assertIn("Nunca se apresente como IA", prompt)
         self.assertIn("PERGUNTA_DO_COMPRADOR", prompt)
-        self.assertIn("LINK_DO_ANUNCIO", prompt)
-        self.assertIn("PESQUISA_COM_LINK_E_PERGUNTA", prompt)
+        self.assertIn("PRODUTO_DO_ANUNCIO", prompt)
+        self.assertIn("PESQUISA_EXTERNA_SOMENTE_SE_NECESSARIA", prompt)
         self.assertIn("REGRAS_DO_APP", prompt)
-        self.assertIn("DESCRICAO_DO_ANUNCIO", prompt)
         self.assertIn("HISTORICO_DE_PERGUNTAS", prompt)
         self.assertIn("CONTEXTO_MINIMO_ENVIADO_A_IA", prompt)
         self.assertIn("https://produto.mercadolivre.com.br/MLB-1-produto", prompt)
-        self.assertLess(prompt.index("\nPERGUNTA_DO_COMPRADOR:"), prompt.index("\nLINK_DO_ANUNCIO:"))
-        self.assertLess(prompt.index("\nLINK_DO_ANUNCIO:"), prompt.index("\nPESQUISA_COM_LINK_E_PERGUNTA:"))
-        self.assertLess(prompt.index("\nPESQUISA_COM_LINK_E_PERGUNTA:"), prompt.index("\nREGRAS_DO_APP:"))
-        self.assertLess(prompt.index("\nREGRAS_DO_APP:"), prompt.index("\nDESCRICAO_DO_ANUNCIO:"))
-        self.assertLess(prompt.index("\nDESCRICAO_DO_ANUNCIO:"), prompt.index("\nHISTORICO_DE_PERGUNTAS:"))
-        self.assertLess(prompt.index("\nHISTORICO_DE_PERGUNTAS:"), prompt.index("\nCONTEXTO_MINIMO_ENVIADO_A_IA"))
+        self.assertLess(prompt.index("\nPERGUNTA_DO_COMPRADOR:"), prompt.index("\nHISTORICO_DE_PERGUNTAS:"))
+        self.assertLess(prompt.index("\nHISTORICO_DE_PERGUNTAS:"), prompt.index("\nPRODUTO_DO_ANUNCIO:"))
+        self.assertLess(prompt.index("\nPRODUTO_DO_ANUNCIO:"), prompt.index("\nPESQUISA_EXTERNA_SOMENTE_SE_NECESSARIA:"))
+        self.assertLess(prompt.index("\nPESQUISA_EXTERNA_SOMENTE_SE_NECESSARIA:"), prompt.index("\nREGRAS_DO_APP:"))
+        self.assertLess(prompt.index("\nREGRAS_DO_APP:"), prompt.index("\nCONTEXTO_MINIMO_ENVIADO_A_IA"))
 
     def test_prompt_context_is_minimal_for_ai(self):
         prompt = PromptBuilder().build(
@@ -252,11 +251,12 @@ class MlQuestionsGeminiTests(unittest.TestCase):
             search_results=[SearchResult(title="resultado externo", url="https://example.com", snippet="nao deve ir")],
         )
         self.assertIn("Descricao completa com manual incluso.", prompt)
-        self.assertIn("Pesquise este anuncio", prompt)
+        self.assertIn("Somente se a resposta nao estiver", prompt)
         self.assertIn("Tem manual?", prompt)
         self.assertIn("Use tom curto.", prompt)
-        self.assertNotIn("Titulo nao deve ir para o prompt", prompt)
-        self.assertNotIn('"attributes"', prompt)
+        self.assertIn("Titulo nao deve ir para o prompt", prompt)
+        self.assertIn('"attributes"', prompt)
+        self.assertIn("220V", prompt)
         self.assertNotIn('"shipping"', prompt)
         self.assertNotIn('"sale_terms"', prompt)
         self.assertNotIn('"variations"', prompt)

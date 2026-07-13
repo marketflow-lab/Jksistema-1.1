@@ -1473,7 +1473,7 @@
         embalagem: 150,
         acoes: 56,
     };
-    const STATUS_LISTA_OPCOES = ['Lista gerada', 'Em Orçamento', 'Analisando orçamento', 'Pedido Aprovado', 'Pedido cancelado'];
+    const STATUS_LISTA_OPCOES = ['Lista gerada', 'Em Orçamento', 'Analisando orçamento', 'Pedido Aprovado', 'Pedido emitido', 'Em produção', 'Em trânsito', 'Em desembaraço', 'Recebido', 'Pedido cancelado'];
     let largurasColunas = {};
     let largurasColunasPedidos = {};
     let chavesColunasAtuais = [];
@@ -2069,7 +2069,7 @@
     function classeStatusListaPedido(status) {
         if (status === 'Em Orçamento') return 'status-em-orcamento';
         if (status === 'Analisando orçamento') return 'status-analisando-orcamento';
-        if (status === 'Pedido Aprovado' || status === 'Pedido feito') return 'status-pedido-aprovado';
+        if (['Pedido Aprovado', 'Pedido feito', 'Pedido emitido', 'Em produção', 'Em trânsito', 'Em desembaraço', 'Recebido'].includes(status)) return 'status-pedido-aprovado';
         if (status === 'Pedido cancelado') return 'status-pedido-cancelado';
         return 'status-lista-gerada';
     }

@@ -195,9 +195,14 @@ class CodexUniversalAccessTest(unittest.TestCase):
         paths = {route.path for route in create_codex_console_router().routes}
         self.assertIn("/api/codex/status", paths)
         self.assertIn("/api/codex/tasks", paths)
+        self.assertIn("/api/codex/conversations/current/reset", paths)
         self.assertIn("/api/codex/tasks/{task_id}/cancel", paths)
         self.assertIn("/api/admin/codex/tasks", paths)
         self.assertIn("/api/admin/codex/actions", paths)
+        self.assertIn("/api/admin/codex/assistant/weekly-analysis/run", paths)
+        self.assertIn("/api/admin/codex/assistant/report-settings", paths)
+        self.assertIn("/api/admin/codex/assistant/financial-adjustments", paths)
+        self.assertIn("/api/admin/codex/assistant/action-queue", paths)
 
 
 if __name__ == "__main__":

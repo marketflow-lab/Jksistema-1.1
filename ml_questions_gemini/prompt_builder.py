@@ -60,11 +60,11 @@ class PromptBuilder:
                 if is_post_sale
                 else [
                     "1_receber_pergunta_do_comprador",
-                    "2_receber_link_do_anuncio",
-                    "3_pesquisar_usando_link_do_anuncio_e_pergunta",
-                    "4_aplicar_regras_do_app",
-                    "5_analisar_descricao_do_anuncio_e_historico",
-                    "6_responder_somente_com_evidencia",
+                    "2_ler_historico_do_mesmo_comprador",
+                    "3_analisar_produto_e_dados_do_anuncio",
+                    "4_verificar_se_o_anuncio_ou_historico_respondem",
+                    "5_comparar_e_pesquisar_na_internet_somente_se_faltar_resposta",
+                    "6_aplicar_regras_do_app_e_responder_com_evidencia",
                 ]
             ),
             "buyer_question": question.text,
@@ -75,7 +75,11 @@ class PromptBuilder:
                 "instruction": (
                     "Nao pesquise nem responda como venda; use apenas o contexto e as regras de pos-venda."
                     if is_post_sale
-                    else "Pesquise usando o link do anuncio junto com a pergunta do comprador antes de responder."
+                    else (
+                        "Primeiro procure a resposta no historico e nos dados do anuncio. "
+                        "Somente se a resposta nao estiver nesses dados, compare o produto e pesquise na internet "
+                        "usando o link, o titulo e a pergunta do comprador."
+                    )
                 ),
             },
             "app_rules": app_rules,
@@ -120,22 +124,22 @@ class PromptBuilder:
             f"A resposta final deve terminar exatamente com: {_store_signature(rules.store_name)}\n"
             "ORDEM OBRIGATORIA DE ANALISE:\n"
             "1. Leia a PERGUNTA_DO_COMPRADOR.\n"
-            "2. Considere o LINK_DO_ANUNCIO como identificador do produto anunciado.\n"
-            "3. Pesquise usando o LINK_DO_ANUNCIO junto com a PERGUNTA_DO_COMPRADOR para entender o produto e a duvida.\n"
-            "4. Aplique as REGRAS_DO_APP antes de qualquer resposta.\n"
-            "5. Analise a DESCRICAO_DO_ANUNCIO e o HISTORICO_DE_PERGUNTAS enviado.\n"
-            "6. Responda somente quando houver evidencia na pesquisa, descricao, regras/orientacoes ou historico; caso contrario, marque revisao humana.\n\n"
+            "2. Leia o HISTORICO_DE_PERGUNTAS do mesmo comprador para manter a continuidade.\n"
+            "3. Analise o PRODUTO_DO_ANUNCIO, incluindo titulo, descricao e atributos.\n"
+            "4. Verifique se o anuncio ou o historico ja contem evidencia suficiente para responder.\n"
+            "5. Somente se a resposta nao estiver no anuncio ou historico, marque requires_human_review=true e reason=missing_listing_evidence para o aplicativo executar a pesquisa externa.\n"
+            "6. Responda somente com evidencia e aplique as REGRAS_DO_APP; nunca invente informacao ausente.\n\n"
             f"PERGUNTA_DO_COMPRADOR:\n{question.text}\n\n"
-            f"LINK_DO_ANUNCIO:\n{listing_link or '-'}\n\n"
-            "PESQUISA_COM_LINK_E_PERGUNTA:\n"
-            f"Pesquise este anuncio ({listing_link or '-'}) junto com esta pergunta: {question.text}\n\n"
-            "REGRAS_DO_APP:\n"
-            + json.dumps(app_rules, ensure_ascii=False, default=str)
-            + "\n\n"
-            "DESCRICAO_DO_ANUNCIO:\n"
-            f"{listing.description[:12000] or '-'}\n\n"
             "HISTORICO_DE_PERGUNTAS:\n"
             + json.dumps([asdict(item) for item in previous_questions[-10:]], ensure_ascii=False, default=str)
+            + "\n\n"
+            "PRODUTO_DO_ANUNCIO:\n"
+            + json.dumps(_listing_payload(listing), ensure_ascii=False, default=str)
+            + "\n\n"
+            "PESQUISA_EXTERNA_SOMENTE_SE_NECESSARIA:\n"
+            f"Se faltar evidencia, o aplicativo pesquisara e comparara ({listing.title or listing_link or '-'}) com esta pergunta: {question.text}\n\n"
+            "REGRAS_DO_APP:\n"
+            + json.dumps(app_rules, ensure_ascii=False, default=str)
             + "\n\n"
             "Responda exclusivamente no JSON do schema pedido, sem texto antes ou depois.\n"
             "CONTEXTO_MINIMO_ENVIADO_A_IA delimitado abaixo:\n"
@@ -146,8 +150,19 @@ class PromptBuilder:
 
 
 def _listing_payload(listing: ListingSnapshot) -> dict[str, Any]:
+    attributes = []
+    for item in (listing.attributes or [])[:40]:
+        if not isinstance(item, dict):
+            continue
+        attributes.append({
+            "id": str(item.get("id") or "")[:120],
+            "name": str(item.get("name") or "")[:160],
+            "value": str(item.get("value_name") or item.get("value") or "")[:500],
+        })
     return {
+        "title": listing.title[:500],
         "description": listing.description[:12000],
+        "attributes": attributes,
         "link": _listing_link(listing),
     }
 

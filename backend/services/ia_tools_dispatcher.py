@@ -729,12 +729,21 @@ def _ia_chat_contexto_funcoes(payload: IAChatRequest, client_id: str) -> str:
                     f"- {alerta.get('data')} | {alerta.get('tipo')} | R$ {float(alerta.get('valor_vendido') or 0):.2f}"
                 )
         elif nome_funcao == "get_profit_by_period":
-            linhas.append(
-                "Resultado: "
-                f"periodo {resultado.get('data_inicio')} a {resultado.get('data_fim')} | faturamento R$ {float(resultado.get('faturamento_total') or 0):.2f} | "
-                f"custo estimado R$ {float(resultado.get('custo_total_estimado') or 0):.2f} | imposto estimado R$ {float(resultado.get('imposto_total_estimado') or 0):.2f} | "
-                f"lucro estimado R$ {float(resultado.get('lucro_estimado') or 0):.2f} ({float(resultado.get('margem_percentual_estimada') or 0):.2f}%)"
-            )
+            cobertura = float(resultado.get("cobertura_faturamento_percentual") or 0)
+            if resultado.get("dados_suficientes"):
+                linhas.append(
+                    "Resultado: "
+                    f"periodo {resultado.get('data_inicio')} a {resultado.get('data_fim')} | faturamento R$ {float(resultado.get('faturamento_total') or 0):.2f} | "
+                    f"custo estimado R$ {float(resultado.get('custo_total_estimado') or 0):.2f} | imposto estimado R$ {float(resultado.get('imposto_total_estimado') or 0):.2f} | "
+                    f"lucro estimado R$ {float(resultado.get('lucro_estimado') or 0):.2f} ({float(resultado.get('margem_percentual_estimada') or 0):.2f}%) | "
+                    f"cobertura {cobertura:.2f}%"
+                )
+            else:
+                linhas.append(
+                    "Resultado: margem consolidada indisponivel por dados insuficientes | "
+                    f"faturamento R$ {float(resultado.get('faturamento_total') or 0):.2f} | cobertura de custo {cobertura:.2f}% | "
+                    f"parcela calculavel R$ {float(resultado.get('faturamento_com_custo') or 0):.2f}"
+                )
         elif nome_funcao == "get_sales_and_returns_data":
             linhas.append(
                 "Resultado: "

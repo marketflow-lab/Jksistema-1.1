@@ -33,6 +33,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.favoritos_storage import (
     _favoritos_carregar_historico,
     _favoritos_historico_payload_from_bytes,
+    _favoritos_historico_preservar_duracao,
     _favoritos_normalizar_historico,
     _favoritos_salvar_historico,
 )
@@ -97,7 +98,9 @@ def _shared_sync_merge_historico_usuario(client_id: str, username: str, fontes: 
             data_nova = str(entrada.get("data_iso") or entrada.get("updated_at") or "")
             data_atual = str((atual_item or {}).get("data_iso") or (atual_item or {}).get("updated_at") or "")
             if not atual_item or data_nova >= data_atual:
-                por_id[chave] = entrada
+                por_id[chave] = _favoritos_historico_preservar_duracao(entrada, atual_item)
+            else:
+                por_id[chave] = _favoritos_historico_preservar_duracao(atual_item, entrada)
     historico = sorted(por_id.values(), key=lambda item: str((item or {}).get("data_iso") or ""), reverse=True)
     return _favoritos_salvar_historico(client_id, username, historico)
 

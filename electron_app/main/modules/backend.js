@@ -5,6 +5,11 @@ function getMlSession() {
     return mlSession;
 }
 
+let persistentSessionsFlushPromise = null;
+let persistentSessionsFlushTimer = null;
+let persistentSessionDurabilityRegistered = false;
+let persistentAuthCookieChangeCount = 0;
+
 function getBrowserSessionPartition() {
     return JK_BROWSER_SESSION_PARTITION;
 }
@@ -282,16 +287,126 @@ function showWindowsNotification(payload = {}) {
 }
 
 async function flushPersistentSessions() {
-    const sessions = [session.defaultSession, getMlSession()];
-    await Promise.all(sessions.map(async (ses) => {
-        try {
-            if (ses && typeof ses.flushStorageData === 'function') {
-                await ses.flushStorageData();
+    if (persistentSessionsFlushPromise) return persistentSessionsFlushPromise;
+    persistentSessionsFlushPromise = (async () => {
+        const sessions = Array.from(new Set([session.defaultSession, getMlSession()].filter(Boolean)));
+        const results = await Promise.all(sessions.map(async (ses, index) => {
+            let lastError = null;
+            for (let attempt = 1; attempt <= 2; attempt += 1) {
+                try {
+                    if (ses.cookies && typeof ses.cookies.flushStore === 'function') {
+                        await ses.cookies.flushStore();
+                    }
+                    if (typeof ses.flushStorageData === 'function') {
+                        await ses.flushStorageData();
+                    }
+                    return { index, success: true, attempts: attempt };
+                } catch (err) {
+                    lastError = err;
+                    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 120));
+                }
             }
-        } catch (err) {
-            console.warn('[Sessao] Falha ao salvar dados persistentes:', err && err.message ? err.message : err);
-        }
-    }));
+            const error = lastError && lastError.message ? lastError.message : String(lastError || 'erro desconhecido');
+            console.warn('[Sessao] Falha ao salvar dados persistentes:', error);
+            return { index, success: false, attempts: 2, error };
+        }));
+        const failures = results.filter(item => !item.success);
+        return { success: failures.length === 0, sessions: sessions.length, results, failures };
+    })().finally(() => {
+        persistentSessionsFlushPromise = null;
+    });
+    return persistentSessionsFlushPromise;
+}
+
+function cookiePertenceAFluxoDeAutenticacaoPersistente(cookie) {
+    const domain = String(cookie && cookie.domain || '').replace(/^\./, '').toLowerCase();
+    return domain === 'localhost'
+        || domain === '127.0.0.1'
+        || domain.endsWith('.mercadolivre.com.br')
+        || domain === 'mercadolivre.com.br'
+        || domain.endsWith('.mercadolivre.com')
+        || domain === 'mercadolivre.com'
+        || domain.endsWith('.mercadolibre.com')
+        || domain === 'mercadolibre.com'
+        || domain.endsWith('.mercadopago.com.br')
+        || domain === 'mercadopago.com.br'
+        || domain.endsWith('.mercadopago.com')
+        || domain === 'mercadopago.com';
+}
+
+function schedulePersistentSessionsFlush(reason = 'cookie-changed', delayMs = 900) {
+    if (persistentSessionsFlushTimer) clearTimeout(persistentSessionsFlushTimer);
+    persistentSessionsFlushTimer = setTimeout(() => {
+        persistentSessionsFlushTimer = null;
+        flushPersistentSessions()
+            .then((result) => {
+                logElectronLifecycle(result && result.success ? 'authentication-session-flushed' : 'authentication-session-flush-failed', {
+                    reason,
+                    sessions: result && result.sessions || 0,
+                    failures: result && result.failures || [],
+                    authCookieChanges: persistentAuthCookieChangeCount
+                });
+                persistentAuthCookieChangeCount = 0;
+            })
+            .catch((err) => {
+                logElectronLifecycle('authentication-session-flush-failed', {
+                    reason,
+                    error: err && err.message ? err.message : String(err)
+                });
+            });
+    }, Math.max(100, Number(delayMs) || 900));
+    if (typeof persistentSessionsFlushTimer.unref === 'function') persistentSessionsFlushTimer.unref();
+}
+
+function registerPersistentSessionDurability() {
+    if (persistentSessionDurabilityRegistered) return;
+    persistentSessionDurabilityRegistered = true;
+    const sessions = Array.from(new Set([session.defaultSession, getMlSession()].filter(Boolean)));
+    sessions.forEach((ses) => {
+        if (!ses.cookies || typeof ses.cookies.on !== 'function') return;
+        ses.cookies.on('changed', (_event, cookie) => {
+            if (!cookiePertenceAFluxoDeAutenticacaoPersistente(cookie)) return;
+            persistentAuthCookieChangeCount += 1;
+            schedulePersistentSessionsFlush('authentication-cookie-changed');
+        });
+    });
+    logElectronLifecycle('authentication-session-durability-ready', {
+        partition: getBrowserSessionPartition(),
+        sessions: sessions.length,
+        userDataDir: JK_ELECTRON_USER_DATA_DIR
+    });
+}
+
+async function persistAuthenticationState(reason = 'manual', options = {}) {
+    const flush = await flushPersistentSessions();
+    let avant = null;
+    if (options.saveAvantPro !== false && typeof saveAvantProExtensionStorageSnapshot === 'function') {
+        avant = await saveAvantProExtensionStorageSnapshot(reason, {
+            source: 'electron-auth-persistence',
+            savedAt: Date.now()
+        }).catch((err) => ({
+            success: false,
+            error: err && err.message ? err.message : String(err)
+        }));
+    }
+    const result = {
+        success: !!(flush && flush.success) && (
+            options.saveAvantPro === false
+            || !avant
+            || !!avant.success
+            || (avant.skipped && avant.reason === 'avantpro-disabled')
+        ),
+        sessions: flush && flush.sessions || 0,
+        sessionFailures: flush && flush.failures || [],
+        avantPro: avant ? {
+            success: !!avant.success,
+            skipped: !!avant.skipped,
+            reason: avant.reason || '',
+            copied: Number(avant.copied || 0)
+        } : null
+    };
+    logElectronLifecycle('authentication-state-persisted', { reason, ...result });
+    return result;
 }
 
 async function clearElectronCache() {
@@ -684,7 +799,7 @@ function writeLocalBackendLauncher(localAppDir) {
     const pythonRuntimeDir = '.python-runtime';
     const lines = [
         '@echo off',
-        'setlocal',
+        'setlocal EnableExtensions EnableDelayedExpansion',
         `cd /d "${cmdValue(localAppDir)}"`,
         'if not exist "logs" mkdir "logs"',
         'if not exist "info" mkdir "info"',
@@ -695,6 +810,7 @@ function writeLocalBackendLauncher(localAppDir) {
         `set "GOOGLE_LOGIN_REDIRECT_URI_LOCAL=${localGoogleCallback}"`,
         `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
         `set "JK_APP_VERSION=${cmdValue(app.getVersion())}"`,
+        'set "VC_REDIST=%CD%\\prerequisites\\VC_redist.x64.exe"',
         'set "IA_RAG_ENABLED=true"',
         'set "IA_RAG_BACKEND=local"',
         'set "IA_RAG_TOP_K=5"',
@@ -712,6 +828,25 @@ function writeLocalBackendLauncher(localAppDir) {
         'echo.>> "%LOG_FILE%"',
         'echo ==== JK Sistema local backend %date% %time% ====>> "%LOG_FILE%"',
         `set "PYTHON_RUNTIME_DIR=${pythonRuntimeDir}"`,
+        'reg query "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64" /v Installed 2>nul | find "0x1" >nul',
+        'if errorlevel 1 (',
+        '  if exist "%VC_REDIST%" (',
+        '    echo Instalando Microsoft Visual C++ Runtime empacotado...>> "%LOG_FILE%"',
+        '    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:VC_REDIST; if($s.Status -ne \'Valid\' -or $s.SignerCertificate.Subject -notmatch \'Microsoft\'){exit 1}" >> "%LOG_FILE%" 2>&1',
+        '    if errorlevel 1 (',
+        '      echo Assinatura do Visual C++ Runtime invalida.>> "%LOG_FILE%"',
+        '      exit /b 1',
+        '    )',
+        '    "%VC_REDIST%" /install /passive /norestart >> "%LOG_FILE%" 2>&1',
+        '    set "VC_EXIT=!ERRORLEVEL!"',
+        '    if not "!VC_EXIT!"=="0" if not "!VC_EXIT!"=="3010" (',
+        '      echo Falha ao instalar Visual C++ Runtime: !VC_EXIT!.>> "%LOG_FILE%"',
+        '      exit /b !VC_EXIT!',
+        '    )',
+        '  ) else (',
+        '    echo Visual C++ Runtime ausente e instalador empacotado nao encontrado.>> "%LOG_FILE%"',
+        '  )',
+        ')',
         'set "BUNDLED_PYTHON_INSTALLER="',
         'for %%I in (python_runtime\\python-*.exe) do if exist "%%~fI" if not defined BUNDLED_PYTHON_INSTALLER set "BUNDLED_PYTHON_INSTALLER=%%~fI"',
         'if exist "%PYTHON_RUNTIME_DIR%\\python.exe" (',
@@ -782,6 +917,12 @@ function writeLocalBackendLauncher(localAppDir) {
         '    exit /b %errorlevel%',
         '  )',
         '  "%PYTHON_EXE%" -m pip check >> "%LOG_FILE%" 2>&1',
+        '  if errorlevel 1 exit /b !ERRORLEVEL!',
+        '  "%PYTHON_EXE%" -c "import ctranslate2, faster_whisper, onnxruntime, openai_codex; from codex_cli_bin import bundled_codex_path; from pathlib import Path; assert Path(bundled_codex_path()).is_file()" >> "%LOG_FILE%" 2>&1',
+        '  if errorlevel 1 (',
+        '    echo Runtime offline do Black Jhon incompleto.>> "%LOG_FILE%"',
+        '    exit /b !ERRORLEVEL!',
+        '  )',
         '  "%PYTHON_EXE%" -m pip uninstall -y fitz >> "%LOG_FILE%" 2>&1',
         `  echo ok> "${depsMarker}"`,
         ')',
@@ -888,19 +1029,83 @@ function ensureLocalBackendStarted() {
     return localBackendStartupPromise;
 }
 
-function stopLocalBackend() {
-    if (!localBackendProcess || !localBackendProcess.pid) {
-        return;
-    }
-    try {
-        spawn('taskkill.exe', ['/PID', String(localBackendProcess.pid), '/T', '/F'], {
-            stdio: 'ignore',
-            windowsHide: true
-        }).unref();
-    } catch (err) {
-        logElectronLifecycle('local-backend-stop-error', err);
-    }
-    localBackendProcess = null;
+function stopTrackedProcessTree(pid) {
+    return new Promise((resolve) => {
+        if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) {
+            resolve(false);
+            return;
+        }
+        let settled = false;
+        const finish = (success) => {
+            if (settled) return;
+            settled = true;
+            resolve(Boolean(success));
+        };
+        try {
+            const child = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+                stdio: 'ignore',
+                windowsHide: true
+            });
+            child.once('error', () => finish(false));
+            child.once('exit', (code) => finish(code === 0));
+        } catch (_err) {
+            finish(false);
+        }
+    });
+}
+
+async function stopLocalBackend() {
+    if (localBackendStopPromise) return localBackendStopPromise;
+
+    localBackendStopPromise = (async () => {
+        const trackedProcess = localBackendProcess;
+        const trackedPid = trackedProcess && trackedProcess.pid ? Number(trackedProcess.pid) : null;
+        localBackendProcess = null;
+
+        const trackedTreeStopped = trackedPid
+            ? await stopTrackedProcessTree(trackedPid)
+            : false;
+
+        // O .cmd de inicializacao pode terminar antes do Uvicorn. Por isso as
+        // portas sao sempre encerradas, mesmo quando nao ha mais PID rastreado.
+        const [promoKillRequested, backendKillRequested] = await Promise.all([
+            stopProcessListeningOnPort(JK_PROMO_WORKER_PORT),
+            stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT)
+        ]);
+        const [promoClosed, backendClosed] = await Promise.all([
+            waitForTcpPortClosed(JK_PROMO_WORKER_PORT),
+            waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT)
+        ]);
+
+        localBackendStartupPromise = null;
+        const result = {
+            success: promoClosed && backendClosed,
+            trackedPid,
+            trackedTreeStopped,
+            promoKillRequested,
+            backendKillRequested,
+            promoClosed,
+            backendClosed
+        };
+        logElectronLifecycle(
+            result.success ? 'local-backend-stopped' : 'local-backend-stop-incomplete',
+            result
+        );
+        return result;
+    })()
+        .catch((err) => {
+            const result = {
+                success: false,
+                error: err && err.message ? err.message : String(err)
+            };
+            logElectronLifecycle('local-backend-stop-error', result);
+            return result;
+        })
+        .finally(() => {
+            localBackendStopPromise = null;
+        });
+
+    return localBackendStopPromise;
 }
 
 function readLocalDotEnvValues(envPath) {

@@ -1,6 +1,7 @@
 import re
 import unicodedata
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -112,6 +113,19 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
                 self.assertIn("config-lote", html)
                 self.assertIn("Todas as contas conectadas", html)
 
+    def test_whatsapp_question_approval_option_is_persisted_and_exposed(self):
+        source = backend_text()
+        self.assertIn("notificar_whatsapp_aprovacoes", source)
+        self.assertIn("_forward_question_approvals", source)
+        self.assertIn("_handle_question_approval_command", source)
+        self.assertIn("_regenerate_question_approval_response", source)
+        canonical = (ROOT / "static" / "perguntas_pos_venda.html").read_text(encoding="utf-8")
+        mirror = (ROOT / "perguntas_pos_venda.html").read_text(encoding="utf-8")
+        self.assertEqual(canonical, mirror)
+        controller = (ROOT / "static" / "perguntas_pos_venda" / "lojas-automacao.js").read_text(encoding="utf-8")
+        self.assertIn('data-config="notificar_whatsapp_aprovacoes"', controller)
+        self.assertIn("Aprovar, Negar e Gerar nova resposta", controller)
+
     def test_public_question_code_validator_ignores_article_before_model(self):
         source = backend_text()
         namespace = {
@@ -162,26 +176,82 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
         self.assertTrue(pede_chassi("Informe o chassi para verificarmos."))
         self.assertFalse(pede_chassi("Para o chassi informado, recomendamos confirmar com mecanico."))
 
-    def test_public_questions_v2_sends_link_and_question_to_web_search(self):
+    def test_public_questions_v2_uses_web_only_after_listing_is_insufficient(self):
         source = backend_text()
         client_body = function_body(source, "_perguntas_ia_v2_query_pesquisa")
         self.assertIn("question_text", client_body)
         self.assertIn("listing_link", client_body)
+        self.assertIn("listing_title", client_body)
         self.assertIn("_favoritos_ml_url_item_id", client_body)
 
         vertex_client = re.search(r"^class _PerguntasVertexGeminiV2Client:.*?^def _perguntas_ia_v2_prompt", source, re.M | re.S)
         self.assertIsNotNone(vertex_client)
         body = vertex_client.group(0)
-        self.assertIn('"forcar_busca_web_chat": not fluxo_pos_venda', body)
-        self.assertIn('"web_search_required": not fluxo_pos_venda', body)
-        self.assertIn('"web_search_query": web_search_query', body)
-        self.assertIn('"ativar_google_search_grounding": not fluxo_pos_venda', body)
-        self.assertNotIn('"desativar_busca_web_chat": True', body)
+        self.assertIn('stage="listing_only"', body)
+        self.assertIn("_perguntas_ia_v2_resposta_precisa_web", body)
+        self.assertIn("_ia_agent_perguntas_web_tool", body)
+        self.assertIn('stage="external_fallback"', body)
+        self.assertIn('"desativar_busca_web_chat": True', body)
+        self.assertLess(body.index('stage="listing_only"'), body.index("_ia_agent_perguntas_web_tool"))
+        self.assertLess(body.index("_ia_agent_perguntas_web_tool"), body.index('stage="external_fallback"'))
 
-        vertex_call = function_body(source, "_chamar_vertex_ai_chat")
-        self.assertIn("fluxo_perguntas_publicas_v2", vertex_call)
-        self.assertIn('ctx_payload.get("web_search_query") or mensagem', vertex_call)
-        self.assertIn('"novo_fluxo_perguntas_v2"', function_body(source, "_vertex_google_search_grounding_ativo"))
+    def test_public_questions_v2_skips_web_when_listing_answer_is_sufficient(self):
+        import backend_api  # noqa: F401 - configura os globals do runtime modular
+        from backend.services import perguntas_pos_venda_agent as agent
+
+        answer = '{"answer":"Acompanha cabo USB.","confidence":0.96,"requires_human_review":false,"reason":"listing_evidence"}'
+        client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {"question": {"text": "Acompanha cabo?"}})
+        with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", return_value=(answer, "codex:gpt-5.5")) as model_call, patch.object(
+            agent,
+            "_ia_agent_perguntas_web_tool",
+            side_effect=AssertionError("internet must not be called"),
+        ):
+            result = client.generate("prompt com historico e anuncio", {
+                "category": "product_feature",
+                "question_text": "Acompanha cabo?",
+                "item_id": "MLB1",
+                "listing_title": "Produto com cabo USB",
+                "history_count": 2,
+            })
+
+        self.assertEqual(result.answer, "Acompanha cabo USB.")
+        self.assertEqual(model_call.call_count, 1)
+        self.assertEqual(client.context_pipeline[-1]["status"], "skipped")
+
+    def test_public_questions_v2_searches_web_when_listing_lacks_answer(self):
+        import backend_api  # noqa: F401 - configura os globals do runtime modular
+        from backend.services import perguntas_pos_venda_agent as agent
+
+        first = '{"answer":"Nao consta no anuncio.","confidence":0.45,"requires_human_review":true,"reason":"missing_listing_evidence"}'
+        second = '{"answer":"Segundo a aplicacao encontrada, serve no modelo informado.","confidence":0.84,"requires_human_review":true,"reason":"external_evidence_review"}'
+        web = {
+            "function": "web_search_question_context",
+            "arguments": {"query": "Produto modelo compatibilidade"},
+            "result": {
+                "found": True,
+                "context": "Manual do fabricante\nURL: https://fabricante.example/manual",
+                "read_only": True,
+            },
+        }
+        client = agent._PerguntasVertexGeminiV2Client("cliente", "Loja", "codex:gpt-5.5", {"question": {"text": "Serve no modelo?"}})
+        with patch.object(agent, "_ia_agent_perguntas_chamar_modelo", side_effect=[(first, "codex:gpt-5.5"), (second, "codex:gpt-5.5")]) as model_call, patch.object(
+            agent,
+            "_ia_agent_perguntas_web_tool",
+            return_value=web,
+        ) as web_call:
+            result = client.generate("prompt com historico e anuncio", {
+                "category": "compatibility",
+                "question_text": "Serve no modelo?",
+                "item_id": "MLB1",
+                "listing_title": "Produto",
+                "history_count": 1,
+            })
+
+        self.assertIn("serve no modelo", result.answer)
+        self.assertEqual(model_call.call_count, 2)
+        web_call.assert_called_once()
+        self.assertEqual(client.context_pipeline[-1]["status"], "completed")
+        self.assertEqual(client.context_pipeline[-1]["source_count"], 1)
 
 
 if __name__ == "__main__":

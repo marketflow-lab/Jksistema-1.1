@@ -82,6 +82,7 @@ SAFE_EXECUTORS = {
     "ml_pergunta_responder",
     "ml_pos_venda_responder",
     "ml_aprovacao_aprovar",
+    "internal_report_queue",
 }
 
 
@@ -450,6 +451,48 @@ def _manual_specs() -> dict[str, CodexActionSpec]:
             side_effects=("Pode alterar custo, preco ou imposto usado nos calculos de margem.",),
             executor="proposal_only",
             status_kind="impostos",
+        ),
+        "reports.queue_replenishment": CodexActionSpec(
+            id="reports.queue_replenishment",
+            module="medias_compras",
+            label="Criar lista interna de reposicao",
+            aliases=("enviar reposicao para fila", "criar lista de reposicao", "aprovar reposicao black jhon"),
+            params_schema=_schema(
+                ["report_id", "report_action"],
+                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+            ),
+            risk_level="local_write",
+            side_effects=("Cria uma lista local em Medias e Compras com status Lista gerada; nao altera estoque externo.",),
+            executor="internal_report_queue",
+            status_kind="black_jhon_report",
+        ),
+        "reports.queue_price_review": CodexActionSpec(
+            id="reports.queue_price_review",
+            module="vendas",
+            label="Criar fila interna de revisao de preco",
+            aliases=("enviar preco para revisao", "criar fila de preco", "aprovar revisao de preco"),
+            params_schema=_schema(
+                ["report_id", "report_action"],
+                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+            ),
+            risk_level="local_write",
+            side_effects=("Registra uma revisao interna; nao altera preco ou anuncio externo.",),
+            executor="internal_report_queue",
+            status_kind="black_jhon_report",
+        ),
+        "reports.queue_liquidation": CodexActionSpec(
+            id="reports.queue_liquidation",
+            module="estoque",
+            label="Criar fila interna de liquidacao de excesso",
+            aliases=("enviar excesso para liquidacao", "criar fila de liquidacao", "aprovar liquidacao"),
+            params_schema=_schema(
+                ["report_id", "report_action"],
+                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+            ),
+            risk_level="local_write",
+            side_effects=("Registra uma fila interna de liquidacao; nao altera anuncio, preco ou estoque externo.",),
+            executor="internal_report_queue",
+            status_kind="black_jhon_report",
         ),
     }
 
@@ -1414,6 +1457,8 @@ def create_proposal(
     params: Optional[dict[str, Any]] = None,
     screen_context: Optional[dict[str, Any]] = None,
     history: Optional[list[dict[str, Any]]] = None,
+    conversation_id: str = "",
+    conversation_generation: int = 1,
 ) -> dict[str, Any]:
     specs = _discover_route_specs()
     cap_action_id = _action_id_from_capability(client_id, capability_id)
@@ -1496,6 +1541,8 @@ def create_proposal(
         "created_at": _now(),
         "created_by": username,
         "client_id": client_id,
+        "conversation_id": str(conversation_id or ""),
+        "conversation_generation": max(1, int(conversation_generation or 1)),
         "requires_confirmation": True,
     }
     _write_json(_proposal_path(proposal_id), proposal)
@@ -1742,6 +1789,65 @@ def _execute_ml_aprovacao_aprovar(run_id: str, proposal: dict[str, Any]) -> dict
     return result
 
 
+def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
+    from backend.services import codex_assistant, codex_assistant_storage, codex_reports_advanced
+
+    params = proposal.get("params") if isinstance(proposal.get("params"), dict) else {}
+    report_action = dict(params.get("report_action") or {}) if isinstance(params.get("report_action"), dict) else {}
+    report_id = str(params.get("report_id") or report_action.get("report_id") or "").strip()
+    spec_id = str((proposal.get("action") or {}).get("id") or "")
+    expected_type = {
+        "reports.queue_replenishment": "replenishment",
+        "reports.queue_price_review": "price_review",
+        "reports.queue_liquidation": "liquidation",
+    }.get(spec_id)
+    if not report_id or not report_action or not expected_type:
+        raise RuntimeError("Relatorio ou acao interna ausente na proposta aprovada.")
+    if str(report_action.get("action_type") or "") != expected_type:
+        raise RuntimeError("O tipo da recomendacao nao corresponde a acao aprovada.")
+    client_id = str(proposal.get("client_id") or "default")
+    username = str(proposal.get("created_by") or proposal.get("username") or "")
+    report = codex_assistant_storage.codex_assistant_report_get(codex_assistant._assistant_info_base(), client_id, report_id)
+    if not isinstance(report, dict):
+        raise RuntimeError("Relatorio de origem nao encontrado.")
+    valid_action = next(
+        (
+            item for item in (report.get("top_actions") or [])
+            if isinstance(item, dict) and str(item.get("action_id") or "") == str(report_action.get("action_id") or "")
+        ),
+        None,
+    )
+    if not isinstance(valid_action, dict):
+        raise RuntimeError("A recomendacao nao pertence ao relatorio informado.")
+    if valid_action.get("queueable") is False:
+        raise RuntimeError("A recomendacao nao possui confianca suficiente para entrar na fila.")
+    queue_payload = {**valid_action, "report_id": report_id, "status": "queued", "approved_by": username}
+    queue_item = codex_reports_advanced.create_queue_action(
+        info_base=codex_assistant._assistant_info_base(),
+        client_id=client_id,
+        username=username,
+        payload=queue_payload,
+    )
+    result: dict[str, Any] = {"queue_action": queue_item, "external_mutation": False}
+    if expected_type == "replenishment":
+        linked = codex_reports_advanced.create_replenishment_list(
+            info_base=codex_assistant._assistant_info_base(),
+            client_id=client_id,
+            action=queue_payload,
+            username=username,
+        )
+        queue_item = codex_reports_advanced.update_queue_action(
+            info_base=codex_assistant._assistant_info_base(),
+            client_id=client_id,
+            action_id=str(queue_item.get("action_id") or ""),
+            username=username,
+            updates={"linked_list_id": linked.get("list_id"), "result": linked},
+        )
+        result.update({"queue_action": queue_item, "replenishment_list": linked})
+    _update_run(run_id, live_status="Fila interna criada sem alteracoes externas.", result=result)
+    return result
+
+
 def _render_route_path(path: str, path_params: dict[str, Any]) -> str:
     out = str(path or "")
     for name in re.findall(r"{([^}:]+)", out):
@@ -1814,6 +1920,8 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
             result = _execute_ml_pos_venda_responder(run_id, proposal)
         elif executor == "ml_aprovacao_aprovar":
             result = _execute_ml_aprovacao_aprovar(run_id, proposal)
+        elif executor == "internal_report_queue":
+            result = _execute_internal_report_queue(run_id, proposal)
         elif executor == "proposal_only":
             raise RuntimeError("Esta proposta ainda nao possui executor seguro. Revise os dados e crie um executor especifico antes de aprovar.")
         else:
@@ -1839,6 +1947,11 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
 def approve_proposal(proposal_id: str, *, username: str, client_id: str, authorization: Optional[str]) -> dict[str, Any]:
     proposal = _read_json(_proposal_path(proposal_id), None)
     if not isinstance(proposal, dict):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if (
+        str(proposal.get("client_id") or "").strip() != str(client_id or "").strip()
+        or str(proposal.get("created_by") or "").strip().lower() != str(username or "").strip().lower()
+    ):
         raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
     if str(proposal.get("status") or "") not in {"awaiting_approval", "approved"}:
         raise HTTPException(status_code=400, detail="Proposta nao esta aguardando aprovacao.")
@@ -1899,6 +2012,32 @@ def approve_proposal(proposal_id: str, *, username: str, client_id: str, authori
     return {"success": True, "proposal": proposal, "run": get_run(run_id).get("run")}
 
 
+def reject_proposal(proposal_id: str, *, username: str, client_id: str, source: str = "app") -> dict[str, Any]:
+    proposal = _read_json(_proposal_path(proposal_id), None)
+    if not isinstance(proposal, dict):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if (
+        str(proposal.get("client_id") or "").strip() != str(client_id or "").strip()
+        or str(proposal.get("created_by") or "").strip().lower() != str(username or "").strip().lower()
+    ):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    status = str(proposal.get("status") or "")
+    if status == "rejected":
+        return {"success": True, "proposal": proposal}
+    if status != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Proposta nao esta aguardando aprovacao.")
+    proposal.update(
+        {
+            "status": "rejected",
+            "rejected_at": _now(),
+            "rejected_by": str(username or ""),
+            "rejection_source": str(source or "app")[:40],
+        }
+    )
+    _write_json(_proposal_path(proposal_id), proposal)
+    return {"success": True, "proposal": proposal}
+
+
 def get_run(run_id: str) -> dict[str, Any]:
     run = _read_json(_run_path(run_id), None)
     if not isinstance(run, dict):
@@ -1955,6 +2094,7 @@ __all__ = [
     "match_action_dry_run",
     "create_proposal",
     "approve_proposal",
+    "reject_proposal",
     "get_run",
     "cancel_run",
 ]

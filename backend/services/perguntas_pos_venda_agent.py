@@ -1338,7 +1338,10 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
 
 
 def _ia_agent_perguntas_chamar_modelo(client_id: str, payload: IAChatRequest, model_req: str) -> tuple[str, str]:
-    if _modelo_eh_vertex_ai(model_req):
+    if _modelo_eh_codex(model_req):
+        resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
+    elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif _modelo_eh_gemini_api(model_req):
@@ -1683,49 +1686,100 @@ def _perguntas_ia_v2_query_pesquisa(metadata: Optional[dict[str, Any]]) -> str:
     meta = metadata if isinstance(metadata, dict) else {}
     pergunta = re.sub(r"\s+", " ", str(meta.get("question_text") or "").strip())
     link = str(meta.get("listing_link") or "").strip()
+    titulo = re.sub(r"\s+", " ", str(meta.get("listing_title") or "").strip())[:240]
     item_id = str(meta.get("item_id") or "").strip()
     if not link and item_id:
         link = _favoritos_ml_url_item_id(item_id)
-    partes = [parte for parte in (pergunta, link) if parte]
+    partes = [parte for parte in (titulo, pergunta, link) if parte]
     if not partes:
         return ""
     return " ".join(partes)[:600]
 
 
+def _perguntas_ia_v2_resposta_precisa_web(resposta: Any, metadata: Optional[dict[str, Any]] = None) -> bool:
+    meta = metadata if isinstance(metadata, dict) else {}
+    categoria = str(meta.get("category") or "").strip().lower()
+    if categoria not in {"compatibility", "product_feature", "warranty_originality", "other_product", "unknown"}:
+        return False
+    texto = str(getattr(resposta, "answer", "") or "").strip()
+    if not texto:
+        return True
+    try:
+        confianca = float(getattr(resposta, "confidence", 0.0) or 0.0)
+    except Exception:
+        confianca = 0.0
+    motivo = _favoritos_normalizar_sem_acentos(str(getattr(resposta, "reason", "") or ""))
+    texto_norm = _favoritos_normalizar_sem_acentos(texto)
+    marcadores_ausencia = (
+        "missing_listing_evidence",
+        "listing evidence missing",
+        "nao consta no anuncio",
+        "nao consta na descricao",
+        "nao encontrei essa informacao",
+        "nao foi informado no anuncio",
+        "informacao nao disponivel no anuncio",
+        "sem evidencia no anuncio",
+    )
+    return bool(
+        getattr(resposta, "requires_human_review", False)
+        or confianca < 0.78
+        or any(marcador in motivo or marcador in texto_norm for marcador in marcadores_ausencia)
+    )
+
+
+def _perguntas_ia_v2_fontes_web(tool_result: Optional[dict[str, Any]]) -> list[str]:
+    result = tool_result.get("result") if isinstance(tool_result, dict) and isinstance(tool_result.get("result"), dict) else {}
+    contexto = str(result.get("context") or "")
+    fontes: list[str] = []
+    for url in re.findall(r"https?://[^\s<>'\"]+", contexto, flags=re.IGNORECASE):
+        limpa = url.rstrip(".,;:)]}")[:600]
+        if limpa and limpa not in fontes:
+            fontes.append(limpa)
+        if len(fontes) >= 8:
+            break
+    return fontes
+
+
 class _PerguntasVertexGeminiV2Client:
-    def __init__(self, client_id: str, loja: str, model_req: str):
+    def __init__(self, client_id: str, loja: str, model_req: str, agent_input: Optional[dict[str, Any]] = None):
         self.client_id = client_id
         self.loja = loja
         self.model_req = model_req
         self.model_usado = model_req
         self.parser = AIResponseParser()
+        self.agent_input = copy.deepcopy(agent_input) if isinstance(agent_input, dict) else {}
+        self.context_pipeline: list[dict[str, Any]] = []
 
-    def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
-        metadata_dict = metadata if isinstance(metadata, dict) else {}
-        fluxo_pos_venda = str(metadata_dict.get("category") or "").strip() == "post_sale"
-        web_search_query = "" if fluxo_pos_venda else _perguntas_ia_v2_query_pesquisa(metadata_dict)
+    def _call_model(
+        self,
+        prompt: str,
+        metadata: dict[str, Any],
+        *,
+        stage: str,
+        tool_results: Optional[list[dict[str, Any]]] = None,
+    ) -> Any:
+        fluxo_pos_venda = str(metadata.get("category") or "").strip() == "post_sale"
         payload = IAChatRequest(
             message=prompt,
             page="Perguntas e pos venda",
             context={
                 "modulo": "perguntas_pos_venda",
-                "tipo": ML_POS_VENDA_IA_V2_MODO if fluxo_pos_venda else ML_PERGUNTAS_IA_V2_MODO,
+                "tipo": ML_POS_VENDA_IA_V2_MODO if fluxo_pos_venda else f"{ML_PERGUNTAS_IA_V2_MODO}_{stage}",
                 "tipo_treinamento": "pos_venda" if fluxo_pos_venda else "perguntas_anuncio",
-                "origem_ia": "mercado_livre_perguntas_pos_venda_v2_vertex_gemini" if fluxo_pos_venda else "mercado_livre_perguntas_v2_vertex_gemini",
-                "forcar_busca_web_chat": not fluxo_pos_venda,
-                "web_search_required": not fluxo_pos_venda,
-                "web_search_query": web_search_query,
-                "ativar_google_search_grounding": not fluxo_pos_venda,
+                "origem_ia": "mercado_livre_perguntas_pos_venda_v2" if fluxo_pos_venda else "mercado_livre_perguntas_v2_contexto_sequencial",
+                "desativar_recursos_chat": True,
+                "desativar_busca_web_chat": True,
+                "context_collection_stage": stage,
                 "loja": self.loja,
-                "metadata": metadata_dict,
+                "metadata": metadata,
             },
             model=self.model_req,
-            tool_results=[],
+            tool_results=list(tool_results or []),
         )
         resposta, model_usado = _ia_agent_perguntas_chamar_modelo(self.client_id, payload, self.model_req)
         self.model_usado = model_usado
         parsed = self.parser.parse(resposta)
-        if parsed.answer:
+        if getattr(parsed, "answer", ""):
             return parsed
         resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
         if resposta_limpa:
@@ -1733,10 +1787,80 @@ class _PerguntasVertexGeminiV2Client:
                 answer=resposta_limpa,
                 confidence=0.70,
                 requires_human_review=True,
-                reason="gemini_plain_text_fallback",
+                reason="plain_text_requires_evidence_review",
                 raw=resposta,
             )
         return parsed
+
+    def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        fluxo_pos_venda = str(metadata_dict.get("category") or "").strip() == "post_sale"
+        history_count = int(metadata_dict.get("history_count") or 0)
+        self.context_pipeline = [
+            {
+                "step": 1,
+                "name": "buyer_question_and_history",
+                "status": "completed",
+                "history_count": history_count,
+                "history_source": str(metadata_dict.get("history_source") or "same_buyer_or_listing"),
+            },
+            {
+                "step": 2,
+                "name": "listing_product_analysis",
+                "status": "completed",
+                "item_id": str(metadata_dict.get("item_id") or ""),
+                "listing_title": str(metadata_dict.get("listing_title") or "")[:240],
+            },
+        ]
+        prompt_interno = (
+            prompt
+            + "\n\nETAPA INTERNA OBRIGATORIA: use primeiro somente a pergunta, o historico e os dados do produto do anuncio. "
+            "Nao pesquise na internet nesta etapa. Se esses dados nao responderem com evidencia, retorne "
+            "requires_human_review=true e reason=missing_listing_evidence para liberar o fallback externo."
+        )
+        parsed = self._call_model(prompt_interno, metadata_dict, stage="listing_only")
+        precisa_web = bool(not fluxo_pos_venda and _perguntas_ia_v2_resposta_precisa_web(parsed, metadata_dict))
+        if not precisa_web:
+            self.context_pipeline.append({
+                "step": 3,
+                "name": "external_research_fallback",
+                "status": "skipped",
+                "reason": "answer_found_in_listing_or_history" if not fluxo_pos_venda else "post_sale_flow",
+            })
+            return parsed
+
+        web_result = _ia_agent_perguntas_web_tool(self.client_id, self.agent_input, [])
+        web_data = web_result.get("result") if isinstance(web_result, dict) and isinstance(web_result.get("result"), dict) else {}
+        fontes = _perguntas_ia_v2_fontes_web(web_result)
+        web_found = bool(web_data.get("found") and str(web_data.get("context") or "").strip())
+        self.context_pipeline.append({
+            "step": 3,
+            "name": "external_research_fallback",
+            "status": "completed" if web_found else "unavailable",
+            "reason": "missing_listing_evidence",
+            "query": str(((web_result or {}).get("arguments") or {}).get("query") or _perguntas_ia_v2_query_pesquisa(metadata_dict))[:600],
+            "source_count": len(fontes),
+            "sources": fontes,
+        })
+        if not web_found:
+            return parsed
+
+        prompt_web = (
+            prompt
+            + "\n\nETAPA DE FALLBACK EXTERNO: a leitura do anuncio e do historico nao encontrou evidencia suficiente. "
+            "Compare o produto anunciado com as fontes publicas abaixo e responda somente quando houver correspondencia clara "
+            "de produto, codigo, medida, aplicacao ou caracteristica. Dados do anuncio prevalecem em caso de divergencia. "
+            "Nao mencione a pesquisa nem URLs ao comprador e marque revisao humana se as fontes continuarem inconclusivas.\n\n"
+            "RESULTADOS_DA_PESQUISA_EXTERNA:\n"
+            + json.dumps(web_result, ensure_ascii=False, default=str)[:10000]
+        )
+        resposta_web = self._call_model(
+            prompt_web,
+            metadata_dict,
+            stage="external_fallback",
+            tool_results=[web_result],
+        )
+        return resposta_web if getattr(resposta_web, "answer", "") else parsed
 
 
 def _perguntas_ia_v2_prompt(
@@ -1889,17 +2013,18 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
     settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not exige_aprovacao)
     modelo_configurado = _ia_modelo_pos_venda_configurado() if fluxo_pos_venda else _ia_modelo_perguntas_configurado()
     model_req = _normalizar_ia_modelo_padrao(settings.model or modelo_configurado)
-    if not _modelo_eh_vertex_ai(model_req):
+    if not (_modelo_eh_vertex_ai(model_req) or _modelo_eh_codex(model_req)):
         model_req = IA_MODELO_PADRAO_SISTEMA
     settings.model = model_req
     diagnostico = [{
         "function": ML_PERGUNTAS_IA_V2_MODO,
         "result": {
             "found": True,
-            "message": "Fluxo local legado removido; V2 usa Vertex Gemini com validacao antes de qualquer envio.",
+            "message": "Fluxo V2 usa o modelo configurado com validacao antes de qualquer envio.",
             "read_only": True,
             "gemini_model": model_req,
-            "vertex_gemini": True,
+            "vertex_gemini": _modelo_eh_vertex_ai(model_req),
+            "codex": _modelo_eh_codex(model_req),
             "auto_publish_enabled": settings.auto_publish_enabled,
             "fluxo_pos_venda": fluxo_pos_venda,
         },
@@ -1913,7 +2038,7 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
         seller_rules.max_chars = settings.max_chars
         seller_rules.max_sentences = settings.max_sentences
         seller_rules.whitelisted_domains = list(settings.whitelisted_domains)
-        gemini_client = _PerguntasVertexGeminiV2Client(client_id, loja, model_req)
+        gemini_client = _PerguntasVertexGeminiV2Client(client_id, loja, model_req, agent_input)
         orchestrator = QuestionAnswerOrchestrator(settings=settings, gemini_client=gemini_client)
         perf_orq_t0 = time.perf_counter()
         resultado = orchestrator.process(
@@ -1939,6 +2064,7 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
             "validation_issues": list(resultado.validation.issues),
             "prompt_chars": len(resultado.prompt or ""),
             "audit": resultado.audit,
+            "context_collection_pipeline": list(gemini_client.context_pipeline),
         })
         _ia_agent_perguntas_log_perf(
             client_id,

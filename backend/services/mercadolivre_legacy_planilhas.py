@@ -108,6 +108,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
 
         frete_val = _to_float_safe(frete_base)
         frete_ml_val = _to_float_safe(frete_ml)
+        frete_ml_exato = str(item.get("frete_ml_exato") or "").strip().lower() in {"1", "true", "sim", "yes"}
         tipo_txt = str(item.get("Tipo") or "").strip().lower()
         listing_type_hint = "free" if "grat" in tipo_txt else ""
         taxa_fixa_item = _to_float_safe(item.get("Taxa Fixa"))
@@ -122,7 +123,7 @@ def _build_df_planilha_analise_promo(dados_analise: list[dict], limpar_status_ex
         # Para frete grÃ¡tis, prioriza o recÃƒÂ¡lculo por faixa oficial do ML
         # com base no preÃ§o final da planilha. Se nÃ£o der para reconhecer a
         # faixa do frete-base, mantÃƒÂ©m o ajuste proporcional como fallback.
-        if frete_gratis_ml_bool and frete_val is not None and preco_final is not None and preco_final_ml is not None:
+        if not frete_ml_exato and frete_gratis_ml_bool and frete_val is not None and preco_final is not None and preco_final_ml is not None:
             frete_ml_ajustado = _recalcular_frete_por_faixa_ml(
                 frete_val,
                 preco_final,

@@ -886,6 +886,7 @@ def _perguntas_ia_gerar_resposta(
         "item_id": item_id,
         "titulo": titulo,
         "sku": sku,
+        "permalink": str((item or {}).get("permalink") or (pergunta or {}).get("item_permalink") or "").strip(),
         "descricao": descricao,
         "descricao_chars": len(descricao or ""),
         "descricao_disponivel": bool(descricao),
@@ -928,9 +929,26 @@ def _perguntas_ia_gerar_resposta(
     bloco_historico_prompt = f"Historico da conversa:\n{historico_prompt}\n\n" if historico_prompt else ""
     resposta_atual = _perguntas_ia_compactar_contexto(str((pergunta or {}).get("_resposta_atual") or ""), 1200)
     bloco_resposta_atual = (
-        "Resposta atual no campo, que precisa ser corrigida ou substituida; nao repita este texto:\n"
+        "RESPOSTA ATUAL QUE O OPERADOR ESTA EDITANDO:\n"
         f"{resposta_atual}\n\n"
+        "Preserve literalmente todo trecho que a orientacao do operador nao mandar alterar. "
+        "Se ele pedir para repetir a resposta anterior removendo ou trocando apenas uma parte, reutilize esta resposta "
+        "e faca somente a alteracao pedida.\n\n"
         if resposta_atual
+        else ""
+    )
+    orientacao_usuario = _perguntas_ia_compactar_contexto(
+        str((pergunta or {}).get("_orientacao_usuario") or ""),
+        1200,
+    )
+    bloco_orientacao_usuario = (
+        "COMANDO EDITORIAL DO OPERADOR PARA ESTA NOVA RESPOSTA:\n"
+        f"{orientacao_usuario}\n\n"
+        "Execute esse comando literalmente, sem explicar o que foi alterado e sem criar uma resposta diferente da solicitada. "
+        "Se o operador fornecer a frase final, copie a redacao dele. Se pedir para remover, incluir, trocar ou manter um trecho, "
+        "altere somente esse trecho. Nao mencione esta orientacao ao comprador. So deixe de cumpri-la se ela contradizer "
+        "dados confirmados ou as regras de seguranca do Mercado Livre.\n\n"
+        if orientacao_usuario
         else ""
     )
     if intencao_atendimento.get("fluxo") == "pos_venda":
@@ -952,6 +970,7 @@ def _perguntas_ia_gerar_resposta(
             f"Titulo do anuncio: {titulo or '-'}\n"
             f"Intencao classificada:\n{json.dumps(intencao_atendimento, ensure_ascii=False, default=str)}\n\n"
             f"{bloco_historico_prompt}"
+            f"{bloco_orientacao_usuario}"
             f"{bloco_resposta_atual}"
             f"Pergunta do comprador:\n{texto_pergunta}"
         )
@@ -984,6 +1003,7 @@ def _perguntas_ia_gerar_resposta(
             f"Descricao do anuncio:\n{descricao_prompt or '-'}\n\n"
             f"{contexto_outra_peca_prompt + chr(10) + chr(10) if contexto_outra_peca_prompt else ''}"
             f"{bloco_historico_prompt}"
+            f"{bloco_orientacao_usuario}"
             f"{bloco_resposta_atual}"
             f"Pergunta do comprador:\n{texto_pergunta}"
         )

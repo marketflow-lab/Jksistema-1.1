@@ -1,0 +1,67 @@
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const root = path.resolve(__dirname, '..');
+const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
+
+const ipc = read('electron_app/main/modules/ipc.js');
+const worker = read('electron_app/main/modules/favoritos-worker-browser.js');
+const mlBrowser = read('static/favoritos/ml-browser.js');
+const executionLayout = read('static/favoritos/tabelas-layout/07-execucao-render-layout.js');
+
+assert.match(ipc, /function assertTrustedFavoritosIpcSender\s*\(/);
+assert.match(ipc, /sender === mainWindow\.webContents/);
+
+const protectedChannels = [
+    'embedded-ml-browser-show',
+    'embedded-ml-browser-position',
+    'embedded-ml-browser-hide',
+    'embedded-ml-browser-execute',
+    'embedded-ml-browser-login-avantpro',
+    'embedded-ml-browser-type',
+    'embedded-ml-browser-click',
+    'favoritos-job-browser-start',
+    'favoritos-job-browser-stop',
+    'favoritos-worker:start',
+    'favoritos-worker:pause',
+    'favoritos-worker:resume',
+    'favoritos-worker:cancel',
+    'favoritos-worker:status',
+    'favoritos-worker:show',
+    'favoritos-worker:hide',
+    'favoritos-worker:stop',
+    'favoritos-worker:execute',
+    'favoritos-worker:click',
+    'favoritos-worker:type'
+];
+
+for (const channel of protectedChannels) {
+    assert.ok(ipc.includes(`ipcMain.handle('${channel}'`), `IPC ausente: ${channel}`);
+    assert.ok(
+        ipc.includes(`assertTrustedFavoritosIpcSender(event, '${channel}')`),
+        `IPC sem validacao de origem: ${channel}`
+    );
+}
+
+assert.match(worker, /function isAllowedFavoritosWorkerUrl\s*\(/);
+assert.match(worker, /isMercadoLivreHost\(host\)/);
+assert.match(worker, /host\.endsWith\('\.avantprocloud\.com\.br'\)/);
+assert.match(worker, /webContents\.on\('will-navigate'[\s\S]*favoritos-worker-browser-navigation-blocked/);
+assert.match(worker, /FAVORITOS_WORKER_MAX_SCRIPT_LENGTH\s*=\s*1024\s*\*\s*1024/);
+assert.match(worker, /assertAllowedFavoritosWorkerUrl\(currentUrl\)/);
+assert.match(ipc, /embedded-ml-browser-execute[\s\S]*assertAllowedFavoritosWorkerUrl\(view\.webContents\.getURL\(\)\)/);
+
+for (const [name, source] of [
+    ['ml-browser', mlBrowser],
+    ['execucao-render-layout', executionLayout]
+]) {
+    assert.match(source, /event\.source === window/ , `${name}: fonte da mensagem nao validada`);
+    assert.match(source, /event\.source === window\.parent/, `${name}: frame pai nao validado`);
+    assert.match(source, /event\.origin === window\.location\.origin/, `${name}: origem da mensagem nao validada`);
+    assert.match(source, /if \(!origemConhecida \|\| !origemCompativel\) return;/, `${name}: mensagem insegura nao bloqueada`);
+}
+
+console.log(`OK: ${protectedChannels.length} IPCs do Favoritos e mensagens frame/shell estao protegidos.`);

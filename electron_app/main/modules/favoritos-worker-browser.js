@@ -1,4 +1,6 @@
 let favoritosWorkerBrowserWindow = null;
+let favoritosWorkerBrowserGeneration = 0;
+const FAVORITOS_WORKER_MAX_SCRIPT_LENGTH = 1024 * 1024;
 let favoritosWorkerBrowserState = {
     active: false,
     paused: false,
@@ -9,6 +11,28 @@ let favoritosWorkerBrowserState = {
     url: '',
     updatedAt: 0
 };
+
+function isAllowedFavoritosWorkerUrl(targetUrl) {
+    const value = String(targetUrl || '').trim();
+    if (!value || value === 'about:blank') return true;
+    try {
+        const url = new URL(normalizeTargetUrl(value));
+        const host = String(url.hostname || '').toLowerCase();
+        return url.protocol === 'https:' && (
+            isMercadoLivreHost(host)
+            || host === 'avantprocloud.com.br'
+            || host.endsWith('.avantprocloud.com.br')
+        );
+    } catch (_err) {
+        return false;
+    }
+}
+
+function assertAllowedFavoritosWorkerUrl(targetUrl) {
+    if (!isAllowedFavoritosWorkerUrl(targetUrl)) {
+        throw new Error('URL nao permitida no navegador trabalhador do Favoritos.');
+    }
+}
 
 function emitFavoritosWorkerEvent(channel, payload = {}) {
     const data = favoritosWorkerBrowserStatus(payload);
@@ -55,6 +79,20 @@ function setFavoritosWorkerBrowserState(patch = {}, channel = 'favoritos-worker:
     return favoritosWorkerBrowserStatus();
 }
 
+function favoritosWorkerCanceledError() {
+    const error = new Error('Navegador trabalhador do Favoritos cancelado.');
+    error.name = 'AbortError';
+    error.canceladoFavoritos = true;
+    return error;
+}
+
+function assertFavoritosWorkerGeneration(generation, worker = null) {
+    if (generation !== favoritosWorkerBrowserGeneration) throw favoritosWorkerCanceledError();
+    if (worker && (worker.isDestroyed() || worker.__jkFavoritosWorkerGeneration !== generation)) {
+        throw favoritosWorkerCanceledError();
+    }
+}
+
 function ensureFavoritosWorkerBrowser(parent = null) {
     if (
         favoritosWorkerBrowserWindow &&
@@ -63,7 +101,8 @@ function ensureFavoritosWorkerBrowser(parent = null) {
         return favoritosWorkerBrowserWindow;
     }
 
-    favoritosWorkerBrowserWindow = new BrowserWindow({
+    if (!favoritosWorkerBrowserGeneration) favoritosWorkerBrowserGeneration = 1;
+    const worker = new BrowserWindow({
         width: 1280,
         height: 900,
         show: false,
@@ -80,54 +119,69 @@ function ensureFavoritosWorkerBrowser(parent = null) {
         }
     });
 
-    favoritosWorkerBrowserWindow.setMenuBarVisibility(false);
+    worker.__jkFavoritosWorkerGeneration = favoritosWorkerBrowserGeneration;
+    favoritosWorkerBrowserWindow = worker;
+    worker.setMenuBarVisibility(false);
     try {
-        favoritosWorkerBrowserWindow.setAlwaysOnTop(false);
+        worker.setAlwaysOnTop(false);
     } catch (_err) {}
     try {
-        favoritosWorkerBrowserWindow.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
+        worker.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
     } catch (_err) {}
     try {
-        registerAvantProConsoleDiagnostics(favoritosWorkerBrowserWindow.webContents);
+        registerAvantProConsoleDiagnostics(worker.webContents);
     } catch (_err) {}
     try {
-        registerEmbeddedMlBrowserDownloadGuard(favoritosWorkerBrowserWindow.webContents);
+        registerEmbeddedMlBrowserDownloadGuard(worker.webContents);
     } catch (_err) {}
 
-    favoritosWorkerBrowserWindow.on('closed', () => {
-        favoritosWorkerBrowserWindow = null;
+    worker.on('closed', () => {
+        const generation = worker.__jkFavoritosWorkerGeneration;
+        if (favoritosWorkerBrowserWindow === worker) favoritosWorkerBrowserWindow = null;
+        if (generation !== favoritosWorkerBrowserGeneration) return;
+        const cancelado = !!favoritosWorkerBrowserState.cancelRequested
+            || favoritosWorkerBrowserState.status === 'canceled';
         setFavoritosWorkerBrowserState({
             active: false,
+            paused: false,
             visible: false,
-            status: 'closed',
-            message: 'Navegador trabalhador do Favoritos fechado.'
+            status: cancelado ? 'canceled' : 'closed',
+            message: cancelado ? '' : 'Navegador trabalhador do Favoritos fechado.'
         }, 'favoritos-worker:done');
     });
-    favoritosWorkerBrowserWindow.on('show', () => {
+    worker.on('show', () => {
+        if (worker !== favoritosWorkerBrowserWindow || worker.__jkFavoritosWorkerGeneration !== favoritosWorkerBrowserGeneration) return;
         setFavoritosWorkerBrowserState({ visible: true });
     });
-    favoritosWorkerBrowserWindow.on('hide', () => {
+    worker.on('hide', () => {
+        if (worker !== favoritosWorkerBrowserWindow || worker.__jkFavoritosWorkerGeneration !== favoritosWorkerBrowserGeneration) return;
         setFavoritosWorkerBrowserState({ visible: false });
     });
-    favoritosWorkerBrowserWindow.webContents.on('did-start-loading', () => {
+    worker.webContents.on('did-start-loading', () => {
+        if (worker !== favoritosWorkerBrowserWindow || worker.__jkFavoritosWorkerGeneration !== favoritosWorkerBrowserGeneration) return;
+        if (favoritosWorkerBrowserState.cancelRequested || favoritosWorkerBrowserState.status === 'canceled') return;
         setFavoritosWorkerBrowserState({
             status: 'loading',
             message: 'Carregando Mercado Livre no navegador trabalhador.',
-            url: favoritosWorkerBrowserWindow && !favoritosWorkerBrowserWindow.isDestroyed()
-                ? favoritosWorkerBrowserWindow.webContents.getURL()
+            url: !worker.isDestroyed()
+                ? worker.webContents.getURL()
                 : favoritosWorkerBrowserState.url
         });
     });
-    favoritosWorkerBrowserWindow.webContents.on('did-finish-load', () => {
+    worker.webContents.on('did-finish-load', () => {
+        if (worker !== favoritosWorkerBrowserWindow || worker.__jkFavoritosWorkerGeneration !== favoritosWorkerBrowserGeneration) return;
+        if (favoritosWorkerBrowserState.cancelRequested || favoritosWorkerBrowserState.status === 'canceled') return;
         setFavoritosWorkerBrowserState({
             status: 'running',
             message: 'Navegador trabalhador pronto.',
-            url: favoritosWorkerBrowserWindow && !favoritosWorkerBrowserWindow.isDestroyed()
-                ? favoritosWorkerBrowserWindow.webContents.getURL()
+            url: !worker.isDestroyed()
+                ? worker.webContents.getURL()
                 : favoritosWorkerBrowserState.url
         });
     });
-    favoritosWorkerBrowserWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    worker.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+        if (worker !== favoritosWorkerBrowserWindow || worker.__jkFavoritosWorkerGeneration !== favoritosWorkerBrowserGeneration) return;
+        if (favoritosWorkerBrowserState.cancelRequested || favoritosWorkerBrowserState.status === 'canceled') return;
         if (isIgnorableNavigationAbort(errorCode, errorDescription)) return;
         setFavoritosWorkerBrowserState({
             status: 'error',
@@ -135,20 +189,31 @@ function ensureFavoritosWorkerBrowser(parent = null) {
             url: validatedURL || favoritosWorkerBrowserState.url
         }, 'favoritos-worker:error');
     });
+    worker.webContents.on('will-navigate', (event, targetUrl) => {
+        if (isAllowedFavoritosWorkerUrl(targetUrl)) return;
+        event.preventDefault();
+        logElectronLifecycle('favoritos-worker-browser-navigation-blocked', { url: targetUrl });
+    });
 
     logElectronLifecycle('favoritos-worker-browser-created', {
         partition: getBrowserSessionPartition ? getBrowserSessionPartition() : '',
         userAgent: ML_BROWSER_USER_AGENT
     });
-    return favoritosWorkerBrowserWindow;
+    return worker;
 }
 
 async function startFavoritosWorkerBrowser(targetUrl, parent = null, options = {}) {
+    const generation = ++favoritosWorkerBrowserGeneration;
     const url = normalizeTargetUrl(targetUrl || 'https://www.mercadolivre.com.br/');
+    assertAllowedFavoritosWorkerUrl(url);
     favoritosEmbeddedMlLastUrl = url;
     await restaurarSessaoAvantProAntesDeAbrirNavegador('before-favoritos-worker-browser-start', { url });
+    assertFavoritosWorkerGeneration(generation);
     await ensureChromeExtensionsForMlSession();
+    assertFavoritosWorkerGeneration(generation);
     const worker = ensureFavoritosWorkerBrowser(parent);
+    worker.__jkFavoritosWorkerGeneration = generation;
+    assertFavoritosWorkerGeneration(generation, worker);
     if (options.show !== false) {
         try {
             worker.setSkipTaskbar(false);
@@ -183,6 +248,7 @@ async function startFavoritosWorkerBrowser(targetUrl, parent = null, options = {
             loadEventPromise,
             waitMs(22000).then(() => ({ timeout: true }))
         ]);
+        assertFavoritosWorkerGeneration(generation, worker);
         if (loadResult instanceof Error) {
             loadWarning = loadResult.message || String(loadResult);
             if (isIgnorableNavigationAbort(null, loadWarning)) {
@@ -197,6 +263,7 @@ async function startFavoritosWorkerBrowser(targetUrl, parent = null, options = {
         }
     }
 
+    assertFavoritosWorkerGeneration(generation, worker);
     const loadedUrl = worker.webContents.getURL() || url;
     setFavoritosWorkerBrowserState({
         active: true,
@@ -209,29 +276,38 @@ async function startFavoritosWorkerBrowser(targetUrl, parent = null, options = {
 
 async function stopFavoritosWorkerBrowser(options = {}) {
     const reason = options.reason || 'favoritos-worker-stop';
+    const status = String(options.status || 'stopped').toLowerCase();
+    if (status === 'canceled' || status === 'cancelled') {
+        return cancelFavoritosWorkerBrowser({ ...options, reason, status: 'canceled' });
+    }
+    const generation = favoritosWorkerBrowserGeneration;
+    const worker = favoritosWorkerBrowserWindow;
     await salvarSessaoAvantProAntesDeOcultarNavegador(reason, {
         url: favoritosEmbeddedMlLastUrl,
         destroy: options.destroy !== false
     });
+    if (generation !== favoritosWorkerBrowserGeneration) {
+        return { success: true, worker: true, superseded: true };
+    }
     const shouldDestroy = options.destroy !== false;
-    if (
-        favoritosWorkerBrowserWindow &&
-        !favoritosWorkerBrowserWindow.isDestroyed()
-    ) {
+    if (worker && !worker.isDestroyed() && worker.__jkFavoritosWorkerGeneration === generation) {
         if (shouldDestroy) {
-            favoritosWorkerBrowserWindow.destroy();
+            favoritosWorkerBrowserGeneration += 1;
+            if (favoritosWorkerBrowserWindow === worker) favoritosWorkerBrowserWindow = null;
+            worker.destroy();
         } else {
-            favoritosWorkerBrowserWindow.hide();
+            worker.hide();
         }
     }
-    favoritosWorkerBrowserWindow = shouldDestroy ? null : favoritosWorkerBrowserWindow;
+    if (shouldDestroy && favoritosWorkerBrowserWindow === worker) favoritosWorkerBrowserWindow = null;
+    const possuiMensagem = Object.prototype.hasOwnProperty.call(options, 'message');
     setFavoritosWorkerBrowserState({
         active: false,
         paused: false,
         cancelRequested: false,
         visible: false,
-        status: options.status || 'stopped',
-        message: options.message || 'Favoritos finalizado.',
+        status,
+        message: possuiMensagem ? String(options.message || '') : 'Favoritos finalizado.',
         url: favoritosEmbeddedMlLastUrl
     }, options.error ? 'favoritos-worker:error' : 'favoritos-worker:done');
     return { success: true, worker: true };
@@ -263,10 +339,22 @@ async function hideFavoritosWorkerBrowser() {
 }
 
 async function executeFavoritosWorkerBrowser(code) {
+    if (favoritosWorkerBrowserState.cancelRequested || favoritosWorkerBrowserState.status === 'canceled') {
+        throw favoritosWorkerCanceledError();
+    }
     const worker = ensureFavoritosWorkerBrowser(mainWindow);
+    const generation = favoritosWorkerBrowserGeneration;
+    worker.__jkFavoritosWorkerGeneration = generation;
+    assertFavoritosWorkerGeneration(generation, worker);
     const currentUrl = worker.webContents.getURL();
+    assertAllowedFavoritosWorkerUrl(currentUrl);
+    const script = String(code || '');
+    if (script.length > FAVORITOS_WORKER_MAX_SCRIPT_LENGTH) {
+        throw new Error('Script excede o limite permitido no navegador trabalhador do Favoritos.');
+    }
     try {
-        const result = await worker.webContents.executeJavaScript(String(code || ''), true);
+        const result = await worker.webContents.executeJavaScript(script, true);
+        assertFavoritosWorkerGeneration(generation, worker);
         if (
             result &&
             typeof result === 'object' &&
@@ -286,10 +374,23 @@ async function executeFavoritosWorkerBrowser(code) {
         }
         return result;
     } catch (err) {
+        let errorUrl = currentUrl || '';
+        try {
+            if (worker && !worker.isDestroyed() && worker.webContents && !worker.webContents.isDestroyed()) {
+                errorUrl = worker.webContents.getURL() || errorUrl;
+            }
+        } catch (_urlErr) {}
         logElectronLifecycle('favoritos-worker-browser-execute-error', {
-            url: worker.webContents.getURL() || currentUrl || '',
+            url: errorUrl,
             error: err && err.message ? err.message : String(err)
         });
+        if (
+            generation !== favoritosWorkerBrowserGeneration
+            || worker.isDestroyed()
+            || worker.__jkFavoritosWorkerGeneration !== generation
+        ) {
+            throw favoritosWorkerCanceledError();
+        }
         throw err;
     }
 }
@@ -377,21 +478,35 @@ function resumeFavoritosWorkerBrowser() {
     });
 }
 
-function cancelFavoritosWorkerBrowser() {
+async function cancelFavoritosWorkerBrowser(options = {}) {
     if (
-        favoritosWorkerBrowserWindow &&
-        !favoritosWorkerBrowserWindow.isDestroyed() &&
-        favoritosWorkerBrowserWindow.webContents &&
-        !favoritosWorkerBrowserWindow.webContents.isDestroyed()
+        favoritosWorkerBrowserState.status === 'canceled'
+        && !favoritosWorkerBrowserState.active
+        && (!favoritosWorkerBrowserWindow || favoritosWorkerBrowserWindow.isDestroyed())
     ) {
-        try {
-            favoritosWorkerBrowserWindow.webContents.stop();
-        } catch (_err) {}
+        favoritosWorkerBrowserGeneration += 1;
+        return favoritosWorkerBrowserStatus();
     }
-    return setFavoritosWorkerBrowserState({
+    favoritosWorkerBrowserGeneration += 1;
+    const worker = favoritosWorkerBrowserWindow;
+    if (favoritosWorkerBrowserWindow === worker) favoritosWorkerBrowserWindow = null;
+    setFavoritosWorkerBrowserState({
+        active: false,
         cancelRequested: true,
         paused: false,
-        status: 'cancel_requested',
-        message: 'Cancelamento solicitado para o Favoritos.'
-    });
+        visible: false,
+        status: 'canceled',
+        message: ''
+    }, 'favoritos-worker:done');
+    if (worker && !worker.isDestroyed() && worker.webContents && !worker.webContents.isDestroyed()) {
+        try {
+            worker.webContents.stop();
+        } catch (_err) {}
+        try { worker.destroy(); } catch (_err) {}
+    }
+    await salvarSessaoAvantProAntesDeOcultarNavegador(
+        options.reason || 'favoritos-cancelado-pelo-usuario',
+        { url: favoritosEmbeddedMlLastUrl, destroy: true, canceled: true }
+    ).catch(() => null);
+    return favoritosWorkerBrowserStatus();
 }

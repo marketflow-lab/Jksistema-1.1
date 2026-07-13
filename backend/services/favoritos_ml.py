@@ -2550,11 +2550,24 @@ def _ml_api_get(url: str, params: dict | None = None, max_retries: int = 3, dela
             resp = requests.get(url, params=params, headers=headers, timeout=10, verify=False)
             if resp.status_code == 200:
                 return resp.json()
-            logger.warning("ML API erro %s: status %s. Tentativa %s/%s", url, resp.status_code, tentativa + 1, max_retries)
-            time.sleep(delay)
+            status = int(resp.status_code or 0)
+            retryable = status in {408, 425, 429} or 500 <= status <= 599
+            logger.warning(
+                "ML API erro %s: status %s. Tentativa %s/%s retry=%s",
+                url,
+                status,
+                tentativa + 1,
+                max_retries,
+                retryable,
+            )
+            if not retryable:
+                return None
+            if tentativa + 1 < max_retries:
+                time.sleep(delay)
         except Exception:
             logger.exception("ML API erro %s. Tentativa %s/%s", url, tentativa + 1, max_retries)
-            time.sleep(delay)
+            if tentativa + 1 < max_retries:
+                time.sleep(delay)
     return None
 
 
@@ -2563,6 +2576,129 @@ def _ml_api_item(item_id: str):
     if not item_id:
         return None
     return _ml_api_get(f"https://api.mercadolibre.com/items/{item_id}")
+
+
+def _ml_api_items_multiget_tenant(client_id: str | None, item_ids: list[str] | tuple[str, ...] | set[str]):
+    ids = []
+    vistos = set()
+    for valor in item_ids or []:
+        item_id = _extrair_item_id(valor) or str(valor or "").strip().upper().replace("-", "")
+        if not item_id or item_id in vistos:
+            continue
+        vistos.add(item_id)
+        ids.append(item_id)
+        if len(ids) >= 200:
+            break
+    if not ids:
+        return {}
+
+    try:
+        lojas = carregar_lojas(client_id) if client_id else []
+    except Exception:
+        lojas = []
+    lojas_oauth = []
+    for loja in lojas or []:
+        nome_loja = str((loja or {}).get("nome") or "").strip()
+        integracoes = (loja or {}).get("integracoes") or {}
+        cfg = dict(integracoes.get("mercadolivre") or {})
+        if not nome_loja or not cfg.get("access_token"):
+            continue
+        cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
+        cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        lojas_oauth.append((nome_loja, cfg))
+
+    def _itens_payload(payload):
+        itens = {}
+        entradas = payload if isinstance(payload, list) else []
+        for entrada in entradas:
+            if not isinstance(entrada, dict):
+                continue
+            body = entrada.get("body") if isinstance(entrada.get("body"), dict) else entrada
+            code = entrada.get("code")
+            if code is not None:
+                try:
+                    if int(code) != 200:
+                        continue
+                except Exception:
+                    continue
+            item_id = _extrair_item_id(body.get("id") or "") if isinstance(body, dict) else None
+            if item_id:
+                itens[item_id] = body
+        return itens
+
+    resultados = {}
+    inicio_total = time.perf_counter()
+    chamadas_oauth = 0
+    chamadas_publicas = 0
+    for inicio in range(0, len(ids), 20):
+        lote = ids[inicio:inicio + 20]
+        pendentes = [item_id for item_id in lote if item_id not in resultados]
+        resultados_lojas = {}
+
+        def _consultar_lote_loja(indice_loja: int, nome_loja: str, cfg: dict, ids_lote: list[str]):
+            try:
+                resp, _cfg = _ml_api_request(
+                    client_id,
+                    nome_loja,
+                    dict(cfg),
+                    "GET",
+                    "https://api.mercadolibre.com/items",
+                    params={"ids": ",".join(ids_lote)},
+                    timeout=20,
+                )
+                if resp.status_code == 200:
+                    return indice_loja, nome_loja, resp.status_code, _itens_payload(resp.json() or []), None
+                return indice_loja, nome_loja, resp.status_code, {}, None
+            except Exception as exc:
+                return indice_loja, nome_loja, None, {}, exc
+
+        if pendentes and lojas_oauth:
+            chamadas_oauth += len(lojas_oauth)
+            with ThreadPoolExecutor(max_workers=min(4, len(lojas_oauth))) as executor:
+                futuros_lojas = [
+                    executor.submit(_consultar_lote_loja, indice, nome_loja, dict(cfg), list(pendentes))
+                    for indice, (nome_loja, cfg) in enumerate(lojas_oauth)
+                ]
+                for futuro in as_completed(futuros_lojas):
+                    indice_loja, nome_loja, status_code, itens_loja, erro_loja = futuro.result()
+                    resultados_lojas[indice_loja] = itens_loja
+                    if erro_loja is not None:
+                        logger.warning(
+                            "[Favoritos][Datas] Falha OAuth multiget loja=%s itens=%s: %s",
+                            nome_loja,
+                            len(pendentes),
+                            erro_loja,
+                        )
+                    elif status_code != 200:
+                        logger.info(
+                            "[Favoritos][Datas] ML OAuth multiget loja=%s itens=%s status=%s",
+                            nome_loja,
+                            len(pendentes),
+                            status_code,
+                        )
+            for indice_loja in range(len(lojas_oauth)):
+                for item_id, body in (resultados_lojas.get(indice_loja) or {}).items():
+                    if item_id not in resultados:
+                        resultados[item_id] = body
+            pendentes = [item_id for item_id in pendentes if item_id not in resultados]
+        if pendentes:
+            chamadas_publicas += 1
+            payload_publico = _ml_api_get(
+                "https://api.mercadolibre.com/items",
+                params={"ids": ",".join(pendentes)},
+            )
+            resultados.update(_itens_payload(payload_publico))
+
+    logger.info(
+        "[Favoritos][Datas] multiget tenant=%s solicitados=%s resolvidos=%s oauth_calls=%s public_calls=%s ms=%s",
+        client_id,
+        len(ids),
+        len(resultados),
+        chamadas_oauth,
+        chamadas_publicas,
+        int((time.perf_counter() - inicio_total) * 1000),
+    )
+    return resultados
 
 
 def _ml_api_item_com_oauth_tenant(client_id: str | None, item_id: str):
@@ -2679,6 +2815,7 @@ def _ml_api_visitas_com_oauth_tenant(client_id: str | None, item_id: str | None,
     except Exception:
         lojas = []
 
+    lojas_oauth = []
     for loja in lojas or []:
         nome_loja = str((loja or {}).get("nome") or "").strip()
         integracoes = (loja or {}).get("integracoes") or {}
@@ -2687,16 +2824,35 @@ def _ml_api_visitas_com_oauth_tenant(client_id: str | None, item_id: str | None,
             continue
         cfg["app_id"] = cfg.get("app_id") or cfg.get("id") or cfg.get("client_id")
         cfg["client_secret"] = cfg.get("client_secret") or cfg.get("secret")
+        lojas_oauth.append((nome_loja, cfg))
+
+    def _consultar_visitas_loja(nome_loja, cfg):
+        return _ml_api_request(
+            client_id,
+            nome_loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/items/{item_id}/visits/time_window",
+            params={"last": dias, "unit": "day", "ending": ending},
+            timeout=12,
+        )
+
+    respostas_por_indice = {}
+    if lojas_oauth:
+        with ThreadPoolExecutor(max_workers=min(4, len(lojas_oauth))) as executor:
+            futuros = {
+                executor.submit(_consultar_visitas_loja, nome_loja, cfg): indice
+                for indice, (nome_loja, cfg) in enumerate(lojas_oauth)
+            }
+            for futuro in as_completed(futuros):
+                respostas_por_indice[futuros[futuro]] = futuro
+
+    for indice, (nome_loja, _cfg) in enumerate(lojas_oauth):
+        futuro = respostas_por_indice.get(indice)
+        if futuro is None:
+            continue
         try:
-            resp, _cfg = _ml_api_request(
-                client_id,
-                nome_loja,
-                cfg,
-                "GET",
-                f"https://api.mercadolibre.com/items/{item_id}/visits/time_window",
-                params={"last": dias, "unit": "day", "ending": ending},
-                timeout=12,
-            )
+            resp, _cfg_atualizada = futuro.result()
             if resp.status_code == 200:
                 data = resp.json() or {}
                 total = _ml_total_visitas_payload(data)
@@ -2994,16 +3150,21 @@ def _ml_datas_cache_local(client_id: str | None):
                 _walk(value, contador)
 
     try:
-        for pattern in patterns:
-            for filename in fnmatch.filter(os.listdir(tenant_path), pattern):
-                caminho = os.path.join(tenant_path, filename)
-                if not os.path.isfile(caminho):
-                    continue
-                try:
-                    with open(caminho, "r", encoding="utf-8") as f:
-                        _walk(json.load(f), [0])
-                except Exception:
-                    logger.debug("[Favoritos][Datas] Falha ao ler cache local %s", caminho, exc_info=True)
+        nomes = os.listdir(tenant_path)
+        filenames = sorted({
+            filename
+            for pattern in patterns
+            for filename in fnmatch.filter(nomes, pattern)
+        })
+        for filename in filenames:
+            caminho = os.path.join(tenant_path, filename)
+            if not os.path.isfile(caminho):
+                continue
+            try:
+                with open(caminho, "r", encoding="utf-8") as f:
+                    _walk(json.load(f), [0])
+            except Exception:
+                logger.debug("[Favoritos][Datas] Falha ao ler cache local %s", caminho, exc_info=True)
     except Exception:
         logger.debug("[Favoritos][Datas] Falha ao varrer cache local tenant=%s", client, exc_info=True)
     return datas
@@ -3015,7 +3176,7 @@ def _ml_data_criacao_cache_local(client_id: str | None, item_id: str | None):
         return None
     return _ml_datas_cache_local(client_id).get(item_id)
 
-PEER_EXPORTS = ['_ml_favoritos_buscar_itens_por_sku', '_ml_favoritos_buscar_primeiros_itens_por_skus', '_ml_favoritos_listar_itens_ativos_loja', '_ml_favoritos_listar_todos_itens_ativos_loja', '_favoritos_ml_dividir_skus', '_favoritos_ml_imagem_item', '_favoritos_ml_url_item_id', '_favoritos_ml_resumo_anuncio_sku', '_favoritos_ml_skus_unicos_itens', '_favoritos_ml_garantir_sku_busca', '_ml_favoritos_mapear_itens_ativos_por_skus', '_ml_favoritos_extrair_texto_descricao', '_ml_favoritos_montar_descricao_por_item', '_ml_favoritos_obter_descricao_item', '_ml_favoritos_obter_descricao_item_rapida', '_favoritos_ml_float_close', '_favoritos_ml_preco_minimo_margem_simulado', '_favoritos_ml_preco_final_verificacao', '_favoritos_ml_margem_estimada', '_favoritos_ml_preco_contingencia_sem_promocao', '_favoritos_ml_verificacao_exige_contingencia_por_margem', '_favoritos_ml_falha_por_percentual_promocao', '_favoritos_ml_aplicar_contingencia_sem_promocao', '_favoritos_ml_texto_promocao', '_favoritos_ml_promocao_para_remocao', '_favoritos_ml_promocoes_remocao_fallback', '_favoritos_ml_remocao_max_attempts', '_favoritos_ml_textos_resposta_remocao', '_favoritos_ml_remocao_erro_transitorio', '_favoritos_ml_remocao_retry_delay', '_favoritos_ml_remover_promocoes_atuais', '_favoritos_ml_listing_type_id', '_favoritos_ml_nome_listing_type', '_favoritos_ml_troca_listing_type_favoritos_suportada', '_favoritos_ml_listing_type_alvo_req', '_favoritos_ml_obter_listing_type_atual_e_disponiveis', '_favoritos_ml_validar_listing_type_disponivel', '_favoritos_ml_atualizar_tipo_listing_item', '_favoritos_ml_atualizar_preco_item', '_favoritos_ml_aguardar_preco_anuncio', '_favoritos_ml_verificar_efetivacao', '_favoritos_resolver_sku_para_margem', '_favoritos_aplicar_margem_anuncio_ml', '_ml_headers', '_ml_api_get', '_ml_api_item', '_ml_api_item_com_oauth_tenant', '_ml_api_user', '_ml_api_user_com_oauth_tenant', '_ml_total_visitas_payload', '_ml_api_visitas_com_oauth_tenant', '_ml_api_search', '_ml_api_search_paginated', '_ml_parcelamento_sem_juros_api', '_ml_parcelamento_sem_juros_texto', '_ml_data_sort_key', '_ml_primeira_pergunta_publica_data', '_ml_wayback_timestamp_iso', '_ml_wayback_primeira_captura_data', '_ml_normalizar_data_cache_local', '_ml_data_criacao_por_imagem', '_ml_datas_cache_local', '_ml_data_criacao_cache_local']
+PEER_EXPORTS = ['_ml_favoritos_buscar_itens_por_sku', '_ml_favoritos_buscar_primeiros_itens_por_skus', '_ml_favoritos_listar_itens_ativos_loja', '_ml_favoritos_listar_todos_itens_ativos_loja', '_favoritos_ml_dividir_skus', '_favoritos_ml_imagem_item', '_favoritos_ml_url_item_id', '_favoritos_ml_resumo_anuncio_sku', '_favoritos_ml_skus_unicos_itens', '_favoritos_ml_garantir_sku_busca', '_ml_favoritos_mapear_itens_ativos_por_skus', '_ml_favoritos_extrair_texto_descricao', '_ml_favoritos_montar_descricao_por_item', '_ml_favoritos_obter_descricao_item', '_ml_favoritos_obter_descricao_item_rapida', '_favoritos_ml_float_close', '_favoritos_ml_preco_minimo_margem_simulado', '_favoritos_ml_preco_final_verificacao', '_favoritos_ml_margem_estimada', '_favoritos_ml_preco_contingencia_sem_promocao', '_favoritos_ml_verificacao_exige_contingencia_por_margem', '_favoritos_ml_falha_por_percentual_promocao', '_favoritos_ml_aplicar_contingencia_sem_promocao', '_favoritos_ml_texto_promocao', '_favoritos_ml_promocao_para_remocao', '_favoritos_ml_promocoes_remocao_fallback', '_favoritos_ml_remocao_max_attempts', '_favoritos_ml_textos_resposta_remocao', '_favoritos_ml_remocao_erro_transitorio', '_favoritos_ml_remocao_retry_delay', '_favoritos_ml_remover_promocoes_atuais', '_favoritos_ml_listing_type_id', '_favoritos_ml_nome_listing_type', '_favoritos_ml_troca_listing_type_favoritos_suportada', '_favoritos_ml_listing_type_alvo_req', '_favoritos_ml_obter_listing_type_atual_e_disponiveis', '_favoritos_ml_validar_listing_type_disponivel', '_favoritos_ml_atualizar_tipo_listing_item', '_favoritos_ml_atualizar_preco_item', '_favoritos_ml_aguardar_preco_anuncio', '_favoritos_ml_verificar_efetivacao', '_favoritos_resolver_sku_para_margem', '_favoritos_aplicar_margem_anuncio_ml', '_ml_headers', '_ml_api_get', '_ml_api_item', '_ml_api_items_multiget_tenant', '_ml_api_item_com_oauth_tenant', '_ml_api_user', '_ml_api_user_com_oauth_tenant', '_ml_total_visitas_payload', '_ml_api_visitas_com_oauth_tenant', '_ml_api_search', '_ml_api_search_paginated', '_ml_parcelamento_sem_juros_api', '_ml_parcelamento_sem_juros_texto', '_ml_data_sort_key', '_ml_primeira_pergunta_publica_data', '_ml_wayback_timestamp_iso', '_ml_wayback_primeira_captura_data', '_ml_normalizar_data_cache_local', '_ml_data_criacao_por_imagem', '_ml_datas_cache_local', '_ml_data_criacao_cache_local']
 __all__ = PEER_EXPORTS + ["configure_favoritos_ml_runtime"]
 
 configure_favoritos_ml_runtime()

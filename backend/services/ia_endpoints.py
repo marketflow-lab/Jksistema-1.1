@@ -200,6 +200,9 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     if resposta_imagem:
         resposta = resposta_imagem
         model_usado = (os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip()
+    elif _modelo_eh_codex(model_req):
+        resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
     elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
@@ -268,6 +271,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
     return {
         "success": True,
         "pode_escolher_modelo_chat": pode_escolher_modelo,
+        "codex": _listar_modelos_codex_configuraveis() if pode_escolher_modelo else [],
         "openai": [
             {"name": "gpt-5.4-nano", "display_name": "Nano"},
             {"name": "gpt-5.4-mini", "display_name": "Mini"},
@@ -295,6 +299,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             "deepseek": "deepseek-v4-flash",
             "gemini": "gemini:gemini-2.5-flash",
             "vertex": f"vertex:{_vertex_ai_modelo_padrao()}",
+            "codex": "codex:gpt-5.5",
             "vertex_project_id": _vertex_ai_project_id_configurado(),
             "vertex_location": _vertex_ai_location(),
             "vertex_service_account_email": _vertex_ai_service_account_email(),

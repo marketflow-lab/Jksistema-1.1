@@ -1067,7 +1067,8 @@
                 const meta = document.createElement('div');
                 meta.className = 'ml-favoritos-historico-meta';
                 const totalAnunciosSku = (entrada.grupos || []).reduce((acc, grupo) => acc + (Array.isArray(grupo.anuncios) ? grupo.anuncios.length : 0), 0);
-                meta.textContent = `${totalAnunciosSku} anuncio(s) rankeado(s) para o SKU ${skuSelecionado}${entrada.loja ? ` | Loja: ${entrada.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(entrada)}`;
+                const duracaoExecucao = formatarDuracaoExecucaoFavoritos(entrada.duracao_execucao_ms);
+                meta.textContent = `${totalAnunciosSku} anuncio(s) rankeado(s) para o SKU ${skuSelecionado}${duracaoExecucao ? ` | Tempo total: ${duracaoExecucao}` : ''}${entrada.loja ? ` | Loja: ${entrada.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(entrada)}`;
                 head.appendChild(titulo);
                 head.appendChild(meta);
                 card.appendChild(head);

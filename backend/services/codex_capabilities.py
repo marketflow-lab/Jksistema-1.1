@@ -736,8 +736,16 @@ def resolve_capability(
     }
 
 
-def compact_capability_catalog(*, client_id: str = "", limit: int = 120) -> dict[str, Any]:
+def compact_capability_catalog(*, client_id: str = "", limit: int = 120, read_only_only: bool = False) -> dict[str, Any]:
     caps = build_capabilities(client_id)
+    if read_only_only:
+        caps = [
+            cap
+            for cap in caps
+            if cap.get("read_only") is True
+            and not bool(cap.get("mutating"))
+            and not bool(cap.get("requires_approval"))
+        ]
     grouped: dict[str, dict[str, Any]] = {}
     for cap in caps:
         module = str(cap.get("module") or "sistema")

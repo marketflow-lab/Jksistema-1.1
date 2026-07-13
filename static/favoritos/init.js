@@ -1,3 +1,7 @@
+(function () {
+    'use strict';
+
+    function inicializarFavoritosPagina() {
         favoritosTableLayout = carregarLayoutTabelasFavoritos();
         // Bootstrap moved from the former inline script so split files can load safely.
         if (btnSkuIaTodos) {
@@ -165,3 +169,19 @@
         carregarHistoricoFavoritosServidor();
         favoritosCarregarLojasEntrada();
         setBrowserStatus('Pronto para abrir dentro do programa.');
+    }
+
+    const layoutReady = window.__FAVORITOS_TABELAS_LAYOUT_READY__;
+    if (layoutReady && typeof layoutReady.then === 'function') {
+        layoutReady
+            .then(inicializarFavoritosPagina)
+            .catch(error => {
+                console.error('[Favoritos] Falha ao inicializar layout:', error);
+                if (typeof setBrowserStatus === 'function') {
+                    setBrowserStatus('Falha ao carregar os componentes do Favoritos.');
+                }
+            });
+    } else {
+        inicializarFavoritosPagina();
+    }
+})();

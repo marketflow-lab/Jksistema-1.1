@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FavoritosEfetivarPromocaoRequest(BaseModel):
@@ -56,6 +56,7 @@ class FavoritosSkuDescricoesRequest(BaseModel):
     skus: list[str]
     loja: str | None = None
     item_ids_por_sku: dict[str, list[str]] | None = None
+    force_refresh: bool = False
 
 
 class FavoritosSkuPesquisaRequest(BaseModel):
@@ -118,7 +119,7 @@ class FavoritosJobStartRequest(BaseModel):
     max_confirmados_ia: int | None = 8
     opcoes_promocao: dict | None = None
     modo_coleta: str | None = None
-    selecionados: list[FavoritosJobSkuItem]
+    selecionados: list[FavoritosJobSkuItem] = Field(min_length=1, max_length=1000)
 
 
 class FavoritosJobColetaTermoRequest(BaseModel):
@@ -147,6 +148,8 @@ class FavoritosAnunciosIgnoradosRequest(BaseModel):
 
 class FavoritosHistoricoRequest(BaseModel):
     historico: list[dict] | None = None
+    finalizar_ids: list[str] | None = None
+    inicio_execucao_ms: int | None = None
 
 
 class FavoritosHistoricoRealtimeSyncRequest(BaseModel):

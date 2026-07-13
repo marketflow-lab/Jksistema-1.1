@@ -1358,6 +1358,7 @@ async function processarAnaliseApi(opcoes = {}) {
     const promocaoAType = selectPromoA?.selectedOptions?.[0]?.dataset?.promoType || '';
     let promoBOptions = getApiPromoBSelections();
     const margemMinima = Number(document.getElementById('apiMargemMinima')?.value || 15);
+    const margemTolerancia = getActionTolerancePct();
     const loading = document.getElementById('apiLoading');
     const loadingDetails = document.getElementById('apiLoadingDetails');
     const errorMsg = document.getElementById('apiErrorMsg');
@@ -1422,6 +1423,7 @@ async function processarAnaliseApi(opcoes = {}) {
         formData.append('promocao_a_id', promocaoA);
         formData.append('promocao_a_type', promocaoAType || '');
         formData.append('margem_minima', String(Number.isFinite(margemMinima) ? margemMinima : 15));
+        formData.append('margem_tolerancia', String(margemTolerancia));
         formData.append('promocoes_b_meta', JSON.stringify(promoBOptions.map((promo) => ({
             promo_b_id: promo.value,
             promo_b_type: promo.promoType || '',

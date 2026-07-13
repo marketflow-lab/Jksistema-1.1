@@ -147,6 +147,7 @@ from backend.routers import (
     create_sala_reuniao_router,
     create_shared_sync_router,
     create_vendas_router,
+    create_whatsapp_bridge_router,
     include_feature_routers,
     mount_static_assets,
 )
@@ -636,7 +637,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.94"
+VERSAO_MINIMA_APP_PADRAO = "1.0.95"
 
 
 def versao_minima_app_backend() -> str:
@@ -919,6 +920,9 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
             request,
             str(payload.get("machine_id") or "").strip(),
         )
+        request.state.username = username
+        request.state.client_id = client_id
+        request.state.auth_payload = dict(payload)
         return client_id
     except JWTError:
         raise HTTPException(
@@ -1952,6 +1956,12 @@ app.include_router(create_shared_sync_router())
 _admin_usuarios_module.configure_admin_usuarios_runtime(sys.modules[__name__])
 app.include_router(create_admin_usuarios_router())
 
+# WhatsApp Cloud API bridge: the public gateway stays at Cloudflare, while all
+# Joao Pretinho processing remains on this authenticated local runtime.
+from backend.services import whatsapp_bridge as _whatsapp_bridge_module
+_whatsapp_bridge_iniciar_background = _whatsapp_bridge_module.whatsapp_bridge_iniciar_background
+app.include_router(create_whatsapp_bridge_router())
+
 # Promocoes service logic lives in backend.services.promocoes_*.
 from backend.services import promocoes_common as _promocoes_common_module
 from backend.services import promocoes_core as _promocoes_core_module
@@ -2366,6 +2376,12 @@ app.include_router(create_cadastro_router())
 _ia_module.configure_ia_runtime(sys.modules[__name__])
 globals().update({name: getattr(_ia_module, name) for name in _ia_module.__all__ if hasattr(_ia_module, name)})
 app.include_router(create_ia_router())
+
+
+def _codex_console_recuperar_fila_background():
+    from backend.services import codex_console as _codex_console_service
+
+    return _codex_console_service.codex_console_recuperar_fila_background()
 
 
 # --- ARQUIVOS ESTÃƒÆ’Ã‚ÂTICOS (FRONTEND) ---

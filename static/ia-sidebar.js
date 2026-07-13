@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260710-black-jhon-responsive-tables-v4';
+  const VERSION = '20260713-black-jhon-single-conversation-v1';
   const FULL_AUTO_LOAD_DELAY_MS = 30000;
   const WORKER_PREFETCH_DELAY_MS = 10000;
   const FULL_RELOAD_AFTER_NAV_DELAY_MS = 500;

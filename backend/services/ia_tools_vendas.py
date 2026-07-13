@@ -94,6 +94,248 @@ def configure_ia_tools_vendas_runtime(runtime_module=None, peers=None):
 configure_ia_tools_vendas_runtime()
 
 
+def _ia_stock_chart_number(value: Any, default: float = 0.0) -> float:
+    """Convert an internal stock metric without copying arbitrary source data."""
+
+    if value is None or isinstance(value, bool):
+        return float(default)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return number if math.isfinite(number) else float(default)
+
+
+def _ia_stale_stock_chart_data(result: dict[str, Any]) -> dict[str, Any]:
+    """Build the complete, PII-free contract used by stock-age visuals."""
+
+    source = result if isinstance(result, dict) else {}
+    raw_items = source.get("itens") if isinstance(source.get("itens"), list) else []
+    stale_items: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        quantity = _ia_stock_chart_number(item.get("saldo_loja"))
+        days_raw = item.get("dias_sem_vender")
+        days = None
+        if days_raw is not None:
+            try:
+                days = max(0, int(float(days_raw)))
+            except (TypeError, ValueError):
+                days = None
+        never_sold = str(item.get("status") or "").strip().lower() == "nunca_vendeu"
+        if quantity <= 0 or (not never_sold and (days is None or days < 30)):
+            continue
+        if never_sold:
+            band_key, band_label, band_order = "never_sold", "Nunca vendeu", 0
+        elif days is not None and days >= 180:
+            band_key, band_label, band_order = "days_180_plus", "180 dias ou mais", 1
+        elif days is not None and days >= 90:
+            band_key, band_label, band_order = "days_90_179", "90 a 179 dias", 2
+        else:
+            band_key, band_label, band_order = "days_30_89", "30 a 89 dias", 3
+
+        capital_known = item.get("custo_cadastrado") is True and item.get("valor_custo_estoque_loja") is not None
+        capital_value = (
+            round(_ia_stock_chart_number(item.get("valor_custo_estoque_loja")), 2)
+            if capital_known
+            else None
+        )
+        stale_items.append(
+            {
+                "sku": str(item.get("sku") or "").strip(),
+                "title": str(item.get("produto") or item.get("nome") or "").strip(),
+                "store": str(item.get("loja") or source.get("loja") or "").strip(),
+                "quantity": round(quantity, 3),
+                "days_without_sale": days,
+                "last_sale": str(item.get("ultima_venda") or "").strip(),
+                "age_band": band_key,
+                "age_band_label": band_label,
+                "age_band_order": band_order,
+                "capital_known": capital_known,
+                "capital_value": capital_value,
+                "ranking_metric": "known_capital" if capital_known else "quantity",
+                "ranking_value": capital_value if capital_known else round(quantity, 3),
+                "value_type": "currency" if capital_known else "quantity",
+            }
+        )
+
+    band_definitions = (
+        ("never_sold", "Nunca vendeu"),
+        ("days_180_plus", "180 dias ou mais"),
+        ("days_90_179", "90 a 179 dias"),
+        ("days_30_89", "30 a 89 dias"),
+    )
+    age_bands = []
+    for key, label in band_definitions:
+        matches = [item for item in stale_items if item.get("age_band") == key]
+        age_bands.append(
+            {
+                "key": key,
+                "label": label,
+                "skus": len(matches),
+                "quantity": round(sum(_ia_stock_chart_number(item.get("quantity")) for item in matches), 3),
+            }
+        )
+
+    ranking = sorted(
+        stale_items,
+        key=lambda item: (
+            0 if item.get("capital_known") else 1,
+            -_ia_stock_chart_number(item.get("ranking_value")),
+            int(item.get("age_band_order") or 0),
+            str(item.get("sku") or ""),
+        ),
+    )
+    total_evaluated = max(0, int(_ia_stock_chart_number(source.get("total_skus_avaliados"))))
+    total_returned = max(0, int(_ia_stock_chart_number(source.get("total_skus_retornados"), len(raw_items))))
+    truncated = bool(source.get("resultado_truncado")) or total_returned < total_evaluated
+    known = [item for item in stale_items if item.get("capital_known")]
+    totals = {
+        "stale_skus": len(stale_items),
+        "stale_quantity": round(sum(_ia_stock_chart_number(item.get("quantity")) for item in stale_items), 3),
+        "capital_known": round(sum(_ia_stock_chart_number(item.get("capital_value")) for item in known), 2),
+        "skus_with_known_cost": len(known),
+        "skus_without_known_cost": len(stale_items) - len(known),
+    }
+    return {
+        "schema": "jk.stock.stale_inventory.v1",
+        "kind": "stale_inventory",
+        "currency_id": "BRL",
+        "store": str(source.get("loja") or "").strip(),
+        "reference_date": str(source.get("data_referencia") or "").strip(),
+        "metrics": [
+            {"key": "quantity", "type": "number"},
+            {"key": "days_without_sale", "type": "integer", "nullable": True},
+            {"key": "capital_value", "type": "currency", "nullable": True},
+        ],
+        "totals": totals,
+        "age_bands": age_bands,
+        "ranking": ranking,
+        "ranking_basis": "known_capital_then_quantity",
+        "coverage_complete": not truncated,
+        "partial": truncated,
+        "coverage": {
+            "evaluated_skus": total_evaluated,
+            "returned_skus": total_returned,
+            "stale_skus_returned": len(stale_items),
+            "truncated": truncated,
+        },
+        "pii_included": False,
+        "read_only": True,
+    }
+
+
+def _ia_stockout_chart_data(result: dict[str, Any]) -> dict[str, Any]:
+    """Build the complete, PII-free contract used by stockout visuals."""
+
+    source = result if isinstance(result, dict) else {}
+    raw_items = source.get("itens") if isinstance(source.get("itens"), list) else []
+    if not raw_items and source.get("sku"):
+        raw_items = [source]
+    risk_order = {"critico": 0, "alto": 1, "medio": 2, "baixo": 3, "sem_consumo": 4}
+    risk_labels = {
+        "critico": "Crítico",
+        "alto": "Alto",
+        "medio": "Médio",
+        "baixo": "Baixo",
+        "sem_consumo": "Sem consumo",
+    }
+    ranking: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        risk = str(item.get("risco_ruptura") or "sem_consumo").strip().lower()
+        if risk not in risk_order:
+            risk = "sem_consumo"
+        days_raw = item.get("dias_ate_ruptura")
+        days = None if days_raw is None else round(max(0.0, _ia_stock_chart_number(days_raw)), 2)
+        quantity = round(_ia_stock_chart_number(item.get("saldo_total")), 3)
+        daily_demand = round(_ia_stock_chart_number(item.get("media_venda_dia")), 4)
+        urgency_score = round(
+            (len(risk_order) - risk_order[risk]) * 1_000_000
+            + max(0.0, 100_000.0 - (days if days is not None else 100_000.0))
+            + daily_demand,
+            4,
+        )
+        ranking.append(
+            {
+                "sku": str(item.get("sku") or "").strip(),
+                "title": str(item.get("nome") or item.get("produto") or "").strip(),
+                "store": str(item.get("loja") or source.get("loja") or "").strip(),
+                "risk": risk,
+                "risk_label": risk_labels[risk],
+                "risk_order": risk_order[risk],
+                "quantity": quantity,
+                "store_quantity": round(_ia_stock_chart_number(item.get("saldo_loja")), 3),
+                "full_quantity": round(_ia_stock_chart_number(item.get("saldo_full")), 3),
+                "sold_in_window": round(_ia_stock_chart_number(item.get("quantidade_vendida_janela")), 3),
+                "daily_demand": daily_demand,
+                "days_to_stockout": days,
+                "stockout_date": str(item.get("data_prevista_ruptura") or "").strip(),
+                "urgency_score": urgency_score,
+            }
+        )
+    ranking.sort(
+        key=lambda item: (
+            int(item.get("risk_order") or 0),
+            float(item.get("days_to_stockout")) if item.get("days_to_stockout") is not None else float("inf"),
+            -_ia_stock_chart_number(item.get("daily_demand")),
+            str(item.get("sku") or ""),
+        )
+    )
+    for position, item in enumerate(ranking, start=1):
+        item["rank"] = position
+
+    risk_bands = []
+    for key in ("critico", "alto", "medio", "baixo", "sem_consumo"):
+        matches = [item for item in ranking if item.get("risk") == key]
+        risk_bands.append(
+            {
+                "key": key,
+                "label": risk_labels[key],
+                "skus": len(matches),
+                "quantity": round(sum(_ia_stock_chart_number(item.get("quantity")) for item in matches), 3),
+            }
+        )
+    total_analyzed = max(0, int(_ia_stock_chart_number(source.get("total_skus_analisados"), len(ranking))))
+    truncated = len(ranking) < total_analyzed
+    at_risk = [item for item in ranking if item.get("risk") in {"critico", "alto", "medio"}]
+    return {
+        "schema": "jk.stock.stockout_forecast.v1",
+        "kind": "stockout_forecast",
+        "store": str(source.get("loja") or "").strip(),
+        "reference_date": str(source.get("data_referencia") or "").strip(),
+        "lookback_days": max(0, int(_ia_stock_chart_number(source.get("janela_dias")))),
+        "metrics": [
+            {"key": "quantity", "type": "number"},
+            {"key": "daily_demand", "type": "number"},
+            {"key": "days_to_stockout", "type": "number", "nullable": True},
+        ],
+        "totals": {
+            "analyzed_skus": total_analyzed,
+            "returned_skus": len(ranking),
+            "at_risk_skus": len(at_risk),
+            "critical_skus": sum(1 for item in ranking if item.get("risk") == "critico"),
+            "high_risk_skus": sum(1 for item in ranking if item.get("risk") == "alto"),
+            "stock_quantity": round(sum(_ia_stock_chart_number(item.get("quantity")) for item in ranking), 3),
+            "daily_demand": round(sum(_ia_stock_chart_number(item.get("daily_demand")) for item in ranking), 4),
+        },
+        "risk_bands": risk_bands,
+        "ranking": ranking,
+        "ranking_basis": "risk_then_days_to_stockout",
+        "coverage_complete": not truncated,
+        "partial": truncated,
+        "coverage": {
+            "analyzed_skus": total_analyzed,
+            "returned_skus": len(ranking),
+            "truncated": truncated,
+        },
+        "pii_included": False,
+        "read_only": True,
+    }
+
+
 def _ia_tool_get_days_without_sale(client_id: str, mensagem: str, produto_tool: Optional[dict] = None, loja: Optional[str] = None) -> Optional[dict]:
     try:
         sku = _ia_tool_resolver_sku(client_id, mensagem, produto_tool)
@@ -186,9 +428,10 @@ def _ia_tool_get_days_without_sale_top(
     limite: int = 20,
     apenas_com_estoque: bool = False,
     apenas_ja_vendidos: bool = False,
+    apenas_saldo_loja: bool = False,
 ) -> Optional[dict]:
     try:
-        limite = max(1, min(int(limite or 20), 200))
+        limite = max(1, min(int(limite or 20), 500))
         loja_filtro = loja if (loja and str(loja).strip() not in ("", "__todas", "Todas as lojas")) else None
 
         df = _ia_carregar_produtos_tool_df(client_id)
@@ -199,6 +442,12 @@ def _ia_tool_get_days_without_sale_top(
         mapa_saldos: dict[str, float] = {}
         mapa_saldos_loja: dict[str, float] = {}
         mapa_saldos_full: dict[str, float] = {}
+        mapa_custos: dict[str, float] = {}
+        mapa_precos: dict[str, float] = {}
+        mapa_custo_origem: dict[str, str] = {}
+        mapa_preco_origem: dict[str, str] = {}
+        custos_conhecidos: set[str] = set()
+        precos_conhecidos: set[str] = set()
         for _, row in df.iterrows():
             sku = str(row.get("sku_norm") or "").strip().upper()
             if not sku:
@@ -215,6 +464,66 @@ def _ia_tool_get_days_without_sale_top(
             mapa_saldos[sku] = max(mapa_saldos.get(sku, 0.0), float(saldo_total or 0.0))
             mapa_saldos_loja[sku] = max(mapa_saldos_loja.get(sku, 0.0), float(saldo_loja or 0.0))
             mapa_saldos_full[sku] = max(mapa_saldos_full.get(sku, 0.0), float(saldo_full or 0.0))
+            for coluna in ("custo", "custo_y", "custo_x"):
+                raw_custo = str(row.get(coluna) or "").strip()
+                if raw_custo:
+                    mapa_custos[sku] = _ia_tool_float(raw_custo)
+                    custos_conhecidos.add(sku)
+                    mapa_custo_origem[sku] = "cadastro geral"
+                    break
+            for coluna in ("preco", "preco_y", "preco_x"):
+                raw_preco = str(row.get(coluna) or "").strip()
+                if raw_preco:
+                    mapa_precos[sku] = _ia_tool_float(raw_preco)
+                    precos_conhecidos.add(sku)
+                    mapa_preco_origem[sku] = "cadastro geral"
+                    break
+
+        # O cadastro principal pode estar incompleto. Aproveita o cadastro de
+        # custos por loja e, no consolidado, usa a media dos valores conhecidos
+        # sem transformar campo ausente em zero.
+        custos_reader = globals().get("_cadastro_ler_custos_lojas")
+        if callable(custos_reader):
+            try:
+                df_custos = custos_reader(client_id)
+                custos_por_sku: dict[str, list[float]] = {}
+                precos_por_sku: dict[str, list[float]] = {}
+                loja_key_target = _normalizar_texto(loja_filtro or "")
+                for _, cost_row in (df_custos.iterrows() if df_custos is not None and not df_custos.empty else []):
+                    cost_sku = str(cost_row.get("sku") or "").strip().upper()
+                    if not cost_sku:
+                        continue
+                    if loja_key_target and _normalizar_texto(cost_row.get("loja_sync") or "") != loja_key_target:
+                        continue
+                    sku_variants = [cost_sku]
+                    variant_resolver = globals().get("_sku_lookup_variantes")
+                    if callable(variant_resolver):
+                        try:
+                            sku_variants = list(dict.fromkeys([cost_sku, *variant_resolver(cost_sku)]))
+                        except Exception:
+                            sku_variants = [cost_sku]
+                    matched_sku = next((variant for variant in sku_variants if variant in mapa_produtos), cost_sku)
+                    raw_custo = str(cost_row.get("custo") or "").strip()
+                    raw_preco = str(cost_row.get("preco") or "").strip()
+                    if raw_custo:
+                        custos_por_sku.setdefault(matched_sku, []).append(_ia_tool_float(raw_custo))
+                    if raw_preco:
+                        precos_por_sku.setdefault(matched_sku, []).append(_ia_tool_float(raw_preco))
+                for sku, values in custos_por_sku.items():
+                    if not values:
+                        continue
+                    mapa_custos[sku] = sum(values) / len(values)
+                    custos_conhecidos.add(sku)
+                    mapa_custo_origem[sku] = "cadastro da loja" if loja_filtro else "media do cadastro por loja"
+                for sku, values in precos_por_sku.items():
+                    if not values:
+                        continue
+                    mapa_precos[sku] = sum(values) / len(values)
+                    precos_conhecidos.add(sku)
+                    mapa_preco_origem[sku] = "cadastro da loja" if loja_filtro else "media do cadastro por loja"
+            except Exception as exc:
+                if logger is not None:
+                    logger.warning(f"[IA TOOLS] Falha ao complementar custo por loja no estoque parado: {exc}")
 
         if not mapa_produtos:
             return None
@@ -264,7 +573,23 @@ def _ia_tool_get_days_without_sale_top(
             saldo_total = float(mapa_saldos.get(sku) or 0.0)
             saldo_loja = float(mapa_saldos_loja.get(sku) or 0.0)
             saldo_full = float(mapa_saldos_full.get(sku) or 0.0)
+            custo_conhecido = sku in custos_conhecidos
+            preco_conhecido = sku in precos_conhecidos
+            custo_unitario = float(mapa_custos.get(sku) or 0.0)
+            preco_unitario = float(mapa_precos.get(sku) or 0.0)
+            valores_cadastro = {
+                "custo_cadastrado": custo_conhecido,
+                "custo_unitario": custo_unitario if custo_conhecido else None,
+                "custo_origem": mapa_custo_origem.get(sku, "") if custo_conhecido else "",
+                "valor_custo_estoque_loja": round(saldo_loja * custo_unitario, 2) if custo_conhecido else None,
+                "preco_cadastrado": preco_conhecido,
+                "preco_unitario": preco_unitario if preco_conhecido else None,
+                "preco_origem": mapa_preco_origem.get(sku, "") if preco_conhecido else "",
+                "valor_venda_estoque_loja": round(saldo_loja * preco_unitario, 2) if preco_conhecido else None,
+            }
             if apenas_com_estoque and saldo_total <= 0:
+                continue
+            if apenas_saldo_loja and saldo_loja <= 0:
                 continue
             ultima = str(ultimas_vendas.get(sku) or "").strip()
             if not ultima:
@@ -279,6 +604,7 @@ def _ia_tool_get_days_without_sale_top(
                     "ultima_venda": "",
                     "dias_sem_vender": None,
                     "status": "nunca_vendeu",
+                    **valores_cadastro,
                 })
                 continue
             try:
@@ -292,6 +618,7 @@ def _ia_tool_get_days_without_sale_top(
                     "ultima_venda": ultima,
                     "dias_sem_vender": dias,
                     "status": "sem_venda_recente" if dias > 0 else "vendeu_no_dia",
+                    **valores_cadastro,
                 })
             except Exception:
                 itens.append({
@@ -303,6 +630,7 @@ def _ia_tool_get_days_without_sale_top(
                     "ultima_venda": ultima,
                     "dias_sem_vender": None,
                     "status": "sem_dado",
+                    **valores_cadastro,
                 })
 
         if not itens:
@@ -317,7 +645,33 @@ def _ia_tool_get_days_without_sale_top(
                 str(x.get("sku") or ""),
             ),
         )
+        itens_parados_loja = [
+            item for item in itens_ordenados
+            if float(item.get("saldo_loja") or 0) > 0
+            and (item.get("dias_sem_vender") is None or int(item.get("dias_sem_vender") or 0) >= 30)
+        ]
+        custos_cobertos = [item for item in itens_parados_loja if item.get("custo_cadastrado") is True]
+        resumo_parado = {
+            "total_skus": len(itens_parados_loja),
+            "total_unidades_loja": round(sum(float(item.get("saldo_loja") or 0) for item in itens_parados_loja), 3),
+            "nunca_venderam": sum(1 for item in itens_parados_loja if item.get("status") == "nunca_vendeu"),
+            "dias_180_mais": sum(1 for item in itens_parados_loja if item.get("dias_sem_vender") is not None and int(item.get("dias_sem_vender") or 0) >= 180),
+            "dias_90_179": sum(1 for item in itens_parados_loja if item.get("dias_sem_vender") is not None and 90 <= int(item.get("dias_sem_vender") or 0) < 180),
+            "dias_30_89": sum(1 for item in itens_parados_loja if item.get("dias_sem_vender") is not None and 30 <= int(item.get("dias_sem_vender") or 0) < 90),
+            "custos_cobertos": len(custos_cobertos),
+            "capital_custo_conhecido": round(sum(float(item.get("valor_custo_estoque_loja") or 0) for item in custos_cobertos), 2),
+        }
 
+        result = {
+            "loja": loja_filtro or "",
+            "data_referencia": data_referencia.isoformat(),
+            "total_skus_avaliados": len(itens_ordenados),
+            "total_skus_retornados": min(len(itens_ordenados), limite),
+            "resultado_truncado": len(itens_ordenados) > limite,
+            "resumo_estoque_parado": resumo_parado,
+            "itens": itens_ordenados[:limite],
+        }
+        result["chart_data"] = _ia_stale_stock_chart_data(result)
         return {
             "function": "get_days_without_sale_top",
             "arguments": {
@@ -325,13 +679,9 @@ def _ia_tool_get_days_without_sale_top(
                 "limite": limite,
                 "apenas_com_estoque": bool(apenas_com_estoque),
                 "apenas_ja_vendidos": bool(apenas_ja_vendidos),
+                "apenas_saldo_loja": bool(apenas_saldo_loja),
             },
-            "result": {
-                "loja": loja_filtro or "",
-                "data_referencia": data_referencia.isoformat(),
-                "total_skus_avaliados": len(itens_ordenados),
-                "itens": itens_ordenados[:limite],
-            },
+            "result": result,
         }
     except Exception as exc:
         logger.warning(f"[IA TOOLS] Falha ao listar SKUs sem venda: {exc}")
@@ -432,6 +782,7 @@ def _ia_tool_get_sales_by_period(client_id: str, data_inicio: str, data_fim: str
                 logger.warning(f"[IA TOOLS] Erro ao resumir vendas em {db_path}: {exc}")
                 continue
         top_skus = _ia_vendas_db_top_skus(client_id, data_inicio, data_fim, loja_filtro, limite=limite)
+        period_label = f"{data_inicio} a {data_fim}"
         return {
             "function": "get_sales_by_period",
             "arguments": {"data_inicio": data_inicio, "data_fim": data_fim, "loja": loja_filtro or ""},
@@ -443,6 +794,40 @@ def _ia_tool_get_sales_by_period(client_id: str, data_inicio: str, data_fim: str
                 "valor_total": total_valor,
                 "pedidos_total": total_pedidos,
                 "top_skus": top_skus,
+                "chart_data": {
+                    "schema": "jk.sales.period_summary.v1",
+                    "analysis_type": "sales",
+                    "title": "Analise visual de vendas",
+                    "source": "Historico de vendas do JK Sistema",
+                    "period_start": data_inicio,
+                    "period_end": data_fim,
+                    "store": loja_filtro or "Todas as lojas",
+                    "coverage_complete": True,
+                    "pii_included": False,
+                    "kpis": {
+                        "orders": total_pedidos,
+                        "items": total_qtd,
+                        "gross": total_valor,
+                    },
+                    "series": [
+                        {
+                            "label": period_label,
+                            "orders": total_pedidos,
+                            "items": total_qtd,
+                            "gross": total_valor,
+                        }
+                    ],
+                    "ranking": [
+                        {
+                            "sku": item.get("sku") or "",
+                            "title": item.get("nome") or "Produto",
+                            "quantity": item.get("qtd") or 0,
+                            "gross": item.get("valor") or 0,
+                        }
+                        for item in top_skus
+                        if isinstance(item, dict)
+                    ],
+                },
             },
         }
     except Exception as exc:
@@ -1413,6 +1798,7 @@ def _ia_tool_get_stockout_forecast(
                 "total_skus_analisados": len(previsoes_ordenadas),
             }
 
+        retorno["chart_data"] = _ia_stockout_chart_data(retorno)
         return {
             "function": "get_stockout_forecast",
             "arguments": {
@@ -1560,6 +1946,12 @@ def _ia_tool_get_period_comparison(
     loja: Optional[str] = None,
 ) -> Optional[dict]:
     try:
+        # O contrato visual e os percentuais usam sempre a ordem cronologica.
+        # Assim, mesmo que o agente envie A=atual e B=anterior, o resultado
+        # representa de forma consistente anterior -> atual.
+        if str(data_inicio_a or "") > str(data_inicio_b or ""):
+            data_inicio_a, data_inicio_b = data_inicio_b, data_inicio_a
+            data_fim_a, data_fim_b = data_fim_b, data_fim_a
         pa = _ia_metricas_periodo_raw(client_id, data_inicio_a, data_fim_a, loja)
         pb = _ia_metricas_periodo_raw(client_id, data_inicio_b, data_fim_b, loja)
         if not pa or not pb:
@@ -1576,6 +1968,40 @@ def _ia_tool_get_period_comparison(
         valor_b = float(pb.get("valor_vendido_total") or 0)
         pedidos_a = int(pa.get("pedidos_total") or 0)
         pedidos_b = int(pb.get("pedidos_total") or 0)
+        label_a = f"{data_inicio_a} a {data_fim_a}"
+        label_b = f"{data_inicio_b} a {data_fim_b}"
+        chart_data = {
+            "schema": "jk.sales.period_comparison.v1",
+            "analysis_type": "sales_period_comparison",
+            "title": "Comparacao de vendas entre periodos",
+            "source": "Historico de vendas do JK Sistema",
+            "period_start": data_inicio_a,
+            "period_end": data_fim_b,
+            "store": pa.get("loja") or loja or "Todas as lojas",
+            "coverage_complete": True,
+            "pii_included": False,
+            "kpis": {
+                "Periodos comparados": 2,
+                "Faturamento mais recente": valor_b,
+                "Pedidos mais recentes": pedidos_b,
+                "Itens mais recentes": qtd_b,
+            },
+            "series": [
+                {
+                    "label": label_a,
+                    "orders": pedidos_a,
+                    "items": qtd_a,
+                    "gross": valor_a,
+                },
+                {
+                    "label": label_b,
+                    "orders": pedidos_b,
+                    "items": qtd_b,
+                    "gross": valor_b,
+                },
+            ],
+            "ranking": [],
+        }
 
         return {
             "function": "get_period_comparison",
@@ -1609,6 +2035,7 @@ def _ia_tool_get_period_comparison(
                     "variacao_pedidos": pedidos_b - pedidos_a,
                     "variacao_pedidos_percentual": _delta_pct(float(pedidos_a), float(pedidos_b)),
                 },
+                "chart_data": chart_data,
             },
         }
     except Exception as exc:
@@ -1686,6 +2113,9 @@ def _ia_tool_get_sales_timeseries(client_id: str, data_inicio: str, data_fim: st
     if not pontos:
         return None
     loja_filtro = loja if (loja and str(loja).strip() not in ("", "__todas", "Todas as lojas")) else ""
+    total_items = sum(float(item.get("quantidade_vendida") or 0) for item in pontos)
+    total_gross = sum(float(item.get("valor_vendido") or 0) for item in pontos)
+    total_refunds = sum(float(item.get("valor_devolvido") or 0) for item in pontos)
     return {
         "function": "get_sales_timeseries",
         "arguments": {"data_inicio": data_inicio, "data_fim": data_fim, "loja": loja_filtro},
@@ -1694,6 +2124,35 @@ def _ia_tool_get_sales_timeseries(client_id: str, data_inicio: str, data_fim: st
             "data_fim": data_fim,
             "loja": loja_filtro,
             "pontos": pontos,
+            "chart_data": {
+                "schema": "jk.sales.timeseries.v1",
+                "analysis_type": "sales",
+                "title": "Evolucao das vendas",
+                "source": "Historico de vendas do JK Sistema",
+                "period_start": data_inicio,
+                "period_end": data_fim,
+                "store": loja_filtro or "Todas as lojas",
+                "coverage_complete": True,
+                "pii_included": False,
+                "kpis": {
+                    "items": total_items,
+                    "gross": total_gross,
+                    "refunds": total_refunds,
+                    "net": total_gross - total_refunds,
+                },
+                "series": [
+                    {
+                        "date": item.get("data") or "",
+                        "items": item.get("quantidade_vendida") or 0,
+                        "gross": item.get("valor_vendido") or 0,
+                        "refunds": item.get("valor_devolvido") or 0,
+                        "net": float(item.get("valor_vendido") or 0) - float(item.get("valor_devolvido") or 0),
+                    }
+                    for item in pontos
+                    if isinstance(item, dict)
+                ],
+                "ranking": [],
+            },
         },
     }
 
@@ -1756,9 +2215,14 @@ def _ia_tool_get_profit_by_period(client_id: str, data_inicio: str, data_fim: st
                 sku = str(row.get("sku_norm") or "").strip().upper()
                 if not sku:
                     continue
-                if sku not in custo_por_sku:
-                    custo_por_sku[sku] = _ia_tool_float(row.get("custo"))
-                    imposto_por_sku[sku] = _ia_tool_float(row.get("imposto"))
+                custo_raw = row.get("custo")
+                imposto_raw = row.get("imposto")
+                custo_presente = custo_raw is not None and str(custo_raw).strip().lower() not in {"", "nan", "none", "null"}
+                imposto_presente = imposto_raw is not None and str(imposto_raw).strip().lower() not in {"", "nan", "none", "null"}
+                if sku not in custo_por_sku and custo_presente:
+                    custo_por_sku[sku] = _ia_tool_float(custo_raw)
+                if sku not in imposto_por_sku and imposto_presente:
+                    imposto_por_sku[sku] = _ia_tool_float(imposto_raw)
 
         sql_loja, params_loja = _sql_filtro_loja_vendas(loja_filtro)
         agregados: dict[str, dict] = {}
@@ -1806,6 +2270,7 @@ def _ia_tool_get_profit_by_period(client_id: str, data_inicio: str, data_fim: st
 
         custo_total_estimado = 0.0
         imposto_total_estimado = 0.0
+        faturamento_com_custo = 0.0
         cobertura_sku_com_custo = 0
         for sku, item in agregados.items():
             qtd = float(item.get("qtd") or 0)
@@ -1813,13 +2278,16 @@ def _ia_tool_get_profit_by_period(client_id: str, data_inicio: str, data_fim: st
             faturamento_total += valor
             custo_unit = float(custo_por_sku.get(sku) or 0)
             imposto_pct = float(imposto_por_sku.get(sku) or 0)
-            if custo_unit > 0:
+            if sku in custo_por_sku and sku in imposto_por_sku:
                 cobertura_sku_com_custo += 1
-            custo_total_estimado += qtd * custo_unit
-            imposto_total_estimado += valor * (imposto_pct / 100.0)
+                faturamento_com_custo += valor
+                custo_total_estimado += qtd * custo_unit
+                imposto_total_estimado += valor * (imposto_pct / 100.0)
 
-        lucro_estimado = faturamento_total - custo_total_estimado - imposto_total_estimado
-        margem_percentual_estimada = (lucro_estimado / faturamento_total * 100.0) if faturamento_total > 0 else 0.0
+        cobertura_faturamento = (faturamento_com_custo / faturamento_total) if faturamento_total > 0 else 0.0
+        dados_suficientes = bool(faturamento_total > 0 and cobertura_faturamento >= 0.95)
+        lucro_parcial = faturamento_com_custo - custo_total_estimado - imposto_total_estimado
+        margem_parcial = (lucro_parcial / faturamento_com_custo * 100.0) if faturamento_com_custo > 0 else None
 
         return {
             "function": "get_profit_by_period",
@@ -1829,10 +2297,16 @@ def _ia_tool_get_profit_by_period(client_id: str, data_inicio: str, data_fim: st
                 "data_fim": data_fim,
                 "loja": loja_filtro or "",
                 "faturamento_total": faturamento_total,
+                "faturamento_com_custo": faturamento_com_custo,
                 "custo_total_estimado": custo_total_estimado,
                 "imposto_total_estimado": imposto_total_estimado,
-                "lucro_estimado": lucro_estimado,
-                "margem_percentual_estimada": margem_percentual_estimada,
+                "lucro_estimado": lucro_parcial if dados_suficientes else None,
+                "margem_percentual_estimada": margem_parcial if dados_suficientes else None,
+                "lucro_estimado_parcial": lucro_parcial if faturamento_com_custo > 0 else None,
+                "margem_percentual_parcial": margem_parcial,
+                "cobertura_faturamento_percentual": cobertura_faturamento * 100.0,
+                "dados_suficientes": dados_suficientes,
+                "status_margem": "disponivel" if dados_suficientes else "indisponivel_dados_insuficientes",
                 "skus_considerados": len(agregados),
                 "skus_com_custo": cobertura_sku_com_custo,
             },
