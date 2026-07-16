@@ -39,6 +39,7 @@ from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
+from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp.contracts import (
     _QuestionResearchPending,
@@ -72,14 +73,8 @@ TYPING_MAX_CONSECUTIVE_ERRORS = 3
 TRANSCRIPTION_TIMEOUT_SECONDS = 600
 WHISPER_MODEL_EXPECTED_BYTES = 488_000_000
 WHATSAPP_GATEWAY_PROTOCOL_VERSION = 1
-SUPPORTED_IMAGE_MIMES = {"image/jpeg": 5 * 1024 * 1024, "image/png": 5 * 1024 * 1024}
-SUPPORTED_AUDIO_MIMES = {
-    "audio/aac": 16 * 1024 * 1024,
-    "audio/mp4": 16 * 1024 * 1024,
-    "audio/mpeg": 16 * 1024 * 1024,
-    "audio/amr": 16 * 1024 * 1024,
-    "audio/ogg": 16 * 1024 * 1024,
-}
+SUPPORTED_IMAGE_MIMES = whatsapp_media.SUPPORTED_IMAGE_MIMES
+SUPPORTED_AUDIO_MIMES = whatsapp_media.SUPPORTED_AUDIO_MIMES
 PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 APPROVAL_CODE_TTL_SECONDS = 10 * 60
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
@@ -91,12 +86,12 @@ WHATSAPP_REPORT_BODY_CHARS = whatsapp_formatting.WHATSAPP_REPORT_BODY_CHARS
 WHATSAPP_REPORT_RANKING_ITEMS_PER_PART = whatsapp_formatting.WHATSAPP_REPORT_RANKING_ITEMS_PER_PART
 WHATSAPP_QUERY_CONTEXT_TTL_SECONDS = 24 * 3600
 WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS = 30 * 60
-WHATSAPP_MAX_OUTBOUND_IMAGES = 3
-WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
-WHATSAPP_OUTBOUND_IMAGE_MAX_PIXELS = 40_000_000
+WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
+WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES = whatsapp_media.WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES
+WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES = whatsapp_media.WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES
+WHATSAPP_OUTBOUND_IMAGE_MAX_PIXELS = whatsapp_media.WHATSAPP_OUTBOUND_IMAGE_MAX_PIXELS
 WHATSAPP_WEEKLY_REPORT_START_HOUR = 8
-WHATSAPP_IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\(\s*<?([^)>\s]+)>?(?:\s+['\"][^)]*['\"])?\s*\)", re.IGNORECASE)
+WHATSAPP_IMAGE_MARKDOWN_RE = whatsapp_media.WHATSAPP_IMAGE_MARKDOWN_RE
 APPROVAL_COMMAND_RE = re.compile(
     r"^(APROVAR|CONFIRMAR|NEGAR|REJEITAR|CANCELAR)\s+([A-Z2-9]{8})$",
     re.IGNORECASE,
@@ -620,41 +615,15 @@ def _whatsapp_clean_markdown(value: Any) -> str:
 
 
 def _whatsapp_image_requested(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    if not re.search(r"\b(foto|fotos|imagem|imagens)\b", text):
-        return False
-    explicit_send = re.search(r"\b(manda|mandar|envia|enviar|mostra|mostrar|quero|preciso|consigo|consegue|pode)\b", text)
-    product_context = re.search(r"\b(sku|produto|cadastro|anuncio)\b", text)
-    return bool(explicit_send or product_context)
+    return whatsapp_media.image_requested(value)
 
 
 def _whatsapp_image_references(value: Any) -> list[tuple[str, str]]:
-    text = str(value or "")
-    references: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for match in WHATSAPP_IMAGE_MARKDOWN_RE.finditer(text):
-        alt = re.sub(r"\s+", " ", str(match.group(1) or "")).strip()
-        ref = str(match.group(2) or "").strip()
-        if ref and ref not in seen:
-            seen.add(ref)
-            references.append((alt, ref))
-    for match in re.finditer(r"(?:/api/cadastro/foto-(?:arquivo/)?|cadastro_fotos/)[^\s)>'\"]+", text, flags=re.IGNORECASE):
-        ref = str(match.group(0) or "").rstrip(".,;:")
-        if ref and ref not in seen:
-            seen.add(ref)
-            references.append(("", ref))
-    return references[:WHATSAPP_MAX_OUTBOUND_IMAGES]
+    return whatsapp_media.image_references(value, max_images=WHATSAPP_MAX_OUTBOUND_IMAGES)
 
 
 def _whatsapp_path_within(path: Path, roots: list[Path]) -> bool:
-    resolved = path.resolve()
-    for root in roots:
-        try:
-            resolved.relative_to(root.resolve())
-            return True
-        except ValueError:
-            continue
-    return False
+    return whatsapp_media.path_within(path, roots)
 
 
 def _whatsapp_image_roots(client_id: Any) -> list[Path]:
@@ -698,31 +667,15 @@ def _whatsapp_resolve_image_reference(reference: Any, client_id: Any) -> Optiona
 
 
 def _whatsapp_sku_candidates(value: Any) -> list[str]:
-    text = str(value or "")
-    result: list[str] = []
-    for match in re.finditer(r"\bSKU\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]{0,40})", text, flags=re.IGNORECASE):
-        sku = str(match.group(1) or "").strip().rstrip(".,;:")
-        if sku and sku.upper() not in {item.upper() for item in result}:
-            result.append(sku)
-    return result[:10]
+    return whatsapp_media.sku_candidates(value)
 
 
 def _whatsapp_normalized_sku(value: Any, *, strip_numeric_zeroes: bool = False) -> str:
-    text = re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
-    if strip_numeric_zeroes:
-        text = re.sub(r"\d+", lambda match: str(int(match.group(0))), text)
-    return text
+    return whatsapp_media.normalized_sku(value, strip_numeric_zeroes=strip_numeric_zeroes)
 
 
 def _whatsapp_image_matches_skus(path: Path, skus: list[str]) -> bool:
-    stem = _whatsapp_normalized_sku(path.stem)
-    stem_compact = _whatsapp_normalized_sku(path.stem, strip_numeric_zeroes=True)
-    for sku in skus:
-        exact = _whatsapp_normalized_sku(sku)
-        compact = _whatsapp_normalized_sku(sku, strip_numeric_zeroes=True)
-        if stem == exact or (compact and stem_compact == compact):
-            return True
-    return False
+    return whatsapp_media.image_matches_skus(path, skus)
 
 
 def _whatsapp_find_image_by_sku(request_text: Any, response: Any, client_id: Any) -> Optional[Path]:
@@ -740,22 +693,7 @@ def _whatsapp_find_image_by_sku(request_text: Any, response: Any, client_id: Any
 
 
 def _whatsapp_image_mime(path: Path) -> str:
-    try:
-        with path.open("rb") as handle:
-            signature = handle.read(12)
-    except OSError:
-        return ""
-    if signature.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if signature.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if signature.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if signature.startswith(b"RIFF") and signature[8:12] == b"WEBP":
-        return "image/webp"
-    if signature.startswith(b"BM"):
-        return "image/bmp"
-    return ""
+    return whatsapp_media.image_mime(path)
 
 
 def _whatsapp_prepare_outbound_image(path: Path) -> Optional[dict[str, Any]]:
@@ -817,19 +755,11 @@ def _whatsapp_prepare_outbound_image(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _whatsapp_strip_image_references(value: Any) -> str:
-    text = WHATSAPP_IMAGE_MARKDOWN_RE.sub("", str(value or ""))
-    text = re.sub(r"(?:/api/cadastro/foto-(?:arquivo/)?|cadastro_fotos/)[^\s)>'\"]+", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return whatsapp_media.strip_image_references(value)
 
 
 def _whatsapp_outbound_image_caption(response: Any, alt: Any = "") -> str:
-    clean = _whatsapp_strip_image_references(response)
-    for line in clean.splitlines():
-        candidate = re.sub(r"^[#*•\s]+|[*_`]+$", "", line).strip()
-        if candidate and not _whatsapp_report_section_kind(candidate):
-            return candidate[:1024]
-    return (str(alt or "Imagem solicitada ao Black John").strip() or "Imagem solicitada ao Black John")[:1024]
+    return whatsapp_media.outbound_image_caption(response, alt)
 
 
 def _whatsapp_deliver_requested_images(
@@ -2262,21 +2192,11 @@ def _transcribe_audio(audio_path: Path) -> dict[str, Any]:
 
 
 def _safe_filename(value: Any, fallback: str) -> str:
-    name = os.path.basename(unquote(str(value or ""))).strip()
-    name = re.sub(r"[^A-Za-z0-9._ -]+", "-", name).strip(" .-")
-    return (name or fallback)[:160]
+    return whatsapp_media.safe_filename(value, fallback)
 
 
 def _media_extension(mime: str) -> str:
-    return {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "audio/aac": ".aac",
-        "audio/mp4": ".m4a",
-        "audio/mpeg": ".mp3",
-        "audio/amr": ".amr",
-        "audio/ogg": ".ogg",
-    }.get(mime, mimetypes.guess_extension(mime) or ".bin")
+    return whatsapp_media.media_extension(mime)
 
 
 def _download_media(config: dict[str, Any], message: dict[str, Any], conversation_id: str) -> dict[str, Any]:
