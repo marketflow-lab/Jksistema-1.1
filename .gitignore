@@ -73,6 +73,7 @@ __pycache__/
 .tmp_checks/
 python_runtime/
 python_wheels/
+.installer_runtime/
 
 # Logs
 logs/

@@ -57,6 +57,8 @@ interface Env {
 type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+const GATEWAY_PROTOCOL_VERSION = 1;
+const GATEWAY_BUILD_VERSION = "1.0.98";
 const MAX_BINDINGS_PER_USER = 3;
 const OUTBOUND_IMAGE_ARTIFACT_TYPES = new Set(["product_photo", "report_chart"]);
 const OUTBOUND_DOCUMENT_MIMES: Record<string, string> = {
@@ -1030,6 +1032,8 @@ async function bridgeStatus(env: Env): Promise<Response> {
   return json({
     success: true,
     worker: true,
+    gateway_protocol_version: GATEWAY_PROTOCOL_VERSION,
+    build_version: GATEWAY_BUILD_VERSION,
     d1: true,
     r2: false,
     kv: true,
@@ -2028,7 +2032,14 @@ export default {
     if (path === "/webhooks/whatsapp") return handleWebhook(request, env, ctx);
     if (path === "/webhooks/openai/realtime") return handleOpenAIRealtimeWebhook(request, env);
     if (path.startsWith("/bridge/")) return bridgeRoute(request, env);
-    return json({ success: true, service: "jk-whatsapp-gateway", zero_cost: true, voice_realtime_sip: true });
+    return json({
+      success: true,
+      service: "jk-whatsapp-gateway",
+      zero_cost: true,
+      voice_realtime_sip: true,
+      gateway_protocol_version: GATEWAY_PROTOCOL_VERSION,
+      build_version: GATEWAY_BUILD_VERSION,
+    });
   },
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     await flushOutbox(env, "", 10);

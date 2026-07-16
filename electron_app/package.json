@@ -4,7 +4,7 @@
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
-    "prestart": "npm run verify:package",
+    "prestart": "npm run prepare:runtime && npm run verify:package",
     "start": "electron .",
     "prepare:runtime": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare_installer_runtime.ps1",
     "verify:package": "node scripts/verify-installer-package.js",
@@ -90,6 +90,18 @@
         ]
       },
       {
+        "from": "../.installer_runtime/black_jhon",
+        "to": "local_app/black_jhon_runtime"
+      },
+      {
+        "from": "../.installer_runtime/prerequisites",
+        "to": "local_app/prerequisites"
+      },
+      {
+        "from": "../.installer_runtime/runtime-manifest.json",
+        "to": "local_app/runtime-manifest.json"
+      },
+      {
         "from": "client-config.json",
         "to": "client-config.json"
       },
@@ -107,7 +119,7 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowElevation": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,

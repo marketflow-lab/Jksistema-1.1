@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 
 const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..');
@@ -10,13 +11,114 @@ const packageJsonPath = path.join(appDir, 'package.json');
 const args = process.argv.slice(2);
 const packagedIndex = args.indexOf('--packaged');
 const packagedRoot = packagedIndex >= 0 ? path.resolve(process.cwd(), args[packagedIndex + 1] || '') : null;
+const deepRuntime = args.includes('--deep-runtime');
 
 function toPosix(value) {
   return String(value || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '');
 }
 
 function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+}
+
+function sha256File(file) {
+  const hash = crypto.createHash('sha256');
+  const descriptor = fs.openSync(file, 'r');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytes = 0;
+    do {
+      bytes = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytes > 0) hash.update(buffer.subarray(0, bytes));
+    } while (bytes > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest('hex');
+}
+
+function validateManifestEntry(baseDir, entry, label, failures) {
+  const rel = toPosix(entry && (entry.path || entry.file || entry.name));
+  const expectedHash = String(entry && entry.sha256 || '').trim().toLowerCase();
+  if (!rel || !/^[a-f0-9]{64}$/.test(expectedHash)) {
+    failures.push(`Manifesto invalido para ${label}`);
+    return;
+  }
+  const root = path.resolve(baseDir);
+  const target = path.resolve(root, rel);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    failures.push(`Caminho fora do pacote em ${label}: ${rel}`);
+    return;
+  }
+  if (!fileExists(target)) {
+    failures.push(`Arquivo do manifesto ausente em ${label}: ${rel}`);
+    return;
+  }
+  if (Number.isFinite(Number(entry.size)) && fs.statSync(target).size !== Number(entry.size)) {
+    failures.push(`Tamanho divergente em ${label}: ${rel}`);
+    return;
+  }
+  if (sha256File(target) !== expectedHash) failures.push(`SHA256 divergente em ${label}: ${rel}`);
+}
+
+function validateOfflineArtifacts(packageRoot, failures, sourceLayout = false) {
+  const requirementsPath = path.join(packageRoot, 'requirements.txt');
+  const wheelDir = path.join(packageRoot, 'python_wheels');
+  const wheelManifestPath = path.join(wheelDir, 'manifest.json');
+  const runtimeManifestPath = sourceLayout
+    ? path.join(packageRoot, '.installer_runtime', 'runtime-manifest.json')
+    : path.join(packageRoot, 'runtime-manifest.json');
+  if (!fileExists(requirementsPath) || !fileExists(wheelManifestPath) || !fileExists(runtimeManifestPath)) {
+    failures.push(`Manifestos do runtime offline ausentes em ${packageRoot}`);
+    return;
+  }
+
+  const wheelManifest = readJson(wheelManifestPath);
+  const requirementsHash = sha256File(requirementsPath);
+  if (String(wheelManifest.requirements_sha256 || '').toLowerCase() !== requirementsHash) {
+    failures.push('Wheelhouse nao corresponde ao requirements.txt atual');
+  }
+  for (const wheel of wheelManifest.wheels || []) validateManifestEntry(wheelDir, wheel, 'wheelhouse', failures);
+
+  const runtime = readJson(runtimeManifestPath);
+  validateManifestEntry(path.join(packageRoot, 'python_runtime'), runtime.python, 'Python', failures);
+  const prerequisitesRoot = sourceLayout
+    ? path.join(packageRoot, '.installer_runtime', 'prerequisites')
+    : path.join(packageRoot, 'prerequisites');
+  validateManifestEntry(prerequisitesRoot, runtime.visual_cpp, 'Visual C++', failures);
+  const modelRoot = sourceLayout
+    ? path.join(packageRoot, '.installer_runtime', 'black_jhon', 'faster-whisper-small')
+    : path.join(packageRoot, 'black_jhon_runtime', 'faster-whisper-small');
+  for (const entry of runtime.whisper && runtime.whisper.files || []) {
+    validateManifestEntry(modelRoot, entry, 'Whisper Small', failures);
+  }
+}
+
+function validateOfflineResolution(packageRoot, failures) {
+  const python = process.env.JK_INSTALLER_VERIFY_PYTHON || 'python';
+  const result = spawnSync(python, [
+    '-m', 'pip', 'install', '--dry-run', '--ignore-installed', '--no-index',
+    '--find-links', path.join(packageRoot, 'python_wheels'), '--platform', 'win_amd64',
+    '--python-version', '3.11', '--implementation', 'cp', '--abi', 'cp311',
+    '--only-binary=:all:', '-r', path.join(packageRoot, 'requirements.txt'),
+  ], { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+  if (result.status !== 0) {
+    failures.push(`Resolucao offline incompleta: ${(result.stderr || result.stdout || '').trim().slice(-3000)}`);
+  }
+}
+
+function validateDeepRuntime(packageRoot, failures) {
+  if (!deepRuntime) return;
+  const script = path.join(repoRoot, 'scripts', 'verify-installer-offline.ps1');
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+    '-PackageRoot', packageRoot, '-BuildRoot', repoRoot,
+  ], { encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
+  if (result.status !== 0) {
+    failures.push(`Smoke test offline falhou: ${(result.stderr || result.stdout || '').trim().slice(-5000)}`);
+  } else if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
 }
 
 function fileExists(file) {
@@ -238,9 +340,17 @@ function validateOfflineRuntimeAtRoot(manifest, failures, baseDir, label) {
     return;
   }
 
-  const expectedMarker = `${markerPrefix}${sha256File(requirementsPath)}.ok`;
-  if (!fileExists(path.join(wheelDirectory, expectedMarker))) {
-    failures.push(`Wheelhouse offline desatualizado em ${label}: marcador ${wheelDirectoryRel}/${expectedMarker} ausente`);
+  const markerBase = `${markerPrefix}${sha256File(requirementsPath)}`;
+  const markerPresent = fs.readdirSync(wheelDirectory, { withFileTypes: true }).some((entry) => {
+    if (!entry.isFile()) return false;
+    if (entry.name === `${markerBase}.ok`) return true;
+    const suffix = entry.name.slice(markerBase.length);
+    return /^-[a-f0-9]{64}\.ok$/i.test(suffix);
+  });
+  if (!markerPresent) {
+    failures.push(
+      `Wheelhouse offline desatualizado em ${label}: marcador ${wheelDirectoryRel}/${markerBase}[-<prepare-sha256>].ok ausente`,
+    );
   }
 
   const wheelFiles = walkFiles(wheelDirectory).filter((file) => file.toLowerCase().endsWith('.whl'));
@@ -376,6 +486,10 @@ function main() {
   validateRuntimeCopyGuards(manifest, failures);
   validateOfflineRuntime(manifest, failures);
   validatePackagedOutput(manifest, failures);
+  const offlineRoot = packagedRoot ? path.join(packagedRoot, 'local_app') : repoRoot;
+  validateOfflineArtifacts(offlineRoot, failures, !packagedRoot);
+  validateOfflineResolution(offlineRoot, failures);
+  if (!failures.length) validateDeepRuntime(offlineRoot, failures);
 
   if (failures.length) {
     console.error('[installer-check] FALHOU');

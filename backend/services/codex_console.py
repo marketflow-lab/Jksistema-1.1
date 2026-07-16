@@ -448,9 +448,17 @@ def _codex_auth_detected() -> bool:
 
 def _codex_cli_version() -> tuple[bool, str]:
     codex_bin = shutil.which("codex")
-    if not codex_bin:
-        return False, ""
-    return True, codex_bin
+    if codex_bin:
+        return True, codex_bin
+    try:
+        from codex_cli_bin import bundled_codex_path
+
+        bundled = str(Path(bundled_codex_path()).resolve())
+        if os.path.isfile(bundled):
+            return True, bundled
+    except Exception:
+        pass
+    return False, ""
 
 
 def _codex_bin_version(path: str | Path) -> tuple[int, ...]:
@@ -696,6 +704,16 @@ def _codex_status_payload() -> dict[str, Any]:
     auth_file_exists = _codex_auth_detected()
     runtime_config_ok = bool(runtime.get("config_ok", True))
     ready = bool(enabled and sdk_ok and runtime_config_ok)
+    if not sdk_ok:
+        runtime_status = "dependency_missing"
+    elif not runtime_config_ok:
+        runtime_status = "configuration_invalid"
+    elif not auth_file_exists:
+        runtime_status = "authentication_pending"
+    elif enabled:
+        runtime_status = "ready"
+    else:
+        runtime_status = "disabled"
     message = f"{BLACK_JHON_DISPLAY_NAME} pronto com Codex como IA principal."
     if not enabled:
         message = f"{BLACK_JHON_DISPLAY_NAME} esta com o Codex desabilitado pela configuracao local."
@@ -713,6 +731,8 @@ def _codex_status_payload() -> dict[str, Any]:
         "success": True,
         "enabled": enabled,
         "ready": ready,
+        "runtime_status": runtime_status,
+        "authentication_required": bool(sdk_ok and not auth_file_exists),
         "sdk_installed": sdk_ok,
         "cli_available": cli_ok,
         "cli_path": cli_path,

@@ -58,6 +58,7 @@ TYPING_MAX_SECONDS = 10 * 60
 TYPING_MAX_CONSECUTIVE_ERRORS = 3
 TRANSCRIPTION_TIMEOUT_SECONDS = 600
 WHISPER_MODEL_EXPECTED_BYTES = 488_000_000
+WHATSAPP_GATEWAY_PROTOCOL_VERSION = 1
 SUPPORTED_IMAGE_MIMES = {"image/jpeg": 5 * 1024 * 1024, "image/png": 5 * 1024 * 1024}
 SUPPORTED_AUDIO_MIMES = {
     "audio/aac": 16 * 1024 * 1024,
@@ -259,6 +260,7 @@ RUNTIME_STATE: dict[str, Any] = {
     "whisper_download_error": "",
     "whisper_download_started_at": "",
 }
+MODEL_VALIDATION_CACHE: dict[str, tuple[int, dict[str, Any]]] = {}
 PHONE_DISPATCH_LOCK = threading.RLock()
 PHONE_DISPATCH_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
 PHONE_DISPATCH_EXECUTOR_WORKERS = 0
@@ -322,12 +324,16 @@ def _bridge_store() -> WhatsappBridgeStore:
     return BRIDGE_STORE
 
 
-def _model_dir() -> Path:
+def _download_model_dir() -> Path:
     return _info_dir() / "ai_models" / "faster-whisper-small"
 
 
-def _model_manifest_path() -> Path:
-    return _model_dir() / "model-manifest.json"
+def _bundled_model_dir() -> Path:
+    return _base_dir() / "black_jhon_runtime" / "faster-whisper-small"
+
+
+def _model_manifest_path(model_dir: Optional[Path] = None) -> Path:
+    return (model_dir or _model_dir()) / "model-manifest.json"
 
 
 def _json_read(path: Path, default: Any) -> Any:
@@ -336,6 +342,66 @@ def _json_read(path: Path, default: Any) -> Any:
         return value
     except Exception:
         return default
+
+
+def _validate_model_dir(path: Path) -> dict[str, Any]:
+    model_dir = Path(path).resolve()
+    manifest_path = model_dir / "model-manifest.json"
+    try:
+        manifest_mtime = manifest_path.stat().st_mtime_ns
+    except OSError:
+        return {"valid": False, "error": "manifest_missing", "files": 0, "bytes": 0}
+
+    cache_key = str(model_dir).lower()
+    cached = MODEL_VALIDATION_CACHE.get(cache_key)
+    if cached and cached[0] == manifest_mtime:
+        return dict(cached[1])
+
+    manifest = _json_read(manifest_path, {})
+    entries = manifest.get("files") if isinstance(manifest, dict) else None
+    if not isinstance(entries, list) or not entries:
+        result = {"valid": False, "error": "manifest_invalid", "files": 0, "bytes": 0}
+        MODEL_VALIDATION_CACHE[cache_key] = (manifest_mtime, result)
+        return dict(result)
+
+    total = 0
+    try:
+        for entry in entries:
+            rel = str(entry.get("path") or "").replace("\\", "/").strip("/")
+            expected_size = int(entry.get("size") or -1)
+            expected_sha = str(entry.get("sha256") or "").strip().lower()
+            if not rel or expected_size < 0 or not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
+                raise RuntimeError("manifest_entry_invalid")
+            candidate = (model_dir / rel).resolve()
+            if os.path.commonpath([str(model_dir), str(candidate)]) != str(model_dir):
+                raise RuntimeError("manifest_path_outside_model")
+            if not candidate.is_file() or candidate.stat().st_size != expected_size:
+                raise RuntimeError(f"model_file_invalid:{rel}")
+            digest = hashlib.sha256()
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected_sha:
+                raise RuntimeError(f"model_hash_invalid:{rel}")
+            total += expected_size
+    except Exception as exc:
+        result = {"valid": False, "error": str(exc)[:300], "files": 0, "bytes": total}
+        MODEL_VALIDATION_CACHE[cache_key] = (manifest_mtime, result)
+        return dict(result)
+
+    result = {"valid": True, "error": "", "files": len(entries), "bytes": total}
+    MODEL_VALIDATION_CACHE[cache_key] = (manifest_mtime, result)
+    return dict(result)
+
+
+def _model_dir() -> Path:
+    downloaded = _download_model_dir()
+    if _validate_model_dir(downloaded).get("valid"):
+        return downloaded
+    bundled = _bundled_model_dir()
+    if _validate_model_dir(bundled).get("valid"):
+        return bundled
+    return downloaded
 
 
 def _json_write(path: Path, value: Any) -> None:
@@ -2869,6 +2935,25 @@ def _worker_health(config: dict[str, Any]) -> dict[str, Any]:
     try:
         result = _gateway_json(config, "GET", "/bridge/status", timeout=12)
         result["latency_ms"] = int((time.time() - started) * 1000)
+        try:
+            actual_protocol = int(result.get("gateway_protocol_version") or 0)
+        except (TypeError, ValueError):
+            actual_protocol = 0
+        result["expected_gateway_protocol_version"] = WHATSAPP_GATEWAY_PROTOCOL_VERSION
+        result["protocol_compatible"] = actual_protocol == WHATSAPP_GATEWAY_PROTOCOL_VERSION
+        if not result["protocol_compatible"]:
+            result.update(
+                {
+                    "success": False,
+                    "worker": False,
+                    "error": (
+                        "gateway_protocol_incompatible: "
+                        f"expected={WHATSAPP_GATEWAY_PROTOCOL_VERSION}, actual={actual_protocol}"
+                    ),
+                }
+            )
+            RUNTIME_STATE["last_error"] = str(result["error"])
+            return result
         RUNTIME_STATE["last_worker_ok_at"] = _now()
         RUNTIME_STATE["last_error"] = ""
         return result
@@ -2890,21 +2975,25 @@ def _directory_size(path: Path) -> int:
 def _whisper_status() -> dict[str, Any]:
     installed = importlib.util.find_spec("faster_whisper") is not None
     model_dir = _model_dir()
-    manifest = _json_read(_model_manifest_path(), {})
-    total_bytes = _directory_size(model_dir)
-    ready = bool(installed and isinstance(manifest, dict) and manifest.get("files") and total_bytes > 0)
+    validation = _validate_model_dir(model_dir)
+    total_bytes = int(validation.get("bytes") or _directory_size(model_dir))
+    ready = bool(installed and validation.get("valid"))
+    model_source = "bundled" if model_dir == _bundled_model_dir() else "downloaded"
     progress = 100 if ready else min(99, int(total_bytes * 100 / WHISPER_MODEL_EXPECTED_BYTES))
     return {
         "dependency_installed": installed,
         "model": "small",
         "model_dir": str(model_dir),
+        "model_source": model_source,
+        "integrity": "verified_sha256" if validation.get("valid") else "invalid",
+        "integrity_error": str(validation.get("error") or ""),
         "ready": ready,
         "download_status": RUNTIME_STATE.get("whisper_download_status") or "idle",
         "download_error": RUNTIME_STATE.get("whisper_download_error") or "",
         "downloaded_bytes": total_bytes,
         "expected_bytes": WHISPER_MODEL_EXPECTED_BYTES,
         "progress_percent": progress,
-        "manifest_files": len(manifest.get("files") or []) if isinstance(manifest, dict) else 0,
+        "manifest_files": int(validation.get("files") or 0),
         "engine": "faster-whisper==1.2.1",
         "device": "cpu",
         "compute_type": "int8",
@@ -2931,7 +3020,7 @@ def _download_whisper_worker() -> None:
                 sys.executable,
                 str(_whisper_runner()),
                 "--model-dir",
-                str(_model_dir()),
+                str(_download_model_dir()),
                 "--output",
                 str(output),
                 "--download-only",
