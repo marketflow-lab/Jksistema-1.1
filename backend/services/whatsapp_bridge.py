@@ -39,6 +39,7 @@ from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
+from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
 from backend.services.whatsapp import settings as whatsapp_settings
@@ -86,7 +87,7 @@ WHATSAPP_REPORT_MAX_PARTS = whatsapp_formatting.WHATSAPP_REPORT_MAX_PARTS
 WHATSAPP_REPORT_BODY_CHARS = whatsapp_formatting.WHATSAPP_REPORT_BODY_CHARS
 WHATSAPP_REPORT_RANKING_ITEMS_PER_PART = whatsapp_formatting.WHATSAPP_REPORT_RANKING_ITEMS_PER_PART
 WHATSAPP_QUERY_CONTEXT_TTL_SECONDS = 24 * 3600
-WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS = 30 * 60
+WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS = whatsapp_intent.WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS
 WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES = whatsapp_media.WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES
 WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES = whatsapp_media.WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES
@@ -966,27 +967,7 @@ def _whatsapp_sales_report_requested(value: Any) -> bool:
 
 
 def _whatsapp_query_only_domains(value: Any) -> list[str]:
-    """Classifica os dominios que nunca podem sofrer mutacao pelo WhatsApp."""
-    text = _whatsapp_text_key(value)
-    domains: list[str] = []
-    implicit_latest_ml_sale = bool(
-        re.search(r"\b(ultima|ultimo|mais recente)\b", text)
-        and re.search(r"\bsku\s*[a-z0-9._/-]+\b", text)
-        and re.search(r"\b(mercado livre|mercadolivre|ml)\b", text)
-        and not re.search(r"\b(devolucao|devolucoes|reembolso|estorno)\b", text)
-    )
-    if implicit_latest_ml_sale or _whatsapp_daily_sales_report_requested(value) or re.search(
-        r"\b(venda|vendas|vendido|vendidos|faturamento|pedidos?|devolucao|devolucoes|sync de vendas|sincronizacao de vendas)\b",
-        text,
-    ):
-        domains.append("vendas")
-    if re.search(r"\b(mercado livre|mercadolivre|ml|anuncio|anuncios|mlb\d+)\b", text):
-        domains.append("anuncios_ml")
-    if re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque)\b", text):
-        domains.append("estoque")
-        if re.search(r"\b(full|fulfillment|mercado envios)\b", text):
-            domains.append("mercado_full")
-    return domains
+    return whatsapp_intent.query_only_domains(value)
 
 
 def _whatsapp_source_policy(value: Any) -> dict[str, Any]:
@@ -1000,30 +981,7 @@ def _whatsapp_source_policy(value: Any) -> dict[str, Any]:
 
 
 def _whatsapp_readonly_inquiry(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    if not text:
-        return False
-    explicit_mutation = bool(
-        re.search(
-            r"\b(responda|envie a resposta|mande a resposta|publique|pause|ative|desative|altere|mude|"
-            r"sincronize|cancele|remova|exclua|aprove|rejeite)\b",
-            text,
-        )
-    )
-    if explicit_mutation:
-        return False
-    subject = bool(
-        re.search(
-            r"\b(saldo|estoque|anuncio|anuncios|informacao|informacoes|detalhe|detalhes|pergunta|perguntas|"
-            r"pendencia|pendencias|fila|venda|vendas|pedido|pedidos|preco|status|relatorio|dados)\b",
-            text,
-        )
-    )
-    inquiry = bool(
-        re.search(r"\b(tem|ha|existe|existem|chegou|chegaram|qual|quais|quanto|quantos|quantas)\b", text)
-        or re.search(r"\b(me diga|mostre|consulte|verifique|liste|informe|quero saber|pode ver|consegue ver)\b", text)
-    )
-    return bool(subject and inquiry)
+    return whatsapp_intent.readonly_inquiry(value)
 
 
 def _whatsapp_general_answer_request(value: Any, session: Optional[dict[str, Any]] = None) -> bool:
@@ -1101,91 +1059,25 @@ def _whatsapp_general_answer_request(value: Any, session: Optional[dict[str, Any
 
 
 def _whatsapp_mutation_intent(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    if _whatsapp_readonly_inquiry(value):
-        return False
-    send_mutation = bool(
-        re.search(r"\b(envie|enviar|mande|mandar)\b", text)
-        and re.search(r"\b(resposta|mensagem|pergunta|aprovacao|publicacao)\b", text)
-    )
-    strong_mutation = send_mutation or bool(
-        re.search(
-            r"\b(pause|pausar|ative|ativar|desative|desativar|publique|publicar|responda|responder|"
-            r"aprove|aprovar|cancele|cancelar|mude|mudar|troque|trocar|remova|remover|exclua|excluir|"
-            r"delete|deletar|sincronize|sincronizar|altere|alterar|corrija|corrigir)\b",
-            text,
-        )
-    )
-    # Verbos como "envie" descrevem frequentemente a entrega de uma consulta,
-    # e "atualize agora ... via API" pede dados frescos, nao uma sincronizacao.
-    query_delivery = bool(
-        re.search(r"\b(envie|enviar|mande|mandar|mostre|mostrar|passe|passar|gere|gerar)\b", text)
-        and re.search(r"\b(relatorio|resumo|consulta|dados|informacoes|resultados|lista|listagem)\b", text)
-    )
-    fresh_api_query = bool(
-        re.search(r"\b(atualize|atualizar)\b", text)
-        and re.search(r"\b(api|dados|consulta|relatorio|resumo|listagem|resultados)\b", text)
-        and not re.search(r"\b(preco|estoque|titulo|status|situacao|quantidade|saldo|resposta|mensagem)\b", text)
-    )
-    if (query_delivery or fresh_api_query) and not strong_mutation:
-        return False
-    if strong_mutation:
-        return True
-    if codex_console._codex_prompt_pede_alteracao(str(value or "")):
-        return True
-    return bool(
-        re.search(
-            r"\b(pause|pausar|ative|ativar|desative|desativar|publique|publicar|responda|responder|"
-            r"aprove|aprovar|cancele|cancelar|mude|mudar|troque|trocar|remova|remover|exclua|excluir|"
-            r"delete|deletar|sincronize|sincronizar|atualize|atualizar|altere|alterar|corrija|corrigir)\b",
-            text,
-        )
+    return whatsapp_intent.mutation_intent(
+        value,
+        mutation_detector=codex_console._codex_prompt_pede_alteracao,
     )
 
 
 def _whatsapp_post_sale_action(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    return bool(
-        re.search(r"\b(pergunta|perguntas|pos venda|conversa|resposta ao cliente|mensagem ao cliente)\b", text)
-        and re.search(r"\b(responda|responder|envie|enviar|mande|mandar|aprove|aprovar)\b", text)
-        and not re.search(r"\b(anuncio|anuncios|preco|estoque|titulo|status do anuncio|pausar|publicar)\b", text)
-    )
+    return whatsapp_intent.post_sale_action(value)
 
 
 def _whatsapp_protected_mutation_domains(value: Any) -> list[str]:
-    domains = _whatsapp_query_only_domains(value)
-    if _whatsapp_post_sale_action(value):
-        domains = [domain for domain in domains if domain != "anuncios_ml"]
-    return domains if domains and _whatsapp_mutation_intent(value) else []
+    return whatsapp_intent.protected_mutation_domains(
+        value,
+        mutation_detector=codex_console._codex_prompt_pede_alteracao,
+    )
 
 
 def _whatsapp_action_spec_query_only_domains(spec: Any) -> list[str]:
-    if spec is None:
-        return []
-    if isinstance(spec, dict):
-        getter = lambda key, default="": spec.get(key, default)
-    else:
-        getter = lambda key, default="": getattr(spec, key, default)
-    text = _whatsapp_text_key(
-        " ".join(
-            str(item or "")
-            for item in (
-                getter("id") or getter("action_id"),
-                getter("module"),
-                getter("label"),
-                getter("status_kind"),
-                " ".join(getter("side_effects", ()) or ()),
-            )
-        )
-    )
-    domains: list[str] = []
-    if re.search(r"\b(vendas?|vendas sync|vendas cancel|sincronizar vendas)\b", text):
-        domains.append("vendas")
-    module_name = str(getter("module") or "").strip().lower()
-    action_id = str(getter("id") or getter("action_id") or "").strip().lower()
-    if module_name == "anuncios_ml" or action_id.startswith("ml.anuncio") or re.search(r"\b(anuncio|anuncios|mercado_livre)\b", text):
-        domains.append("anuncios_ml")
-    return list(dict.fromkeys(domains))
+    return whatsapp_intent.action_spec_query_only_domains(spec)
 
 
 def _whatsapp_load_store_configs(client_id: Any) -> list[dict[str, Any]]:
@@ -1247,50 +1139,15 @@ def _whatsapp_authorized_api_stores(
 
 
 def _whatsapp_exact_store_matches(value: Any, stores: list[str]) -> list[str]:
-    text = _whatsapp_text_key(value)
-    raw_matches: list[tuple[str, str]] = []
-    seen_keys: set[str] = set()
-    for store in stores:
-        key = _whatsapp_text_key(store)
-        if (
-            key
-            and key not in seen_keys
-            and re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", text)
-        ):
-            seen_keys.add(key)
-            raw_matches.append((store, key))
-    # "JK Pecas" tambem contem "JK". Nesse caso existe uma unica mencao,
-    # portanto prevalece o nome cadastrado mais especifico/mais longo.
-    return [
-        store
-        for store, key in raw_matches
-        if not any(key != other_key and re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", other_key) for _, other_key in raw_matches)
-    ]
+    return whatsapp_intent.exact_store_matches(value, stores)
 
 
 def _whatsapp_all_stores_requested(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    return bool(
-        re.search(
-            r"\b(todas as lojas|todas lojas|todas as contas|cada loja|cada conta|por loja|por conta|"
-            r"loja a loja|conta a conta|separad[oa]s? por loja|compare as lojas|comparar as lojas|visao geral)\b",
-            text,
-        )
-    )
+    return whatsapp_intent.all_stores_requested(value)
 
 
 def _whatsapp_store_scoped_request(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    if not text:
-        return False
-    return bool(
-        re.search(
-            r"\b(venda|vendas|faturamento|pedido|pedidos|devolucao|devolucoes|estoque|saldo|sku|produto|produtos|"
-            r"anuncio|anuncios|mercado livre|mercadolivre|preco|precos|margem|lucro|relatorio|relatorios|"
-            r"pergunta|perguntas|pos venda|pos-venda|comprador|compradores|promocao|promocoes)\b",
-            text,
-        )
-    )
+    return whatsapp_intent.store_scoped_request(value)
 
 
 def _whatsapp_session_stores(session: dict[str, Any]) -> list[str]:
@@ -1325,8 +1182,7 @@ def _whatsapp_store_scope_policy(value: Any, session: dict[str, Any]) -> dict[st
 
 
 def _whatsapp_api_query_requires_store(value: Any, domains: list[str]) -> bool:
-    del value
-    return bool(set(domains) & {"vendas", "anuncios_ml", "estoque", "mercado_full"})
+    return whatsapp_intent.api_query_requires_store(value, domains)
 
 
 def _whatsapp_requested_api_providers(value: Any, domains: list[str]) -> list[str]:
@@ -1415,58 +1271,27 @@ def _whatsapp_query_policy(value: Any, session: dict[str, Any]) -> dict[str, Any
 
 
 def _whatsapp_pagination_request(value: Any) -> bool:
-    text = _whatsapp_text_key(value)
-    return bool(re.fullmatch(r"(?:os |as )?(?:proximos|proximas|mais resultados|pagina seguinte|continuar|continue)", text))
+    return whatsapp_intent.pagination_request(value)
 
 
 def _whatsapp_contextual_report_request(value: Any) -> bool:
-    """Reconhece uma nova rodada de relatorio que depende do contexto recente."""
-    text = _whatsapp_text_key(value)
-    if not text:
-        return False
-    relative_period = bool(
-        re.search(r"\b(?:deste|desse|este|nesse|no) mes\b", text)
-        or re.search(r"\bmes atual\b", text)
-    )
-    same_store = bool(re.search(r"\b(?:na |da |pela )?mesma (?:loja|conta)\b", text))
-    report_language = bool(re.search(r"\b(relatorio|resumo|analise|vendas?|pedidos?|faturamento)\b", text))
-    return bool(relative_period or (same_store and report_language) or text in {"mesma loja", "mesma conta"})
+    return whatsapp_intent.contextual_report_request(value)
 
 
 def _whatsapp_contextual_report_period(value: Any) -> tuple[str, str]:
-    text = _whatsapp_text_key(value)
-    if not (
-        re.search(r"\b(?:deste|desse|este|nesse|no) mes\b", text)
-        or re.search(r"\bmes atual\b", text)
-    ):
-        return "", ""
     try:
         current = datetime.now(ZoneInfo("America/Sao_Paulo"))
     except Exception:
         current = datetime.now().astimezone()
-    return current.replace(day=1).date().isoformat(), current.date().isoformat()
+    return whatsapp_intent.contextual_report_period(value, current=current)
 
 
 def _whatsapp_implicit_store_followup(value: Any, *, context_age: float, has_direct_policy: bool) -> bool:
-    text = _whatsapp_text_key(value)
-    if not text or _whatsapp_all_stores_requested(value):
-        return False
-    strong_reference = bool(
-        re.search(r"^(?:agora|entao|e\s|tambem|continue|continuando)\b", text)
-        or re.search(
-            r"\b(?:dess[ae]s?|dest[ae]s?|del[ae]s?|sobre isso|sobre eles|sobre elas|"
-            r"mais detalhes?|detalhe melhor|motivo de cada|cada (?:um|uma|pedido|venda|devolucao|reclamacao)|"
-            r"mesma loja|mesma conta)\b",
-            text,
-        )
-    )
-    if strong_reference:
-        return True
-    word_count = len(re.findall(r"[a-z0-9]+", text))
-    return bool(
-        has_direct_policy
-        and context_age <= WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS
-        and word_count <= 16
+    return whatsapp_intent.implicit_store_followup(
+        value,
+        context_age=context_age,
+        has_direct_policy=has_direct_policy,
+        recent_seconds=WHATSAPP_IMPLICIT_STORE_RECENT_SECONDS,
     )
 
 
