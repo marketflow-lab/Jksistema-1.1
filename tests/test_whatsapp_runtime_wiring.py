@@ -8,6 +8,10 @@ from backend.services import codex_console
 
 
 ROOT = Path(__file__).resolve().parents[1]
+WHATSAPP_COMPONENTS = {
+    path.relative_to(ROOT).as_posix()
+    for path in (ROOT / "backend" / "services" / "whatsapp").rglob("*.py")
+}
 
 
 def test_whatsapp_bridge_is_registered_in_backend_startup() -> None:
@@ -35,6 +39,8 @@ def test_installer_requires_whatsapp_startup_files_with_source_parity() -> None:
         )
     )
     parity = set(manifest.get("requiredPackagedSourceParity") or [])
+    source_files = set(manifest.get("requiredSourceFiles") or [])
+    packaged_files = set(manifest.get("requiredPackagedFiles") or [])
     assert {
         "backend_api.py",
         "backend/lifecycle.py",
@@ -50,6 +56,21 @@ def test_installer_requires_whatsapp_startup_files_with_source_parity() -> None:
         "backend/services/ia_tools_marketplaces.py",
         "backend/services/whatsapp_bridge.py",
     } <= parity
+    assert WHATSAPP_COMPONENTS <= source_files
+    assert WHATSAPP_COMPONENTS <= parity
+    assert {f"local_app/{path}" for path in WHATSAPP_COMPONENTS} <= packaged_files
+    source_directories = {
+        item.get("path"): item.get("minFiles")
+        for item in manifest.get("requiredSourceDirectories") or []
+        if isinstance(item, dict)
+    }
+    packaged_directories = {
+        item.get("path"): item.get("minFiles")
+        for item in manifest.get("requiredPackagedDirectories") or []
+        if isinstance(item, dict)
+    }
+    assert source_directories["backend/services/whatsapp"] == len(WHATSAPP_COMPONENTS)
+    assert packaged_directories["local_app/backend/services/whatsapp"] == len(WHATSAPP_COMPONENTS)
 
 
 def test_whatsapp_injects_original_latest_event_request_into_ml_call() -> None:
