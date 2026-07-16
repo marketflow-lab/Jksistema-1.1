@@ -32,19 +32,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 timeout /t 2 >nul
 echo.
 
-REM Localiza Python do sistema (sempre necessario para recriar venv se quebrada)
+REM Localiza exatamente o Python 3.11.9 exigido pelo lock de dependencias.
 set "SYSTEM_PYTHON="
-where py >nul 2>nul
-if not errorlevel 1 set "SYSTEM_PYTHON=py -3"
+set "SYSTEM_PYTHON_ARGS="
+if exist ".python-runtime\python.exe" (
+	".python-runtime\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 11, 9) else 1)" >nul 2>nul
+	if not errorlevel 1 set "SYSTEM_PYTHON=.python-runtime\python.exe"
+)
+if not defined SYSTEM_PYTHON (
+	where py >nul 2>nul
+	if not errorlevel 1 (
+		py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 11, 9) else 1)" >nul 2>nul
+		if not errorlevel 1 (
+			set "SYSTEM_PYTHON=py"
+			set "SYSTEM_PYTHON_ARGS=-3.11"
+		)
+	)
+)
 if not defined SYSTEM_PYTHON (
 	where python >nul 2>nul
-	if not errorlevel 1 set "SYSTEM_PYTHON=python"
+	if not errorlevel 1 (
+		python -c "import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 11, 9) else 1)" >nul 2>nul
+		if not errorlevel 1 set "SYSTEM_PYTHON=python"
+	)
 )
 
 if not defined SYSTEM_PYTHON (
-	echo ERRO: Python nao encontrado neste computador.
-	echo Instale o Python 3 em https://www.python.org/downloads/
-	echo e execute novamente este arquivo.
+	echo ERRO: Python 3.11.9 nao encontrado neste computador.
+	echo Instale python_runtime\python-3.11.9-amd64.exe
+	echo ou disponibilize o runtime local em .python-runtime\python.exe.
 	pause
 	exit /b 1
 )
@@ -52,24 +68,31 @@ if not defined SYSTEM_PYTHON (
 REM Verifica se a venv existente funciona de verdade nesta maquina
 set "PYTHON_EXE="
 if exist ".venv\Scripts\python.exe" (
-	".venv\Scripts\python.exe" --version >nul 2>nul
+	".venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 11, 9) else 1)" >nul 2>nul
 	if not errorlevel 1 (
 		set "PYTHON_EXE=.venv\Scripts\python.exe"
 	) else (
-		echo    Ambiente virtual corrompido ou de outra maquina. Recriando...
+		echo    Ambiente virtual incompativel com Python 3.11.9. Recriando...
 		rmdir /s /q .venv
 	)
 )
 
 if not defined PYTHON_EXE (
 	echo 0. Criando ambiente virtual local...
-	call %SYSTEM_PYTHON% -m venv .venv
+	call "%SYSTEM_PYTHON%" %SYSTEM_PYTHON_ARGS% -m venv .venv
 	if errorlevel 1 (
 		echo ERRO: Nao foi possivel criar o ambiente virtual .venv
 		pause
 		exit /b 1
 	)
 	set "PYTHON_EXE=.venv\Scripts\python.exe"
+)
+
+"%PYTHON_EXE%" -c "import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 11, 9) else 1)" >nul 2>nul
+if errorlevel 1 (
+	echo ERRO: A .venv criada nao usa Python 3.11.9.
+	pause
+	exit /b 1
 )
 
 echo 1. Verificando dependencias...
@@ -183,7 +206,7 @@ if not defined HAS_NPM goto :ABRIR_NO_NAVEGADOR
 if defined ELECTRON_READY goto :ABRIR_ELECTRON
 
 echo 3.0 Instalando dependencias do Desktop - Electron...
-call npm.cmd install
+call npm.cmd ci
 if errorlevel 1 goto :ABRIR_NO_NAVEGADOR
 if not exist "node_modules\.bin\electron.cmd" goto :ABRIR_NO_NAVEGADOR
 set "ELECTRON_READY=1"

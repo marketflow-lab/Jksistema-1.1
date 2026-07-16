@@ -73,14 +73,21 @@ def test_composed_app_preserves_global_and_openapi_contracts() -> None:
     code = r'''
 import collections, hashlib, json
 import backend_api
-pairs=[]
+routes=[]
 for route in backend_api.app.routes:
+    effective_route_contexts=getattr(route, "effective_route_contexts", None)
+    if callable(effective_route_contexts):
+        routes.extend(effective_route_contexts())
+    else:
+        routes.append(route)
+pairs=[]
+for route in routes:
     for method in set(getattr(route, "methods", set()) or set()) - {"HEAD", "OPTIONS"}:
         pairs.append((method, route.path))
 duplicates=[item for item,count in collections.Counter(pairs).items() if count > 1]
 paths={path:item for path,item in backend_api.app.openapi().get("paths",{}).items() if path.startswith("/api/vendas") or path.startswith("/api/notas-entrada") or path.startswith("/api/unidades-negocios")}
 raw=json.dumps(paths,sort_keys=True,ensure_ascii=False,separators=(",",":"))
-print(json.dumps({"routes":len(backend_api.app.routes),"pairs":len(pairs),"duplicates":duplicates,"openapi":hashlib.sha256(raw.encode()).hexdigest()}))
+print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicates,"openapi":hashlib.sha256(raw.encode()).hexdigest()}))
 '''
     completed = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr

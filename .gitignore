@@ -72,6 +72,8 @@ android_app/*.keystore
 # Python/runtime caches
 __pycache__/
 *.py[cod]
+.venv/
+.python-runtime/
 .tmp_checks/
 python_runtime/
 python_wheels/

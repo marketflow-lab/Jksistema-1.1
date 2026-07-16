@@ -108,16 +108,29 @@ function verifyPythonLock() {
 }
 
 function verifyInstallCommands() {
-  const deterministicNodeFiles = ['Executar.bat', 'GerarExecutavel.bat', 'cloudflare/whatsapp-gateway/README.md'];
+  const deterministicNodeFiles = [
+    'Executar.bat',
+    'iniciar_servidor.bat',
+    'iniciar_servidor_dev.bat',
+    'GerarExecutavel.bat',
+    'cloudflare/whatsapp-gateway/README.md',
+  ];
   for (const file of deterministicNodeFiles) {
     if (/\bnpm install\b/i.test(readText(file))) failures.push(`${file}: use npm ci em vez de npm install`);
   }
   const pythonLaunchers = ['iniciar_servidor.bat', 'iniciar_servidor_dev.bat', 'electron_app/main/modules/backend.js'];
+  const expectedPythonTuple = expectedPython.split('.').join(', ');
   for (const file of pythonLaunchers) {
     const content = readText(file);
     if (/pip install[^\r\n]*--upgrade\s+(?:pip|watchfiles)/i.test(content)) {
       failures.push(`${file}: atualizacao Python sem lock detectada`);
     }
+    if (!content.includes(`sys.version_info[:3] == (${expectedPythonTuple})`)) {
+      failures.push(`${file}: deve exigir exatamente Python ${expectedPython}`);
+    }
+  }
+  if (!/\bcall\s+"?%~dp0iniciar_servidor\.bat"?/i.test(readText('Executar.bat'))) {
+    failures.push('Executar.bat: deve iniciar o backend pelo bootstrap Python canonico');
   }
   const qualityWorkflow = readText('.github/workflows/quality-gate.yml');
   if (!qualityWorkflow.includes('npm.cmd test')) failures.push('Quality Gate: deve executar npm.cmd test');

@@ -178,6 +178,23 @@ function walkFiles(dir) {
   return out;
 }
 
+function validateNoServiceAccountJson(baseDir, reportRoot, failures, label) {
+  const files = fileExists(baseDir) ? [baseDir] : walkFiles(baseDir);
+  for (const file of files) {
+    if (path.extname(file).toLowerCase() !== '.json') continue;
+    try {
+      const payload = readJson(file);
+      if (payload && payload.type === 'service_account' && payload.private_key) {
+        failures.push(
+          `Credencial de service account proibida ${label}: ${toPosix(path.relative(reportRoot, file))}`,
+        );
+      }
+    } catch (_err) {
+      // Arquivos JSON invalidos sao tratados pelos validadores especificos quando obrigatorios.
+    }
+  }
+}
+
 function countFiles(dir) {
   return walkFiles(dir).length;
 }
@@ -266,6 +283,20 @@ function failIfMissingSource(manifest, failures) {
     if (!a.equals(b)) {
       failures.push(`HTML fora da regra de fonte unica: edite ${canonical} e sincronize ${legacy}`);
     }
+  }
+
+  for (const relDir of manifest.requiredPackagedSourceParityDirectories || []) {
+    validateNoServiceAccountJson(
+      path.join(repoRoot, toPosix(relDir)),
+      repoRoot,
+      failures,
+      'na fonte empacotavel',
+    );
+  }
+  const appBuildFiles = readJson(packageJsonPath).build?.files || [];
+  for (const rel of appBuildFiles) {
+    if (typeof rel !== 'string' || rel.includes('*')) continue;
+    validateNoServiceAccountJson(path.join(appDir, rel), appDir, failures, 'na fonte do app.asar');
   }
 }
 
@@ -467,6 +498,8 @@ function validatePackagedOutput(manifest, failures) {
       failures.push(`Conteudo privado proibido no pacote: ${pattern} (${found.length} arquivo(s))`);
     }
   }
+
+  validateNoServiceAccountJson(packagedRoot, packagedRoot, failures, 'no pacote');
 
   const asarPath = path.join(packagedRoot, 'app.asar');
   if (fileExists(asarPath)) {

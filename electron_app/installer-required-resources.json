@@ -86,7 +86,6 @@
     "firebase-presence.env"
   ],
   "requiredSourceGlobs": [
-    { "pattern": "jkjkjk-*.json", "min": 1 },
     { "pattern": "python_runtime/python-*.exe", "min": 1 },
     { "pattern": "python_wheels/*.whl", "min": 20 },
     { "pattern": "python_wheels/openai_codex-0.1.0b3-*.whl", "min": 1 },
@@ -172,10 +171,6 @@
     "!ml_questions_gemini/**/__pycache__/**",
     "!ml_questions_gemini/**/*.pyc",
     "firebase-presence.env",
-    "jkjkjk-*.json",
-    "firebase-service-account.json",
-    "firebase_service_account.json",
-    "*service-account*.json",
     "static/**",
     "img/**",
     "python_runtime/**",
@@ -192,7 +187,11 @@
     "backups/**",
     "backups/*",
     "electron_user_data/**",
-    "electron_user_data/*"
+    "electron_user_data/*",
+    "jkjkjk-*.json",
+    "firebase-service-account.json",
+    "firebase_service_account.json",
+    "*service-account*.json"
   ],
   "requiredRuntimeSkipEntries": [
     ".venv",
@@ -342,7 +341,6 @@
     "img"
   ],
   "requiredPackagedGlobs": [
-    { "pattern": "local_app/jkjkjk-*.json", "min": 1 },
     { "pattern": "local_app/python_runtime/python-*.exe", "min": 1 },
     { "pattern": "local_app/python_wheels/*.whl", "min": 20 },
     { "pattern": "local_app/python_wheels/openai_codex-0.1.0b3-*.whl", "min": 1 },
@@ -379,6 +377,11 @@
     "local_app/logs/**",
     "local_app/backups/**",
     "local_app/electron_user_data/**",
+    "local_app/jkjkjk-*.json",
+    "local_app/firebase-service-account.json",
+    "local_app/firebase_service_account.json",
+    "local_app/*service-account*.json",
+    "local_app/**/*service-account*.json",
     "local_app/backend/**/__pycache__/**",
     "local_app/backend/**/*.pyc",
     "local_app/ml_questions_gemini/**/__pycache__/**",
