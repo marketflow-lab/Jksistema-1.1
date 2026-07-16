@@ -6,7 +6,18 @@ const canonical = fs.readFileSync(path.join(root, 'static', 'configuracoes.html'
 const mirror = fs.readFileSync(path.join(root, 'configuracoes.html'), 'utf8');
 const ui = fs.readFileSync(path.join(root, 'static', 'configuracoes-whatsapp.js'), 'utf8');
 const historyUi = fs.readFileSync(path.join(root, 'static', 'configuracoes-whatsapp-history.js'), 'utf8');
-const service = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge.py'), 'utf8');
+function readPythonTree(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) return readPythonTree(fullPath);
+      return entry.isFile() && entry.name.endsWith('.py') ? [fs.readFileSync(fullPath, 'utf8')] : [];
+    });
+}
+const service = [
+  fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge.py'), 'utf8'),
+  ...readPythonTree(path.join(root, 'backend', 'services', 'whatsapp')),
+].join('\n');
 const bridgeContracts = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'contracts.py'), 'utf8');
 const bridgeFormatting = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'formatting.py'), 'utf8');
 const bridgeGateway = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'gateway.py'), 'utf8');
@@ -145,7 +156,7 @@ assert(voiceService.includes('ia_providers._obter_openai_api_key()'), 'voice doe
 assert(voiceService.includes('codex_registrar_interacao_whatsapp_externa'), 'voice transcript is not connected to canonical WhatsApp history');
 assert(!voiceService.includes('open("audio'), 'voice service must not persist raw audio');
 assert(service.includes('"/bridge/messages/send"'), 'ad hoc message is not routed to the gateway');
-assert(service.includes('phone_settings["send_ml_question_suggestions"]'), 'question suggestions do not honor the selected phone preference');
+assert(service.includes('settings["send_ml_question_suggestions"]'), 'question suggestions do not honor the selected phone preference');
 assert(service.includes('def _start_phone_notification_report_scan('), 'per-phone scheduled reports are missing');
 const taskTransitionStart = service.indexOf('def _forward_task_transitions(');
 const taskTransitionEnd = service.indexOf('\ndef ', taskTransitionStart + 4);
