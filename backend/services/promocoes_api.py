@@ -20,6 +20,8 @@ def _peer_globals() -> dict[str, object]:
     peers = {}
     for module in _MODULES:
         for name in getattr(module, "PEER_EXPORTS", getattr(module, "__all__", ())):
+            if name == "get_tenant_id":
+                continue
             if hasattr(module, name):
                 peers[name] = getattr(module, name)
     return peers

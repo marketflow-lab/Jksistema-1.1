@@ -743,6 +743,18 @@
                     atualizarAnimacaoAzulNoNavegadorMl(mlFavoritosEmExecucao);
                     return true;
                 } catch (err) {
+                    const verificacao = typeof confirmarAberturaNavegadorMlAposTimeout === 'function'
+                        ? await confirmarAberturaNavegadorMlAposTimeout(url, err)
+                        : { confirmado: false, reason: 'verificacao-indisponivel', url: '' };
+                    if (verificacao.confirmado) {
+                        mlOpenedOnce = true;
+                        atualizarAnimacaoAzulNoNavegadorMl(mlFavoritosEmExecucao);
+                        return true;
+                    }
+                    console.error('Falha real ao abrir o navegador interno do Mercado Livre.', {
+                        erro: err && err.message ? err.message : String(err),
+                        verificacao
+                    });
                     setBrowserStatus('Falha ao abrir no quadro interno do programa.');
                     mostrarHintAbertura();
                     return false;

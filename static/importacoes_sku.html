@@ -144,17 +144,222 @@
 
         .layout {
             display: grid;
-            grid-template-columns: 1.15fr 1fr 0.66fr;
+            grid-template-columns: 1.15fr 1fr 0.78fr;
             gap: 14px;
         }
 
         .analysis-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 8px;
         }
-        .analysis-grid .tile.blue-strong {
-            grid-column: span 1;
+
+        .analysis-comparison-card {
+            min-width: 0;
+        }
+
+        .analysis-comparison-title {
+            display: none;
+        }
+
+        .analysis-offers {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+        }
+
+        .analysis-offer {
+            min-width: 0;
+            min-height: 88px;
+            box-sizing: border-box;
+            border: 1px solid;
+            border-radius: 10px;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            background: rgba(9, 24, 43, 0.88);
+        }
+
+        .analysis-offer.own {
+            border-color: rgba(70, 158, 255, 0.9);
+            background: linear-gradient(155deg, rgba(22, 72, 126, 0.94), rgba(13, 48, 87, 0.96));
+        }
+
+        .analysis-offer.competitor {
+            border-color: rgba(25, 190, 221, 0.92);
+            background: linear-gradient(155deg, rgba(9, 90, 107, 0.94), rgba(6, 62, 76, 0.98));
+        }
+
+        .analysis-offer.is-clickable {
+            cursor: pointer;
+            transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+        }
+
+        .analysis-offer.is-clickable:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.08);
+            box-shadow: 0 6px 14px rgba(0, 0, 0, 0.24);
+        }
+
+        .analysis-offer.is-clickable:focus-visible {
+            outline: 2px solid #ffe07a;
+            outline-offset: 2px;
+        }
+
+        .analysis-offer-role {
+            color: rgba(220, 237, 255, 0.72);
+            font-size: 0.55rem;
+            font-weight: 900;
+            letter-spacing: 0.55px;
+            line-height: 1;
+            text-transform: uppercase;
+        }
+
+        .analysis-offer-link {
+            min-width: 0;
+            margin-top: 3px;
+            color: #ffffff;
+            font-size: 0.64rem;
+            font-weight: 900;
+            line-height: 1.05;
+            overflow-wrap: anywhere;
+        }
+
+        .analysis-offer-link .label-link {
+            color: inherit;
+            text-decoration: none;
+            border-bottom: 1px dotted currentColor;
+        }
+
+        .analysis-offer-link .label-link:hover {
+            color: #dff5ff;
+        }
+
+        .analysis-price-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 1px;
+            margin-top: auto;
+            padding-top: 3px;
+        }
+
+        .analysis-price-original {
+            color: rgba(226, 237, 249, 0.68);
+            font-size: 0.58rem;
+            font-weight: 800;
+            line-height: 1;
+            text-decoration: line-through;
+            text-decoration-thickness: 1.5px;
+        }
+
+        .analysis-price-current {
+            color: #ffffff;
+            font-size: 0.88rem;
+            font-weight: 950;
+            line-height: 1.05;
+            white-space: nowrap;
+        }
+
+        .analysis-offer.own .analysis-price-current {
+            color: #78d2ff;
+        }
+
+        .analysis-price-current.is-promotional {
+            color: #78ffba;
+        }
+
+        .analysis-promo-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 3px;
+            margin-top: 1px;
+        }
+
+        .analysis-price-original[hidden],
+        .analysis-promo-row[hidden] {
+            display: none !important;
+        }
+
+        .analysis-promo-badge {
+            border: 1px solid rgba(92, 255, 171, 0.62);
+            border-radius: 999px;
+            padding: 1px 3px;
+            color: #8affc1;
+            background: rgba(11, 112, 62, 0.36);
+            font-size: 0.52rem;
+            font-weight: 950;
+            line-height: 1;
+        }
+
+        .analysis-promo-label {
+            color: rgba(212, 255, 232, 0.76);
+            font-size: 0.5rem;
+            font-weight: 800;
+        }
+
+        .analysis-margin {
+            margin-top: 3px;
+            padding-top: 3px;
+            border-top: 1px dashed rgba(151, 199, 255, 0.48);
+            color: #7ff0ad;
+            font-size: 0.64rem;
+            font-weight: 900;
+            line-height: 1.05;
+        }
+
+        .analysis-margin.negative {
+            color: #ff9b91;
+        }
+
+        .analysis-margin.unavailable {
+            color: #8da5c4;
+        }
+
+        .purchase-approval {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .approve-purchase-btn {
+            width: 100%;
+            min-height: 48px;
+            border: 1px solid #35d477;
+            border-radius: 11px;
+            background: linear-gradient(180deg, #27bd67, #168747);
+            color: #ffffff;
+            font: inherit;
+            font-weight: 900;
+            letter-spacing: 0.2px;
+            cursor: pointer;
+            box-shadow: 0 10px 22px rgba(22, 135, 71, 0.28);
+            transition: transform 0.16s ease, filter 0.16s ease, opacity 0.16s ease;
+        }
+
+        .approve-purchase-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            filter: brightness(1.08);
+        }
+
+        .approve-purchase-btn:disabled {
+            cursor: default;
+            opacity: 0.72;
+        }
+
+        .approve-purchase-btn.is-approved {
+            border-color: #7ee6a8;
+            background: linear-gradient(180deg, #238d52, #176638);
+        }
+
+        .purchase-approval-status {
+            min-height: 18px;
+            color: var(--muted);
+            font-size: 0.8rem;
+            line-height: 1.35;
+            text-align: center;
         }
 
         .card {
@@ -556,7 +761,7 @@
                 grid-template-columns: 1fr;
             }
             .analysis-grid {
-                grid-template-columns: 1fr 1fr;
+                grid-template-columns: 1fr;
             }
             .fx-chip {
                 max-width: calc(100% - 28px);
@@ -572,6 +777,16 @@
                 padding: 0 13px;
                 top: 12px;
                 right: 12px;
+            }
+        }
+
+        @media (max-width: 520px) {
+            .analysis-offers {
+                grid-template-columns: 1fr;
+            }
+
+            .analysis-offer {
+                min-height: 112px;
             }
         }
     </style>
@@ -676,16 +891,45 @@
             <section class="card">
                 <h2>Análise</h2>
                 <div class="analysis-grid">
-                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_1"><div id="lblMlb1" class="label">MLB</div><div id="vMlb1" class="value">-</div></div>
-                    <div class="tile cyan" data-card-id="analise_conc_1"><div id="lblConcorrente1" class="label">Concorrente 1</div><div id="vConcorrente1" class="value">-</div></div>
-                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_2"><div id="lblMlb2" class="label">MLB</div><div id="vMlb2" class="value">-</div></div>
-                    <div class="tile cyan" data-card-id="analise_conc_2"><div id="lblConcorrente2" class="label">Concorrente 2</div><div id="vConcorrente2" class="value">-</div></div>
-                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_3"><div id="lblMlb3" class="label">MLB</div><div id="vMlb3" class="value">-</div></div>
-                    <div class="tile cyan" data-card-id="analise_conc_3"><div id="lblConcorrente3" class="label">Concorrente 3</div><div id="vConcorrente3" class="value">-</div></div>
-                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_4"><div id="lblMlb4" class="label">MLB</div><div id="vMlb4" class="value">-</div></div>
-                    <div class="tile cyan" data-card-id="analise_conc_4"><div id="lblConcorrente4" class="label">Concorrente 4</div><div id="vConcorrente4" class="value">-</div></div>
-                    <div class="tile blue-strong compact-top" data-card-id="analise_mlb_5"><div id="lblMlb5" class="label">MLB</div><div id="vMlb5" class="value">-</div></div>
-                    <div class="tile cyan" data-card-id="analise_conc_5"><div id="lblConcorrente5" class="label">Concorrente 5</div><div id="vConcorrente5" class="value">-</div></div>
+                    <article class="analysis-comparison-card" data-card-id="analise_comparacao_1">
+                        <div class="analysis-comparison-title">Comparação 1</div>
+                        <div class="analysis-offers">
+                            <div class="analysis-offer own"><div class="analysis-offer-role">Peças</div><div id="lblMlb1" class="analysis-offer-link">MLB</div><div class="analysis-price-stack"><div id="vMlbOriginal1" class="analysis-price-original" hidden>-</div><div id="vMlb1" class="analysis-price-current">-</div><div id="vPromoMlb1" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div></div>
+                            <div class="analysis-offer competitor"><div class="analysis-offer-role">Mercado</div><div id="lblConcorrente1" class="analysis-offer-link">Concorrente 1</div><div class="analysis-price-stack"><div id="vConcorrenteOriginal1" class="analysis-price-original" hidden>-</div><div id="vConcorrente1" class="analysis-price-current">-</div><div id="vPromoConcorrente1" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div><div id="vMargemConcorrente1" class="analysis-margin unavailable">Margem: -</div></div>
+                        </div>
+                    </article>
+                    <article class="analysis-comparison-card" data-card-id="analise_comparacao_2">
+                        <div class="analysis-comparison-title">Comparação 2</div>
+                        <div class="analysis-offers">
+                            <div class="analysis-offer own"><div class="analysis-offer-role">Peças</div><div id="lblMlb2" class="analysis-offer-link">MLB</div><div class="analysis-price-stack"><div id="vMlbOriginal2" class="analysis-price-original" hidden>-</div><div id="vMlb2" class="analysis-price-current">-</div><div id="vPromoMlb2" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div></div>
+                            <div class="analysis-offer competitor"><div class="analysis-offer-role">Mercado</div><div id="lblConcorrente2" class="analysis-offer-link">Concorrente 2</div><div class="analysis-price-stack"><div id="vConcorrenteOriginal2" class="analysis-price-original" hidden>-</div><div id="vConcorrente2" class="analysis-price-current">-</div><div id="vPromoConcorrente2" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div><div id="vMargemConcorrente2" class="analysis-margin unavailable">Margem: -</div></div>
+                        </div>
+                    </article>
+                    <article class="analysis-comparison-card" data-card-id="analise_comparacao_3">
+                        <div class="analysis-comparison-title">Comparação 3</div>
+                        <div class="analysis-offers">
+                            <div class="analysis-offer own"><div class="analysis-offer-role">Peças</div><div id="lblMlb3" class="analysis-offer-link">MLB</div><div class="analysis-price-stack"><div id="vMlbOriginal3" class="analysis-price-original" hidden>-</div><div id="vMlb3" class="analysis-price-current">-</div><div id="vPromoMlb3" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div></div>
+                            <div class="analysis-offer competitor"><div class="analysis-offer-role">Mercado</div><div id="lblConcorrente3" class="analysis-offer-link">Concorrente 3</div><div class="analysis-price-stack"><div id="vConcorrenteOriginal3" class="analysis-price-original" hidden>-</div><div id="vConcorrente3" class="analysis-price-current">-</div><div id="vPromoConcorrente3" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div><div id="vMargemConcorrente3" class="analysis-margin unavailable">Margem: -</div></div>
+                        </div>
+                    </article>
+                    <article class="analysis-comparison-card" data-card-id="analise_comparacao_4">
+                        <div class="analysis-comparison-title">Comparação 4</div>
+                        <div class="analysis-offers">
+                            <div class="analysis-offer own"><div class="analysis-offer-role">Peças</div><div id="lblMlb4" class="analysis-offer-link">MLB</div><div class="analysis-price-stack"><div id="vMlbOriginal4" class="analysis-price-original" hidden>-</div><div id="vMlb4" class="analysis-price-current">-</div><div id="vPromoMlb4" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div></div>
+                            <div class="analysis-offer competitor"><div class="analysis-offer-role">Mercado</div><div id="lblConcorrente4" class="analysis-offer-link">Concorrente 4</div><div class="analysis-price-stack"><div id="vConcorrenteOriginal4" class="analysis-price-original" hidden>-</div><div id="vConcorrente4" class="analysis-price-current">-</div><div id="vPromoConcorrente4" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div><div id="vMargemConcorrente4" class="analysis-margin unavailable">Margem: -</div></div>
+                        </div>
+                    </article>
+                    <article class="analysis-comparison-card" data-card-id="analise_comparacao_5">
+                        <div class="analysis-comparison-title">Comparação 5</div>
+                        <div class="analysis-offers">
+                            <div class="analysis-offer own"><div class="analysis-offer-role">Peças</div><div id="lblMlb5" class="analysis-offer-link">MLB</div><div class="analysis-price-stack"><div id="vMlbOriginal5" class="analysis-price-original" hidden>-</div><div id="vMlb5" class="analysis-price-current">-</div><div id="vPromoMlb5" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div></div>
+                            <div class="analysis-offer competitor"><div class="analysis-offer-role">Mercado</div><div id="lblConcorrente5" class="analysis-offer-link">Concorrente 5</div><div class="analysis-price-stack"><div id="vConcorrenteOriginal5" class="analysis-price-original" hidden>-</div><div id="vConcorrente5" class="analysis-price-current">-</div><div id="vPromoConcorrente5" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div><div id="vMargemConcorrente5" class="analysis-margin unavailable">Margem: -</div></div>
+                        </div>
+                    </article>
+                </div>
+                <div class="purchase-approval">
+                    <button id="btnAprovarCompra" class="approve-purchase-btn" type="button">Aprovar compra</button>
+                    <div id="aprovacaoCompraStatus" class="purchase-approval-status" aria-live="polite">Registra a decisão de compra deste SKU; não cria pedido nem altera o estoque.</div>
                 </div>
             </section>
         </div>
@@ -706,6 +950,7 @@
         let ultimaProporcao = 100;
         let ultimoQtdSku = 1;
         let ultimaCotacaoBase = 0;
+        let ultimoValorUnitarioProduto = null;
         let cacheImpostosProdutos = null;
         let promessaImpostosProdutos = null;
         let cardArrastado = null;
@@ -1162,6 +1407,87 @@
             el.style.display = txt ? 'block' : 'none';
         }
 
+        function itemComCompraAprovada(item) {
+            const valor = item && (item.compra_aprovada ?? item['Compra aprovada']);
+            if (valor === true || valor === 1) return true;
+            return ['1', 'true', 'sim', 'aprovada', 'aprovado'].includes(String(valor || '').trim().toLowerCase());
+        }
+
+        function formatarDataHoraAprovacao(valor) {
+            const texto = String(valor || '').trim();
+            if (!texto) return '';
+            const data = new Date(texto);
+            if (Number.isNaN(data.getTime())) return texto;
+            return data.toLocaleString('pt-BR', {
+                timeZone: 'America/Sao_Paulo',
+                dateStyle: 'short',
+                timeStyle: 'short'
+            });
+        }
+
+        function atualizarEstadoAprovacaoCompra(item) {
+            const botao = document.getElementById('btnAprovarCompra');
+            const status = document.getElementById('aprovacaoCompraStatus');
+            if (!botao || !status) return;
+            const aprovado = itemComCompraAprovada(item);
+            botao.disabled = aprovado;
+            botao.classList.toggle('is-approved', aprovado);
+            botao.textContent = aprovado ? 'Compra aprovada' : 'Aprovar compra';
+            const dataAprovacao = formatarDataHoraAprovacao(item && (item.compra_aprovada_em || item['Compra aprovada em']));
+            status.textContent = aprovado
+                ? ('Aprovação de compra registrada' + (dataAprovacao ? ' em ' + dataAprovacao : '') + '.')
+                : 'Registra a decisão de compra deste SKU; não cria pedido nem altera o estoque.';
+        }
+
+        function configurarAprovacaoCompra(lista, item) {
+            const botao = document.getElementById('btnAprovarCompra');
+            if (!botao) return;
+            atualizarEstadoAprovacaoCompra(item);
+            botao.onclick = async function() {
+                if (itemComCompraAprovada(item)) return;
+                const { listaId, sku } = getParams();
+                const itens = Array.isArray(lista && lista.itens) ? lista.itens : [];
+                const indice = itens.indexOf(item) >= 0
+                    ? itens.indexOf(item)
+                    : itens.findIndex((registro) => normSku(registro && registro.SKU) === normSku(sku));
+                if (!listaId || indice < 0) {
+                    setErro('Não foi possível localizar o SKU para registrar a aprovação.');
+                    return;
+                }
+
+                const aprovadoEm = new Date().toISOString();
+                const itensAtualizados = itens.map((registro, posicao) => posicao === indice
+                    ? { ...registro, compra_aprovada: true, compra_aprovada_em: aprovadoEm }
+                    : registro);
+                botao.disabled = true;
+                botao.textContent = 'Aprovando...';
+                setErro('');
+
+                try {
+                    const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                        body: JSON.stringify({ itens: itensAtualizados })
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                        throw new Error(data.detail || 'Não foi possível aprovar a compra deste SKU.');
+                    }
+
+                    const itensSalvos = data && data.lista && Array.isArray(data.lista.itens) ? data.lista.itens : itensAtualizados;
+                    const itemSalvo = itensSalvos.find((registro) => normSku(registro && registro.SKU) === normSku(sku)) || itensAtualizados[indice];
+                    Object.assign(item, itemSalvo);
+                    lista.itens = itensSalvos;
+                    atualizarEstadoAprovacaoCompra(item);
+                } catch (e) {
+                    botao.disabled = false;
+                    botao.classList.remove('is-approved');
+                    botao.textContent = 'Aprovar compra';
+                    setErro(e.message || 'Erro ao aprovar a compra deste SKU.');
+                }
+            };
+        }
+
         function getField(item, aliases, fallback = '-') {
             const obj = item || {};
             const aliasNorm = (aliases || []).map(normTxt);
@@ -1383,15 +1709,46 @@
 
         let ultimosComponentesCustoProduto = null;
 
+        function atualizarMargemConcorrente(numero) {
+            const el = document.getElementById('vMargemConcorrente' + numero);
+            const cardValor = document.getElementById('vConcorrente' + numero);
+            if (!el) return;
+
+            const precoVenda = getNumber(cardValor && cardValor.textContent);
+            const custoUnitario = getNumber(ultimoValorUnitarioProduto);
+            const dadosValidos = precoVenda !== null && precoVenda > 0
+                && custoUnitario !== null && custoUnitario >= 0;
+
+            el.classList.remove('negative', 'unavailable');
+            if (!dadosValidos) {
+                el.textContent = 'Margem: -';
+                el.classList.add('unavailable');
+                el.removeAttribute('title');
+                return;
+            }
+
+            const margem = ((precoVenda - custoUnitario) / precoVenda) * 100;
+            el.textContent = 'Margem: ' + fmtPct(margem);
+            el.classList.toggle('negative', margem < 0);
+            el.title = 'Valor do card Concorrente ' + numero + ': ' + fmtBRL(precoVenda)
+                + ' | Custo unitário: ' + fmtBRL(custoUnitario);
+        }
+
+        function atualizarTodasMargensConcorrentes() {
+            [1, 2, 3, 4, 5].forEach(atualizarMargemConcorrente);
+        }
+
         function atualizarCustoTotalProduto(icmsValor) {
             const c = ultimosComponentesCustoProduto;
             const elCustoTotal = document.getElementById('vCustoTotalProduto');
             const elValUnit = document.getElementById('vValorUnitarioProduto');
             const elDespesasNacionais = document.getElementById('vDespesasNacionais');
             if (!c || !(c.prodBrl > 0)) {
+                ultimoValorUnitarioProduto = null;
                 if (elCustoTotal) elCustoTotal.textContent = '-';
                 if (elValUnit) elValUnit.textContent = '-';
                 if (elDespesasNacionais) elDespesasNacionais.textContent = '-';
+                atualizarTodasMargensConcorrentes();
                 return null;
             }
 
@@ -1406,10 +1763,12 @@
                 + icmsBrl;
             const custoTotal = baseCusto / 0.90;
             const despesasNacionais = custoTotal * 0.10;
+            ultimoValorUnitarioProduto = c.qtd > 0 ? Math.round((custoTotal / c.qtd) * 100) / 100 : null;
 
             if (elCustoTotal) elCustoTotal.textContent = fmtBRL(custoTotal);
-            if (elValUnit) elValUnit.textContent = c.qtd > 0 ? fmtBRL(custoTotal / c.qtd) : '-';
+            if (elValUnit) elValUnit.textContent = ultimoValorUnitarioProduto !== null ? fmtBRL(ultimoValorUnitarioProduto) : '-';
             if (elDespesasNacionais) elDespesasNacionais.textContent = fmtBRL(despesasNacionais);
+            atualizarTodasMargensConcorrentes();
             return custoTotal;
         }
 
@@ -1581,6 +1940,192 @@
             return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
         }
 
+        function extrairCodigoMlbOferta(...candidatos) {
+            for (const candidato of candidatos) {
+                let texto = String(candidato || '').trim();
+                if (!texto) continue;
+                try { texto = decodeURIComponent(texto); } catch (_e) {}
+                const direcionado = texto.match(/(?:item_id\s*[:=]|wid\s*=)\s*MLB-?(\d{8,})/i);
+                if (direcionado && direcionado[1]) return 'MLB' + direcionado[1];
+                const generico = texto.match(/\bMLB-?(\d{8,})\b/i);
+                if (generico && generico[1]) return 'MLB' + generico[1];
+            }
+            return '';
+        }
+
+        function primeiroNumeroPreco(candidatos) {
+            for (const candidato of candidatos || []) {
+                const numero = getNumber(candidato);
+                if (numero !== null && numero > 0) return numero;
+            }
+            return null;
+        }
+
+        function normalizarDetalhePrecoOferta(valorFallback, dados) {
+            const info = dados && typeof dados === 'object' ? dados : {};
+            const priceDetails = info.price_details && typeof info.price_details === 'object' ? info.price_details : {};
+            const salePrice = info.sale_price && typeof info.sale_price === 'object' ? info.sale_price : {};
+            const precoPromocional = primeiroNumeroPreco([
+                info.preco_promocional,
+                info.promotional_price,
+                info.promotion_price,
+                salePrice.amount,
+                priceDetails.price,
+            ]);
+            const precoApi = primeiroNumeroPreco([info.preco, info.price, info.amount]);
+            const fallbackNumero = getNumber(valorFallback);
+            const precoFallback = fallbackNumero !== null && fallbackNumero >= 0 ? fallbackNumero : null;
+            const precoAtual = precoPromocional || precoApi || precoFallback;
+            const precoCheio = primeiroNumeroPreco([
+                info.preco_original,
+                info.original_price,
+                salePrice.regular_amount,
+                priceDetails.original_price,
+                priceDetails.standard_price,
+                info.standard_price,
+            ]);
+            const temPromocao = precoCheio !== null && precoAtual !== null && precoAtual > 0 && precoCheio > (precoAtual + 0.005);
+            const desconto = temPromocao ? ((precoCheio - precoAtual) / precoCheio) * 100 : 0;
+            return {
+                precoAtual,
+                precoCheio: temPromocao ? precoCheio : null,
+                temPromocao,
+                desconto,
+            };
+        }
+
+        function manterPrecoPlanilhaComPromocao(valorPlanilha, detalheAnuncio) {
+            const detalhePlanilha = normalizarDetalhePrecoOferta(valorPlanilha, {});
+            const precoAtual = detalhePlanilha.precoAtual;
+            const precoCheio = detalheAnuncio && detalheAnuncio.temPromocao
+                ? detalheAnuncio.precoCheio
+                : null;
+            const temPromocao = precoAtual !== null
+                && precoAtual > 0
+                && precoCheio !== null
+                && precoCheio > (precoAtual + 0.005);
+            return {
+                precoAtual,
+                precoCheio: temPromocao ? precoCheio : null,
+                temPromocao,
+                desconto: temPromocao ? ((precoCheio - precoAtual) / precoCheio) * 100 : 0,
+            };
+        }
+
+        function aplicarDetalhePrecoOferta(tipo, numero, detalhe) {
+            const ehMlb = tipo === 'mlb';
+            const prefixo = ehMlb ? 'Mlb' : 'Concorrente';
+            const atualEl = document.getElementById('v' + prefixo + numero);
+            const originalEl = document.getElementById('v' + prefixo + 'Original' + numero);
+            const promoEl = document.getElementById('vPromo' + prefixo + numero);
+            if (!atualEl || !originalEl || !promoEl) return;
+
+            const dados = detalhe || normalizarDetalhePrecoOferta('', {});
+            atualEl.textContent = dados.precoAtual !== null ? fmtBRL(dados.precoAtual) : '-';
+            atualEl.classList.toggle('is-promotional', !!dados.temPromocao);
+            originalEl.hidden = !dados.temPromocao;
+            originalEl.textContent = dados.temPromocao ? fmtBRL(dados.precoCheio) : '-';
+            promoEl.hidden = !dados.temPromocao;
+            const badge = promoEl.querySelector('.analysis-promo-badge');
+            if (badge) badge.textContent = dados.temPromocao ? ('-' + fmtPct(dados.desconto)) : '-';
+
+            if (!ehMlb) atualizarMargemConcorrente(numero);
+        }
+
+        async function consultarComTempoLimite(promessa, timeoutMs, mensagem) {
+            let timer = null;
+            try {
+                return await Promise.race([
+                    promessa,
+                    new Promise((_, rejeitar) => {
+                        timer = setTimeout(() => rejeitar(new Error(mensagem)), timeoutMs);
+                    }),
+                ]);
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }
+
+        async function buscarDetalhePrecoOferta(itemId, url, valorFallback) {
+            const detalhePlanilha = normalizarDetalhePrecoOferta(valorFallback, {});
+            if (!itemId) return detalhePlanilha;
+
+            const electronApi = window.electronAPI || {};
+            const browserApi = electronApi.getMlBrowserItemInfo;
+            const publicApi = electronApi.getMlPublicItemInfo;
+            let detalheBrowser = null;
+            let detalhePublico = null;
+
+            if (typeof browserApi === 'function') {
+                try {
+                    const dadosBrowser = await consultarComTempoLimite(
+                        browserApi(itemId, url),
+                        40000,
+                        'Tempo limite ao abrir o anúncio.'
+                    );
+                    detalheBrowser = normalizarDetalhePrecoOferta('', dadosBrowser);
+                } catch (_e) {}
+            }
+
+            if (!detalheBrowser || !detalheBrowser.temPromocao) {
+                if (typeof publicApi === 'function') {
+                    try {
+                        const dadosPublicos = await consultarComTempoLimite(
+                            publicApi(itemId),
+                            9000,
+                            'Tempo limite ao consultar o anúncio.'
+                        );
+                        detalhePublico = normalizarDetalhePrecoOferta('', dadosPublicos);
+                    } catch (_e) {}
+                }
+            }
+
+            const detalhePromocional = detalheBrowser && detalheBrowser.temPromocao
+                ? detalheBrowser
+                : (detalhePublico && detalhePublico.temPromocao ? detalhePublico : null);
+            return manterPrecoPlanilhaComPromocao(valorFallback, detalhePromocional);
+        }
+
+        async function executarConsultasPrecosLimitadas(tarefas, limite = 2) {
+            let proxima = 0;
+            const trabalhadores = Array.from({ length: Math.min(limite, tarefas.length) }, async () => {
+                while (proxima < tarefas.length) {
+                    const indice = proxima;
+                    proxima += 1;
+                    await tarefas[indice]();
+                }
+            });
+            await Promise.all(trabalhadores);
+        }
+
+        async function enriquecerPrecosAnalise(comparacoes) {
+            const tarefas = [];
+            [1, 2, 3, 4, 5].forEach((numero) => {
+                const chave = 'concorrente_' + numero;
+                const linkMlb = comparacoes.mlb[chave] || '';
+                const linkConcorrente = comparacoes.links[chave] || '';
+                const precoMlb = comparacoes.preco[chave] || '';
+                const precoConcorrente = comparacoes.valores[chave] || '';
+                const itemMlb = extrairCodigoMlbOferta(linkMlb);
+                const itemConcorrente = extrairCodigoMlbOferta(linkConcorrente);
+
+                if (itemMlb) {
+                    tarefas.push(async () => {
+                        const detalhe = await buscarDetalhePrecoOferta(itemMlb, linkMlb, precoMlb);
+                        aplicarDetalhePrecoOferta('mlb', numero, detalhe);
+                    });
+                }
+                if (itemConcorrente) {
+                    tarefas.push(async () => {
+                        const detalhe = await buscarDetalhePrecoOferta(itemConcorrente, linkConcorrente, precoConcorrente);
+                        aplicarDetalhePrecoOferta('concorrente', numero, detalhe);
+                    });
+                }
+            });
+            await executarConsultasPrecosLimitadas(tarefas, 2);
+            atualizarTodasMargensConcorrentes();
+        }
+
         function setText(id, value) {
             const el = document.getElementById(id);
             if (el) el.textContent = String(value || '-');
@@ -1638,6 +2183,55 @@
             el.innerHTML = '<a class="link-prod" href="' + v.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer">Abrir link do produto</a>';
         }
 
+        function configurarCardOfertaClicavel(lbl, labelTexto, urlAnuncio) {
+            const card = lbl && lbl.closest ? lbl.closest('.analysis-offer') : null;
+            if (!card) return;
+
+            const url = String(urlAnuncio || '').trim();
+            const urlValida = /^https?:\/\//i.test(url);
+
+            card.onclick = null;
+            card.onkeydown = null;
+            card.classList.toggle('is-clickable', urlValida);
+            if (!urlValida) {
+                card.removeAttribute('role');
+                card.removeAttribute('tabindex');
+                card.removeAttribute('aria-label');
+                return;
+            }
+
+            card.setAttribute('role', 'link');
+            card.setAttribute('tabindex', '0');
+            card.setAttribute('aria-label', 'Abrir anúncio ' + String(labelTexto || '').trim());
+            const abrirLinkFallback = () => {
+                const ancora = lbl.querySelector('a.label-link');
+                if (ancora) ancora.click();
+            };
+            const abrirLink = () => {
+                const abrirChrome = window.electronAPI && window.electronAPI.openExternalChrome;
+                if (typeof abrirChrome === 'function') {
+                    try {
+                        const resultado = abrirChrome(url);
+                        if (resultado && typeof resultado.catch === 'function') {
+                            resultado.catch(abrirLinkFallback);
+                        }
+                        return;
+                    } catch (_err) {}
+                }
+                abrirLinkFallback();
+            };
+            card.onclick = (event) => {
+                if (event && event.target && event.target.closest && event.target.closest('a[href]')) return;
+                abrirLink();
+            };
+            card.onkeydown = (event) => {
+                if (!event || (event.key !== 'Enter' && event.key !== ' ')) return;
+                if (event.target && event.target.closest && event.target.closest('a[href]')) return;
+                event.preventDefault();
+                abrirLink();
+            };
+        }
+
         function setLinkConcorrente(labelId, labelTexto, value) {
             const lbl = document.getElementById(labelId);
             const v = String(value || '').trim();
@@ -1646,9 +2240,11 @@
             const ok = /^https?:\/\//i.test(v);
             if (!ok) {
                 lbl.textContent = labelTexto;
+                configurarCardOfertaClicavel(lbl, labelTexto, '');
                 return;
             }
             lbl.innerHTML = '<a class="label-link" href="' + v.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer">' + escaparHtml(labelTexto) + '</a>';
+            configurarCardOfertaClicavel(lbl, labelTexto, v);
         }
 
         function renderFoto(url, sku) {
@@ -2317,59 +2913,21 @@
                     registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
                 }
                 preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
+                configurarAprovacaoCompra(lista, item);
 
                 const linksConc = await buscarLinksConcorrentes(skuNorm);
-                setLinkConcorrente('lblConcorrente1', 'Concorrente 1', linksConc.links.concorrente_1);
-                setLinkConcorrente('lblConcorrente2', 'Concorrente 2', linksConc.links.concorrente_2);
-                setLinkConcorrente('lblConcorrente3', 'Concorrente 3', linksConc.links.concorrente_3);
-                setLinkConcorrente('lblConcorrente4', 'Concorrente 4', linksConc.links.concorrente_4);
-                setLinkConcorrente('lblConcorrente5', 'Concorrente 5', linksConc.links.concorrente_5);
-
-                setText('vConcorrente1', linksConc.valores.concorrente_1 || '-');
-                setText('vConcorrente2', linksConc.valores.concorrente_2 || '-');
-                setText('vConcorrente3', linksConc.valores.concorrente_3 || '-');
-                setText('vConcorrente4', linksConc.valores.concorrente_4 || '-');
-                setText('vConcorrente5', linksConc.valores.concorrente_5 || '-');
-
-                function extrairCodigoMlb(v) {
-                    const txt = String(v || '').trim().toUpperCase();
-                    if (!txt) return '';
-                    const m1 = txt.match(/MLB\d{5,}/);
-                    if (m1) return m1[0];
-                    const m2 = txt.match(/\b\d{8,14}\b/);
-                    if (m2) return 'MLB' + m2[0];
-                    return '';
-                }
-
-                function normalizarValorCardMlb(v) {
-                    const txt = String(v || '').trim();
-                    if (!txt) return '-';
-                    if (/(https?:\/\/|www\.|mercadolivre\.com)/i.test(txt)) return '-';
-                    return txt;
-                }
-
-                function escolherValorCardMlb(preferido, fallback) {
-                    const p = normalizarValorCardMlb(preferido);
-                    if (p !== '-') return p;
-                    const f = normalizarValorCardMlb(fallback);
-                    return f !== '-' ? f : '-';
-                }
-
-                // Cards MLB (título = apenas código MLB, sem link)
                 [1, 2, 3, 4, 5].forEach(function(n) {
-                    const mlbVal = linksConc.mlb['concorrente_' + n] || '';
-                    const precoVal = linksConc.preco['concorrente_' + n] || '';
-                    const valorConc = linksConc.valores['concorrente_' + n] || '';
-                    const linkVal = linksConc.links['concorrente_' + n] || '';
-                    const mlbCode = extrairCodigoMlb(mlbVal)
-                        || extrairCodigoMlb(linkVal)
-                        || extrairCodigoMlb(precoVal)
-                        || extrairCodigoMlb(valorConc);
-                    const lblEl = document.getElementById('lblMlb' + n);
-                    const valEl = document.getElementById('vMlb' + n);
-                    if (lblEl) lblEl.textContent = mlbCode || 'MLB';
-                    if (valEl) valEl.textContent = escolherValorCardMlb(precoVal, valorConc);
+                    const chave = 'concorrente_' + n;
+                    const linkMlb = linksConc.mlb[chave] || '';
+                    const linkConcorrente = linksConc.links[chave] || '';
+                    const codigoMlb = extrairCodigoMlbOferta(linkMlb);
+                    const codigoConcorrente = extrairCodigoMlbOferta(linkConcorrente);
+                    setLinkConcorrente('lblMlb' + n, codigoMlb || 'Anúncio da loja', linkMlb);
+                    setLinkConcorrente('lblConcorrente' + n, codigoConcorrente || ('Concorrente ' + n), linkConcorrente);
+                    aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
+                    aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta(linksConc.valores[chave], {}));
                 });
+                await enriquecerPrecosAnalise(linksConc);
             } catch (e) {
                 setErro(e.message || 'Erro ao carregar detalhe do SKU.');
             }

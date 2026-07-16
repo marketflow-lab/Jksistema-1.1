@@ -159,6 +159,20 @@ async def api_medias_compras_concorrentes_links(
                     "concorrente_4": "",
                     "concorrente_5": "",
                 },
+                "concorrentes_mlb": {
+                    "concorrente_1": "",
+                    "concorrente_2": "",
+                    "concorrente_3": "",
+                    "concorrente_4": "",
+                    "concorrente_5": "",
+                },
+                "concorrentes_preco": {
+                    "concorrente_1": "",
+                    "concorrente_2": "",
+                    "concorrente_3": "",
+                    "concorrente_4": "",
+                    "concorrente_5": "",
+                },
             }
 
         header = rows[0] if rows else []
@@ -202,6 +216,20 @@ async def api_medias_compras_concorrentes_links(
                     "concorrente_4": "",
                     "concorrente_5": "",
                 },
+                "concorrentes_mlb": {
+                    "concorrente_1": "",
+                    "concorrente_2": "",
+                    "concorrente_3": "",
+                    "concorrente_4": "",
+                    "concorrente_5": "",
+                },
+                "concorrentes_preco": {
+                    "concorrente_1": "",
+                    "concorrente_2": "",
+                    "concorrente_3": "",
+                    "concorrente_4": "",
+                    "concorrente_5": "",
+                },
             }
 
         def _get_col(row: list[str], idx: int) -> str:
@@ -227,11 +255,31 @@ async def api_medias_compras_concorrentes_links(
             "concorrente_5": _get_col(row_match, 21),
         }
 
+        # Colunas C, G, K, O, S: anuncio da loja usado como referencia em cada comparacao.
+        links_mlb = {
+            "concorrente_1": _get_col(row_match, 2),
+            "concorrente_2": _get_col(row_match, 6),
+            "concorrente_3": _get_col(row_match, 10),
+            "concorrente_4": _get_col(row_match, 14),
+            "concorrente_5": _get_col(row_match, 18),
+        }
+
+        # Colunas D, H, L, P, T: preco do anuncio da loja em cada comparacao.
+        precos_mlb = {
+            "concorrente_1": _get_col(row_match, 3),
+            "concorrente_2": _get_col(row_match, 7),
+            "concorrente_3": _get_col(row_match, 11),
+            "concorrente_4": _get_col(row_match, 15),
+            "concorrente_5": _get_col(row_match, 19),
+        }
+
         return {
             "success": True,
             "sku": sku_in,
             "concorrentes": links,
             "concorrentes_valores": valores,
+            "concorrentes_mlb": links_mlb,
+            "concorrentes_preco": precos_mlb,
         }
     except HTTPException:
         raise
@@ -265,6 +313,32 @@ async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str 
     }
 
 
+async def api_medias_compras_lista_pedido_custo_posto(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    """Return the backend-authoritative landed-cost calculation for one import list."""
+    from backend.services import codex_reports_advanced
+
+    context = codex_reports_advanced.build_profile_context(
+        info_base=str(medias_common.PASTA_INFO or ""),
+        client_id=str(client_id or "default"),
+        profile="import_order",
+        import_list_id=str(lista_id or ""),
+        margin_rows=[],
+    )
+    analysis = context.get("import_analysis") if isinstance(context.get("import_analysis"), dict) else None
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Lista de importacao nao encontrada")
+    return {
+        "success": True,
+        "analysis": analysis,
+        "supplier_performance": context.get("supplier_performance"),
+        "scope": context.get("scope"),
+        "data_quality": context.get("data_quality"),
+    }
+
+
 async def api_medias_compras_lista_pedido_editar(
     lista_id: str,
     req: ListaPedidoUpdateRequest,
@@ -293,6 +367,25 @@ async def api_medias_compras_lista_pedido_editar(
     if "loja" in campos_informados:
         loja = str(req.loja or "").strip()
         lista["loja"] = loja if loja and loja.lower() != "__todas" else "__todas"
+        alterou = True
+
+    campos_logisticos = (
+        "supplier", "currency", "incoterm", "exchange_rate", "lead_time_days",
+        "moq_default", "package_multiple_default", "order_date", "promised_ship_date",
+        "actual_ship_date", "eta_date", "customs_clearance_date", "received_at",
+        "promised_delivery_date",
+    )
+    for campo in campos_logisticos:
+        if campo not in campos_informados:
+            continue
+        valor = getattr(req, campo, None)
+        if campo in {"exchange_rate", "lead_time_days", "moq_default", "package_multiple_default"}:
+            valor = max(0.0, float(valor or 0))
+            if campo == "package_multiple_default" and valor <= 0:
+                valor = 1.0
+        elif valor is not None:
+            valor = str(valor).strip()
+        lista[campo] = valor
         alterou = True
 
     if "itens" in campos_informados:
@@ -649,6 +742,7 @@ __all__ = [
     "api_medias_compras_preferencias_colunas_put",
     "api_medias_compras_concorrentes_links",
     "api_medias_compras_lista_pedido_detalhe",
+    "api_medias_compras_lista_pedido_custo_posto",
     "api_medias_compras_lista_pedido_editar",
     "api_medias_compras_lista_pedido_adicionar_sku",
     "api_medias_compras_lista_pedido_atualizar_status",

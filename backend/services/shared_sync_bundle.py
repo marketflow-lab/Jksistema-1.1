@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -53,6 +54,43 @@ def _shared_sync_snapshot_hash(entries: list[dict]) -> str:
         sha.update(b"\n")
     return sha.hexdigest()
 
+
+_SHARED_SYNC_TRANSIENT_OAUTH_KEYS = {
+    "state", "code", "oauth_code", "authorization_code", "callback",
+    "callback_url", "oauth_callback", "oauth_callback_url",
+}
+
+
+def _shared_sync_remove_transient_oauth(value):
+    if isinstance(value, list):
+        return [_shared_sync_remove_transient_oauth(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _shared_sync_remove_transient_oauth(item)
+            for key, item in value.items()
+            if str(key or "").strip().lower() not in _SHARED_SYNC_TRANSIENT_OAUTH_KEYS
+        }
+    return value
+
+
+def _shared_sync_sanitize_transient_oauth_entries(scope: str, entries: list[dict]) -> list[dict]:
+    if scope != "lojas_integracoes":
+        return entries
+    sanitized = []
+    for item in entries:
+        rel = str(item.get("relative_path") or "")
+        if rel.lower() not in {"lojas_config.json", "integracoes.json"}:
+            sanitized.append(item)
+            continue
+        data = item.get("data") if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"])
+        try:
+            payload = json.loads((data or b"").decode("utf-8-sig"))
+            data = json.dumps(_shared_sync_remove_transient_oauth(payload), ensure_ascii=False, indent=2).encode("utf-8")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"{rel} invalido para sincronizacao: {exc}")
+        sanitized.append(_shared_sync_entry_from_bytes(rel, data, item.get("mtime") or time.time(), item.get("item_keys") or []))
+    return sanitized
+
 def _shared_sync_montar_pacote(
     client_id: str,
     scope: str,
@@ -84,8 +122,9 @@ def _shared_sync_montar_pacote(
             data = _shared_sync_sanitizar_lojas_integracoes_user_share_bytes(data or b"")
             sanitizadas.append(_shared_sync_entry_from_bytes(rel, data, item.get("mtime") or time.time(), item.get("item_keys") or []))
         entries = sanitizadas
+    entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "app": "JK Sistema",
         "scope": scope,
         "client_id": str(client_id or "default").strip() or "default",
@@ -127,5 +166,7 @@ configure_shared_sync_bundle_runtime()
 __all__ = [
     "configure_shared_sync_bundle_runtime",
     "_shared_sync_snapshot_hash",
+    "_shared_sync_remove_transient_oauth",
+    "_shared_sync_sanitize_transient_oauth_entries",
     "_shared_sync_montar_pacote",
 ]

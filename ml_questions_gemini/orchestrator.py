@@ -118,6 +118,9 @@ class QuestionAnswerOrchestrator:
                     "item_id": listing.id,
                     "question_text": question.text,
                     "listing_link": listing.permalink,
+                    "listing_title": listing.title,
+                    "history_count": len(previous_questions),
+                    "history_source": "same_buyer_or_listing",
                     "category": classification.category.value,
                 },
             )
@@ -144,6 +147,7 @@ class QuestionAnswerOrchestrator:
             category=classification.category,
             rules=rules,
             confidence=ai_answer.confidence,
+            compatibility_analysis=getattr(self.gemini_client, "compatibility_analysis", None),
         )
         decision = self._publication_decision(
             validation,

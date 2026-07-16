@@ -26,3 +26,5 @@ webdriver-manager
 Pillow
 psycopg[binary]
 openai-codex
+websockets>=15,<16
+faster-whisper==1.2.1

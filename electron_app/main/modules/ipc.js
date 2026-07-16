@@ -17,6 +17,73 @@ function isIgnorableNavigationAbort(errorCode, message = '') {
     return Number(errorCode) === -3 || /\bERR_ABORTED\b|\(-3\)|loading 'https?:\/\//i.test(String(message || ''));
 }
 
+function isMercadoLivreAuthenticationFlowUrl(targetUrl) {
+    const raw = String(targetUrl || '').trim();
+    if (!raw) return false;
+    try {
+        const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+        const host = String(url.hostname || '').toLowerCase();
+        const mercadoLivreHost = host === 'mercadolivre.com'
+            || host.endsWith('.mercadolivre.com')
+            || host === 'mercadolivre.com.br'
+            || host.endsWith('.mercadolivre.com.br')
+            || host === 'mercadolibre.com'
+            || host.endsWith('.mercadolibre.com');
+        if (!mercadoLivreHost) return false;
+        const pathname = String(url.pathname || '/').toLowerCase().replace(/\/{2,}/g, '/');
+        const specificAuthRoute = /^\/gz\/account-verification(?:\/|$)|^\/jms\/[^/]+\/lgz(?:\/|$)|^\/password\/validation(?:\/|$)|^\/totp(?:\/|$)|^\/login\/challenges?(?:\/|$)/.test(pathname);
+        const genericAuthHost = host === 'mercadolivre.com'
+            || host === 'mercadolivre.com.br'
+            || host === 'mercadolibre.com'
+            || /^(?:www|auth|accounts?|account)\./.test(host);
+        const genericAuthRoute = /^\/login(?:\/|$)|^\/(?:captcha|recaptcha|security[-_/]?check|identity[-_/]?verification)(?:\/|$)/.test(pathname);
+        let negativeTraffic = false;
+        let explicitAuthParam = false;
+        for (const [name, value] of url.searchParams.entries()) {
+            const key = String(name || '').toLowerCase();
+            const itemValue = String(value || '').toLowerCase();
+            if (key === 'logintype' && itemValue === 'negative_traffic') negativeTraffic = true;
+            if (['captcha', 'recaptcha', 'security_check', 'identity_verification'].includes(key) && itemValue) {
+                explicitAuthParam = true;
+            }
+        }
+        return specificAuthRoute
+            || negativeTraffic
+            || (genericAuthHost && (genericAuthRoute || explicitAuthParam));
+    } catch (_err) {
+        return false;
+    }
+}
+
+function mercadoLivreUrlSeguraParaLog(targetUrl) {
+    try {
+        const url = new URL(String(targetUrl || ''));
+        return `${url.origin}${url.pathname}`;
+    } catch (_err) {
+        return '';
+    }
+}
+
+function mercadoLivreMensagemSeguraParaLog(value) {
+    return String(value || '').replace(/https?:\/\/[^\s'"<>]+/gi, (match) => (
+        mercadoLivreUrlSeguraParaLog(match) || '[url-removida]'
+    ));
+}
+
+function shouldPreserveMercadoLivreAuthenticationNavigation(currentUrl, requestedUrl) {
+    const observed = String(currentUrl || '').trim();
+    const requested = String(requestedUrl || '').trim();
+    if (!observed || observed === 'about:blank' || !requested) return false;
+    if (normalizeComparableUrl(observed) === normalizeComparableUrl(requested)) return false;
+    return isMercadoLivreAuthenticationFlowUrl(observed)
+        || isMercadoLivreAuthenticationFlowUrl(requested);
+}
+
+function shouldRememberMercadoLivreStableUrl(targetUrl) {
+    const url = String(targetUrl || '').trim();
+    return /^https?:\/\//i.test(url) && !isMercadoLivreAuthenticationFlowUrl(url);
+}
+
 function buildMlProductUrlFromItemId(itemId) {
     const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
     if (!/^MLB\d+$/.test(cleanId)) return '';
@@ -37,6 +104,8 @@ function pickMlItemImage(item = {}) {
 
 let favoritosEmbeddedMlLastUrl = 'https://www.mercadolivre.com.br/';
 let favoritosEmbeddedMlLastAvantRestore = { url: '', at: 0 };
+let authenticationQuitPersistenceReady = false;
+let authenticationQuitPersistencePromise = null;
 
 function isEmbeddedMlBrowserWebContentsIpc(contents) {
     return !!(
@@ -46,6 +115,23 @@ function isEmbeddedMlBrowserWebContentsIpc(contents) {
         !embeddedMlBrowserView.webContents.isDestroyed() &&
         contents === embeddedMlBrowserView.webContents
     );
+}
+
+function assertTrustedFavoritosIpcSender(event, channel = 'favoritos') {
+    const sender = event && event.sender;
+    const trusted = !!(
+        sender
+        && mainWindow
+        && !mainWindow.isDestroyed()
+        && mainWindow.webContents
+        && !mainWindow.webContents.isDestroyed()
+        && sender === mainWindow.webContents
+    );
+    if (trusted) return;
+    let senderUrl = '';
+    try { senderUrl = sender && !sender.isDestroyed() ? sender.getURL() : ''; } catch (_err) {}
+    logElectronLifecycle('favoritos-ipc-sender-blocked', { channel, senderUrl });
+    throw new Error('Origem IPC nao autorizada para o Favoritos.');
 }
 
 async function salvarSessaoAvantProAntesDeOcultarNavegador(reason = 'embedded-browser-hide', details = {}) {
@@ -270,7 +356,10 @@ async function getEmbeddedMlBrowserForIpc(event = null, options = {}) {
         view.webContents.loadURL(targetUrl).catch((err) => {
             const warning = err && err.message ? err.message : String(err);
             if (!isIgnorableNavigationAbort(null, warning)) {
-                logElectronLifecycle('embedded-ml-browser-recreate-load-warning', { url: targetUrl, warning });
+                logElectronLifecycle('embedded-ml-browser-recreate-load-warning', {
+                    url: mercadoLivreUrlSeguraParaLog(targetUrl),
+                    warning: mercadoLivreMensagemSeguraParaLog(warning)
+                });
             }
         });
         const loadResult = await Promise.race([
@@ -278,9 +367,14 @@ async function getEmbeddedMlBrowserForIpc(event = null, options = {}) {
             waitMs(18000).then(() => ({ timeout: true }))
         ]);
         if (loadResult instanceof Error && !isIgnorableNavigationAbort(null, loadResult.message || String(loadResult))) {
-            logElectronLifecycle('embedded-ml-browser-recreate-load-error', { url: targetUrl, warning: loadResult.message || String(loadResult) });
+            logElectronLifecycle('embedded-ml-browser-recreate-load-error', {
+                url: mercadoLivreUrlSeguraParaLog(targetUrl),
+                warning: mercadoLivreMensagemSeguraParaLog(loadResult.message || String(loadResult))
+            });
         } else if (loadResult && loadResult.timeout) {
-            logElectronLifecycle('embedded-ml-browser-recreate-load-timeout', { url: targetUrl });
+            logElectronLifecycle('embedded-ml-browser-recreate-load-timeout', {
+                url: mercadoLivreUrlSeguraParaLog(targetUrl)
+            });
         }
     }
     return view;
@@ -502,6 +596,7 @@ async function fillAvantProLoginInEmbeddedBrowser(email) {
 }
 
 app.whenReady().then(async () => {
+    if (!JK_PRIMARY_INSTANCE_LOCK_ACQUIRED) return;
     recoverProfileIfStartupCrashed();
     markStartupIncomplete();
     if (process.env.JK_CLEAR_ELECTRON_CACHE === '1') {
@@ -516,6 +611,11 @@ app.whenReady().then(async () => {
 
     ensureChromeExtensionsForMlSession();
     configureNotificationPermissions();
+    registerPersistentSessionDurability();
+    const authSnapshotTimer = setInterval(() => {
+        persistAuthenticationState('periodic-auth-snapshot', { saveAvantPro: false }).catch(() => {});
+    }, 5 * 60 * 1000);
+    if (typeof authSnapshotTimer.unref === 'function') authSnapshotTimer.unref();
 
     app.on('web-contents-created', (_event, contents) => {
         configureNotificationPermissionsForSession(contents && contents.session);
@@ -526,12 +626,12 @@ app.whenReady().then(async () => {
             const url = getNavigationEventUrl(urlOrDetails);
             if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
                 event.preventDefault();
-                logElectronLifecycle('blocked-ml-logout-navigation-during-favoritos', { url });
+                logElectronLifecycle('blocked-ml-logout-navigation-during-favoritos', { url: mercadoLivreUrlSeguraParaLog(url) });
                 return;
             }
             if (isBlockedAutomationPopupUrl(url)) {
                 event.preventDefault();
-                logElectronLifecycle('blocked-automation-navigation', { url });
+                logElectronLifecycle('blocked-automation-navigation', { url: mercadoLivreUrlSeguraParaLog(url) });
                 return;
             }
             if (isOAuthExternalAuthUrl(url)) {
@@ -553,17 +653,17 @@ app.whenReady().then(async () => {
             const url = getNavigationEventUrl(urlOrDetails, maybeDetails);
             if (isEmbeddedMlBrowserWebContentsIpc(contents) && /^(blob|data):/i.test(String(url || '').trim())) {
                 event.preventDefault();
-                logElectronLifecycle('embedded-ml-browser-blob-navigation-blocked', { url });
+                logElectronLifecycle('embedded-ml-browser-blob-navigation-blocked', { url: mercadoLivreUrlSeguraParaLog(url) });
                 return;
             }
             if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
                 event.preventDefault();
-                logElectronLifecycle('blocked-ml-logout-frame-navigation-during-favoritos', { url });
+                logElectronLifecycle('blocked-ml-logout-frame-navigation-during-favoritos', { url: mercadoLivreUrlSeguraParaLog(url) });
                 return;
             }
             if (isBlockedAutomationPopupUrl(url)) {
                 event.preventDefault();
-                logElectronLifecycle('blocked-automation-frame-navigation', { url });
+                logElectronLifecycle('blocked-automation-frame-navigation', { url: mercadoLivreUrlSeguraParaLog(url) });
                 return;
             }
             if (isOAuthExternalAuthUrl(url)) {
@@ -579,15 +679,15 @@ app.whenReady().then(async () => {
         if (typeof contents.setWindowOpenHandler === 'function') {
             contents.setWindowOpenHandler(({ url }) => {
                 if (isEmbeddedMlBrowserWebContentsIpc(contents) && /^(blob|data):/i.test(String(url || '').trim())) {
-                    logElectronLifecycle('embedded-ml-browser-blob-popup-blocked', { url });
+                    logElectronLifecycle('embedded-ml-browser-blob-popup-blocked', { url: mercadoLivreUrlSeguraParaLog(url) });
                     return { action: 'deny' };
                 }
                 if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
-                    logElectronLifecycle('blocked-ml-logout-popup-during-favoritos', { url });
+                    logElectronLifecycle('blocked-ml-logout-popup-during-favoritos', { url: mercadoLivreUrlSeguraParaLog(url) });
                     return { action: 'deny' };
                 }
                 if (isBlockedAutomationPopupUrl(url)) {
-                    logElectronLifecycle('blocked-automation-popup', { url });
+                    logElectronLifecycle('blocked-automation-popup', { url: mercadoLivreUrlSeguraParaLog(url) });
                     return { action: 'deny' };
                 }
                 if (isOAuthExternalAuthUrl(url)) {
@@ -599,7 +699,7 @@ app.whenReady().then(async () => {
                     return { action: 'deny' };
                 }
                 if (shouldUseMlSessionForPopup(contents, url)) {
-                    logElectronLifecycle('ml-login-popup-allowed-with-session', { url });
+                    logElectronLifecycle('ml-login-popup-allowed-with-session', { url: mercadoLivreUrlSeguraParaLog(url) });
                     return {
                         action: 'allow',
                         overrideBrowserWindowOptions: mlPopupWindowOptions(contents)
@@ -614,6 +714,25 @@ app.whenReady().then(async () => {
                 configureMlPopupWindow(win, details || {});
             }
         });
+        const observeMercadoLivreAuthenticationNavigation = (_navigationEvent, targetUrl) => {
+            const url = String(targetUrl || '');
+            if (!isMercadoLivreUrl(url)) return;
+            const authenticationFlow = isMercadoLivreAuthenticationFlowUrl(url);
+            const previousAuthenticationFlow = contents.__jkMercadoLivreAuthenticationFlow === true;
+            contents.__jkMercadoLivreAuthenticationFlow = authenticationFlow;
+            if (previousAuthenticationFlow && !authenticationFlow) {
+                persistAuthenticationState('mercado-livre-auth-flow-completed', {
+                    saveAvantPro: false
+                }).catch((err) => {
+                    logElectronLifecycle('mercado-livre-auth-persistence-failed', {
+                        url: mercadoLivreUrlSeguraParaLog(url),
+                        error: err && err.message ? err.message : String(err)
+                    });
+                });
+            }
+        };
+        contents.on('did-navigate', observeMercadoLivreAuthenticationNavigation);
+        contents.on('did-navigate-in-page', observeMercadoLivreAuthenticationNavigation);
     });
 
     ipcMain.handle('get-mac', () => {
@@ -676,8 +795,7 @@ app.whenReady().then(async () => {
         return await restoreAvantProExtensionStorageSnapshot(reason || 'manual', details || {}, options || {});
     });
     ipcMain.handle('flush-browser-session', async () => {
-        await flushPersistentSessions();
-        return { success: true };
+        return await persistAuthenticationState('renderer-flush-browser-session');
     });
     ipcMain.handle('choose-display-media-source', async (event) => {
         const sourceUrl = event && event.senderFrame && event.senderFrame.url
@@ -706,7 +824,7 @@ app.whenReady().then(async () => {
         }
         const result = setMlAutomationProtection(event.sender, !!active, reason);
         if (!active) {
-            await flushPersistentSessions();
+            await persistAuthenticationState('mercado-livre-automation-finished');
             maybeInstallDeferredUpdate();
         }
         return result;
@@ -846,10 +964,12 @@ app.whenReady().then(async () => {
         }
     });
     ipcMain.handle('embedded-ml-browser-show', async (event, targetUrl, bounds) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-show');
         const url = normalizeTargetUrl(targetUrl);
-        favoritosEmbeddedMlLastUrl = url;
+        const safeUrl = mercadoLivreUrlSeguraParaLog(url);
+        const requestedAuthFlow = isMercadoLivreAuthenticationFlowUrl(url);
         if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
-            logElectronLifecycle('blocked-embedded-ml-logout-load-during-favoritos', { url });
+            logElectronLifecycle('blocked-embedded-ml-logout-load-during-favoritos', { url: safeUrl });
             return {
                 success: false,
                 blocked: true,
@@ -859,112 +979,268 @@ app.whenReady().then(async () => {
                     : ''
             };
         }
-        await restaurarSessaoAvantProAntesDeAbrirNavegador('before-embedded-ml-browser-show', { url });
+        await restaurarSessaoAvantProAntesDeAbrirNavegador('before-embedded-ml-browser-show', { url: safeUrl });
         await ensureChromeExtensionsForMlSession();
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const background = !!(bounds && bounds.background);
         const view = ensureEmbeddedMlBrowser(parent, { attach: true });
         view.setBounds(normalizarBoundsNavegadorMl(background ? { ...bounds, background: true } : bounds));
-        const currentUrl = view.webContents.getURL();
+        let currentUrl = view.webContents.getURL();
+        if (shouldRememberMercadoLivreStableUrl(currentUrl)) favoritosEmbeddedMlLastUrl = currentUrl;
+        const devePreservarNavegacaoAutenticacao = observedUrl => (
+            shouldPreserveMercadoLivreAuthenticationNavigation(observedUrl, url)
+        );
+        const preservarNavegacaoAutenticacao = (observedUrl) => {
+            const currentAuthFlow = isMercadoLivreAuthenticationFlowUrl(observedUrl);
+            if (shouldRememberMercadoLivreStableUrl(observedUrl)) {
+                favoritosEmbeddedMlLastUrl = observedUrl;
+            }
+            logElectronLifecycle('embedded-ml-browser-auth-flow-preserved', {
+                currentUrl: mercadoLivreUrlSeguraParaLog(observedUrl),
+                requestedUrl: mercadoLivreUrlSeguraParaLog(url),
+                currentAuthFlow,
+                requestedAuthFlow
+            });
+            return {
+                success: true,
+                url: observedUrl,
+                authFlow: currentAuthFlow,
+                preservedAuthFlow: true,
+                loadWarning: null
+            };
+        };
+        if (devePreservarNavegacaoAutenticacao(currentUrl)) {
+            return preservarNavegacaoAutenticacao(currentUrl);
+        }
         let loadWarning = null;
         if (normalizeComparableUrl(currentUrl) !== normalizeComparableUrl(url)) {
-            const loadTimeoutMs = background ? 22000 : 14000;
-            const loadEventPromise = waitForWebContentsLoad(view.webContents, loadTimeoutMs, url).catch((err) => err);
-            view.webContents.loadURL(url).catch((err) => {
-                const warning = err && err.message ? err.message : String(err);
-                if (isIgnorableNavigationAbort(null, warning)) {
-                    logElectronLifecycle('embedded-ml-browser-load-aborted-ignored', { url, warning });
-                    return;
+            const latestUrl = view.webContents.getURL() || currentUrl;
+            if (devePreservarNavegacaoAutenticacao(latestUrl)) {
+                return preservarNavegacaoAutenticacao(latestUrl);
+            }
+            currentUrl = latestUrl;
+            if (normalizeComparableUrl(currentUrl) !== normalizeComparableUrl(url)) {
+                const loadTimeoutMs = background ? 22000 : 14000;
+                const loadEventPromise = waitForWebContentsLoad(view.webContents, loadTimeoutMs, url).catch((err) => err);
+                view.webContents.loadURL(url).catch((err) => {
+                    const warning = err && err.message ? err.message : String(err);
+                    if (isIgnorableNavigationAbort(null, warning)) {
+                        logElectronLifecycle('embedded-ml-browser-load-aborted-ignored', {
+                            url: safeUrl,
+                            warning: mercadoLivreMensagemSeguraParaLog(warning)
+                        });
+                        return;
+                    }
+                    logElectronLifecycle('embedded-ml-browser-load-start-warning', {
+                        url: safeUrl,
+                        warning: mercadoLivreMensagemSeguraParaLog(warning)
+                    });
+                });
+                const loadResult = await Promise.race([
+                    loadEventPromise,
+                    waitMs(background ? 18000 : 9000).then(() => ({ timeout: true }))
+                ]);
+                if (loadResult instanceof Error) {
+                    loadWarning = loadResult.message || String(loadResult);
+                    if (isIgnorableNavigationAbort(null, loadWarning)) {
+                        logElectronLifecycle('embedded-ml-browser-show-load-aborted-ignored', {
+                            url: safeUrl,
+                            warning: mercadoLivreMensagemSeguraParaLog(loadWarning)
+                        });
+                        loadWarning = null;
+                    } else {
+                        logElectronLifecycle('embedded-ml-browser-show-load-warning', {
+                            url: safeUrl,
+                            warning: mercadoLivreMensagemSeguraParaLog(loadWarning)
+                        });
+                    }
+                } else if (loadResult && loadResult.timeout) {
+                    loadWarning = 'timeout';
+                    logElectronLifecycle('embedded-ml-browser-show-load-timeout', { url: safeUrl });
                 }
-                logElectronLifecycle('embedded-ml-browser-load-start-warning', { url, warning });
-            });
-            const loadResult = await Promise.race([
-                loadEventPromise,
-                waitMs(background ? 18000 : 9000).then(() => ({ timeout: true }))
-            ]);
-            if (loadResult instanceof Error) {
-                loadWarning = loadResult.message || String(loadResult);
-                if (isIgnorableNavigationAbort(null, loadWarning)) {
-                    logElectronLifecycle('embedded-ml-browser-show-load-aborted-ignored', { url, warning: loadWarning });
-                    loadWarning = null;
-                } else {
-                    logElectronLifecycle('embedded-ml-browser-show-load-warning', { url, warning: loadWarning });
-                }
-            } else if (loadResult && loadResult.timeout) {
-                loadWarning = 'timeout';
-                logElectronLifecycle('embedded-ml-browser-show-load-timeout', { url });
             }
         }
         const loadedUrl = view.webContents.getURL() || url;
+        if (shouldRememberMercadoLivreStableUrl(loadedUrl)) {
+            favoritosEmbeddedMlLastUrl = loadedUrl;
+        }
         if (
             loadWarning
             && normalizeComparableUrl(loadedUrl) === normalizeComparableUrl(url)
         ) {
             logElectronLifecycle('embedded-ml-browser-show-load-warning-cleared', {
-                url,
-                loadedUrl,
-                warning: loadWarning
+                url: safeUrl,
+                loadedUrl: mercadoLivreUrlSeguraParaLog(loadedUrl),
+                warning: mercadoLivreMensagemSeguraParaLog(loadWarning)
             });
             loadWarning = null;
         }
-        logElectronLifecycle('embedded-ml-browser-avant-monitoring-disabled', { url: loadedUrl });
-        return { success: true, url: loadedUrl, loadWarning };
+        logElectronLifecycle('embedded-ml-browser-avant-monitoring-disabled', {
+            url: mercadoLivreUrlSeguraParaLog(loadedUrl)
+        });
+        return {
+            success: true,
+            url: loadedUrl,
+            authFlow: isMercadoLivreAuthenticationFlowUrl(loadedUrl),
+            loadWarning
+        };
     });
     ipcMain.handle('favoritos-job-browser-start', async (event, targetUrl) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-job-browser-start');
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         return startFavoritosWorkerBrowser(targetUrl || 'https://www.mercadolivre.com.br/', parent, {
             message: 'Favoritos rodando em segundo plano.'
         });
     });
-    ipcMain.handle('favoritos-job-browser-stop', async () => {
+    ipcMain.handle('favoritos-job-browser-stop', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-job-browser-stop');
         return stopFavoritosWorkerBrowser({
             destroy: true,
             reason: 'favoritos-job-browser-stop',
             message: 'Favoritos finalizado.'
         });
     });
-    ipcMain.handle('favoritos-worker:start', async (event, targetUrl) => {
+    ipcMain.handle('favoritos-worker:start', async (event, targetUrl, workerId = FAVORITOS_WORKER_LEGACY_ID, options = {}) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:start');
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         return startFavoritosWorkerBrowser(targetUrl || 'https://www.mercadolivre.com.br/', parent, {
-            message: 'Favoritos rodando em segundo plano.'
-        });
+            ...(options || {}),
+            message: options && options.message || 'Favoritos rodando em segundo plano.'
+        }, workerId);
     });
-    ipcMain.handle('favoritos-worker:pause', async () => pauseFavoritosWorkerBrowser());
-    ipcMain.handle('favoritos-worker:resume', async () => resumeFavoritosWorkerBrowser());
-    ipcMain.handle('favoritos-worker:cancel', async () => cancelFavoritosWorkerBrowser());
-    ipcMain.handle('favoritos-worker:status', async () => favoritosWorkerBrowserStatus());
-    ipcMain.handle('favoritos-worker:show', async () => showFavoritosWorkerBrowser());
-    ipcMain.handle('favoritos-worker:hide', async () => hideFavoritosWorkerBrowser());
-    ipcMain.handle('favoritos-worker:stop', async (_event, options = {}) => stopFavoritosWorkerBrowser(options || {}));
-    ipcMain.handle('favoritos-worker:execute', async (_event, code) => executeFavoritosWorkerBrowser(code));
-    ipcMain.handle('favoritos-worker:click', async (_event, point) => clickFavoritosWorkerBrowser(point || {}));
-    ipcMain.handle('favoritos-worker:type', async (_event, payload) => typeFavoritosWorkerBrowser(payload || {}));
+    ipcMain.handle('favoritos-worker:pause', async (event, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:pause');
+        return pauseFavoritosWorkerBrowser(workerId);
+    });
+    ipcMain.handle('favoritos-worker:resume', async (event, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:resume');
+        return resumeFavoritosWorkerBrowser(workerId);
+    });
+    ipcMain.handle('favoritos-worker:cancel', async (event, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:cancel');
+        return cancelFavoritosWorkerBrowser({}, workerId);
+    });
+    ipcMain.handle('favoritos-worker:status', async (event, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:status');
+        return favoritosWorkerBrowserStatus(workerId);
+    });
+    ipcMain.handle('favoritos-worker:show', async (event, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:show');
+        return showFavoritosWorkerBrowser(workerId);
+    });
+    ipcMain.handle('favoritos-worker:hide', async (event, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:hide');
+        return hideFavoritosWorkerBrowser(workerId);
+    });
+    ipcMain.handle('favoritos-worker:stop', async (event, options = {}, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:stop');
+        return stopFavoritosWorkerBrowser(options || {}, workerId);
+    });
+    ipcMain.handle('favoritos-worker:execute', async (event, code, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:execute');
+        return executeFavoritosWorkerBrowser(code, workerId);
+    });
+    ipcMain.handle('favoritos-worker:click', async (event, point, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:click');
+        return clickFavoritosWorkerBrowser(point || {}, workerId);
+    });
+    ipcMain.handle('favoritos-worker:type', async (event, payload, workerId = FAVORITOS_WORKER_LEGACY_ID) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-worker:type');
+        return typeFavoritosWorkerBrowser(payload || {}, workerId);
+    });
+    ipcMain.handle('favoritos-workers:start-pool', async (event, payload = {}) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:start-pool');
+        const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+        return startFavoritosWorkersPool(payload || {}, parent);
+    });
+    ipcMain.handle('favoritos-workers:status', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:status');
+        return favoritosWorkersPoolStatus();
+    });
+    ipcMain.handle('favoritos-workers:pause', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:pause');
+        return pauseFavoritosWorkersPool();
+    });
+    ipcMain.handle('favoritos-workers:resume', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:resume');
+        return resumeFavoritosWorkersPool();
+    });
+    ipcMain.handle('favoritos-workers:show', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:show');
+        return showFavoritosWorkersPool();
+    });
+    ipcMain.handle('favoritos-workers:hide', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:hide');
+        return hideFavoritosWorkersPool();
+    });
+    ipcMain.handle('favoritos-workers:stop-pool', async (event, options = {}) => {
+        assertTrustedFavoritosIpcSender(event, 'favoritos-workers:stop-pool');
+        return stopFavoritosWorkersPool(options || {});
+    });
+    ipcMain.handle('embedded-ml-browser-state', async (event) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-state');
+        const available = !!(
+            embeddedMlBrowserView
+            && embeddedMlBrowserView.webContents
+            && !embeddedMlBrowserView.webContents.isDestroyed()
+        );
+        const currentUrl = available ? (embeddedMlBrowserView.webContents.getURL() || '') : '';
+        return {
+            success: available && /^https?:\/\//i.test(currentUrl),
+            available,
+            attached: !!(
+                available
+                && embeddedMlBrowserOwner
+                && !embeddedMlBrowserOwner.isDestroyed()
+            ),
+            url: currentUrl,
+            authFlow: isMercadoLivreAuthenticationFlowUrl(currentUrl)
+        };
+    });
     ipcMain.handle('embedded-ml-browser-position', async (event, bounds) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-position');
         const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const view = ensureEmbeddedMlBrowser(parent);
         view.setBounds(normalizarBoundsNavegadorMl(bounds));
-        return { success: true };
+        const currentUrl = view.webContents.getURL() || '';
+        if (shouldRememberMercadoLivreStableUrl(currentUrl)) {
+            favoritosEmbeddedMlLastUrl = currentUrl;
+        }
+        return {
+            success: true,
+            url: currentUrl,
+            authFlow: isMercadoLivreAuthenticationFlowUrl(currentUrl)
+        };
     });
-    ipcMain.handle('embedded-ml-browser-hide', async (_event, options = {}) => {
+    ipcMain.handle('embedded-ml-browser-hide', async (event, options = {}) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-hide');
         const hideOptions = options && typeof options === 'object' ? options : {};
         if (hideOptions.preserveAvantProSession === true || hideOptions.preservarSessaoAvantPro === true) {
             await salvarSessaoAvantProAntesDeOcultarNavegador(hideOptions.reason || 'embedded-ml-browser-hide', {
-                url: favoritosEmbeddedMlLastUrl,
+                url: mercadoLivreUrlSeguraParaLog(favoritosEmbeddedMlLastUrl),
                 destroy: !!(hideOptions.destroy || hideOptions.unload)
             });
         }
         hideEmbeddedMlBrowser(hideOptions);
         return { success: true };
     });
-    ipcMain.handle('embedded-ml-browser-execute', async (_event, code) => {
-        const view = await getEmbeddedMlBrowserForIpc(_event);
-        return await view.webContents.executeJavaScript(String(code || ''), true);
+    ipcMain.handle('embedded-ml-browser-execute', async (event, code) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-execute');
+        const view = await getEmbeddedMlBrowserForIpc(event);
+        assertAllowedFavoritosWorkerUrl(view.webContents.getURL());
+        const script = String(code || '');
+        if (script.length > FAVORITOS_WORKER_MAX_SCRIPT_LENGTH) {
+            throw new Error('Script excede o limite permitido no navegador do Favoritos.');
+        }
+        return await view.webContents.executeJavaScript(script, true);
     });
-    ipcMain.handle('embedded-ml-browser-login-avantpro', async (_event, email) => {
+    ipcMain.handle('embedded-ml-browser-login-avantpro', async (event, email) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-login-avantpro');
         return await fillAvantProLoginInEmbeddedBrowser(email);
     });
-    ipcMain.handle('embedded-ml-browser-type', async (_event, payload) => {
-        const view = await getEmbeddedMlBrowserForIpc(_event);
+    ipcMain.handle('embedded-ml-browser-type', async (event, payload) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-type');
+        const view = await getEmbeddedMlBrowserForIpc(event);
         const raw = payload && typeof payload === 'object' ? payload : { text: payload };
         const text = String(raw.text ?? raw.value ?? '');
         const clearFirst = raw.clearFirst !== false;
@@ -974,7 +1250,7 @@ app.whenReady().then(async () => {
             textLength: text.length,
             clearFirst,
             pressEnter,
-            url: contents.getURL()
+            url: mercadoLivreUrlSeguraParaLog(contents.getURL())
         });
         const tapKey = async (keyCode, modifiers = []) => {
             contents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
@@ -1004,12 +1280,13 @@ app.whenReady().then(async () => {
         logElectronLifecycle('embedded-ml-browser-native-type-done', {
             typed: text.length,
             enter: pressEnter,
-            url: contents.getURL()
+            url: mercadoLivreUrlSeguraParaLog(contents.getURL())
         });
         return { success: true, typed: text.length, enter: pressEnter, url: contents.getURL() };
     });
-    ipcMain.handle('embedded-ml-browser-click', async (_event, point) => {
-        const view = await getEmbeddedMlBrowserForIpc(_event);
+    ipcMain.handle('embedded-ml-browser-click', async (event, point) => {
+        assertTrustedFavoritosIpcSender(event, 'embedded-ml-browser-click');
+        const view = await getEmbeddedMlBrowserForIpc(event);
         const raw = point || {};
         let x = Number(raw.x ?? raw.left);
         let y = Number(raw.y ?? raw.top);
@@ -1031,7 +1308,7 @@ app.whenReady().then(async () => {
             clickCount,
             source: raw.source || '',
             label: raw.label || '',
-            url: contents.getURL()
+            url: mercadoLivreUrlSeguraParaLog(contents.getURL())
         });
         contents.sendInputEvent({ type: 'mouseMove', x, y, movementX: 0, movementY: 0 });
         contents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount });
@@ -1042,7 +1319,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('open-internal-browser', async (event, targetUrl) => {
         const url = normalizeTargetUrl(targetUrl);
         if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
-            logElectronLifecycle('blocked-internal-ml-logout-load-during-favoritos', { url });
+            logElectronLifecycle('blocked-internal-ml-logout-load-during-favoritos', { url: mercadoLivreUrlSeguraParaLog(url) });
             return { success: false, blocked: true, reason: 'favoritos-em-execucao', url: '' };
         }
         await ensureChromeExtensionsForMlSession();
@@ -1066,7 +1343,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('open-detached-internal-browser', async (event, targetUrl, title = '') => {
         const url = normalizeTargetUrl(targetUrl);
         if (isMlAutomationProtected() && isMercadoLivreLogoutUrl(url)) {
-            logElectronLifecycle('blocked-detached-ml-logout-load-during-favoritos', { url });
+            logElectronLifecycle('blocked-detached-ml-logout-load-during-favoritos', { url: mercadoLivreUrlSeguraParaLog(url) });
             return { success: false, blocked: true, reason: 'favoritos-em-execucao', url: '' };
         }
         await ensureChromeExtensionsForMlSession();
@@ -1290,9 +1567,41 @@ app.on('window-all-closed', () => {
     }
 });
 
-app.on('before-quit', () => {
-    logElectronLifecycle('before-quit');
-    stopLocalBackend();
-    clearStartupIncomplete();
-    flushPersistentSessions().catch(() => {});
+app.on('before-quit', (event) => {
+    if (!JK_PRIMARY_INSTANCE_LOCK_ACQUIRED) {
+        logElectronLifecycle('before-quit-secondary-instance');
+        return;
+    }
+    if (authenticationQuitPersistenceReady) {
+        logElectronLifecycle('before-quit');
+        clearStartupIncomplete();
+        return;
+    }
+
+    event.preventDefault();
+    if (authenticationQuitPersistencePromise) return;
+    logElectronLifecycle('before-quit-authentication-persistence-started');
+    const timeoutPromise = new Promise((resolve) => {
+        setTimeout(() => resolve({ success: false, timeout: true }), 8000);
+    });
+    authenticationQuitPersistencePromise = Promise.race([
+        persistAuthenticationState('before-quit-authentication'),
+        timeoutPromise
+    ])
+        .then((result) => {
+            logElectronLifecycle('before-quit-authentication-persistence-finished', result || {});
+        })
+        .catch((err) => {
+            logElectronLifecycle('before-quit-authentication-persistence-failed', {
+                error: err && err.message ? err.message : String(err)
+            });
+        })
+        .finally(async () => {
+            const backendStopResult = await stopLocalBackend();
+            logElectronLifecycle('before-quit-local-backend-finished', backendStopResult || {});
+            clearStartupIncomplete();
+            authenticationQuitPersistenceReady = true;
+            authenticationQuitPersistencePromise = null;
+            app.quit();
+        });
 });

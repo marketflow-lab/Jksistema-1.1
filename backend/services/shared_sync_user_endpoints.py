@@ -24,9 +24,11 @@ from backend.schemas import (
     SharedSyncConfigRequest,
     SharedSyncMachineConfigRequest,
     SharedSyncRunRequest,
+    SharedSyncPreviewRequest,
     SharedSyncUserInviteActionRequest,
     SharedSyncUserInviteCreateRequest,
     SharedSyncUserLinkRunRequest,
+    SharedSyncUserLinkCreateRequest,
     SharedSyncUserLinkUpdateRequest,
 )
 from backend.services.runtime_bridge import bind_runtime_globals
@@ -77,12 +79,177 @@ def shared_sync_user_shares_status(
     sessao = _shared_sync_session(authorization, client_id)
     return _shared_sync_user_shares_for_session(sessao)
 
+
+def _shared_sync_participant_session(username: str, client_id: str) -> dict:
+    username_norm = _shared_sync_normalizar_username(username)
+    client_norm = _shared_sync_normalizar_client_id(client_id)
+    permissions = _carregar_permissoes_usuario(username_norm, client_norm)
+    return {
+        "username": username_norm,
+        "client_id": client_norm,
+        "permissions": permissions,
+        "is_admin": bool(permissions.get("full") is True or permissions.get("admin_usuarios") is True),
+    }
+
+
+def _shared_sync_validate_link_scopes(sessao: dict, other: dict, requested: Optional[list[str]]) -> list[str]:
+    scopes = _shared_sync_resolver_scopes_usuario(requested)
+    other_session = _shared_sync_participant_session(other.get("username"), other.get("client_id"))
+    denied = [
+        scope for scope in scopes
+        if not _shared_sync_machine_scope_allowed(scope, sessao)
+        or not _shared_sync_machine_scope_allowed(scope, other_session)
+    ]
+    if denied:
+        labels = ", ".join((SHARED_SYNC_SCOPES.get(scope) or {}).get("label") or scope for scope in denied)
+        raise HTTPException(status_code=403, detail=f"Origem e destino precisam das permissoes normais destes modulos: {labels}.")
+    return scopes
+
+
+def _shared_sync_create_direct_link(payload, sessao: dict) -> dict:
+    destino = _shared_sync_resolver_usuario_destino(payload.target_username, payload.target_client_id)
+    if (
+        _shared_sync_normalizar_username(destino.get("username")) == _shared_sync_normalizar_username(sessao.get("username"))
+        and _shared_sync_normalizar_client_id(destino.get("client_id")) == _shared_sync_normalizar_client_id(sessao.get("client_id"))
+    ):
+        raise HTTPException(status_code=400, detail="Escolha outro usuario para receber os dados.")
+    scopes = _shared_sync_validate_link_scopes(sessao, destino, payload.scopes)
+    source_user = _shared_sync_usuario_publico(sessao.get("usuario") or {})
+    source_user.update({
+        "username": _shared_sync_normalizar_username(sessao.get("username")),
+        "client_id": _shared_sync_normalizar_client_id(sessao.get("client_id")),
+    })
+    base = {
+        "source_username": source_user.get("username"),
+        "source_client_id": source_user.get("client_id"),
+        "source_name": source_user.get("name") or source_user.get("username"),
+        "target_username": destino.get("username"),
+        "target_client_id": destino.get("client_id"),
+        "target_name": destino.get("name") or destino.get("username"),
+    }
+    link_id = _shared_sync_link_id_for_pair(base)
+    now = _shared_sync_now_iso()
+    link = {
+        **base,
+        "id": link_id,
+        "active": True,
+        "schema": 2,
+        "scopes": scopes,
+        "bundles": {},
+        "directional_bundles": {},
+        "source_keep_synced": False,
+        "target_keep_synced": False,
+        "message": str(getattr(payload, "message", "") or "").strip()[:1000],
+        "created_at": now,
+        "created_ts": int(time.time()),
+        "updated_at": now,
+        "updated_ts": int(time.time()),
+    }
+    duplicates = []
+    for existing in _shared_sync_links_all():
+        if _shared_sync_item_pair_key(existing) != _shared_sync_item_pair_key(link):
+            continue
+        link = _shared_sync_merge_link_items(existing, link)
+        if str(existing.get("id") or "") != link_id:
+            duplicates.append(str(existing.get("id") or ""))
+    link["id"] = link_id
+    link["active"] = True
+    link["schema"] = 2
+    link["scopes"] = scopes
+    link["source_keep_synced"] = False
+    link["target_keep_synced"] = False
+    link["updated_at"] = now
+    link["updated_ts"] = int(time.time())
+    saved = _shared_sync_save_link(link)
+    for duplicate_id in duplicates:
+        if duplicate_id:
+            _shared_sync_delete_link_doc(duplicate_id)
+    return {
+        "success": True,
+        "message": "Vinculo ativo criado. Nenhum dado foi enviado; use Enviar agora.",
+        "link": _shared_sync_link_public(saved, sessao),
+        "invite": None,
+        "results": [],
+        "manual_only": True,
+    }
+
+
+def shared_sync_user_shares_link_create(
+    payload: SharedSyncUserLinkCreateRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    return _shared_sync_create_direct_link(payload, sessao)
+
+
+def _shared_sync_migrate_v2_records():
+    """Remove convites pendentes e consolida vínculos ativos sem enviar dados."""
+    pending_deleted = 0
+    for invite in _shared_sync_invites_all():
+        if str(invite.get("status") or "pending").strip().lower() != "pending":
+            continue
+        result = _shared_sync_delete_invite_doc(str(invite.get("id") or ""))
+        if result.get("local_deleted") or result.get("firebase_deleted"):
+            pending_deleted += 1
+
+    groups: dict[tuple[str, str, str, str], list[dict]] = {}
+    for link in _shared_sync_links_all():
+        if not bool(link.get("active", True)):
+            continue
+        groups.setdefault(_shared_sync_item_pair_key(link), []).append(link)
+
+    duplicates_deleted = 0
+    links_migrated = 0
+    for items in groups.values():
+        items.sort(key=_shared_sync_item_timestamp)
+        merged: dict = {}
+        for item in items:
+            merged = _shared_sync_merge_link_items(merged, item)
+        canonical_id = _shared_sync_link_id_for_pair(merged)
+        merged["id"] = canonical_id
+        merged["active"] = True
+        merged["schema"] = 2
+        merged["source_keep_synced"] = False
+        merged["target_keep_synced"] = False
+        merged["updated_at"] = _shared_sync_now_iso()
+        merged["updated_ts"] = int(time.time())
+        _shared_sync_save_link(merged)
+        links_migrated += 1
+        for item in items:
+            old_id = str(item.get("id") or "")
+            if old_id and old_id != canonical_id:
+                result = _shared_sync_delete_link_doc(old_id)
+                if result.get("local_deleted") or result.get("firebase_deleted"):
+                    duplicates_deleted += 1
+
+    return {
+        "success": True,
+        "manual_only": True,
+        "pending_invites_deleted": pending_deleted,
+        "active_links_migrated": links_migrated,
+        "duplicate_links_deleted": duplicates_deleted,
+        "message": "Migração v2 concluída sem publicar ou importar dados.",
+    }
+
+
+def admin_shared_sync_migrate_v2(
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _shared_sync_require_admin(authorization, client_id)
+    return _shared_sync_migrate_v2_records()
+
 def shared_sync_user_shares_invite(
     payload: SharedSyncUserInviteCreateRequest,
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
     sessao = _shared_sync_session(authorization, client_id)
+    # Adaptador temporario: nao cria convite pendente, nao prepara pacote e nao
+    # exige aceite. Clientes antigos recebem imediatamente o vinculo ativo.
+    return _shared_sync_create_direct_link(payload, sessao)
+    # Codigo v1 abaixo e mantido apenas para leitura de instalacoes antigas.
     scopes = _shared_sync_resolver_scopes_usuario(payload.scopes)
     destino = _shared_sync_resolver_usuario_destino(payload.target_username, payload.target_client_id)
     source_user = _shared_sync_usuario_publico(sessao.get("usuario") or {})
@@ -207,6 +374,7 @@ def shared_sync_user_shares_accept(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
+    raise HTTPException(status_code=410, detail="Aceite preliminar descontinuado; o vinculo ja nasce ativo.")
     sessao = _shared_sync_session(authorization, client_id)
     invite = _shared_sync_get_invite(invite_id)
     if not _shared_sync_session_is_target(sessao, invite):
@@ -282,6 +450,7 @@ def shared_sync_user_shares_reject(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
+    raise HTTPException(status_code=410, detail="Rejeicao de convite descontinuada; pause ou remova o vinculo.")
     sessao = _shared_sync_session(authorization, client_id)
     invite = _shared_sync_get_invite(invite_id)
     if not _shared_sync_session_is_target(sessao, invite):
@@ -394,6 +563,55 @@ def shared_sync_user_shares_link_update(
     _shared_sync_save_link(link)
     return {"success": True, "message": "Preferencias atualizadas.", "link": _shared_sync_link_public(link, sessao)}
 
+
+def _shared_sync_link_bundle_ids(link: dict, sessao: dict, scopes: list[str], direction: str) -> dict[str, str]:
+    my_direction = _shared_sync_link_direction_for_session(sessao, link)
+    transfer_direction = my_direction if direction == "push" else _shared_sync_link_reverse_direction(my_direction)
+    return {
+        scope: _shared_sync_link_bundle_id_for_direction(link, scope, transfer_direction)
+        for scope in scopes
+    }
+
+
+def _shared_sync_validate_existing_link_scopes(sessao: dict, link: dict, requested: Optional[list[str]]) -> list[str]:
+    scopes = _shared_sync_resolver_scopes_usuario(requested or link.get("scopes") or [])
+    if any(scope not in (link.get("scopes") or []) for scope in scopes):
+        raise HTTPException(status_code=403, detail="A operacao pediu um modulo fora deste vinculo.")
+    other = (
+        {"username": link.get("target_username"), "client_id": link.get("target_client_id")}
+        if _shared_sync_session_is_source(sessao, link)
+        else {"username": link.get("source_username"), "client_id": link.get("source_client_id")}
+    )
+    return _shared_sync_validate_link_scopes(sessao, other, scopes)
+
+
+def shared_sync_user_shares_link_preview(
+    link_id: str,
+    payload: SharedSyncPreviewRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    link = _shared_sync_get_link(link_id)
+    if not bool(link.get("active", True)):
+        raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
+    direction = _shared_sync_operation_direction(payload.direction)
+    scopes = _shared_sync_validate_existing_link_scopes(sessao, link, payload.scopes)
+    bundle_ids = _shared_sync_link_bundle_ids(link, sessao, scopes, direction)
+    if direction == "pull":
+        missing = [scope for scope, bundle_id in bundle_ids.items() if not _shared_sync_remote_meta_by_id(bundle_id)]
+        if missing:
+            raise HTTPException(status_code=404, detail="A outra parte ainda nao publicou snapshot para todos os modulos selecionados.")
+    return _shared_sync_create_preview(
+        sessao,
+        kind="user-link",
+        resource_id=link_id,
+        direction=direction,
+        scopes=scopes,
+        bundle_ids=bundle_ids,
+        machine_id=payload.machine_id or "",
+    )
+
 def shared_sync_user_shares_link_push(
     link_id: str,
     payload: SharedSyncUserLinkRunRequest,
@@ -405,9 +623,14 @@ def shared_sync_user_shares_link_push(
     if not bool(link.get("active", True)):
         raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
     _shared_sync_link_direction_for_session(sessao, link)
-    scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link, sessao)
+    scopes = _shared_sync_validate_existing_link_scopes(sessao, link, payload.scopes)
+    bundle_ids = _shared_sync_link_bundle_ids(link, sessao, scopes, "push")
+    operation = _shared_sync_require_operation(
+        payload.operation_id, sessao, kind="user-link", resource_id=link_id,
+        direction="push", scopes=scopes, bundle_ids=bundle_ids,
+    )
     results = [_shared_sync_push_link_scope(sessao, link, scope, payload.machine_id or "") for scope in scopes]
+    _shared_sync_audit(sessao, record=operation, results=results, link_id=link_id)
     return {"success": True, "direction": "push", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
 def shared_sync_user_shares_link_pull(
@@ -421,9 +644,14 @@ def shared_sync_user_shares_link_pull(
     if not bool(link.get("active", True)):
         raise HTTPException(status_code=400, detail="Compartilhamento pausado.")
     _shared_sync_link_direction_for_session(sessao, link)
-    scopes = _shared_sync_resolver_scopes_usuario(payload.scopes or link.get("scopes") or [])
-    scopes = _shared_sync_filtrar_scopes_entre_clientes(scopes, link, sessao)
+    scopes = _shared_sync_validate_existing_link_scopes(sessao, link, payload.scopes)
+    bundle_ids = _shared_sync_link_bundle_ids(link, sessao, scopes, "pull")
+    operation = _shared_sync_require_operation(
+        payload.operation_id, sessao, kind="user-link", resource_id=link_id,
+        direction="pull", scopes=scopes, bundle_ids=bundle_ids,
+    )
     results = [_shared_sync_pull_pair_scope(sessao, link, scope) for scope in scopes]
+    _shared_sync_audit(sessao, record=operation, results=results, link_id=link_id)
     return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}
 
 def shared_sync_user_shares_auto_push(
@@ -535,12 +763,16 @@ __all__ = [
     "configure_shared_sync_user_endpoints_runtime",
     "shared_sync_listar_usuarios_destino",
     "shared_sync_user_shares_status",
+    "shared_sync_user_shares_link_create",
+    "_shared_sync_migrate_v2_records",
+    "admin_shared_sync_migrate_v2",
     "shared_sync_user_shares_invite",
     "shared_sync_user_shares_accept",
     "shared_sync_user_shares_reject",
     "shared_sync_user_shares_cancel",
     "shared_sync_user_shares_delete",
     "shared_sync_user_shares_link_update",
+    "shared_sync_user_shares_link_preview",
     "shared_sync_user_shares_link_push",
     "shared_sync_user_shares_link_pull",
     "shared_sync_user_shares_auto_push",

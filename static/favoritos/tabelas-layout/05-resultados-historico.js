@@ -227,6 +227,25 @@
             return texto.length > max ? `${texto.slice(0, max - 1)}...` : texto;
         }
 
+        function normalizarDuracaoExecucaoFavoritosMs(valor) {
+            if (valor === null || valor === undefined || valor === '') return null;
+            const numero = Number(valor);
+            if (!Number.isFinite(numero) || numero < 0) return null;
+            return Math.min(Math.floor(numero), 7 * 24 * 60 * 60 * 1000);
+        }
+
+        function formatarDuracaoExecucaoFavoritos(valor) {
+            const duracaoMs = normalizarDuracaoExecucaoFavoritosMs(valor);
+            if (duracaoMs === null) return '';
+            const totalSegundos = Math.floor(duracaoMs / 1000);
+            const horas = Math.floor(totalSegundos / 3600);
+            const minutos = Math.floor((totalSegundos % 3600) / 60);
+            const segundos = totalSegundos % 60;
+            return [horas, minutos, segundos]
+                .map(item => String(item).padStart(2, '0'))
+                .join(':');
+        }
+
         function normalizarLinhaRelatorioAlteracaoFavoritos(linha) {
             if (!linha) return null;
             if (typeof linha === 'string') {
@@ -313,9 +332,11 @@
                         usuario: entrada.usuario || usuarioEntrada,
                         nome_usuario: entrada.nome_usuario || usuarioEntrada,
                         username: entrada.username || usernameAtual || usuarioEntrada,
+                        duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(entrada.duracao_execucao_ms),
                         grupos: Array.isArray(entrada.grupos)
                             ? entrada.grupos.map(grupo => ({
                                 ...grupo,
+                                duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms),
                                 anuncios: Array.isArray(grupo && grupo.anuncios)
                                     ? grupo.anuncios.map(normalizarAnuncioHistoricoFavoritosFrontend)
                                     : [],
@@ -369,13 +390,33 @@
             return normalizarHistoricoFavoritosFrontend(mlHistoricoFavoritosCache);
         }
 
-        async function salvarHistoricoFavoritosServidor(lista) {
+        async function salvarHistoricoFavoritosServidor(lista, opcoes = {}) {
             const historico = normalizarHistoricoFavoritosFrontend(lista);
-            const response = await fetch('/api/favoritos/historico', {
-                method: 'PUT',
-                headers: headersJsonAutenticado(),
-                body: JSON.stringify({ historico })
-            });
+            const finalizacao = opcoes && opcoes.finalizarDuracao && typeof opcoes.finalizarDuracao === 'object'
+                ? opcoes.finalizarDuracao
+                : null;
+            const finalizarIds = [...new Set((Array.isArray(finalizacao && finalizacao.ids) ? finalizacao.ids : [])
+                .map(value => String(value || '').trim())
+                .filter(Boolean))];
+            const inicioExecucaoMs = Number(finalizacao && finalizacao.inicio_execucao_ms) || 0;
+            const body = { historico };
+            if (finalizarIds.length && inicioExecucaoMs > 0) {
+                body.finalizar_ids = finalizarIds;
+                body.inicio_execucao_ms = Math.trunc(inicioExecucaoMs);
+            }
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const timeout = controller ? setTimeout(() => controller.abort(), 30000) : null;
+            let response;
+            try {
+                response = await fetch('/api/favoritos/historico', {
+                    method: 'PUT',
+                    headers: headersJsonAutenticado(),
+                    body: JSON.stringify(body),
+                    ...(controller ? { signal: controller.signal } : {})
+                });
+            } finally {
+                if (timeout) clearTimeout(timeout);
+            }
             if (!response.ok) {
                 let detalhe = `HTTP ${response.status}`;
                 try {
@@ -390,7 +431,95 @@
             mlHistoricoFavoritosServidorCarregado = true;
             salvarHistoricoFavoritosLocal(remoto);
             agendarSincronizacaoHistoricoFavoritosVinculos();
-            return remoto;
+            return {
+                historico: remoto,
+                duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(data.duracao_execucao_ms),
+                finalizados_ids: Array.isArray(data.finalizados_ids) ? data.finalizados_ids : [],
+                finalizado_em_ms: Number(data.finalizado_em_ms) || 0
+            };
+        }
+
+        function enfileirarSalvamentoHistoricoFavoritosServidor(lista, opcoes = {}) {
+            const historico = normalizarHistoricoFavoritosFrontend(lista);
+            const anterior = mlHistoricoFavoritosPersistenciaFila || Promise.resolve({ success: true, historico: [] });
+            const tarefa = Promise.resolve(anterior)
+                .catch(() => null)
+                .then(() => salvarHistoricoFavoritosServidor(historico, opcoes))
+                .then(resultadoServidor => ({
+                    success: true,
+                    historico: normalizarHistoricoFavoritosFrontend(resultadoServidor && resultadoServidor.historico),
+                    duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(resultadoServidor && resultadoServidor.duracao_execucao_ms),
+                    finalizados_ids: Array.isArray(resultadoServidor && resultadoServidor.finalizados_ids)
+                        ? resultadoServidor.finalizados_ids
+                        : [],
+                    finalizado_em_ms: Number(resultadoServidor && resultadoServidor.finalizado_em_ms) || 0,
+                    erro: ''
+                }))
+                .catch(err => {
+                    tratarErroSalvarHistoricoFavoritosServidor(err);
+                    return {
+                        success: false,
+                        historico: [],
+                        erro: err && err.message ? err.message : String(err)
+                    };
+                });
+            mlHistoricoFavoritosPersistenciaFila = tarefa;
+            mlHistoricoFavoritosUltimaPersistenciaPromise = tarefa;
+            return tarefa;
+        }
+
+        async function confirmarSalvamentoHistoricoFavoritosServidor(idsEsperados = [], opcoes = {}) {
+            const ids = [...new Set((Array.isArray(idsEsperados) ? idsEsperados : [])
+                .map(value => String(value || '').trim())
+                .filter(Boolean))];
+            const duracaoEsperadaMs = normalizarDuracaoExecucaoFavoritosMs(opcoes && opcoes.duracao_execucao_ms);
+            const resultado = await Promise.resolve(
+                mlHistoricoFavoritosUltimaPersistenciaPromise
+                || mlHistoricoFavoritosPersistenciaFila
+                || { success: true, historico: lerHistoricoFavoritos() }
+            );
+            if (!resultado || resultado.success !== true) {
+                return {
+                    success: false,
+                    ids,
+                    faltantes: ids,
+                    erro: resultado && resultado.erro || 'O servidor nao confirmou o salvamento do historico.'
+                };
+            }
+            const entradasServidor = normalizarHistoricoFavoritosFrontend(resultado.historico);
+            const mapaServidor = new Map(entradasServidor
+                .map(item => [String(item && item.id || '').trim(), item])
+                .filter(([id]) => Boolean(id)));
+            const idsServidor = new Set(mapaServidor.keys());
+            const faltantes = ids.filter(id => !idsServidor.has(id));
+            const duracaoDivergente = duracaoEsperadaMs === null
+                ? []
+                : ids.filter(id => {
+                    const entrada = mapaServidor.get(id);
+                    return normalizarDuracaoExecucaoFavoritosMs(entrada && entrada.duracao_execucao_ms) !== duracaoEsperadaMs;
+                });
+            const duracaoGruposDivergente = duracaoEsperadaMs === null
+                ? []
+                : ids.filter(id => {
+                    const entrada = mapaServidor.get(id);
+                    return (Array.isArray(entrada && entrada.grupos) ? entrada.grupos : []).some(grupo => (
+                        normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms) !== duracaoEsperadaMs
+                    ));
+                });
+            return {
+                success: faltantes.length === 0 && duracaoDivergente.length === 0 && duracaoGruposDivergente.length === 0,
+                ids,
+                faltantes,
+                duracao_execucao_ms: duracaoEsperadaMs,
+                duracao_divergente_ids: duracaoDivergente,
+                duracao_grupos_divergente_ids: duracaoGruposDivergente,
+                historico: resultado.historico,
+                erro: faltantes.length
+                    ? `O servidor nao devolveu ${faltantes.length} registro(s) do historico salvo.`
+                    : (duracaoDivergente.length || duracaoGruposDivergente.length
+                        ? `O servidor nao confirmou o tempo de execucao completo em ${new Set([...duracaoDivergente, ...duracaoGruposDivergente]).size} registro(s).`
+                        : '')
+            };
         }
 
         function agendarSalvarHistoricoFavoritosServidor(lista) {
@@ -398,7 +527,7 @@
             if (mlHistoricoFavoritosSaveTimer) clearTimeout(mlHistoricoFavoritosSaveTimer);
             mlHistoricoFavoritosSaveTimer = setTimeout(() => {
                 mlHistoricoFavoritosSaveTimer = null;
-                salvarHistoricoFavoritosServidor(historico).catch(tratarErroSalvarHistoricoFavoritosServidor);
+                enfileirarSalvamentoHistoricoFavoritosServidor(historico);
             }, 300);
         }
 
@@ -418,10 +547,39 @@
                     clearTimeout(mlHistoricoFavoritosSaveTimer);
                     mlHistoricoFavoritosSaveTimer = null;
                 }
-                salvarHistoricoFavoritosServidor(historico).catch(tratarErroSalvarHistoricoFavoritosServidor);
+                return enfileirarSalvamentoHistoricoFavoritosServidor(historico, opcoes);
             } else {
                 agendarSalvarHistoricoFavoritosServidor(historico);
             }
+            return null;
+        }
+
+        function duracaoExecucaoMescladaHistoricoFavoritos(...entradas) {
+            const duracoes = [];
+            entradas.forEach(entrada => {
+                if (!entrada || typeof entrada !== 'object') return;
+                const duracaoEntrada = normalizarDuracaoExecucaoFavoritosMs(entrada.duracao_execucao_ms);
+                if (duracaoEntrada !== null) duracoes.push(duracaoEntrada);
+                (Array.isArray(entrada.grupos) ? entrada.grupos : []).forEach(grupo => {
+                    const duracaoGrupo = normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms);
+                    if (duracaoGrupo !== null) duracoes.push(duracaoGrupo);
+                });
+            });
+            return duracoes.length ? Math.max(...duracoes) : null;
+        }
+
+        function preservarDuracaoExecucaoMergeHistoricoFavoritos(preferida, complementar = null) {
+            const saida = { ...(preferida || {}) };
+            const duracao = duracaoExecucaoMescladaHistoricoFavoritos(saida, complementar);
+            if (duracao === null) return saida;
+            saida.duracao_execucao_ms = duracao;
+            if (Array.isArray(saida.grupos)) {
+                saida.grupos = saida.grupos.map(grupo => ({
+                    ...grupo,
+                    duracao_execucao_ms: duracao
+                }));
+            }
+            return saida;
         }
 
         function mesclarHistoricosFavoritos(...listas) {
@@ -429,7 +587,11 @@
             listas.forEach(lista => {
                 normalizarHistoricoFavoritosFrontend(lista).forEach(entrada => {
                     const chave = idEntradaHistoricoFavoritos(entrada) || `${entrada.data_iso || ''}_${mapa.size}`;
-                    if (!chave || mapa.has(chave)) return;
+                    if (!chave) return;
+                    if (mapa.has(chave)) {
+                        mapa.set(chave, preservarDuracaoExecucaoMergeHistoricoFavoritos(mapa.get(chave), entrada));
+                        return;
+                    }
                     mapa.set(chave, entrada);
                 });
             });
@@ -444,7 +606,7 @@
 
         function assinaturaHistoricoFavoritos(lista) {
             return normalizarHistoricoFavoritosFrontend(lista)
-                .map(entrada => idEntradaHistoricoFavoritos(entrada) || entrada.data_iso || '')
+                .map(entrada => `${idEntradaHistoricoFavoritos(entrada) || entrada.data_iso || ''}:${entrada.duracao_execucao_ms ?? ''}`)
                 .join('|');
         }
 
@@ -473,7 +635,10 @@
                     mlHistoricoFavoritosCache = historicoMesclado;
                     salvarHistoricoFavoritosLocal(historicoMesclado);
                     if (assinaturaHistoricoFavoritos(historicoMesclado) !== assinaturaHistoricoFavoritos(historicoServidor)) {
-                        await salvarHistoricoFavoritosServidor(historicoMesclado);
+                        const persistencia = await enfileirarSalvamentoHistoricoFavoritosServidor(historicoMesclado);
+                        if (!persistencia || persistencia.success !== true) {
+                            throw new Error(persistencia && persistencia.erro || 'Falha ao mesclar o historico no servidor.');
+                        }
                     }
                 } else {
                     mlHistoricoFavoritosCache = [];
@@ -595,6 +760,12 @@
                 preco_promocional: precos.promocional,
                 promotional_price: precos.promocional,
                 discount_pct: precos.desconto || '',
+                custo: anuncio && (anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? ''),
+                custo_unitario: anuncio && (anuncio.custo_unitario ?? anuncio.custo ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? ''),
+                custo_produto: anuncio && (anuncio.custo_produto ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.preco_custo ?? anuncio.valor_custo ?? ''),
+                preco_custo: anuncio && (anuncio.preco_custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.valor_custo ?? ''),
+                valor_custo: anuncio && (anuncio.valor_custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? ''),
+                custo_frete: anuncio && (anuncio.custo_frete ?? anuncio.frete_ml ?? anuncio.shipping_cost ?? anuncio.shipping_seller_cost ?? ''),
                 fonte_preco: fontePrecoFavoritos(anuncio),
                 precoFonte: anuncio && (anuncio.precoFonte || anuncio.preco_fonte || anuncio.fonte_preco || ''),
                 preco_fonte: anuncio && (anuncio.precoFonte || anuncio.preco_fonte || anuncio.fonte_preco || ''),
@@ -639,6 +810,7 @@
                         ? grupo.removidos_ia.slice(0, 80).map(anuncioHistoricoPayload)
                         : [];
                     const opcoesPromocao = resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
+                    const duracaoExecucaoMs = normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms);
                     return {
                         sku: grupo && grupo.sku || '',
                         titulo: grupo && grupo.titulo || '',
@@ -649,6 +821,11 @@
                         opcoes_promocao: opcoesPromocao || null,
                         avulso: grupoRankingFavoritosEhAvulso(grupo),
                         pesquisa_avulsa: grupoRankingFavoritosEhAvulso(grupo),
+                        duracao_execucao_ms: duracaoExecucaoMs,
+                        duracao_tarefa_ms: Math.max(0, Number(grupo && grupo.duracao_tarefa_ms) || 0),
+                        timings: grupo && grupo.timings && typeof grupo.timings === 'object'
+                            ? { ...grupo.timings }
+                            : null,
                         total_anuncios: Array.isArray(grupo && grupo.anuncios) ? grupo.anuncios.length : 0,
                         usou_ia: !!(grupo && grupo.usou_ia),
                         ia_confirmados: Number(grupo && grupo.ia_confirmados) || 0,
@@ -670,6 +847,17 @@
                                 suspeitos: Number(resumo && resumo.suspeitos) || 0,
                                 avant_nao_vinculado: Number(resumo && resumo.avant_nao_vinculado) || 0,
                                 tempo_esgotado: !!(resumo && resumo.tempo_esgotado),
+                                login_avant_bloqueado: !!(resumo && resumo.login_avant_bloqueado),
+                                motivo_encerramento: String(resumo && resumo.motivo_encerramento || ''),
+                                passadas: Number(resumo && resumo.passadas) || 0,
+                                posicoes_percorridas: Number(resumo && resumo.posicoes_percorridas) || 0,
+                                cliques_avant: Number(resumo && resumo.cliques_avant) || 0,
+                                capturados_avant: Number(resumo && resumo.capturados_avant) || 0,
+                                tempo_navegacao_ms: Number(resumo && resumo.tempo_navegacao_ms) || 0,
+                                tempo_materializacao_ms: Number(resumo && resumo.tempo_materializacao_ms) || 0,
+                                tempo_avant_ms: Number(resumo && resumo.tempo_avant_ms) || 0,
+                                tempo_finalizacao_ms: Number(resumo && resumo.tempo_finalizacao_ms) || 0,
+                                tempo_enriquecimento_ms: Number(resumo && resumo.tempo_enriquecimento_ms) || 0,
                                 motivos_incompletos: resumo && resumo.motivos_incompletos && typeof resumo.motivos_incompletos === 'object'
                                     ? { ...resumo.motivos_incompletos }
                                     : {},
@@ -688,6 +876,9 @@
                 .filter(grupo => grupo.sku && (grupo.anuncios.length || grupo.removidos_ia.length));
 
             const opcoesEntrada = gruposHistorico.map(grupo => grupo.opcoes_promocao).find(Boolean) || null;
+            const duracoesExecucao = gruposHistorico
+                .map(grupo => normalizarDuracaoExecucaoFavoritosMs(grupo.duracao_execucao_ms))
+                .filter(valor => valor !== null);
             const nomeUsuario = nomeUsuarioHistoricoFavoritosAtual();
             const usernameUsuario = usernameHistoricoFavoritosAtual();
             return {
@@ -698,6 +889,7 @@
                 nome_usuario: nomeUsuario,
                 username: usernameUsuario,
                 opcoes_promocao: opcoesEntrada,
+                duracao_execucao_ms: duracoesExecucao.length ? Math.max(...duracoesExecucao) : null,
                 total_skus: gruposHistorico.length,
                 total_anuncios: gruposHistorico.reduce((acc, grupo) => acc + grupo.total_anuncios, 0),
                 grupos: gruposHistorico
@@ -717,6 +909,102 @@
                 renderizarLinksAlinhadosFavoritos();
             }
             return entrada;
+        }
+
+        function atualizarDuracaoExecucaoHistoricosFavoritos(idsHistorico = [], duracaoExecucaoMs = null) {
+            const ids = new Set((Array.isArray(idsHistorico) ? idsHistorico : [])
+                .map(value => String(value || '').trim())
+                .filter(Boolean));
+            const duracao = normalizarDuracaoExecucaoFavoritosMs(duracaoExecucaoMs);
+            if (!ids.size || duracao === null) {
+                return Promise.resolve({
+                    success: false,
+                    historico: [],
+                    erro: 'Nao foi possivel associar o tempo de execucao ao historico.'
+                });
+            }
+            let atualizados = 0;
+            const historico = lerHistoricoFavoritos().map(entrada => {
+                const id = String(entrada && entrada.id || '').trim();
+                if (!ids.has(id)) return entrada;
+                atualizados += 1;
+                return {
+                    ...entrada,
+                    duracao_execucao_ms: duracao,
+                    grupos: Array.isArray(entrada.grupos)
+                        ? entrada.grupos.map(grupo => ({ ...grupo, duracao_execucao_ms: duracao }))
+                        : []
+                };
+            });
+            if (atualizados !== ids.size) {
+                return Promise.resolve({
+                    success: false,
+                    historico,
+                    erro: `Nao encontrei ${ids.size - atualizados} registro(s) para salvar o tempo de execucao.`
+                });
+            }
+            return salvarHistoricoFavoritos(historico, { imediato: true });
+        }
+
+        async function finalizarDuracaoExecucaoHistoricosFavoritos(idsHistorico = [], inicioExecucaoMs = null) {
+            const ids = [...new Set((Array.isArray(idsHistorico) ? idsHistorico : [])
+                .map(value => String(value || '').trim())
+                .filter(Boolean))];
+            const inicio = Number(inicioExecucaoMs) || 0;
+            const duracaoProvisoria = normalizarDuracaoExecucaoFavoritosMs(Date.now() - inicio);
+            if (!ids.length || inicio <= 0 || duracaoProvisoria === null) {
+                return {
+                    success: false,
+                    historico: [],
+                    erro: 'Nao foi possivel finalizar o tempo de execucao no historico.'
+                };
+            }
+            const idsSet = new Set(ids);
+            let atualizados = 0;
+            const historico = lerHistoricoFavoritos().map(entrada => {
+                const id = String(entrada && entrada.id || '').trim();
+                if (!idsSet.has(id)) return entrada;
+                atualizados += 1;
+                return {
+                    ...entrada,
+                    duracao_execucao_ms: duracaoProvisoria,
+                    grupos: Array.isArray(entrada.grupos)
+                        ? entrada.grupos.map(grupo => ({ ...grupo, duracao_execucao_ms: duracaoProvisoria }))
+                        : []
+                };
+            });
+            if (atualizados !== ids.length) {
+                return {
+                    success: false,
+                    historico,
+                    erro: `Nao encontrei ${ids.length - atualizados} registro(s) para finalizar o tempo de execucao.`
+                };
+            }
+            const persistencia = await salvarHistoricoFavoritos(historico, {
+                imediato: true,
+                finalizarDuracao: {
+                    ids,
+                    inicio_execucao_ms: inicio
+                }
+            });
+            if (!persistencia || persistencia.success !== true) return persistencia;
+            const duracaoPersistida = normalizarDuracaoExecucaoFavoritosMs(persistencia.duracao_execucao_ms);
+            if (duracaoPersistida === null) {
+                return {
+                    ...persistencia,
+                    success: false,
+                    erro: 'O servidor salvou o historico, mas nao devolveu a duracao final da execucao.'
+                };
+            }
+            const confirmacao = await confirmarSalvamentoHistoricoFavoritosServidor(ids, {
+                duracao_execucao_ms: duracaoPersistida
+            });
+            return {
+                ...persistencia,
+                ...confirmacao,
+                duracao_execucao_ms: duracaoPersistida,
+                finalizado_em_ms: Number(persistencia.finalizado_em_ms) || (inicio + duracaoPersistida)
+            };
         }
 
         function registrarHistoricoAlteracoesFavoritos(snapshot) {
@@ -752,6 +1040,54 @@
             // Historico de ranqueamento deve ser compartilhado entre lojas.
             // O filtro por loja continua valendo apenas para os anuncios atuais do SKU.
             return lista;
+        }
+
+        function lojaAtualHistoricoFavoritosEstaticoNormalizada() {
+            const lojaAtual = typeof favoritosLojaSelecionadaParaApi === 'function'
+                ? favoritosLojaSelecionadaParaApi()
+                : (mlSkuLojaSelecionada || skuLojaSelecionada || '');
+            if (!lojaAtual || (typeof favoritosEhTodasLojas === 'function' && favoritosEhTodasLojas(lojaAtual))) return '';
+            return skuNormalizarLoja(lojaAtual);
+        }
+
+        function nomeLojaAtualHistoricoFavoritosEstatico() {
+            const lojaAtual = typeof favoritosLojaSelecionadaParaApi === 'function'
+                ? favoritosLojaSelecionadaParaApi()
+                : (mlSkuLojaSelecionada || skuLojaSelecionada || '');
+            if (!lojaAtual || (typeof favoritosEhTodasLojas === 'function' && favoritosEhTodasLojas(lojaAtual))) return '';
+            return String(lojaAtual || '').trim();
+        }
+
+        function coletarLojasHistoricoFavoritosEstaticoFonte(fonte, lojas) {
+            if (!fonte || typeof fonte !== 'object') return;
+            [
+                fonte.loja,
+                fonte.loja_sync,
+                fonte.lojaSync,
+                fonte.nome_loja,
+                fonte.nomeLoja,
+                fonte.conta,
+                fonte.conta_ml,
+                fonte.contaMl,
+                fonte.descricao_ml_loja,
+                fonte.descricaoMlLoja
+            ].forEach(valor => {
+                const texto = String(valor || '').trim();
+                if (texto) lojas.push(texto);
+            });
+        }
+
+        function historicoFavoritoEstaticoPertenceLojaAtual(entrada, snapshot) {
+            const lojaAtualNorm = lojaAtualHistoricoFavoritosEstaticoNormalizada();
+            if (!lojaAtualNorm) return true;
+            const lojas = [];
+            coletarLojasHistoricoFavoritosEstaticoFonte(entrada, lojas);
+            coletarLojasHistoricoFavoritosEstaticoFonte(snapshot, lojas);
+            (Array.isArray(snapshot && snapshot.vinculos) ? snapshot.vinculos : []).forEach(vinculo => {
+                coletarLojasHistoricoFavoritosEstaticoFonte(vinculo, lojas);
+                coletarLojasHistoricoFavoritosEstaticoFonte(vinculo && vinculo.nosso, lojas);
+            });
+            return lojas.some(loja => skuNormalizarLoja(loja) === lojaAtualNorm);
         }
 
         function obterHistoricoMaisRecenteSku(sku) {
@@ -884,9 +1220,13 @@
                 ? `Ranqueamento avulso${item.titulo ? ` - ${item.titulo}` : ''}`
                 : `${item.sku}${item.titulo ? ` - ${item.titulo}` : ''}`;
             const data = formatarDataHistoricoFavoritos(item.data_iso) || 'data desconhecida';
+            const duracaoExecucaoValor = item && item.duracao_execucao_ms !== null && item.duracao_execucao_ms !== undefined
+                ? item.duracao_execucao_ms
+                : (item && item.entrada ? item.entrada.duracao_execucao_ms : null);
+            const duracaoExecucao = formatarDuracaoExecucaoFavoritos(duracaoExecucaoValor);
             const meta = document.createElement('span');
             meta.className = 'ml-favoritos-recente-meta';
-            meta.textContent = `${item.total_anuncios} anuncio(s) rankeado(s) | ${data}${item.loja ? ` | Loja: ${item.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(item.entrada || item)}`;
+            meta.textContent = `${item.total_anuncios} anuncio(s) rankeado(s) | ${data}${duracaoExecucao ? ` | Tempo total: ${duracaoExecucao}` : ''}${item.loja ? ` | Loja: ${item.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(item.entrada || item)}`;
             conteudo.appendChild(titulo);
             conteudo.appendChild(meta);
             const termosTexto = formatarTermosPesquisaFavoritos(item && item.grupo && item.grupo.termos);
@@ -1095,10 +1435,11 @@
 
         function montarHistoricosFavoritosAlteracoesEstaticas(limite = 80) {
             const saida = [];
-            const historico = filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos());
+            const historico = lerHistoricoFavoritos();
             for (const entrada of historico) {
                 const alteracoes = Array.isArray(entrada && entrada.alteracoes_favoritos) ? entrada.alteracoes_favoritos : [];
                 for (const snapshot of alteracoes) {
+                    if (!historicoFavoritoEstaticoPertenceLojaAtual(entrada, snapshot)) continue;
                     const vinculos = (Array.isArray(snapshot && snapshot.vinculos) ? snapshot.vinculos : [])
                         .filter(vinculoHistoricoFavoritoRelacionado)
                         .map((vinculo, index) => ({
@@ -1671,6 +2012,10 @@
             tituloWrap.appendChild(titulo);
             tituloWrap.appendChild(meta);
             head.appendChild(tituloWrap);
+            if (typeof window.favoritosCriarBotaoColarHistoricoPlanilha === 'function') {
+                const botaoColarPlanilha = window.favoritosCriarBotaoColarHistoricoPlanilha(item);
+                if (botaoColarPlanilha) head.appendChild(botaoColarPlanilha);
+            }
             bloco.appendChild(head);
 
             if (item.mensagem_final) {
@@ -1757,9 +2102,11 @@
             mlLinksAlinhadosEmptyEl.classList.toggle('hidden', historicos.length > 0);
             if (mlLinksAlinhadosStatusEl) {
                 const totalVinculos = historicos.reduce((acc, item) => acc + item.vinculos.length, 0);
+                const lojaAtual = nomeLojaAtualHistoricoFavoritosEstatico();
+                const sufixoLoja = lojaAtual ? ` para ${lojaAtual}` : '';
                 mlLinksAlinhadosStatusEl.textContent = historicos.length
-                    ? `${historicos.length} execucao(oes) estatica(s) | ${totalVinculos} anuncio(s) relacionado(s).`
-                    : 'Nenhuma alteracao de favoritos salva com anuncios relacionados.';
+                    ? `${historicos.length} execucao(oes) estatica(s)${sufixoLoja} | ${totalVinculos} anuncio(s) relacionado(s).`
+                    : `Nenhuma alteracao de favoritos salva${sufixoLoja} com anuncios relacionados.`;
             }
             if (historicos.length > 1) {
                 agruparHistoricosFavoritosPorSku(historicos).forEach(grupo => {

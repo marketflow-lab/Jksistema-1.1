@@ -8,16 +8,28 @@ stable endpoint callables without registering monolith-local functions.
 from __future__ import annotations
 
 import inspect
-from typing import Optional
+import hashlib
+import math
+import re
+import threading
+from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from backend.services import perguntas_pos_venda_codex
+
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
+from ml_questions_gemini.compatibility import (
+    normalize_comparison_attributes,
+    normalize_profile,
+    normalize_target_type,
+)
 
 
-PERGUNTAS_POS_VENDA_ENDPOINTS: tuple[str, ...] = ('ml_perguntas_listar_lojas', 'ml_perguntas_salvar_config_loja', 'ml_perguntas_salvar_config_lojas_lote', 'ml_perguntas_automacao_poll', 'ml_perguntas_aprovacoes_listar', 'ml_perguntas_aprovacoes_aprovar', 'ml_perguntas_aprovacoes_rejeitar', 'ml_questions_v2_webhook', 'ml_questions_v2_process', 'ml_questions_v2_pending_review', 'ml_questions_v2_review_approve', 'ml_questions_v2_review_reject', 'ml_questions_v2_audit_question', 'ml_questions_v2_metrics', 'ml_perguntas_gerar_resposta_manual', 'ml_perguntas_responder_manual', 'ml_ia_treinamento_obter', 'ml_ia_treinamento_salvar', 'ml_ia_treinamento_listar_skus', 'ml_ia_treinamento_simular', 'ml_pos_venda_listar_conversas', 'ml_pos_venda_listar_mediacoes', 'ml_pos_venda_detalhe_conversa', 'ml_pos_venda_obter_anexo', 'ml_pos_venda_gerar_resposta_conversa', 'ml_pos_venda_responder_conversa', 'ml_pos_venda_automacao_poll', 'ml_listar_perguntas')
+PERGUNTAS_POS_VENDA_ENDPOINTS: tuple[str, ...] = ('ml_perguntas_listar_lojas', 'ml_perguntas_salvar_config_loja', 'ml_perguntas_salvar_config_lojas_lote', 'ml_perguntas_automacao_poll', 'ml_perguntas_aprovacoes_listar', 'ml_perguntas_aprovacoes_aprovar', 'ml_perguntas_aprovacoes_rejeitar', 'ml_questions_v2_webhook', 'ml_questions_v2_process', 'ml_questions_v2_pending_review', 'ml_questions_v2_review_approve', 'ml_questions_v2_review_reject', 'ml_questions_v2_audit_question', 'ml_questions_v2_metrics', 'ml_perguntas_gerar_resposta_manual', 'ml_perguntas_responder_manual', 'ml_ia_treinamento_obter', 'ml_ia_treinamento_salvar', 'ml_ia_treinamento_listar_skus', 'ml_ia_treinamento_simular', 'ml_pos_venda_listar_conversas', 'ml_pos_venda_listar_mediacoes', 'ml_pos_venda_detalhe_conversa', 'ml_pos_venda_obter_anexo', 'ml_pos_venda_gerar_resposta_conversa', 'ml_pos_venda_responder_conversa', 'ml_pos_venda_automacao_poll', 'ml_customer_reply_job_status', 'ml_customer_reply_job_cancel', 'ml_listar_perguntas')
 
 _TENANT_DEPENDENCY = None
 _PROTECTED_GLOBALS = {
@@ -26,7 +38,344 @@ _PROTECTED_GLOBALS = {
     "PERGUNTAS_POS_VENDA_ENDPOINTS",
     "configure_perguntas_pos_venda_endpoints_runtime",
     "get_tenant_id",
+    "_ML_APPROVAL_SEND_LOCK",
 }
+
+_ML_APPROVAL_SEND_LOCK = threading.RLock()
+
+
+_PERGUNTAS_IA_DIAGNOSTICO_MAX_ITENS = 8
+_PERGUNTAS_IA_DIAGNOSTICO_MAX_TEXTO = 1200
+_PERGUNTAS_IA_DIAGNOSTICO_SEGREDO_RE = re.compile(
+    r"(?i)\b(access[_-]?token|refresh[_-]?token|authorization|client[_-]?secret|api[_-]?key)"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+
+
+def _perguntas_ia_diagnostico_texto(valor: Any, limite: int = _PERGUNTAS_IA_DIAGNOSTICO_MAX_TEXTO) -> str:
+    texto = re.sub(r"\s+", " ", str(valor or "")).strip()
+    if not texto:
+        return ""
+    texto = _PERGUNTAS_IA_DIAGNOSTICO_SEGREDO_RE.sub(r"\1\2[redacted]", texto)
+    if texto.lower().startswith(("http://", "https://")):
+        try:
+            partes = urlsplit(texto)
+            texto = urlunsplit((partes.scheme, partes.netloc, partes.path, "", ""))
+        except ValueError:
+            pass
+    return texto[: max(1, int(limite or 1))]
+
+
+def _perguntas_ia_diagnostico_lista_textos(valor: Any, *, limite_texto: int = 240) -> list[str]:
+    itens = valor if isinstance(valor, (list, tuple, set)) else ([valor] if valor not in (None, "") else [])
+    resultado: list[str] = []
+    for item in itens:
+        texto = _perguntas_ia_diagnostico_texto(item, limite_texto)
+        if texto and texto not in resultado:
+            resultado.append(texto)
+        if len(resultado) >= _PERGUNTAS_IA_DIAGNOSTICO_MAX_ITENS:
+            break
+    return resultado
+
+
+def _perguntas_ia_diagnostico_query(valor: Any) -> str | dict[str, Any] | None:
+    if isinstance(valor, str):
+        return _perguntas_ia_diagnostico_texto(valor, 600) or None
+    if not isinstance(valor, dict):
+        return None
+    limites = {
+        "type": 80,
+        "name": 120,
+        "query": 600,
+        "status": 80,
+        "provider": 120,
+        "reason": 400,
+    }
+    normalizado: dict[str, Any] = {}
+    orcamento_texto = 2200
+    for chave, limite in limites.items():
+        if valor.get(chave) in (None, "") or orcamento_texto <= 0:
+            continue
+        texto = _perguntas_ia_diagnostico_texto(valor.get(chave), min(limite, orcamento_texto))
+        if texto:
+            normalizado[chave] = texto
+            orcamento_texto -= len(texto)
+    return normalizado or None
+
+
+def _perguntas_ia_diagnostico_source(valor: Any) -> str | dict[str, Any] | None:
+    if isinstance(valor, str):
+        return _perguntas_ia_diagnostico_texto(valor, 1000) or None
+    if not isinstance(valor, dict):
+        return None
+    limites = {
+        "type": 80,
+        "source_type": 80,
+        "kind": 80,
+        "name": 160,
+        "title": 300,
+        "url": 1000,
+        "domain": 240,
+        "provider": 120,
+        "authority": 120,
+        "status": 80,
+        "reference": 500,
+        "snippet": 1200,
+        "excerpt": 1200,
+        "fact": 1200,
+        "claim": 1200,
+        "supports": 500,
+        "page": 80,
+    }
+    normalizado: dict[str, Any] = {}
+    orcamento_texto = 2200
+    for chave, limite in limites.items():
+        if valor.get(chave) in (None, "") or orcamento_texto <= 0:
+            continue
+        texto = _perguntas_ia_diagnostico_texto(valor.get(chave), min(limite, orcamento_texto))
+        if texto:
+            normalizado[chave] = texto
+            orcamento_texto -= len(texto)
+    return normalizado or None
+
+
+def _perguntas_ia_diagnostico_lista(
+    valor: Any,
+    normalizar_item,
+) -> list[Any]:
+    itens = valor if isinstance(valor, (list, tuple)) else ([valor] if valor not in (None, "") else [])
+    resultado: list[Any] = []
+    vistos: set[str] = set()
+    for item in itens:
+        normalizado = normalizar_item(item)
+        if normalizado in (None, "", {}):
+            continue
+        chave = repr(normalizado)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        resultado.append(normalizado)
+        if len(resultado) >= _PERGUNTAS_IA_DIAGNOSTICO_MAX_ITENS:
+            break
+    return resultado
+
+
+def _perguntas_ia_compatibility_analysis_normalizar(valor: Any) -> dict[str, Any]:
+    if not isinstance(valor, dict):
+        return {}
+    limites = {
+        "target_type": 80,
+        "target_item": 300,
+        "compatibility_profile": 100,
+        "product_interface": 800,
+        "target_vehicle": 300,
+        "target_interface": 800,
+        "decision": 80,
+        "condition": 1000,
+    }
+    normalizado: dict[str, Any] = {
+        chave: _perguntas_ia_diagnostico_texto(valor.get(chave), limite)
+        for chave, limite in limites.items()
+        if valor.get(chave) not in (None, "")
+    }
+    alvo = normalizado.get("target_item") or normalizado.get("target_vehicle")
+    if alvo:
+        normalizado["target_item"] = alvo
+        normalizado["target_vehicle"] = alvo
+    if normalizado.get("target_type") or normalizado.get("compatibility_profile"):
+        target_type = normalize_target_type(normalizado.get("target_type"), "generic")
+        normalizado["target_type"] = target_type
+        normalizado["compatibility_profile"] = normalize_profile(
+            normalizado.get("compatibility_profile"),
+            target_type,
+        )
+    comparacoes = normalize_comparison_attributes(valor.get("comparison_attributes"))
+    if comparacoes:
+        normalizado["comparison_attributes"] = [
+            {
+                "attribute": _perguntas_ia_diagnostico_texto(item.get("attribute"), 120),
+                "product_value": _perguntas_ia_diagnostico_texto(item.get("product_value"), 300),
+                "target_value": _perguntas_ia_diagnostico_texto(item.get("target_value"), 300),
+                "unit": _perguntas_ia_diagnostico_texto(item.get("unit"), 24),
+                "result": _perguntas_ia_diagnostico_texto(item.get("result"), 32),
+                "decisive": bool(item.get("decisive")),
+                "evidence_refs": _perguntas_ia_diagnostico_lista_textos(item.get("evidence_refs"), limite_texto=300),
+            }
+            for item in comparacoes[:_PERGUNTAS_IA_DIAGNOSTICO_MAX_ITENS]
+        ]
+    missing_fields = _perguntas_ia_diagnostico_lista_textos(valor.get("missing_fields"), limite_texto=200)
+    if missing_fields:
+        normalizado["missing_fields"] = missing_fields
+    evidencias_brutas = valor.get("evidence")
+    if evidencias_brutas in (None, ""):
+        evidencias_brutas = valor.get("evidences") or valor.get("evidencias")
+    if isinstance(evidencias_brutas, dict):
+        evidencias: dict[str, list[Any]] = {}
+        evidencias_restantes = _PERGUNTAS_IA_DIAGNOSTICO_MAX_ITENS
+        for grupo in ("product", "target", "equivalence"):
+            origem_grupo = grupo
+            if grupo == "target" and not isinstance(evidencias_brutas.get("target"), list):
+                origem_grupo = "target_vehicle"
+            itens = _perguntas_ia_diagnostico_lista(
+                list(evidencias_brutas.get(origem_grupo) or [])[:evidencias_restantes],
+                _perguntas_ia_diagnostico_source,
+            )
+            if itens:
+                evidencias[grupo] = itens
+                evidencias_restantes -= len(itens)
+            if evidencias_restantes <= 0:
+                break
+        if evidencias:
+            if evidencias.get("target"):
+                evidencias["target_vehicle"] = list(evidencias["target"])
+            normalizado["evidence"] = evidencias
+    else:
+        evidencias_lista = _perguntas_ia_diagnostico_lista(
+            evidencias_brutas,
+            _perguntas_ia_diagnostico_source,
+        )
+        if evidencias_lista:
+            normalizado["evidence"] = evidencias_lista
+
+    queries = _perguntas_ia_diagnostico_lista(valor.get("queries"), _perguntas_ia_diagnostico_query)
+    if queries:
+        normalizado["queries"] = queries
+    sources = _perguntas_ia_diagnostico_lista(valor.get("sources"), _perguntas_ia_diagnostico_source)
+    if sources:
+        normalizado["sources"] = sources
+    try:
+        confidence = float(valor.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = math.nan
+    if math.isfinite(confidence) and 0.0 <= confidence <= 1.0:
+        normalizado["confidence"] = round(confidence, 4)
+    reason = _perguntas_ia_diagnostico_texto(valor.get("reason"), 1000)
+    if reason:
+        normalizado["reason"] = reason
+    return normalizado
+
+
+def _perguntas_ia_context_pipeline_normalizar(valor: Any) -> list[dict[str, Any]]:
+    if not isinstance(valor, (list, tuple)):
+        return []
+    resultado: list[dict[str, Any]] = []
+    for entrada in valor:
+        if not isinstance(entrada, dict):
+            continue
+        normalizada: dict[str, Any] = {}
+        if isinstance(entrada.get("step"), int):
+            normalizada["step"] = max(0, min(int(entrada["step"]), 999))
+        limites = {
+            "name": 160,
+            "status": 80,
+            "reason": 400,
+            "query": 600,
+            "provider": 120,
+        }
+        normalizada.update({
+            chave: _perguntas_ia_diagnostico_texto(entrada.get(chave), limite)
+            for chave, limite in limites.items()
+            if entrada.get(chave) not in (None, "")
+        })
+        if isinstance(entrada.get("source_count"), int):
+            normalizada["source_count"] = max(0, min(int(entrada["source_count"]), 999))
+        if normalizada:
+            resultado.append(normalizada)
+        if len(resultado) >= _PERGUNTAS_IA_DIAGNOSTICO_MAX_ITENS:
+            break
+    return resultado
+
+
+def _perguntas_ia_diagnostico_resultado(contexto: Any) -> dict[str, Any]:
+    if not isinstance(contexto, dict):
+        return {}
+    diagnostico = contexto.get("diagnostico_ia")
+    if not isinstance(diagnostico, list):
+        return {}
+    for entrada in diagnostico:
+        if isinstance(entrada, dict) and isinstance(entrada.get("result"), dict):
+            return entrada["result"]
+    return {}
+
+
+def _perguntas_ia_diagnostico_aprovacao(contexto: Any) -> dict[str, Any]:
+    """Return the bounded, non-secret V2 diagnostic subset stored with a listing-question review."""
+    if not isinstance(contexto, dict):
+        return {}
+    diagnostico = _perguntas_ia_diagnostico_resultado(contexto)
+
+    def primeiro(*chaves: str):
+        for origem in (contexto, diagnostico):
+            for chave in chaves:
+                if origem.get(chave) not in (None, "", [], {}):
+                    return origem[chave]
+        return None
+
+    persistido: dict[str, Any] = {}
+    compatibility_analysis = _perguntas_ia_compatibility_analysis_normalizar(primeiro("compatibility_analysis"))
+    if compatibility_analysis:
+        persistido["compatibility_analysis"] = compatibility_analysis
+
+    context_pipeline_bruto = primeiro("context_pipeline", "context_collection_pipeline")
+    context_pipeline = _perguntas_ia_context_pipeline_normalizar(context_pipeline_bruto)
+    if context_pipeline:
+        persistido["context_pipeline"] = context_pipeline
+
+    queries = _perguntas_ia_diagnostico_lista(
+        primeiro("queries", "research_queries") or compatibility_analysis.get("queries"),
+        _perguntas_ia_diagnostico_query,
+    )
+    if not queries:
+        queries = _perguntas_ia_diagnostico_lista(
+            [
+                entrada.get("query")
+                for entrada in context_pipeline
+                if isinstance(entrada, dict) and entrada.get("query")
+            ] + [
+                query
+                for entrada in (context_pipeline_bruto or [])
+                if isinstance(entrada, dict)
+                for query in (entrada.get("queries") or [])
+            ],
+            _perguntas_ia_diagnostico_query,
+        )
+    if queries:
+        persistido["queries"] = queries
+
+    sources = _perguntas_ia_diagnostico_lista(
+        primeiro("sources", "research_sources") or compatibility_analysis.get("sources"),
+        _perguntas_ia_diagnostico_source,
+    )
+    if not sources:
+        sources = _perguntas_ia_diagnostico_lista(
+            [
+                source
+                for entrada in (context_pipeline_bruto or [])
+                if isinstance(entrada, dict)
+                for source in (entrada.get("sources") or [])
+            ],
+            _perguntas_ia_diagnostico_source,
+        )
+    if sources:
+        persistido["sources"] = sources
+
+    confianca_bruta = primeiro("confidence", "ia_confidence")
+    if confianca_bruta in (None, ""):
+        confianca_bruta = compatibility_analysis.get("confidence")
+    try:
+        confidence = float(confianca_bruta)
+    except (TypeError, ValueError):
+        confidence = math.nan
+    if math.isfinite(confidence) and 0.0 <= confidence <= 1.0:
+        persistido["confidence"] = round(confidence, 4)
+
+    reason_bruto = primeiro("reason", "decision_reason")
+    if reason_bruto in (None, ""):
+        reason_bruto = compatibility_analysis.get("reason")
+    reason = _perguntas_ia_diagnostico_texto(reason_bruto, 1000)
+    if reason:
+        persistido["reason"] = reason
+    return persistido
 
 
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
@@ -108,6 +457,7 @@ def ml_perguntas_salvar_config_loja(req: PerguntasLojaConfigRequest, client_id: 
         req.loja,
         req.responder_automaticamente,
         req.solicitar_aprovacao,
+        req.notificar_whatsapp_aprovacoes,
         req.habilitar_pos_venda_automatico,
         req.intervalo_minutos,
     )
@@ -138,6 +488,7 @@ def ml_perguntas_salvar_config_lojas_lote(req: PerguntasLojasConfigLoteRequest, 
             nome,
             config_atual.get("responder_automaticamente") is True,
             config_atual.get("solicitar_aprovacao") is True,
+            config_atual.get("notificar_whatsapp_aprovacoes") is True,
             config_atual.get("habilitar_pos_venda_automatico") is True,
             intervalo_minutos,
         )
@@ -250,7 +601,34 @@ def ml_perguntas_automacao_poll(
 
                 item = item_por_id.get(str(pergunta.get("item_id") or "").strip()) or {}
                 try:
-                    resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, nome_loja, cfg, pergunta, item)
+                    if perguntas_pos_venda_codex.enabled():
+                        job = perguntas_pos_venda_codex.create_job(
+                            client_id=client_id,
+                            task_type="question",
+                            store=nome_loja,
+                            subject_key=question_id,
+                            request={
+                                "pergunta": pergunta,
+                                "item": item,
+                                "question_text": str(pergunta.get("text") or ""),
+                                "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
+                            },
+                            channel="app",
+                            created_by="perguntas_automacao",
+                        )
+                        job = _customer_reply_wait_or_raise(client_id, job)
+                        job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+                        resposta = str(job_result.get("resposta") or "")
+                        contexto = job_result.get("contexto") if isinstance(job_result.get("contexto"), dict) else {}
+                        contexto.update({
+                            "codex_job_id": job.get("job_id") or "",
+                            "proposal_version": job_result.get("proposal_version") or 1,
+                            "proposal_hash": job_result.get("proposal_hash") or "",
+                            "data_sufficient": bool(job_result.get("data_sufficient")),
+                            "warnings": job_result.get("warnings") or [],
+                        })
+                    else:
+                        resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, nome_loja, cfg, pergunta, item)
                 except PerguntasIARespostaIndisponivel as exc:
                     logger.warning(
                         "[ML PERGUNTAS IA] Resposta bloqueada para a loja %s, pergunta %s: %s",
@@ -263,7 +641,7 @@ def ml_perguntas_automacao_poll(
                 if not resposta:
                     continue
 
-                if config.get("solicitar_aprovacao") or contexto.get("ia_requer_revisao_humana") or _perguntas_ia_v2_exigir_aprovacao():
+                if _customer_reply_requires_approval():
                     intencao_ctx = contexto.get("intencao_atendimento") if isinstance(contexto.get("intencao_atendimento"), dict) else {}
                     approval = {
                         "id": _perguntas_ia_aprovacao_id(nome_loja, question_id),
@@ -273,6 +651,7 @@ def ml_perguntas_automacao_poll(
                         "item_id": contexto.get("item_id") or "",
                         "sku": contexto.get("sku") or "",
                         "titulo": contexto.get("titulo") or "",
+                        "permalink": contexto.get("permalink") or "",
                         "descricao_anuncio": str(contexto.get("descricao") or "")[:2500],
                         "pergunta": contexto.get("pergunta") or "",
                         "mensagens": _perguntas_ia_mensagens_aprovacao(pergunta, nome_loja),
@@ -288,26 +667,19 @@ def ml_perguntas_automacao_poll(
                         "ia_validacao_ok": contexto.get("ia_validacao_ok"),
                         "ia_validacao_issues": contexto.get("ia_validacao_issues") or [],
                         "ia_requer_revisao_humana": bool(contexto.get("ia_requer_revisao_humana")),
+                        "codex_job_id": contexto.get("codex_job_id") or "",
+                        "proposal_id": contexto.get("codex_job_id") or "",
+                        "proposal_version": contexto.get("proposal_version") or 1,
+                        "proposal_hash": contexto.get("proposal_hash") or "",
+                        "data_sufficient": contexto.get("data_sufficient"),
+                        "warnings": contexto.get("warnings") or [],
                         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
                     }
+                    approval.update(_perguntas_ia_diagnostico_aprovacao(contexto))
                     aprovacoes.append(approval)
                     novas_pendentes.append(approval)
                     processadas_loja += 1
                     mudou_aprovacoes = True
-                else:
-                    resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, nome_loja, cfg, question_id, resposta)
-                    _perguntas_ia_marcar_processada(state, nome_loja, question_id, "sent_auto")
-                    processadas_loja += 1
-                    mudou_state = True
-                    enviadas.append({
-                        "loja": nome_loja,
-                        "question_id": question_id,
-                        "item_id": contexto.get("item_id") or "",
-                        "sku": contexto.get("sku") or "",
-                        "titulo": contexto.get("titulo") or "",
-                        "resposta": resposta,
-                        "mercadolivre": resposta_ml,
-                    })
         except HTTPException as exc:
             erros.append({"loja": nome_loja, "erro": exc.detail})
         except Exception as exc:
@@ -409,22 +781,48 @@ def ml_perguntas_aprovacoes_listar(client_id: str = Depends(get_tenant_id)):
 
 
 def ml_perguntas_aprovacoes_aprovar(req: PerguntasAprovacaoRequest, client_id: str = Depends(get_tenant_id)):
+    # A reserva, a consulta remota e o POST precisam formar uma única seção
+    # crítica no backend local. Isso fecha cliques simultâneos e permite
+    # reconciliar um processo reiniciado depois de a API ter aceitado a resposta.
+    with _ML_APPROVAL_SEND_LOCK:
+        return _ml_perguntas_aprovacoes_aprovar_locked(req, client_id)
+
+
+def _ml_perguntas_aprovacoes_aprovar_locked(req: PerguntasAprovacaoRequest, client_id: str):
     approval_id = str(req.approval_id or "").strip()
     aprovacoes = _perguntas_ia_aprovacoes_carregar(client_id)
     idx = next((i for i, item in enumerate(aprovacoes) if isinstance(item, dict) and str(item.get("id") or "") == approval_id), -1)
     if idx < 0:
         raise HTTPException(status_code=404, detail="AprovaÃ§Ã£o nÃ£o encontrada.")
     approval = aprovacoes[idx]
-    if str(approval.get("status") or "pending") != "pending":
-        return {"success": True, "approval": approval}
-
     loja = str(approval.get("loja") or "").strip()
     question_id = str(approval.get("question_id") or "").strip()
     resposta_editada = req.resposta if req.resposta is not None else req.texto
     resposta_base = resposta_editada if resposta_editada is not None else approval.get("resposta_sugerida")
     resposta = str(resposta_base or "").strip()
+    draft_hash = hashlib.sha256(resposta.encode("utf-8")).hexdigest()
+    expected_idempotency_key = hashlib.sha256(
+        f"{client_id}|{loja}|{question_id}|{draft_hash}".encode("utf-8")
+    ).hexdigest()
+    requested_idempotency_key = str(req.idempotency_key or "").strip().lower()
+    if requested_idempotency_key and requested_idempotency_key != expected_idempotency_key:
+        raise HTTPException(status_code=409, detail="Chave idempotente nao corresponde ao cliente, loja, pergunta e rascunho.")
+    idempotency_key = requested_idempotency_key or expected_idempotency_key
+    existing_idempotency_key = str(approval.get("send_idempotency_key") or "").strip().lower()
+    if existing_idempotency_key and existing_idempotency_key != idempotency_key:
+        raise HTTPException(status_code=409, detail="Esta pergunta possui outro envio em andamento ou concluido.")
+    previous_status = str(approval.get("status") or "pending")
+    if previous_status not in {"pending", "sending"}:
+        return {
+            "success": True,
+            "approval": approval,
+            "idempotent_replay": bool(existing_idempotency_key == idempotency_key and previous_status.startswith("sent")),
+        }
+
     cfg = _obter_cfg_ml(client_id, loja)
     tipo_aprovacao = str(approval.get("tipo") or approval.get("approval_type") or "").strip().lower()
+    proposal_id = str(approval.get("proposal_id") or approval.get("codex_job_id") or "").strip()
+    proposal_info = None
     if tipo_aprovacao == "pos_venda":
         pack_id = str(approval.get("pack_id") or "").strip()
         buyer_id = str(approval.get("buyer_id") or "").strip()
@@ -432,12 +830,116 @@ def ml_perguntas_aprovacoes_aprovar(req: PerguntasAprovacaoRequest, client_id: s
         resposta = _pos_venda_ia_limpar_resposta(resposta, max_chars)
         if not resposta:
             raise HTTPException(status_code=400, detail="Informe uma resposta antes de aprovar.")
-        resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, loja, cfg, pack_id, buyer_id, resposta, max_chars)
+        try:
+            conversa_preflight = approval.get("conversa") if isinstance(approval.get("conversa"), dict) else {}
+            conversa_preflight, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, loja, cfg, conversa_preflight)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Nao foi possivel confirmar se a conversa ainda esta pendente.") from exc
+        if _ml_pos_venda_conversa_respondida_pela_loja(conversa_preflight):
+            approval.update(
+                {
+                    "status": "answered_elsewhere",
+                    "resolved_at": dt.datetime.now().isoformat(timespec="seconds"),
+                    "resolution_reason": "pos_venda_respondido_por_outro_fluxo",
+                }
+            )
+            aprovacoes[idx] = approval
+            _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+            return {"success": True, "approval": approval, "idempotent_replay": previous_status == "sending"}
+        if proposal_id:
+            proposal_info = perguntas_pos_venda_codex.approve_or_refresh_proposal(
+                client_id=client_id,
+                proposal_id=proposal_id,
+                proposal_version=int(approval.get("proposal_version") or 0),
+                proposal_hash=str(approval.get("proposal_hash") or ""),
+                answer=resposta,
+                store=loja,
+                subject_key=pack_id,
+            )
+        approval.update(
+            {
+                "status": "sending",
+                "send_idempotency_key": idempotency_key,
+                "send_draft_hash": draft_hash,
+                "send_started_at": dt.datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        aprovacoes[idx] = approval
+        _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+        try:
+            resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, loja, cfg, pack_id, buyer_id, resposta, max_chars)
+        except Exception:
+            approval["status"] = "pending"
+            approval["send_last_error_at"] = dt.datetime.now().isoformat(timespec="seconds")
+            aprovacoes[idx] = approval
+            _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+            if proposal_id:
+                perguntas_pos_venda_codex.mark_verified(client_id=client_id, job_id=proposal_id, success=False)
+            raise
     else:
         resposta = _perguntas_ia_limpar_resposta(resposta)
         if not resposta:
             raise HTTPException(status_code=400, detail="Informe uma resposta antes de aprovar.")
-        resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
+        respondida, pergunta_ml, cfg = _perguntas_ia_pergunta_respondida_ml(client_id, loja, cfg, question_id)
+        if not pergunta_ml:
+            raise HTTPException(status_code=503, detail="Nao foi possivel confirmar se a pergunta ainda esta pendente.")
+        if respondida:
+            answer = pergunta_ml.get("answer") if isinstance(pergunta_ml.get("answer"), dict) else {}
+            resposta_existente = str(answer.get("text") or "").strip()
+            reconciled = bool(previous_status == "sending" and resposta_existente == resposta)
+            approval.update(
+                {
+                    "status": "sent_reconciled" if reconciled else "answered_elsewhere",
+                    "resolved_at": dt.datetime.now().isoformat(timespec="seconds"),
+                    "resolution_reason": "idempotent_reconciliation" if reconciled else "pergunta_respondida_por_outro_fluxo",
+                    "resposta_enviada": resposta_existente,
+                    "mercadolivre": pergunta_ml,
+                    "send_idempotency_key": idempotency_key if reconciled else existing_idempotency_key,
+                }
+            )
+            aprovacoes[idx] = approval
+            _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+            return {"success": True, "approval": approval, "idempotent_replay": reconciled}
+        if proposal_id:
+            proposal_info = perguntas_pos_venda_codex.approve_or_refresh_proposal(
+                client_id=client_id,
+                proposal_id=proposal_id,
+                proposal_version=int(approval.get("proposal_version") or 0),
+                proposal_hash=str(approval.get("proposal_hash") or ""),
+                answer=resposta,
+                store=loja,
+                subject_key=question_id,
+            )
+        approval.update(
+            {
+                "status": "sending",
+                "send_idempotency_key": idempotency_key,
+                "send_draft_hash": draft_hash,
+                "send_started_at": dt.datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        aprovacoes[idx] = approval
+        _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+        try:
+            resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
+        except Exception:
+            approval["status"] = "pending"
+            approval["send_last_error_at"] = dt.datetime.now().isoformat(timespec="seconds")
+            aprovacoes[idx] = approval
+            _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
+            if proposal_id:
+                perguntas_pos_venda_codex.mark_verified(client_id=client_id, job_id=proposal_id, success=False)
+            raise
+    if proposal_id:
+        perguntas_pos_venda_codex.mark_verified(
+            client_id=client_id,
+            job_id=proposal_id,
+            success=True,
+            evidence={"mercadolivre": resposta_ml, "approval_id": approval_id},
+        )
+        if proposal_info:
+            approval["proposal_version"] = proposal_info.get("proposal_version") or approval.get("proposal_version")
+            approval["proposal_hash"] = proposal_info.get("proposal_hash") or approval.get("proposal_hash")
     approval["status"] = "sent"
     approval["sent_at"] = dt.datetime.now().isoformat(timespec="seconds")
     approval["resposta_enviada"] = resposta
@@ -494,6 +996,9 @@ def ml_perguntas_aprovacoes_rejeitar(req: PerguntasAprovacaoRequest, client_id: 
     approval = aprovacoes[idx]
     approval["status"] = "rejected"
     approval["rejected_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    proposal_id = str(approval.get("proposal_id") or approval.get("codex_job_id") or "").strip()
+    if proposal_id:
+        perguntas_pos_venda_codex.mark_rejected(client_id=client_id, job_id=proposal_id)
     aprovacoes[idx] = approval
     _perguntas_ia_aprovacoes_salvar(client_id, aprovacoes)
     state = _perguntas_ia_state_carregar(client_id)
@@ -536,6 +1041,31 @@ def ml_questions_v2_process(question_id: str, req: MLQuestionsV2ProcessRequest, 
     if not str(pergunta.get("text") or "").strip() and not pergunta.get("buyer_question_chat"):
         raise HTTPException(status_code=400, detail="Informe o texto da pergunta.")
     item = req.item if isinstance(req.item, dict) else {}
+    if perguntas_pos_venda_codex.enabled():
+        job = perguntas_pos_venda_codex.create_job(
+            client_id=client_id,
+            task_type="question",
+            store=loja,
+            subject_key=str(pergunta.get("id") or ""),
+            request={
+                "pergunta": pergunta,
+                "item": item,
+                "question_text": str(pergunta.get("text") or ""),
+                "resposta_atual": str(req.resposta_atual or ""),
+                "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
+            },
+            channel="app",
+        )
+        job = _customer_reply_wait_or_raise(client_id, job)
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        return jsonable_encoder({
+            **job,
+            "success": str(job.get("status") or "") == "completed",
+            "question_id": pergunta.get("id"),
+            "answer": result.get("resposta") or "",
+            "context": result.get("contexto") or {},
+            "publish_attempted": False,
+        })
     cfg = _obter_cfg_ml(client_id, loja)
     try:
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
@@ -622,16 +1152,81 @@ def ml_questions_v2_metrics(client_id: str = Depends(get_tenant_id)):
     return {"success": True, "metrics": metrics}
 
 
-def ml_perguntas_gerar_resposta_manual(req: PerguntasGerarRespostaRequest, client_id: str = Depends(get_tenant_id)):
+def _customer_reply_wait_or_raise(client_id: str, job: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(job.get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(status_code=500, detail="O orquestrador nao retornou a identificacao da tarefa.")
+    if job.get("queued"):
+        job = perguntas_pos_venda_codex.wait_job(client_id, job_id, timeout=180)
+    status = str(job.get("status") or "")
+    if status == "failed":
+        raise HTTPException(status_code=503, detail=str(job.get("error") or "Falha no orquestrador Codex."))
+    if status == "cancelled":
+        raise HTTPException(status_code=409, detail="A geracao foi cancelada.")
+    if status != "completed":
+        return job
+    return job
+
+
+def _customer_reply_requires_approval() -> bool:
+    """Automatic mode only prepares drafts; publishing always needs approval."""
+
+    return True
+
+
+def ml_perguntas_gerar_resposta_manual(
+    req: PerguntasGerarRespostaRequest,
+    client_id: str = Depends(get_tenant_id),
+):
     loja = str(req.loja or "").strip()
     pergunta = req.pergunta if isinstance(req.pergunta, dict) else {}
     resposta_atual = str(req.resposta_atual or "").strip()
     if resposta_atual:
         pergunta = {**pergunta, "_resposta_atual": resposta_atual[:1200]}
+    orientacao_usuario = str(req.orientacao_usuario or "").strip()
+    if orientacao_usuario:
+        pergunta = {**pergunta, "_orientacao_usuario": orientacao_usuario[:1200]}
     if not loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
     if not str(pergunta.get("id") or "").strip():
         raise HTTPException(status_code=400, detail="Informe a pergunta.")
+
+    if perguntas_pos_venda_codex.enabled():
+        job = perguntas_pos_venda_codex.create_job(
+            client_id=client_id,
+            task_type="question",
+            store=loja,
+            subject_key=str(pergunta.get("id") or "").strip(),
+            request={
+                "pergunta": pergunta,
+                "question_text": str(pergunta.get("text") or ""),
+                "resposta_atual": resposta_atual,
+                "orientacao_usuario": orientacao_usuario,
+                "sku": str(pergunta.get("item_sku") or pergunta.get("sku") or ""),
+            },
+            channel="app",
+        )
+        if req.async_mode:
+            return jsonable_encoder(job)
+        job = _customer_reply_wait_or_raise(client_id, job)
+        if str(job.get("status") or "") != "completed":
+            return jsonable_encoder(job)
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        return jsonable_encoder({
+            **job,
+            "success": True,
+            "loja": loja,
+            "question_id": str(pergunta.get("id") or "").strip(),
+            "resposta": result.get("resposta") or "",
+            "contexto": result.get("contexto") or {},
+            "job_id": job.get("job_id") or "",
+            "agent_state": job.get("agent_state") or "aguardando_aprovacao",
+            "subquestions": job.get("subquestions") or [],
+            "evidence_status": job.get("evidence_status") or [],
+            "data_sufficient": bool(job.get("data_sufficient")),
+            "proposal_version": job.get("proposal_version") or 1,
+            "warnings": job.get("warnings") or [],
+        })
 
     cfg = _obter_cfg_ml(client_id, loja)
     item_id = str(pergunta.get("item_id") or "").strip()
@@ -691,8 +1286,43 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
     if not resposta:
         raise HTTPException(status_code=400, detail="Informe a resposta.")
 
+    proposal_info = None
+    if str(req.proposal_id or "").strip():
+        try:
+            proposal_info = perguntas_pos_venda_codex.approve_or_refresh_proposal(
+                client_id=client_id,
+                proposal_id=str(req.proposal_id or "").strip(),
+                proposal_version=int(req.proposal_version or 0),
+                proposal_hash=str(req.proposal_hash or "").strip(),
+                answer=resposta,
+                store=loja,
+                subject_key=question_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Proposta de resposta nao encontrada.") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     cfg = _obter_cfg_ml(client_id, loja)
-    resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
+    try:
+        resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
+    except Exception:
+        if proposal_info:
+            perguntas_pos_venda_codex.mark_verified(
+                client_id=client_id,
+                job_id=str(req.proposal_id or ""),
+                success=False,
+            )
+        raise
+    if proposal_info:
+        perguntas_pos_venda_codex.mark_verified(
+            client_id=client_id,
+            job_id=str(req.proposal_id or ""),
+            success=True,
+            evidence={"question_id": question_id, "mercadolivre": resposta_ml},
+        )
     resolvidas = _perguntas_ia_resolver_aprovacoes_pendentes(
         client_id,
         loja,
@@ -745,6 +1375,8 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
         "question_id": question_id,
         "resposta": resposta,
         "mercadolivre": resposta_ml,
+        "proposal_version": (proposal_info or {}).get("proposal_version") if proposal_info else None,
+        "proposal_hash": (proposal_info or {}).get("proposal_hash") if proposal_info else "",
     }
 
 
@@ -817,7 +1449,10 @@ def ml_ia_treinamento_simular(req: IATreinamentoPerguntasPosVendaSimularRequest,
     model_req = _normalizar_ia_modelo_padrao(str(req.model or "").strip() or _ia_modelo_perguntas_configurado())
     payload.model = model_req
 
-    if _modelo_eh_vertex_ai(model_req):
+    if _modelo_eh_codex(model_req):
+        resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
+    elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif _modelo_eh_gemini_api(model_req):
@@ -1252,13 +1887,56 @@ def ml_pos_venda_obter_anexo(
     return StreamingResponse(io.BytesIO(resp.content), media_type=media_type, headers=headers)
 
 
-def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, client_id: str = Depends(get_tenant_id)):
+def ml_pos_venda_gerar_resposta_conversa(
+    req: PosVendaGerarRespostaRequest,
+    client_id: str = Depends(get_tenant_id),
+):
     nome_loja = str(req.loja or "").strip()
     pack = str(req.pack_id or "").strip()
     if not nome_loja:
         raise HTTPException(status_code=400, detail="Informe a loja.")
     if not pack:
         raise HTTPException(status_code=400, detail="Informe a conversa do pos venda.")
+
+    if perguntas_pos_venda_codex.enabled():
+        job = perguntas_pos_venda_codex.create_job(
+            client_id=client_id,
+            task_type="post_sale",
+            store=nome_loja,
+            subject_key=pack,
+            request={
+                "pack_id": pack,
+                "order_id": str(req.order_id or "").strip(),
+                "buyer_id": str(req.buyer_id or "").strip(),
+                "max_chars": int(req.max_chars or ML_POS_VENDA_DEFAULT_MAX_CHARS),
+                "resposta_atual": str(req.resposta_atual or "").strip(),
+                "orientacao_usuario": str(req.orientacao_usuario or "").strip(),
+            },
+            channel="app",
+        )
+        if req.async_mode:
+            return jsonable_encoder(job)
+        job = _customer_reply_wait_or_raise(client_id, job)
+        if str(job.get("status") or "") != "completed":
+            return jsonable_encoder(job)
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        context = result.get("contexto") if isinstance(result.get("contexto"), dict) else {}
+        return jsonable_encoder({
+            **job,
+            "success": True,
+            "loja": nome_loja,
+            "pack_id": pack,
+            "resposta": result.get("resposta") or "",
+            "model": result.get("model") or context.get("model") or "",
+            "pode_enviar_automaticamente": False,
+            "decisao": context.get("decisao") or {},
+            "validacao": context.get("validacao") or {},
+            "ia_pipeline": _ml_pos_venda_pipeline_resumo(context),
+            "audit_id": "",
+            "seller_max_message_length": int(req.max_chars or ML_POS_VENDA_DEFAULT_MAX_CHARS),
+            "data_sufficient": bool(job.get("data_sufficient")),
+            "warnings": job.get("warnings") or [],
+        })
 
     cfg = _obter_cfg_ml(client_id, nome_loja)
     max_chars = int(req.max_chars or ML_POS_VENDA_DEFAULT_MAX_CHARS)
@@ -1271,6 +1949,10 @@ def ml_pos_venda_gerar_resposta_conversa(req: PosVendaGerarRespostaRequest, clie
     )
     if req.buyer_id and not conversa.get("buyer_id"):
         conversa["buyer_id"] = str(req.buyer_id or "").strip()
+    if str(req.resposta_atual or "").strip():
+        conversa["_resposta_atual"] = str(req.resposta_atual or "").strip()[:1200]
+    if str(req.orientacao_usuario or "").strip():
+        conversa["_orientacao_usuario"] = str(req.orientacao_usuario or "").strip()[:1200]
     conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
     resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
     return jsonable_encoder({
@@ -1299,6 +1981,24 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
     cfg = _obter_cfg_ml(client_id, nome_loja)
     max_chars = int(req.max_chars or ML_POS_VENDA_DEFAULT_MAX_CHARS)
     resposta = _pos_venda_ia_limpar_resposta(req.texto, max_chars)
+    proposal_info = None
+    if str(req.proposal_id or "").strip():
+        try:
+            proposal_info = perguntas_pos_venda_codex.approve_or_refresh_proposal(
+                client_id=client_id,
+                proposal_id=str(req.proposal_id or "").strip(),
+                proposal_version=int(req.proposal_version or 0),
+                proposal_hash=str(req.proposal_hash or "").strip(),
+                answer=resposta,
+                store=nome_loja,
+                subject_key=pack,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Proposta de resposta nao encontrada.") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     conversa_memoria = req.conversa if isinstance(req.conversa, dict) else {}
     if conversa_memoria:
         conversa_memoria.setdefault("pack_id", pack)
@@ -1317,7 +2017,23 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
             buyer = str(conversa_memoria.get("buyer_id") or "").strip()
         except Exception as exc:
             logger.warning("[ML POS VENDA] Nao foi possivel resolver buyer_id antes do envio pack=%s loja=%s: %s", pack, nome_loja, exc)
-    resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, nome_loja, cfg, pack, buyer, resposta, max_chars)
+    try:
+        resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, nome_loja, cfg, pack, buyer, resposta, max_chars)
+    except Exception:
+        if proposal_info:
+            perguntas_pos_venda_codex.mark_verified(
+                client_id=client_id,
+                job_id=str(req.proposal_id or ""),
+                success=False,
+            )
+        raise
+    if proposal_info:
+        perguntas_pos_venda_codex.mark_verified(
+            client_id=client_id,
+            job_id=str(req.proposal_id or ""),
+            success=True,
+            evidence={"pack_id": pack, "mercadolivre": resposta_ml},
+        )
     if not conversa_memoria:
         try:
             conversa_memoria, cfg = _ml_pos_venda_montar_conversa_normalizada(
@@ -1384,7 +2100,23 @@ def ml_pos_venda_responder_conversa(req: PosVendaMensagemRequest, client_id: str
         "pack_id": pack,
         "resposta": resposta,
         "mercadolivre": resposta_ml,
+        "proposal_version": (proposal_info or {}).get("proposal_version") if proposal_info else None,
+        "proposal_hash": (proposal_info or {}).get("proposal_hash") if proposal_info else "",
     })
+
+
+def ml_customer_reply_job_status(job_id: str, client_id: str = Depends(get_tenant_id)):
+    job = perguntas_pos_venda_codex.get_job(client_id, str(job_id or "").strip())
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=404, detail="Tarefa de atendimento nao encontrada.")
+    return jsonable_encoder(job)
+
+
+def ml_customer_reply_job_cancel(job_id: str, client_id: str = Depends(get_tenant_id)):
+    job = perguntas_pos_venda_codex.cancel_job(client_id, str(job_id or "").strip())
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=404, detail="Tarefa de atendimento nao encontrada.")
+    return jsonable_encoder(job)
 
 
 def ml_pos_venda_automacao_poll(
@@ -1464,7 +2196,41 @@ def ml_pos_venda_automacao_poll(
                 buyer_id = str(conversa.get("buyer_id") or "").strip()
                 max_chars = int(conversa.get("seller_max_message_length") or ML_POS_VENDA_DEFAULT_MAX_CHARS)
                 conversa, cfg = _ml_pos_venda_preparar_conversa_ia(client_id, nome_loja, cfg, conversa)
-                resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
+                if perguntas_pos_venda_codex.enabled():
+                    job = perguntas_pos_venda_codex.create_job(
+                        client_id=client_id,
+                        task_type="post_sale",
+                        store=nome_loja,
+                        subject_key=pack_id,
+                        request={
+                            "pack_id": pack_id,
+                            "order_id": order_id,
+                            "buyer_id": buyer_id,
+                            "max_chars": max_chars,
+                            "last_message_text": last_text,
+                            "sku": str(((conversa.get("items") or [{}])[0] or {}).get("sku") or ""),
+                        },
+                        channel="app",
+                        created_by="pos_venda_automacao",
+                    )
+                    job = _customer_reply_wait_or_raise(client_id, job)
+                    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+                    job_context = job_result.get("contexto") if isinstance(job_result.get("contexto"), dict) else {}
+                    resultado_ia = {
+                        "resposta": job_result.get("resposta") or "",
+                        "model": job_result.get("model") or job_context.get("model") or "",
+                        "pode_enviar_automaticamente": False,
+                        "decisao": job_context.get("decisao") or {},
+                        "validacao": job_context.get("validacao") or {},
+                        "contexto_ia": job_context,
+                        "codex_job_id": job.get("job_id") or "",
+                        "proposal_version": job_result.get("proposal_version") or 1,
+                        "proposal_hash": job_result.get("proposal_hash") or "",
+                        "data_sufficient": bool(job_result.get("data_sufficient")),
+                        "warnings": job_result.get("warnings") or [],
+                    }
+                else:
+                    resultado_ia, cfg = _ml_pos_venda_executar_pipeline_ia(client_id, nome_loja, cfg, conversa, max_chars)
                 resposta = str(resultado_ia.get("resposta") or "").strip()
                 model_usado = str(resultado_ia.get("model") or "").strip()
                 contexto_ia = resultado_ia.get("contexto_ia") if isinstance(resultado_ia.get("contexto_ia"), dict) else {}
@@ -1472,7 +2238,7 @@ def ml_pos_venda_automacao_poll(
                     continue
                 item = (conversa.get("items") or [{}])[0] if isinstance(conversa.get("items"), list) else {}
 
-                if config.get("solicitar_aprovacao") or _pos_venda_ia_v2_exigir_aprovacao() or not resultado_ia.get("pode_enviar_automaticamente"):
+                if _customer_reply_requires_approval():
                     conversa_aprovacao = {
                         "pack_id": conversa.get("pack_id") or pack_id,
                         "order_id": conversa.get("order_id") or order_id,
@@ -1500,6 +2266,7 @@ def ml_pos_venda_automacao_poll(
                         "item_id": item.get("id") or "",
                         "sku": item.get("sku") or "",
                         "titulo": item.get("title") or conversa.get("item_title") or "",
+                        "permalink": item.get("permalink") or item.get("link") or item.get("url") or "",
                         "pergunta": last_text,
                         "conversa": conversa_aprovacao,
                         "mensagens": conversa_aprovacao["messages"],
@@ -1514,6 +2281,12 @@ def ml_pos_venda_automacao_poll(
                         "ia_decisao": resultado_ia.get("decisao") or {},
                         "ia_validacao": resultado_ia.get("validacao") or {},
                         "audit_id": resultado_ia.get("audit_id") or "",
+                        "codex_job_id": resultado_ia.get("codex_job_id") or "",
+                        "proposal_id": resultado_ia.get("codex_job_id") or "",
+                        "proposal_version": resultado_ia.get("proposal_version") or 1,
+                        "proposal_hash": resultado_ia.get("proposal_hash") or "",
+                        "data_sufficient": resultado_ia.get("data_sufficient"),
+                        "warnings": resultado_ia.get("warnings") or [],
                         "created_at": dt.datetime.now().isoformat(timespec="seconds"),
                     }
                     aprovacoes.append(approval)
@@ -1534,47 +2307,6 @@ def ml_pos_venda_automacao_poll(
                         })
                     except Exception as exc:
                         logger.warning("[ML POS VENDA IA] Falha ao auditar envio para humano: %s", exc)
-                else:
-                    resposta_ml, cfg = _ml_pos_venda_enviar_resposta_ml(client_id, nome_loja, cfg, pack_id, buyer_id, resposta, max_chars)
-                    try:
-                        _ml_pos_venda_memoria_registrar_resposta_enviada(
-                            client_id,
-                            nome_loja,
-                            conversa,
-                            resposta,
-                            origem="auto_pos_venda",
-                        )
-                    except Exception as exc:
-                        logger.warning("[ML POS VENDA IA] Falha ao registrar resposta automatica na memoria do SKU: %s", exc)
-                    _perguntas_ia_marcar_processada(state, nome_loja, chave, "sent_auto_pos_venda")
-                    mudou_state = True
-                    processadas_loja += 1
-                    try:
-                        _ml_pos_venda_auditoria_registrar(client_id, {
-                            "evento": "pos_venda_ia_enviada_auto",
-                            "loja": nome_loja,
-                            "pack_id": pack_id,
-                            "order_id": order_id,
-                            "buyer_id": buyer_id,
-                            "audit_pipeline_id": resultado_ia.get("audit_id") or "",
-                            "decisao": resultado_ia.get("decisao") or {},
-                            "validacao": resultado_ia.get("validacao") or {},
-                            "mercadolivre": resposta_ml,
-                        })
-                    except Exception as exc:
-                        logger.warning("[ML POS VENDA IA] Falha ao auditar envio automatico: %s", exc)
-                    enviadas.append({
-                        "tipo": "pos_venda",
-                        "loja": nome_loja,
-                        "pack_id": pack_id,
-                        "order_id": order_id,
-                        "buyer_id": buyer_id,
-                        "sku": item.get("sku") or "",
-                        "titulo": item.get("title") or conversa.get("item_title") or "",
-                        "resposta": resposta,
-                        "mercadolivre": resposta_ml,
-                        "audit_id": resultado_ia.get("audit_id") or "",
-                    })
         except HTTPException as exc:
             erros.append({"loja": nome_loja, "erro": exc.detail})
         except Exception as exc:
@@ -1602,6 +2334,8 @@ def ml_listar_perguntas(
     limit: int = 50,
     carregar_todas: bool = True,
     max_pages: int = 100,
+    modo_resumo_rapido: bool = False,
+    request_timeout: int = 20,
     client_id: str = Depends(get_tenant_id),
 ):
     try:
@@ -1617,6 +2351,7 @@ def ml_listar_perguntas(
         limit = max(1, min(int(limit or 20), 100))
         offset = max(0, int(offset or 0))
         max_pages = max(1, min(int(max_pages or 100), 100))
+        request_timeout = max(5, min(int(request_timeout or 20), 25))
         status_filtro = str(status or "").strip().upper()
         if status_filtro in {"TODAS", "TODOS", "ALL"}:
             status_filtro = ""
@@ -1655,7 +2390,7 @@ def ml_listar_perguntas(
                         "limit": limit,
                     }
 
-                resp, cfg = _ml_api_request(client_id, nome_loja, cfg, "GET", url, params=params, timeout=25)
+                resp, cfg = _ml_api_request(client_id, nome_loja, cfg, "GET", url, params=params, timeout=request_timeout)
                 if resp.status_code != 200:
                     detail = _ml_parse_error_detail(resp, "Erro ao buscar perguntas do Mercado Livre")
                     if resp.status_code == 400 and "invalid client parameter" in str(detail).lower():
@@ -1726,7 +2461,7 @@ def ml_listar_perguntas(
                 if status_filtro:
                     params["status"] = status_filtro
 
-                resp, cfg = _ml_api_request(client_id, nome_loja, cfg, "GET", url, params=params, timeout=20)
+                resp, cfg = _ml_api_request(client_id, nome_loja, cfg, "GET", url, params=params, timeout=request_timeout)
                 if resp.status_code != 200:
                     raise HTTPException(status_code=resp.status_code, detail=_ml_parse_error_detail(resp, "Erro ao buscar perguntas do Mercado Livre"))
 
@@ -1774,7 +2509,7 @@ def ml_listar_perguntas(
             if status_filtro:
                 params["status"] = status_filtro
 
-            resp, cfg = _ml_api_request(client_id, nome_loja, cfg, "GET", url, params=params, timeout=20)
+            resp, cfg = _ml_api_request(client_id, nome_loja, cfg, "GET", url, params=params, timeout=request_timeout)
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=_ml_parse_error_detail(resp, "Erro ao buscar perguntas do Mercado Livre"))
 
@@ -1815,10 +2550,14 @@ def ml_listar_perguntas(
         itens, cfg = _ml_buscar_itens_batch(client_id, nome_loja, cfg, item_ids)
         itens = _ml_perguntas_completar_skus_itens(client_id, nome_loja, cfg, itens)
         item_por_id = {str(item.get("id") or "").strip(): item for item in itens if isinstance(item, dict)}
-        usuario_por_id, cfg = _ml_perguntas_buscar_usuarios(client_id, nome_loja, cfg, user_ids)
+        usuario_por_id = {}
+        if not modo_resumo_rapido:
+            usuario_por_id, cfg = _ml_perguntas_buscar_usuarios(client_id, nome_loja, cfg, user_ids)
         perguntas_norm = [_ml_perguntas_normalizar(pergunta, item_por_id, usuario_por_id) for pergunta in perguntas]
-        perguntas_norm, cfg = _ml_perguntas_anexar_historico_comprador(client_id, nome_loja, cfg, seller_id, perguntas_norm)
-        tempo_resposta_ml, cfg = _ml_perguntas_tempo_resposta(client_id, nome_loja, cfg, seller_id)
+        tempo_resposta_ml = {}
+        if not modo_resumo_rapido:
+            perguntas_norm, cfg = _ml_perguntas_anexar_historico_comprador(client_id, nome_loja, cfg, seller_id, perguntas_norm)
+            tempo_resposta_ml, cfg = _ml_perguntas_tempo_resposta(client_id, nome_loja, cfg, seller_id)
 
         return jsonable_encoder({
             "success": True,
@@ -1831,6 +2570,7 @@ def ml_listar_perguntas(
             "next_offset": None if carregar_todas else (proximo_offset if proximo_offset < total and not interrompido else None),
             "interrompido": interrompido,
             "modo_busca": "scan" if usar_scan else "offset",
+            "modo_resumo_rapido": bool(modo_resumo_rapido),
             "status_resumo": _ml_perguntas_resumir_status(perguntas_norm),
             "tempo_resposta_ml": tempo_resposta_ml,
             "filters": filtros,

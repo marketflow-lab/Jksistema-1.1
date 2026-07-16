@@ -146,7 +146,7 @@ from backend.routers import (
     create_renovacao_router,
     create_sala_reuniao_router,
     create_shared_sync_router,
-    create_vendas_router,
+    create_whatsapp_bridge_router,
     include_feature_routers,
     mount_static_assets,
 )
@@ -218,8 +218,10 @@ from backend.services.favoritos import (
     _favoritos_usuario_slug,
     configure_favoritos_context,
 )
+from backend.services.favoritos_planilhas_colar import favoritos_colar_historico_planilha
 from backend.services import favoritos_endpoints as favoritos_endpoint_service
 from backend.services import perguntas_pos_venda_endpoints as perguntas_pos_venda_endpoint_service
+from backend.services import perguntas_pos_venda_codex as perguntas_pos_venda_codex_service
 for _endpoint_name in perguntas_pos_venda_endpoint_service.PERGUNTAS_POS_VENDA_ENDPOINTS:
     globals()[_endpoint_name] = getattr(perguntas_pos_venda_endpoint_service, _endpoint_name)
 for _endpoint_name in favoritos_endpoint_service.FAVORITOS_ENDPOINTS:
@@ -330,35 +332,12 @@ from backend.services.mercadolivre import (
     MercadoLivreServiceConfig,
     configure_mercado_livre_context,
 )
-from backend.services.shared_sync import (
-    _shared_sync_bytes_sha256,
-    _shared_sync_config_doc_id,
-    _shared_sync_doc_id,
-    _shared_sync_docs_cache_get,
-    _shared_sync_docs_cache_invalidate,
-    _shared_sync_docs_cache_set,
-    _shared_sync_json_clone,
-    _shared_sync_local_backup_retention,
-    _shared_sync_machine_doc_id,
-    _shared_sync_max_bundle_bytes,
-    _shared_sync_max_file_bytes,
-    _shared_sync_now_iso,
-    _shared_sync_pair_doc_id,
-    _shared_sync_relativo_seguro,
-    _shared_sync_safe_doc_id,
-    _shared_sync_safe_filename,
-    _shared_sync_sha256_file,
-)
-from backend.services.vendas import (
-    _vendas_sync_dias_periodo,
-    _vendas_sync_job_key,
-    _vendas_sync_load_state,
-    _vendas_sync_parse_date,
-    _vendas_sync_prepare_job,
-    _vendas_sync_save_state,
-    _vendas_sync_state_path,
-    _vendas_sync_update_job,
-    configure_vendas_context,
+from backend.core import AppPaths
+from backend.modules.vendas import (
+    LegacyBlingVendasAdapter,
+    VendasModuleDependencies,
+    create_vendas_module,
+    install_default_vendas_module,
 )
 from backend.services.renovacao import (
     RenovacaoServiceConfig,
@@ -465,6 +444,7 @@ from backend.schemas import (
     FavoritosHistoricoRealtimeSyncRequest,
     FavoritosPlanilhaLojaItem,
     FavoritosPlanilhasLojasRequest,
+    FavoritosPlanilhaColarHistoricoRequest,
     IASalvarConversaRequest,
     SiscomexAliquotasRequest,
 )
@@ -634,7 +614,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.90"
+VERSAO_MINIMA_APP_PADRAO = "1.0.98"
 
 
 def versao_minima_app_backend() -> str:
@@ -917,6 +897,9 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
             request,
             str(payload.get("machine_id") or "").strip(),
         )
+        request.state.username = username
+        request.state.client_id = client_id
+        request.state.auth_payload = dict(payload)
         return client_id
     except JWTError:
         raise HTTPException(
@@ -1278,25 +1261,6 @@ USER_CHAT_REMOTE_HISTORY_CHECK_CACHE: dict[str, int] = {}
 
 
 
-
-
-
-
-
-
-
-
-
-
-# Shared Sync service logic lives in backend.services.shared_sync.
-from backend.services import shared_sync as _shared_sync_module
-_shared_sync_module.configure_shared_sync_runtime(sys.modules[__name__])
-globals().update({
-    name: getattr(_shared_sync_module, name)
-    for name in _shared_sync_module.__all__
-    if name != "configure_shared_sync_runtime" and hasattr(_shared_sync_module, name)
-})
-app.include_router(create_shared_sync_router())
 
 
 
@@ -1950,6 +1914,13 @@ app.include_router(create_shared_sync_router())
 _admin_usuarios_module.configure_admin_usuarios_runtime(sys.modules[__name__])
 app.include_router(create_admin_usuarios_router())
 
+# WhatsApp Cloud API bridge: the public gateway stays at Cloudflare, while all
+# Joao Pretinho processing remains on this authenticated local runtime.
+from backend.services import whatsapp_bridge as _whatsapp_bridge_module
+_whatsapp_bridge_iniciar_background = _whatsapp_bridge_module.whatsapp_bridge_iniciar_background
+_whatsapp_bridge_parar_background = _whatsapp_bridge_module.whatsapp_bridge_parar_background
+app.include_router(create_whatsapp_bridge_router())
+
 # Promocoes service logic lives in backend.services.promocoes_*.
 from backend.services import promocoes_common as _promocoes_common_module
 from backend.services import promocoes_core as _promocoes_core_module
@@ -2019,6 +1990,18 @@ def get_tenant_path(client_id: str):
     return tenant_path
 
 
+# O Shared Sync depende de get_tenant_path e, por isso, so pode configurar o
+# runtime depois que todos os helpers de tenant estiverem definidos.
+from backend.services import shared_sync as _shared_sync_module
+_shared_sync_module.configure_shared_sync_runtime(sys.modules[__name__])
+globals().update({
+    name: getattr(_shared_sync_module, name)
+    for name in _shared_sync_module.__all__
+    if name != "configure_shared_sync_runtime" and hasattr(_shared_sync_module, name)
+})
+app.include_router(create_shared_sync_router())
+
+
 configure_bling_vendas_context(
     pasta_info=PASTA_INFO,
     get_tenant_path=get_tenant_path,
@@ -2039,7 +2022,6 @@ configure_configuracoes_drive_sync_context(
     get_tenant_path_fn=get_tenant_path,
 )
 configure_full_context(get_tenant_path=get_tenant_path)
-configure_vendas_context(get_tenant_path=get_tenant_path, sync_state_lock=SYNC_STATE_LOCK)
 configure_favoritos_context(
     get_tenant_path=get_tenant_path,
     logger=logger,
@@ -2141,6 +2123,7 @@ _promocoes_api_module.configure_promocoes_api_runtime(sys.modules[__name__])
 _mercadolivre_legacy_core_module.configure_mercadolivre_legacy_core_runtime(sys.modules[__name__])
 _favoritos_core_module.configure_favoritos_core_runtime(sys.modules[__name__])
 _perguntas_pos_venda_core_module.configure_perguntas_pos_venda_core_runtime(sys.modules[__name__])
+perguntas_pos_venda_codex_service.configure_perguntas_pos_venda_codex_runtime(sys.modules[__name__])
 perguntas_pos_venda_endpoint_service.configure_perguntas_pos_venda_endpoints_runtime(sys.modules[__name__])
 app.include_router(create_perguntas_pos_venda_router())
 
@@ -2325,15 +2308,16 @@ globals().update({name: getattr(_cadastro_module, name) for name in _cadastro_mo
 
 # --- ENDPOINTS VENDAS (LISTAGEM) ---
 
-# Vendas service logic lives in backend.services.vendas.
-from backend.services import vendas as _vendas_module
-_vendas_module.configure_vendas_runtime(sys.modules[__name__])
-globals().update({
-    name: getattr(_vendas_module, name)
-    for name in _vendas_module.__all__
-    if hasattr(_vendas_module, name)
-})
-app.include_router(create_vendas_router())
+# Vendas is composed explicitly; legacy import paths delegate to this instance.
+_vendas_paths = AppPaths.create(base_dir=BASE_DIR, info_dir=PASTA_INFO, logger=logger)
+_vendas_domain = install_default_vendas_module(create_vendas_module(VendasModuleDependencies(
+    get_tenant_id=get_tenant_id,
+    paths=_vendas_paths,
+    logger=logger,
+    legacy=LegacyBlingVendasAdapter(),
+    max_active_sync=2,
+)))
+app.include_router(_vendas_domain.router)
 
 # Medias Compras endpoints live in backend.services.medias_compras.
 from backend.services import medias_compras as _medias_compras_module
@@ -2366,6 +2350,12 @@ globals().update({name: getattr(_ia_module, name) for name in _ia_module.__all__
 app.include_router(create_ia_router())
 
 
+def _codex_console_recuperar_fila_background():
+    from backend.services import codex_console as _codex_console_service
+
+    return _codex_console_service.codex_console_recuperar_fila_background()
+
+
 # --- ARQUIVOS ESTÃƒÆ’Ã‚ÂTICOS (FRONTEND) ---
-register_startup_events(app, sys.modules[__name__])
+register_startup_events(app, sys.modules[__name__], extra_handlers=(_vendas_domain.prepare_databases,))
 mount_static_assets(app, _frontend_router_config)

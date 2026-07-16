@@ -157,6 +157,64 @@
             row.descricao_ml_erro = (resultado && resultado.erro) || '';
         }
 
+        function skuDescricaoCacheKey(row, loja = '') {
+            const sku = skuChaveDescricao(row);
+            const lojaKey = String(
+                loja
+                || favoritosLojaSelecionadaParaApi(skuObterLoja(row))
+                || skuObterLoja(row)
+                || ''
+            ).trim().toLowerCase();
+            const itemIds = Array.from(new Set(
+                (Array.isArray(row && row.item_ids) ? row.item_ids : [])
+                    .concat(row && row.descricao_ml_item_id ? [row.descricao_ml_item_id] : [])
+                    .map(value => String(value || '').trim().toUpperCase())
+                    .filter(Boolean)
+            )).sort().join(',');
+            return `${lojaKey}|${sku}|${itemIds}`;
+        }
+
+        function skuDescricaoCacheGet(row, loja = '') {
+            const key = skuDescricaoCacheKey(row, loja);
+            const cached = key ? skuDescricaoMemCache.get(key) : null;
+            if (!cached) return null;
+            if (Number(cached.expiresAt || 0) <= Date.now()) {
+                skuDescricaoMemCache.delete(key);
+                return null;
+            }
+            return cached.resultado && typeof cached.resultado === 'object'
+                ? { ...cached.resultado, cache_hit: true }
+                : null;
+        }
+
+        function skuDescricaoCacheSet(row, resultado, loja = '') {
+            const key = skuDescricaoCacheKey(row, loja);
+            if (!key || !resultado || typeof resultado !== 'object') return;
+            const temDescricao = !!String(resultado.descricao || '').trim();
+            const ttl = temDescricao ? SKU_DESCRICAO_CACHE_TTL_OK_MS : SKU_DESCRICAO_CACHE_TTL_EMPTY_MS;
+            skuDescricaoMemCache.set(key, {
+                expiresAt: Date.now() + ttl,
+                resultado: { ...resultado }
+            });
+        }
+
+        function skuCancelarBuscaDescricoesAutomaticas() {
+            skuDescricaoAutoRunId++;
+            if (skuDescricaoAutoTimer) {
+                clearTimeout(skuDescricaoAutoTimer);
+                skuDescricaoAutoTimer = null;
+            }
+            if (skuDescricaoAutoAbortController) {
+                try { skuDescricaoAutoAbortController.abort(); } catch (_err) {}
+                skuDescricaoAutoAbortController = null;
+            }
+            (Array.isArray(skuDados) ? skuDados : []).forEach(row => {
+                if (String(row && row.descricao_ml_status || '') === 'loading') {
+                    row.descricao_ml_status = '';
+                }
+            });
+        }
+
         function skuNormalizarLinhaApiMercadoLivre(row, lojaPadrao = '') {
             const base = row && typeof row === 'object' ? row : {};
             const lojaApi = String(base.loja || base.loja_sync || lojaPadrao || mlSkuLojaSelecionada || skuLojaSelecionada || '').trim();
@@ -181,8 +239,7 @@
         }
 
         function skuAtualizarDadosComApiMercadoLivre(skus, loja) {
-            skuDescricaoAutoRunId++;
-            if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
+            skuCancelarBuscaDescricoesAutomaticas();
             skuDados = (Array.isArray(skus) ? skus : [])
                 .map(item => skuNormalizarLinhaApiMercadoLivre(item, loja))
                 .filter(item => skuObterSku(item));
@@ -193,9 +250,13 @@
         }
 
         function skuAgendarBuscaDescricoesAutomaticas(delay = 250) {
-            if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
+            skuCancelarBuscaDescricoesAutomaticas();
             skuDescricaoAutoTimer = setTimeout(() => {
+                skuDescricaoAutoTimer = null;
                 skuBuscarDescricoesAutomaticas().catch(err => {
+                    if (err && err.name === 'AbortError') return;
+                    skuCancelarBuscaDescricoesAutomaticas();
+                    skuRenderizarTabela();
                     if (skuStatusEl) skuStatusEl.textContent = `Erro ao buscar descrições: ${err && err.message ? err.message : err}`;
                 });
             }, delay);
@@ -203,15 +264,43 @@
 
         async function skuBuscarDescricoesAutomaticas() {
             const runId = ++skuDescricaoAutoRunId;
-            const linhas = skuFiltrarDados()
+            if (skuDescricaoAutoAbortController) {
+                try { skuDescricaoAutoAbortController.abort(); } catch (_err) {}
+            }
+            const controller = new AbortController();
+            skuDescricaoAutoAbortController = controller;
+            const todasLinhas = skuFiltrarDados()
                 .filter(row => {
                     const status = String(row.descricao_ml_status || '').trim();
                     return skuObterSku(row) && !row.descricao_ml && status !== 'loading' && status !== 'ok' && status !== 'nao_encontrado' && status !== 'sem_descricao';
                 });
-            if (!linhas.length) return;
+            if (!todasLinhas.length) {
+                if (skuDescricaoAutoAbortController === controller) skuDescricaoAutoAbortController = null;
+                return;
+            }
 
-            const skus = Array.from(new Set(linhas.map(row => skuObterSku(row)).filter(Boolean)));
+            const inicioPagina = Math.max(0, (Math.max(1, Number(skuPaginaAtual) || 1) - 1) * SKU_API_PAGE_SIZE);
+            const linhasVisiveis = todasLinhas.slice(inicioPagina, inicioPagina + SKU_API_PAGE_SIZE);
+            const visiveis = new Set(linhasVisiveis);
+            const linhas = linhasVisiveis.concat(todasLinhas.filter(row => !visiveis.has(row)));
+            const lojaDescricoes = favoritosLojaSelecionadaParaApi();
+            const pendentes = [];
             linhas.forEach(row => {
+                const cached = skuDescricaoCacheGet(row, lojaDescricoes);
+                if (cached) {
+                    skuAplicarDescricaoResultado(row, cached);
+                } else {
+                    pendentes.push(row);
+                }
+            });
+            if (pendentes.length !== linhas.length) skuRenderizarTabela();
+            if (!pendentes.length) {
+                if (skuDescricaoAutoAbortController === controller) skuDescricaoAutoAbortController = null;
+                return;
+            }
+
+            const skus = Array.from(new Set(pendentes.map(row => skuObterSku(row)).filter(Boolean)));
+            pendentes.forEach(row => {
                 row.descricao_ml_status = 'loading';
                 row.descricao_ml_erro = '';
             });
@@ -224,12 +313,11 @@
             for (let inicio = 0; inicio < skus.length; inicio += tamanhoLote) {
                 if (runId !== skuDescricaoAutoRunId) return;
                 const lote = skus.slice(inicio, inicio + tamanhoLote);
-                const body = { skus: lote };
-                const itemIdsPorSku = skuItemIdsPorSkuDescricao(linhas, lote);
+                const body = { skus: lote, force_refresh: false };
+                const itemIdsPorSku = skuItemIdsPorSkuDescricao(pendentes, lote);
                 if (Object.keys(itemIdsPorSku).length) {
                     body.item_ids_por_sku = itemIdsPorSku;
                 }
-                const lojaDescricoes = favoritosLojaSelecionadaParaApi();
                 if (lojaDescricoes) {
                     body.loja = lojaDescricoes;
                 }
@@ -241,7 +329,8 @@
                 const response = await fetch('/api/favoritos/skus/descricoes', {
                     method: 'POST',
                     headers: headersJsonAutenticado(),
-                    body: JSON.stringify(body)
+                    body: JSON.stringify(body),
+                    signal: controller.signal
                 });
                 if (!response.ok) {
                     let detalhe = `HTTP ${response.status}`;
@@ -258,7 +347,10 @@
                 const mapaResultados = new Map(resultados.map(item => [String(item.sku || '').trim().toLowerCase(), item]));
                 skuDados.forEach(row => {
                     const resultado = mapaResultados.get(skuChaveDescricao(row));
-                    if (resultado) skuAplicarDescricaoResultado(row, resultado);
+                    if (resultado) {
+                        skuAplicarDescricaoResultado(row, resultado);
+                        skuDescricaoCacheSet(row, resultado, lojaDescricoes);
+                    }
                 });
                 processadas += lote.length;
                 encontradas += resultados.filter(item => String(item.descricao || '').trim()).length;
@@ -268,10 +360,12 @@
                     skuStatusEl.textContent = `Descricoes carregadas: ${encontradas}/${processadas} SKU(s) processados de ${skus.length}.`;
                 }
             }
+            if (skuDescricaoAutoAbortController === controller) skuDescricaoAutoAbortController = null;
         }
         async function skuBuscarDescricaoManual(row, botao) {
             const sku = skuObterSku(row);
             if (!sku) return;
+            skuCancelarBuscaDescricoesAutomaticas();
             if (botao) botao.disabled = true;
             row.descricao_ml_status = 'loading';
             row.descricao_ml_erro = '';
@@ -279,7 +373,7 @@
             if (skuStatusEl) skuStatusEl.textContent = `Buscando descricao do SKU ${sku}...`;
 
             try {
-                const body = { skus: [sku] };
+                const body = { skus: [sku], force_refresh: true };
                 const itemIdsPorSku = skuItemIdsPorSkuDescricao([row], [sku]);
                 if (Object.keys(itemIdsPorSku).length) body.item_ids_por_sku = itemIdsPorSku;
                 const lojaDescricao = favoritosLojaSelecionadaParaApi(skuObterLoja(row));
@@ -304,7 +398,10 @@
                 const resultado = resultados.find(item => String(item.sku || '').trim().toLowerCase() === chave);
                 if (resultado) {
                     skuDados.forEach(item => {
-                        if (skuChaveDescricao(item) === chave) skuAplicarDescricaoResultado(item, resultado);
+                        if (skuChaveDescricao(item) === chave) {
+                            skuAplicarDescricaoResultado(item, resultado);
+                            skuDescricaoCacheSet(item, resultado, lojaDescricao);
+                        }
                     });
                 } else {
                     row.descricao_ml_status = 'nao_encontrado';
@@ -321,6 +418,9 @@
                 row.descricao_ml_erro = err && err.message ? err.message : String(err);
                 skuRenderizarTabela();
                 if (skuStatusEl) skuStatusEl.textContent = `Erro ao buscar descricao do SKU ${sku}: ${row.descricao_ml_erro}`;
+            } finally {
+                if (botao) botao.disabled = false;
+                skuAgendarBuscaDescricoesAutomaticas(500);
             }
         }
 
@@ -586,8 +686,7 @@
             favoritosTotalAnunciosLojaAtual = 0;
             favoritosWarningLojaAtual = '';
             favoritosMlSkuCacheMetaAtual = null;
-            skuDescricaoAutoRunId++;
-            if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
+            skuCancelarBuscaDescricoesAutomaticas();
         }
 
         function favoritosAplicarCacheSkusLoja(nomeLoja, opcoes = {}) {
@@ -614,8 +713,7 @@
             favoritosWarningLojaAtual = cache.warning || '';
             favoritosMlSkuCacheMetaAtual = favoritosClonarValorCache(cache.cacheMeta) || favoritosMlSkuCacheMetaAtual;
             skuSkusOcultos = new Set(Array.isArray(cache.ocultos) ? cache.ocultos : []);
-            skuDescricaoAutoRunId++;
-            if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
+            skuCancelarBuscaDescricoesAutomaticas();
             if (opcoes.render !== false) {
                 skuRenderizarCardsLojas();
                 skuRenderizarTabela();
@@ -1523,8 +1621,7 @@
                 favoritosTotalAnunciosLojaAtual = Number(data.total_anuncios || 0);
                 favoritosWarningLojaAtual = data.warning || '';
                 favoritosMlSkuCacheMetaAtual = favoritosCacheMlMeta(data);
-                skuDescricaoAutoRunId++;
-                if (skuDescricaoAutoTimer) clearTimeout(skuDescricaoAutoTimer);
+                skuCancelarBuscaDescricoesAutomaticas();
                 skuDados = mlSkusAnunciosLojaAtual
                     .map(item => skuNormalizarLinhaApiMercadoLivre(item, mlSkuLojaSelecionada))
                     .filter(item => skuObterSku(item));

@@ -1,8 +1,9 @@
-"""Read-only data source discovery and query helpers for Joao Pretinho."""
+"""Read-only data source discovery and query helpers for Black Jhon."""
 
 from __future__ import annotations
 
 import csv
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -16,7 +17,7 @@ from typing import Any, Optional
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
-READONLY_SOURCES_VERSION = "20260624-readonly-sources-v1"
+READONLY_SOURCES_VERSION = "20260713-readonly-sources-v2-live-questions"
 MAX_DISCOVERY_FILES = int(os.getenv("JK_CODEX_READONLY_MAX_DISCOVERY_FILES") or "1200")
 MAX_TEXT_BYTES = int(os.getenv("JK_CODEX_READONLY_MAX_TEXT_BYTES") or str(512 * 1024))
 DEFAULT_LIMIT = 50
@@ -34,6 +35,19 @@ SYNC_HINT_RE = re.compile(r"(sync|sincron|shared|state|status|erro|error|log|aud
 CACHE_HINT_RE = re.compile(r"(cache|historico|state|favoritos|ia_|web_cache|ml_|mercado|bling|integracoes)", re.I)
 FISCAL_HINT_RE = re.compile(r"(imposto|fiscal|ncm|cest|tribut|aliquota|convenio|nf-e|nfe|\bnf\b)", re.I)
 QUESTION_HINT_RE = re.compile(r"(pergunta|pos_venda|pos-venda|question|approval|aprovacao|comprador)", re.I)
+QUESTION_ALL_STORES_RE = re.compile(
+    r"\b(todas as lojas|todas lojas|todas as contas|cada loja|cada conta|por loja|por conta|"
+    r"loja a loja|conta a conta|separad[oa]s? por loja|visao geral)\b",
+    re.I,
+)
+QUESTION_ALLOWED_STATUSES = {
+    "UNANSWERED",
+    "ANSWERED",
+    "CLOSED_UNANSWERED",
+    "BANNED",
+    "DELETED",
+    "UNDER_REVIEW",
+}
 
 
 def configure_codex_readonly_sources_runtime(runtime_module=None):
@@ -600,10 +614,260 @@ def sync_logs_query(**kwargs: Any) -> dict[str, Any]:
     return local_cache_query(**kwargs)
 
 
-def questions_post_sale_query(**kwargs: Any) -> dict[str, Any]:
-    kwargs["questions_only"] = True
-    result = local_cache_query(**kwargs)
-    result["tool_id"] = "questions_post_sale_query"
+def _question_status_filter(message: str, status: Any = "") -> str:
+    explicit = str(status or "").strip().upper().replace("-", "_").replace(" ", "_")
+    if explicit in {"ALL", "TODAS", "TODOS"}:
+        return ""
+    if explicit in QUESTION_ALLOWED_STATUSES:
+        return explicit
+    text = _norm(message)
+    if re.search(r"\b(fechad[ao]s?|encerrad[ao]s?)\b", text) and re.search(r"\b(sem resposta|nao respondid[ao]s?)\b", text):
+        return "CLOSED_UNANSWERED"
+    if re.search(r"\b(respondid[ao]s?|respondidas anteriormente|ja respondid[ao]s?)\b", text) and not re.search(
+        r"\b(nao respondid[ao]s?|sem resposta)\b", text
+    ):
+        return "ANSWERED"
+    if re.search(r"\b(todas as perguntas|todo o historico|historico completo)\b", text):
+        return ""
+    return "UNANSWERED"
+
+
+def _question_store_catalog(client_id: str) -> tuple[list[dict[str, Any]], str]:
+    try:
+        from backend.services import perguntas_pos_venda_endpoints
+
+        payload = perguntas_pos_venda_endpoints.ml_perguntas_listar_lojas(client_id)
+        stores = payload.get("lojas") if isinstance(payload, dict) else []
+        clean: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in stores or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("nome") or "").strip()
+            key = _norm(name)
+            if not name or not key or key in seen:
+                continue
+            seen.add(key)
+            clean.append({
+                "nome": name,
+                "key": key,
+                "connected": bool(item.get("mercadolivre_conectado")),
+                "status": str(item.get("mercadolivre_status") or "").strip(),
+                "reason": str(item.get("mercadolivre_motivo") or "").strip(),
+            })
+        return clean, ""
+    except Exception as exc:
+        detail = getattr(exc, "detail", exc)
+        return [], str(detail or "Falha ao listar lojas do Mercado Livre.")[:400]
+
+
+def _question_requested_stores(
+    catalog: list[dict[str, Any]],
+    message: str,
+    loja: str,
+    all_stores: bool,
+) -> list[dict[str, Any]]:
+    store_text = str(loja or "").strip()
+    store_key = _norm(store_text)
+    message_key = _norm(message)
+    all_requested = bool(all_stores) or bool(QUESTION_ALL_STORES_RE.search(message_key)) or store_key in {
+        "todas",
+        "todas as lojas",
+        "todas as contas",
+        "__todas",
+    }
+    if all_requested:
+        return list(catalog)
+
+    def matches(candidate_key: str, haystack: str) -> bool:
+        return bool(candidate_key and re.search(rf"(?<![a-z0-9]){re.escape(candidate_key)}(?![a-z0-9])", haystack))
+
+    if store_key:
+        for item in catalog:
+            if item.get("key") == store_key:
+                return [item]
+        return [{"nome": store_text, "key": store_key, "connected": True, "status": "", "reason": ""}]
+
+    matched = [item for item in catalog if matches(str(item.get("key") or ""), message_key)]
+    if matched:
+        matched_keys = {str(item.get("key") or "") for item in matched}
+        return [
+            item
+            for item in matched
+            if not any(
+                item.get("key") != other_key and matches(str(item.get("key") or ""), other_key)
+                for other_key in matched_keys
+            )
+        ]
+    return list(catalog)
+
+
+def questions_post_sale_query(
+    *,
+    client_id: str,
+    message: str = "",
+    loja: str = "",
+    status: str = "",
+    limit: int = DEFAULT_LIMIT,
+    all_stores: bool = False,
+    query_deadline_seconds: int = 15,
+    **_: Any,
+) -> dict[str, Any]:
+    """Consulta a fila viva do Mercado Livre; caches historicos nunca provam fila vazia."""
+
+    from backend.services import perguntas_pos_venda_endpoints
+
+    status_filter = _question_status_filter(message, status)
+    limit_safe = _safe_int(limit, DEFAULT_LIMIT, 1, 100)
+    catalog, catalog_error = _question_store_catalog(client_id)
+    requested = _question_requested_stores(catalog, message, loja, all_stores)
+    records: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    checked: list[str] = []
+    incomplete: list[str] = []
+    errors_by_store: dict[str, str] = {}
+    questions_by_store: dict[str, Optional[int]] = {}
+
+    if catalog_error and not requested:
+        warnings.append(f"Lojas do Mercado Livre: {catalog_error}")
+    if not requested and not catalog_error:
+        warnings.append("Nenhuma loja Mercado Livre vinculada foi encontrada para consultar perguntas.")
+
+    connected_stores: list[dict[str, Any]] = []
+    for store in requested:
+        name = str(store.get("nome") or "").strip()
+        if not name:
+            continue
+        if store.get("connected") is False:
+            reason = str(store.get("reason") or store.get("status") or "Conta Mercado Livre desconectada.").strip()
+            errors_by_store[name] = reason
+            questions_by_store[name] = None
+            warnings.append(f"{name}: {reason}")
+            continue
+        connected_stores.append(store)
+
+    fast_summary = len(connected_stores) > 1
+
+    def query_store(store: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        name = str(store.get("nome") or "").strip()
+        payload = perguntas_pos_venda_endpoints.ml_listar_perguntas(
+            loja=name,
+            status=status_filter or None,
+            offset=0,
+            limit=limit_safe,
+            carregar_todas=False,
+            max_pages=1,
+            modo_resumo_rapido=fast_summary,
+            request_timeout=min(10, max(5, int(query_deadline_seconds or 15))),
+            client_id=client_id,
+        )
+        return name, payload if isinstance(payload, dict) else {}
+
+    deadline_safe = _safe_int(query_deadline_seconds, 15, 5, 60)
+    executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+    futures: dict[concurrent.futures.Future[Any], str] = {}
+    completed_names: set[str] = set()
+    if connected_stores:
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(4, len(connected_stores)),
+            thread_name_prefix="jk-ml-questions",
+        )
+        futures = {
+            executor.submit(query_store, store): str(store.get("nome") or "").strip()
+            for store in connected_stores
+        }
+    try:
+        iterator = concurrent.futures.as_completed(futures, timeout=deadline_safe) if futures else []
+        for future in iterator:
+            expected_name = futures[future]
+            completed_names.add(expected_name)
+            try:
+                name, payload = future.result()
+            except Exception as exc:
+                detail = getattr(exc, "detail", exc)
+                error = str(detail or "Falha ao consultar perguntas.")[:400]
+                errors_by_store[expected_name] = error
+                questions_by_store[expected_name] = None
+                warnings.append(f"{expected_name}: {error}")
+                continue
+            questions = payload.get("questions") if isinstance(payload, dict) else []
+            questions = [item for item in (questions or []) if isinstance(item, dict)]
+            if status_filter:
+                questions = [
+                    item for item in questions
+                    if str(item.get("status") or "").strip().upper() == status_filter
+                ]
+            checked.append(name)
+            try:
+                total_store = int(payload.get("total") if payload.get("total") is not None else len(questions))
+            except (TypeError, ValueError):
+                total_store = len(questions)
+            questions_by_store[name] = max(0, total_store)
+            for question in questions:
+                records.append({"record_type": "mercado_livre_question", "loja": name, **question})
+            sources.append({
+                "source_id": f"mercado_livre_questions_{_safe_id(name)}",
+                "type": "external_api",
+                "module": "perguntas_pos_venda",
+                "path": f"Mercado Livre - perguntas atuais - {name}",
+                "updated_at": _now(),
+                "status": "available",
+            })
+            if bool(payload.get("interrompido")):
+                incomplete.append(name)
+                warnings.append(f"{name}: a API interrompeu a consulta antes de confirmar a fila.")
+    except concurrent.futures.TimeoutError:
+        pass
+    finally:
+        for future, name in futures.items():
+            if name in completed_names:
+                continue
+            future.cancel()
+            error = f"Consulta excedeu o limite rapido de {deadline_safe} segundos."
+            errors_by_store[name] = error
+            questions_by_store[name] = None
+            incomplete.append(name)
+            warnings.append(f"{name}: {error}")
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    requested_names = [str(item.get("nome") or "").strip() for item in requested if str(item.get("nome") or "").strip()]
+    coverage_complete = bool(requested_names) and len(checked) == len(requested_names) and not errors_by_store and not incomplete
+    result = _result(
+        "questions_post_sale_query",
+        records,
+        sources,
+        {
+            "message": message,
+            "loja": loja,
+            "status": status_filter,
+            "all_stores": bool(all_stores) or bool(QUESTION_ALL_STORES_RE.search(_norm(message))),
+            "limit": limit_safe,
+        },
+        warnings,
+    )
+    result.update({
+        "live_query": True,
+        "source_freshness": "live",
+        "status_filter": status_filter,
+        "current_queue": status_filter == "UNANSWERED",
+        "total_questions": sum(value for value in questions_by_store.values() if isinstance(value, int)),
+        "total_pending": sum(value for value in questions_by_store.values() if isinstance(value, int)) if status_filter == "UNANSWERED" else None,
+        "records_returned": len(records),
+        "records_truncated": any(isinstance(value, int) and value > limit_safe for value in questions_by_store.values()),
+        "questions_by_store": questions_by_store,
+        "pending_by_store": questions_by_store if status_filter == "UNANSWERED" else {},
+        "stores_requested": len(requested_names),
+        "stores_checked": len(checked),
+        "stores_failed": len(errors_by_store) + len(incomplete),
+        "coverage_complete": coverage_complete,
+        "zero_is_authoritative": coverage_complete and not records,
+        "lojas_solicitadas_text": ", ".join(requested_names),
+        "lojas_consultadas_text": ", ".join(checked),
+        "lojas_incompletas_text": ", ".join(incomplete),
+        "errors_by_store": errors_by_store,
+    })
     return result
 
 
@@ -633,6 +897,11 @@ def mercado_livre_readonly(
     limit: int = DEFAULT_LIMIT,
     **_: Any,
 ) -> dict[str, Any]:
+    if re.search(r"(pergunta|pos venda|pos-venda|question)", _norm(message)):
+        result = questions_post_sale_query(client_id=client_id, message=message, loja=loja, limit=limit)
+        result["tool_id"] = "mercado_livre_readonly"
+        return result
+
     records = []
     warnings = []
     sources = []
@@ -647,11 +916,6 @@ def mercado_livre_readonly(
         sources.append({"source_id": "mercado_livre_api", "type": "external_api", "module": "mercado_livre", "path": "Mercado Livre read-only"})
     except Exception as exc:
         warnings.append(f"Mercado Livre anuncios: {str(exc)[:220]}")
-    if re.search(r"(pergunta|pos venda|pos-venda|question)", _norm(message)):
-        q = questions_post_sale_query(client_id=client_id, message=message, loja=loja, limit=limit)
-        records.extend(q.get("records") or [])
-        sources.extend(q.get("sources") or [])
-        warnings.extend(q.get("warnings") or [])
     return _result("mercado_livre_readonly", records[: _safe_int(limit)], sources, {"message": message, "loja": loja, "limit": limit}, warnings)
 
 
@@ -664,6 +928,7 @@ def execute_readonly_source_tool(
     data_inicio: str = "",
     data_fim: str = "",
     limit: int = DEFAULT_LIMIT,
+    query_deadline_seconds: int = 15,
     args: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     args = dict(args or {}) if isinstance(args, dict) else {}
@@ -685,7 +950,15 @@ def execute_readonly_source_tool(
     if tool_id == "sync_logs_query":
         return sync_logs_query(**common)
     if tool_id == "questions_post_sale_query":
-        return questions_post_sale_query(**common)
+        return questions_post_sale_query(
+            client_id=client_id,
+            message=message,
+            loja=loja,
+            status=str(args.get("status") or ""),
+            limit=limit,
+            all_stores=bool(args.get("all_stores") or args.get("todas_lojas") or args.get("separar_por_loja")),
+            query_deadline_seconds=query_deadline_seconds,
+        )
     if tool_id == "fiscal_local_query":
         return fiscal_local_query(**common)
     if tool_id == "mercado_livre_readonly":

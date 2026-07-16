@@ -61,10 +61,17 @@ def _shared_sync_resolver_scopes_usuario(requested: Optional[list[str]]) -> list
     return saida
 
 def _shared_sync_usuario_publico(usuario: dict) -> dict:
+    email = str(usuario.get("email") or "").strip().lower()
+    normalizar_email = globals().get("_normalizar_email")
+    if callable(normalizar_email):
+        try:
+            email = normalizar_email(email)
+        except Exception:
+            pass
     return {
         "username": _shared_sync_normalizar_username(usuario.get("username")),
         "name": str(usuario.get("name") or usuario.get("username") or "").strip(),
-        "email": _normalizar_email(usuario.get("email")),
+        "email": email,
         "client_id": _shared_sync_normalizar_client_id(usuario.get("client_id")),
         "active": bool(usuario.get("active", True)),
     }
@@ -239,6 +246,9 @@ def _shared_sync_delete_invite_doc(invite_id: str) -> dict:
 def _shared_sync_save_link(item: dict) -> dict:
     return _shared_sync_save_doc(_firebase_shared_sync_user_links_collection_name(), ARQUIVO_SHARED_SYNC_USER_LINKS, item)
 
+def _shared_sync_delete_link_doc(link_id: str) -> dict:
+    return _shared_sync_delete_doc(_firebase_shared_sync_user_links_collection_name(), ARQUIVO_SHARED_SYNC_USER_LINKS, link_id)
+
 def _shared_sync_get_invite(invite_id: str) -> dict:
     invite_id = str(invite_id or "").strip()
     for item in _shared_sync_invites_all():
@@ -276,6 +286,7 @@ __all__ = [
     "_shared_sync_save_invite",
     "_shared_sync_delete_invite_doc",
     "_shared_sync_save_link",
+    "_shared_sync_delete_link_doc",
     "_shared_sync_get_invite",
     "_shared_sync_get_link",
 ]

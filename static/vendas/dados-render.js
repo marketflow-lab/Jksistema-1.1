@@ -273,13 +273,23 @@ function aplicarResumoVendas(payload, dataIniIso, dataFimIso) {
 
 async function carregarVendas(opcoes = {}) {
     const retornoRapido = !!opcoes.retornoRapido;
-    if (carregarVendasPromise) {
-        return carregarVendasPromise;
-    }
-
-    carregarVendasPromise = (async () => {
     const dataIniIso = getDataIniISO();
     const dataFimIso = getDataFimISO();
+    const requestKey = JSON.stringify({
+        dataIniIso,
+        dataFimIso,
+        loja: lojaSelecionada || '__todas',
+        unidade: unidadeNegocioSelect?.value || '__todos'
+    });
+    if (carregarVendasPromise && carregarVendasRequestKey === requestKey) {
+        return carregarVendasPromise;
+    }
+    if (carregarVendasController) carregarVendasController.abort();
+    carregarVendasController = new AbortController();
+    carregarVendasRequestKey = requestKey;
+    const requestController = carregarVendasController;
+
+    carregarVendasPromise = (async () => {
     if (!dataIniIso || !dataFimIso) {
         statusEl.className = 'status-bar';
         statusEl.textContent = '';
@@ -314,9 +324,14 @@ async function carregarVendas(opcoes = {}) {
         }
         const urlResumo = '/api/vendas/resumo' + (paramsResumo.toString() ? `?${paramsResumo.toString()}` : '');
         statusEl.innerHTML = `${spinnerHtml}Buscando resumo de vendas...`;
-        const respResumo = await fetchComTimeout(urlResumo, { headers: obterAuthHeaders() }, 45000);
+        const respResumo = await fetchComTimeout(urlResumo, {
+            headers: obterAuthHeaders(),
+            signal: requestController.signal
+        }, 45000);
         if (!respResumo.ok) throw new Error(`HTTP ${respResumo.status}`);
-        aplicarResumoVendas(await respResumo.json(), dataIniIso, dataFimIso);
+        const payloadResumo = await respResumo.json();
+        if (requestController.signal.aborted || carregarVendasRequestKey !== requestKey) return;
+        aplicarResumoVendas(payloadResumo, dataIniIso, dataFimIso);
 
         statusEl.innerHTML = `${spinnerHtml}Renderizando resumo...`;
         await aguardarProximoFrame();
@@ -379,6 +394,7 @@ async function carregarVendas(opcoes = {}) {
             statusEl.textContent = '';
         }
     } catch (e) {
+        if (e.name === 'AbortError' && carregarVendasRequestKey !== requestKey) return;
         statusEl.className = 'status-bar error';
         statusEl.textContent = `Erro ao carregar vendas: ${e.name === 'AbortError' ? 'tempo de resposta excedido' : e.message}`;
     }
@@ -387,14 +403,20 @@ async function carregarVendas(opcoes = {}) {
     try {
         return await carregarVendasPromise;
     } finally {
-        carregarVendasPromise = null;
+        if (carregarVendasRequestKey === requestKey) {
+            carregarVendasPromise = null;
+            carregarVendasController = null;
+        }
     }
 }
 
 filtroTexto.addEventListener('input', filtrar);
-unidadeNegocioSelect.addEventListener('change', async () => {
-    await carregarVendas({ retornoRapido: true });
-    agendarSegundoPlano(() => carregarGrafico(), 120);
+unidadeNegocioSelect.addEventListener('change', () => {
+    if (periodoApplyTimer) clearTimeout(periodoApplyTimer);
+    periodoApplyTimer = setTimeout(async () => {
+        await carregarVendas({ retornoRapido: true });
+        agendarSegundoPlano(() => carregarGrafico(), 120);
+    }, 250);
 });
 dataIni.addEventListener('change', () => { atualizarPeriodoComRecarregamento(true); });
 dataFim.addEventListener('change', () => { atualizarPeriodoComRecarregamento(true); });

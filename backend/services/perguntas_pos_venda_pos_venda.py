@@ -967,6 +967,25 @@ def _ml_pos_venda_gerar_resposta_ia(
     memoria_sku = _ml_pos_venda_memoria_bloco_prompt(client_id, conversa)
     assinatura_loja = _perguntas_ia_assinatura_loja(loja)
     contexto_estruturado = _ml_pos_venda_contexto_prompt(contexto_pipeline)
+    resposta_atual = str(conversa.get("_resposta_atual") or "").strip()[:1200]
+    bloco_resposta_atual = (
+        "RESPOSTA ATUAL QUE O OPERADOR ESTA EDITANDO:\n"
+        f"{resposta_atual}\n\n"
+        "Preserve literalmente todo trecho que a orientacao do operador nao mandar alterar. "
+        "Se ele pedir para repetir a resposta removendo ou trocando apenas uma parte, faca somente essa alteracao.\n\n"
+        if resposta_atual
+        else ""
+    )
+    orientacao_usuario = str(conversa.get("_orientacao_usuario") or "").strip()[:1200]
+    bloco_orientacao_usuario = (
+        "COMANDO EDITORIAL DO OPERADOR PARA ESTA NOVA RESPOSTA:\n"
+        f"{orientacao_usuario}\n\n"
+        "Execute literalmente, sem explicar a edicao. Se o operador fornecer a frase final, copie a redacao dele. "
+        "Se pedir para remover, incluir, trocar ou manter um trecho, altere somente esse trecho. Nao mencione esta orientacao "
+        "ao comprador. So deixe de cumpri-la se contrariar o historico confirmado ou as regras de seguranca do Mercado Livre.\n\n"
+        if orientacao_usuario
+        else ""
+    )
     mensagem = (
         "Fluxo: IA de POS-VENDA do Mercado Livre. "
         "Responda somente como equipe da loja, sem se apresentar como assistente, IA, Gemini, Vertex ou JK Sistema. "
@@ -981,6 +1000,8 @@ def _ml_pos_venda_gerar_resposta_ia(
         f"A resposta final completa deve ter no maximo {min(limite, ML_POS_VENDA_LIMITE_SEGURO)} caracteres. "
         f"Finalize exatamente com: {assinatura_loja}\n\n"
         f"Contexto estruturado do pipeline:\n{contexto_estruturado or '-'}\n\n"
+        f"{bloco_orientacao_usuario}"
+        f"{bloco_resposta_atual}"
         f"Loja: {loja}\n"
         f"Pack: {conversa.get('pack_id') or '-'}\n"
         f"Pedido: {conversa.get('order_id') or '-'}\n"
@@ -991,6 +1012,13 @@ def _ml_pos_venda_gerar_resposta_ia(
         f"HistÃ³rico da conversa:\n{historico or '-'}\n\n"
         f"Ãšltima mensagem do comprador:\n{ultima or '-'}"
     )
+    subquestions = conversa.get("_agent_subquestions") if isinstance(conversa.get("_agent_subquestions"), list) else []
+    if subquestions:
+        mensagem += (
+            "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
+            + json.dumps(subquestions[:8], ensure_ascii=False, default=str)
+            + "\nResponda todos os assuntos confirmados pelo contexto e sinalize de forma objetiva o que ainda depende de dado do comprador."
+        )
     payload = IAChatRequest(
         message=mensagem,
         page="Perguntas e pos venda",
@@ -1004,12 +1032,29 @@ def _ml_pos_venda_gerar_resposta_ia(
             "desativar_busca_web_chat": True,
             "loja": loja,
             "conversa": conversa,
+            "_codex_thread_id": str(conversa.get("_codex_thread_id") or ""),
+            "_codex_persist_thread": bool(conversa.get("_codex_job_id")),
+            "_codex_job_id": str(conversa.get("_codex_job_id") or ""),
+            "_codex_conversation_key": str(conversa.get("_codex_job_id") or ""),
         },
         model=None,
     )
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_pos_venda_configurado())
     payload.model = model_req
-    if _modelo_eh_vertex_ai(model_req):
+    if _modelo_eh_codex(model_req):
+        if conversa.get("_codex_job_id") or conversa.get("_codex_thread_id"):
+            resposta, resulting_thread_id = _chamar_codex_chat_com_thread(
+                payload,
+                client_id,
+                thread_id=str(conversa.get("_codex_thread_id") or ""),
+                persist_thread=True,
+                conversation_key=str(conversa.get("_codex_job_id") or ""),
+            )
+            conversa["_codex_thread_id_result"] = resulting_thread_id
+        else:
+            resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
+    elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif _modelo_eh_gemini_api(model_req):
@@ -1024,10 +1069,11 @@ def _ml_pos_venda_gerar_resposta_ia(
     resposta_limpa = _pos_venda_ia_resposta_final_loja(resposta, loja, limite)
     if not resposta_limpa:
         raise PerguntasIARespostaIndisponivel("IA de pos-venda nao gerou resposta.")
-    try:
-        _ml_pos_venda_memoria_registrar_geracao(client_id, loja, conversa, resposta_limpa, model_usado)
-    except Exception as exc:
-        logger.warning("[ML POS VENDA IA] Falha ao registrar memoria de geracao do SKU: %s", exc)
+    if not conversa.get("_codex_job_id"):
+        try:
+            _ml_pos_venda_memoria_registrar_geracao(client_id, loja, conversa, resposta_limpa, model_usado)
+        except Exception as exc:
+            logger.warning("[ML POS VENDA IA] Falha ao registrar memoria de geracao do SKU: %s", exc)
     return resposta_limpa, model_usado
 
 

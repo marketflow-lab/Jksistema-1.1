@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import hashlib
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import unicodedata
@@ -20,6 +22,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
+from backend.services import codex_agent_runtime, codex_assistant_storage
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -73,6 +76,8 @@ COMMON_LOJA_ALIASES = {
 
 CODEX_ACTIONS: dict[str, dict[str, Any]] = {}
 CODEX_ACTIONS_LOCK = threading.RLock()
+CODEX_ACTION_PROPOSAL_CLIENTS: dict[str, str] = {}
+CODEX_ACTION_RUN_CLIENTS: dict[str, str] = {}
 SAFE_EXECUTORS = {
     "vendas_sync",
     "vendas_cancel",
@@ -82,6 +87,7 @@ SAFE_EXECUTORS = {
     "ml_pergunta_responder",
     "ml_pos_venda_responder",
     "ml_aprovacao_aprovar",
+    "internal_report_queue",
 }
 
 
@@ -138,6 +144,10 @@ def _info_root() -> Path:
     return root
 
 
+def _assistant_info_base() -> str:
+    return str(globals().get("PASTA_INFO") or os.path.join(_base_dir(), "info")).strip()
+
+
 def _proposal_path(proposal_id: str) -> Path:
     return _info_root() / "proposals" / f"{_safe_id(proposal_id)}.json"
 
@@ -164,13 +174,73 @@ def _write_json(path: Path, data: Any) -> None:
     tmp.replace(path)
 
 
+def _proposal_load(proposal_id: str, client_id: str) -> Optional[dict[str, Any]]:
+    proposal = codex_assistant_storage.codex_assistant_action_proposal_get(
+        _assistant_info_base(),
+        client_id,
+        proposal_id,
+    )
+    if isinstance(proposal, dict):
+        CODEX_ACTION_PROPOSAL_CLIENTS[str(proposal_id)] = str(client_id or "default")
+        return proposal
+    # Compatibilidade somente leitura com propostas criadas por versoes antigas.
+    legacy = _read_json(_proposal_path(proposal_id), None)
+    return legacy if isinstance(legacy, dict) else None
+
+
+def _proposal_save(proposal: dict[str, Any]) -> dict[str, Any]:
+    client_id = str(proposal.get("client_id") or "default")
+    proposal_id = str(proposal.get("proposal_id") or "")
+    saved = codex_assistant_storage.codex_assistant_action_proposal_save(
+        _assistant_info_base(),
+        client_id,
+        proposal,
+    )
+    if proposal_id:
+        CODEX_ACTION_PROPOSAL_CLIENTS[proposal_id] = client_id
+    return saved
+
+
+def _run_load(run_id: str, client_id: str = "") -> Optional[dict[str, Any]]:
+    tenant = str(client_id or CODEX_ACTION_RUN_CLIENTS.get(str(run_id)) or "").strip()
+    if tenant:
+        run = codex_assistant_storage.codex_assistant_action_run_get(
+            _assistant_info_base(),
+            tenant,
+            run_id,
+        )
+        if isinstance(run, dict):
+            CODEX_ACTION_RUN_CLIENTS[str(run_id)] = tenant
+            return run
+    # Compatibilidade somente leitura com execucoes criadas por versoes antigas.
+    legacy = _read_json(_run_path(run_id), None)
+    return legacy if isinstance(legacy, dict) else None
+
+
+def _run_save(run: dict[str, Any]) -> dict[str, Any]:
+    client_id = str(run.get("client_id") or "default")
+    run_id = str(run.get("run_id") or "")
+    saved = codex_assistant_storage.codex_assistant_action_run_save(
+        _assistant_info_base(),
+        client_id,
+        run,
+    )
+    if run_id:
+        CODEX_ACTION_RUN_CLIENTS[run_id] = client_id
+    return saved
+
+
 def _update_run(run_id: str, **updates: Any) -> dict[str, Any]:
     with CODEX_ACTIONS_LOCK:
-        run = _read_json(_run_path(run_id), {}) or {}
+        run = _run_load(run_id, str(updates.pop("_client_id", "") or "")) or {}
+        if not run:
+            # Executores tambem sao exercitados isoladamente em validacoes e
+            # simulacoes. Sem uma execucao persistida, devolva apenas o espelho
+            # do progresso e nunca crie um registro operacional fantasma.
+            return {"run_id": str(run_id or ""), **updates}
         run.update(updates)
         run["updated_at"] = _now()
-        _write_json(_run_path(run_id), run)
-        return run
+        return _run_save(run)
 
 
 def _normalizar(text: Any) -> str:
@@ -451,6 +521,48 @@ def _manual_specs() -> dict[str, CodexActionSpec]:
             executor="proposal_only",
             status_kind="impostos",
         ),
+        "reports.queue_replenishment": CodexActionSpec(
+            id="reports.queue_replenishment",
+            module="medias_compras",
+            label="Criar lista interna de reposicao",
+            aliases=("enviar reposicao para fila", "criar lista de reposicao", "aprovar reposicao black jhon"),
+            params_schema=_schema(
+                ["report_id", "report_action"],
+                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+            ),
+            risk_level="local_write",
+            side_effects=("Cria uma lista local em Medias e Compras com status Lista gerada; nao altera estoque externo.",),
+            executor="internal_report_queue",
+            status_kind="black_jhon_report",
+        ),
+        "reports.queue_price_review": CodexActionSpec(
+            id="reports.queue_price_review",
+            module="vendas",
+            label="Criar fila interna de revisao de preco",
+            aliases=("enviar preco para revisao", "criar fila de preco", "aprovar revisao de preco"),
+            params_schema=_schema(
+                ["report_id", "report_action"],
+                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+            ),
+            risk_level="local_write",
+            side_effects=("Registra uma revisao interna; nao altera preco ou anuncio externo.",),
+            executor="internal_report_queue",
+            status_kind="black_jhon_report",
+        ),
+        "reports.queue_liquidation": CodexActionSpec(
+            id="reports.queue_liquidation",
+            module="estoque",
+            label="Criar fila interna de liquidacao de excesso",
+            aliases=("enviar excesso para liquidacao", "criar fila de liquidacao", "aprovar liquidacao"),
+            params_schema=_schema(
+                ["report_id", "report_action"],
+                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+            ),
+            risk_level="local_write",
+            side_effects=("Registra uma fila interna de liquidacao; nao altera anuncio, preco ou estoque externo.",),
+            executor="internal_report_queue",
+            status_kind="black_jhon_report",
+        ),
     }
 
 
@@ -526,7 +638,7 @@ def _discover_route_specs() -> dict[str, CodexActionSpec]:
 
 
 def _public_spec(spec: CodexActionSpec) -> dict[str, Any]:
-    return {
+    return codex_agent_runtime.enrich_action_contract({
         "id": spec.id,
         "module": spec.module,
         "label": spec.label,
@@ -542,7 +654,7 @@ def _public_spec(spec: CodexActionSpec) -> dict[str, Any]:
         "cancellable": spec.cancellable,
         "can_execute": _action_can_execute(spec),
         "proposal_only": not _action_can_execute(spec),
-    }
+    })
 
 
 def list_actions() -> dict[str, Any]:
@@ -1333,7 +1445,7 @@ def _merge_params(client_id: str, spec: CodexActionSpec, message: str, screen_co
         params.setdefault("dados", {})
         params.setdefault("alteracoes", params.get("dados") or {})
     if spec.id == "estoque.ajuste_manual" and "motivo" not in params:
-        params["motivo"] = "Solicitado pelo Joao Pretinho; revisar antes de executar."
+        params["motivo"] = "Solicitado pelo Black Jhon; revisar antes de executar."
     if spec.executor == "generic_route":
         params.setdefault("path_params", {})
         params.setdefault("query", {})
@@ -1414,6 +1526,13 @@ def create_proposal(
     params: Optional[dict[str, Any]] = None,
     screen_context: Optional[dict[str, Any]] = None,
     history: Optional[list[dict[str, Any]]] = None,
+    conversation_id: str = "",
+    conversation_generation: int = 1,
+    plan_id: str = "",
+    task_id: str = "",
+    channel: str = "app",
+    wa_id_hash: str = "",
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
     specs = _discover_route_specs()
     cap_action_id = _action_id_from_capability(client_id, capability_id)
@@ -1439,11 +1558,12 @@ def create_proposal(
     )
     missing = _missing_params(spec, merged)
     if missing:
+        preview_action = _public_spec(spec)
         return {
             "success": True,
             "matched": True,
             "needs_input": True,
-            "action": _public_spec(spec),
+            "action": preview_action,
             "capability_id": str(capability_id or ""),
             "missing_params": missing,
             "proposal_preview": {
@@ -1457,6 +1577,9 @@ def create_proposal(
                 "missing_params": missing,
                 "can_execute": _action_can_execute(spec),
                 "requires_approval": True,
+                "preconditions": list(preview_action.get("preconditions") or []),
+                "postconditions": list(preview_action.get("postconditions") or []),
+                "channels_allowed": list(preview_action.get("channels_allowed") or ["app"]),
                 "after_intent": _proposal_after_intent(spec, merged),
             },
             "message": "Preciso destes parametros antes de criar a proposta: " + ", ".join(missing),
@@ -1470,10 +1593,13 @@ def create_proposal(
         "visible_text_preview": str((screen_context or {}).get("visible_text") or "")[:1200] if isinstance(screen_context, dict) else "",
     }
     can_execute = _action_can_execute(spec)
+    public_action = _public_spec(spec)
+    before_snapshot = _proposal_before_snapshot(screen_context, merged)
     proposal = {
         "proposal_id": proposal_id,
+        "version": 1,
         "status": "awaiting_approval",
-        "action": _public_spec(spec),
+        "action": public_action,
         "capability_id": str(capability_id or ""),
         "action_id": spec.id,
         "title": _proposal_title(spec),
@@ -1481,13 +1607,17 @@ def create_proposal(
         "accounts": _proposal_accounts(merged),
         "entities": _proposal_entities(merged),
         "params": merged,
-        "before_snapshot": _proposal_before_snapshot(screen_context, merged),
+        "before_snapshot": before_snapshot,
         "after_intent": _proposal_after_intent(spec, merged),
         "risk": spec.risk_level,
         "side_effects": list(spec.side_effects),
         "missing_params": [],
         "can_execute": can_execute,
         "requires_approval": True,
+        "preconditions": list(public_action.get("preconditions") or []),
+        "postconditions": list(public_action.get("postconditions") or []),
+        "channels_allowed": list(public_action.get("channels_allowed") or ["app"]),
+        "requires_app_confirmation": str(channel or "app") == "whatsapp" and not bool(public_action.get("whatsapp_allowed")),
         "expires_at": _future(24),
         "message": str(message or ""),
         "site_context": site_context,
@@ -1496,9 +1626,55 @@ def create_proposal(
         "created_at": _now(),
         "created_by": username,
         "client_id": client_id,
+        "conversation_id": str(conversation_id or ""),
+        "conversation_generation": max(1, int(conversation_generation or 1)),
+        "plan_id": str(plan_id or ""),
+        "task_id": str(task_id or ""),
+        "channel": "whatsapp" if str(channel or "").lower() == "whatsapp" else "app",
+        "wa_id_hash": str(wa_id_hash or ""),
+        "idempotency_key": str(idempotency_key or ""),
         "requires_confirmation": True,
     }
-    _write_json(_proposal_path(proposal_id), proposal)
+    proposal["precondition_hash"] = hashlib.sha256(
+        json.dumps(
+            {"action_id": spec.id, "params": merged, "before_snapshot": before_snapshot},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8", "replace")
+    ).hexdigest()
+    proposal["proposal_hash"] = codex_agent_runtime.proposal_hash(proposal)
+    proposal = _proposal_save(proposal)
+    if plan_id:
+        try:
+            codex_agent_runtime.transition_plan(
+                _assistant_info_base(),
+                client_id,
+                plan_id,
+                "aguardando_aprovacao",
+                current_step="aprovar",
+                proposal=proposal,
+                details={"proposal_id": proposal_id, "action_id": spec.id},
+            )
+        except Exception:
+            pass
+    codex_agent_runtime.audit(
+        _assistant_info_base(),
+        client_id,
+        event_type="proposal_created",
+        entity_type="proposal",
+        entity_id=proposal_id,
+        actor=username,
+        channel=str(channel or "app"),
+        payload={
+            "action_id": spec.id,
+            "version": 1,
+            "proposal_hash": proposal.get("proposal_hash"),
+            "can_execute": can_execute,
+            "requires_app_confirmation": proposal.get("requires_app_confirmation"),
+        },
+    )
     try:
         from backend.services import codex_operational_memory
 
@@ -1742,6 +1918,65 @@ def _execute_ml_aprovacao_aprovar(run_id: str, proposal: dict[str, Any]) -> dict
     return result
 
 
+def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dict[str, Any]:
+    from backend.services import codex_assistant, codex_assistant_storage, codex_reports_advanced
+
+    params = proposal.get("params") if isinstance(proposal.get("params"), dict) else {}
+    report_action = dict(params.get("report_action") or {}) if isinstance(params.get("report_action"), dict) else {}
+    report_id = str(params.get("report_id") or report_action.get("report_id") or "").strip()
+    spec_id = str((proposal.get("action") or {}).get("id") or "")
+    expected_type = {
+        "reports.queue_replenishment": "replenishment",
+        "reports.queue_price_review": "price_review",
+        "reports.queue_liquidation": "liquidation",
+    }.get(spec_id)
+    if not report_id or not report_action or not expected_type:
+        raise RuntimeError("Relatorio ou acao interna ausente na proposta aprovada.")
+    if str(report_action.get("action_type") or "") != expected_type:
+        raise RuntimeError("O tipo da recomendacao nao corresponde a acao aprovada.")
+    client_id = str(proposal.get("client_id") or "default")
+    username = str(proposal.get("created_by") or proposal.get("username") or "")
+    report = codex_assistant_storage.codex_assistant_report_get(codex_assistant._assistant_info_base(), client_id, report_id)
+    if not isinstance(report, dict):
+        raise RuntimeError("Relatorio de origem nao encontrado.")
+    valid_action = next(
+        (
+            item for item in (report.get("top_actions") or [])
+            if isinstance(item, dict) and str(item.get("action_id") or "") == str(report_action.get("action_id") or "")
+        ),
+        None,
+    )
+    if not isinstance(valid_action, dict):
+        raise RuntimeError("A recomendacao nao pertence ao relatorio informado.")
+    if valid_action.get("queueable") is False:
+        raise RuntimeError("A recomendacao nao possui confianca suficiente para entrar na fila.")
+    queue_payload = {**valid_action, "report_id": report_id, "status": "queued", "approved_by": username}
+    queue_item = codex_reports_advanced.create_queue_action(
+        info_base=codex_assistant._assistant_info_base(),
+        client_id=client_id,
+        username=username,
+        payload=queue_payload,
+    )
+    result: dict[str, Any] = {"queue_action": queue_item, "external_mutation": False}
+    if expected_type == "replenishment":
+        linked = codex_reports_advanced.create_replenishment_list(
+            info_base=codex_assistant._assistant_info_base(),
+            client_id=client_id,
+            action=queue_payload,
+            username=username,
+        )
+        queue_item = codex_reports_advanced.update_queue_action(
+            info_base=codex_assistant._assistant_info_base(),
+            client_id=client_id,
+            action_id=str(queue_item.get("action_id") or ""),
+            username=username,
+            updates={"linked_list_id": linked.get("list_id"), "result": linked},
+        )
+        result.update({"queue_action": queue_item, "replenishment_list": linked})
+    _update_run(run_id, live_status="Fila interna criada sem alteracoes externas.", result=result)
+    return result
+
+
 def _render_route_path(path: str, path_params: dict[str, Any]) -> str:
     out = str(path or "")
     for name in re.findall(r"{([^}:]+)", out):
@@ -1793,6 +2028,39 @@ def _execute_generic_route(run_id: str, proposal: dict[str, Any], authorization:
     raise RuntimeError(last_error or "Falha ao executar rota generica.")
 
 
+def _sync_task_from_action(proposal: dict[str, Any], run: dict[str, Any]) -> None:
+    task_id = str(proposal.get("task_id") or "").strip()
+    if not task_id:
+        return
+    try:
+        from backend.services import codex_console
+
+        status = str(run.get("status") or "")
+        verification = run.get("verification") if isinstance(run.get("verification"), dict) else {}
+        action = proposal.get("action") if isinstance(proposal.get("action"), dict) else {}
+        label = str(action.get("label") or proposal.get("action_id") or "acao")
+        if status == "completed":
+            response = f"{label}: execucao concluida e verificada."
+        elif status == "partial":
+            response = f"{label}: execucao concluida, mas a verificacao retornou evidencias parciais."
+        else:
+            response = f"{label}: a execucao falhou. {str(run.get('error') or '').strip()}".strip()
+        codex_console._codex_update_task(
+            task_id,
+            status=status if status in {"completed", "partial", "failed", "canceled"} else "running",
+            completed_at=str(run.get("completed_at") or ""),
+            final_response=response,
+            live_status=str(run.get("live_status") or ""),
+            error=str(run.get("error") or ""),
+            verification=verification,
+            action_run=run,
+            agent_state="concluido" if status == "completed" else status if status in {"partial", "failed", "canceled"} else "executando",
+            current_step="responder" if status in {"completed", "partial", "failed", "canceled"} else "executar",
+        )
+    except Exception:
+        pass
+
+
 def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Optional[str]) -> None:
     spec_id = str((proposal.get("action") or {}).get("id") or "")
     executor = str((proposal.get("action") or {}).get("executor") or "generic_route")
@@ -1814,32 +2082,123 @@ def _execute_run_worker(run_id: str, proposal: dict[str, Any], authorization: Op
             result = _execute_ml_pos_venda_responder(run_id, proposal)
         elif executor == "ml_aprovacao_aprovar":
             result = _execute_ml_aprovacao_aprovar(run_id, proposal)
+        elif executor == "internal_report_queue":
+            result = _execute_internal_report_queue(run_id, proposal)
         elif executor == "proposal_only":
             raise RuntimeError("Esta proposta ainda nao possui executor seguro. Revise os dados e crie um executor especifico antes de aprovar.")
         else:
-            result = _execute_generic_route(run_id, proposal, authorization)
-        _update_run(
+            raise RuntimeError("Executor generico bloqueado. Esta funcao precisa de um adaptador seguro e testado.")
+        _update_run(run_id, live_status="Verificando o resultado da acao.")
+        plan_id = str(proposal.get("plan_id") or "")
+        client_id = str(proposal.get("client_id") or "default")
+        if plan_id:
+            try:
+                codex_agent_runtime.transition_plan(
+                    _assistant_info_base(),
+                    client_id,
+                    plan_id,
+                    "verificando",
+                    current_step="verificar",
+                    details={"run_id": run_id, "executor": executor},
+                )
+            except Exception:
+                pass
+        verification = codex_agent_runtime.verification_from_result(result, executor=executor)
+        final_status = "completed" if verification.get("confirmed") else "partial"
+        final_run = _update_run(
             run_id,
-            status="completed",
+            status=final_status,
             completed_at=_now(),
-            live_status="Acao concluida.",
+            live_status="Acao concluida e verificada." if verification.get("confirmed") else "Acao concluida com verificacao parcial.",
             result=result,
+            verification=verification,
             error="",
         )
+        _sync_task_from_action(proposal, final_run)
+        if plan_id:
+            try:
+                codex_agent_runtime.transition_plan(
+                    _assistant_info_base(),
+                    client_id,
+                    plan_id,
+                    "concluido" if verification.get("confirmed") else "parcial",
+                    current_step="responder",
+                    step_status="completed",
+                    verification=verification,
+                    details={"run_id": run_id},
+                )
+            except Exception:
+                pass
     except Exception as exc:
-        _update_run(
+        failed_run = _update_run(
             run_id,
             status="failed",
             completed_at=_now(),
             live_status="Acao falhou.",
             error=f"{spec_id}: {str(exc)}",
         )
+        _sync_task_from_action(proposal, failed_run)
+        plan_id = str(proposal.get("plan_id") or "")
+        if plan_id:
+            try:
+                codex_agent_runtime.transition_plan(
+                    _assistant_info_base(),
+                    str(proposal.get("client_id") or "default"),
+                    plan_id,
+                    "falhou",
+                    current_step="executar",
+                    step_status="failed",
+                    verification={"status": "failed", "confirmed": False, "error": str(exc)[:1000]},
+                )
+            except Exception:
+                pass
 
 
-def approve_proposal(proposal_id: str, *, username: str, client_id: str, authorization: Optional[str]) -> dict[str, Any]:
-    proposal = _read_json(_proposal_path(proposal_id), None)
+def _proposal_expired(proposal: dict[str, Any]) -> bool:
+    expires_at = str(proposal.get("expires_at") or "").strip()
+    if not expires_at:
+        return False
+    try:
+        return time.mktime(time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ")) <= time.time()
+    except Exception:
+        return False
+
+
+def approve_proposal(
+    proposal_id: str,
+    *,
+    username: str,
+    client_id: str,
+    authorization: Optional[str],
+    source: str = "app",
+    wa_id: str = "",
+    proposal_version: Optional[int] = None,
+    proposal_hash: str = "",
+) -> dict[str, Any]:
+    proposal = _proposal_load(proposal_id, client_id)
     if not isinstance(proposal, dict):
         raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if (
+        str(proposal.get("client_id") or "").strip() != str(client_id or "").strip()
+        or str(proposal.get("created_by") or "").strip().lower() != str(username or "").strip().lower()
+    ):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if _proposal_expired(proposal):
+        proposal["status"] = "expired"
+        _proposal_save(proposal)
+        raise HTTPException(status_code=409, detail="A proposta expirou. Gere uma nova confirmacao.")
+    current_version = max(1, int(proposal.get("version") or 1))
+    current_hash = codex_agent_runtime.proposal_hash(proposal)
+    stored_hash = str(proposal.get("proposal_hash") or "")
+    if stored_hash and not secrets.compare_digest(stored_hash, current_hash):
+        raise HTTPException(status_code=409, detail="A proposta mudou desde a revisao. Gere uma nova confirmacao.")
+    if proposal_version is not None and int(proposal_version) != current_version:
+        raise HTTPException(status_code=409, detail="A versao confirmada nao e mais a versao atual da proposta.")
+    if proposal_hash and not secrets.compare_digest(str(proposal_hash), current_hash):
+        raise HTTPException(status_code=409, detail="O conteudo confirmado nao corresponde mais a proposta atual.")
+    source = "whatsapp" if str(source or "").strip().lower() == "whatsapp" else "app"
+    if source not in list(proposal.get("channels_allowed") or ["app"]):
+        raise HTTPException(status_code=409, detail="Esta acao precisa ser confirmada no aplicativo.")
     if str(proposal.get("status") or "") not in {"awaiting_approval", "approved"}:
         raise HTTPException(status_code=400, detail="Proposta nao esta aguardando aprovacao.")
     action = proposal.get("action") if isinstance(proposal.get("action"), dict) else {}
@@ -1850,12 +2209,40 @@ def approve_proposal(proposal_id: str, *, username: str, client_id: str, authori
             detail="Esta proposta ainda nao possui executor seguro aprovado para execucao.",
         )
 
+    idempotency_key = hashlib.sha256(
+        f"{client_id}|{proposal_id}|{current_version}|{current_hash}".encode("utf-8", "replace")
+    ).hexdigest()
+    existing_run = codex_assistant_storage.codex_assistant_action_run_get(
+        _assistant_info_base(),
+        client_id,
+        idempotency_key=idempotency_key,
+    )
+    if isinstance(existing_run, dict):
+        return {"success": True, "proposal": proposal, "run": existing_run, "idempotent_replay": True}
+
     run_id = uuid.uuid4().hex
     proposal["status"] = "approved"
     proposal["approved_at"] = _now()
     proposal["approved_by"] = username
     proposal["run_id"] = run_id
-    _write_json(_proposal_path(proposal_id), proposal)
+    proposal["approved_source"] = source
+    _proposal_save(proposal)
+
+    wa_id_hash = hashlib.sha256(re.sub(r"\D", "", str(wa_id or "")).encode("utf-8")).hexdigest() if wa_id else ""
+    codex_assistant_storage.codex_assistant_action_approval_save(
+        _assistant_info_base(),
+        client_id,
+        {
+            "approval_id": uuid.uuid4().hex,
+            "proposal_id": proposal_id,
+            "proposal_version": current_version,
+            "proposal_hash": current_hash,
+            "status": "approved",
+            "source": source,
+            "actor": username,
+            "wa_id_hash": wa_id_hash,
+        },
+    )
 
     run = {
         "run_id": run_id,
@@ -1873,8 +2260,35 @@ def approve_proposal(proposal_id: str, *, username: str, client_id: str, authori
         "logs": [],
         "result": None,
         "error": "",
+        "idempotency_key": idempotency_key,
+        "proposal_version": current_version,
+        "proposal_hash": current_hash,
+        "verification": {},
     }
-    _write_json(_run_path(run_id), run)
+    _run_save(run)
+    plan_id = str(proposal.get("plan_id") or "")
+    if plan_id:
+        try:
+            codex_agent_runtime.transition_plan(
+                _assistant_info_base(),
+                client_id,
+                plan_id,
+                "executando",
+                current_step="executar",
+                details={"proposal_id": proposal_id, "run_id": run_id},
+            )
+        except Exception:
+            pass
+    codex_agent_runtime.audit(
+        _assistant_info_base(),
+        client_id,
+        event_type="proposal_approved",
+        entity_type="proposal",
+        entity_id=proposal_id,
+        actor=username,
+        channel=source,
+        payload={"version": current_version, "proposal_hash": current_hash, "run_id": run_id},
+    )
     try:
         from backend.services import codex_operational_memory
 
@@ -1896,11 +2310,123 @@ def approve_proposal(proposal_id: str, *, username: str, client_id: str, authori
         pass
     thread = threading.Thread(target=_execute_run_worker, args=(run_id, proposal, authorization), daemon=True)
     thread.start()
-    return {"success": True, "proposal": proposal, "run": get_run(run_id).get("run")}
+    return {"success": True, "proposal": proposal, "run": get_run(run_id, client_id=client_id).get("run")}
 
 
-def get_run(run_id: str) -> dict[str, Any]:
-    run = _read_json(_run_path(run_id), None)
+def reject_proposal(proposal_id: str, *, username: str, client_id: str, source: str = "app") -> dict[str, Any]:
+    proposal = _proposal_load(proposal_id, client_id)
+    if not isinstance(proposal, dict):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if (
+        str(proposal.get("client_id") or "").strip() != str(client_id or "").strip()
+        or str(proposal.get("created_by") or "").strip().lower() != str(username or "").strip().lower()
+    ):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    status = str(proposal.get("status") or "")
+    if status == "rejected":
+        return {"success": True, "proposal": proposal}
+    if status != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Proposta nao esta aguardando aprovacao.")
+    proposal.update(
+        {
+            "status": "rejected",
+            "rejected_at": _now(),
+            "rejected_by": str(username or ""),
+            "rejection_source": str(source or "app")[:40],
+        }
+    )
+    _proposal_save(proposal)
+    codex_assistant_storage.codex_assistant_action_approval_save(
+        _assistant_info_base(),
+        client_id,
+        {
+            "approval_id": uuid.uuid4().hex,
+            "proposal_id": proposal_id,
+            "proposal_version": max(1, int(proposal.get("version") or 1)),
+            "proposal_hash": str(proposal.get("proposal_hash") or ""),
+            "status": "rejected",
+            "source": str(source or "app"),
+            "actor": username,
+        },
+    )
+    if proposal.get("plan_id"):
+        try:
+            codex_agent_runtime.transition_plan(
+                _assistant_info_base(),
+                client_id,
+                str(proposal.get("plan_id")),
+                "cancelado",
+                current_step="aprovar",
+                step_status="canceled",
+            )
+        except Exception:
+            pass
+    return {"success": True, "proposal": proposal}
+
+
+def revise_proposal(
+    proposal_id: str,
+    *,
+    username: str,
+    client_id: str,
+    params: Optional[dict[str, Any]] = None,
+    message: str = "",
+    source: str = "app",
+) -> dict[str, Any]:
+    proposal = _proposal_load(proposal_id, client_id)
+    if not isinstance(proposal, dict):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if (
+        str(proposal.get("client_id") or "") != str(client_id or "")
+        or str(proposal.get("created_by") or "").strip().lower() != str(username or "").strip().lower()
+    ):
+        raise HTTPException(status_code=404, detail="Proposta Codex Action nao encontrada.")
+    if str(proposal.get("status") or "") not in {"awaiting_approval", "expired", "rejected"}:
+        raise HTTPException(status_code=409, detail="Uma proposta em execucao ou concluida nao pode ser revisada.")
+    if isinstance(params, dict):
+        proposal["params"] = {**dict(proposal.get("params") or {}), **params}
+    if message:
+        proposal["message"] = str(message)[:4000]
+    proposal["version"] = max(1, int(proposal.get("version") or 1)) + 1
+    proposal["status"] = "awaiting_approval"
+    proposal["expires_at"] = _future(24)
+    proposal.pop("approved_at", None)
+    proposal.pop("approved_by", None)
+    proposal.pop("run_id", None)
+    proposal["proposal_hash"] = codex_agent_runtime.proposal_hash(proposal)
+    saved = _proposal_save(proposal)
+    codex_agent_runtime.audit(
+        _assistant_info_base(),
+        client_id,
+        event_type="proposal_revised",
+        entity_type="proposal",
+        entity_id=proposal_id,
+        actor=username,
+        channel=str(source or "app"),
+        payload={"version": saved.get("version"), "proposal_hash": saved.get("proposal_hash")},
+    )
+    return {"success": True, "proposal": saved}
+
+
+def list_proposals(
+    *,
+    client_id: str,
+    username: str,
+    status: str = "awaiting_approval",
+    limit: int = 100,
+) -> dict[str, Any]:
+    proposals = codex_assistant_storage.codex_assistant_action_proposal_list(
+        _assistant_info_base(),
+        client_id,
+        status=str(status or ""),
+        created_by=str(username or ""),
+        limit=limit,
+    )
+    return {"success": True, "proposals": proposals, "total": len(proposals)}
+
+
+def get_run(run_id: str, *, client_id: str = "") -> dict[str, Any]:
+    run = _run_load(run_id, client_id)
     if not isinstance(run, dict):
         raise HTTPException(status_code=404, detail="Execucao Codex Action nao encontrada.")
     action = run.get("action") if isinstance(run.get("action"), dict) else {}
@@ -1910,6 +2436,7 @@ def get_run(run_id: str) -> dict[str, Any]:
         progress = _progress_payload(kind, client_id)
         run = _update_run(
             run_id,
+            _client_id=client_id,
             progress=progress.get("progress"),
             logs=list(progress.get("logs") or [])[-120:],
             sync_meta=progress.get("sync_meta"),
@@ -1918,9 +2445,9 @@ def get_run(run_id: str) -> dict[str, Any]:
     return {"success": True, "run": run}
 
 
-def cancel_run(run_id: str) -> dict[str, Any]:
-    run = get_run(run_id).get("run") or {}
-    if str(run.get("status") or "") in {"completed", "failed", "canceled"}:
+def cancel_run(run_id: str, *, client_id: str = "") -> dict[str, Any]:
+    run = get_run(run_id, client_id=client_id).get("run") or {}
+    if str(run.get("status") or "") in {"completed", "partial", "failed", "canceled"}:
         return {"success": True, "run": run}
     action = run.get("action") if isinstance(run.get("action"), dict) else {}
     kind = str(action.get("status_kind") or "")
@@ -1940,7 +2467,7 @@ def cancel_run(run_id: str) -> dict[str, Any]:
             estoque_context.ESTOQUE_LANC_SYNC_ACTIVE.pop(client_id, None)
     except Exception:
         pass
-    run = _update_run(run_id, status="cancel_requested", live_status="Cancelamento solicitado.")
+    run = _update_run(run_id, _client_id=client_id, status="cancel_requested", live_status="Cancelamento solicitado.")
     return {"success": True, "run": run}
 
 
@@ -1955,6 +2482,9 @@ __all__ = [
     "match_action_dry_run",
     "create_proposal",
     "approve_proposal",
+    "reject_proposal",
+    "revise_proposal",
+    "list_proposals",
     "get_run",
     "cancel_run",
 ]

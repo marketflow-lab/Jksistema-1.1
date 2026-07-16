@@ -42,6 +42,15 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
+from backend.services.secure_credentials import (
+    delete_secret as _secure_delete_secret,
+    read_any_secret as _secure_read_any_secret,
+    read_secret as _secure_read_secret,
+    secrets_status as _secure_secrets_status,
+    secure_store_available as _secure_store_available,
+    write_secret as _secure_write_secret,
+    write_secrets_bundle as _secure_write_secrets_bundle,
+)
 
 logger = None
 
@@ -137,7 +146,9 @@ def _obter_openai_api_key() -> str:
         os.environ["OPENAI_API_KEY"] = secure_key
         return secure_key
 
-    key_file = os.path.join(PASTA_INFO, "openai_api_key.txt")
+    base_dir = str(globals().get("BASE_DIR") or os.getcwd()).strip() or os.getcwd()
+    info_dir = str(globals().get("PASTA_INFO") or os.path.join(base_dir, "info")).strip()
+    key_file = os.path.join(info_dir, "openai_api_key.txt")
     if os.path.exists(key_file):
         try:
             with open(key_file, "r", encoding="utf-8") as f:
@@ -308,7 +319,37 @@ def _modelo_eh_vertex_ai(model_name: str) -> bool:
     return nome.startswith("vertex:")
 
 
+def _modelo_eh_codex(model_name: str) -> bool:
+    nome = str(model_name or "").strip().lower()
+    return nome.startswith("codex:")
+
+
+def _codex_modelo_nome_curto(model_name: str | None) -> str:
+    nome = str(model_name or "").strip()
+    if nome.lower().startswith("codex:"):
+        nome = nome.split(":", 1)[1].strip()
+    return nome or "gpt-5.5"
+
+
 IA_MODELO_PADRAO_SISTEMA = "vertex:gemini-2.5-flash"
+
+
+CODEX_CONFIGURABLE_MODELS = (
+    ("gpt-5.6-sol", "Codex GPT-5.6 Sol"),
+    ("gpt-5.6-terra", "Codex GPT-5.6 Terra"),
+    ("gpt-5.6-luna", "Codex GPT-5.6 Luna"),
+    ("gpt-5.5", "Codex GPT-5.5"),
+    ("gpt-5.4", "Codex GPT-5.4"),
+    ("gpt-5.4-mini", "Codex GPT-5.4 Mini"),
+    ("gpt-5.3-codex-spark", "Codex GPT-5.3 Codex Spark"),
+)
+
+
+def _listar_modelos_codex_configuraveis() -> list[dict[str, str]]:
+    return [
+        {"name": f"codex:{slug}", "display_name": display_name}
+        for slug, display_name in CODEX_CONFIGURABLE_MODELS
+    ]
 
 
 GEMINI_31_FLASH_MODEL = "gemini-3.1-flash"
@@ -339,6 +380,9 @@ def _normalizar_ia_modelo_padrao(model_name: str | None) -> str:
     if _modelo_eh_vertex_ai(nome):
         curto = _vertex_modelo_nome_curto(nome)
         return f"vertex:{curto}" if curto else IA_MODELO_PADRAO_SISTEMA
+    if _modelo_eh_codex(nome):
+        curto = _codex_modelo_nome_curto(nome)
+        return f"codex:{curto}" if curto else "codex:gpt-5.5"
     if nome.lower().startswith(("gpt-", "deepseek-")):
         return nome
     curto = _vertex_modelo_nome_curto(nome)
@@ -520,6 +564,7 @@ IA_PROVIDER_CONFIG_KEYS = {
 
 
 IA_PROVIDER_LABELS = {
+    "codex": "Codex",
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
     "gemini": "Gemini",
@@ -529,6 +574,8 @@ IA_PROVIDER_LABELS = {
 
 def _ia_provedor_por_modelo(model_name: str | None) -> str:
     nome = str(model_name or "").strip()
+    if _modelo_eh_codex(nome):
+        return "codex"
     if _modelo_eh_vertex_ai(nome):
         return "vertex"
     if _modelo_eh_gemini_api(nome):
@@ -561,6 +608,133 @@ def _ia_validar_provedor_ativo(provedor: str) -> None:
         status_code=403,
         detail=f"{nome} esta desativada nas configuracoes. Peca para um admin reativar.",
     )
+
+
+def _chamar_codex_chat_com_thread(
+    payload: IAChatRequest,
+    client_id: str,
+    *,
+    thread_id: str = "",
+    persist_thread: bool = False,
+    conversation_key: str = "",
+) -> tuple[str, str]:
+    """Execute Codex in read-only mode and optionally resume an operational thread."""
+    from backend.services import codex_console
+
+    if not codex_console._codex_enabled():
+        raise HTTPException(status_code=503, detail="Codex esta desabilitado neste runtime.")
+    if not codex_console._codex_sdk_installed():
+        raise HTTPException(status_code=503, detail="Dependencia do Codex nao instalada neste runtime.")
+    if not codex_console._codex_auth_detected():
+        raise HTTPException(status_code=503, detail="Autenticacao local do Codex nao encontrada.")
+
+    mensagem = _ia_chat_mensagem_contextual(payload)
+    if not mensagem:
+        raise HTTPException(status_code=400, detail="Mensagem vazia.")
+
+    blocos = [mensagem]
+    contexto = payload.context if isinstance(payload.context, dict) else {}
+    if contexto:
+        try:
+            contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
+        except Exception:
+            contexto_json = str(contexto)
+        if contexto_json.strip():
+            blocos.append(f"Contexto do JK Sistema:\n{contexto_json[:16000]}")
+
+    resultados = payload.tool_results if isinstance(payload.tool_results, list) else []
+    if resultados:
+        try:
+            resultados_json = json.dumps(resultados, ensure_ascii=False, default=str)
+        except Exception:
+            resultados_json = str(resultados)
+        if resultados_json.strip():
+            blocos.append(f"Resultados de consultas internas autorizadas:\n{resultados_json[:18000]}")
+
+    anexos_texto = []
+    for anexo in _ia_chat_normalizar_anexos(payload):
+        texto = _ia_chat_extrair_texto_anexo(anexo)
+        if texto:
+            anexos_texto.append(f"Arquivo {anexo.get('name') or 'anexo'}:\n{texto[:12000]}")
+        elif str(anexo.get("mime_type") or "").startswith("image/"):
+            anexos_texto.append(
+                f"Imagem {anexo.get('name') or 'anexo'} anexada; esta integracao configurada do Codex aceita somente texto."
+            )
+    if anexos_texto:
+        blocos.append("\n\n".join(anexos_texto)[:18000])
+
+    prompt = "\n\n".join(blocos)[:52000]
+    model = _codex_modelo_nome_curto(payload.model)
+    session_key = str(conversation_key or thread_id or uuid.uuid4().hex).strip()
+    cwd = codex_console._codex_readonly_cwd_for_session(
+        {"client_id": str(client_id or "default"), "username": "ia-configurada"},
+        session_key,
+    )
+
+    try:
+        from openai_codex import ApprovalMode, Codex, CodexConfig
+        from openai_codex.generated.v2_all import ReasoningEffort, ReasoningSummary
+
+        with Codex(
+            CodexConfig(
+                codex_bin=codex_console._codex_runtime_bin(),
+                env=codex_console._codex_sdk_env(),
+                cwd=cwd,
+                config_overrides=codex_console._codex_nonfull_config_overrides(),
+            )
+        ) as codex:
+            thread_kwargs = {
+                "cwd": cwd,
+                "model": model,
+                "approval_mode": ApprovalMode.deny_all,
+                "ephemeral": not bool(persist_thread),
+                "developer_instructions": (
+                    "Voce e o nucleo de raciocinio Codex do orquestrador do JK Sistema. "
+                    "Responda em portugues do Brasil, somente em texto, usando apenas o contexto fornecido. "
+                    "As ferramentas e fontes sao executadas pelo backend; nao use shell, arquivos ou rede por conta propria. "
+                    "Nao publique, envie ou alegue executar alteracoes."
+                ),
+            }
+            if str(thread_id or "").strip():
+                try:
+                    thread = codex.thread_resume(str(thread_id).strip(), **thread_kwargs)
+                except Exception as exc:
+                    if logger is not None:
+                        logger.warning("[IA CODEX] Thread operacional indisponivel; iniciando outra: %s", exc)
+                    thread = codex.thread_start(**thread_kwargs)
+            else:
+                thread = codex.thread_start(**thread_kwargs)
+            resultado = thread.run(
+                prompt,
+                cwd=cwd,
+                model=model,
+                approval_mode=ApprovalMode.deny_all,
+                effort=ReasoningEffort.medium,
+                summary=ReasoningSummary.model_validate("auto"),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("[IA CODEX] Falha ao gerar resposta: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Codex indisponivel: {exc}") from exc
+
+    status = str(getattr(getattr(resultado, "status", None), "value", getattr(resultado, "status", "")) or "")
+    if status == "failed":
+        erro = getattr(resultado, "error", None)
+        detalhe = str(getattr(erro, "message", "") or "Codex falhou ao gerar a resposta.")
+        raise HTTPException(status_code=503, detail=detalhe)
+    resposta = str(getattr(resultado, "final_response", "") or "").strip()
+    if not resposta:
+        raise HTTPException(status_code=502, detail="Codex concluiu sem resposta final.")
+    return resposta, str(getattr(thread, "id", "") or "")
+
+
+def _chamar_codex_chat(payload: IAChatRequest, client_id: str) -> str:
+    """Executa o modelo Codex configurado sem expor ferramentas ou o workspace."""
+
+    resposta, _thread_id = _chamar_codex_chat_com_thread(payload, client_id)
+    return resposta
 
 
 def _vertex_config_valor(chave: str, padrao: str = "") -> str:

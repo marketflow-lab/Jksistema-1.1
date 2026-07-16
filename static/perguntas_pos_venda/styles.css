@@ -435,7 +435,7 @@
 
         .store-card:hover .store-options,
         .store-card:focus-within .store-options {
-            max-height: 260px;
+            max-height: 340px;
             margin-top: 12px;
             padding-top: 12px;
             border-top-color: rgba(157, 231, 255, 0.14);
@@ -465,6 +465,11 @@
         .store-option.interval-option {
             flex-basis: 100%;
             flex-wrap: wrap;
+        }
+
+        .store-option.whatsapp-approval-option {
+            flex-basis: 100%;
+            color: #9de7ff;
         }
 
         .store-option.interval-option input {

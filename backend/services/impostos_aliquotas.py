@@ -31,6 +31,7 @@ from backend.schemas import (
 )
 from backend.services.impostos_common import *
 from backend.services.impostos_context import get_tenant_id, get_tenant_path
+from backend.services.monofasico_rules import avaliar_monofasico
 
 logger = None
 
@@ -467,6 +468,13 @@ def _carregar_regras_monofasico(client_id: str) -> dict:
 
 
 def _avaliar_monofasico_ncm(client_id: str, ncm: str, ttce_result: dict | None = None) -> dict:
+    """Classify domestic resale using the official legal rule set."""
+    # TTCE describes import treatment and the old tenant file was generated
+    # from import rates; neither proves the PIS/Cofins treatment on domestic
+    # resale.  Use the conservative legal classifier shared with Cadastro.
+    _ = client_id, ttce_result
+    return avaliar_monofasico(ncm)
+
     """Classifica monofÃƒÂ¡sico em 3 camadas de prioridade:
       1. TTCE Ã¢â‚¬â€ regime real retornado pela API (mais preciso)
       2. Regras locais do tenant (ncm_exatos / ncm_prefixos / ncm_excluir_*)

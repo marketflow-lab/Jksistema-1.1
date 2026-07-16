@@ -5,11 +5,18 @@ function obterClientId() {
 
 async function fetchComTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     const controller = new AbortController();
+    const externalSignal = options.signal;
+    const abortFromExternal = () => controller.abort(externalSignal?.reason);
+    if (externalSignal) {
+        if (externalSignal.aborted) abortFromExternal();
+        else externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+    }
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
         return await fetch(url, { ...options, signal: controller.signal });
     } finally {
         clearTimeout(timeoutId);
+        if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal);
     }
 }
 
@@ -494,46 +501,10 @@ function aguardar(ms) {
 }
 
 async function aguardarFimSyncAtual() {
-    let falhasConsecutivas = 0;
-    while (true) {
-        if (cancelSolicitado) {
-            throw new Error('Sincroniza\u00e7\u00e3o cancelada.');
-        }
-        let resp = null;
-        try {
-            resp = await fetch('/api/vendas/sync/progress', {
-                headers: obterAuthHeaders(),
-                cache: 'no-store'
-            });
-        } catch (erroFetch) {
-            falhasConsecutivas += 1;
-            if (falhasConsecutivas >= 4) throw erroFetch;
-            statusEl.className = 'status-bar loading';
-            statusEl.innerHTML = `${spinnerHtml}<strong>Sincroniza\u00e7\u00e3o em andamento...</strong><div style="color:#9bd1ff;font-size:0.85rem;">Reconectando ao progresso (${falhasConsecutivas}/3)</div>`;
-            await aguardar(1600);
-            continue;
-        }
-        if (!resp.ok) {
-            if ([502, 503, 504].includes(resp.status)) {
-                falhasConsecutivas += 1;
-                if (falhasConsecutivas < 4) {
-                    await aguardar(1600);
-                    continue;
-                }
-            }
-            throw new Error(`Falha ao consultar progresso: HTTP ${resp.status}`);
-        }
-        falhasConsecutivas = 0;
-        const payload = await resp.json();
-        if (!payload.active) {
-            const progresso = payload.progress || {};
-            if ((progresso.etapa || '').toLowerCase() === 'erro') {
-                throw new Error(corrigirTextoVendas(progresso.mensagem || 'Erro na sincroniza\u00e7\u00e3o.'));
-            }
-            return payload;
-        }
-        await aguardar(1500);
-    }
+    if (cancelSolicitado) throw new Error('Sincronização cancelada.');
+    const payload = await vendasSyncMonitor.waitForInactive();
+    if (cancelSolicitado) throw new Error('Sincronização cancelada.');
+    return payload;
 }
 
 async function recuperarSyncLojaAposFalhaFetch(lojaNome, erroOriginal) {
@@ -545,12 +516,7 @@ async function recuperarSyncLojaAposFalhaFetch(lojaNome, erroOriginal) {
         if (cancelSolicitado) return null;
         await aguardar(1000 * tentativa);
         try {
-            const resp = await fetch('/api/vendas/sync/progress', {
-                headers: obterAuthHeaders(),
-                cache: 'no-store'
-            });
-            if (!resp.ok) continue;
-            const payload = await resp.json();
+            const payload = await vendasSyncMonitor.refresh({ propagateError: true });
             const jobs = []
                 .concat(Array.isArray(payload?.active_jobs) ? payload.active_jobs : [])
                 .concat(Array.isArray(payload?.progress?.jobs) ? payload.progress.jobs : []);
@@ -603,6 +569,7 @@ async function iniciarSyncLoja(lojaNome, periodo = null) {
         await aguardarFimSyncAtual();
         return result;
     }
+    void vendasSyncMonitor.refresh();
     return result;
 }
 
@@ -719,6 +686,7 @@ async function executarSync(opcoes = {}) {
                 Recarregando dados...`;
             
             await carregarVendas();
+            await carregarGrafico();
             
             // Finalizar
             statusEl.className = 'status-bar success';
@@ -766,6 +734,7 @@ btnCancel.addEventListener('click', async () => {
                 method: 'POST',
                 headers: obterAuthHeaders()
             });
+            void vendasSyncMonitor.refresh();
         }
     } catch (e) {
         console.warn('[SYNC] Falha ao solicitar cancelamento:', e);

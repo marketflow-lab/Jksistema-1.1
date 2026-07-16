@@ -319,13 +319,9 @@ def _shared_sync_prepare_invite_packages_impl(invite_id: str, source_sessao: dic
     _shared_sync_save_invite(invite)
 
 def _shared_sync_start_invite_prepare_thread(invite_id: str, source_sessao: dict, destino: dict, scopes: list[str], machine_id: str = "") -> None:
-    thread = threading.Thread(
-        target=_shared_sync_prepare_invite_packages,
-        args=(invite_id, dict(source_sessao or {}), dict(destino or {}), list(scopes or []), str(machine_id or "")),
-        name=f"shared-sync-invite-{invite_id[:8]}",
-        daemon=True,
-    )
-    thread.start()
+    # Convites v1 nao preparam mais pacotes em segundo plano. O endpoint antigo
+    # agora cria um vinculo direto e o pacote so nasce apos previa + Enviar agora.
+    return None
 
 def _shared_sync_pull_pair_scope(target_sessao: dict, link: dict, scope: str) -> dict:
     if not _shared_sync_scope_permitido_entre_clientes(link, scope, target_sessao):
@@ -440,47 +436,7 @@ def _shared_sync_push_link_scope(source_sessao: dict, link: dict, scope: str, ma
     return result
 
 def _shared_sync_propagar_lojas_integracoes_cliente(client_id: str, machine_id: str = "") -> list[dict]:
-    client_norm = _shared_sync_normalizar_client_id(client_id)
-    if not client_norm or not _firebase_deve_usar():
-        return []
-    resultados = []
-    for link in _shared_sync_links_all():
-        if not bool(link.get("active", True)):
-            continue
-        if "lojas_integracoes" not in (link.get("scopes") or []):
-            continue
-        if not (link.get("source_keep_synced") and link.get("target_keep_synced")):
-            continue
-        sessao = None
-        if _shared_sync_normalizar_client_id(link.get("source_client_id")) == client_norm:
-            sessao = {
-                "client_id": link.get("source_client_id"),
-                "username": link.get("source_username"),
-                "name": link.get("source_name") or link.get("source_username") or "",
-            }
-        elif _shared_sync_normalizar_client_id(link.get("target_client_id")) == client_norm:
-            sessao = {
-                "client_id": link.get("target_client_id"),
-                "username": link.get("target_username"),
-                "name": link.get("target_name") or link.get("target_username") or "",
-            }
-        if not sessao or not sessao.get("username"):
-            continue
-        try:
-            resultado = _shared_sync_push_link_scope(sessao, link, "lojas_integracoes", machine_id or "oauth-refresh")
-            resultados.append({
-                "link_id": link.get("id"),
-                "success": True,
-                "skipped": bool(resultado.get("skipped")),
-                "reason": resultado.get("reason") or "",
-            })
-        except Exception as exc:
-            resultados.append({
-                "link_id": link.get("id"),
-                "success": False,
-                "reason": _shared_sync_exception_message(exc),
-            })
-    return resultados
+    return []
 
 configure_shared_sync_user_pairs_runtime()
 

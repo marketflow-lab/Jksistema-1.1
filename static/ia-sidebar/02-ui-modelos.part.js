@@ -77,10 +77,9 @@
     50%{filter:brightness(1.3);box-shadow:0 0 0 5px rgba(239,68,68,.18),0 0 28px rgba(239,68,68,.72);}
   }
   #jk-msg-fab{background:linear-gradient(145deg,#5b8cff,#21b8a3);}
-  #jk-codex-fab{background:#101c37;font-size:0;font-weight:900;padding:0;overflow:hidden;border-radius:999px;}
-  #jk-codex-fab.is-hidden{display:none;}
+  #jk-ia-fab{background:#101c37;font-size:0;font-weight:900;padding:0;overflow:hidden;border-radius:999px;}
   .jk-codex-avatar{display:block;width:100%;height:100%;object-fit:cover;}
-  #jk-codex-fab .jk-codex-avatar,.jk-codex-icon .jk-codex-avatar{transform:scale(1.12);transform-origin:center;}
+  #jk-ia-fab .jk-codex-avatar,.jk-codex-icon .jk-codex-avatar{transform:scale(1.12);transform-origin:center;}
   #jk-msg-badge{position:absolute;top:5px;right:5px;min-width:17px;height:17px;padding:0 5px;border-radius:999px;
     background:#ef4444;color:#fff;border:2px solid #062a22;font-size:.62rem;font-weight:900;line-height:13px;text-align:center;display:none;}
   #jk-msg-badge:not(:empty){display:block;}
@@ -229,7 +228,7 @@
   #jk-msg-image-modal-close{min-width:36px;padding:0;font-size:1.2rem;line-height:1;}
   .jk-msg-image-modal-stage{min-width:0;min-height:0;display:grid;place-items:center;padding:14px;overflow:auto;}
   #jk-msg-image-modal-img{display:block;max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;background:rgba(255,255,255,.03);box-shadow:0 18px 60px rgba(0,0,0,.52);}
-  #jk-codex-panel{--jk-codex-panel-width:410px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-codex-panel-width);min-width:330px;max-width:96vw;
+  #jk-codex-panel{--jk-codex-panel-width:410px;position:fixed;top:0;right:0;bottom:0;z-index:9999;width:var(--jk-codex-panel-width);min-width:330px;max-width:96vw;container-type:inline-size;container-name:jk-codex-panel;
     background:#091625;border-left:1px solid rgba(167,139,250,.34);display:flex;flex-direction:column;box-shadow:-6px 0 30px rgba(0,0,0,.5);
     transform:translateX(110%);transition:transform .25s cubic-bezier(.4,0,.2,1);overflow:hidden;}
   #jk-codex-panel *,#jk-codex-panel *::before,#jk-codex-panel *::after{box-sizing:border-box;}
@@ -274,12 +273,52 @@
   .jk-codex-msg.codex-report h1{font-size:.98rem;line-height:1.22;margin:0 0 7px;color:#f8fbff;}
   .jk-codex-msg.codex-report h2{font-size:.86rem;line-height:1.22;margin:12px 0 6px;color:#bffef6;}
   .jk-codex-msg.codex-report h3{font-size:.78rem;line-height:1.25;margin:10px 0 5px;color:#dcd7ff;}
+  .jk-codex-msg.codex-report p{margin:6px 0;min-width:0;overflow-wrap:anywhere;word-break:break-word;}
   .jk-codex-msg.codex-report ul,.jk-codex-msg.codex-report ol{margin:5px 0 8px;padding-left:18px;}
-  .jk-codex-msg.codex-report li{margin:4px 0;}
-  .jk-codex-msg.codex-report table{display:block;max-width:100%;overflow:auto;border-collapse:collapse;margin:7px 0;border:1px solid rgba(167,139,250,.22);border-radius:8px;}
-  .jk-codex-msg.codex-report th,.jk-codex-msg.codex-report td{border:1px solid rgba(167,139,250,.18);padding:5px 6px;vertical-align:top;font-size:.68rem;line-height:1.28;}
-  .jk-codex-msg.codex-report th{background:rgba(20,184,166,.14);color:#eafffb;font-weight:900;}
+  .jk-codex-msg.codex-report li{margin:4px 0;min-width:0;overflow-wrap:anywhere;word-break:break-word;}
+  .jk-codex-msg.assistant:has(.jk-ia-table-wrap){align-self:stretch;max-width:100%;width:100%;}
+  .jk-codex-msg.assistant .jk-ia-table-wrap{display:block;width:100%;max-width:100%;margin:8px 0;overflow:auto;border:1px solid rgba(167,139,250,.22);border-radius:10px;background:rgba(2,6,23,.2);scrollbar-width:thin;scrollbar-color:rgba(167,139,250,.3) transparent;}
+  .jk-codex-msg.assistant table{display:table;width:100%;max-width:100%;table-layout:fixed;border-collapse:collapse;margin:0;}
+  .jk-codex-msg.assistant th,.jk-codex-msg.assistant td{min-width:0;border:1px solid rgba(167,139,250,.18);padding:7px 8px;vertical-align:top;font-size:.69rem;line-height:1.35;white-space:normal;overflow-wrap:anywhere;word-break:break-word;}
+  .jk-codex-msg.assistant th{background:rgba(20,184,166,.14);color:#eafffb;font-weight:900;}
+  @container jk-codex-panel (max-width:560px){
+    .jk-codex-msg.assistant .jk-ia-table-wrap{overflow:visible;border:0;background:transparent;border-radius:0;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive,.jk-codex-msg.assistant .jk-ia-table-responsive tbody,.jk-codex-msg.assistant .jk-ia-table-responsive tr,.jk-codex-msg.assistant .jk-ia-table-responsive td{display:block;width:100%;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive{border:0;background:transparent;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive thead{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive tbody{display:grid;gap:8px;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive tr{overflow:hidden;border:1px solid rgba(167,139,250,.24);border-radius:10px;background:linear-gradient(145deg,rgba(15,31,49,.96),rgba(19,39,55,.88));box-shadow:0 6px 16px rgba(2,6,23,.2);}
+    .jk-codex-msg.assistant .jk-ia-table-responsive td{display:grid;grid-template-columns:minmax(92px,38%) minmax(0,1fr);gap:9px;align-items:start;border:0;border-bottom:1px solid rgba(167,139,250,.14);padding:8px 10px;font-size:.72rem;line-height:1.38;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive td:last-child{border-bottom:0;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive td::before{content:attr(data-label);min-width:0;color:#8de9dc;font-size:.64rem;font-weight:900;line-height:1.35;text-transform:uppercase;letter-spacing:.025em;overflow-wrap:anywhere;}
+    .jk-codex-msg.assistant .jk-ia-table-responsive[data-columns="1"] td{grid-template-columns:minmax(0,1fr);}
+    .jk-codex-msg.assistant .jk-ia-table-responsive[data-columns="1"] td::before{display:none;}
+  }
   .jk-codex-report-downloads{border-top:1px solid rgba(167,139,250,.2);padding-top:8px;justify-content:flex-start;}
+  .jk-codex-report-quality{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:center;margin-top:9px;border:1px solid rgba(20,184,166,.28);border-radius:10px;background:rgba(8,47,73,.32);padding:8px;white-space:normal;}
+  .jk-codex-report-quality strong{min-width:52px;border-radius:999px;background:rgba(20,184,166,.18);color:#bffef6;padding:4px 7px;text-align:center;font-size:.68rem;}
+  .jk-codex-report-quality span{min-width:0;color:#d8f7ff;font-size:.67rem;font-weight:800;line-height:1.35;overflow-wrap:anywhere;}
+  .jk-codex-report-decisions{display:grid;gap:7px;margin-top:9px;white-space:normal;}
+  .jk-codex-report-decision{display:grid;gap:5px;border:1px solid rgba(167,139,250,.24);border-left:4px solid #8b5cf6;border-radius:9px;background:rgba(15,23,42,.76);padding:8px;}
+  .jk-codex-report-decision[data-urgency="immediate"]{border-left-color:#ef4444;}
+  .jk-codex-report-decision[data-urgency="high"]{border-left-color:#f97316;}
+  .jk-codex-report-decision-title{color:#fff;font-size:.74rem;font-weight:900;line-height:1.25;overflow-wrap:anywhere;}
+  .jk-codex-report-decision-meta{color:#9ee8df;font-size:.61rem;font-weight:900;line-height:1.35;overflow-wrap:anywhere;}
+  .jk-codex-report-decision-text{color:#d8e6f5;font-size:.65rem;font-weight:700;line-height:1.35;overflow-wrap:anywhere;}
+  #jk-codex-report-settings-dialog{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;padding:18px;background:rgba(2,6,23,.76);backdrop-filter:blur(4px);}
+  #jk-codex-report-settings-dialog[hidden]{display:none!important;}
+  .jk-codex-report-settings-card{width:min(720px,calc(100vw - 28px));max-height:min(760px,calc(100vh - 28px));overflow:auto;border:1px solid rgba(45,212,191,.38);border-radius:16px;background:#071522;color:#e6f7ff;box-shadow:0 24px 80px rgba(0,0,0,.48);padding:16px;}
+  .jk-codex-report-settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;}
+  .jk-codex-report-settings-head h3{margin:0;color:#fff;font-size:1rem;}
+  .jk-codex-report-settings-head p{margin:4px 0 0;color:#9bc4d3;font-size:.72rem;line-height:1.4;}
+  .jk-codex-report-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+  .jk-codex-report-field{display:grid;gap:5px;min-width:0;color:#b8d9e5;font-size:.68rem;font-weight:800;}
+  .jk-codex-report-field.wide{grid-column:1/-1;}
+  .jk-codex-report-field input,.jk-codex-report-field textarea{box-sizing:border-box;width:100%;border:1px solid rgba(148,163,184,.34);border-radius:9px;background:#03101b;color:#effcff;padding:9px 10px;font:700 .72rem/1.35 Arial,sans-serif;outline:none;}
+  .jk-codex-report-field textarea{min-height:118px;resize:vertical;font-family:Consolas,monospace;font-weight:500;}
+  .jk-codex-report-field input:focus,.jk-codex-report-field textarea:focus{border-color:#2dd4bf;box-shadow:0 0 0 2px rgba(45,212,191,.12);}
+  .jk-codex-report-settings-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
+  @media (max-width:560px){.jk-codex-report-settings-grid{grid-template-columns:1fr}.jk-codex-report-field.wide{grid-column:auto}}
   .jk-codex-msg pre{max-width:100%;overflow:auto;white-space:pre;background:rgba(2,6,23,.7);border:1px solid rgba(167,139,250,.25);border-radius:8px;padding:8px;font-size:.74rem;}
   .jk-codex-msg code{background:rgba(2,6,23,.52);border:1px solid rgba(167,139,250,.22);border-radius:5px;padding:1px 5px;font-size:.75rem;}
   .jk-codex-msg a{color:#99f6e4;text-decoration:underline;text-underline-offset:2px;}
@@ -483,15 +522,14 @@
   </div>
   <div id="jk-right-sidebar-hotspot" aria-label="Menu lateral direito" tabindex="0">
     <div id="jk-right-sidebar-menu" role="toolbar" aria-label="Atalhos laterais">
-      <button id="jk-ia-fab" class="jk-right-sidebar-icon" title="Assistente IA" aria-label="Abrir assistente IA">&#129302;</button>
-      <button id="jk-codex-fab" class="jk-right-sidebar-icon is-hidden" title="João Pretinho" aria-label="Abrir João Pretinho"><img class="jk-codex-avatar" src="/assets/joao-pretinho-icon.png?v=20260623-joao-pretinho" alt=""></button>
+      <button id="jk-ia-fab" class="jk-right-sidebar-icon" title="Black Jhon" aria-label="Abrir Black Jhon" data-primary-ai="codex"><img class="jk-codex-avatar" src="/assets/joao-pretinho-icon.png?v=20260710-black-jhon" alt=""></button>
       <button id="jk-msg-fab" class="jk-right-sidebar-icon" title="Mensagens" aria-label="Abrir mensagens">&#128172;<span id="jk-msg-badge" aria-label="Mensagens nao lidas"></span></button>
     </div>
   </div>
-  <aside id="jk-ia-panel" role="complementary" aria-label="Assistente IA">
-    <div id="jk-ia-resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar assistente IA" tabindex="0"></div>
+  <aside id="jk-ia-panel" role="complementary" aria-label="Black Jhon">
+    <div id="jk-ia-resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar Black Jhon" tabindex="0"></div>
     <div id="jk-ia-panel-header">
-      <h3>🤖 Assistente IA</h3>
+      <h3>Black Jhon</h3>
       <select id="jk-ia-model-sel" title="Modelo de IA" style="display:none;background:#0b3040;border:1px solid rgba(120,227,212,.3);color:#8ee9de;font-size:.68rem;border-radius:8px;padding:6px 8px;cursor:pointer;max-width:90px;min-height:36px;">
         <optgroup label="OpenAI">
           <option value="gpt-5.4-nano">Nano</option>
@@ -523,29 +561,30 @@
       <div id="jk-ia-convs-lista"></div>
     </div>
     <div id="jk-ia-chat-wrap">
-      <div id="jk-ia-status">Assistente conectado a este módulo.</div>
+      <div id="jk-ia-status">Black Jhon conectado a este módulo.</div>
       <div id="jk-ia-msgs" aria-live="polite"></div>
       <div id="jk-ia-anexos"></div>
       <div id="jk-ia-input-row">
         <button class="jk-ia-ibtn" id="jk-ia-btn-img" title="Enviar foto">🖼</button>
         <button class="jk-ia-ibtn" id="jk-ia-btn-arq" title="Enviar arquivo">📎</button>
-        <textarea id="jk-ia-input" placeholder="Pergunte sobre este módulo..." rows="1"></textarea>
+        <textarea id="jk-ia-input" placeholder="Pergunte ao Black Jhon sobre este módulo..." rows="1"></textarea>
         <button class="jk-ia-ibtn" id="jk-ia-send" title="Enviar">↑</button>
       </div>
     </div>
     <input type="file" id="jk-ia-file-img" accept="image/*" multiple style="display:none">
     <input type="file" id="jk-ia-file-arq" accept=".pdf,.txt,.csv,.json,.xml,.md,.log,.xlsx,.xls" multiple style="display:none">
   </aside>
-  <aside id="jk-codex-panel" role="complementary" aria-label="João Pretinho">
-    <div id="jk-codex-resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar João Pretinho" tabindex="0"></div>
+  <aside id="jk-codex-panel" role="complementary" aria-label="Black Jhon">
+    <div id="jk-codex-resizer" role="separator" aria-orientation="vertical" aria-label="Redimensionar Black Jhon" tabindex="0"></div>
     <div id="jk-codex-header">
       <div class="jk-codex-icon" aria-hidden="true"><img class="jk-codex-avatar" src="/assets/joao-pretinho-icon.png?v=20260623-joao-pretinho" alt=""></div>
       <div style="flex:1 1 auto;min-width:0;">
-        <h3>João Pretinho</h3>
-        <span>IA assistente do sistema</span>
+        <h3>Black Jhon</h3>
+        <span>Codex principal &middot; IA integrada do sistema</span>
       </div>
-      <button class="jk-codex-hbtn" id="jk-codex-new" title="Nova conversa">&#9998;</button>
+      <button class="jk-codex-hbtn" id="jk-codex-new" title="Reiniciar memoria" aria-label="Reiniciar memoria do Black Jhon">&#8634;</button>
       <button class="jk-codex-hbtn" id="jk-codex-history-toggle" title="Historico">&#128340;</button>
+      <button class="jk-codex-hbtn" id="jk-codex-report-settings" title="Configuracoes dos relatorios">&#9881;</button>
       <button class="jk-codex-hbtn" id="jk-codex-refresh" title="Atualizar status">&#8635;</button>
       <button class="jk-codex-hbtn" id="jk-codex-close" title="Fechar">&times;</button>
     </div>
@@ -586,7 +625,7 @@
         <div class="jk-codex-live-block" id="jk-codex-live-answer" hidden></div>
         <div id="jk-codex-log-list"></div>
       </div>
-      <div id="jk-codex-status">João Pretinho disponivel apenas para administrador full.</div>
+      <div id="jk-codex-status">Black Jhon com Codex disponivel apenas para administrador full.</div>
       <div id="jk-codex-context-pct" title="Contexto usado">Ctx --%</div>
     </div>
     <div id="jk-codex-compose">
@@ -644,13 +683,42 @@
       </div>
       <div id="jk-codex-path-chips"></div>
       <div id="jk-codex-attachment-chips"></div>
-      <textarea id="jk-codex-input" rows="3" placeholder="Peça uma analise, correcao ou tarefa interna para o João Pretinho..."></textarea>
+      <textarea id="jk-codex-input" rows="3" placeholder="Peça uma analise, correcao ou tarefa interna para o Black Jhon..."></textarea>
       <div id="jk-codex-actions">
-        <button class="jk-codex-btn primary" id="jk-codex-readonly" type="button" title="Enviar para o João Pretinho">Enviar</button>
+        <button class="jk-codex-btn primary" id="jk-codex-readonly" type="button" title="Enviar para o Black Jhon">Enviar</button>
       </div>
       <input type="file" id="jk-codex-file-input" multiple style="display:none">
     </div>
   </aside>
+  <div id="jk-codex-report-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="jk-codex-report-settings-title" hidden>
+    <div class="jk-codex-report-settings-card">
+      <div class="jk-codex-report-settings-head">
+        <div>
+          <h3 id="jk-codex-report-settings-title">Relatorios gerenciais</h3>
+          <p>Politica global e excecoes herdadas por loja, fornecedor e SKU. Somente administradores full podem alterar.</p>
+        </div>
+        <button class="jk-codex-hbtn" id="jk-codex-report-settings-close" type="button" title="Fechar">&times;</button>
+      </div>
+      <div class="jk-codex-report-settings-grid">
+        <label class="jk-codex-report-field">Cobertura minima para margem (%)<input id="jk-report-margin-coverage" type="number" min="0" max="100" step="0.1"></label>
+        <label class="jk-codex-report-field">Lead time padrao (dias)<input id="jk-report-lead-time" type="number" min="0" max="1460" step="1"></label>
+        <label class="jk-codex-report-field">Ciclo de revisao (dias)<input id="jk-report-review-cycle" type="number" min="0" max="365" step="1"></label>
+        <label class="jk-codex-report-field">Margem alvo (%)<input id="jk-report-target-margin" type="number" min="-100" max="100" step="0.1"></label>
+        <label class="jk-codex-report-field">Prazos imediata/alta/media/baixa (dias)<input id="jk-report-urgency-days" type="text" placeholder="1, 3, 7, 14"></label>
+        <label class="jk-codex-report-field">Cenarios de cambio (%)<input id="jk-report-scenario-exchange" type="text" placeholder="5, 10"></label>
+        <label class="jk-codex-report-field">Cenarios de frete (%)<input id="jk-report-scenario-freight" type="text" placeholder="10, 20"></label>
+        <label class="jk-codex-report-field">Cenarios de atraso (dias)<input id="jk-report-scenario-delay" type="text" placeholder="15, 30"></label>
+        <label class="jk-codex-report-field">Responsavel por reposicao<input id="jk-report-owner-replenishment" type="text" placeholder="usuario ou funcao"></label>
+        <label class="jk-codex-report-field">Responsavel por precos<input id="jk-report-owner-price" type="text" placeholder="usuario ou funcao"></label>
+        <label class="jk-codex-report-field">Responsavel por liquidacao<input id="jk-report-owner-liquidation" type="text" placeholder="usuario ou funcao"></label>
+        <label class="jk-codex-report-field wide">Excecoes por loja, fornecedor e SKU (JSON)<textarea id="jk-report-overrides" spellcheck="false" placeholder='{"stores":{"Loja 1":{"monthly_sales_target_brl":100000}},"suppliers":{},"skus":{}}'></textarea></label>
+      </div>
+      <div class="jk-codex-report-settings-actions">
+        <button class="jk-codex-tool" id="jk-codex-report-settings-cancel" type="button">Cancelar</button>
+        <button class="jk-codex-btn primary" id="jk-codex-report-settings-save" type="button">Salvar configuracoes</button>
+      </div>
+    </div>
+  </div>
   <aside id="jk-msg-panel" role="complementary" aria-label="Mensagens">
     <div id="jk-msg-header">
       <div class="jk-msg-title-wrap">

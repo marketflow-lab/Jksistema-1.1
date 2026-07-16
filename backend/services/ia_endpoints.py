@@ -122,7 +122,8 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     perf_t0 = time.perf_counter()
     contexto = payload.context if isinstance(payload.context, dict) else {}
     mensagem_original = str(payload.message or "").strip()
-    modo_rapido_sidebar = bool(isinstance(contexto, dict) and contexto.get("modo_rapido_sidebar")) or _ia_chat_eh_pedido_rapido_sidebar(
+    fallback_read_only = bool(payload.fallback_read_only)
+    modo_rapido_sidebar = fallback_read_only or bool(isinstance(contexto, dict) and contexto.get("modo_rapido_sidebar")) or _ia_chat_eh_pedido_rapido_sidebar(
         mensagem_original,
         contexto if isinstance(contexto, dict) else {},
         payload.attachments or [],
@@ -154,6 +155,12 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     if modo_rapido_sidebar:
         contexto = dict(contexto)
         contexto["modo_rapido_sidebar"] = True
+        if fallback_read_only:
+            contexto["fallback_read_only"] = True
+            contexto["restricao_fallback"] = (
+                "Fallback estritamente de leitura: responda apenas em texto; nao execute ferramentas, "
+                "nao gere arquivos ou imagens e nao proponha como concluida nenhuma alteracao externa."
+            )
         payload.context = contexto
 
     try:
@@ -161,6 +168,13 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     except AttributeError:
         payload_execucao = payload.copy(deep=True)
     payload_execucao.message = mensagem_original if modo_rapido_sidebar else _ia_chat_mensagem_contextual(payload)
+    if fallback_read_only:
+        payload_execucao.message = (
+            "MODO FALLBACK ESTRITAMENTE DE LEITURA. Responda somente em texto. "
+            "Nao execute nem alegue ter executado alteracoes, ferramentas, envios, arquivos ou imagens.\n\n"
+            f"Pedido do usuario: {mensagem_original}"
+        )
+        payload.message = payload_execucao.message
 
     perf_tools_t0 = time.perf_counter()
     if modo_rapido_sidebar:
@@ -181,11 +195,14 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
     payload.model = model_req
     # GeraÃƒÂ§ÃƒÂ£o de imagem deve considerar apenas a mensagem atual.
     # O payload_execucao inclui histÃƒÂ³rico recente e pode herdar pedidos antigos como "gere uma imagem".
-    resposta_imagem = _ia_gerar_imagem_sku_resposta(payload, client_id)
+    resposta_imagem = None if fallback_read_only else _ia_gerar_imagem_sku_resposta(payload, client_id)
     perf_provider_t0 = time.perf_counter()
     if resposta_imagem:
         resposta = resposta_imagem
         model_usado = (os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip()
+    elif _modelo_eh_codex(model_req):
+        resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
     elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
@@ -254,6 +271,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
     return {
         "success": True,
         "pode_escolher_modelo_chat": pode_escolher_modelo,
+        "codex": _listar_modelos_codex_configuraveis() if pode_escolher_modelo else [],
         "openai": [
             {"name": "gpt-5.4-nano", "display_name": "Nano"},
             {"name": "gpt-5.4-mini", "display_name": "Mini"},
@@ -281,6 +299,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             "deepseek": "deepseek-v4-flash",
             "gemini": "gemini:gemini-2.5-flash",
             "vertex": f"vertex:{_vertex_ai_modelo_padrao()}",
+            "codex": "codex:gpt-5.5",
             "vertex_project_id": _vertex_ai_project_id_configurado(),
             "vertex_location": _vertex_ai_location(),
             "vertex_service_account_email": _vertex_ai_service_account_email(),

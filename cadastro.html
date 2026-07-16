@@ -105,7 +105,7 @@
             <div id="painelProdutos" class="tab-panel" role="tabpanel" aria-labelledby="tabProdutos">
                 <div class="toolbar">
                     <button id="btnAtualizar" class="btn btn-secondary" type="button">Atualizar lista</button>
-                    <button id="btnSyncNcm" class="btn btn-secondary" type="button">Sincronizar NCM</button>
+                    <button id="btnSyncNcm" class="btn btn-secondary" type="button">Sincronizar NCM e monofásico</button>
                     <button id="btnEditarCadastro" class="btn btn-secondary" type="button">Editar</button>
                     <button id="btnIncluirCadastro" class="btn btn-secondary" type="button">Incluir</button>
                     <button id="btnImportarColunas" class="btn btn-secondary" type="button">Importar colunas (Excel/CSV)</button>
@@ -210,10 +210,12 @@
     }
 
     const colunasFixasPrimeiro = [
-        'sku', 'foto', 'produto_bling', 'nome', 'produto', 'ncm', 'cest', 'categoria', 'custo', 'preco', 'descricao', 'imposto', 'updated_at'
+        'sku', 'foto', 'produto_bling', 'nome', 'produto', 'ncm', 'ncm_validade', 'monofasico', 'monofasico_confianca', 'cest', 'categoria', 'custo', 'preco', 'descricao', 'imposto', 'updated_at'
     ];
     const colunasOcultas = new Set([
-        'marca', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'custos_frete_mlb', 'modalidades_mlb', 'gtins_mlb'
+        'marca', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'custos_frete_mlb', 'modalidades_mlb', 'gtins_mlb',
+        'monofasico_status', 'monofasico_fundamento', 'monofasico_fonte', 'monofasico_motivo', 'monofasico_verificado_em',
+        'ncm_fonte_auditoria', 'ncm_descricao_oficial', 'ncm_verificado_em'
     ]);
 
     function colunaEhIndesejada(coluna) {
@@ -282,7 +284,10 @@
             marca: 'Marca',
             foto: 'Foto',
             ncm: 'NCM',
+            ncm_validade: 'Validade NCM',
             cest: 'CEST',
+            monofasico: 'Monofásico',
+            monofasico_confianca: 'Confiança',
             produto_bling: 'Produto Bling',
             custo: 'Custo',
             preco: 'Preço',
@@ -883,7 +888,7 @@
 
     async function sincronizarNcmBackground() {
         try {
-            setStatusNcmGlobal('Iniciando sincronização de NCM...', 'loading');
+            setStatusNcmGlobal('Iniciando sincronização de NCM e classificação monofásica...', 'loading');
             btnSyncNcm.disabled = true;
             
             await NCM_SYNC.iniciarSincronizacao();
@@ -897,7 +902,7 @@
     function onNcmSyncComplete(status) {
         btnSyncNcm.disabled = false;
         if (status === 'done') {
-            setStatusNcmGlobal('✅ Sincronização NCM concluída! Recarregando produtos...', 'success');
+            setStatusNcmGlobal('✅ NCM e classificação monofásica atualizados. Recarregando produtos...', 'success');
             setTimeout(() => {
                 carregarProdutos();
                 setStatusNcmGlobal('', '');

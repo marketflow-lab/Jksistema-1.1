@@ -10,6 +10,7 @@
         window.posicionarBalaoFavoritosStatus = statusModal.posicionarBalaoFavoritosStatus || window.posicionarBalaoFavoritosStatus;
         window.garantirCamadaBalaoFavoritosStatus = statusModal.garantirCamadaBalaoFavoritosStatus || window.garantirCamadaBalaoFavoritosStatus;
         window.atualizarStatusFavoritosNoNavegadorMl = statusModal.atualizarStatusFavoritosNoNavegadorMl || window.atualizarStatusFavoritosNoNavegadorMl;
+        window.limparStatusTerminalFavoritos = statusModal.limparStatusTerminalFavoritos || window.limparStatusTerminalFavoritos;
         window.favoritosMarcarBotaoAcaoBalaoClicado = statusModal.marcarBotaoAcaoBalaoClicado || window.favoritosMarcarBotaoAcaoBalaoClicado;
         window.favoritosResolverAcaoBalao = statusModal.resolverAcaoBalao || window.favoritosResolverAcaoBalao;
         return;
@@ -67,12 +68,19 @@
         return typeof mlFavoritosEmExecucao !== 'undefined' && !!mlFavoritosEmExecucao;
     }
 
+    function cancelamentoFavoritosAtivo() {
+        return typeof mlFavoritosCancelado !== 'undefined' && !!mlFavoritosCancelado;
+    }
+
     function notificarShellFavoritosWorkerStatus(mensagem, opcoes = {}) {
         if (!favoritosEmExecucao()) return;
         try {
             if (!window.top || window.top === window || typeof window.top.postMessage !== 'function') return;
             const pausado = typeof mlFavoritosPausado !== 'undefined' && !!mlFavoritosPausado;
             const segundoPlano = typeof mlFavoritosExecucaoEmSegundoPlano !== 'undefined' && !!mlFavoritosExecucaoEmSegundoPlano;
+            const inicioExecucao = typeof mlFavoritosExecucaoIniciadaEmMs !== 'undefined'
+                ? Number(mlFavoritosExecucaoIniciadaEmMs) || 0
+                : 0;
             const workerAtivo = !!window.__JK_FAVORITOS_WORKER_BROWSER_ACTIVE;
             if (!segundoPlano && !workerAtivo) return;
             window.top.postMessage({
@@ -81,9 +89,26 @@
                     active: true,
                     paused: pausado,
                     background: segundoPlano,
+                    startedAt: inicioExecucao,
                     status: pausado ? 'paused' : 'running',
                     message: String(mensagem || '').trim() || 'Favoritos rodando em segundo plano.',
                     error: !!(opcoes && opcoes.erro)
+                }
+            }, '*');
+        } catch (_err) {}
+    }
+
+    function notificarShellFavoritosWorkerTerminal(status = 'canceled') {
+        try {
+            if (!window.top || window.top === window || typeof window.top.postMessage !== 'function') return;
+            window.top.postMessage({
+                channel: 'jk-favoritos-worker-done',
+                payload: {
+                    active: false,
+                    paused: false,
+                    background: false,
+                    status: String(status || 'canceled').toLowerCase(),
+                    message: ''
                 }
             }, '*');
         } catch (_err) {}
@@ -183,6 +208,10 @@
     }
 
     function mostrarBalaoFavoritosStatus(mensagem, opcoes = {}) {
+        if (cancelamentoFavoritosAtivo() && opcoes.permitirAposCancelamento !== true) {
+            limparStatusTerminalFavoritos({ status: 'canceled' });
+            return;
+        }
         const textoStatus = mensagem || '';
         notificarShellFavoritosWorkerStatus(textoStatus, opcoes);
         const statusEl = obterMlFavoritosStatusEl();
@@ -225,11 +254,14 @@
         }
     }
 
-    function esconderBalaoFavoritosStatus() {
+    function esconderBalaoFavoritosStatus(opcoes = {}) {
+        const statusEl = obterMlFavoritosStatusEl();
         const liveStatusEl = obterMlWorkModalLiveStatusEl();
         const balaoEl = obterMlFavoritosBalloonEl();
+        const textoEl = obterMlFavoritosBalloonTextEl();
         const acoesEl = obterMlFavoritosBalloonActionsEl();
         limparTimerBalao();
+        if (statusEl) statusEl.textContent = '';
         if (liveStatusEl) {
             liveStatusEl.textContent = '';
             liveStatusEl.classList.add('hidden');
@@ -237,9 +269,26 @@
         if (balaoEl) balaoEl.classList.add('hidden');
         if (balaoEl) balaoEl.classList.remove('is-wide');
         if (balaoEl) balaoEl.classList.remove('is-comparison');
+        if (textoEl) textoEl.textContent = '';
         if (acoesEl) acoesEl.innerHTML = '';
         posicionarBalaoFavoritosStatus();
-        restaurarNavegadorSeVisivel();
+        if (opcoes.restaurarNavegador !== false) restaurarNavegadorSeVisivel();
+    }
+
+    function limparStatusTerminalFavoritos(opcoes = {}) {
+        esconderBalaoFavoritosStatus({ restaurarNavegador: false });
+        const frameWrapEl = obterMlBrowserFrameWrapEl();
+        if (frameWrapEl) {
+            frameWrapEl.classList.remove('has-status-overlay');
+            frameWrapEl.style.setProperty('--ml-favoritos-status-overlay-height', '0px');
+        }
+        const camadaBalao = obterCamadaBalaoAtual();
+        if (camadaBalao) {
+            camadaBalao.classList.add('hidden');
+            camadaBalao.setAttribute('aria-hidden', 'true');
+        }
+        atualizarStatusFavoritosNoNavegadorMl('', false, { imediato: true, forcar: true });
+        notificarShellFavoritosWorkerTerminal(opcoes.status || 'canceled');
     }
 
     function garantirCamadaBalaoFavoritosStatus() {
@@ -268,7 +317,7 @@
         const frameWrapEl = obterMlBrowserFrameWrapEl();
         const sobreNavegador = resultadosMlAbertos();
         const balaoVisivel = !balaoEl.classList.contains('hidden');
-        const statusVisivel = balaoVisivel || favoritosEmExecucao();
+        const statusVisivel = balaoVisivel || (favoritosEmExecucao() && !cancelamentoFavoritosAtivo());
         const destino = document.body || obterMlFavoritosBalloonOriginalParentEl();
         const camadaBalao = garantirCamadaBalaoFavoritosStatus();
         const chavePosicao = [
@@ -307,7 +356,12 @@
         if (temAcoes) {
             atualizarStatusFavoritosNoNavegadorMl('', false, { somenteSeVisivel: true });
         } else {
-            atualizarStatusFavoritosNoNavegadorMl(textoStatus, !!(sobreNavegador && favoritosEmExecucao() && statusVisivel));
+            atualizarStatusFavoritosNoNavegadorMl(textoStatus, !!(
+                sobreNavegador
+                && favoritosEmExecucao()
+                && !cancelamentoFavoritosAtivo()
+                && statusVisivel
+            ));
         }
         agendarPosicaoNavegador();
     }
@@ -407,8 +461,10 @@
             statusOverlayNavegadorMl.timer = null;
             statusOverlayNavegadorMl.pendente = null;
         }
-        if (!ativoFinal && !statusOverlayNavegadorMl.visivel) return;
+        if (!ativoFinal && !statusOverlayNavegadorMl.visivel && opcoes.forcar !== true) return;
         if (
+            opcoes.forcar !== true
+            &&
             statusOverlayNavegadorMl.ativo === ativoFinal
             && statusOverlayNavegadorMl.texto === texto
             && statusOverlayNavegadorMl.visivel === ativoFinal
@@ -439,6 +495,7 @@
         posicionarBalaoFavoritosStatus,
         garantirCamadaBalaoFavoritosStatus,
         atualizarStatusFavoritosNoNavegadorMl,
+        limparStatusTerminalFavoritos,
         marcarBotaoAcaoBalaoClicado,
         resolverAcaoBalao
     });
@@ -448,6 +505,7 @@
     window.posicionarBalaoFavoritosStatus = posicionarBalaoFavoritosStatus;
     window.garantirCamadaBalaoFavoritosStatus = garantirCamadaBalaoFavoritosStatus;
     window.atualizarStatusFavoritosNoNavegadorMl = atualizarStatusFavoritosNoNavegadorMl;
+    window.limparStatusTerminalFavoritos = limparStatusTerminalFavoritos;
     window.favoritosMarcarBotaoAcaoBalaoClicado = marcarBotaoAcaoBalaoClicado;
     window.favoritosResolverAcaoBalao = resolverAcaoBalao;
 })();

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "4"
 STATE_ROW_SCHEDULER = "scheduler_state"
 
 _LOCKS_LOCK = threading.RLock()
@@ -210,6 +210,218 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_assistant_reports_conversation "
         "ON assistant_reports(conversation_id, thread_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_report_settings (
+            name TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_financial_adjustments (
+            adjustment_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            store TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            amount REAL,
+            platform TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_assistant_adjustments_period "
+        "ON assistant_financial_adjustments(kind, store, period_start, period_end)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_action_queue (
+            action_id TEXT PRIMARY KEY,
+            report_id TEXT,
+            action_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            store TEXT,
+            owner_username TEXT,
+            owner_role TEXT,
+            due_at TEXT,
+            impact_brl REAL,
+            confidence TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            created_by TEXT,
+            approved_by TEXT,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_assistant_action_queue_status "
+        "ON assistant_action_queue(status, owner_username, due_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_agent_plans (
+            plan_id TEXT PRIMARY KEY,
+            task_id TEXT,
+            conversation_id TEXT,
+            conversation_generation INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL,
+            idempotency_key TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_plans_task "
+        "ON assistant_agent_plans(task_id) WHERE task_id <> ''"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_plans_idempotency "
+        "ON assistant_agent_plans(idempotency_key) WHERE idempotency_key <> ''"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_customer_reply_jobs (
+            job_id TEXT PRIMARY KEY,
+            profile TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            subject_key TEXT NOT NULL,
+            store TEXT,
+            status TEXT NOT NULL,
+            agent_state TEXT NOT NULL,
+            idempotency_key TEXT,
+            thread_id TEXT,
+            lease_owner TEXT,
+            lease_expires_ts REAL,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_queue "
+        "ON assistant_customer_reply_jobs(status, lease_expires_ts, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_reply_jobs_subject "
+        "ON assistant_customer_reply_jobs(profile, task_type, store, subject_key, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_reply_jobs_idempotency "
+        "ON assistant_customer_reply_jobs(idempotency_key) WHERE idempotency_key <> ''"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_agent_guidance (
+            guidance_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_key TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY(guidance_id, version)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_guidance_scope "
+        "ON assistant_agent_guidance(active, scope_type, scope_key, version DESC)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_action_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            action_id TEXT,
+            status TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            proposal_hash TEXT NOT NULL,
+            conversation_id TEXT,
+            created_by TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_action_proposals_status "
+        "ON assistant_action_proposals(status, created_by, updated_at DESC)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_action_runs (
+            run_id TEXT PRIMARY KEY,
+            proposal_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            idempotency_key TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_action_runs_idempotency "
+        "ON assistant_action_runs(idempotency_key) WHERE idempotency_key <> ''"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_action_runs_proposal "
+        "ON assistant_action_runs(proposal_id, updated_at DESC)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_action_approvals (
+            approval_id TEXT PRIMARY KEY,
+            proposal_id TEXT NOT NULL,
+            proposal_version INTEGER NOT NULL,
+            proposal_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source TEXT NOT NULL,
+            actor TEXT,
+            wa_id_hash TEXT,
+            created_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_action_approvals_proposal "
+        "ON assistant_action_approvals(proposal_id, created_at DESC)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_agent_audit (
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id TEXT,
+            actor TEXT,
+            channel TEXT,
+            created_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_audit_entity "
+        "ON assistant_agent_audit(entity_type, entity_id, created_at DESC)"
     )
 
 
@@ -523,13 +735,15 @@ def _scheduler_legacy_path(info_base: str, client_id: str) -> str:
 
 def _scheduler_light_payload_conn(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
-    report = data.get("last_daily_report")
-    if isinstance(report, dict):
-        saved = _report_upsert_conn(conn, report)
-        report_id = str(saved.get("report_id") or report.get("report_id") or "").strip()
-        if report_id:
-            data["last_daily_report_id"] = report_id
-            data.pop("last_daily_report", None)
+    for prefix in ("daily", "weekly"):
+        report_key = f"last_{prefix}_report"
+        report = data.get(report_key)
+        if isinstance(report, dict):
+            saved = _report_upsert_conn(conn, report)
+            report_id = str(saved.get("report_id") or report.get("report_id") or "").strip()
+            if report_id:
+                data[f"last_{prefix}_report_id"] = report_id
+                data.pop(report_key, None)
     return data
 
 
@@ -570,12 +784,14 @@ def _scheduler_import_legacy_conn(conn: sqlite3.Connection, info_base: str, clie
 
 def _scheduler_rehydrate(info_base: str, client_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
-    if not isinstance(data.get("last_daily_report"), dict):
-        report_id = str(data.get("last_daily_report_id") or "").strip()
-        if report_id:
-            report = codex_assistant_report_get(info_base, client_id, report_id)
-            if isinstance(report, dict):
-                data["last_daily_report"] = report
+    for prefix in ("daily", "weekly"):
+        report_key = f"last_{prefix}_report"
+        if not isinstance(data.get(report_key), dict):
+            report_id = str(data.get(f"last_{prefix}_report_id") or "").strip()
+            if report_id:
+                report = codex_assistant_report_get(info_base, client_id, report_id)
+                if isinstance(report, dict):
+                    data[report_key] = report
     return data
 
 
@@ -601,3 +817,985 @@ def codex_assistant_scheduler_save(info_base: str, client_id: str, payload: dict
         with _connection(db_path) as conn:
             _ensure_state_schema(conn)
             _scheduler_upsert_conn(conn, payload if isinstance(payload, dict) else {})
+
+
+def codex_assistant_report_settings_get(info_base: str, client_id: str, name: str = "default") -> dict[str, Any]:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT payload_json FROM assistant_report_settings WHERE name = ?",
+                (str(name or "default"),),
+            ).fetchone()
+            payload = _json_loads(row["payload_json"] if row else "", {})
+            return payload if isinstance(payload, dict) else {}
+
+
+def codex_assistant_report_settings_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+    *,
+    updated_by: str = "",
+    name: str = "default",
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    data["updated_at"] = _now_iso()
+    if updated_by:
+        data["updated_by"] = str(updated_by)
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO assistant_report_settings(name, payload_json, updated_at, updated_by)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(name or "default"), raw, data["updated_at"], str(updated_by or "")),
+            )
+    return data
+
+
+def codex_assistant_financial_adjustment_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+    *,
+    created_by: str = "",
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    adjustment_id = _safe_id(data.get("adjustment_id"), "")
+    if not adjustment_id:
+        adjustment_id = hashlib.sha256(
+            f"{time.time_ns()}|{client_id}|{data.get('kind')}|{data.get('store')}".encode("utf-8")
+        ).hexdigest()[:24]
+    data["adjustment_id"] = adjustment_id
+    data.setdefault("created_at", _now_iso())
+    data["created_by"] = str(created_by or data.get("created_by") or "")
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO assistant_financial_adjustments(
+                    adjustment_id, kind, store, period_start, period_end, amount, platform,
+                    note, created_at, created_by, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    adjustment_id,
+                    str(data.get("kind") or "advertising"),
+                    str(data.get("store") or ""),
+                    str(data.get("period_start") or ""),
+                    str(data.get("period_end") or ""),
+                    float(data.get("amount") or 0),
+                    str(data.get("platform") or ""),
+                    str(data.get("note") or ""),
+                    str(data.get("created_at") or ""),
+                    data["created_by"],
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_financial_adjustments_list(
+    info_base: str,
+    client_id: str,
+    *,
+    kind: str = "advertising",
+    store: str = "",
+    period_start: str = "",
+    period_end: str = "",
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    clauses = ["kind = ?"]
+    params: list[Any] = [str(kind or "advertising")]
+    if store:
+        clauses.append("LOWER(store) = LOWER(?)")
+        params.append(str(store))
+    if period_start:
+        clauses.append("COALESCE(period_end, '') >= ?")
+        params.append(str(period_start))
+    if period_end:
+        clauses.append("COALESCE(period_start, '') <= ?")
+        params.append(str(period_end))
+    params.append(max(1, min(5000, int(limit or 500))))
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            rows = conn.execute(
+                "SELECT payload_json FROM assistant_financial_adjustments WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY period_start DESC, created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+    return [item for row in rows if isinstance((item := _json_loads(row["payload_json"], {})), dict)]
+
+
+def codex_assistant_financial_adjustment_delete(info_base: str, client_id: str, adjustment_id: str) -> bool:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            cursor = conn.execute(
+                "DELETE FROM assistant_financial_adjustments WHERE adjustment_id = ?",
+                (_safe_id(adjustment_id, ""),),
+            )
+            return bool(cursor.rowcount)
+
+
+def codex_assistant_action_queue_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+    *,
+    actor: str = "",
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    action_id = _safe_id(data.get("action_id"), "")
+    if not action_id:
+        action_id = hashlib.sha256(
+            f"{time.time_ns()}|{client_id}|{data.get('report_id')}|{data.get('action_type')}".encode("utf-8")
+        ).hexdigest()[:24]
+    now = _now_iso()
+    data["action_id"] = action_id
+    data.setdefault("created_at", now)
+    data["updated_at"] = now
+    data.setdefault("created_by", str(actor or ""))
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO assistant_action_queue(
+                    action_id, report_id, action_type, status, store, owner_username,
+                    owner_role, due_at, impact_brl, confidence, created_at, updated_at,
+                    created_by, approved_by, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action_id,
+                    str(data.get("report_id") or ""),
+                    str(data.get("action_type") or "review"),
+                    str(data.get("status") or "queued"),
+                    str(data.get("store") or ""),
+                    str(data.get("owner_username") or ""),
+                    str(data.get("owner_role") or ""),
+                    str(data.get("due_at") or ""),
+                    float(data["impact_brl"]) if data.get("impact_brl") is not None else None,
+                    str(data.get("confidence") or ""),
+                    str(data.get("created_at") or now),
+                    now,
+                    str(data.get("created_by") or actor or ""),
+                    str(data.get("approved_by") or ""),
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_action_queue_list(
+    info_base: str,
+    client_id: str,
+    *,
+    status: str = "",
+    action_type: str = "",
+    owner_username: str = "",
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    clauses = ["1 = 1"]
+    params: list[Any] = []
+    for column, value in (("status", status), ("action_type", action_type), ("owner_username", owner_username)):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(str(value))
+    params.append(max(1, min(5000, int(limit or 500))))
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            rows = conn.execute(
+                "SELECT payload_json FROM assistant_action_queue WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+    return [item for row in rows if isinstance((item := _json_loads(row["payload_json"], {})), dict)]
+
+
+def codex_assistant_action_queue_get(info_base: str, client_id: str, action_id: str) -> Optional[dict[str, Any]]:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT payload_json FROM assistant_action_queue WHERE action_id = ?",
+                (_safe_id(action_id, ""),),
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_assistant_agent_plan_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    plan_id = _safe_id(data.get("plan_id"), "")
+    if not plan_id:
+        plan_id = hashlib.sha256(
+            f"{time.time_ns()}|{client_id}|{data.get('task_id')}|{data.get('conversation_id')}".encode("utf-8")
+        ).hexdigest()[:32]
+    now = _now_iso()
+    data["plan_id"] = plan_id
+    data.setdefault("created_at", now)
+    data["updated_at"] = now
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO assistant_agent_plans(
+                    plan_id, task_id, conversation_id, conversation_generation, status,
+                    idempotency_key, created_at, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_id) DO UPDATE SET
+                    task_id=excluded.task_id,
+                    conversation_id=excluded.conversation_id,
+                    conversation_generation=excluded.conversation_generation,
+                    status=excluded.status,
+                    idempotency_key=excluded.idempotency_key,
+                    updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    plan_id,
+                    str(data.get("task_id") or ""),
+                    str(data.get("conversation_id") or ""),
+                    max(1, int(data.get("conversation_generation") or 1)),
+                    str(data.get("agent_state") or data.get("status") or "entendendo"),
+                    str(data.get("idempotency_key") or ""),
+                    str(data.get("created_at") or now),
+                    now,
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_agent_plan_get(
+    info_base: str,
+    client_id: str,
+    plan_id: str = "",
+    *,
+    task_id: str = "",
+    idempotency_key: str = "",
+) -> Optional[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if plan_id:
+        clauses.append("plan_id = ?")
+        params.append(_safe_id(plan_id, ""))
+    elif task_id:
+        clauses.append("task_id = ?")
+        params.append(str(task_id))
+    elif idempotency_key:
+        clauses.append("idempotency_key = ?")
+        params.append(str(idempotency_key))
+    else:
+        return None
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT payload_json FROM assistant_agent_plans WHERE " + " AND ".join(clauses) + " LIMIT 1",
+                params,
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_assistant_customer_reply_job_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist a Mercado Livre customer-reply orchestration job."""
+
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    job_id = _safe_id(data.get("job_id"), "")
+    if not job_id:
+        job_id = hashlib.sha256(
+            f"{time.time_ns()}|{client_id}|{data.get('task_type')}|{data.get('subject_key')}".encode("utf-8")
+        ).hexdigest()[:32]
+    now = _now_iso()
+    data["job_id"] = job_id
+    data.setdefault("profile", "mercado_livre_customer_reply")
+    data.setdefault("status", "queued")
+    data.setdefault("agent_state", "entendendo")
+    data.setdefault("created_at", now)
+    data["updated_at"] = now
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO assistant_customer_reply_jobs(
+                    job_id, profile, task_type, subject_key, store, status,
+                    agent_state, idempotency_key, thread_id, lease_owner,
+                    lease_expires_ts, cancel_requested, created_at, updated_at,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    profile=excluded.profile,
+                    task_type=excluded.task_type,
+                    subject_key=excluded.subject_key,
+                    store=excluded.store,
+                    status=excluded.status,
+                    agent_state=excluded.agent_state,
+                    idempotency_key=excluded.idempotency_key,
+                    thread_id=excluded.thread_id,
+                    lease_owner=excluded.lease_owner,
+                    lease_expires_ts=excluded.lease_expires_ts,
+                    cancel_requested=excluded.cancel_requested,
+                    updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    job_id,
+                    str(data.get("profile") or "mercado_livre_customer_reply"),
+                    str(data.get("task_type") or "question"),
+                    str(data.get("subject_key") or ""),
+                    str(data.get("store") or ""),
+                    str(data.get("status") or "queued"),
+                    str(data.get("agent_state") or "entendendo"),
+                    str(data.get("idempotency_key") or ""),
+                    str(data.get("thread_id") or ""),
+                    str(data.get("lease_owner") or ""),
+                    float(data.get("lease_expires_ts") or 0.0),
+                    1 if data.get("cancel_requested") else 0,
+                    str(data.get("created_at") or now),
+                    now,
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_customer_reply_job_get(
+    info_base: str,
+    client_id: str,
+    job_id: str = "",
+    *,
+    idempotency_key: str = "",
+) -> Optional[dict[str, Any]]:
+    if job_id:
+        clause, value = "job_id = ?", _safe_id(job_id, "")
+    elif idempotency_key:
+        clause, value = "idempotency_key = ?", str(idempotency_key)
+    else:
+        return None
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                f"SELECT payload_json FROM assistant_customer_reply_jobs WHERE {clause} LIMIT 1",
+                (value,),
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_assistant_customer_reply_job_latest(
+    info_base: str,
+    client_id: str,
+    *,
+    task_type: str,
+    store: str,
+    subject_key: str,
+) -> Optional[dict[str, Any]]:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                """
+                SELECT payload_json FROM assistant_customer_reply_jobs
+                WHERE profile = 'mercado_livre_customer_reply'
+                  AND task_type = ? AND store = ? AND subject_key = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (str(task_type or ""), str(store or ""), str(subject_key or "")),
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_assistant_customer_reply_jobs_list(
+    info_base: str,
+    client_id: str,
+    *,
+    statuses: Optional[list[str]] = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    params: list[Any] = []
+    sql = "SELECT payload_json FROM assistant_customer_reply_jobs"
+    clean_statuses = [str(item or "").strip() for item in (statuses or []) if str(item or "").strip()]
+    if clean_statuses:
+        sql += " WHERE status IN (" + ",".join("?" for _ in clean_statuses) + ")"
+        params.extend(clean_statuses)
+    sql += " ORDER BY created_at ASC LIMIT ?"
+    params.append(max(1, min(int(limit or 100), 1000)))
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            rows = conn.execute(sql, params).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _json_loads(row["payload_json"], None)
+        if isinstance(payload, dict):
+            result.append(payload)
+    return result
+
+
+def codex_assistant_customer_reply_job_claim(
+    info_base: str,
+    client_id: str,
+    job_id: str,
+    *,
+    owner: str,
+    lease_seconds: float = 45.0,
+) -> Optional[dict[str, Any]]:
+    """Atomically claim a queued job or a running job whose lease expired."""
+
+    now_ts = time.time()
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT status, lease_owner, lease_expires_ts, cancel_requested, payload_json "
+                "FROM assistant_customer_reply_jobs WHERE job_id = ?",
+                (_safe_id(job_id, ""),),
+            ).fetchone()
+            if not row or bool(row["cancel_requested"]):
+                return None
+            status = str(row["status"] or "")
+            lease_owner = str(row["lease_owner"] or "")
+            lease_expires = float(row["lease_expires_ts"] or 0.0)
+            if status not in {"queued", "running"}:
+                return None
+            if status == "running" and lease_expires > now_ts and lease_owner != str(owner or ""):
+                return None
+            data = _json_loads(row["payload_json"], {})
+            if not isinstance(data, dict):
+                data = {}
+            data.update(
+                {
+                    "status": "running",
+                    "lease_owner": str(owner or ""),
+                    "lease_expires_ts": now_ts + max(10.0, float(lease_seconds or 45.0)),
+                    "updated_at": _now_iso(),
+                }
+            )
+            conn.execute(
+                """
+                UPDATE assistant_customer_reply_jobs
+                SET status = 'running', lease_owner = ?, lease_expires_ts = ?,
+                    updated_at = ?, payload_json = ?
+                WHERE job_id = ?
+                """,
+                (
+                    data["lease_owner"],
+                    data["lease_expires_ts"],
+                    data["updated_at"],
+                    _json_dumps(data),
+                    _safe_id(job_id, ""),
+                ),
+            )
+    return data
+
+
+def codex_assistant_customer_reply_job_heartbeat(
+    info_base: str,
+    client_id: str,
+    job_id: str,
+    *,
+    owner: str,
+    lease_seconds: float = 45.0,
+) -> Optional[dict[str, Any]]:
+    """Atomically renew an active customer-reply job lease.
+
+    The status and owner checks happen in the same database lock as the update,
+    so a late heartbeat can never resurrect a job that already completed.
+    """
+
+    now = _now_iso()
+    lease_expires = time.time() + max(10.0, float(lease_seconds or 45.0))
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT status, lease_owner, payload_json FROM assistant_customer_reply_jobs WHERE job_id = ?",
+                (_safe_id(job_id, ""),),
+            ).fetchone()
+            if not row or str(row["status"] or "") != "running":
+                return None
+            if str(row["lease_owner"] or "") != str(owner or ""):
+                return None
+            data = _json_loads(row["payload_json"], {})
+            if not isinstance(data, dict):
+                data = {}
+            data.update(
+                {
+                    "status": "running",
+                    "lease_owner": str(owner or ""),
+                    "lease_expires_ts": lease_expires,
+                    "heartbeat_at": now,
+                    "updated_at": now,
+                }
+            )
+            updated = conn.execute(
+                """
+                UPDATE assistant_customer_reply_jobs
+                SET lease_expires_ts = ?, updated_at = ?, payload_json = ?
+                WHERE job_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (
+                    lease_expires,
+                    now,
+                    _json_dumps(data),
+                    _safe_id(job_id, ""),
+                    str(owner or ""),
+                ),
+            )
+            if int(updated.rowcount or 0) != 1:
+                return None
+    return data
+
+
+def codex_assistant_customer_reply_job_request_cancel(
+    info_base: str,
+    client_id: str,
+    job_id: str,
+) -> Optional[dict[str, Any]]:
+    data = codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
+    if not isinstance(data, dict):
+        return None
+    if str(data.get("status") or "") in {"completed", "cancelled"}:
+        return data
+    data["cancel_requested"] = True
+    if str(data.get("status") or "") in {"queued", "waiting_retry", "failed"}:
+        data.update({"status": "cancelled", "agent_state": "cancelado"})
+    return codex_assistant_customer_reply_job_save(info_base, client_id, data)
+
+
+def codex_assistant_agent_guidance_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+    *,
+    updated_by: str = "",
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    scope_type = str(data.get("scope_type") or "global").strip().lower()
+    scope_key = str(data.get("scope_key") or "").strip()
+    guidance_id = _safe_id(data.get("guidance_id"), "")
+    if not guidance_id:
+        guidance_id = _safe_id(f"{scope_type}_{scope_key or 'default'}", "global_default")
+    now = _now_iso()
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT MAX(version) AS version FROM assistant_agent_guidance WHERE guidance_id = ?",
+                (guidance_id,),
+            ).fetchone()
+            latest = int(row["version"] or 0) if row else 0
+            requested = int(data.get("version") or 0)
+            version = max(latest + 1, requested if requested > latest else latest + 1)
+            data.update(
+                {
+                    "guidance_id": guidance_id,
+                    "version": version,
+                    "scope_type": scope_type,
+                    "scope_key": scope_key,
+                    "active": data.get("active") is not False,
+                    "updated_at": now,
+                    "updated_by": str(updated_by or data.get("updated_by") or ""),
+                }
+            )
+            data.setdefault("created_at", now)
+            raw = _json_dumps(data)
+            conn.execute(
+                """
+                INSERT INTO assistant_agent_guidance(
+                    guidance_id, version, scope_type, scope_key, active,
+                    created_at, updated_at, updated_by, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    guidance_id,
+                    version,
+                    scope_type,
+                    scope_key,
+                    1 if data["active"] else 0,
+                    str(data.get("created_at") or now),
+                    now,
+                    data["updated_by"],
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_agent_guidance_list(
+    info_base: str,
+    client_id: str,
+    *,
+    active_only: bool = False,
+    latest_only: bool = True,
+) -> list[dict[str, Any]]:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            where = "WHERE g.active = 1" if active_only else ""
+            if latest_only:
+                rows = conn.execute(
+                    """
+                    SELECT g.payload_json
+                    FROM assistant_agent_guidance g
+                    JOIN (
+                        SELECT guidance_id, MAX(version) AS version
+                        FROM assistant_agent_guidance
+                        GROUP BY guidance_id
+                    ) latest
+                      ON latest.guidance_id = g.guidance_id AND latest.version = g.version
+                    """
+                    + where
+                    + " ORDER BY g.scope_type, g.scope_key, g.guidance_id"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT payload_json FROM assistant_agent_guidance g "
+                    + where
+                    + " ORDER BY g.guidance_id, g.version DESC"
+                ).fetchall()
+    return [item for row in rows if isinstance((item := _json_loads(row["payload_json"], {})), dict)]
+
+
+def codex_assistant_action_proposal_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    proposal_id = _safe_id(data.get("proposal_id"), "")
+    if not proposal_id:
+        raise ValueError("proposal_id obrigatorio")
+    now = _now_iso()
+    data.setdefault("created_at", now)
+    data["updated_at"] = now
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO assistant_action_proposals(
+                    proposal_id, action_id, status, version, proposal_hash,
+                    conversation_id, created_by, expires_at, created_at, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                    action_id=excluded.action_id,
+                    status=excluded.status,
+                    version=excluded.version,
+                    proposal_hash=excluded.proposal_hash,
+                    conversation_id=excluded.conversation_id,
+                    created_by=excluded.created_by,
+                    expires_at=excluded.expires_at,
+                    updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    proposal_id,
+                    str(data.get("action_id") or ""),
+                    str(data.get("status") or "awaiting_approval"),
+                    max(1, int(data.get("version") or 1)),
+                    str(data.get("proposal_hash") or ""),
+                    str(data.get("conversation_id") or ""),
+                    str(data.get("created_by") or ""),
+                    str(data.get("expires_at") or ""),
+                    str(data.get("created_at") or now),
+                    now,
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_action_proposal_get(
+    info_base: str,
+    client_id: str,
+    proposal_id: str,
+) -> Optional[dict[str, Any]]:
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                "SELECT payload_json FROM assistant_action_proposals WHERE proposal_id = ?",
+                (_safe_id(proposal_id, ""),),
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_assistant_action_proposal_list(
+    info_base: str,
+    client_id: str,
+    *,
+    status: str = "",
+    created_by: str = "",
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if str(status or "").strip():
+        clauses.append("status = ?")
+        params.append(str(status).strip())
+    if str(created_by or "").strip():
+        clauses.append("LOWER(created_by) = LOWER(?)")
+        params.append(str(created_by).strip())
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    safe_limit = max(1, min(int(limit or 100), 500))
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            rows = conn.execute(
+                "SELECT payload_json FROM assistant_action_proposals"
+                + where
+                + " ORDER BY updated_at DESC LIMIT ?",
+                (*params, safe_limit),
+            ).fetchall()
+    return [item for row in rows if isinstance((item := _json_loads(row["payload_json"], {})), dict)]
+
+
+def codex_assistant_action_run_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    run_id = _safe_id(data.get("run_id"), "")
+    if not run_id:
+        raise ValueError("run_id obrigatorio")
+    now = _now_iso()
+    data.setdefault("created_at", now)
+    data["updated_at"] = now
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO assistant_action_runs(
+                    run_id, proposal_id, status, idempotency_key, created_at, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    proposal_id=excluded.proposal_id,
+                    status=excluded.status,
+                    idempotency_key=excluded.idempotency_key,
+                    updated_at=excluded.updated_at,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    run_id,
+                    str(data.get("proposal_id") or ""),
+                    str(data.get("status") or "queued"),
+                    str(data.get("idempotency_key") or ""),
+                    str(data.get("created_at") or now),
+                    now,
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_action_run_get(
+    info_base: str,
+    client_id: str,
+    run_id: str = "",
+    *,
+    idempotency_key: str = "",
+) -> Optional[dict[str, Any]]:
+    if not run_id and not idempotency_key:
+        return None
+    column = "run_id" if run_id else "idempotency_key"
+    value = _safe_id(run_id, "") if run_id else str(idempotency_key)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            row = conn.execute(
+                f"SELECT payload_json FROM assistant_action_runs WHERE {column} = ? LIMIT 1",
+                (value,),
+            ).fetchone()
+    payload = _json_loads(row["payload_json"] if row else "", None)
+    return payload if isinstance(payload, dict) else None
+
+
+def codex_assistant_action_approval_save(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    approval_id = _safe_id(data.get("approval_id"), "") or hashlib.sha256(
+        f"{time.time_ns()}|{client_id}|{data.get('proposal_id')}".encode("utf-8")
+    ).hexdigest()[:32]
+    data["approval_id"] = approval_id
+    data.setdefault("created_at", _now_iso())
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO assistant_action_approvals(
+                    approval_id, proposal_id, proposal_version, proposal_hash, status,
+                    source, actor, wa_id_hash, created_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    approval_id,
+                    str(data.get("proposal_id") or ""),
+                    max(1, int(data.get("proposal_version") or 1)),
+                    str(data.get("proposal_hash") or ""),
+                    str(data.get("status") or "approved"),
+                    str(data.get("source") or "app"),
+                    str(data.get("actor") or ""),
+                    str(data.get("wa_id_hash") or ""),
+                    str(data.get("created_at") or _now_iso()),
+                    raw,
+                ),
+            )
+    return data
+
+
+def codex_assistant_agent_audit_add(
+    info_base: str,
+    client_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    data.setdefault("created_at", _now_iso())
+    raw = _json_dumps(data)
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            cursor = conn.execute(
+                """
+                INSERT INTO assistant_agent_audit(
+                    event_type, entity_type, entity_id, actor, channel, created_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(data.get("event_type") or "event"),
+                    str(data.get("entity_type") or ""),
+                    str(data.get("entity_id") or ""),
+                    str(data.get("actor") or ""),
+                    str(data.get("channel") or ""),
+                    str(data.get("created_at") or _now_iso()),
+                    raw,
+                ),
+            )
+            data["audit_id"] = int(cursor.lastrowid or 0)
+    return data
+
+
+def codex_assistant_agent_audit_list(
+    info_base: str,
+    client_id: str,
+    *,
+    entity_type: str = "",
+    entity_id: str = "",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    clauses = ["1 = 1"]
+    params: list[Any] = []
+    if entity_type:
+        clauses.append("entity_type = ?")
+        params.append(str(entity_type))
+    if entity_id:
+        clauses.append("entity_id = ?")
+        params.append(str(entity_id))
+    params.append(max(1, min(2000, int(limit or 200))))
+    db_path = codex_assistant_state_db_path(info_base, client_id)
+    lock = _lock_for(db_path)
+    with lock:
+        with _connection(db_path) as conn:
+            _ensure_state_schema(conn)
+            rows = conn.execute(
+                "SELECT audit_id, payload_json FROM assistant_agent_audit WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY audit_id DESC LIMIT ?",
+                params,
+            ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _json_loads(row["payload_json"], {})
+        if isinstance(payload, dict):
+            payload["audit_id"] = int(row["audit_id"] or 0)
+            result.append(payload)
+    return result

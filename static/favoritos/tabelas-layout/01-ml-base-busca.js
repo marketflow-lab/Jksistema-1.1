@@ -134,7 +134,7 @@
             return obterCondicaoAnuncioFavoritos(anuncio) !== 'used';
         }
 
-        async function consultarItemApiMercadoLivre(itemId) {
+        async function consultarItemApiMercadoLivreSemDedupe(itemId) {
             itemId = String(itemId || '').trim().toUpperCase();
             if (!itemId) return null;
             consultarItemApiMercadoLivre.cache = consultarItemApiMercadoLivre.cache || new Map();
@@ -381,6 +381,28 @@
             } catch (err) {
                 console.warn('Falha ao consultar API pública do ML:', itemId, err);
                 return null;
+            }
+        }
+
+        async function consultarItemApiMercadoLivre(itemId) {
+            itemId = String(itemId || '').trim().toUpperCase();
+            if (!itemId) return null;
+            consultarItemApiMercadoLivre.cache = consultarItemApiMercadoLivre.cache || new Map();
+            consultarItemApiMercadoLivre.inflight = consultarItemApiMercadoLivre.inflight || new Map();
+            if (consultarItemApiMercadoLivre.cache.has(itemId)) {
+                return consultarItemApiMercadoLivre.cache.get(itemId);
+            }
+            if (consultarItemApiMercadoLivre.inflight.has(itemId)) {
+                return consultarItemApiMercadoLivre.inflight.get(itemId);
+            }
+            const promise = consultarItemApiMercadoLivreSemDedupe(itemId);
+            consultarItemApiMercadoLivre.inflight.set(itemId, promise);
+            try {
+                return await promise;
+            } finally {
+                if (consultarItemApiMercadoLivre.inflight.get(itemId) === promise) {
+                    consultarItemApiMercadoLivre.inflight.delete(itemId);
+                }
             }
         }
 

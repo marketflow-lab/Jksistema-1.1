@@ -65,8 +65,9 @@ def _shared_sync_auto_interval_seconds() -> int:
     return max(600, min(valor, 3600))
 
 def _shared_sync_auto_enabled() -> bool:
-    valor = _env_texto("JK_SHARED_SYNC_AUTO_ENABLED", "SHARED_SYNC_AUTO_ENABLED").lower()
-    return valor in {"1", "true", "sim", "yes", "on"}
+    # Contrato v2: a sincronizacao compartilhada nunca executa em background.
+    # A variavel antiga e deliberadamente ignorada para impedir reativacao acidental.
+    return False
 
 def _shared_sync_manual_only_payload(direction: str) -> dict:
     return {
@@ -416,8 +417,8 @@ def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]
     return {
         "enabled": bool(data.get("enabled", False)),
         "scopes": scopes,
-        "auto_pull": bool(data.get("auto_pull", True)),
-        "auto_push": bool(data.get("auto_push", True)),
+        "auto_pull": False,
+        "auto_push": False,
         "updated_at": str(data.get("updated_at") or ""),
     }
 

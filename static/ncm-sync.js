@@ -163,7 +163,7 @@ const NCM_SYNC = {
         if (!this.statusCallback) return;
         
         const status = progress.status || 'running';
-        const mensagem = progress.mensagem || 'Sincronizando NCM...';
+        const mensagem = progress.mensagem || 'Sincronizando NCM e classificação monofásica...';
         const processados = progress.processados || 0;
         const total = progress.total || 0;
         const encontrados = progress.encontrados || 0;

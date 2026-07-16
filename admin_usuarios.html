@@ -617,7 +617,9 @@
         body.share-embed .admin-only,
         body.share-embed #jk-left-sidebar-hotspot,
         body.share-embed #jk-right-sidebar-hotspot,
+        body.share-embed #jk-ia-light-fab,
         body.share-embed #jk-ia-panel,
+        body.share-embed #jk-codex-panel,
         body.share-embed #jk-msg-panel {
             display: none !important;
         }
@@ -801,40 +803,25 @@
                     <div class="section-header">
                         <div>
                             <h3>Compartilhar entre usuários</h3>
-                            <div id="userShareSummary" class="small">Carregando convites e vínculos...</div>
+                            <div id="userShareSummary" class="small">Carregando vínculos...</div>
                             <div id="userShareActionStatus" class="user-share-action-status" aria-live="polite"></div>
                         </div>
                         <button class="btn-muted" onclick="carregarCompartilhamentoEntreUsuarios()">Atualizar</button>
                     </div>
 
-                    <div class="user-share-grid">
-                        <div>
-                            <label>Enviar para</label>
-                            <select id="userShareTarget"></select>
-                        </div>
-                        <label class="check-item" style="margin:24px 0 0;">
-                            <input id="userShareKeepSynced" type="checkbox">
-                            <span>Quero permitir sincronização manual destes dados</span>
-                        </label>
-                    </div>
+                    <label>Vincular com</label>
+                    <select id="userShareTarget"></select>
                     <label>Dados a compartilhar</label>
                     <div id="userShareScopes" class="user-share-scopes"></div>
                     <label>Mensagem opcional</label>
                     <textarea id="userShareMessage" placeholder="Explique para o outro usuário o que está enviando."></textarea>
                     <div class="form-actions">
-                        <button class="btn-primary" onclick="enviarConviteCompartilhamentoUsuario()">Enviar convite</button>
+                        <button class="btn-primary" onclick="enviarConviteCompartilhamentoUsuario()">Criar vínculo</button>
                         <button class="btn-muted" onclick="limparConviteCompartilhamentoUsuario()">Limpar</button>
                     </div>
-                    <div class="user-share-grid">
-                        <div>
-                            <h4>Convites</h4>
-                            <div id="userShareInvites"></div>
-                        </div>
-                        <div>
-                            <h4>Compartilhamentos ativos</h4>
-                            <div id="userShareLinks"></div>
-                        </div>
-                    </div>
+                    <div id="userShareInvites" hidden></div>
+                    <h4>Compartilhamentos ativos</h4>
+                    <div id="userShareLinks"></div>
                 </div>
             </section>
             <div id="userShareStatusBalloon" class="user-share-status-balloon" aria-live="polite"></div>
@@ -1948,7 +1935,7 @@
             }]);
             return;
         }
-        const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
+        const invites = [];
         const links = Array.isArray(payload && payload.links) ? payload.links : [];
         const preparando = invites.filter(invite => invite.status === 'pending' && String(invite.prepare_status || '').toLowerCase() === 'preparing');
         const aguardandoAceite = invites.filter(invite => invite.direction === 'sent' && invite.status === 'pending' && String(invite.prepare_status || '').toLowerCase() !== 'preparing');
@@ -2073,6 +2060,9 @@
     function renderConvitesCompartilhamentoUsuario(payload) {
         const el = document.getElementById('userShareInvites');
         if (!el) return;
+        el.innerHTML = '';
+        el.hidden = true;
+        return;
         const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
         if (!invites.length) {
             el.innerHTML = '<div class="user-share-empty">Nenhum convite.</div>';
@@ -2158,9 +2148,7 @@
             const pessoa = souOrigem
                 ? `${link.target_client_id} - ${link.target_name || link.target_username}`
                 : `${link.source_client_id} - ${link.source_name || link.source_username}`;
-            const meuSync = souOrigem ? !!link.source_keep_synced : !!link.target_keep_synced;
-            const outroSync = souOrigem ? !!link.target_keep_synced : !!link.source_keep_synced;
-            const syncStatus = `Sincronização manual (${meuSync ? 'você aceitou' : 'você pausou'}, ${outroSync ? 'outro aceitou' : 'outro pausou'})`;
+            const syncStatus = 'Qualquer participante com permissão pode enviar ou importar manualmente.';
             const dados = (link.scope_labels || []).join(', ');
             return `
                 <tr>
@@ -2172,15 +2160,11 @@
                     <td>
                         <span class="share-status-pill ok">Manual</span>
                         <div class="muted-line">${escaparHtml(syncStatus)}</div>
-                        <label class="sync-auto-row">
-                            <input type="checkbox" ${meuSync ? 'checked' : ''} onchange="alterarSyncVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}', this.checked)">
-                            <span>Permitir sincronização manual do meu lado</span>
-                        </label>
                     </td>
                     <td>
                         <div class="share-row-actions">
                         <button class="btn-success" onclick="enviarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Enviar agora</button>
-                        <button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Receber agora</button>
+                        <button class="btn-warning" onclick="receberVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Importar agora</button>
                         <button class="btn-muted" onclick="pausarVinculoCompartilhamentoUsuario('${escaparHtml(link.id)}')">Pausar</button>
                         </div>
                     </td>
@@ -2213,10 +2197,8 @@
         });
         const summary = document.getElementById('userShareSummary');
         if (summary) {
-            const invites = Array.isArray(payload && payload.invites) ? payload.invites : [];
             const links = Array.isArray(payload && payload.links) ? payload.links : [];
-            const pendentes = invites.filter(item => item.direction === 'received' && item.status === 'pending').length;
-            summary.textContent = `${pendentes} convite(s) pendente(s) | ${links.length} vínculo(s)`;
+            summary.textContent = `${links.length} vínculo(s) | sincronização somente manual`;
         }
         renderEscoposCompartilhamentoUsuario(payload);
         renderConvitesCompartilhamentoUsuario(payload);
@@ -2277,8 +2259,6 @@
     function limparConviteCompartilhamentoUsuario() {
         const msg = document.getElementById('userShareMessage');
         if (msg) msg.value = '';
-        const sync = document.getElementById('userShareKeepSynced');
-        if (sync) sync.checked = false;
     }
 
     function renderSincronizacaoMinhasMaquinas(payload) {
@@ -2394,6 +2374,28 @@
         }
     }
 
+    async function criarPreviaSincronizacaoManual(url, direcao, scopes) {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ direction: direcao, scopes: scopes || [], machine_id: machineIdAtual() })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false || !data.operation_id) {
+            throw new Error(data.detail || data.message || 'Não foi possível gerar a prévia.');
+        }
+        const total = data.totals || {};
+        const resumo = [
+            `${Number(total.inclusions || 0)} inclusão(ões)`,
+            `${Number(total.changes || 0)} alteração(ões)`,
+            `${Number(total.deletions || 0)} exclusão(ões)`,
+            `${Number(total.disconnects || 0)} desconexão(ões)`,
+            `${Number(total.credentials || 0)} credencial(is)`
+        ].join(', ');
+        const acao = direcao === 'pull' ? 'Importar agora' : 'Enviar agora';
+        return confirm(`Prévia: ${resumo}.\n\n${acao}?`) ? data.operation_id : '';
+    }
+
     async function executarSincronizacaoMinhasMaquinas(direcao) {
         const salvou = await salvarSincronizacaoMinhasMaquinas(true);
         if (!salvou) return;
@@ -2402,14 +2404,18 @@
             setStatus('Selecione pelo menos um dado para sincronizar.', true);
             return;
         }
-        if (direcao === 'pull' && !confirm('Importar dados das suas outras máquinas? O sistema cria backup local antes de aplicar.')) return;
         const endpoint = direcao === 'push' ? '/api/shared-sync/machine-sync/push' : '/api/shared-sync/machine-sync/pull';
         setStatus(direcao === 'push' ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
         try {
+            const operationId = await criarPreviaSincronizacaoManual('/api/shared-sync/machine-sync/preview', direcao, scopes);
+            if (!operationId) {
+                setStatus('Operação cancelada. Nenhum dado local foi alterado.');
+                return;
+            }
             const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ scopes, machine_id: machineIdAtual() })
+                body: JSON.stringify({ scopes, machine_id: machineIdAtual(), operation_id: operationId })
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
@@ -2478,29 +2484,27 @@
             setUserShareStatus('Selecione pelo menos um dado para compartilhar.', true);
             return;
         }
-        setUserShareProcesso('Convite', 0, 'Validando destino e dados selecionados.');
+        setUserShareProcesso('Vínculo', 0, 'Validando destino e permissões dos módulos.');
         try {
-            setUserShareProcesso('Convite', 15, 'Enviando para o Firebase.');
-            const resp = await fetch('/api/shared-sync/user-shares/invite', {
+            setUserShareProcesso('Vínculo', 25, 'Criando vínculo ativo.');
+            const resp = await fetch('/api/shared-sync/user-shares/links', {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     target_username,
                     target_client_id,
                     scopes,
-                    keep_synced: !!document.getElementById('userShareKeepSynced')?.checked,
                     message: document.getElementById('userShareMessage')?.value || '',
                     machine_id: machineIdAtual()
                 })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao enviar convite.');
-            setUserShareProcesso('Convite', 45, 'Pacote em preparação no servidor.');
+            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao criar vínculo.');
             limparConviteCompartilhamentoUsuario();
             await carregarCompartilhamentoEntreUsuarios();
-            setUserShareProcesso('Convite', 70, data.message || 'Convite enviado. Acompanhando preparo.');
+            setUserShareProcesso('Vínculo', 100, data.message || 'Vínculo ativo criado. Nenhum dado foi enviado.');
         } catch (error) {
-            setUserShareProcesso('Convite', 100, error.message || 'Erro ao enviar convite.', true);
+            setUserShareProcesso('Vínculo', 100, error.message || 'Erro ao criar vínculo.', true);
         }
     }
 
@@ -2613,12 +2617,23 @@
 
     async function executarVinculoCompartilhamentoUsuario(linkId, direcao) {
         const endpoint = direcao === 'push' ? 'push' : 'pull';
-        if (direcao === 'pull' && !confirm('Receber e adicionar dados novos deste usuário? O sistema cria backup local antes de aplicar.')) return;
         const nomeProcesso = direcao === 'push' ? 'Envio do vínculo' : 'Recebimento do vínculo';
         setUserShareProcesso(nomeProcesso, 0, direcao === 'push' ? 'Preparando novidades locais.' : 'Buscando novidades remotas.');
         try {
+            const link = (Array.isArray(compartilhamentoUsuariosCache?.links) ? compartilhamentoUsuariosCache.links : [])
+                .find(item => String(item?.id || '') === String(linkId || ''));
+            const scopes = Array.isArray(link?.scopes) ? link.scopes : [];
+            const operationId = await criarPreviaSincronizacaoManual(
+                '/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/preview',
+                direcao,
+                scopes
+            );
+            if (!operationId) {
+                setUserShareProcesso(nomeProcesso, 100, 'Operação cancelada. Nenhum dado local foi alterado.');
+                return;
+            }
             setUserShareProcesso(nomeProcesso, 30, direcao === 'push' ? 'Enviando pacote.' : 'Importando pacote.');
-            const body = { machine_id: machineIdAtual() };
+            const body = { machine_id: machineIdAtual(), operation_id: operationId };
             const resp = await fetch('/api/shared-sync/user-shares/links/' + encodeURIComponent(linkId) + '/' + endpoint, {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),

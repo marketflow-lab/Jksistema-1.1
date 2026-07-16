@@ -27,6 +27,7 @@ from backend.services.integracoes import (
     limpar_temp_auth,
     salvar_lojas,
     salvar_temp_auth,
+    registrar_tombstone_integracao,
 )
 
 
@@ -91,6 +92,8 @@ async def delete_loja(nome_loja: str, client_id: str = Depends(get_tenant_id)):
     lojas_filtradas = [loja for loja in lojas if loja["nome"] != nome_loja]
     if len(lojas) == len(lojas_filtradas):
         raise HTTPException(status_code=404, detail="Loja nao encontrada para deletar.")
+    removida = next((loja for loja in lojas if loja.get("nome") == nome_loja), {})
+    registrar_tombstone_integracao(client_id, loja=removida, tipo="store")
     salvar_lojas(client_id, lojas_filtradas)
     return {"success": True}
 
@@ -207,10 +210,6 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
             "connected": True,
             "updated_at": str(time.time()),
         })
-        try:
-            _shared_sync_propagar_lojas_integracoes_cliente(client_id, "bling-oauth-auth")
-        except Exception as exc:
-            logger.warning("[BLING] Nao foi possivel propagar autenticacao para compartilhamentos: %s", exc)
     else:
         ok, result = auth_ml_exchange(app_id, secret, code, redirect_uri=redirect_uri)
         if not ok:

@@ -2,13 +2,14 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PerguntasLojaConfigRequest(BaseModel):
     loja: str
     responder_automaticamente: bool = False
     solicitar_aprovacao: bool = False
+    notificar_whatsapp_aprovacoes: bool = False
     habilitar_pos_venda_automatico: bool = False
     intervalo_minutos: Optional[float] = 10
 
@@ -22,12 +23,15 @@ class PerguntasAprovacaoRequest(BaseModel):
     approval_id: str
     resposta: Optional[Any] = None
     texto: Optional[Any] = None
+    idempotency_key: Optional[str] = ""
 
 
 class PerguntasGerarRespostaRequest(BaseModel):
     loja: str
     pergunta: dict
     resposta_atual: Optional[str] = ""
+    orientacao_usuario: Optional[str] = ""
+    async_mode: bool = Field(False, alias="async")
 
 
 class PerguntasEnviarRespostaRequest(BaseModel):
@@ -37,6 +41,9 @@ class PerguntasEnviarRespostaRequest(BaseModel):
     pergunta: Optional[dict] = None
     sku: Optional[str] = ""
     item_id: Optional[str] = ""
+    proposal_id: Optional[str] = ""
+    proposal_version: Optional[int] = 0
+    proposal_hash: Optional[str] = ""
 
 
 class MLQuestionsV2ProcessRequest(BaseModel):
@@ -59,6 +66,9 @@ class PosVendaMensagemRequest(BaseModel):
     texto: Any
     max_chars: Optional[int] = 350
     conversa: Optional[dict] = None
+    proposal_id: Optional[str] = ""
+    proposal_version: Optional[int] = 0
+    proposal_hash: Optional[str] = ""
 
 
 class PosVendaGerarRespostaRequest(BaseModel):
@@ -67,6 +77,9 @@ class PosVendaGerarRespostaRequest(BaseModel):
     order_id: Optional[Any] = ""
     buyer_id: Optional[Any] = ""
     max_chars: Optional[int] = 350
+    resposta_atual: Optional[str] = ""
+    orientacao_usuario: Optional[str] = ""
+    async_mode: bool = Field(False, alias="async")
 
 
 class MLDescricaoRequest(BaseModel):

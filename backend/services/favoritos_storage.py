@@ -735,6 +735,19 @@ def _favoritos_int_historico(valor: Any, padrao: int = 0) -> int:
         return int(padrao)
 
 
+def _favoritos_duracao_execucao_ms(valor: Any) -> Optional[int]:
+    if valor is None or valor == "":
+        return None
+    numero = _favoritos_numero_historico(valor)
+    try:
+        duracao = int(numero)
+    except Exception:
+        return None
+    if duracao < 0:
+        return None
+    return min(duracao, 7 * 24 * 60 * 60 * 1000)
+
+
 def _favoritos_lista_texto_historico(valor: Any, limite_item: int = 220, max_itens: int = 5) -> list[str]:
     if not isinstance(valor, list):
         return []
@@ -850,6 +863,42 @@ def _favoritos_normalizar_anuncio_alteracao_historico(anuncio: Any) -> dict:
         "original_price": preco_original,
         "preco_promocional": preco_promocional,
         "promotional_price": preco_promocional,
+        "custo": _favoritos_numero_historico(
+            anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("custo_produto")
+            or anuncio.get("preco_custo")
+            or anuncio.get("valor_custo")
+        ),
+        "custo_unitario": _favoritos_numero_historico(
+            anuncio.get("custo_unitario")
+            or anuncio.get("custo")
+            or anuncio.get("custo_produto")
+            or anuncio.get("preco_custo")
+            or anuncio.get("valor_custo")
+        ),
+        "custo_produto": _favoritos_numero_historico(
+            anuncio.get("custo_produto")
+            or anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("preco_custo")
+            or anuncio.get("valor_custo")
+        ),
+        "preco_custo": _favoritos_numero_historico(
+            anuncio.get("preco_custo")
+            or anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("custo_produto")
+            or anuncio.get("valor_custo")
+        ),
+        "valor_custo": _favoritos_numero_historico(
+            anuncio.get("valor_custo")
+            or anuncio.get("custo")
+            or anuncio.get("custo_unitario")
+            or anuncio.get("custo_produto")
+            or anuncio.get("preco_custo")
+        ),
+        "custo_frete": _favoritos_numero_historico(anuncio.get("custo_frete")),
         "discount_pct": _favoritos_numero_historico(anuncio.get("discount_pct") or anuncio.get("discount_percent") or anuncio.get("discount_percentage")),
         "moeda": _favoritos_limpar_texto_historico(anuncio.get("moeda") or anuncio.get("currency_id") or "BRL", 12),
         "currency_id": _favoritos_limpar_texto_historico(anuncio.get("currency_id") or anuncio.get("moeda") or "BRL", 12),
@@ -871,6 +920,42 @@ def _favoritos_normalizar_simulacao_alteracao_historico(raw: Any) -> dict:
         "preco_aplicado": _favoritos_numero_historico(raw.get("preco_aplicado")),
         "preco_promocional_aplicado": _favoritos_numero_historico(raw.get("preco_promocional_aplicado")),
         "margem_prevista": _favoritos_numero_historico(raw.get("margem_prevista")),
+        "margem_aplicada": _favoritos_numero_historico(raw.get("margem_aplicada") or raw.get("margem_estimada_contingencia")),
+        "custo": _favoritos_numero_historico(
+            raw.get("custo")
+            or raw.get("custo_base")
+            or raw.get("custo_unitario")
+            or raw.get("custo_produto")
+            or raw.get("preco_custo")
+            or raw.get("valor_custo")
+        ),
+        "custo_base": _favoritos_numero_historico(
+            raw.get("custo_base")
+            or raw.get("custo")
+            or raw.get("custo_unitario")
+            or raw.get("custo_produto")
+            or raw.get("preco_custo")
+            or raw.get("valor_custo")
+        ),
+        "custo_unitario": _favoritos_numero_historico(
+            raw.get("custo_unitario")
+            or raw.get("custo")
+            or raw.get("custo_base")
+            or raw.get("custo_produto")
+            or raw.get("preco_custo")
+            or raw.get("valor_custo")
+        ),
+        "limite_margem_aplicado": bool(raw.get("limite_margem_aplicado") or raw.get("limiteMargemAplicado")),
+        "preco_minimo_margem": _favoritos_numero_historico(raw.get("preco_minimo_margem") or raw.get("precoMinimoMargem")),
+        "preco_alvo_custo_ideal": _favoritos_numero_historico(raw.get("preco_alvo_custo_ideal") or raw.get("precoAlvoCustoIdeal")),
+        "custo_ideal_abaixo_base": _favoritos_numero_historico(
+            raw.get("custo_ideal_abaixo_base")
+            or raw.get("custoIdealAbaixoBase")
+            or raw.get("preco_custo_necessario")
+            or raw.get("custo_para_concorrer")
+            or raw.get("custo_maximo_para_concorrer")
+        ),
+        "reducao_custo_ideal": _favoritos_numero_historico(raw.get("reducao_custo_ideal") or raw.get("reducaoCustoIdeal")),
         "tipo_anuncio_atual": _favoritos_limpar_texto_historico(raw.get("tipo_anuncio_atual"), 80),
         "tipo_anuncio_alvo": _favoritos_limpar_texto_historico(raw.get("tipo_anuncio_alvo"), 80),
         "campanha_id": _favoritos_limpar_texto_historico(raw.get("campanha_id"), 120),
@@ -1090,7 +1175,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                         "percentual": _favoritos_numero_historico(desconto_raw.get("percentual")),
                     },
                 }
-            grupos_saida.append({
+            grupo_saida = {
                 "sku": sku,
                 "titulo": _favoritos_limpar_texto_historico(grupo.get("titulo"), 500),
                 "historico_estatico": bool(grupo.get("historico_estatico", True)),
@@ -1105,9 +1190,14 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                 "ia_confirmados": _favoritos_int_historico(grupo.get("ia_confirmados"), 0),
                 "ia_max_confirmados": _favoritos_int_historico(grupo.get("ia_max_confirmados"), 0),
                 "removidos_ia_total": _favoritos_int_historico(grupo.get("removidos_ia_total"), len(removidos_ia_saida)),
+                "resumo_coleta": _favoritos_normalizar_resumo_coleta_historico(grupo.get("resumo_coleta")),
                 "removidos_ia": removidos_ia_saida,
                 "anuncios": anuncios_saida,
-            })
+            }
+            duracao_grupo_ms = _favoritos_duracao_execucao_ms(grupo.get("duracao_execucao_ms"))
+            if duracao_grupo_ms is not None:
+                grupo_saida["duracao_execucao_ms"] = duracao_grupo_ms
+            grupos_saida.append(grupo_saida)
         alteracoes_saida: list[dict] = []
         for alteracao in (entrada.get("alteracoes_favoritos") or [])[:80]:
             alteracao_norm = _favoritos_normalizar_alteracao_favoritos_historico(alteracao)
@@ -1135,12 +1225,90 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             "total_anuncios": _favoritos_int_historico(entrada.get("total_anuncios"), total_anuncios_padrao),
             "grupos": grupos_saida,
         }
+        duracao_entrada_ms = _favoritos_duracao_execucao_ms(entrada.get("duracao_execucao_ms"))
+        if duracao_entrada_ms is not None:
+            entrada_saida["duracao_execucao_ms"] = duracao_entrada_ms
         if alteracoes_saida:
             entrada_saida["tipo"] = entrada_saida.get("tipo") or "alteracao_favoritos"
             entrada_saida["alteracoes_favoritos"] = alteracoes_saida
         saida.append(entrada_saida)
         if len(saida) >= FAVORITOS_HISTORICO_MAX:
             break
+    return saida
+
+
+def _favoritos_contador_historico(valor: Any, limite: int = 1_000_000) -> int:
+    return max(0, min(_favoritos_int_historico(valor, 0), limite))
+
+
+def _favoritos_normalizar_contadores_resumo_historico(valor: Any) -> dict[str, int]:
+    if not isinstance(valor, dict):
+        return {}
+    saida: dict[str, int] = {}
+    for chave, quantidade in list(valor.items())[:30]:
+        chave_limpa = _favoritos_limpar_texto_historico(chave, 80)
+        if not chave_limpa:
+            continue
+        saida[chave_limpa] = _favoritos_contador_historico(quantidade)
+    return saida
+
+
+def _favoritos_normalizar_amostras_resumo_historico(valor: Any) -> list[dict]:
+    saida: list[dict] = []
+    for item in (valor if isinstance(valor, list) else [])[:10]:
+        if not isinstance(item, dict):
+            continue
+        posicao = _favoritos_numero_historico(item.get("posicao"))
+        amostra = {
+            "posicao": int(posicao) if posicao is not None else None,
+            "mlb": _favoritos_limpar_texto_historico(item.get("mlb") or item.get("id"), 40),
+            "titulo": _favoritos_limpar_texto_historico(item.get("titulo") or item.get("title"), 160),
+            "faltas": _favoritos_lista_texto_historico(item.get("faltas"), 40, 10),
+            "origem_dados": _favoritos_limpar_texto_historico(item.get("origem_dados"), 120),
+            "tituloFonte": _favoritos_limpar_texto_historico(item.get("tituloFonte") or item.get("titulo_fonte"), 120),
+            "fotoFonte": _favoritos_limpar_texto_historico(item.get("fotoFonte") or item.get("foto_fonte"), 120),
+            "precoFonte": _favoritos_limpar_texto_historico(item.get("precoFonte") or item.get("preco_fonte"), 120),
+            "vendasFonte": _favoritos_limpar_texto_historico(item.get("vendasFonte") or item.get("vendas_fonte"), 120),
+            "vendedorFonte": _favoritos_limpar_texto_historico(item.get("vendedorFonte") or item.get("vendedor_fonte"), 120),
+            "dataCriacaoFonte": _favoritos_limpar_texto_historico(item.get("dataCriacaoFonte") or item.get("data_criacao_fonte"), 120),
+        }
+        saida.append(amostra)
+    return saida
+
+
+def _favoritos_normalizar_resumo_coleta_historico(valor: Any) -> list[dict]:
+    saida: list[dict] = []
+    for resumo in (valor if isinstance(valor, list) else [])[:3]:
+        if not isinstance(resumo, dict):
+            continue
+        saida.append({
+            "pesquisa": max(1, min(_favoritos_int_historico(resumo.get("pesquisa"), 1), 100)),
+            "termo": _favoritos_limpar_texto_historico(resumo.get("termo"), 220),
+            "campo": _favoritos_limpar_texto_historico(resumo.get("campo"), 40),
+            "visiveis": _favoritos_contador_historico(resumo.get("visiveis")),
+            "coletados": _favoritos_contador_historico(resumo.get("coletados")),
+            "com_titulo": _favoritos_contador_historico(resumo.get("com_titulo")),
+            "com_foto": _favoritos_contador_historico(resumo.get("com_foto")),
+            "com_preco": _favoritos_contador_historico(resumo.get("com_preco")),
+            "com_link": _favoritos_contador_historico(resumo.get("com_link")),
+            "com_dados_avant": _favoritos_contador_historico(resumo.get("com_dados_avant")),
+            "incompletos": _favoritos_contador_historico(resumo.get("incompletos")),
+            "suspeitos": _favoritos_contador_historico(resumo.get("suspeitos")),
+            "avant_nao_vinculado": _favoritos_contador_historico(resumo.get("avant_nao_vinculado")),
+            "tempo_esgotado": bool(resumo.get("tempo_esgotado")),
+            "login_avant_bloqueado": bool(resumo.get("login_avant_bloqueado")),
+            "motivo_encerramento": _favoritos_limpar_texto_historico(resumo.get("motivo_encerramento"), 80),
+            "passadas": _favoritos_contador_historico(resumo.get("passadas"), 100),
+            "posicoes_percorridas": _favoritos_contador_historico(resumo.get("posicoes_percorridas"), 10_000),
+            "cliques_avant": _favoritos_contador_historico(resumo.get("cliques_avant"), 10_000),
+            "capturados_avant": _favoritos_contador_historico(resumo.get("capturados_avant"), 10_000),
+            "tempo_materializacao_ms": _favoritos_contador_historico(resumo.get("tempo_materializacao_ms"), 7 * 24 * 60 * 60 * 1000),
+            "tempo_avant_ms": _favoritos_contador_historico(resumo.get("tempo_avant_ms"), 7 * 24 * 60 * 60 * 1000),
+            "tempo_finalizacao_ms": _favoritos_contador_historico(resumo.get("tempo_finalizacao_ms"), 7 * 24 * 60 * 60 * 1000),
+            "motivos_incompletos": _favoritos_normalizar_contadores_resumo_historico(resumo.get("motivos_incompletos")),
+            "origens_dados": _favoritos_normalizar_contadores_resumo_historico(resumo.get("origens_dados")),
+            "amostras_incompletos": _favoritos_normalizar_amostras_resumo_historico(resumo.get("amostras_incompletos")),
+        })
     return saida
 
 
@@ -1410,6 +1578,37 @@ def _favoritos_historico_json_sha256(caminho_json: str) -> str:
     return sha.hexdigest()
 
 
+def _favoritos_historico_duracao_merge(*entradas: Any) -> Optional[int]:
+    duracoes: list[int] = []
+    for entrada in entradas:
+        if not isinstance(entrada, dict):
+            continue
+        duracao_entrada = _favoritos_duracao_execucao_ms(entrada.get("duracao_execucao_ms"))
+        if duracao_entrada is not None:
+            duracoes.append(duracao_entrada)
+        for grupo in entrada.get("grupos") or []:
+            if not isinstance(grupo, dict):
+                continue
+            duracao_grupo = _favoritos_duracao_execucao_ms(grupo.get("duracao_execucao_ms"))
+            if duracao_grupo is not None:
+                duracoes.append(duracao_grupo)
+    return max(duracoes) if duracoes else None
+
+
+def _favoritos_historico_preservar_duracao(preferida: dict, complementar: Optional[dict] = None) -> dict:
+    saida = dict(preferida or {})
+    duracao = _favoritos_historico_duracao_merge(saida, complementar)
+    if duracao is None:
+        return saida
+    saida["duracao_execucao_ms"] = duracao
+    if isinstance(saida.get("grupos"), list):
+        saida["grupos"] = [
+            {**grupo, "duracao_execucao_ms": duracao} if isinstance(grupo, dict) else grupo
+            for grupo in saida["grupos"]
+        ]
+    return saida
+
+
 def _favoritos_historico_merge_listas(base: list[dict], nova: list[dict]) -> list[dict]:
     por_id: dict[str, dict] = {}
     for entrada in _favoritos_normalizar_historico(base or []):
@@ -1420,7 +1619,9 @@ def _favoritos_historico_merge_listas(base: list[dict], nova: list[dict]) -> lis
         data_nova = str(entrada.get("data_iso") or entrada.get("updated_at") or "")
         data_atual = str((atual or {}).get("data_iso") or (atual or {}).get("updated_at") or "")
         if not atual or data_nova >= data_atual:
-            por_id[chave] = entrada
+            por_id[chave] = _favoritos_historico_preservar_duracao(entrada, atual)
+        else:
+            por_id[chave] = _favoritos_historico_preservar_duracao(atual, entrada)
     return sorted(por_id.values(), key=lambda item: str((item or {}).get("data_iso") or ""), reverse=True)[:FAVORITOS_HISTORICO_MAX]
 
 
@@ -1486,7 +1687,74 @@ def _favoritos_aplicar_usuario_padrao_historico(historico_normalizado: list[dict
             entrada["username"] = usuario_padrao
 
 
-def _favoritos_salvar_historico(client_id: str, username: str, historico: Any) -> dict:
+def _favoritos_finalizar_duracao_historico(
+    historico: list[dict],
+    finalizar_ids: Any,
+    inicio_execucao_ms: Any,
+) -> tuple[list[dict], Optional[int], list[str]]:
+    ids = []
+    vistos = set()
+    for valor in finalizar_ids or []:
+        entrada_id = _favoritos_limpar_texto_historico(valor, 80)
+        if not entrada_id or entrada_id in vistos:
+            continue
+        vistos.add(entrada_id)
+        ids.append(entrada_id)
+        if len(ids) >= 1000:
+            break
+    if not ids:
+        return historico, None, []
+
+    try:
+        inicio_ms = int(inicio_execucao_ms)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Inicio da execucao do Favoritos invalido.") from exc
+
+    agora_ms = int(time.time() * 1000)
+    limite_ms = 7 * 24 * 60 * 60 * 1000
+    if inicio_ms <= 0 or inicio_ms > agora_ms + 5 * 60 * 1000 or agora_ms - inicio_ms > limite_ms:
+        raise HTTPException(status_code=422, detail="Inicio da execucao do Favoritos fora do intervalo permitido.")
+    duracao_ms = _favoritos_duracao_execucao_ms(max(0, agora_ms - inicio_ms))
+    if duracao_ms is None:
+        raise HTTPException(status_code=422, detail="Duracao da execucao do Favoritos invalida.")
+
+    ids_esperados = set(ids)
+    ids_encontrados = set()
+    historico_atualizado = []
+    for entrada in historico or []:
+        if not isinstance(entrada, dict):
+            historico_atualizado.append(entrada)
+            continue
+        entrada_id = _favoritos_limpar_texto_historico(entrada.get("id"), 80)
+        if entrada_id not in ids_esperados:
+            historico_atualizado.append(entrada)
+            continue
+        ids_encontrados.add(entrada_id)
+        entrada_atualizada = {**entrada, "duracao_execucao_ms": duracao_ms}
+        if isinstance(entrada_atualizada.get("grupos"), list):
+            entrada_atualizada["grupos"] = [
+                {**grupo, "duracao_execucao_ms": duracao_ms} if isinstance(grupo, dict) else grupo
+                for grupo in entrada_atualizada["grupos"]
+            ]
+        historico_atualizado.append(entrada_atualizada)
+
+    faltantes = [entrada_id for entrada_id in ids if entrada_id not in ids_encontrados]
+    if faltantes:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Nao encontrei {len(faltantes)} registro(s) do Favoritos para finalizar a duracao.",
+        )
+    return historico_atualizado, duracao_ms, ids
+
+
+def _favoritos_salvar_historico(
+    client_id: str,
+    username: str,
+    historico: Any,
+    *,
+    finalizar_ids: Any = None,
+    inicio_execucao_ms: Any = None,
+) -> dict:
     caminho = _favoritos_arquivo_historico(client_id, username)
     _favoritos_migrar_historico_json_para_sqlite(client_id, username)
     historico_normalizado = _favoritos_normalizar_historico(historico)
@@ -1496,7 +1764,36 @@ def _favoritos_salvar_historico(client_id: str, username: str, historico: Any) -
         try:
             _favoritos_historico_ensure_schema(conn)
             payload = _favoritos_historico_write_conn(conn, historico_normalizado)
+            historico_normalizado, duracao_execucao_ms, ids_finalizados = _favoritos_finalizar_duracao_historico(
+                historico_normalizado,
+                finalizar_ids,
+                inicio_execucao_ms,
+            )
+            if duracao_execucao_ms is not None:
+                ids_finalizados_set = set(ids_finalizados)
+                for entrada in historico_normalizado:
+                    if not isinstance(entrada, dict) or _favoritos_historico_key(entrada) not in ids_finalizados_set:
+                        continue
+                    payload_json = _favoritos_historico_payload_json(entrada)
+                    conn.execute(
+                        """
+                        UPDATE favoritos_historico_entries
+                        SET payload_json = ?, payload_hash = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            payload_json,
+                            hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+                            payload.get("updated_at") or datetime.now().isoformat(timespec="seconds"),
+                            _favoritos_historico_key(entrada),
+                        ),
+                    )
+                payload["historico"] = historico_normalizado
             conn.commit()
+            if duracao_execucao_ms is not None:
+                payload["duracao_execucao_ms"] = duracao_execucao_ms
+                payload["finalizados_ids"] = ids_finalizados
+                payload["finalizado_em_ms"] = int(time.time() * 1000)
             return payload
         except Exception:
             conn.rollback()

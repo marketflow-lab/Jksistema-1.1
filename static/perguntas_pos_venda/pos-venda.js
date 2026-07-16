@@ -672,14 +672,26 @@ async function gerarRespostaIaPosVenda(conversa, textarea, botaoIa, botaoEnviar,
                 pack_id: String(conversa.pack_id || ''),
                 order_id: String(conversa.order_id || ''),
                 buyer_id: String(conversa.buyer_id || ''),
-                max_chars: Number(conversa.seller_max_message_length || 350)
+                max_chars: Number(conversa.seller_max_message_length || 350),
+                resposta_atual: String(textarea.value || '').trim(),
+                async: true
             })
         });
-        const data = await response.json().catch(() => ({}));
+        let data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao gerar resposta com IA.'));
-        textarea.value = String(data.resposta || '').trim();
+        if (data.job_id && data.status !== 'completed') {
+            const aguardar = window.aguardarJobAtendimentoCodex;
+            if (typeof aguardar !== 'function') throw new Error('Monitor do agente Codex indisponivel.');
+            data = await aguardar(data.job_id, (texto) => { status.textContent = texto; });
+        }
+        const result = data.result && typeof data.result === 'object' ? data.result : data;
+        textarea.value = String(result.resposta || data.resposta || '').trim();
+        textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
+        textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
+        textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        status.textContent = `Resposta gerada com IA${data.model ? ` (${data.model})` : ''}. Revise e edite antes de enviar.`;
+        const aviso = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings[0]}` : '';
+        status.textContent = `Resposta gerada pelo agente Codex. Revise e edite antes de enviar.${aviso}`;
     } catch (error) {
         status.textContent = `Erro ao gerar resposta com IA: ${mensagemErro(error)}`;
     } finally {
@@ -712,12 +724,18 @@ async function enviarRespostaPosVenda(conversa, textarea, botao, status) {
                 buyer_id: String(conversa.buyer_id || ''),
                 texto,
                 max_chars: Number(conversa.seller_max_message_length || 350),
-                conversa
+                conversa,
+                proposal_id: String(textarea.dataset.codexProposalId || ''),
+                proposal_version: Number(textarea.dataset.codexProposalVersion || 0),
+                proposal_hash: String(textarea.dataset.codexProposalHash || '')
             })
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
         textarea.value = '';
+        delete textarea.dataset.codexProposalId;
+        delete textarea.dataset.codexProposalVersion;
+        delete textarea.dataset.codexProposalHash;
         status.textContent = 'Resposta enviada. Atualizando conversa...';
         await abrirConversaPosVenda(anexarLojaOrigem(conversa, lojaConversa));
         carregarPosVenda(true);

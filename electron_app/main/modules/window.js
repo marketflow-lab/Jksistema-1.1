@@ -993,6 +993,81 @@ function buildMlItemUrl(itemId, targetUrl) {
     return url;
 }
 
+function parseMlMoneyValue(value) {
+    if (value && typeof value === 'object') {
+        const nested = [value.amount, value.price, value.value, value.current_price];
+        for (const candidate of nested) {
+            const parsed = parseMlMoneyValue(candidate);
+            if (parsed !== null) return parsed;
+        }
+        return null;
+    }
+    if (typeof value === 'number') {
+        return Number.isFinite(value) && value > 0 ? value : null;
+    }
+    const raw = String(value === null || value === undefined ? '' : value).replace(/\s+/g, ' ').trim();
+    if (!raw) return null;
+    const aria = raw.match(/(\d[\d.]*)\s*reais?(?:\s*(?:e|,)?\s*(\d{1,2})\s*centavos?)?/i);
+    if (aria && aria[1]) {
+        const reais = Number(String(aria[1]).replace(/\./g, ''));
+        const centavos = aria[2] ? Number(aria[2]) : 0;
+        const total = reais + (Number.isFinite(centavos) ? centavos / 100 : 0);
+        return Number.isFinite(total) && total > 0 ? total : null;
+    }
+    const match = raw.replace(/R\$\s*/gi, '').replace(/\s+/g, '').match(/\d[\d.,]*/);
+    if (!match) return null;
+    let normalized = match[0];
+    if (normalized.includes('.') && normalized.includes(',')) {
+        normalized = normalized.lastIndexOf('.') > normalized.lastIndexOf(',')
+            ? normalized.replace(/,/g, '')
+            : normalized.replace(/\./g, '').replace(/,/g, '.');
+    } else if (normalized.includes(',')) {
+        normalized = normalized.replace(/\./g, '').replace(/,/g, '.');
+    } else if (/^\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
+        normalized = normalized.replace(/\./g, '');
+    }
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeMlBrowserPriceInfo(source = {}) {
+    const info = source && typeof source === 'object' ? source : {};
+    const salePrice = info.sale_price && typeof info.sale_price === 'object' ? info.sale_price : {};
+    const firstPositive = (values) => {
+        for (const value of values) {
+            const parsed = parseMlMoneyValue(value);
+            if (parsed !== null) return parsed;
+        }
+        return null;
+    };
+    const current = firstPositive([
+        info.preco_promocional,
+        info.promotional_price,
+        salePrice.amount,
+        info.preco,
+        info.price,
+        info.amount
+    ]);
+    const regular = firstPositive([
+        info.preco_original,
+        info.original_price,
+        salePrice.regular_amount,
+        info.standard_price,
+        info.base_price
+    ]);
+    const promotional = current !== null && regular !== null && regular > current + 0.005;
+    return {
+        preco: current,
+        price: current,
+        preco_original: promotional ? regular : '',
+        original_price: promotional ? regular : '',
+        standard_price: regular || current || '',
+        preco_promocional: promotional ? current : '',
+        promotional_price: promotional ? current : '',
+        discount_pct: promotional ? ((regular - current) / regular) * 100 : ''
+    };
+}
+
 function findMlItemInfoInObject(root, itemId) {
     const cleanId = String(itemId || '').trim().toUpperCase().replace('-', '');
     const dateKeys = new Set([
@@ -1016,7 +1091,20 @@ function findMlItemInfoInObject(root, itemId) {
     ]);
     const stack = [root];
     const seen = new Set();
-    const info = { data_criacao: '', vendedor: '', seller_id: null, id: cleanId, vendas: null };
+    const info = {
+        data_criacao: '',
+        vendedor: '',
+        seller_id: null,
+        id: cleanId,
+        vendas: null,
+        preco: null,
+        price: null,
+        preco_original: '',
+        original_price: '',
+        preco_promocional: '',
+        promotional_price: '',
+        discount_pct: ''
+    };
 
     while (stack.length) {
         const cur = stack.pop();
@@ -1032,6 +1120,10 @@ function findMlItemInfoInObject(root, itemId) {
 
         const curId = normalizeMlText(cur.id || cur.item_id || cur.itemId || cur.itemID).toUpperCase().replace('-', '');
         const sameItem = cleanId && curId === cleanId;
+        if (sameItem) {
+            const prices = normalizeMlBrowserPriceInfo(cur);
+            if (prices.preco !== null) Object.assign(info, prices);
+        }
         for (const [key, value] of Object.entries(cur)) {
             if (!info.data_criacao && dateKeys.has(key) && value) {
                 info.data_criacao = normalizeMlText(value);
@@ -1085,16 +1177,21 @@ function findMlItemInfoInObject(root, itemId) {
             if (value && typeof value === 'object') stack.push(value);
         }
 
-        if (sameItem && (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null)) {
+        if (sameItem && (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null || info.preco !== null)) {
             return info;
         }
     }
 
-    return (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null) ? info : null;
+    return (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null || info.preco !== null) ? info : null;
 }
 
 function findMlItemInfoInText(text, itemId) {
     const normalized = normalizeMlText(text);
+    try {
+        const parsed = JSON.parse(normalized);
+        const structuredInfo = findMlItemInfoInObject(parsed, itemId);
+        if (structuredInfo) return structuredInfo;
+    } catch (_err) {}
     const patterns = [
         /"date_created"\s*:\s*"([^"]+)"/i,
         /"dateCreated"\s*:\s*"([^"]+)"/i,
@@ -1136,12 +1233,7 @@ function findMlItemInfoInText(text, itemId) {
     }
     if (info.data_criacao || info.vendedor || info.seller_id || info.vendas !== null) return info;
 
-    try {
-        const parsed = JSON.parse(normalized);
-        return findMlItemInfoInObject(parsed, itemId);
-    } catch (_err) {
-        return null;
-    }
+    return null;
 }
 
 async function extractMlInfoByBrowser(itemId, targetUrl) {
@@ -1214,10 +1306,78 @@ async function extractMlInfoByBrowser(itemId, targetUrl) {
         const pageInfo = await win.webContents.executeJavaScript(`
             (function () {
                 try {
+                    var parseMoney = function (value) {
+                        var raw = String(value === null || value === undefined ? '' : value).replace(/\\s+/g, ' ').trim();
+                        if (!raw) return null;
+                        var aria = raw.match(/(\\d[\\d.]*)\\s*reais?(?:\\s*(?:e|,)?\\s*(\\d{1,2})\\s*centavos?)?/i);
+                        if (aria && aria[1]) {
+                            var reais = Number(String(aria[1]).replace(/\\./g, ''));
+                            var centavos = aria[2] ? Number(aria[2]) : 0;
+                            var total = reais + (Number.isFinite(centavos) ? centavos / 100 : 0);
+                            return Number.isFinite(total) && total > 0 ? total : null;
+                        }
+                        var match = raw.replace(/R\\$\\s*/gi, '').replace(/\\s+/g, '').match(/\\d[\\d.,]*/);
+                        if (!match) return null;
+                        var normalized = match[0];
+                        if (normalized.indexOf('.') >= 0 && normalized.indexOf(',') >= 0) {
+                            normalized = normalized.lastIndexOf('.') > normalized.lastIndexOf(',')
+                                ? normalized.replace(/,/g, '')
+                                : normalized.replace(/\\./g, '').replace(/,/g, '.');
+                        } else if (normalized.indexOf(',') >= 0) {
+                            normalized = normalized.replace(/\\./g, '').replace(/,/g, '.');
+                        } else if (/^\\d{1,3}(?:\\.\\d{3})+$/.test(normalized)) {
+                            normalized = normalized.replace(/\\./g, '');
+                        }
+                        var parsed = Number(normalized);
+                        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+                    };
+                    var readMoney = function (selectors) {
+                        for (var selectorIndex = 0; selectorIndex < selectors.length; selectorIndex += 1) {
+                            var nodes = Array.prototype.slice.call(document.querySelectorAll(selectors[selectorIndex]));
+                            for (var nodeIndex = 0; nodeIndex < nodes.length; nodeIndex += 1) {
+                                var node = nodes[nodeIndex];
+                                var value = parseMoney(
+                                    (node.getAttribute && (
+                                        node.getAttribute('aria-label')
+                                        || node.getAttribute('content')
+                                        || node.getAttribute('value')
+                                    ))
+                                    || node.textContent
+                                    || ''
+                                );
+                                if (value !== null) return value;
+                            }
+                        }
+                        return null;
+                    };
+                    var currentPrice = readMoney([
+                        '.ui-pdp-price__second-line .andes-money-amount',
+                        '[data-testid="price-part"] .andes-money-amount',
+                        '[data-testid="price-part"]',
+                        '.ui-pdp-price .andes-money-amount:not(.andes-money-amount--previous)',
+                        'meta[itemprop="price"]',
+                        'meta[property="product:price:amount"]'
+                    ]);
+                    var originalPrice = readMoney([
+                        '.ui-pdp-price__original-value .andes-money-amount',
+                        's.ui-pdp-price__original-value .andes-money-amount',
+                        '.andes-money-amount--previous',
+                        '.ui-pdp-price s .andes-money-amount',
+                        's .andes-money-amount'
+                    ]);
+                    if (originalPrice !== null && (currentPrice === null || originalPrice <= currentPrice)) {
+                        originalPrice = null;
+                    }
                     return {
                         html: document.documentElement && document.documentElement.outerHTML ? document.documentElement.outerHTML : '',
                         title: document.title || '',
                         url: location.href,
+                        preco: currentPrice,
+                        price: currentPrice,
+                        preco_original: originalPrice,
+                        original_price: originalPrice,
+                        preco_promocional: originalPrice !== null && currentPrice !== null ? currentPrice : '',
+                        promotional_price: originalPrice !== null && currentPrice !== null ? currentPrice : '',
                         sellerText: (function () {
                             var selectors = [
                                 '.ui-pdp-seller__header__title',
@@ -1241,11 +1401,15 @@ async function extractMlInfoByBrowser(itemId, targetUrl) {
         `, true);
 
         const htmlInfo = findMlItemInfoInText(pageInfo && pageInfo.html, cleanId) || {};
+        const pagePrices = normalizeMlBrowserPriceInfo(pageInfo || {});
+        if (pagePrices.preco !== null) {
+            Object.assign(htmlInfo, pagePrices);
+        }
         if (pageInfo && pageInfo.sellerText && !htmlInfo.vendedor) {
             htmlInfo.vendedor = normalizeMlText(pageInfo.sellerText).replace(/^(vendido por|loja oficial)\s+/i, '').trim();
         }
-        if (htmlInfo.data_criacao || htmlInfo.vendedor || htmlInfo.seller_id) {
-            htmlInfo.source = htmlInfo.source || 'page_html';
+        if (htmlInfo.data_criacao || htmlInfo.vendedor || htmlInfo.seller_id || pagePrices.preco !== null) {
+            htmlInfo.source = pagePrices.preco !== null ? 'browser_page' : (htmlInfo.source || 'page_html');
             found.push(htmlInfo);
         }
 
@@ -1253,6 +1417,11 @@ async function extractMlInfoByBrowser(itemId, targetUrl) {
             || found.find(item => item && item.vendedor)
             || found.find(item => item && item.vendas !== null && item.vendas !== undefined)
             || found.find(Boolean);
+        const bestPrice = found.find(item => {
+            const prices = normalizeMlBrowserPriceInfo(item || {});
+            return prices.preco !== null && prices.preco_original;
+        }) || found.find(item => normalizeMlBrowserPriceInfo(item || {}).preco !== null);
+        const prices = normalizeMlBrowserPriceInfo(bestPrice || {});
         return {
             id: cleanId,
             url: pageInfo && pageInfo.url ? pageInfo.url : url,
@@ -1260,7 +1429,15 @@ async function extractMlInfoByBrowser(itemId, targetUrl) {
             vendedor: best && best.vendedor ? best.vendedor : '',
             seller_id: best && best.seller_id ? best.seller_id : null,
             vendas: best && best.vendas !== null && best.vendas !== undefined ? best.vendas : null,
-            source: best && best.source ? best.source : '',
+            preco: prices.preco,
+            price: prices.price,
+            preco_original: prices.preco_original,
+            original_price: prices.original_price,
+            standard_price: prices.standard_price,
+            preco_promocional: prices.preco_promocional,
+            promotional_price: prices.promotional_price,
+            discount_pct: prices.discount_pct,
+            source: bestPrice && bestPrice.source ? bestPrice.source : (best && best.source ? best.source : ''),
             attempts: found.length
         };
     } finally {

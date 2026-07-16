@@ -248,10 +248,6 @@ def _bling_salvar_oauth_valido(client_id: str, nome_loja: str, cfg: dict) -> dic
     atualizado["shared_without_oauth_tokens"] = False
     atualizado["updated_at"] = str(time.time())
     atualizar_api_loja(client_id, nome_loja, "bling", atualizado)
-    try:
-        _shared_sync_propagar_lojas_integracoes_cliente(client_id, "bling-oauth-refresh")
-    except Exception as exc:
-        logger.warning("[BLING] Nao foi possivel propagar token renovado para compartilhamentos: %s", exc)
     return atualizado
 
 

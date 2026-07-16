@@ -1006,6 +1006,13 @@
     if (window.__jkSharedSyncAutoPullInit) return;
     window.__jkSharedSyncAutoPullInit = true;
 
+    // Schema 2 e exclusivamente manual. Mantemos somente os nomes publicos
+    // para compatibilidade, sem fetch, timer ou listener de sincronizacao.
+    window.jkSharedSyncAutoPullNow = async () => ({ success: false, manual_only: true });
+    window.jkSharedSyncAutoPushNow = async () => ({ success: false, manual_only: true });
+    window.jkFavoritosHistoricoSyncNow = async () => ({ success: false, manual_only: true });
+    return;
+
     let executandoPull = false;
     let executandoPush = false;
     let executandoFavoritosHistorico = false;
@@ -1276,6 +1283,9 @@
 (function initMachineSharedSyncAuto() {
     if (window.__jkMachineSharedSyncAutoInit) return;
     window.__jkMachineSharedSyncAutoInit = true;
+
+    window.jkMachineSyncNow = async () => ({ success: false, manual_only: true });
+    return;
 
     let executando = false;
     let ultimaExecucao = 0;

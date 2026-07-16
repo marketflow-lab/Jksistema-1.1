@@ -985,10 +985,11 @@ def _favoritos_busca_externa_normalizar_resultados(resultados: list[dict], provi
     }
 
 
-def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4) -> dict:
+def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4, timeout_s: float = 18) -> dict:
     query = re.sub(r"\s+", " ", str(query or "").strip())
     if not query:
         return _favoritos_busca_externa_normalizar_resultados([], "none", query, max_results)
+    timeout_s = max(2.0, min(float(timeout_s or 18), 30.0))
 
     tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
     if tavily_key:
@@ -1002,7 +1003,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4) -> dic
                 "max_results": max_results,
                 "include_answer": False,
             },
-            timeout=18,
+            timeout=timeout_s,
             verify=False,
         )
         resp.raise_for_status()
@@ -1015,7 +1016,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4) -> dic
             "https://api.search.brave.com/res/v1/web/search",
             headers={"Accept": "application/json", "X-Subscription-Token": brave_key},
             params={"q": query, "count": max_results, "country": "br", "search_lang": "pt-br"},
-            timeout=18,
+            timeout=timeout_s,
             verify=False,
         )
         resp.raise_for_status()
@@ -1032,7 +1033,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4) -> dic
         resp = requests.get(
             "https://serpapi.com/search.json",
             params={"engine": "google", "q": query, "hl": "pt-br", "gl": "br", "num": max_results, "api_key": serpapi_key},
-            timeout=18,
+            timeout=timeout_s,
             verify=False,
         )
         resp.raise_for_status()
@@ -1043,7 +1044,7 @@ def _favoritos_busca_externa_chamar_api(query: str, max_results: int = 4) -> dic
         "https://duckduckgo.com/html/",
         params={"q": query},
         headers={"User-Agent": "Mozilla/5.0 JK-Sistema/1.0"},
-        timeout=18,
+        timeout=timeout_s,
         verify=False,
     )
     resp.raise_for_status()

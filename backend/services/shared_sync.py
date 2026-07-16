@@ -15,11 +15,12 @@ from backend.services import shared_sync_merge_integracoes as _shared_sync_modul
 from backend.services import shared_sync_merge_sqlite as _shared_sync_module_7
 from backend.services import shared_sync_apply_scope as _shared_sync_module_8
 from backend.services import shared_sync_machine as _shared_sync_module_9
-from backend.services import shared_sync_user_identity as _shared_sync_module_10
-from backend.services import shared_sync_user_links as _shared_sync_module_11
-from backend.services import shared_sync_user_pairs as _shared_sync_module_12
-from backend.services import shared_sync_user_endpoints as _shared_sync_module_13
-from backend.services import shared_sync_machine_endpoints as _shared_sync_module_14
+from backend.services import shared_sync_operations as _shared_sync_module_10
+from backend.services import shared_sync_user_identity as _shared_sync_module_11
+from backend.services import shared_sync_user_links as _shared_sync_module_12
+from backend.services import shared_sync_user_pairs as _shared_sync_module_13
+from backend.services import shared_sync_user_endpoints as _shared_sync_module_14
+from backend.services import shared_sync_machine_endpoints as _shared_sync_module_15
 from backend.services.shared_sync_config import *
 from backend.services.shared_sync_collect_files import *
 from backend.services.shared_sync_delta import *
@@ -30,6 +31,7 @@ from backend.services.shared_sync_merge_integracoes import *
 from backend.services.shared_sync_merge_sqlite import *
 from backend.services.shared_sync_apply_scope import *
 from backend.services.shared_sync_machine import *
+from backend.services.shared_sync_operations import *
 from backend.services.shared_sync_user_identity import *
 from backend.services.shared_sync_user_links import *
 from backend.services.shared_sync_user_pairs import *
@@ -52,6 +54,7 @@ _SHARED_SYNC_MODULES = (
     _shared_sync_module_12,
     _shared_sync_module_13,
     _shared_sync_module_14,
+    _shared_sync_module_15,
 )
 
 

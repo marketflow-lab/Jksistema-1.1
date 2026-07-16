@@ -5,6 +5,11 @@ function getMlSession() {
     return mlSession;
 }
 
+let persistentSessionsFlushPromise = null;
+let persistentSessionsFlushTimer = null;
+let persistentSessionDurabilityRegistered = false;
+let persistentAuthCookieChangeCount = 0;
+
 function getBrowserSessionPartition() {
     return JK_BROWSER_SESSION_PARTITION;
 }
@@ -282,16 +287,126 @@ function showWindowsNotification(payload = {}) {
 }
 
 async function flushPersistentSessions() {
-    const sessions = [session.defaultSession, getMlSession()];
-    await Promise.all(sessions.map(async (ses) => {
-        try {
-            if (ses && typeof ses.flushStorageData === 'function') {
-                await ses.flushStorageData();
+    if (persistentSessionsFlushPromise) return persistentSessionsFlushPromise;
+    persistentSessionsFlushPromise = (async () => {
+        const sessions = Array.from(new Set([session.defaultSession, getMlSession()].filter(Boolean)));
+        const results = await Promise.all(sessions.map(async (ses, index) => {
+            let lastError = null;
+            for (let attempt = 1; attempt <= 2; attempt += 1) {
+                try {
+                    if (ses.cookies && typeof ses.cookies.flushStore === 'function') {
+                        await ses.cookies.flushStore();
+                    }
+                    if (typeof ses.flushStorageData === 'function') {
+                        await ses.flushStorageData();
+                    }
+                    return { index, success: true, attempts: attempt };
+                } catch (err) {
+                    lastError = err;
+                    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 120));
+                }
             }
-        } catch (err) {
-            console.warn('[Sessao] Falha ao salvar dados persistentes:', err && err.message ? err.message : err);
-        }
-    }));
+            const error = lastError && lastError.message ? lastError.message : String(lastError || 'erro desconhecido');
+            console.warn('[Sessao] Falha ao salvar dados persistentes:', error);
+            return { index, success: false, attempts: 2, error };
+        }));
+        const failures = results.filter(item => !item.success);
+        return { success: failures.length === 0, sessions: sessions.length, results, failures };
+    })().finally(() => {
+        persistentSessionsFlushPromise = null;
+    });
+    return persistentSessionsFlushPromise;
+}
+
+function cookiePertenceAFluxoDeAutenticacaoPersistente(cookie) {
+    const domain = String(cookie && cookie.domain || '').replace(/^\./, '').toLowerCase();
+    return domain === 'localhost'
+        || domain === '127.0.0.1'
+        || domain.endsWith('.mercadolivre.com.br')
+        || domain === 'mercadolivre.com.br'
+        || domain.endsWith('.mercadolivre.com')
+        || domain === 'mercadolivre.com'
+        || domain.endsWith('.mercadolibre.com')
+        || domain === 'mercadolibre.com'
+        || domain.endsWith('.mercadopago.com.br')
+        || domain === 'mercadopago.com.br'
+        || domain.endsWith('.mercadopago.com')
+        || domain === 'mercadopago.com';
+}
+
+function schedulePersistentSessionsFlush(reason = 'cookie-changed', delayMs = 900) {
+    if (persistentSessionsFlushTimer) clearTimeout(persistentSessionsFlushTimer);
+    persistentSessionsFlushTimer = setTimeout(() => {
+        persistentSessionsFlushTimer = null;
+        flushPersistentSessions()
+            .then((result) => {
+                logElectronLifecycle(result && result.success ? 'authentication-session-flushed' : 'authentication-session-flush-failed', {
+                    reason,
+                    sessions: result && result.sessions || 0,
+                    failures: result && result.failures || [],
+                    authCookieChanges: persistentAuthCookieChangeCount
+                });
+                persistentAuthCookieChangeCount = 0;
+            })
+            .catch((err) => {
+                logElectronLifecycle('authentication-session-flush-failed', {
+                    reason,
+                    error: err && err.message ? err.message : String(err)
+                });
+            });
+    }, Math.max(100, Number(delayMs) || 900));
+    if (typeof persistentSessionsFlushTimer.unref === 'function') persistentSessionsFlushTimer.unref();
+}
+
+function registerPersistentSessionDurability() {
+    if (persistentSessionDurabilityRegistered) return;
+    persistentSessionDurabilityRegistered = true;
+    const sessions = Array.from(new Set([session.defaultSession, getMlSession()].filter(Boolean)));
+    sessions.forEach((ses) => {
+        if (!ses.cookies || typeof ses.cookies.on !== 'function') return;
+        ses.cookies.on('changed', (_event, cookie) => {
+            if (!cookiePertenceAFluxoDeAutenticacaoPersistente(cookie)) return;
+            persistentAuthCookieChangeCount += 1;
+            schedulePersistentSessionsFlush('authentication-cookie-changed');
+        });
+    });
+    logElectronLifecycle('authentication-session-durability-ready', {
+        partition: getBrowserSessionPartition(),
+        sessions: sessions.length,
+        userDataDir: JK_ELECTRON_USER_DATA_DIR
+    });
+}
+
+async function persistAuthenticationState(reason = 'manual', options = {}) {
+    const flush = await flushPersistentSessions();
+    let avant = null;
+    if (options.saveAvantPro !== false && typeof saveAvantProExtensionStorageSnapshot === 'function') {
+        avant = await saveAvantProExtensionStorageSnapshot(reason, {
+            source: 'electron-auth-persistence',
+            savedAt: Date.now()
+        }).catch((err) => ({
+            success: false,
+            error: err && err.message ? err.message : String(err)
+        }));
+    }
+    const result = {
+        success: !!(flush && flush.success) && (
+            options.saveAvantPro === false
+            || !avant
+            || !!avant.success
+            || (avant.skipped && avant.reason === 'avantpro-disabled')
+        ),
+        sessions: flush && flush.sessions || 0,
+        sessionFailures: flush && flush.failures || [],
+        avantPro: avant ? {
+            success: !!avant.success,
+            skipped: !!avant.skipped,
+            reason: avant.reason || '',
+            copied: Number(avant.copied || 0)
+        } : null
+    };
+    logElectronLifecycle('authentication-state-persisted', { reason, ...result });
+    return result;
 }
 
 async function clearElectronCache() {
@@ -695,6 +810,7 @@ function writeLocalBackendLauncher(localAppDir) {
         `set "GOOGLE_LOGIN_REDIRECT_URI_LOCAL=${localGoogleCallback}"`,
         `set "PROMO_WORKER_URL=http://127.0.0.1:${JK_PROMO_WORKER_PORT}"`,
         `set "JK_APP_VERSION=${cmdValue(app.getVersion())}"`,
+        `set "JK_CODEX_CONSOLE_ENABLED=${cmdValue(process.env.JK_CODEX_CONSOLE_ENABLED || 'true')}"`,
         'set "IA_RAG_ENABLED=true"',
         'set "IA_RAG_BACKEND=local"',
         'set "IA_RAG_TOP_K=5"',
@@ -820,15 +936,18 @@ function ensureLocalBackendStarted() {
                     currentVersion: app.getVersion(),
                     health
                 });
-                return { success: true, alreadyRunning: true, staleMetadata: true, port: JK_LOCAL_BACKEND_PORT };
+            } else {
+                logElectronLifecycle('local-backend-stale-restart', {
+                    port: JK_LOCAL_BACKEND_PORT,
+                    currentVersion: app.getVersion(),
+                    health
+                });
             }
-            logElectronLifecycle('local-backend-stale-restart', {
-                port: JK_LOCAL_BACKEND_PORT,
-                currentVersion: app.getVersion(),
-                health
-            });
             await stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT);
-            await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
+            const backendStopped = await waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT);
+            if (!backendStopped) {
+                throw new Error(`Nao foi possivel reiniciar o servidor local antigo na porta ${JK_LOCAL_BACKEND_PORT}.`);
+            }
         }
 
         logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
@@ -843,6 +962,7 @@ function ensureLocalBackendStarted() {
                 GOOGLE_LOGIN_REDIRECT_URI_LOCAL: process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback',
                 PROMO_WORKER_URL: `http://127.0.0.1:${JK_PROMO_WORKER_PORT}`,
                 JK_APP_VERSION: app.getVersion(),
+                JK_CODEX_CONSOLE_ENABLED: process.env.JK_CODEX_CONSOLE_ENABLED || 'true',
                 IA_RAG_ENABLED: 'true',
                 IA_RAG_BACKEND: 'local',
                 IA_RAG_TOP_K: '5',
@@ -884,19 +1004,83 @@ function ensureLocalBackendStarted() {
     return localBackendStartupPromise;
 }
 
-function stopLocalBackend() {
-    if (!localBackendProcess || !localBackendProcess.pid) {
-        return;
-    }
-    try {
-        spawn('taskkill.exe', ['/PID', String(localBackendProcess.pid), '/T', '/F'], {
-            stdio: 'ignore',
-            windowsHide: true
-        }).unref();
-    } catch (err) {
-        logElectronLifecycle('local-backend-stop-error', err);
-    }
-    localBackendProcess = null;
+function stopTrackedProcessTree(pid) {
+    return new Promise((resolve) => {
+        if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) {
+            resolve(false);
+            return;
+        }
+        let settled = false;
+        const finish = (success) => {
+            if (settled) return;
+            settled = true;
+            resolve(Boolean(success));
+        };
+        try {
+            const child = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+                stdio: 'ignore',
+                windowsHide: true
+            });
+            child.once('error', () => finish(false));
+            child.once('exit', (code) => finish(code === 0));
+        } catch (_err) {
+            finish(false);
+        }
+    });
+}
+
+async function stopLocalBackend() {
+    if (localBackendStopPromise) return localBackendStopPromise;
+
+    localBackendStopPromise = (async () => {
+        const trackedProcess = localBackendProcess;
+        const trackedPid = trackedProcess && trackedProcess.pid ? Number(trackedProcess.pid) : null;
+        localBackendProcess = null;
+
+        const trackedTreeStopped = trackedPid
+            ? await stopTrackedProcessTree(trackedPid)
+            : false;
+
+        // O .cmd de inicializacao pode terminar antes do Uvicorn. Por isso as
+        // portas sao sempre encerradas, mesmo quando nao ha mais PID rastreado.
+        const [promoKillRequested, backendKillRequested] = await Promise.all([
+            stopProcessListeningOnPort(JK_PROMO_WORKER_PORT),
+            stopProcessListeningOnPort(JK_LOCAL_BACKEND_PORT)
+        ]);
+        const [promoClosed, backendClosed] = await Promise.all([
+            waitForTcpPortClosed(JK_PROMO_WORKER_PORT),
+            waitForTcpPortClosed(JK_LOCAL_BACKEND_PORT)
+        ]);
+
+        localBackendStartupPromise = null;
+        const result = {
+            success: promoClosed && backendClosed,
+            trackedPid,
+            trackedTreeStopped,
+            promoKillRequested,
+            backendKillRequested,
+            promoClosed,
+            backendClosed
+        };
+        logElectronLifecycle(
+            result.success ? 'local-backend-stopped' : 'local-backend-stop-incomplete',
+            result
+        );
+        return result;
+    })()
+        .catch((err) => {
+            const result = {
+                success: false,
+                error: err && err.message ? err.message : String(err)
+            };
+            logElectronLifecycle('local-backend-stop-error', result);
+            return result;
+        })
+        .finally(() => {
+            localBackendStopPromise = null;
+        });
+
+    return localBackendStopPromise;
 }
 
 function readLocalDotEnvValues(envPath) {

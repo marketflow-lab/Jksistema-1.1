@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260701-sidebar-approval-lite-v1';
+  const VERSION = '20260714-black-jhon-operational-agent-v1';
   const FULL_AUTO_LOAD_DELAY_MS = 30000;
   const WORKER_PREFETCH_DELAY_MS = 10000;
   const FULL_RELOAD_AFTER_NAV_DELAY_MS = 500;
@@ -458,13 +458,14 @@
     if (!botao) return;
     botao.classList.toggle('loading', !!carregando);
     botao.classList.toggle('error', !!erro);
-    botao.title = erro ? 'Nao foi possivel carregar a IA. Clique para tentar novamente.' : 'Abrir IA';
+    botao.title = erro ? 'Nao foi possivel carregar o Black Jhon. Clique para tentar novamente.' : 'Abrir Black Jhon';
   }
 
   function abrirPainelQuandoDisponivel(tentativas) {
     const fab = document.getElementById('jk-ia-fab');
     if (fab) {
-      fab.click();
+      if (!document.getElementById('jk-codex-panel')?.classList.contains('aberto')) fab.click();
+      abrirDepoisDeCarregar = false;
       return;
     }
     if ((tentativas || 0) >= 40) return;
@@ -530,7 +531,8 @@
     const style = document.createElement('style');
     style.id = 'jk-ia-light-fab-style';
     style.textContent = `
-      #jk-ia-light-fab{position:fixed;right:18px;bottom:92px;z-index:10000;width:46px;height:46px;border:1px solid rgba(89,206,255,.55);border-radius:14px;background:linear-gradient(135deg,#145b6b,#1c8fd5);color:#fff;font:800 14px/1 Arial,sans-serif;box-shadow:0 10px 26px rgba(0,0,0,.34),0 0 18px rgba(63,169,245,.28);cursor:pointer;letter-spacing:0}
+      #jk-ia-light-fab{position:fixed;right:18px;bottom:92px;z-index:10000;width:46px;height:46px;border:1px solid rgba(89,206,255,.55);border-radius:999px;background:#101c37;color:#fff;font:800 14px/1 Arial,sans-serif;box-shadow:0 10px 26px rgba(0,0,0,.34),0 0 18px rgba(63,169,245,.28);cursor:pointer;letter-spacing:0;overflow:hidden;padding:0}
+      #jk-ia-light-fab img{display:block;width:100%;height:100%;object-fit:cover;transform:scale(1.12);transform-origin:center}
       #jk-ia-light-fab:hover{transform:translateY(-1px);box-shadow:0 12px 30px rgba(0,0,0,.38),0 0 22px rgba(63,169,245,.38)}
       #jk-ia-light-fab.loading{cursor:wait;opacity:.78}
       #jk-ia-light-fab.loading::after{content:'';position:absolute;inset:6px;border:2px solid rgba(255,255,255,.26);border-top-color:#fff;border-radius:50%;animation:jkIaLightSpin .8s linear infinite}
@@ -542,9 +544,9 @@
     const botao = document.createElement('button');
     botao.id = 'jk-ia-light-fab';
     botao.type = 'button';
-    botao.textContent = 'IA';
-    botao.title = 'Abrir IA';
-    botao.setAttribute('aria-label', 'Abrir IA');
+    botao.innerHTML = '<img src="/assets/joao-pretinho-icon.png?v=20260710-black-jhon" alt="">';
+    botao.title = 'Abrir Black Jhon';
+    botao.setAttribute('aria-label', 'Abrir Black Jhon');
     botao.addEventListener('click', () => {
       loadFullSidebar({ openAfterLoad: true }).catch(() => {});
     });
@@ -552,6 +554,10 @@
   }
 
   function iniciarLoaderLeve() {
+    const params = new URLSearchParams(location.search || '');
+    if (params.get('embed') === 'share' || params.get('modo') === 'compartilhar' || document.body?.classList.contains('share-embed')) {
+      return;
+    }
     instalarLeftSidebarLeve();
     instalarBotaoLeve();
 

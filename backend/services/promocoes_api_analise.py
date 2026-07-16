@@ -63,6 +63,8 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 
+_PROMOCOES_RUNTIME_GET_TENANT_ID = None
+
 
 def configure_promocoes_api_analise_runtime(runtime_module=None, peers=None):
     _configure_common = globals().get("configure_promocoes_common_runtime")
@@ -72,8 +74,11 @@ def configure_promocoes_api_analise_runtime(runtime_module=None, peers=None):
         except TypeError:
             _configure_common()
     runtime = bind_runtime_globals(globals(), runtime_module)
+    runtime_get_tenant_id = getattr(runtime, "get_tenant_id", None) if runtime is not None else None
+    if callable(runtime_get_tenant_id):
+        globals()["_PROMOCOES_RUNTIME_GET_TENANT_ID"] = runtime_get_tenant_id
     if peers:
-        globals().update(peers)
+        globals().update({name: value for name, value in peers.items() if name != "get_tenant_id"})
     return runtime
 
 
@@ -84,10 +89,154 @@ logger = logging.getLogger("jk_sistema")
 
 
 async def get_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
-    raise RuntimeError("Promocoes API runtime was not configured.")
+    resolver = globals().get("_PROMOCOES_RUNTIME_GET_TENANT_ID")
+    if resolver is None:
+        runtime = globals().get("_runtime")
+        resolver = getattr(runtime, "get_tenant_id", None) if runtime is not None else None
+    if not callable(resolver) or resolver is globals().get("_PROMOCOES_PLACEHOLDER_GET_TENANT_ID"):
+        raise RuntimeError("Promocoes API runtime was not configured.")
+    result = resolver(request, authorization)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+_PROMOCOES_PLACEHOLDER_GET_TENANT_ID = get_tenant_id
 
 
 PROMOCOES_ENDPOINTS = ('analisar_promo_via_api', 'analisar_promo_via_api_com_arquivos', 'iniciar_analise_promo_via_api', 'iniciar_analise_promo_via_api_com_arquivos', 'progresso_analise_promo_via_api_com_arquivos', 'cancelar_analise_promo_via_api_com_arquivos', 'promo_automacao_obter', 'promo_automacao_salvar', 'aplicar_participacoes_promocoes', 'aplicar_participacoes_promocoes_start', 'aplicar_participacoes_promocoes_job', 'analisar_promo_automatico')
+
+
+def _promo_sanitizar_tolerancia_margem(valor: Any) -> float:
+    tolerancia = _parse_float_flex(valor)
+    if tolerancia is None:
+        return 0.0
+    return max(0.0, min(100.0, float(tolerancia)))
+
+
+def _promo_margens_aprovadas(
+    margem_a: Any,
+    margem_b: Any,
+    margem_minima: Any = 15.0,
+    margem_tolerancia: Any = 0.0,
+) -> bool:
+    margem_a_pct = _parse_float_flex(margem_a)
+    margem_b_pct = _parse_float_flex(margem_b)
+    margem_minima_pct = _parse_float_flex(margem_minima)
+    minimo = float(margem_minima_pct or 0.0)
+    tolerancia = _promo_sanitizar_tolerancia_margem(margem_tolerancia)
+    if margem_a_pct is None or margem_b_pct is None:
+        return False
+    if float(margem_a_pct) < minimo or float(margem_b_pct) < minimo:
+        return False
+    return float(margem_b_pct) + tolerancia + 1e-9 >= float(margem_a_pct)
+
+
+def _promo_obter_fretes_por_preco(
+    client_id: str,
+    loja: str,
+    cfg: dict,
+    item_id: str,
+    item: dict,
+    preco_a,
+    preco_b,
+):
+    """Consulta o custo de frete separadamente para cada preco promocional."""
+    cfg_atual = cfg
+    resultados = {}
+
+    def _consultar(preco):
+        nonlocal cfg_atual
+        preco_num = _parse_float_flex(preco)
+        if preco_num is None or preco_num <= 0:
+            return {}
+        chave = round(float(preco_num), 2)
+        if chave in resultados:
+            return resultados[chave]
+        try:
+            dados, cfg_atual = _ml_obter_frete_detalhado(
+                client_id,
+                loja,
+                cfg_atual,
+                item_id,
+                item.get("shipping") or {},
+                reconsultar_zero=True,
+                contexto_frete=_ml_contexto_frete_item(item, preco_num),
+            )
+        except Exception:
+            logger.exception("[PROMO API] Falha ao consultar frete do item %s no preco %.2f", item_id, preco_num)
+            dados = {}
+        resultados[chave] = dados or {}
+        return resultados[chave]
+
+    return _consultar(preco_a), _consultar(preco_b), cfg_atual
+
+
+def _promo_ajustar_preco_painel_seller_campaign(
+    raw_campanha: dict,
+    promotion_type: str,
+    promocoes_item,
+) -> dict:
+    """Replica a escolha de preco exibida pelo painel para campanha flexivel.
+
+    Em candidato SELLER_CAMPAIGN, a API publica devolve um limite maximo e uma
+    sugestao. O painel usa a sugestao somente quando ela coincide com uma
+    oferta SMART ainda candidata/elegivel do anuncio; nos demais casos exibe o
+    limite maximo. Precos efetivamente ativos continuam vindo de ``price``.
+    """
+    if not isinstance(raw_campanha, dict):
+        return raw_campanha
+
+    tipo = str(
+        promotion_type
+        or raw_campanha.get("promotion_type")
+        or raw_campanha.get("type")
+        or ""
+    ).strip().upper()
+    if tipo not in {"SELLER_CAMPAIGN", "SELLER_CAMPAIGNS"}:
+        return raw_campanha
+
+    subtipo = str(raw_campanha.get("sub_type") or raw_campanha.get("subType") or "").strip().upper()
+    if subtipo and subtipo != "FLEXIBLE_PERCENTAGE":
+        return raw_campanha
+
+    status = str(
+        raw_campanha.get("status")
+        or raw_campanha.get("status_item")
+        or raw_campanha.get("_jk_status_item_consultado")
+        or ""
+    ).strip().lower()
+    if status not in {"candidate", "eligible"}:
+        return raw_campanha
+
+    preco_maximo = _parse_float_flex(raw_campanha.get("max_discounted_price"))
+    preco_sugerido = _parse_float_flex(raw_campanha.get("suggested_discounted_price"))
+    if preco_maximo is None or preco_maximo <= 0:
+        return raw_campanha
+
+    preco_painel = float(preco_maximo)
+    fonte = "max_discounted_price"
+    if preco_sugerido is not None and preco_sugerido > 0:
+        for promocao in promocoes_item or []:
+            if not isinstance(promocao, dict):
+                continue
+            tipo_item = str(promocao.get("promotion_type") or promocao.get("type") or "").strip().upper()
+            status_item = str(promocao.get("status") or promocao.get("status_item") or "").strip().lower()
+            preco_item = _parse_float_flex(promocao.get("price"))
+            if (
+                tipo_item == "SMART"
+                and status_item in {"candidate", "eligible"}
+                and preco_item is not None
+                and abs(float(preco_item) - float(preco_sugerido)) <= 0.01
+            ):
+                preco_painel = float(preco_sugerido)
+                fonte = "suggested_discounted_price_smart_candidate"
+                break
+
+    resultado = dict(raw_campanha)
+    resultado["_jk_preco_painel_seller_campaign"] = round(preco_painel, 2)
+    resultado["_jk_preco_painel_fonte"] = fonte
+    return resultado
 
 
 def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends(get_tenant_id)):
@@ -216,13 +365,26 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             preco_base_anuncio,
         )
         promocoes_item_a = None
+        try:
+            promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, req.loja, cfg_local, item_id)
+            raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
+                raw_a_item,
+                promo_a_type,
+                promocoes_item_a,
+            )
+        except Exception:
+            promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
             try:
                 promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, req.loja, cfg_local, item_id)
                 raw_a_fallback = _ml_encontrar_promocao_raw_item(promocoes_item_a, promo_a)
                 if raw_a_fallback:
-                    raw_a_item = raw_a_fallback
+                    raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
+                        raw_a_fallback,
+                        promo_a_type,
+                        promocoes_item_a,
+                    )
                     preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
@@ -263,22 +425,24 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         if desconto_b is None and preco_base_anuncio and preco_b and preco_base_anuncio > 0:
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
-        shipping_data, cfg_local = _ml_obter_frete_detalhado(
+        shipping_data_a, shipping_data_b, cfg_local = _promo_obter_fretes_por_preco(
             client_id,
             req.loja,
             cfg_local,
             item_id,
-            item.get("shipping") or {},
-            reconsultar_zero=True,
-            contexto_frete=_ml_contexto_frete_item(item, preco_b or preco_a or preco_atual or preco_base_anuncio),
+            item,
+            preco_a,
+            preco_b,
         )
-        frete_api = shipping_data.get("shipping_cost")
-        frete_api_val = _parse_float_flex(frete_api)
+        frete_a_api_val = _parse_float_flex(shipping_data_a.get("shipping_cost"))
+        frete_b_api_val = _parse_float_flex(shipping_data_b.get("shipping_cost"))
         frete_fallback_val = 0.0
-        frete_a_val = frete_api_val if frete_api_val is not None else frete_fallback_val
-        frete_b_val = frete_api_val if frete_api_val is not None else frete_fallback_val
-        buyer_cost = _parse_float_flex(shipping_data.get("shipping_buyer_cost"))
-        frete_gratis_api = bool(shipping_data.get("free_shipping")) or (buyer_cost is not None and buyer_cost <= 0)
+        frete_a_val = frete_a_api_val if frete_a_api_val is not None else frete_fallback_val
+        frete_b_val = frete_b_api_val if frete_b_api_val is not None else frete_fallback_val
+        buyer_cost_a = _parse_float_flex(shipping_data_a.get("shipping_buyer_cost"))
+        buyer_cost_b = _parse_float_flex(shipping_data_b.get("shipping_buyer_cost"))
+        frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
+        frete_gratis_b_api = bool(shipping_data_b.get("free_shipping")) or (buyer_cost_b is not None and buyer_cost_b <= 0)
 
         custo = _resolver_custo_medio_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display])
         imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku)
@@ -290,8 +454,8 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         item_taxa_b = dict(item)
         item_taxa_b["price"] = preco_b
         fee_b, cfg_local = _ml_obter_taxas_anuncio(client_id, req.loja, cfg_local, item_taxa_b)
-        frete_gratis_a = bool(frete_gratis_api or (frete_api_val is None and preco_a is not None and preco_a >= 79.0))
-        frete_gratis_b = bool(frete_gratis_api or (frete_api_val is None and preco_b is not None and preco_b >= 79.0))
+        frete_gratis_a = bool(frete_gratis_a_api or (frete_a_api_val is None and preco_a is not None and preco_a >= 79.0))
+        frete_gratis_b = bool(frete_gratis_b_api or (frete_b_api_val is None and preco_b is not None and preco_b >= 79.0))
         taxa_fixa_a = _parse_float_flex(fee_a.get("fixed_fee_amount"))
         taxa_fixa_b = _parse_float_flex(fee_b.get("fixed_fee_amount"))
         if taxa_fixa_a is None:
@@ -356,14 +520,12 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
                 margem_b = (valor_liquido_b * 100.0) / preco_b
 
         presente_b = item_id in ids_b
-        margem_minima_pct = float(req.margem_minima or 0)
-        if margem_a is None or margem_a < margem_minima_pct:
-            decisao = "NÃ£o participar"
-        elif margem_b is None:
-            decisao = "NÃ£o participar"
-        elif margem_b < margem_minima_pct:
-            decisao = "NÃ£o participar"
-        elif margem_a is not None and margem_b < margem_a:
+        if not _promo_margens_aprovadas(
+            margem_a,
+            margem_b,
+            req.margem_minima,
+            req.margem_tolerancia,
+        ):
             decisao = "NÃ£o participar"
         else:
             decisao = "Participar"
@@ -380,6 +542,8 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "TÃ­tulo": str(item.get("title") or ""),
             "Frete": formatar_moeda_br(frete_a_val),
             "Frete ML": formatar_moeda_br(frete_b_val),
+            "frete_exato": bool(shipping_data_a.get("shipping_exact_for_price")),
+            "frete_ml_exato": bool(shipping_data_b.get("shipping_exact_for_price")),
             "Frete Gratis": "SIM" if frete_gratis_a else "NÃƒO",
             "Frete Gratis ML": "SIM" if frete_gratis_b else "NÃƒO",
             "Custo": formatar_moeda_br(custo) if custo is not None else "",
@@ -486,6 +650,7 @@ async def analisar_promo_via_api_sem_arquivos(
     promocao_a_id: str,
     promocao_a_type: str = "",
     margem_minima: float = 15.0,
+    margem_tolerancia: float = 0.0,
     promocoes_b_meta: str = "[]",
     client_id: str = "default",
     progress_hook: Optional[Callable[[dict], None]] = None,
@@ -643,13 +808,26 @@ async def analisar_promo_via_api_sem_arquivos(
         )
 
         promocoes_item_a = None
+        try:
+            promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
+            raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
+                raw_a_item,
+                promo_a_type,
+                promocoes_item_a,
+            )
+        except Exception:
+            promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
             try:
                 promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
                 raw_a_fallback = _ml_encontrar_promocao_raw_item(promocoes_item_a, promo_a)
                 if raw_a_fallback:
-                    raw_a_item = raw_a_fallback
+                    raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
+                        raw_a_fallback,
+                        promo_a_type,
+                        promocoes_item_a,
+                    )
                     preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
@@ -696,21 +874,21 @@ async def analisar_promo_via_api_sem_arquivos(
         if desconto_b is None and preco_base_anuncio and preco_b and preco_base_anuncio > 0:
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
-        try:
-            shipping_data, cfg_local = _ml_obter_frete_detalhado(
-                client_id,
-                loja,
-                cfg_local,
-                item_id,
-                item.get("shipping") or {},
-                reconsultar_zero=True,
-                contexto_frete=_ml_contexto_frete_item(item, preco_b or preco_a or preco_atual or preco_base_anuncio),
-            )
-        except Exception:
-            shipping_data = {}
-        frete_api_val = _parse_float_flex(shipping_data.get("shipping_cost"))
-        buyer_cost = _parse_float_flex(shipping_data.get("shipping_buyer_cost"))
-        frete_gratis_api = bool(shipping_data.get("free_shipping")) or (buyer_cost is not None and buyer_cost <= 0)
+        shipping_data_a, shipping_data_b, cfg_local = _promo_obter_fretes_por_preco(
+            client_id,
+            loja,
+            cfg_local,
+            item_id,
+            item,
+            preco_a,
+            preco_b,
+        )
+        frete_a_api_val = _parse_float_flex(shipping_data_a.get("shipping_cost"))
+        frete_b_api_val = _parse_float_flex(shipping_data_b.get("shipping_cost"))
+        buyer_cost_a = _parse_float_flex(shipping_data_a.get("shipping_buyer_cost"))
+        buyer_cost_b = _parse_float_flex(shipping_data_b.get("shipping_buyer_cost"))
+        frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
+        frete_gratis_b_api = bool(shipping_data_b.get("free_shipping")) or (buyer_cost_b is not None and buyer_cost_b <= 0)
 
         custo = _resolver_custo_medio_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display])
         imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku)
@@ -751,12 +929,12 @@ async def analisar_promo_via_api_sem_arquivos(
             taxa_fixa_b = _ml_estimar_taxa_fixa_por_preco(preco_b, domain_id=item.get("domain_id") or "", category_id=item.get("category_id") or "", listing_type_id=item.get("listing_type_id") or "")
 
         frete_a_val = None
-        frete_b_val = frete_api_val if frete_api_val is not None else 0.0
+        frete_b_val = frete_b_api_val if frete_b_api_val is not None else 0.0
         frete_gratis_a = False
-        frete_gratis_b = bool(frete_gratis_api or (frete_api_val is None and preco_b is not None and preco_b >= 79.0))
+        frete_gratis_b = bool(frete_gratis_b_api or (frete_b_api_val is None and preco_b is not None and preco_b >= 79.0))
         if preco_a is not None:
-            frete_a_val = frete_api_val if frete_api_val is not None else 0.0
-            frete_gratis_a = bool(frete_gratis_api or (frete_api_val is None and preco_a is not None and preco_a >= 79.0))
+            frete_a_val = frete_a_api_val if frete_a_api_val is not None else 0.0
+            frete_gratis_a = bool(frete_gratis_a_api or (frete_a_api_val is None and preco_a is not None and preco_a >= 79.0))
         # Frete fica com o valor da API de shipping_options.
         # A taxa fixa do ML pertence ao detalhamento da tarifa, nao substitui frete.
 
@@ -799,12 +977,12 @@ async def analisar_promo_via_api_sem_arquivos(
             if preco_b:
                 margem_b = (valor_liquido_b * 100.0) / preco_b
 
-        margem_minima_pct = float(margem_minima or 0)
-        if margem_a is None or margem_a < margem_minima_pct:
-            decisao = "Nao participar"
-        elif margem_b is None or margem_b < margem_minima_pct:
-            decisao = "Nao participar"
-        elif margem_a is not None and margem_b < margem_a:
+        if not _promo_margens_aprovadas(
+            margem_a,
+            margem_b,
+            margem_minima,
+            margem_tolerancia,
+        ):
             decisao = "Nao participar"
         else:
             decisao = "Participar"
@@ -826,6 +1004,8 @@ async def analisar_promo_via_api_sem_arquivos(
             "TÃ­tulo": str(item.get("title") or raw_b_item.get("title") or ""),
             "Frete": formatar_moeda_br(frete_a_val) if preco_a is not None else "",
             "Frete ML": formatar_moeda_br(frete_b_val),
+            "frete_exato": bool(shipping_data_a.get("shipping_exact_for_price")),
+            "frete_ml_exato": bool(shipping_data_b.get("shipping_exact_for_price")),
             "Frete Gratis": ("SIM" if frete_gratis_a else "NAO") if preco_a is not None else "",
             "Frete Gratis ML": "SIM" if frete_gratis_b else "NAO",
             "Custo": formatar_moeda_br(custo) if custo is not None else "",
@@ -1061,10 +1241,11 @@ async def analisar_promo_via_api_com_arquivos(
     promocao_a_id: str = Form(...),
     promocao_a_type: str = Form(""),
     margem_minima: float = Form(15.0),
+    margem_tolerancia: float = Form(0.0),
     promocoes_b_meta: str = Form(...),
     files: list[UploadFile] = File(...),
     client_id: str = Depends(get_tenant_id),
-    progress_hook: Optional[Callable[[dict], None]] = None,
+    progress_hook: Any = None,
 ):
     inicio = time.time()
 
@@ -1255,13 +1436,26 @@ async def analisar_promo_via_api_com_arquivos(
         )
 
         promocoes_item_a = None
+        try:
+            promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
+            raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
+                raw_a_item,
+                promo_a_type,
+                promocoes_item_a,
+            )
+        except Exception:
+            promocoes_item_a = None
         preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
         if preco_a_raw is None and desc_a_raw is None:
             try:
                 promocoes_item_a, cfg_local = _ml_obter_promocoes_item(client_id, loja, cfg_local, item_id)
                 raw_a_fallback = _ml_encontrar_promocao_raw_item(promocoes_item_a, promo_a)
                 if raw_a_fallback:
-                    raw_a_item = raw_a_fallback
+                    raw_a_item = _promo_ajustar_preco_painel_seller_campaign(
+                        raw_a_fallback,
+                        promo_a_type,
+                        promocoes_item_a,
+                    )
                     preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
@@ -1302,21 +1496,21 @@ async def analisar_promo_via_api_com_arquivos(
         if desconto_b is None and preco_base_anuncio and preco_b and preco_base_anuncio > 0:
             desconto_b = max(0.0, ((preco_base_anuncio - preco_b) / preco_base_anuncio) * 100.0)
 
-        try:
-            shipping_data, cfg_local = _ml_obter_frete_detalhado(
-                client_id,
-                loja,
-                cfg_local,
-                item_id,
-                item.get("shipping") or {},
-                reconsultar_zero=True,
-                contexto_frete=_ml_contexto_frete_item(item, preco_b or preco_a or preco_atual or preco_base_anuncio),
-            )
-        except Exception:
-            shipping_data = {}
-        frete_api_val = _parse_float_flex(shipping_data.get("shipping_cost"))
-        buyer_cost = _parse_float_flex(shipping_data.get("shipping_buyer_cost"))
-        frete_gratis_api = bool(shipping_data.get("free_shipping")) or (buyer_cost is not None and buyer_cost <= 0)
+        shipping_data_a, shipping_data_b, cfg_local = _promo_obter_fretes_por_preco(
+            client_id,
+            loja,
+            cfg_local,
+            item_id,
+            item,
+            preco_a,
+            preco_b,
+        )
+        frete_a_api_val = _parse_float_flex(shipping_data_a.get("shipping_cost"))
+        frete_b_api_val = _parse_float_flex(shipping_data_b.get("shipping_cost"))
+        buyer_cost_a = _parse_float_flex(shipping_data_a.get("shipping_buyer_cost"))
+        buyer_cost_b = _parse_float_flex(shipping_data_b.get("shipping_buyer_cost"))
+        frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
+        frete_gratis_b_api = bool(shipping_data_b.get("free_shipping")) or (buyer_cost_b is not None and buyer_cost_b <= 0)
 
         custo = _resolver_custo_medio_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display, sku_base])
         imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku)
@@ -1364,12 +1558,12 @@ async def analisar_promo_via_api_com_arquivos(
             taxa_fixa_b = _ml_estimar_taxa_fixa_por_preco(preco_b, domain_id=item.get("domain_id") or "", category_id=item.get("category_id") or "", listing_type_id=item.get("listing_type_id") or "")
 
         frete_a_val = None
-        frete_b_val = frete_api_val if frete_api_val is not None else 0.0
+        frete_b_val = frete_b_api_val if frete_b_api_val is not None else 0.0
         frete_gratis_a = False
-        frete_gratis_b = bool(frete_gratis_api or (frete_api_val is None and preco_b is not None and preco_b >= 79.0))
+        frete_gratis_b = bool(frete_gratis_b_api or (frete_b_api_val is None and preco_b is not None and preco_b >= 79.0))
         if preco_a is not None:
-            frete_a_val = frete_api_val if frete_api_val is not None else 0.0
-            frete_gratis_a = bool(frete_gratis_api or (frete_api_val is None and preco_a is not None and preco_a >= 79.0))
+            frete_a_val = frete_a_api_val if frete_a_api_val is not None else 0.0
+            frete_gratis_a = bool(frete_gratis_a_api or (frete_a_api_val is None and preco_a is not None and preco_a >= 79.0))
 
         # Frete fica com o valor da API de shipping_options.
         # A taxa fixa do ML pertence ao detalhamento da tarifa, nao substitui frete.
@@ -1419,7 +1613,6 @@ async def analisar_promo_via_api_com_arquivos(
         else:
             status = status_exibicao_promo_a
 
-        margem_minima_pct = float(margem_minima or 0)
         tem_valores_comparacao = (
             custo is not None
             and preco_a not in (None, 0)
@@ -1431,13 +1624,12 @@ async def analisar_promo_via_api_com_arquivos(
         )
         if not tem_valores_comparacao:
             decisao = "NÃ£o participar"
-        elif margem_a is None or margem_a < margem_minima_pct:
-            decisao = "NÃ£o participar"
-        elif margem_b is None:
-            decisao = "NÃ£o participar"
-        elif margem_b < margem_minima_pct:
-            decisao = "NÃ£o participar"
-        elif margem_b is not None and margem_a is not None and margem_b < margem_a:
+        elif not _promo_margens_aprovadas(
+            margem_a,
+            margem_b,
+            margem_minima,
+            margem_tolerancia,
+        ):
             decisao = "NÃ£o participar"
         else:
             decisao = "Participar"
@@ -1453,6 +1645,8 @@ async def analisar_promo_via_api_com_arquivos(
             "TÃ­tulo": str(item.get("title") or entrada_b.get("TÃ­tulo") or ""),
             "Frete": formatar_moeda_br(frete_a_val) if preco_a is not None else "",
             "Frete ML": formatar_moeda_br(frete_b_val),
+            "frete_exato": bool(shipping_data_a.get("shipping_exact_for_price")),
+            "frete_ml_exato": bool(shipping_data_b.get("shipping_exact_for_price")),
             "Frete Gratis": ("SIM" if frete_gratis_a else "NÃƒO") if preco_a is not None else "",
             "Frete Gratis ML": "SIM" if frete_gratis_b else "NÃƒO",
             "Custo": formatar_moeda_br(custo) if custo is not None else "",

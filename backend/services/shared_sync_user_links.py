@@ -99,11 +99,7 @@ def _shared_sync_link_reverse_direction(direction_key: str) -> str:
     return "source_to_target" if direction_key == "target_to_source" else "target_to_source"
 
 def _shared_sync_lojas_integracoes_cross_client_volta_bloqueada(link: dict, scope: str, direction_key: str) -> bool:
-    if scope != "lojas_integracoes" or direction_key == "source_to_target":
-        return False
-    source_client = _shared_sync_normalizar_client_id((link or {}).get("source_client_id"))
-    target_client = _shared_sync_normalizar_client_id((link or {}).get("target_client_id"))
-    return bool(source_client and target_client and source_client != target_client)
+    return False
 
 def _shared_sync_link_bundle_id_for_direction(link: dict, scope: str, direction_key: str) -> str:
     directional = link.get("directional_bundles") if isinstance(link.get("directional_bundles"), dict) else {}
@@ -262,13 +258,10 @@ def _shared_sync_source_is_admin(item: dict, sessao: Optional[dict] = None) -> b
     return _shared_sync_usuario_identity_is_admin(source_username, source_client)
 
 def _shared_sync_scope_permitido_entre_clientes(item: dict, scope: str, sessao: Optional[dict] = None) -> bool:
-    if scope != "lojas_integracoes":
-        return True
-    if _shared_sync_source_is_admin(item, sessao):
-        return True
-    source_client = _shared_sync_normalizar_client_id((item or {}).get("source_client_id"))
-    target_client = _shared_sync_normalizar_client_id((item or {}).get("target_client_id"))
-    return bool(source_client and target_client and source_client == target_client)
+    # O vinculo nao depende de administrador nem de os usuarios pertencerem ao
+    # mesmo cliente. As permissoes normais dos modulos sao validadas nos dois
+    # participantes ao criar/alterar o vinculo e novamente antes de cada operacao.
+    return scope in SHARED_SYNC_SCOPES
 
 def _shared_sync_filtrar_scopes_entre_clientes(scopes: list[str], item: dict, sessao: Optional[dict] = None) -> list[str]:
     saida = []

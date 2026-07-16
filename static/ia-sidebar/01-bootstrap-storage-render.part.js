@@ -409,10 +409,19 @@
       return renderImagem('Imagem gerada', texto) || renderArquivo(texto.split('/').pop(), texto);
     }
 
-    function splitPipeRow(line) {
+    function splitPipeCells(line) {
       const raw = String(line || '').trim();
       const semBorda = raw.replace(/^\|/, '').replace(/\|$/, '');
-      return semBorda.split('|').map(c => inlineMd(c.trim()));
+      return semBorda.split('|').map(c => c.trim());
+    }
+
+    function splitPipeRow(line) {
+      return splitPipeCells(line).map(c => inlineMd(c));
+    }
+
+    function tableDataLabel(value, index) {
+      const raw = String(value || '').replace(/[`*_#]/g, '').replace(/\s+/g, ' ').trim();
+      return escapeHtml(raw || `Coluna ${index + 1}`).replace(/"/g, '&quot;');
     }
 
     function isTableSep(line) {
@@ -454,7 +463,8 @@
       }
 
       if (trim.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
-        const header = splitPipeRow(lines[i]);
+        const headerCells = splitPipeCells(lines[i]);
+        const header = headerCells.map(c => inlineMd(c));
         i += 2;
         const bodyRows = [];
         while (i < lines.length) {
@@ -465,9 +475,10 @@
         }
         const headHtml = `<thead><tr>${header.map(c => `<th>${c}</th>`).join('')}</tr></thead>`;
         const bodyHtml = bodyRows.length
-          ? `<tbody>${bodyRows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>`
+          ? `<tbody>${bodyRows.map(r => `<tr>${r.map((c, index) => `<td data-label="${tableDataLabel(headerCells[index], index)}">${c}</td>`).join('')}</tr>`).join('')}</tbody>`
           : '';
-        out.push(`<table>${headHtml}${bodyHtml}</table>`);
+        const columnCount = Math.max(1, header.length);
+        out.push(`<div class="jk-ia-table-wrap" role="region" aria-label="Tabela de resultados" tabindex="0"><table class="jk-ia-table-responsive" data-columns="${columnCount}">${headHtml}${bodyHtml}</table></div>`);
         continue;
       }
 

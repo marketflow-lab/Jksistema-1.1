@@ -80,6 +80,21 @@ def _shared_sync_aplicar_pacote(
                 data = zf.read(member)
             except KeyError:
                 raise HTTPException(status_code=502, detail=f"Backup remoto sem arquivo esperado: {rel}")
+            if scope == "lojas_integracoes" and rel == "lojas_config.json":
+                # A operacao manual confirmada e autoritativa. Toda escrita passa
+                # pelo lock, backup imediato, validacao e os.replace de Integracoes.
+                try:
+                    lojas = json.loads(data.decode("utf-8-sig"))
+                except Exception as exc:
+                    raise HTTPException(status_code=502, detail=f"lojas_config.json remoto invalido: {exc}")
+                if not isinstance(lojas, list):
+                    raise HTTPException(status_code=502, detail="lojas_config.json remoto nao contem uma lista.")
+                target_abs = os.path.abspath(os.path.join(tenant_abs, rel))
+                _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
+                from backend.services.integracoes import salvar_lojas
+                salvar_lojas(client_id, lojas, permitir_reducao_confirmada=True)
+                escritos.append(rel)
+                continue
             if (
                 scope == "favoritos_historico"
                 and not user_share
@@ -98,8 +113,6 @@ def _shared_sync_aplicar_pacote(
             if not target_abs.startswith(tenant_abs + os.sep):
                 raise HTTPException(status_code=400, detail="Backup contem destino invalido.")
             _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
-            if scope == "lojas_integracoes" and rel == "lojas_config.json":
-                data = _shared_sync_merge_lojas_integracoes_bytes(target_abs, data)
             os.makedirs(os.path.dirname(target_abs), exist_ok=True)
             with open(target_abs, "wb") as f:
                 f.write(data)

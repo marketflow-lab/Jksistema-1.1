@@ -9,6 +9,7 @@ import csv
 import functools
 import hashlib
 import html as html_lib
+import ipaddress
 import io
 import json
 import logging
@@ -40,6 +41,16 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
+from ml_questions_gemini.compatibility import (
+    default_missing_details,
+    extract_compatibility_target,
+    infer_compatibility_profile,
+    is_compatibility_question,
+    normalize_comparison_attributes,
+    normalize_profile,
+    normalize_target_type,
+    profile_language_issues,
+)
 
 
 def configure_perguntas_pos_venda_agent_runtime(runtime_module=None, peers=None):
@@ -56,6 +67,25 @@ def configure_perguntas_pos_venda_agent_runtime(runtime_module=None, peers=None)
 
 
 configure_perguntas_pos_venda_agent_runtime()
+
+
+def _perguntas_ia_pergunta_tecnica_exige_pesquisa(valor: Any) -> bool:
+    texto = _favoritos_normalizar_sem_acentos(str(valor or ""))
+    if not texto:
+        return False
+    if is_compatibility_question(texto):
+        return True
+    termos_tecnicos = (
+        "engate rapido", "abracadeira", "tipo de conexao", "conexao", "conector", "plug",
+        "entrada", "saida", "encaixe", "fixacao", "flange", "furacao", "rosca", "diametro",
+        "mangueira", "terminal", "pino", "pinos", "estria", "estrias", "eixo", "haste",
+        "medida", "tamanho", "dimensao", "material", "plastico", "aluminio", "aco",
+        "voltagem", "tensao", "frequencia", "potencia", "amperagem", "corrente", "pressao",
+        "protocolo", "bluetooth", "wifi", "wi-fi", "hdmi", "usb", "lightning", "magsafe",
+        "acompanha", "vem com", "incluso", "inclui", "quantas", "quantos", "lado direito",
+        "lado esquerdo", "temperatura", "capacidade", "vazao",
+    )
+    return any(termo in texto for termo in termos_tecnicos)
 
 
 def _perguntas_ia_mensagens_aprovacao(pergunta: dict, loja: str) -> list[dict]:
@@ -112,8 +142,19 @@ def _perguntas_ia_agent_input(
         allowed_tools: list[str] = []
         usar_busca_web = False
     else:
-        usar_busca_web = _intencao_flag("usar_busca_web", True)
-        allowed_tools = []
+        intencao_nome = _favoritos_normalizar_sem_acentos(str(intencao_atendimento.get("intencao") or ""))
+        # Compatibilidade exige a sequencia tecnica completa. Uma variacao da
+        # classificacao nao pode desligar justamente a pesquisa que compara as
+        # interfaces do produto e do veiculo.
+        pergunta_tecnica = _perguntas_ia_pergunta_tecnica_exige_pesquisa(
+            (pergunta if isinstance(pergunta, dict) else {}).get("text")
+        )
+        usar_busca_web = bool(
+            intencao_nome in {"compatibilidade", "compatibility"}
+            or pergunta_tecnica
+            or _intencao_flag("usar_busca_web", True)
+        )
+        allowed_tools = ["get_product_data"]
         if _intencao_flag("usar_mercado_livre_anuncio", True):
             allowed_tools.append("get_mercado_livre_listing")
         if _intencao_flag("usar_bling", True):
@@ -138,6 +179,7 @@ def _perguntas_ia_agent_input(
     ).strip()
     return {
         "task": "mercado_livre_question_draft",
+        "orchestrator_profile": "mercado_livre_customer_reply",
         "locale": "pt-BR",
         "tenant_id": str(client_id or "").strip(),
         "store": str(loja or "").strip(),
@@ -148,6 +190,13 @@ def _perguntas_ia_agent_input(
         "item": _perguntas_ia_item_para_agente(item, contexto_dict.get("descricao") or ""),
         "context": contexto_dict,
         "intent": intencao_atendimento,
+        "subquestions": list((pergunta or {}).get("_agent_subquestions") or []),
+        "_codex_thread_id": str((pergunta or {}).get("_codex_thread_id") or ""),
+        "_codex_job_id": str((pergunta or {}).get("_codex_job_id") or ""),
+        "research_attempt": max(1, int((pergunta or {}).get("_research_attempt") or 1)),
+        "research_history": list((pergunta or {}).get("_research_history") or [])[-6:],
+        "force_external_research": bool((pergunta or {}).get("_force_external_research")),
+        "research_directive": str((pergunta or {}).get("_research_directive") or "")[:1200],
         "context_collection_pipeline": [
             {
                 "step": 1,
@@ -172,7 +221,10 @@ def _perguntas_ia_agent_input(
             {
                 "step": 5,
                 "name": "question_focused_web_research",
-                "description": "Pesquisar novamente na internet para responder a pergunta atual dentro do contexto coletado.",
+                "description": (
+                    "Identificar o produto e pesquisar na internet compatibilidade, aplicacao, caracteristicas e funcoes; "
+                    "priorizar fabricante, manuais, catalogos OEM e documentacao oficial."
+                ),
             },
             {
                 "step": 6,
@@ -331,17 +383,9 @@ def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -
         texto = re.sub(r"\s+", " ", str(valor or "").strip())
         if not texto:
             return ""
-        padroes_alvo = (
-            r"(?:serve|servir|aplica|encaixa|compat[ií]vel|compativel).*?(?:no|na|em|para|com)\s+(.+)$",
-            r"(?:modelo|veiculo|veículo|carro|moto)\s+(.+)$",
-        )
-        for padrao in padroes_alvo:
-            match = re.search(padrao, texto, flags=re.IGNORECASE)
-            if match:
-                alvo = match.group(1)
-                alvo = re.sub(r"[?!.;,]+$", "", alvo).strip()
-                if len(alvo) >= 4:
-                    return alvo[:160]
+        alvo = extract_compatibility_target(texto)
+        if len(alvo) >= 2:
+            return alvo[:160]
         texto = re.sub(
             r"\b(compare|comparar|confira|conferir|verifique|verificar|pesquise|pesquisar|busque|buscar|internet|google|web|anuncio|anuncios|anúncio|anúncios|descricao|descrição|mesmo|mesma|esta|essa|esse|este|produto|peca|peça|item|pela|pelo|pelas|pelos|do|da|dos|das|e)\b",
             " ",
@@ -392,6 +436,98 @@ def _ia_agent_perguntas_query_web(agent_input: dict, tool_results: list[dict]) -
     if "compat" not in _normalizar_texto(consulta):
         consulta += " compatibilidade especificacao aplicacao"
     return consulta[:500]
+
+
+def _perguntas_ia_v2_texto_busca_curto(valor: object, max_palavras: int = 14, max_chars: int = 180) -> str:
+    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", str(valor or ""), flags=re.IGNORECASE)
+    texto = re.sub(r"\bSKU\s*[:#-]?\s*[A-Z0-9._/-]+\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"https?://\S+", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"[^0-9A-Za-zÀ-ÿ+./-]+", " ", texto)
+    palavras = [parte for parte in texto.split() if parte]
+    return " ".join(palavras[:max(1, int(max_palavras or 14))])[:max_chars].strip()
+
+
+def _perguntas_ia_v2_foco_tecnico_pergunta(agent_input: dict) -> str:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    texto = _favoritos_normalizar_sem_acentos(str(question.get("text") or ""))
+    if not texto:
+        return ""
+    grupos = (
+        (("engate rapido", "abracadeira"), "engate rapido abracadeira tipo de conexao"),
+        (("conector", "conexao", "plug", "entrada", "saida", "terminal"), "tipo de conector conexao entrada saida"),
+        (("rosca", "diametro", "mangueira", "flange"), "rosca diametro mangueira flange"),
+        (("encaixe", "fixacao", "furacao", "eixo", "haste", "estria"), "encaixe fixacao furacao eixo estrias"),
+        (("material", "plastico", "aluminio", "aco"), "material composicao"),
+        (("voltagem", "tensao", "frequencia", "potencia", "amperagem", "corrente"), "tensao frequencia potencia corrente"),
+        (("pressao", "vazao", "capacidade"), "pressao vazao capacidade"),
+        (("medida", "tamanho", "dimensao"), "medidas dimensoes tamanho"),
+        (("acompanha", "vem com", "incluso", "inclui"), "conteudo do kit itens inclusos"),
+        (("lado direito", "lado esquerdo", "quantas", "quantos"), "lado quantidade variacao"),
+        (("temperatura",), "temperatura de funcionamento especificacao"),
+        (("usb", "lightning", "magsafe", "hdmi", "bluetooth", "wifi", "wi-fi", "protocolo"), "conector protocolo compatibilidade tecnica"),
+    )
+    for termos, foco in grupos:
+        if any(termo in texto for termo in termos):
+            return foco
+    if is_compatibility_question(texto):
+        return "compatibilidade interface encaixe"
+    if _perguntas_ia_pergunta_tecnica_exige_pesquisa(texto):
+        return "especificacao tecnica da caracteristica perguntada"
+    return ""
+
+
+def _perguntas_ia_v2_perfil_compatibilidade(agent_input: Optional[dict[str, Any]] = None) -> dict[str, str]:
+    entrada = agent_input if isinstance(agent_input, dict) else {}
+    question = entrada.get("question") if isinstance(entrada.get("question"), dict) else {}
+    item = entrada.get("item") if isinstance(entrada.get("item"), dict) else {}
+    context = entrada.get("context") if isinstance(entrada.get("context"), dict) else {}
+    return infer_compatibility_profile(
+        question=question.get("text"),
+        title=item.get("title") or context.get("titulo"),
+        description=item.get("description") or context.get("descricao"),
+        category_id=item.get("category_id"),
+        attributes=item.get("attributes"),
+    )
+
+
+def _perguntas_ia_v2_alvo_compatibilidade(agent_input: dict) -> str:
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    texto = re.sub(r"\s+", " ", str(question.get("text") or "").strip())
+    if not texto:
+        return ""
+    alvo = extract_compatibility_target(texto)
+    if alvo:
+        alvo = re.sub(
+            r"^(?:(?:suporte|base|preparacao|prepara[cç][aã]o|encaixe)(?:\s+(?:gps|navega[cç][aã]o))?|gps)"
+            r"\s+(?:original\s+)?(?:do|da|de|para)\s+",
+            "",
+            alvo,
+            flags=re.IGNORECASE,
+        ).strip()
+        perfil = _perguntas_ia_v2_perfil_compatibilidade(agent_input)
+        if perfil.get("target_type") == "vehicle":
+            titulo = str(item.get("title") or "")
+            marcas = (
+                "BMW", "Honda", "Yamaha", "Suzuki", "Kawasaki", "Triumph", "KTM", "Ducati",
+                "Chevrolet", "Volkswagen", "Fiat", "Ford", "Toyota", "Hyundai", "Jeep", "Renault",
+                "Peugeot", "Citroen", "Mercedes", "Audi", "Nissan", "Mitsubishi", "Land Rover",
+            )
+            marca = next((nome for nome in marcas if re.search(rf"\b{re.escape(nome)}\b", titulo, flags=re.IGNORECASE)), "")
+            if marca and not re.search(rf"\b{re.escape(marca)}\b", alvo, flags=re.IGNORECASE):
+                alvo = f"{marca} {alvo}".strip()
+            if marca.upper() == "LAND ROVER" and re.search(r"\bEVOQUE\b", titulo, flags=re.IGNORECASE):
+                if not re.search(r"\bEVOQUE\b", alvo, flags=re.IGNORECASE):
+                    alvo = re.sub(r"^Land Rover\s+", "Land Rover Evoque ", alvo, flags=re.IGNORECASE).strip()
+            if marca.upper() == "BMW" and re.fullmatch(
+                r"BMW\s+(?:R\s*)?1300\s*GS(?:\s+(?:ADV|ADVENTURE))?",
+                alvo,
+                flags=re.IGNORECASE,
+            ):
+                alvo = "BMW R1300GS" + (" Adventure" if re.search(r"\b(?:ADV|ADVENTURE)\b", alvo, flags=re.IGNORECASE) else "")
+        if len(alvo) >= 2:
+            return _perguntas_ia_v2_texto_busca_curto(alvo, max_palavras=10, max_chars=120)
+    return _perguntas_ia_v2_texto_busca_curto(texto, max_palavras=10, max_chars=120)
 
 
 def _ia_agent_perguntas_valor_codigo_web(valor: object) -> str:
@@ -591,66 +727,207 @@ def _ia_agent_perguntas_slug_link_produto(permalink: object) -> str:
     return slug[:180]
 
 
-def _ia_agent_perguntas_queries_identificacao_produto(agent_input: dict) -> list[dict]:
+def _perguntas_ia_v2_interface_busca(agent_input: dict, tool_results: Optional[list[dict]] = None) -> str:
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
     context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
-
-    partes: list[str] = []
-    vistos: set[str] = set()
-    for valor in (
+    textos = [
+        item.get("description"),
+        context.get("descricao"),
         item.get("title"),
         context.get("titulo"),
-        _ia_agent_perguntas_slug_link_produto(item.get("permalink") or context.get("permalink") or context.get("link")),
-        item.get("seller_sku") or item.get("sku"),
-        context.get("sku"),
-        item.get("id"),
-        context.get("item_id"),
-    ):
-        _ia_agent_perguntas_adicionar_parte_busca(valor, partes, vistos)
-    for codigo in _ia_agent_perguntas_codigos_web(agent_input, [])[:5]:
-        _ia_agent_perguntas_adicionar_parte_busca(codigo, partes, vistos)
+    ]
+    for tool in tool_results or []:
+        if not isinstance(tool, dict):
+            continue
+        result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        textos.extend([result.get("memory"), result.get("context")])
+        for match in (result.get("matches") or [])[:3]:
+            if not isinstance(match, dict):
+                continue
+            textos.extend([
+                match.get("description"), match.get("descricao"), match.get("title"), match.get("nome"),
+                json.dumps(match.get("attributes") or [], ensure_ascii=False, default=str),
+            ])
+    bloco = re.sub(r"\s+", " ", " ".join(str(texto or "") for texto in textos if str(texto or "").strip())).strip()
+    if not bloco:
+        return ""
+    padroes = (
+        r"\b(?:(?:base|suporte|prepara[cç][aã]o)\s+(?:original\s+)?(?:bmw\s+)?(?:garmin\s+)?)?navigator\s+(?:vi|iv|v|iii|ii|i|[1-9])(?:(?:\s*[,/+-]\s*|\s+e\s+|\s+ou\s+)(?:vi|iv|v|iii|ii|i|[1-9])){0,5}\b",
+        r"\b(?:usb\s*[- ]?\s*c|type\s*c|tipo\s*c|micro\s*[- ]?\s*usb|lightning)\b",
+        r"\b(?:conector|base|encaixe|interface)\s+(?:de\s+)?(?:\d{1,3}\s*)?(?:pinos?|pins?|[a-z][a-z0-9+./-]{2,24})\b",
+        r"\b(?:eixo|haste)\s+(?:de\s+)?\d+(?:[.,]\d+)?\s*(?:mm|cm|polegadas?|pol\.?|in)\b",
+        r"\b\d{1,3}\s*(?:estrias?|dentes?|pinos?|furos?)\b",
+        r"\b(?:rosca\s*)?(?:m\d{2,3}|\d+\s*/\s*\d+\s*(?:polegadas?|pol\.?|in))\b",
+        r"\b(?:110|127|220|230|240)\s*v(?:olts?)?\b|\b(?:bivolt|50\s*/?\s*60\s*hz)\b",
+        r"\b\d+(?:[.,]\d+)?\s*(?:mm|cm|polegadas?|pol\.?|in)\b",
+        r"\b(?:bluetooth|wifi|wi-fi|hdmi|displayport|magsafe|canbus|carplay|android\s*auto)\b",
+    )
+    for padrao in padroes:
+        match = re.search(padrao, bloco, flags=re.IGNORECASE)
+        if match:
+            return _perguntas_ia_v2_texto_busca_curto(match.group(0), max_palavras=12, max_chars=120)
+    return ""
 
-    base = re.sub(r"\s+", " ", " ".join(partes)).strip()
+
+def _ia_agent_perguntas_queries_identificacao_produto(
+    agent_input: dict,
+    tool_results: Optional[list[dict]] = None,
+) -> list[dict]:
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    titulo = (
+        item.get("title")
+        or context.get("titulo")
+        or _ia_agent_perguntas_slug_link_produto(item.get("permalink") or context.get("permalink") or context.get("link"))
+    )
+    base = _perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=9, max_chars=120)
     if not base:
         return []
-
+    interface = _perguntas_ia_v2_interface_busca(agent_input, tool_results)
+    foco = _perguntas_ia_v2_foco_tecnico_pergunta(agent_input)
+    complemento = interface or foco
+    detalhe = f" {complemento}" if complemento and _normalizar_texto(complemento) not in _normalizar_texto(base) else ""
     queries = [{
-        "type": "produto_link_identificacao",
-        "query": f"{base} codigo peca OEM part number compatibilidade aplicacao",
+        "type": "product_interface_identity",
+        "query": f"{base}{detalhe} ficha tecnica catalogo fabricante"[:260],
     }]
-    titulo = re.sub(r"\s+", " ", str(item.get("title") or context.get("titulo") or "").strip())[:180]
-    item_id = str(item.get("id") or context.get("item_id") or "").strip()
-    sku = str(item.get("seller_sku") or item.get("sku") or context.get("sku") or "").strip()
-    comparacao_base = " ".join([parte for parte in (titulo, item_id, sku) if parte]).strip()
-    if comparacao_base:
+    tentativa = max(1, int(agent_input.get("research_attempt") or 1))
+    if tentativa > 1:
+        codigos = _ia_agent_perguntas_codigos_web(agent_input, list(tool_results or []))
+        codigo = next((str(value or "").strip() for value in codigos if str(value or "").strip()), "")
+        sufixos = (
+            "manual servico pdf part number",
+            "catalogo OEM aplicacao referencia cruzada",
+            "datasheet especificacoes tecnicas fabricante",
+            "service manual technical specifications",
+        )
+        sufixo = sufixos[(tentativa - 2) % len(sufixos)]
         queries.append({
-            "type": "produto_anuncio_origem_e_similares",
-            "query": f"{comparacao_base} Mercado Livre descricao anuncio similar compatibilidade",
+            "type": "product_identity_retry",
+            "query": f"{codigo or base} {complemento or ''} {sufixo}"[:260],
         })
     return queries[:2]
 
 
 def _ia_agent_perguntas_queries_web(agent_input: dict, tool_results: list[dict]) -> list[dict]:
-    principal = _ia_agent_perguntas_query_web(agent_input, tool_results)
-    if not principal:
-        return []
-    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
-    codigos = _ia_agent_perguntas_codigos_web(agent_input, tool_results)
-    titulo = re.sub(r"\s+", " ", str(item.get("title") or "").strip())[:180]
-    pergunta_norm = _normalizar_texto(question.get("text") or "")
-    quer_comparar_descricao = any(
-        termo in pergunta_norm
-        for termo in ("DESCRICAO", "ANUNCIO", "ANUNCIOS", "MESMO PRODUTO", "COMPARAR", "COMPARE", "SIMILAR", "EQUIVALENTE")
+    context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
+    titulo = _perguntas_ia_v2_texto_busca_curto(
+        item.get("title") or context.get("titulo"),
+        max_palavras=12,
+        max_chars=160,
     )
-    queries = [{"type": "compatibilidade_aplicacao", "query": principal}]
-    base_comparacao = " ".join([parte for parte in [titulo, " ".join(codigos[:3])] if parte]).strip()
-    if base_comparacao and (quer_comparar_descricao or codigos or titulo):
-        comparacao = f"{base_comparacao} Mercado Livre anuncio descricao produto similar"
-        comparacao = re.sub(r"\s+", " ", comparacao).strip()[:500]
-        if _normalizar_texto(comparacao) != _normalizar_texto(principal):
-            queries.append({"type": "anuncios_similares_descricao", "query": comparacao})
-    return queries[:2]
+    question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
+    intent = _perguntas_ia_intencao_agent(agent_input)
+    pergunta_texto = str(question.get("text") or "")
+    pergunta_compatibilidade = bool(
+        intent.get("intencao") == "compatibilidade"
+        or is_compatibility_question(pergunta_texto)
+    )
+    foco_tecnico = _perguntas_ia_v2_foco_tecnico_pergunta(agent_input)
+    alvo = _perguntas_ia_v2_alvo_compatibilidade(agent_input) if pergunta_compatibilidade else ""
+    interface = _perguntas_ia_v2_interface_busca(agent_input, tool_results)
+    target_type = _perguntas_ia_v2_perfil_compatibilidade(agent_input).get("target_type") or "generic"
+    termos_perfil = {
+        "vehicle": "interface base conector preparacao ano versao",
+        "machine_tool": "eixo estrias rosca diametro fixacao",
+        "phone_computing": "modelo geracao dimensoes conector protocolo",
+        "electrical_electronic": "tensao frequencia potencia conector",
+        "hydraulic": "medida rosca diametro pressao padrao",
+        "dimensional": "medidas furacao encaixe fixacao",
+        "generic": "interface encaixe conexao medida codigo",
+    }.get(target_type, "interface encaixe conexao medida codigo")
+    titulo_normalizado = _normalizar_texto(titulo)
+    if target_type == "vehicle" and "BOMBA" in titulo_normalizado and "COMBUST" in titulo_normalizado:
+        termos_perfil = "pressao vazao tensao codigo OEM aplicacao motor ano"
+    codigos = _ia_agent_perguntas_codigos_web(agent_input, tool_results)
+    sku_norm = _ia_agent_perguntas_codigo_norm_web(item.get("seller_sku") or item.get("sku"))
+    codigos_tecnicos = [
+        codigo for codigo in codigos
+        if not re.fullmatch(r"MLB\d+", _ia_agent_perguntas_codigo_norm_web(codigo), flags=re.IGNORECASE)
+        and _ia_agent_perguntas_codigo_norm_web(codigo) != sku_norm
+    ]
+    if not pergunta_compatibilidade and titulo and foco_tecnico:
+        queries: list[dict] = []
+        produto_base = _perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=6, max_chars=100)
+        foco_busca = " ".join(foco_tecnico.split()[:3])
+        for codigo in codigos_tecnicos[:2]:
+            queries.append({
+                "type": "product_specification_by_code",
+                "query": f'"{codigo}" {produto_base} {foco_busca}'[:260],
+            })
+        queries.append({
+            "type": "product_feature_technical",
+            "query": f"{produto_base} {foco_busca}"[:260],
+        })
+        return queries[:3]
+    codigo_tecnico = next(
+        (
+            codigo for codigo in codigos_tecnicos
+        ),
+        "",
+    )
+    queries: list[dict] = []
+    if alvo:
+        detalhes_alvo = " ".join(
+            dict.fromkeys(value for value in (foco_tecnico, interface or termos_perfil) if str(value or "").strip())
+        )
+        detalhe_interface = f" {detalhes_alvo}" if detalhes_alvo else ""
+        queries.append({
+            "type": "target_interface_official",
+            "query": f"{alvo}{detalhe_interface} manual especificacoes fabricante"[:260],
+        })
+    if titulo:
+        sufixo_codigo = f" {codigo_tecnico}" if codigo_tecnico else ""
+        detalhes_produto = " ".join(
+            dict.fromkeys(value for value in (foco_tecnico, interface or termos_perfil) if str(value or "").strip())
+        )
+        detalhe_interface = f" {detalhes_produto}" if detalhes_produto else ""
+        queries.append({
+            "type": "product_interface_technical",
+            "query": f"{_perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=8, max_chars=110)}{sufixo_codigo}{detalhe_interface} especificacoes fabricante"[:260],
+        })
+    if titulo and alvo:
+        produto_equivalencia = " ".join(
+            value
+            for value in (
+                interface or _perguntas_ia_v2_texto_busca_curto(titulo, max_palavras=8, max_chars=100),
+                foco_tecnico,
+            )
+            if value
+        )
+        queries.append({
+            "type": "interface_equivalence",
+            "query": f"{alvo} {produto_equivalencia} compatibilidade interface oficial"[:260],
+        })
+    tentativa = max(1, int(agent_input.get("research_attempt") or 1))
+    if tentativa > 1:
+        historico = agent_input.get("research_history") if isinstance(agent_input.get("research_history"), list) else []
+        consultas_anteriores = {
+            _normalizar_texto(item)
+            for tentativa_anterior in historico
+            if isinstance(tentativa_anterior, dict)
+            for item in (tentativa_anterior.get("queries") or [])
+            if str(item or "").strip()
+        }
+        estrategias = (
+            ("official_pdf_retry", "manual servico pdf catalogo OEM"),
+            ("cross_reference_retry", "part number cross reference aplicacao"),
+            ("technical_spec_retry", "datasheet especificacoes tecnicas fabricante"),
+            ("target_service_retry", "service manual especificacao tecnica"),
+        )
+        tipo_retry, sufixo_retry = estrategias[(tentativa - 2) % len(estrategias)]
+        bases_retry = [
+            " ".join(value for value in (codigo_tecnico, titulo) if value),
+            " ".join(value for value in (alvo, foco_tecnico or interface) if value),
+            " ".join(value for value in (codigo_tecnico, alvo) if value),
+        ]
+        for base_retry in bases_retry:
+            consulta_retry = re.sub(r"\s+", " ", f"{base_retry} {sufixo_retry}").strip()[:260]
+            if not consulta_retry or _normalizar_texto(consulta_retry) in consultas_anteriores:
+                continue
+            queries.append({"type": tipo_retry, "query": consulta_retry})
+    return queries[:6]
 
 
 def _ia_agent_perguntas_relaxar_query_web(query: str) -> str:
@@ -659,12 +936,16 @@ def _ia_agent_perguntas_relaxar_query_web(query: str) -> str:
     texto = re.sub(r"\bSKU[-_/A-Z0-9]{2,}\b", " ", texto, flags=re.IGNORECASE)
     texto = re.sub(r"\b\d{8,14}\b", " ", texto)
     texto = re.sub(r"\b[A-Z]{2,8}[-./][A-Z0-9]{3,}\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"[\"']+", " ", texto)
     texto = re.sub(r"\s+", " ", texto).strip()
     return texto[:500]
 
 
 def _ia_agent_perguntas_query_ml_publica(query: str) -> str:
-    texto = _ia_agent_perguntas_relaxar_query_web(query)
+    texto = str(query or "")
+    texto = re.sub(r"\bMLB[\s_-]*\d{5,}\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"\bSKU[-_/A-Z0-9]{2,}\b", " ", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"[\"']+", " ", texto)
     texto = re.sub(
         r"\b(mercado livre|anuncio|anuncios|descri[cç][aã]o|produto similar|compatibilidade|especificacao|aplicacao)\b",
         " ",
@@ -794,11 +1075,225 @@ def _ia_agent_perguntas_anuncios_ml_autenticado(client_id: str, loja: str, query
     return []
 
 
+def _perguntas_ia_v2_prioridade_fonte_web(item: dict, url: str) -> tuple[int, str]:
+    try:
+        parsed = urlparse(str(url or ""))
+        host = str(parsed.hostname or "").lower()
+        caminho = str(parsed.path or "").lower()
+    except Exception:
+        host = ""
+        caminho = ""
+    texto = _favoritos_normalizar_sem_acentos(" ".join([
+        str(item.get("title") or ""),
+        str(item.get("provider") or ""),
+        str(item.get("source") or ""),
+        str(url or ""),
+    ]))
+    marketplace = any(
+        dominio in texto
+        for dominio in ("mercadolivre", "amazon.", "shopee", "aliexpress", "magazineluiza")
+    )
+    espelho_manual = any(
+        dominio in host
+        for dominio in ("manualslib.", "manualzz.", "scribd.", "manualpdf.", "manuals.plus")
+    )
+    host_documentacao = any(
+        host.startswith(prefixo)
+        for prefixo in ("manual.", "manuals.", "support.", "docs.", "service.", "help.")
+    )
+    fonte_institucional = host.endswith(".gov") or ".gov." in host or host.endswith(".edu") or ".edu." in host
+    oficial = any(
+        termo in texto
+        for termo in ("manual", "fabricante", "manufacturer", "official", "oficial", "support.", ".gov", "oem")
+    )
+    if marketplace:
+        prioridade = 0
+    elif espelho_manual:
+        prioridade = 1
+    elif host_documentacao or fonte_institucional:
+        prioridade = 6
+    elif caminho.endswith(".pdf") and oficial:
+        prioridade = 5
+    elif oficial:
+        prioridade = 4
+    else:
+        prioridade = 2
+    return (prioridade, str(url or ""))
+
+
+def _perguntas_ia_v2_url_fonte_tecnica_segura(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except Exception:
+        return False
+    host = str(parsed.hostname or "").strip().lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".internal")):
+        return False
+    try:
+        endereco = ipaddress.ip_address(host)
+    except ValueError:
+        endereco = None
+    if endereco is not None and not endereco.is_global:
+        return False
+    return not any(
+        dominio in host
+        for dominio in ("mercadolivre.", "amazon.", "shopee.", "aliexpress.", "magazineluiza.")
+    )
+
+
+def _perguntas_ia_v2_recortes_fonte_tecnica(texto: str, query: str, max_chars: int = 1200) -> str:
+    texto = str(texto or "")
+    if not texto:
+        return ""
+    termos_query = {
+        termo
+        for termo in re.findall(r"[a-z0-9]{4,}", _favoritos_normalizar_sem_acentos(query))
+        if termo not in {
+            "manual", "fabricante", "oficial", "official", "interface", "especificacoes",
+            "compatibilidade", "preparacao", "produto", "adaptador", "suporte",
+        }
+    }
+    sinais_interface = {
+        "navigator", "navigation", "navegacao", "navegacion", "preparation", "preparacao",
+        "preparacion", "preinstalacao", "preinstalacion", "mount", "base",
+        "connector", "conector", "conexao", "socket", "encaixe", "interface", "adapter", "adaptador",
+        "engate", "engates", "abracadeira", "mangueira", "mangueiras",
+        "eixo", "haste", "estria", "estrias", "rosca", "diametro", "flange", "furacao",
+        "fixacao", "medida", "dimensao", "tensao", "voltagem", "frequencia", "potencia",
+        "pressao", "hdmi", "displayport", "wifi", "bluetooth", "protocolo",
+    }
+    sinais_decisao = {
+        "suitable", "compatible", "compatível", "compativel", "adequada", "adequado", "fits",
+        "fit", "later", "posterior", "onward", "requires", "requer", "only", "somente", "designed",
+        "apta", "apto", "admite", "aceita", "desde", "partir",
+    }
+    candidatos: list[tuple[int, int, str]] = []
+    vistos: set[str] = set()
+    for posicao, linha_original in enumerate(texto.splitlines()):
+        linha = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(linha_original or ""))
+        linha = re.sub(r"^[#>*`\-\s]+", "", linha)
+        # Leitores de PDF preservam hifenizacao de fim de linha, como
+        # Navi-gator, prepara-tion e na-vegacion. Reunir a palavra evita
+        # esconder justamente o nome da interface pesquisada.
+        linha = re.sub(r"(?<=[A-Za-zÀ-ÿ])-(?=[A-Za-zÀ-ÿ])", "", linha)
+        linha = re.sub(r"\s+", " ", linha).strip()
+        if len(linha) < 18 or len(linha) > 900:
+            continue
+        normalizada = _favoritos_normalizar_sem_acentos(linha)
+        if not normalizada or normalizada in vistos:
+            continue
+        vistos.add(normalizada)
+        palavras = set(re.findall(r"[a-z0-9]{3,}", normalizada))
+        hits_query = len(termos_query & palavras)
+        hits_interface = len(sinais_interface & palavras)
+        hits_decisao = len(sinais_decisao & palavras)
+        if not hits_interface or not (hits_query or hits_decisao):
+            continue
+        pontuacao = (hits_decisao * 6) + (hits_interface * 3) + (hits_query * 2)
+        candidatos.append((pontuacao, -posicao, linha))
+    candidatos.sort(reverse=True)
+    recortes: list[str] = []
+    total = 0
+    for _, _, linha in candidatos:
+        acrescimo = len(linha) + (1 if recortes else 0)
+        if total + acrescimo > max_chars:
+            continue
+        recortes.append(linha)
+        total += acrescimo
+        if len(recortes) >= 5:
+            break
+    return " ".join(recortes)
+
+
+def _perguntas_ia_v2_recorte_confirma_interface(texto: str) -> bool:
+    normalizado = _perguntas_ia_v2_grounding_texto(texto)
+    interfaces = (
+        "navigator", "navigation", "navegacao", "navegacion", "preparation", "preparacao",
+        "preparacion", "preinstalacao", "preinstalacion", "mount", "base", "conector", "connector",
+        "conexao", "engate", "engates", "abracadeira", "mangueira", "mangueiras",
+        "encaixe", "interface", "eixo", "haste", "estria", "estrias", "rosca", "diametro",
+        "flange", "furacao", "fixacao", "medida", "dimensao", "tensao", "voltagem",
+        "frequencia", "potencia", "pressao", "hdmi", "displayport", "wifi", "bluetooth", "protocolo",
+    )
+    decisoes = (
+        "suitable", "compatible", "compativel", "adequada", "adequado", "fits", "fit", "later",
+        "posterior", "onward", "apta", "apto", "admite", "aceita", "suporta", "desde", "a partir",
+        "nao compativel", "incompativel", "does not fit", "nao encaixa",
+    )
+    return any(termo in normalizado for termo in interfaces) and any(
+        termo in normalizado for termo in decisoes
+    )
+
+
+def _perguntas_ia_v2_ler_fonte_tecnica(url: str, query: str) -> str:
+    url_limpa = _ia_web_normalizar_result_url(url)
+    if not _perguntas_ia_v2_url_fonte_tecnica_segura(url_limpa):
+        return ""
+    try:
+        resposta = requests.get(
+            "https://r.jina.ai/http://" + url_limpa,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)",
+                "Accept": "text/plain",
+            },
+            timeout=15,
+            verify=False,
+        )
+        if resposta.status_code in {403, 404, 429}:
+            return ""
+        resposta.raise_for_status()
+        texto = str(resposta.text or "")
+        if len(texto) > 600_000:
+            texto = texto[:600_000]
+        return _perguntas_ia_v2_recortes_fonte_tecnica(texto, query)
+    except Exception as exc:
+        logger.warning("[IA AGENT PERGUNTAS] Falha ao ler fonte tecnica %s: %s", url_limpa[:180], exc)
+        return ""
+
+
 def _ia_agent_perguntas_contexto_web(client_id: str, loja: str, queries: list[dict]) -> str:
     if not queries:
         return ""
     linhas: list[str] = []
     urls_vistas: set[str] = set()
+    leituras_tecnicas_tentadas = 0
+    leitura_tecnica_confirmada = False
+    consultas_prefetch: list[str] = []
+    for consulta in queries:
+        if not isinstance(consulta, dict):
+            continue
+        query_prefetch = str(consulta.get("query") or "").strip()
+        if not query_prefetch:
+            continue
+        consultas_prefetch.append(query_prefetch)
+        query_relaxada = _ia_agent_perguntas_relaxar_query_web(query_prefetch)
+        if query_relaxada and _normalizar_texto(query_relaxada) != _normalizar_texto(query_prefetch):
+            consultas_prefetch.append(query_relaxada)
+    consultas_prefetch = list(dict.fromkeys(consultas_prefetch))[:12]
+    resultados_prefetch: dict[str, list[dict[str, Any]]] = {}
+    if consultas_prefetch:
+        max_workers = min(6, len(consultas_prefetch))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ml-questions-web") as executor:
+            futuros_busca = {
+                executor.submit(
+                    _ia_web_buscar_cached,
+                    consulta,
+                    client_id=client_id,
+                    max_results=4,
+                    fast=True,
+                ): consulta
+                for consulta in consultas_prefetch
+            }
+            for futuro in as_completed(futuros_busca):
+                consulta = futuros_busca[futuro]
+                try:
+                    valor = futuro.result()
+                except Exception as exc:
+                    logger.warning("[IA AGENT PERGUNTAS] Falha na busca rapida %s: %s", consulta[:120], exc)
+                    valor = []
+                resultados_prefetch[consulta] = valor if isinstance(valor, list) else []
     for consulta in queries:
         if not isinstance(consulta, dict):
             continue
@@ -815,7 +1310,7 @@ def _ia_agent_perguntas_contexto_web(client_id: str, loja: str, queries: list[di
         itens = []
         query_usada = query
         for tentativa_query in consultas_tentadas:
-            resultados = _ia_web_buscar_cached(tentativa_query, client_id=client_id, max_results=4)
+            resultados = resultados_prefetch.get(tentativa_query) or []
             for item in resultados or []:
                 if not isinstance(item, dict):
                     continue
@@ -834,10 +1329,27 @@ def _ia_agent_perguntas_contexto_web(client_id: str, loja: str, queries: list[di
                 query_usada = tentativa_query
                 break
 
-        anuncios_publicos = (
-            _ia_agent_perguntas_anuncios_ml_autenticado(client_id, loja, query_usada or query, max_results=3)
-            or _ia_agent_perguntas_anuncios_publicos_ml(query_usada or query, max_results=3)
-        )
+        itens.sort(key=lambda par: _perguntas_ia_v2_prioridade_fonte_web(par[0], par[1]), reverse=True)
+
+        tipo_especificacao_produto = tipo in {
+            "product_specification_by_code",
+            "product_feature_technical",
+        }
+        leituras_consulta_tentadas = 0
+        limite_leituras_consulta = 1 if tipo_especificacao_produto else 3
+
+        consultar_marketplace = tipo in {
+            "marketplace_hint",
+            "anuncios_similares_descricao",
+            "product_specification_by_code",
+            "product_feature_technical",
+        }
+        anuncios_publicos = []
+        if consultar_marketplace:
+            anuncios_publicos = (
+                _ia_agent_perguntas_anuncios_ml_autenticado(client_id, loja, query_usada or query, max_results=3)
+                or _ia_agent_perguntas_anuncios_publicos_ml(query_usada or query, max_results=3)
+            )
         if not itens and not anuncios_publicos:
             continue
         linhas.append(f"Busca {len(linhas) + 1} ({tipo}): {query_usada}")
@@ -849,7 +1361,25 @@ def _ia_agent_perguntas_contexto_web(client_id: str, loja: str, queries: list[di
                 bloco += f"\nFonte: {item.get('source')}"
             if item.get("published_at"):
                 bloco += f"\nData: {item.get('published_at')}"
-            bloco += f"\nResumo: {item.get('snippet') or 'Sem resumo disponivel.'}"
+            resumo = str(item.get("snippet") or "").strip()
+            prioridade, _ = _perguntas_ia_v2_prioridade_fonte_web(item, url)
+            prioridade_minima_leitura = 2 if tipo_especificacao_produto else 4
+            if (
+                (not leitura_tecnica_confirmada or tipo_especificacao_produto)
+                and leituras_tecnicas_tentadas < 3
+                and leituras_consulta_tentadas < limite_leituras_consulta
+                and prioridade >= prioridade_minima_leitura
+            ):
+                leituras_tecnicas_tentadas += 1
+                leituras_consulta_tentadas += 1
+                leitura_tecnica = _perguntas_ia_v2_ler_fonte_tecnica(url, query_usada or query)
+                if leitura_tecnica:
+                    resumo = (resumo + " Leitura tecnica da fonte: " + leitura_tecnica).strip()
+                    leitura_tecnica_confirmada = bool(
+                        tipo not in {"target_interface_official", "interface_equivalence"}
+                        or _perguntas_ia_v2_recorte_confirma_interface(leitura_tecnica)
+                    )
+            bloco += f"\nResumo: {resumo or 'Sem resumo disponivel.'}"
             linhas.append(bloco)
         if anuncios_publicos:
             linhas.append("Anuncios publicos do Mercado Livre para comparar titulo e descricao:")
@@ -896,17 +1426,22 @@ def _ia_agent_perguntas_web_tool(client_id: str, agent_input: dict, tool_results
             "instruction": (
                 "Pesquisa externa final, feita depois do contexto interno e das APIs. "
                 "Use estes achados para responder a pergunta atual do comprador dentro do contexto ja coletado. "
-                "Compare codigos, titulos e descricoes de anuncios similares quando disponiveis. "
-                "Nao trate resultado web como certeza se conflitar com cadastro, Mercado Livre ou Bling; nesses casos, responda com cautela e recomende confirmacao."
+                "Priorize manual oficial, catalogo OEM e documentacao do fabricante. "
+                "Anuncios similares servem somente como pista e nunca comprovam compatibilidade sozinhos. "
+                "Resultado vazio ou erro de consulta significa pesquisa indisponivel, nao incompatibilidade."
             ),
         },
     }
 
 
-def _ia_agent_perguntas_product_identity_web_tool(client_id: str, agent_input: dict) -> Optional[dict]:
+def _ia_agent_perguntas_product_identity_web_tool(
+    client_id: str,
+    agent_input: dict,
+    tool_results: Optional[list[dict]] = None,
+) -> Optional[dict]:
     if not _ia_agent_perguntas_precisa_web(agent_input):
         return None
-    queries = _ia_agent_perguntas_queries_identificacao_produto(agent_input)
+    queries = _ia_agent_perguntas_queries_identificacao_produto(agent_input, tool_results)
     if not queries:
         return None
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
@@ -1312,8 +1847,9 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
         "Nao invente compatibilidade, prazo, garantia, estoque, medidas, links ou dados tecnicos. "
         "Nao mencione SKU, codigo interno, quantidade em estoque, preco, nome da loja, status do anuncio ou link do proprio anuncio, exceto quando as orientacoes do app pedirem explicitamente. "
         "Se a pergunta for sobre compatibilidade, responda a compatibilidade de forma direta e curta; nao reinicie o atendimento com resumo do produto. "
-        "Quando mencionar compatibilidade, nunca copie a pergunta inteira como se fosse o nome do veiculo; extraia apenas modelo, motor, ano e cambio, ou use 'veiculo informado'. "
-        "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peça chassi; recomende confirmar com mecanico de confianca. "
+        "Quando mencionar compatibilidade, nunca copie a pergunta inteira como se fosse o nome do alvo; extraia apenas o equipamento, aparelho, veiculo, modelo ou codigo realmente informado. "
+        "Em perguntas de compatibilidade automotiva sem confirmacao objetiva, nao peca foto, chassi ou VIN e nao recomende genericamente mecanico ou oficina. "
+        "Quando faltar evidencia, identifique o perfil do alvo e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao. "
         "Quando houver historico da conversa, responda a ultima pergunta considerando as mensagens anteriores e evite saudacao longa/repetitiva. "
         "Siga as orientacoes do app e do treinamento salvo para tom, estrutura, politica comercial e conteudo permitido. "
         "Use resultados das ferramentas e contexto recebido como fonte principal de fatos, respeitando a ordem do pipeline. "
@@ -1338,7 +1874,24 @@ def _ia_agent_perguntas_montar_prompt(client_id: str, agent_input: dict, tool_re
 
 
 def _ia_agent_perguntas_chamar_modelo(client_id: str, payload: IAChatRequest, model_req: str) -> tuple[str, str]:
-    if _modelo_eh_vertex_ai(model_req):
+    if _modelo_eh_codex(model_req):
+        context = payload.context if isinstance(payload.context, dict) else {}
+        thread_id = str(context.get("_codex_thread_id") or "").strip()
+        persist_thread = bool(context.get("_codex_persist_thread"))
+        if persist_thread or thread_id:
+            resposta, resulting_thread_id = _chamar_codex_chat_com_thread(
+                payload,
+                client_id,
+                thread_id=thread_id,
+                persist_thread=True,
+                conversation_key=str(context.get("_codex_conversation_key") or context.get("_codex_job_id") or ""),
+            )
+            context["_codex_thread_id_result"] = resulting_thread_id
+            payload.context = context
+        else:
+            resposta = _chamar_codex_chat(payload, client_id)
+        model_usado = f"codex:{_codex_modelo_nome_curto(model_req)}"
+    elif _modelo_eh_vertex_ai(model_req):
         resposta = _chamar_vertex_ai_chat(payload, client_id)
         model_usado = f"vertex:{_vertex_modelo_nome_curto(model_req) or _vertex_ai_modelo_padrao()}"
     elif _modelo_eh_gemini_api(model_req):
@@ -1485,6 +2038,47 @@ def _ia_agent_perguntas_resposta_pede_chassi(texto: str) -> bool:
     )
 
 
+def _ia_agent_perguntas_resposta_pede_foto(texto: str) -> bool:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
+    objeto = r"(?:foto|fotos|imagem|imagens|anexo|anexos|arquivo|arquivos|documento|documentos|pdf|video|videos|gravacao|gravacoes)"
+    pedido_antes = r"(?:informe|envie|mande|passe|forneca|anexe|encaminhe|compartilhe|adicione|faca\s+upload|pode\s+enviar|poderia\s+enviar|favor\s+enviar)"
+    transferencia = r"(?:envie|mande|anexe|encaminhe|compartilhe|adicione|faca\s+upload)"
+    for trecho in re.split(r"[.!?;\n]+", texto_norm):
+        trecho = trecho.strip()
+        if not trecho or not re.search(r"\b" + objeto + r"\b", trecho):
+            continue
+        negacao = re.search(
+            r"\b(?:nao\s+(?:e\s+)?necessari[oa]|nao\s+precisa|nao\s+(?:envie|mande|anexe|encaminhe)|sem\s+necessidade\s+de)\b.{0,70}\b"
+            + objeto + r"\b",
+            trecho,
+        )
+        if negacao and len(re.findall(r"\b" + objeto + r"\b", trecho)) == 1:
+            continue
+        if re.search(r"\b(?:anexe|anexar|faca\s+upload|adicione\s+um\s+anexo)\b", trecho):
+            return True
+        pedido_do_objeto = re.search(r"\b" + pedido_antes + r"\b.{0,90}\b" + objeto + r"\b", trecho)
+        if pedido_do_objeto:
+            return True
+        referencia_anuncio = re.search(r"\b" + objeto + r"\b\s+(?:que\s+consta[m]?\s+)?(?:do|no|das|nas)\s+anuncio", trecho)
+        if referencia_anuncio and len(re.findall(r"\b" + objeto + r"\b", trecho)) == 1:
+            continue
+        if re.search(r"\b" + objeto + r"\b.{0,60}\b" + transferencia + r"\b", trecho):
+            return True
+        if re.search(r"\b(?:preciso|precisamos|necessario|necessaria)\b.{0,70}\b" + objeto + r"\b", trecho):
+            return True
+    return False
+
+
+def _ia_agent_perguntas_recomenda_mecanico_generico(texto: str) -> bool:
+    texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
+    if not any(termo in texto_norm for termo in ("mecanico", "oficina", "profissional de confianca")):
+        return False
+    return any(
+        termo in texto_norm
+        for termo in ("confirme", "confirmar", "consulte", "consultar", "verifique", "verificar", "recomendamos", "recomendo")
+    )
+
+
 def _ia_agent_perguntas_pede_conector(texto: str) -> bool:
     texto_norm = _favoritos_normalizar_sem_acentos(texto or "")
     if _ia_agent_perguntas_conectores(texto_norm):
@@ -1539,6 +2133,8 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         )
         if any(sinal in pergunta_sem_acentos for sinal in sinais_defeito) and not any(sinal in texto_sem_acentos for sinal in respostas_esperadas):
             violacoes.append("nao tratou o defeito/troca relatado pelo comprador")
+    elif _ia_agent_perguntas_resposta_pede_foto(texto):
+        violacoes.append("pediu anexo/arquivo em pergunta publica")
     if re.search(r"\bSKU\b", texto, flags=re.IGNORECASE):
         violacoes.append("mencionou SKU/codigo interno")
     seller_sku = str(item.get("seller_sku") or item.get("sku") or "").strip()
@@ -1575,6 +2171,15 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         violacoes.append("usou expressao proibida sobre nao confirmar compatibilidade")
     if _ia_agent_perguntas_resposta_pede_chassi(texto):
         violacoes.append("pediu chassi em pergunta de compatibilidade")
+    if intent.get("fluxo") != "pos_venda" and intencao_nome == "compatibilidade" and _ia_agent_perguntas_recomenda_mecanico_generico(texto):
+        violacoes.append("recomendou mecanico/oficina genericamente em pergunta publica")
+    if intent.get("fluxo") != "pos_venda" and intencao_nome == "compatibilidade":
+        perfil = _perguntas_ia_v2_perfil_compatibilidade(agent_input)
+        linguagem_incompativel = profile_language_issues(texto, perfil.get("target_type"))
+        if linguagem_incompativel:
+            violacoes.append(
+                "usou linguagem de outro perfil de compatibilidade: " + ", ".join(linguagem_incompativel[:3])
+            )
     if re.search(r"COMPAT\w*\s+COM\s+(?:O|A)?\s*(?:BOA|BOM|OLA|OI)", texto_norm):
         violacoes.append("copiou a pergunta inteira como veiculo")
     if "COMPAT" in texto_norm and "COM" in texto_norm and any(t in texto_norm for t in ("ESSA PECA", "ESSA PEÇA", "ESSA PE", "MEU CARRO", "MINHA MOTO")):
@@ -1584,9 +2189,10 @@ def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> 
         rascunho_compacto = re.sub(r"\s+", " ", rascunho_atual_norm).strip()
         if texto_compacto == rascunho_compacto or texto_compacto in rascunho_compacto or rascunho_compacto in texto_compacto:
             violacoes.append("repetiu a resposta atual sem corrigir")
-    pergunta_compatibilidade = any(
-        termo in pergunta_sem_acentos
-        for termo in ("serve", "servi", "compat", "aplica", "encaixa", "veiculo", "carro", "chassi", "vin", "peugeot", "thp", "308cc")
+    pergunta_compatibilidade = bool(
+        is_compatibility_question(pergunta_sem_acentos)
+        or any(termo in pergunta_sem_acentos for termo in ("chassi", "vin"))
+        or intencao_nome == "compatibilidade"
     )
     resposta_compatibilidade = any(
         termo in texto_sem_acentos
@@ -1683,49 +2289,893 @@ def _perguntas_ia_v2_query_pesquisa(metadata: Optional[dict[str, Any]]) -> str:
     meta = metadata if isinstance(metadata, dict) else {}
     pergunta = re.sub(r"\s+", " ", str(meta.get("question_text") or "").strip())
     link = str(meta.get("listing_link") or "").strip()
+    titulo = re.sub(r"\s+", " ", str(meta.get("listing_title") or "").strip())[:240]
     item_id = str(meta.get("item_id") or "").strip()
     if not link and item_id:
         link = _favoritos_ml_url_item_id(item_id)
-    partes = [parte for parte in (pergunta, link) if parte]
+    partes = [parte for parte in (titulo, pergunta, link) if parte]
     if not partes:
         return ""
     return " ".join(partes)[:600]
 
 
+def _perguntas_ia_v2_resposta_precisa_web(resposta: Any, metadata: Optional[dict[str, Any]] = None) -> bool:
+    meta = metadata if isinstance(metadata, dict) else {}
+    categoria = str(meta.get("category") or "").strip().lower()
+    if categoria not in {"compatibility", "product_feature", "warranty_originality", "other_product", "unknown"}:
+        return False
+    texto = str(getattr(resposta, "answer", "") or "").strip()
+    if not texto:
+        return True
+    try:
+        confianca = float(getattr(resposta, "confidence", 0.0) or 0.0)
+    except Exception:
+        confianca = 0.0
+    motivo = _favoritos_normalizar_sem_acentos(str(getattr(resposta, "reason", "") or ""))
+    texto_norm = _favoritos_normalizar_sem_acentos(texto)
+    marcadores_ausencia = (
+        "missing_listing_evidence",
+        "listing evidence missing",
+        "nao consta no anuncio",
+        "nao consta na descricao",
+        "nao encontrei essa informacao",
+        "nao foi informado no anuncio",
+        "informacao nao disponivel no anuncio",
+        "sem evidencia no anuncio",
+        "nao esta especificado",
+        "nao informa objetivamente",
+        "nao podemos afirmar com seguranca",
+        "precisamos verificar essa especificacao",
+    )
+    return bool(
+        getattr(resposta, "requires_human_review", False)
+        or confianca < 0.78
+        or any(marcador in motivo or marcador in texto_norm for marcador in marcadores_ausencia)
+    )
+
+
+def _perguntas_ia_v2_fontes_web(tool_result: Optional[dict[str, Any]]) -> list[str]:
+    result = tool_result.get("result") if isinstance(tool_result, dict) and isinstance(tool_result.get("result"), dict) else {}
+    contexto = str(result.get("context") or "")
+    fontes: list[str] = []
+    for url in re.findall(r"https?://[^\s<>'\"]+", contexto, flags=re.IGNORECASE):
+        limpa = url.rstrip(".,;:)]}")[:600]
+        if limpa and limpa not in fontes:
+            fontes.append(limpa)
+        if len(fontes) >= 8:
+            break
+    return fontes
+
+
+def _perguntas_ia_v2_json_obj(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    texto = str(payload or "").strip()
+    if not texto:
+        return {}
+    try:
+        data = json.loads(texto)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        match = re.search(r"\{.*\}", texto, flags=re.DOTALL)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+
+def _perguntas_ia_v2_grounding_url_key(valor: object) -> str:
+    url = str(valor or "").strip()
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return ""
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
+    except Exception:
+        return ""
+
+
+def _perguntas_ia_v2_grounding_texto(valor: object) -> str:
+    texto = _favoritos_normalizar_sem_acentos(str(valor or ""))
+    tokens = re.sub(r"[^a-z0-9]+", " ", texto).strip().split()
+    romanos = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
+    return " ".join(romanos.get(token, token) for token in tokens)
+
+
+def _perguntas_ia_v2_grounding_marketplace(url: object) -> bool:
+    dominio = _perguntas_ia_v2_grounding_url_key(url)
+    return any(
+        termo in dominio
+        for termo in ("mercadolivre", "mercadolibre", "amazon.", "shopee.", "aliexpress.", "magazineluiza.")
+    )
+
+
+def _perguntas_ia_v2_grounding_blocos_web(contexto: object) -> list[tuple[str, str]]:
+    linhas = str(contexto or "").splitlines()
+    blocos: list[tuple[str, str]] = []
+    atual: list[str] = []
+
+    def concluir() -> None:
+        if not atual:
+            return
+        bloco = "\n".join(atual).strip()
+        urls = re.findall(r"https?://[^\s<>'\"]+", bloco, flags=re.IGNORECASE)
+        for url in urls:
+            limpa = url.rstrip(".,;:)]}")
+            if limpa:
+                blocos.append((limpa, bloco))
+
+    for linha in linhas:
+        inicio_resultado = bool(re.match(r"^\s*\d+\.\s+", linha))
+        inicio_busca = bool(re.match(r"^\s*Busca\s+\d+", linha, flags=re.IGNORECASE))
+        if (inicio_resultado or inicio_busca) and any("URL:" in parte.upper() for parte in atual):
+            concluir()
+            atual = []
+        atual.append(linha)
+    concluir()
+    if blocos:
+        return blocos
+    urls = _perguntas_ia_v2_fontes_web({"result": {"context": str(contexto or "")}})
+    return [(url, str(contexto or "")) for url in urls]
+
+
+def _perguntas_ia_v2_grounding_coletar(
+    tool_results: list[dict[str, Any]],
+    agent_input: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    grounding: dict[str, Any] = {
+        "product": [],
+        "target_vehicle": [],
+        "equivalence": [],
+        "urls": {},
+        "sources": [],
+    }
+
+    def adicionar(grupos: tuple[str, ...], texto: object, source_type: str, authority: str, url: str = "") -> None:
+        texto_bruto = str(texto or "").strip()
+        texto_norm = _perguntas_ia_v2_grounding_texto(texto_bruto)
+        if not texto_norm:
+            return
+        url_key = _perguntas_ia_v2_grounding_url_key(url)
+        marketplace = _perguntas_ia_v2_grounding_marketplace(url_key)
+        authority_real = "marketplace_hint" if marketplace else authority
+        entrada = {
+            "text": texto_bruto[:16000],
+            "text_norm": texto_norm[:24000],
+            "source_type": source_type,
+            "authority": authority_real,
+            "url": url_key,
+            "marketplace": marketplace,
+        }
+        for grupo in grupos:
+            grounding[grupo].append(entrada)
+        if url_key:
+            grounding["urls"].setdefault(url_key, []).append(entrada)
+            if url_key not in grounding["sources"]:
+                grounding["sources"].append(url_key)
+
+    entrada = agent_input if isinstance(agent_input, dict) else {}
+    item = entrada.get("item") if isinstance(entrada.get("item"), dict) else {}
+    context = entrada.get("context") if isinstance(entrada.get("context"), dict) else {}
+    snapshot = json.dumps({
+        "title": item.get("title") or context.get("titulo") or "",
+        "description": item.get("description") or context.get("descricao") or "",
+        "attributes": item.get("attributes") or [],
+    }, ensure_ascii=False, default=str)
+    adicionar(("product",), snapshot, "listing_snapshot", "internal_listing")
+
+    for tool in tool_results or []:
+        if not isinstance(tool, dict):
+            continue
+        function_name = str(tool.get("function") or "").strip()
+        result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        erro = str(result.get("error") or "").strip()
+        matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+        contexto_web = str(result.get("context") or "").strip()
+        found = bool(result.get("found") or matches or contexto_web or result.get("memory"))
+        texto_status = _perguntas_ia_v2_grounding_texto(json.dumps(result, ensure_ascii=False, default=str)[:3000])
+        if erro or not found or any(marcador in texto_status for marcador in ("http 403", "http status 403", "status code 403")):
+            continue
+        if function_name == "local_memory_and_rules":
+            adicionar(
+                ("product", "target_vehicle", "equivalence"),
+                result.get("memory"),
+                "approved_sku_memory",
+                "approved_internal_memory",
+            )
+            continue
+        if function_name in {"get_mercado_livre_listing", "get_product_data", "get_bling_product"}:
+            autoridades = {
+                "get_mercado_livre_listing": ("mercado_livre_api", "internal_listing"),
+                "get_product_data": ("internal_product_registry", "internal_catalog"),
+                "get_bling_product": ("bling_product", "internal_catalog"),
+            }
+            source_type, authority = autoridades[function_name]
+            adicionar(("product",), json.dumps(result, ensure_ascii=False, default=str), source_type, authority)
+            continue
+        if function_name not in {"web_search_product_identity", "web_search_question_context"}:
+            continue
+        grupos = (
+            ("product", "equivalence")
+            if function_name == "web_search_product_identity"
+            else ("target_vehicle", "equivalence")
+        )
+        blocos_web = _perguntas_ia_v2_grounding_blocos_web(contexto_web)
+        if not blocos_web:
+            adicionar(grupos, contexto_web, function_name, "technical_web_source")
+            continue
+        for url, bloco_web in blocos_web:
+            marketplace = _perguntas_ia_v2_grounding_marketplace(url)
+            texto_norm = _perguntas_ia_v2_grounding_texto(bloco_web)
+            try:
+                host_fonte = str(urlparse(url).hostname or "").lower()
+            except Exception:
+                host_fonte = ""
+            oficial = any(
+                marcador in texto_norm
+                for marcador in ("manual oficial", "fabricante", "catalogo oem", "documentacao oficial")
+            ) or any(
+                host_fonte.startswith(prefixo)
+                for prefixo in ("manual.", "manuals.", "support.", "docs.", "service.")
+            )
+            authority = "marketplace_hint" if marketplace else ("official_document" if oficial else "technical_web_source")
+            adicionar(grupos, bloco_web, function_name, authority, url)
+    grounding["sources"] = grounding["sources"][:16]
+    grounding["target"] = copy.deepcopy(grounding["target_vehicle"])
+    return grounding
+
+
+def _perguntas_ia_v2_grounding_campo_suportado(campo: object, texto_norm: str) -> bool:
+    candidato = _perguntas_ia_v2_grounding_texto(campo)
+    if not candidato:
+        return True
+    if candidato in texto_norm:
+        return True
+    tokens = [
+        token for token in candidato.split()
+        if token not in {"a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em", "para", "com"}
+    ]
+    return bool(len(tokens) >= 2 and all(re.search(rf"\b{re.escape(token)}\b", texto_norm) for token in tokens))
+
+
+def _perguntas_ia_v2_grounding_evidencia(
+    grupo: str,
+    registro: dict[str, Any],
+    grounding: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    url_key = _perguntas_ia_v2_grounding_url_key(registro.get("url"))
+    candidatos = grounding.get(grupo) if isinstance(grounding.get(grupo), list) else []
+    if url_key:
+        candidatos = [fonte for fonte in candidatos if str(fonte.get("url") or "") == url_key]
+        if not candidatos:
+            return None
+    campos_factuais = [
+        registro.get(campo)
+        for campo in ("reference", "fact", "claim", "snippet")
+        if str(registro.get(campo) or "").strip()
+    ]
+    if not campos_factuais:
+        return None
+    for fonte in candidatos:
+        texto_norm = str(fonte.get("text_norm") or "")
+        if not texto_norm or not all(_perguntas_ia_v2_grounding_campo_suportado(campo, texto_norm) for campo in campos_factuais):
+            continue
+        saida = dict(registro)
+        saida["source_type"] = fonte.get("source_type") or saida.get("source_type") or "collected_source"
+        saida["authority"] = fonte.get("authority") or "collected_source"
+        saida["grounded"] = True
+        if fonte.get("url"):
+            saida["url"] = fonte.get("url")
+        else:
+            saida.pop("url", None)
+        return saida
+    return None
+
+
+def _perguntas_ia_v2_evidencias_normalizar(
+    valor: Any,
+    grounding: Optional[dict[str, Any]] = None,
+) -> dict[str, list[dict[str, Any]]]:
+    origem = valor if isinstance(valor, dict) else {}
+    saida: dict[str, list[dict[str, Any]]] = {"product": [], "target_vehicle": [], "equivalence": []}
+    for grupo in saida:
+        chave_origem = grupo
+        if grupo == "target_vehicle" and not isinstance(origem.get(grupo), list):
+            chave_origem = "target"
+        itens = origem.get(chave_origem) if isinstance(origem.get(chave_origem), list) else []
+        for item in itens[:8]:
+            if isinstance(item, str):
+                registro = {"reference": item[:800]}
+            elif isinstance(item, dict):
+                registro = {
+                    chave: item.get(chave)
+                    for chave in (
+                        "source_type", "authority", "reference", "title", "url", "snippet",
+                        "fact", "claim", "status", "http_status", "status_code", "grounded", "derived_from",
+                    )
+                    if item.get(chave) not in (None, "", [], {})
+                }
+            else:
+                continue
+            if not registro:
+                continue
+            status = _favoritos_normalizar_sem_acentos(str(registro.get("status") or ""))
+            if status in {"error", "erro", "failed", "failure", "falha", "empty", "not_found", "sem_resultado"}:
+                continue
+            try:
+                http_status = int(registro.get("http_status") or registro.get("status_code") or 0)
+            except Exception:
+                http_status = 0
+            texto_evidencia = _favoritos_normalizar_sem_acentos(" ".join(
+                str(registro.get(campo) or "")
+                for campo in ("reference", "title", "url", "snippet", "fact", "claim")
+            ))
+            if http_status >= 400 or any(
+                marcador in texto_evidencia
+                for marcador in ("http 403", "erro 403", "sem resultado", "nenhum resultado", "busca falhou")
+            ):
+                continue
+            if not texto_evidencia:
+                continue
+            if isinstance(grounding, dict):
+                registro_aterrado = _perguntas_ia_v2_grounding_evidencia(grupo, registro, grounding)
+                if not registro_aterrado:
+                    continue
+                registro = registro_aterrado
+            saida[grupo].append(registro)
+    saida["target"] = copy.deepcopy(saida["target_vehicle"])
+    return saida
+
+
+def _perguntas_ia_v2_compatibilidade_padrao(agent_input: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    entrada = agent_input if isinstance(agent_input, dict) else {}
+    perfil = _perguntas_ia_v2_perfil_compatibilidade(entrada)
+    alvo = _perguntas_ia_v2_alvo_compatibilidade(entrada)
+    return {
+        "product_interface": "",
+        "target_type": perfil["target_type"],
+        "target_item": alvo,
+        "target_vehicle": alvo,
+        "compatibility_profile": perfil["compatibility_profile"],
+        "target_interface": "",
+        "comparison_attributes": [],
+        "decision": "insufficient",
+        "condition": "",
+        "missing_fields": list(default_missing_details(perfil["target_type"])),
+        "evidence": {"product": [], "target": [], "target_vehicle": [], "equivalence": []},
+        "queries": [],
+        "sources": [],
+        "confidence": 0.0,
+        "reason": "compatibility_analysis_not_completed",
+    }
+
+
+def _perguntas_ia_v2_evidencia_texto(itens: list[dict[str, Any]]) -> str:
+    return " ".join(
+        str(item.get(campo) or "")
+        for item in itens
+        for campo in ("reference", "fact", "claim", "snippet", "title")
+    )
+
+
+def _perguntas_ia_v2_termos_interface(texto: object) -> set[str]:
+    stopwords = {
+        "base", "suporte", "interface", "encaixe", "produto", "veiculo", "moto", "carro",
+        "original", "preparacao", "compativel", "compatibilidade", "posterior", "modelo",
+        "maquina", "ferramenta", "aparelho", "equipamento", "universal",
+    }
+    texto_normalizado = _favoritos_normalizar_sem_acentos(str(texto or ""))
+    tokens = set(_perguntas_ia_v2_grounding_texto(texto).split())
+    termos = {
+        token for token in tokens
+        if token not in stopwords
+        and (len(token) >= 4 or bool(re.search(r"\d", token)) or token in {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"})
+    }
+    for numero, unidade in re.findall(
+        r"\b(\d+(?:[.,]\d+)?)\s*(mm|cm|pol(?:egadas?)?|in|v|volts?|hz|w|watts?|a|amperes?|bar|psi)\b",
+        texto_normalizado,
+    ):
+        unidade_norm = {
+            "pol": "in", "polegada": "in", "polegadas": "in", "volt": "v", "volts": "v",
+            "watt": "w", "watts": "w", "ampere": "a", "amperes": "a",
+        }.get(unidade, unidade)
+        termos.add(numero.replace(",", ".") + unidade_norm)
+    termos.update(re.findall(r"\bm\d{2,3}\b", texto_normalizado))
+    return termos
+
+
+def _perguntas_ia_v2_termos_identificam_interface(termos: set[str]) -> bool:
+    familias = {
+        "navigator", "garmin", "usb", "lightning", "micro", "typec", "canbus", "bluetooth",
+        "carplay", "androidauto", "magsafe", "mount", "cradle", "socket", "plug", "pino", "pin",
+        "eixo", "haste", "estria", "estrias", "dente", "dentes", "rosca", "diametro", "flange",
+        "furacao", "furos", "fixacao", "hdmi", "displayport", "wifi", "tensao", "voltagem",
+        "frequencia", "potencia", "pressao", "protocolo",
+    }
+    unidades_tecnicas = re.compile(r"^(?:m\d+|\d+(?:mm|cm|in|pol|v|hz|w|a|bar|psi|pinos?|pins?))$", re.IGNORECASE)
+    return bool(termos & familias) or any(bool(unidades_tecnicas.search(termo)) for termo in termos)
+
+
+def _perguntas_ia_v2_grounding_recorte_interface(texto: object, descricao: object) -> str:
+    bruto = str(texto or "").strip()
+    if not bruto:
+        return ""
+    termos_descricao = _perguntas_ia_v2_termos_interface(descricao)
+    familias_preferidas = {
+        "navigator", "garmin", "usb", "lightning", "typec", "canbus", "bluetooth", "carplay",
+        "androidauto", "magsafe", "mount", "cradle", "socket", "plug", "pino", "pin",
+        "eixo", "haste", "estria", "estrias", "rosca", "diametro", "flange", "furacao",
+        "fixacao", "hdmi", "displayport", "wifi", "tensao", "voltagem", "frequencia",
+        "potencia", "pressao", "protocolo",
+    }
+    familias_descricao = termos_descricao & familias_preferidas
+    partes = [
+        re.sub(r"\s+", " ", parte).strip()
+        for parte in re.split(r"(?<=[.!?])\s+|[\r\n]+", bruto)
+        if re.sub(r"\s+", " ", parte).strip()
+    ]
+    candidatos: list[tuple[int, int, str]] = []
+    for indice, parte in enumerate(partes):
+        termos_parte = _perguntas_ia_v2_termos_interface(parte)
+        compartilhados = termos_descricao & termos_parte
+        if len(compartilhados) < 2 or not _perguntas_ia_v2_termos_identificam_interface(compartilhados):
+            continue
+        if familias_descricao and not (compartilhados & familias_descricao):
+            continue
+        bonus_decisao = 3 if _perguntas_ia_v2_recorte_confirma_interface(parte) else 0
+        bonus_familia = len(compartilhados & familias_preferidas) * 10
+        candidatos.append((len(compartilhados) + bonus_decisao + bonus_familia, -indice, parte))
+    if not candidatos:
+        return ""
+    candidatos.sort(reverse=True)
+    melhor = candidatos[0][2]
+    if len(melhor) <= 800:
+        return melhor
+    normalizado = _perguntas_ia_v2_grounding_texto(melhor)
+    ordem_ancoras = (
+        "navigator", "garmin", "usb", "lightning", "typec", "canbus", "carplay", "androidauto",
+        "magsafe", "mount", "cradle", "socket", "plug", "conector", "connector", "pino", "pin",
+        "eixo", "haste", "estria", "estrias", "rosca", "diametro", "flange", "furacao",
+        "fixacao", "hdmi", "displayport", "wifi", "tensao", "voltagem", "frequencia",
+        "potencia", "pressao", "protocolo",
+    )
+    termo_ancora = next(
+        (termo for termo in ordem_ancoras if termo in termos_descricao and termo in normalizado),
+        "",
+    )
+    if not termo_ancora:
+        termo_ancora = next(
+            (
+                termo
+                for termo in sorted(termos_descricao, key=lambda valor: (-len(valor), valor))
+                if re.search(r"\d", termo) and termo in normalizado
+            ),
+            "",
+        )
+    if not termo_ancora:
+        return melhor[:800]
+    match = re.search(re.escape(termo_ancora), _favoritos_normalizar_sem_acentos(melhor))
+    centro = match.start() if match else 0
+    inicio = max(0, centro - 300)
+    return melhor[inicio:inicio + 800].strip()
+
+
+def _perguntas_ia_v2_grounding_evidencia_interface(
+    grupo: str,
+    descricao: object,
+    grounding: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    termos_descricao = _perguntas_ia_v2_termos_interface(descricao)
+    if len(termos_descricao) < 2:
+        return None
+    candidatos = grounding.get(grupo) if isinstance(grounding.get(grupo), list) else []
+    melhores: list[tuple[int, dict[str, Any], str]] = []
+    for fonte in candidatos:
+        if not isinstance(fonte, dict) or (grupo == "target_vehicle" and fonte.get("marketplace")):
+            continue
+        termos_fonte = _perguntas_ia_v2_termos_interface(fonte.get("text_norm") or fonte.get("text"))
+        compartilhados = termos_descricao & termos_fonte
+        if len(compartilhados) < 2 or not _perguntas_ia_v2_termos_identificam_interface(compartilhados):
+            continue
+        recorte = _perguntas_ia_v2_grounding_recorte_interface(fonte.get("text"), descricao)
+        if not recorte:
+            continue
+        autoridade = _favoritos_normalizar_sem_acentos(str(fonte.get("authority") or ""))
+        bonus = 4 if autoridade in {"official_document", "internal_listing", "approved_internal_memory"} else 0
+        melhores.append((len(compartilhados) + bonus, fonte, recorte))
+    if not melhores:
+        return None
+    melhores.sort(key=lambda item: item[0], reverse=True)
+    _, fonte, recorte = melhores[0]
+    evidencia = {
+        "source_type": fonte.get("source_type") or "collected_source",
+        "authority": fonte.get("authority") or "collected_source",
+        "reference": recorte[:800],
+        "grounded": True,
+    }
+    if fonte.get("url"):
+        evidencia["url"] = fonte.get("url")
+    return evidencia
+
+
+def _perguntas_ia_v2_equivalencia_explicita(
+    decisao: str,
+    evidencias_produto: list[dict[str, Any]],
+    evidencias_alvo: list[dict[str, Any]],
+    evidencias_equivalencia: list[dict[str, Any]],
+) -> bool:
+    if not evidencias_equivalencia:
+        return False
+    texto_equivalencia = _perguntas_ia_v2_grounding_texto(_perguntas_ia_v2_evidencia_texto(evidencias_equivalencia))
+    negativos = (
+        "incompativel", "nao compativel", "nao encaixa", "nao serve", "interface diferente",
+        "conector diferente", "nao suporta", "not compatible", "does not fit",
+    )
+    if decisao == "no":
+        return any(marcador in texto_equivalencia for marcador in negativos)
+    positivos = (
+        "mesma interface", "mesmo encaixe", "compativel", "encaixa", "serve", "equivalente",
+        "aceita", "suporta", "fits", "compatible",
+    )
+    if any(marcador in texto_equivalencia for marcador in positivos):
+        return True
+    termos_produto = _perguntas_ia_v2_termos_interface(_perguntas_ia_v2_evidencia_texto(evidencias_produto))
+    termos_alvo = _perguntas_ia_v2_termos_interface(_perguntas_ia_v2_evidencia_texto(evidencias_alvo))
+    termos_equivalencia = _perguntas_ia_v2_termos_interface(texto_equivalencia)
+    compartilhados = termos_produto & termos_alvo
+    return bool(compartilhados and (compartilhados & termos_equivalencia))
+
+
+def _perguntas_ia_v2_equivalencia_derivada(
+    valor_bruto: Any,
+    evidencias_produto: list[dict[str, Any]],
+    evidencias_alvo: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    origem = valor_bruto if isinstance(valor_bruto, dict) else {}
+    candidatos = origem.get("equivalence") if isinstance(origem.get("equivalence"), list) else []
+    termos_produto = _perguntas_ia_v2_termos_interface(_perguntas_ia_v2_evidencia_texto(evidencias_produto))
+    termos_alvo = _perguntas_ia_v2_termos_interface(_perguntas_ia_v2_evidencia_texto(evidencias_alvo))
+    compartilhados = termos_produto & termos_alvo
+    if len(compartilhados) < 2 or not _perguntas_ia_v2_termos_identificam_interface(compartilhados):
+        return None
+    for item in candidatos[:8]:
+        if isinstance(item, str):
+            registro = {"reference": item}
+        elif isinstance(item, dict):
+            registro = dict(item)
+        else:
+            continue
+        if str(registro.get("url") or "").strip():
+            continue
+        texto = _perguntas_ia_v2_grounding_texto(" ".join(
+            str(registro.get(campo) or "") for campo in ("reference", "fact", "claim", "snippet")
+        ))
+        termos_registro = _perguntas_ia_v2_termos_interface(texto)
+        marcador_derivacao = any(
+            marcador in texto
+            for marcador in ("mesma interface", "mesmo encaixe", "equivalente", "interfaces coincidem", "same interface")
+        )
+        if not marcador_derivacao and not (compartilhados & termos_registro):
+            continue
+        referencia = str(registro.get("reference") or registro.get("fact") or registro.get("claim") or "equivalencia textual")[:800]
+        return {
+            "source_type": "derived_from_grounded_evidence",
+            "authority": "derived",
+            "reference": referencia,
+            "grounded": True,
+            "derived_from": {
+                "product": [str(item.get("reference") or item.get("fact") or item.get("claim") or "")[:300] for item in evidencias_produto[:3]],
+                "target": [str(item.get("reference") or item.get("fact") or item.get("claim") or "")[:300] for item in evidencias_alvo[:3]],
+                "target_vehicle": [str(item.get("reference") or item.get("fact") or item.get("claim") or "")[:300] for item in evidencias_alvo[:3]],
+                "shared_terms": sorted(compartilhados)[:12],
+            },
+        }
+    return {
+        "source_type": "derived_from_grounded_evidence",
+        "authority": "derived",
+        "reference": "Mesma interface tecnica verificada: " + ", ".join(sorted(compartilhados)[:8]),
+        "grounded": True,
+        "derived_from": {
+            "product": [str(item.get("reference") or item.get("fact") or item.get("claim") or "")[:300] for item in evidencias_produto[:3]],
+            "target": [str(item.get("reference") or item.get("fact") or item.get("claim") or "")[:300] for item in evidencias_alvo[:3]],
+            "target_vehicle": [str(item.get("reference") or item.get("fact") or item.get("claim") or "")[:300] for item in evidencias_alvo[:3]],
+            "shared_terms": sorted(compartilhados)[:12],
+        },
+    }
+
+
+def _perguntas_ia_v2_compatibilidade_normalizar(
+    valor: Any,
+    *,
+    base: Optional[dict[str, Any]] = None,
+    queries: Optional[list[dict[str, Any]]] = None,
+    sources: Optional[list[str]] = None,
+    grounding: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    bruto = valor if isinstance(valor, dict) else {}
+    analise = copy.deepcopy(base) if isinstance(base, dict) else _perguntas_ia_v2_compatibilidade_padrao()
+    for campo in ("product_interface", "target_interface", "condition", "reason"):
+        if bruto.get(campo) not in (None, ""):
+            analise[campo] = re.sub(r"\s+", " ", str(bruto.get(campo) or "")).strip()[:1200]
+    alvo = bruto.get("target_item") or bruto.get("target_vehicle") or analise.get("target_item") or analise.get("target_vehicle")
+    analise["target_item"] = re.sub(r"\s+", " ", str(alvo or "")).strip()[:300]
+    # Alias aditivo para consumidores e aprovacoes gravadas antes da
+    # generalizacao do alvo de compatibilidade.
+    analise["target_vehicle"] = analise["target_item"]
+    target_type_padrao = normalize_target_type(analise.get("target_type"), "generic")
+    analise["target_type"] = normalize_target_type(bruto.get("target_type"), target_type_padrao)
+    analise["compatibility_profile"] = normalize_profile(
+        bruto.get("compatibility_profile") or analise.get("compatibility_profile"),
+        analise["target_type"],
+    )
+    comparacoes_brutas = bruto.get("comparison_attributes")
+    if not isinstance(comparacoes_brutas, list):
+        comparacoes_brutas = analise.get("comparison_attributes")
+    analise["comparison_attributes"] = normalize_comparison_attributes(comparacoes_brutas)
+    aliases = {
+        "sim": "yes", "compativel": "yes", "compatible": "yes", "yes": "yes",
+        "nao": "no", "incompativel": "no", "incompatible": "no", "no": "no",
+        "condicional": "conditional", "conditional": "conditional",
+        "insuficiente": "insufficient", "evidencia_insuficiente": "insufficient", "insufficient": "insufficient",
+    }
+    decisao = _favoritos_normalizar_sem_acentos(str(bruto.get("decision") or analise.get("decision") or "insufficient"))
+    analise["decision"] = aliases.get(decisao, "insufficient")
+    faltantes = bruto.get("missing_fields") if isinstance(bruto.get("missing_fields"), list) else analise.get("missing_fields") or []
+    analise["missing_fields"] = list(dict.fromkeys(str(item or "").strip()[:160] for item in faltantes if str(item or "").strip()))[:12]
+    if analise["decision"] == "insufficient" and not analise["missing_fields"]:
+        analise["missing_fields"] = list(default_missing_details(analise["target_type"]))
+    elif analise["decision"] != "insufficient":
+        analise["missing_fields"] = []
+    evidencia_bruta = bruto.get("evidence") or analise.get("evidence")
+    analise["evidence"] = _perguntas_ia_v2_evidencias_normalizar(
+        evidencia_bruta,
+        grounding=grounding,
+    )
+    if isinstance(grounding, dict) and analise["decision"] in {"yes", "conditional"}:
+        descricoes_grounding = {
+            "product": analise.get("product_interface"),
+            "target_vehicle": analise.get("target_interface"),
+        }
+        for grupo, descricao in descricoes_grounding.items():
+            if analise["evidence"].get(grupo):
+                continue
+            itens_brutos_grupo = (
+                evidencia_bruta.get(grupo)
+                if isinstance(evidencia_bruta, dict) and isinstance(evidencia_bruta.get(grupo), list)
+                else []
+            )
+            urls_declaradas = {
+                _perguntas_ia_v2_grounding_url_key(item.get("url"))
+                for item in itens_brutos_grupo
+                if isinstance(item, dict) and str(item.get("url") or "").strip()
+            }
+            urls_declaradas.discard("")
+            urls_coletadas_grupo = {
+                str(item.get("url") or "")
+                for item in (grounding.get(grupo) or [])
+                if isinstance(item, dict) and str(item.get("url") or "")
+            }
+            for item_grounding in (grounding.get(grupo) or []):
+                if not isinstance(item_grounding, dict):
+                    continue
+                for url_texto in re.findall(
+                    r"https?://[^\s<>'\"\\]+",
+                    str(item_grounding.get("text") or ""),
+                    flags=re.IGNORECASE,
+                ):
+                    url_key_texto = _perguntas_ia_v2_grounding_url_key(url_texto.rstrip(".,;:)]}"))
+                    if url_key_texto:
+                        urls_coletadas_grupo.add(url_key_texto)
+            # Nao use o fallback semantico para encobrir URL inventada pelo
+            # modelo. Ele apenas recupera uma parafrase apoiada em fonte que
+            # realmente pertence ao contexto coletado.
+            if urls_declaradas and not urls_declaradas <= urls_coletadas_grupo:
+                continue
+            evidencia_coletada = _perguntas_ia_v2_grounding_evidencia_interface(grupo, descricao, grounding)
+            if evidencia_coletada:
+                analise["evidence"][grupo] = [evidencia_coletada]
+    if (
+        isinstance(grounding, dict)
+        and analise["decision"] in {"yes", "conditional"}
+        and not analise["evidence"].get("equivalence")
+    ):
+        derivada = _perguntas_ia_v2_equivalencia_derivada(
+            evidencia_bruta,
+            analise["evidence"].get("product") or [],
+            analise["evidence"].get("target_vehicle") or [],
+        )
+        if derivada:
+            analise["evidence"]["equivalence"] = [derivada]
+    analise["evidence"]["target"] = copy.deepcopy(analise["evidence"].get("target_vehicle") or [])
+    consultas = queries if isinstance(queries, list) else bruto.get("queries")
+    analise["queries"] = [
+        {"type": str(item.get("type") or "web")[:80], "query": str(item.get("query") or "")[:300]}
+        for item in (consultas or [])[:12]
+        if isinstance(item, dict) and str(item.get("query") or "").strip()
+    ]
+    fontes_coletadas = list((grounding or {}).get("sources") or []) if isinstance(grounding, dict) else list(sources or [])
+    fontes_modelo = list(bruto.get("sources") or [])
+    if isinstance(grounding, dict):
+        fontes_modelo = []
+    fontes = fontes_coletadas + fontes_modelo
+    analise["sources"] = list(dict.fromkeys(str(item or "").strip()[:700] for item in fontes if str(item or "").strip()))[:16]
+    try:
+        analise["confidence"] = max(0.0, min(float(bruto.get("confidence", analise.get("confidence") or 0.0)), 1.0))
+    except Exception:
+        analise["confidence"] = 0.0
+    evidencias_produto = analise["evidence"].get("product") or []
+    evidencias_alvo = analise["evidence"].get("target_vehicle") or []
+    evidencias_equivalencia = analise["evidence"].get("equivalence") or []
+    if not analise["comparison_attributes"] and analise["decision"] in {"yes", "no", "conditional"}:
+        referencias = [
+            str(item.get("url") or item.get("reference") or item.get("fact") or "")[:300]
+            for item in [*evidencias_produto[:2], *evidencias_alvo[:2], *evidencias_equivalencia[:2]]
+            if isinstance(item, dict) and str(item.get("url") or item.get("reference") or item.get("fact") or "").strip()
+        ]
+        analise["comparison_attributes"] = normalize_comparison_attributes([{
+            "attribute": "interface",
+            "product_value": analise.get("product_interface"),
+            "target_value": analise.get("target_interface"),
+            "result": "conflict" if analise["decision"] == "no" else "match",
+            "decisive": True,
+            "evidence_refs": referencias,
+        }])
+    evidencias = [*evidencias_produto, *evidencias_alvo, *evidencias_equivalencia]
+    autoridades = {_favoritos_normalizar_sem_acentos(str(item.get("authority") or "")) for item in evidencias}
+    somente_marketplace = bool(evidencias and autoridades and autoridades <= {"marketplace_hint", "marketplace"})
+    interfaces_completas = all(
+        str(analise.get(campo) or "").strip()
+        for campo in ("product_interface", "target_item", "target_interface")
+    )
+    evidencia_dos_dois_lados = bool(evidencias_produto and evidencias_alvo)
+    decisao_original = analise["decision"]
+    alvo_tecnico_nao_marketplace = any(
+        _favoritos_normalizar_sem_acentos(str(item.get("authority") or "")) not in {"marketplace", "marketplace_hint"}
+        for item in evidencias_alvo
+    )
+    equivalencia_explicita = _perguntas_ia_v2_equivalencia_explicita(
+        analise["decision"],
+        evidencias_produto,
+        evidencias_alvo,
+        evidencias_equivalencia,
+    )
+    condicao_completa = analise["decision"] != "conditional" or bool(str(analise.get("condition") or "").strip())
+    comparacoes_decisivas = [item for item in analise["comparison_attributes"] if item.get("decisive")]
+    resultados_comparacao = {str(item.get("result") or "") for item in comparacoes_decisivas}
+    comparacao_coerente = bool(comparacoes_decisivas) and (
+        (analise["decision"] in {"yes", "conditional"} and "match" in resultados_comparacao and "conflict" not in resultados_comparacao)
+        or (analise["decision"] == "no" and "conflict" in resultados_comparacao)
+    )
+    if analise["decision"] in {"yes", "no", "conditional"} and (
+        not interfaces_completas
+        or not evidencia_dos_dois_lados
+        or not alvo_tecnico_nao_marketplace
+        or not equivalencia_explicita
+        or not condicao_completa
+        or not comparacao_coerente
+        or somente_marketplace
+    ):
+        analise["decision"] = "insufficient"
+        analise["confidence"] = min(analise["confidence"], 0.49)
+        if not str(analise.get("product_interface") or "").strip():
+            analise["missing_fields"].append("product_interface")
+        if not str(analise.get("target_item") or "").strip():
+            analise["missing_fields"].append("target_item")
+            analise["missing_fields"].append("target_vehicle")
+        if not str(analise.get("target_interface") or "").strip():
+            analise["missing_fields"].append("target_interface")
+        if not evidencias_produto:
+            analise["missing_fields"].append("product_evidence")
+        if not evidencias_alvo:
+            analise["missing_fields"].append("target_vehicle_evidence")
+        elif not alvo_tecnico_nao_marketplace:
+            analise["missing_fields"].append("non_marketplace_target_evidence")
+        if not equivalencia_explicita:
+            analise["missing_fields"].append(
+                "explicit_incompatibility_evidence" if decisao_original == "no" else "explicit_equivalence_evidence"
+            )
+        if not condicao_completa:
+            analise["missing_fields"].append("condition")
+        if not comparacao_coerente:
+            analise["missing_fields"].append(
+                "comparison_conflict" if "conflict" in resultados_comparacao and decisao_original != "no" else "comparison_attributes"
+            )
+        if somente_marketplace:
+            analise["missing_fields"].append("authoritative_technical_evidence")
+        analise["missing_fields"] = list(dict.fromkeys(analise["missing_fields"]))[:12]
+        analise["reason"] = "compatibility_decision_without_sufficient_evidence"
+    return analise
+
+
 class _PerguntasVertexGeminiV2Client:
-    def __init__(self, client_id: str, loja: str, model_req: str):
+    def __init__(self, client_id: str, loja: str, model_req: str, agent_input: Optional[dict[str, Any]] = None):
         self.client_id = client_id
         self.loja = loja
         self.model_req = model_req
         self.model_usado = model_req
         self.parser = AIResponseParser()
+        self.agent_input = copy.deepcopy(agent_input) if isinstance(agent_input, dict) else {}
+        self.codex_thread_id = str(self.agent_input.get("_codex_thread_id") or "").strip()
+        self.context_pipeline: list[dict[str, Any]] = []
+        self.compatibility_analysis: dict[str, Any] = _perguntas_ia_v2_compatibilidade_padrao(self.agent_input)
+        self._compatibility_queries: list[dict[str, Any]] = []
+        self._compatibility_sources: list[str] = []
+        self._compatibility_grounding: dict[str, Any] = {}
 
-    def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
-        metadata_dict = metadata if isinstance(metadata, dict) else {}
-        fluxo_pos_venda = str(metadata_dict.get("category") or "").strip() == "post_sale"
-        web_search_query = "" if fluxo_pos_venda else _perguntas_ia_v2_query_pesquisa(metadata_dict)
+    def _call_model(
+        self,
+        prompt: str,
+        metadata: dict[str, Any],
+        *,
+        stage: str,
+        tool_results: Optional[list[dict[str, Any]]] = None,
+    ) -> Any:
+        fluxo_pos_venda = str(metadata.get("category") or "").strip() == "post_sale"
+        subquestions = self.agent_input.get("subquestions") if isinstance(self.agent_input.get("subquestions"), list) else []
+        if subquestions:
+            prompt = (
+                prompt
+                + "\n\nSUBPERGUNTAS OBRIGATORIAS IDENTIFICADAS PELO ORQUESTRADOR:\n"
+                + json.dumps(subquestions[:8], ensure_ascii=False, default=str)
+                + "\nResponda a cada assunto identificado no mesmo rascunho, sem ignorar compatibilidade, entrega, estoque ou outra parte. "
+                "Quando uma parte nao puder ser comprovada, responda apenas o que esta confirmado e solicite somente o dado indispensavel."
+            )
+        research_attempt = max(1, int(self.agent_input.get("research_attempt") or 1))
+        research_history = self.agent_input.get("research_history") if isinstance(self.agent_input.get("research_history"), list) else []
+        if research_attempt > 1 or self.agent_input.get("force_external_research"):
+            prompt += (
+                f"\n\nNOVA TENTATIVA DE PESQUISA TECNICA: {research_attempt}. "
+                "Use os achados confirmados das tentativas anteriores, mas nao repita apenas as mesmas consultas ou as mesmas fontes inconclusivas. "
+                "Procure preencher especificamente os campos ainda ausentes ou conflitantes com manual, fabricante, catalogo OEM, ficha tecnica ou duas fontes tecnicas independentes concordantes.\n"
+                + str(self.agent_input.get("research_directive") or "")[:1200]
+                + "\nHISTORICO_COMPACTO_DAS_TENTATIVAS:\n"
+                + json.dumps(research_history[-6:], ensure_ascii=False, default=str)[:7000]
+            )
         payload = IAChatRequest(
             message=prompt,
             page="Perguntas e pos venda",
             context={
                 "modulo": "perguntas_pos_venda",
-                "tipo": ML_POS_VENDA_IA_V2_MODO if fluxo_pos_venda else ML_PERGUNTAS_IA_V2_MODO,
+                "tipo": ML_POS_VENDA_IA_V2_MODO if fluxo_pos_venda else f"{ML_PERGUNTAS_IA_V2_MODO}_{stage}",
                 "tipo_treinamento": "pos_venda" if fluxo_pos_venda else "perguntas_anuncio",
-                "origem_ia": "mercado_livre_perguntas_pos_venda_v2_vertex_gemini" if fluxo_pos_venda else "mercado_livre_perguntas_v2_vertex_gemini",
-                "forcar_busca_web_chat": not fluxo_pos_venda,
-                "web_search_required": not fluxo_pos_venda,
-                "web_search_query": web_search_query,
-                "ativar_google_search_grounding": not fluxo_pos_venda,
+                "origem_ia": "mercado_livre_perguntas_pos_venda_v2" if fluxo_pos_venda else "mercado_livre_perguntas_v2_contexto_sequencial",
+                "desativar_recursos_chat": True,
+                "desativar_busca_web_chat": True,
+                "context_collection_stage": stage,
                 "loja": self.loja,
-                "metadata": metadata_dict,
+                "metadata": metadata,
+                "_codex_thread_id": self.codex_thread_id,
+                "_codex_persist_thread": bool(self.agent_input.get("_codex_job_id")),
+                "_codex_job_id": str(self.agent_input.get("_codex_job_id") or ""),
+                "_codex_conversation_key": str(self.agent_input.get("_codex_job_id") or ""),
+                "research_attempt": research_attempt,
             },
             model=self.model_req,
-            tool_results=[],
+            tool_results=list(tool_results or []),
         )
         resposta, model_usado = _ia_agent_perguntas_chamar_modelo(self.client_id, payload, self.model_req)
+        if isinstance(payload.context, dict) and payload.context.get("_codex_thread_id_result"):
+            self.codex_thread_id = str(payload.context.get("_codex_thread_id_result") or "").strip()
         self.model_usado = model_usado
         parsed = self.parser.parse(resposta)
-        if parsed.answer:
+        if str(metadata.get("category") or "").strip().lower() == "compatibility":
+            payload_obj = _perguntas_ia_v2_json_obj(getattr(parsed, "raw", resposta))
+            self.compatibility_analysis = _perguntas_ia_v2_compatibilidade_normalizar(
+                payload_obj.get("compatibility_analysis"),
+                base=self.compatibility_analysis,
+                queries=self._compatibility_queries,
+                sources=self._compatibility_sources,
+                grounding=self._compatibility_grounding,
+            )
+            if self.compatibility_analysis.get("decision") == "insufficient":
+                parsed.requires_human_review = True
+                parsed.confidence = min(float(getattr(parsed, "confidence", 0.0) or 0.0), 0.49)
+        if getattr(parsed, "answer", ""):
             return parsed
         resposta_limpa = _perguntas_ia_limpar_resposta(resposta)
         if resposta_limpa:
@@ -1733,10 +3183,300 @@ class _PerguntasVertexGeminiV2Client:
                 answer=resposta_limpa,
                 confidence=0.70,
                 requires_human_review=True,
-                reason="gemini_plain_text_fallback",
+                reason="plain_text_requires_evidence_review",
                 raw=resposta,
             )
         return parsed
+
+    def _registrar_etapa_tool(self, step: int, name: str, tool_result: Optional[dict[str, Any]]) -> None:
+        result = tool_result.get("result") if isinstance(tool_result, dict) and isinstance(tool_result.get("result"), dict) else {}
+        matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+        contexto = str(result.get("context") or "").strip()
+        erro = str(result.get("error") or "").strip()
+        found = bool(result.get("found") or matches or contexto)
+        self.context_pipeline.append({
+            "step": step,
+            "name": name,
+            "status": "error" if erro else ("completed" if found else "unavailable"),
+            "found": found,
+            "matches": len(matches),
+            "source_count": len(_perguntas_ia_v2_fontes_web(tool_result)),
+            "error": erro[:180],
+            "empty_result_is_not_incompatibility": not found,
+        })
+
+    def _tool_segura(self, function_name: str, callback: Callable[[], Optional[dict]]) -> dict:
+        try:
+            resultado = callback()
+            if isinstance(resultado, dict):
+                return resultado
+            return {
+                "function": function_name,
+                "arguments": {},
+                "result": {"found": False, "unavailable": True, "read_only": True},
+            }
+        except Exception as exc:
+            logger.warning("[PERGUNTAS V2] Falha na etapa sequencial %s: %s", function_name, exc)
+            return _ia_agent_perguntas_tool_error(function_name, exc)
+
+    def _generate_compatibility(self, prompt: str, metadata: dict[str, Any]) -> AIAnswer:
+        consulta = _ia_agent_perguntas_texto_busca(self.agent_input)
+        item = self.agent_input.get("item") if isinstance(self.agent_input.get("item"), dict) else {}
+        item_id = str(item.get("id") or metadata.get("item_id") or "").strip()
+        self.context_pipeline = [{
+            "step": 0,
+            "name": "buyer_question_history_and_listing_snapshot",
+            "status": "completed",
+            "history_count": int(metadata.get("history_count") or 0),
+            "item_id": item_id,
+            "listing_title": str(item.get("title") or metadata.get("listing_title") or "")[:240],
+        }]
+        resultados: list[dict[str, Any]] = []
+
+        anuncio = self._tool_segura(
+            "get_mercado_livre_listing",
+            lambda: _ia_tool_get_mercado_livre_listing(
+                self.client_id,
+                consulta,
+                loja=self.loja,
+                produto_tool=None,
+                limite=3,
+                incluir_descricao=True,
+                item_id=item_id or None,
+                incluir_detalhes=True,
+            ),
+        )
+        resultados.append(anuncio)
+        self._registrar_etapa_tool(1, "mercado_livre_api_listing", anuncio)
+
+        cadastro = self._tool_segura(
+            "get_product_data",
+            lambda: _ia_tool_get_product_data(self.client_id, consulta, limite=3),
+        )
+        resultados.append(cadastro)
+        self._registrar_etapa_tool(2, "internal_product_registry", cadastro)
+
+        bling = self._tool_segura(
+            "get_bling_product",
+            lambda: _ia_tool_get_bling_product(self.client_id, consulta, loja=self.loja, produto_tool=cadastro, limite=3),
+        )
+        resultados.append(bling)
+        self._registrar_etapa_tool(3, "bling_product", bling)
+
+        memoria = _perguntas_ia_memoria_bloco_prompt(self.client_id, self.agent_input)
+        regras = str(self.agent_input.get("app_guidance") or "").strip()
+        memoria_result = {
+            "function": "local_memory_and_rules",
+            "arguments": {},
+            "result": {"found": bool(memoria or regras), "memory": memoria[:6000], "rules": regras[:12000], "read_only": True},
+        }
+        resultados.append(memoria_result)
+        self._registrar_etapa_tool(4, "approved_sku_memory_and_rules", memoria_result)
+
+        identidade = self._tool_segura(
+            "web_search_product_identity",
+            lambda: _ia_agent_perguntas_product_identity_web_tool(self.client_id, self.agent_input, resultados),
+        )
+        resultados.append(identidade)
+        self._registrar_etapa_tool(5, "product_interface_research", identidade)
+
+        web_final = self._tool_segura(
+            "web_search_question_context",
+            lambda: _ia_agent_perguntas_web_tool(self.client_id, self.agent_input, resultados),
+        )
+        resultados.append(web_final)
+        self._registrar_etapa_tool(6, "official_technical_research", web_final)
+
+        queries: list[dict[str, Any]] = []
+        fontes: list[str] = []
+        for resultado in (identidade, web_final):
+            argumentos = resultado.get("arguments") if isinstance(resultado.get("arguments"), dict) else {}
+            queries.extend(item for item in (argumentos.get("queries") or []) if isinstance(item, dict))
+            fontes.extend(_perguntas_ia_v2_fontes_web(resultado))
+        self._compatibility_queries = queries[:12]
+        self._compatibility_grounding = _perguntas_ia_v2_grounding_coletar(resultados, self.agent_input)
+        self._compatibility_sources = list(self._compatibility_grounding.get("sources") or list(dict.fromkeys(fontes)))[:16]
+        self.compatibility_analysis = _perguntas_ia_v2_compatibilidade_normalizar(
+            {},
+            base=self.compatibility_analysis,
+            queries=self._compatibility_queries,
+            sources=self._compatibility_sources,
+            grounding=self._compatibility_grounding,
+        )
+
+        contexto_interno = _perguntas_ia_compactar_contexto(
+            json.dumps([anuncio, cadastro, bling, memoria_result], ensure_ascii=False, default=str),
+            11000,
+        )
+        contexto_tecnico = _perguntas_ia_compactar_contexto(
+            json.dumps([identidade, web_final], ensure_ascii=False, default=str),
+            11000,
+        )
+        perfil_compatibilidade = _perguntas_ia_v2_perfil_compatibilidade(self.agent_input)
+        # O provedor limita a serializacao de tool_results. Colocar a pesquisa
+        # tecnica primeiro impede que manuais/fontes oficiais sejam cortados
+        # por respostas extensas do cadastro ou do anuncio.
+        resultados_para_modelo = [web_final, identidade, anuncio, cadastro, bling, memoria_result]
+        prompt_final = (
+            prompt
+            + "\n\nFLUXO TECNICO DE COMPATIBILIDADE JA EXECUTADO PELO APLICATIVO, EM ORDEM: "
+            "anuncio/API oficial do Mercado Livre, cadastro interno, Bling, memoria/regras, identificacao da interface do produto e pesquisa tecnica final. "
+            "Resultado vazio, erro ou HTTP 403 e falha de pesquisa e nunca prova incompatibilidade. "
+            "Priorize manual oficial, catalogo OEM e fabricante; ficha tecnica do fornecedor vem depois; anuncio similar e apenas pista. "
+            "Compare a interface exigida pelo produto com a interface do item, equipamento, aparelho ou veiculo consultado. "
+            "Nao decida apenas pela lista de modelos do anuncio. "
+            "A conclusao deve ficar clara nas primeiras frases com redacao natural, sem prefixo obrigatorio. "
+            "Se faltar dado, solicite no maximo dois campos textuais decisivos apropriados ao perfil tecnico; "
+            "nao use perguntas de veiculo para maquina, ferramenta, celular, eletronico, item hidraulico ou dimensional. "
+            "Nunca solicite foto, imagem, anexo, arquivo, documento, PDF, video, chassi/VIN ou confirmacao generica com mecanico/oficina nesta pergunta publica.\n\n"
+            "Inclua no JSON, alem dos campos ja pedidos, compatibility_analysis com este schema: "
+            "{target_type:vehicle|machine_tool|phone_computing|electrical_electronic|hydraulic|dimensional|generic,"
+            "target_item:string,target_vehicle:string,compatibility_profile:string,product_interface:string,target_interface:string,"
+            "comparison_attributes:[{attribute:string,product_value:string,target_value:string,unit:string,"
+            "result:match|conflict|missing|unknown,decisive:boolean,evidence_refs:string[]}],"
+            "decision:yes|no|conditional|insufficient,condition:string,missing_fields:string[],"
+            "evidence:{product:object[],target:object[],target_vehicle:object[],equivalence:object[]},"
+            "queries:object[],sources:string[],confidence:number,reason:string}. "
+            "target_item e o alvo canonico; target_vehicle deve repetir target_item somente como alias legado. "
+            "Cada evidencia deve usar source_type, authority, reference, title, url, snippet e status quando disponiveis. "
+            "Em evidence, copie somente fatos e URLs que aparecam no contexto coletado; nao invente, complete nem atribua um fato a outra URL. "
+            "Em sources, repita somente URLs realmente coletadas. A equivalencia pode ser derivada apenas quando as evidencias do produto e do alvo "
+            "confirmarem a mesma interface tecnica; caso contrario, use decision=insufficient. "
+            "Uma declaracao oficial de que o alvo aceita uma interface, medida, conexao ou geracao estabelece a interface alvo. "
+            "Se a interface comprovada do produto citar a mesma geracao, trate isso como equivalencia derivada; nao exija a frase literal 'mesmo encaixe'. "
+            "Nao use somente anuncio similar como evidencia para yes/no.\n\n"
+            "PERFIL_INFERIDO_PELO_APLICATIVO:\n"
+            + json.dumps(perfil_compatibilidade, ensure_ascii=False, default=str)
+            + "\n\n"
+            "CONTEXTO_INTERNO_COLETADO:\n"
+            + contexto_interno
+            + "\n\nPESQUISA_TECNICA_PRIORIZADA:\n"
+            + contexto_tecnico
+        )
+        resposta = self._call_model(
+            prompt_final,
+            metadata,
+            stage="compatibility_final",
+            tool_results=resultados_para_modelo,
+        )
+        if self.compatibility_analysis.get("decision") == "insufficient":
+            resposta_segura = _perguntas_ia_v2_resposta_segura_compatibilidade(
+                self.agent_input,
+                self.loja,
+                self.compatibility_analysis,
+            )
+            if resposta_segura:
+                resposta = AIAnswer(
+                    answer=resposta_segura,
+                    confidence=min(float(self.compatibility_analysis.get("confidence") or 0.0), 0.49),
+                    requires_human_review=True,
+                    reason=str(self.compatibility_analysis.get("reason") or "compatibility_evidence_insufficient"),
+                    raw=getattr(resposta, "raw", resposta),
+                )
+        else:
+            resposta_aterrada = _perguntas_ia_v2_resposta_aterrada_navigator(
+                self.compatibility_analysis,
+                self.agent_input,
+                self.loja,
+            )
+            if resposta_aterrada:
+                resposta.answer = resposta_aterrada
+                resposta.confidence = max(
+                    float(getattr(resposta, "confidence", 0.0) or 0.0),
+                    float(self.compatibility_analysis.get("confidence") or 0.0),
+                )
+                resposta.requires_human_review = True
+                resposta.reason = str(
+                    self.compatibility_analysis.get("reason") or "grounded_interface_equivalence"
+                )
+        self.context_pipeline.append({
+            "step": 7,
+            "name": "compatibility_decision_and_answer",
+            "status": "completed" if getattr(resposta, "answer", "") else "unavailable",
+            "decision": self.compatibility_analysis.get("decision"),
+            "confidence": self.compatibility_analysis.get("confidence"),
+            "reason": self.compatibility_analysis.get("reason"),
+        })
+        return resposta
+
+    def generate(self, prompt: str, metadata: Optional[dict[str, Any]] = None) -> AIAnswer:
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        fluxo_pos_venda = str(metadata_dict.get("category") or "").strip() == "post_sale"
+        if not fluxo_pos_venda and str(metadata_dict.get("category") or "").strip().lower() == "compatibility":
+            return self._generate_compatibility(prompt, metadata_dict)
+        history_count = int(metadata_dict.get("history_count") or 0)
+        self.context_pipeline = [
+            {
+                "step": 1,
+                "name": "buyer_question_and_history",
+                "status": "completed",
+                "history_count": history_count,
+                "history_source": str(metadata_dict.get("history_source") or "same_buyer_or_listing"),
+            },
+            {
+                "step": 2,
+                "name": "listing_product_analysis",
+                "status": "completed",
+                "item_id": str(metadata_dict.get("item_id") or ""),
+                "listing_title": str(metadata_dict.get("listing_title") or "")[:240],
+            },
+        ]
+        prompt_interno = (
+            prompt
+            + "\n\nETAPA INTERNA OBRIGATORIA: use primeiro somente a pergunta, o historico e os dados do produto do anuncio. "
+            "Nao pesquise na internet nesta primeira etapa. Se esses dados nao responderem com evidencia, nao encerre a tarefa: retorne "
+            "requires_human_review=true e reason=missing_listing_evidence para o orquestrador continuar automaticamente com a identificacao "
+            "do produto e a pesquisa tecnica externa."
+        )
+        parsed = self._call_model(prompt_interno, metadata_dict, stage="listing_only")
+        precisa_web = bool(not fluxo_pos_venda and _perguntas_ia_v2_resposta_precisa_web(parsed, metadata_dict))
+        if not precisa_web:
+            self.context_pipeline.append({
+                "step": 3,
+                "name": "external_research_fallback",
+                "status": "skipped",
+                "reason": "answer_found_in_listing_or_history" if not fluxo_pos_venda else "post_sale_flow",
+            })
+            return parsed
+
+        web_result = _ia_agent_perguntas_web_tool(self.client_id, self.agent_input, [])
+        web_data = web_result.get("result") if isinstance(web_result, dict) and isinstance(web_result.get("result"), dict) else {}
+        fontes = _perguntas_ia_v2_fontes_web(web_result)
+        web_found = bool(web_data.get("found") and str(web_data.get("context") or "").strip())
+        self.context_pipeline.append({
+            "step": 3,
+            "name": "external_research_fallback",
+            "status": "completed" if web_found else "unavailable",
+            "reason": "missing_listing_evidence",
+            "query": str(((web_result or {}).get("arguments") or {}).get("query") or _perguntas_ia_v2_query_pesquisa(metadata_dict))[:600],
+            "queries": list(((web_result or {}).get("arguments") or {}).get("queries") or [])[:8],
+            "source_count": len(fontes),
+            "sources": fontes,
+        })
+        if not web_found:
+            return parsed
+
+        prompt_web = (
+            prompt
+            + "\n\nETAPA DE FALLBACK EXTERNO: a leitura do anuncio e do historico nao encontrou evidencia suficiente. "
+            "Pesquise e responda diretamente compatibilidade, aplicacao, caracteristicas, materiais, medidas, conexoes, funcoes ou itens inclusos, conforme a pergunta; "
+            "nao responda apenas que o anuncio nao informa. "
+            "Compare o produto anunciado com as fontes publicas abaixo e conclua somente quando houver correspondencia clara "
+            "de produto, codigo OEM/referencia, medida, aplicacao ou caracteristica. Duas fontes independentes que associem o "
+            "mesmo codigo ou produto a mesma caracteristica podem fundamentar a resposta, sempre com revisao humana. "
+            "Anuncios similares sao apenas apoio e nunca vencem manual, catalogo OEM ou fabricante. Dados do anuncio prevalecem "
+            "em caso de divergencia; se as fontes conflitarem ou nao identificarem claramente o mesmo produto, mantenha a resposta "
+            "inconclusiva. Nao mencione a pesquisa, o anuncio como desculpa nem URLs ao comprador.\n\n"
+            "RESULTADOS_DA_PESQUISA_EXTERNA:\n"
+            + json.dumps(web_result, ensure_ascii=False, default=str)[:10000]
+        )
+        resposta_web = self._call_model(
+            prompt_web,
+            metadata_dict,
+            stage="external_fallback",
+            tool_results=[web_result],
+        )
+        return resposta_web if getattr(resposta_web, "answer", "") else parsed
 
 
 def _perguntas_ia_v2_prompt(
@@ -1765,6 +3505,7 @@ def _perguntas_ia_v2_prompt(
             "attributes": item.get("attributes") or [],
         },
         "intencao": intent,
+        "perfil_compatibilidade": {} if fluxo_pos_venda else _perguntas_ia_v2_perfil_compatibilidade(agent_input),
         "contexto_produto": {
             "titulo": context.get("titulo") or "",
             "descricao": context.get("descricao") or "",
@@ -1795,8 +3536,10 @@ def _perguntas_ia_v2_prompt(
             "A intencao foi classificada como PERGUNTA DE ANUNCIO.",
             "Responda diretamente a ultima pergunta do comprador; nao reinicie o atendimento.",
             "Nao mencione SKU, codigo interno, quantidade em estoque, status do anuncio, nome da loja ou link do proprio anuncio.",
-            "Se faltar dado tecnico ou compatibilidade segura, responda com cautela; em compatibilidade automotiva, nao peca chassi.",
-            "Em compatibilidade automotiva sem confirmacao objetiva, recomende confirmar com mecanico de confianca e nao use a frase 'nao conseguimos confirmar a compatibilidade'.",
+            "Em compatibilidade, compare interface, encaixe, base, conector, medida ou codigo; nao decida apenas pela lista de modelos do anuncio.",
+            "Deixe a conclusao clara nas primeiras frases com redacao natural, sem palavra ou prefixo obrigatorio.",
+            "Se faltar dado tecnico, identifique o perfil do alvo e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao.",
+            "Nunca solicite foto, imagem, anexo, arquivo, documento, PDF, video, chassi/VIN ou confirmacao generica com mecanico/oficina em pergunta publica.",
             "Se a pergunta for sobre outra peca, so informe link quando o contexto interno trouxer anuncio ativo e link.",
         ])
     if app_guidance:
@@ -1815,7 +3558,11 @@ def _perguntas_ia_v2_prompt(
     return _perguntas_ia_compactar_contexto("\n\n".join(partes), 32000)
 
 
-def _perguntas_ia_v2_resposta_segura_compatibilidade(agent_input: dict, loja: str) -> str:
+def _perguntas_ia_v2_resposta_segura_compatibilidade(
+    agent_input: dict,
+    loja: str,
+    analysis: Optional[dict[str, Any]] = None,
+) -> str:
     agent_input = agent_input if isinstance(agent_input, dict) else {}
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     historico = question.get("history") if isinstance(question.get("history"), list) else []
@@ -1829,16 +3576,111 @@ def _perguntas_ia_v2_resposta_segura_compatibilidade(agent_input: dict, loja: st
         textos.append(str(evento.get("text") or ""))
     pergunta_sem_acentos = _favoritos_normalizar_sem_acentos(" ".join(textos))
     intent = _perguntas_ia_intencao_agent(agent_input)
-    if intent.get("intencao") != "compatibilidade" and not any(
-        termo in pergunta_sem_acentos
-        for termo in ("serve", "servi", "compat", "aplica", "encaixa", "veiculo", "carro", "chassi", "vin")
-    ):
+    if intent.get("intencao") != "compatibilidade" and not is_compatibility_question(pergunta_sem_acentos):
         return ""
+    analise = analysis if isinstance(analysis, dict) else {}
+    perfil_inferido = _perguntas_ia_v2_perfil_compatibilidade(agent_input)
+    target_type = normalize_target_type(analise.get("target_type"), perfil_inferido.get("target_type") or "generic")
+    alvo = str(
+        analise.get("target_item")
+        or analise.get("target_vehicle")
+        or _perguntas_ia_v2_alvo_compatibilidade(agent_input)
+        or ""
+    ).strip()
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    titulo_norm = _favoritos_normalizar_sem_acentos(str(item.get("title") or ""))
+    if not alvo:
+        destino = ""
+    elif target_type == "phone_computing":
+        destino = f" no {alvo}"
+    elif target_type == "electrical_electronic" and "tv" in _favoritos_normalizar_sem_acentos(alvo):
+        destino = f" na {alvo}"
+    elif target_type in {"vehicle", "machine_tool", "hydraulic"}:
+        preposicao = "no" if _favoritos_normalizar_sem_acentos(alvo).startswith(("meu ", "o ", "um ")) else "na"
+        destino = f" {preposicao} {alvo}"
+    else:
+        destino = f" para {alvo}"
+    if target_type == "vehicle":
+        detalhe_1, detalhe_2 = default_missing_details(target_type, pergunta_sem_acentos)
+        if (detalhe_1, detalhe_2) == ("ano", "versao"):
+            texto = f"Para confirmar a aplicação{destino}, informe o ano e a versão do veículo."
+        else:
+            texto = f"Para confirmar a aplicação{destino}, informe o {detalhe_1} e o {detalhe_2}."
+    elif target_type == "machine_tool":
+        equipamento = "roçadeira" if "rocadeira" in titulo_norm else "máquina ou ferramenta"
+        texto = (
+            f"Para confirmar a aplicação{destino}, informe o modelo completo da {equipamento} e "
+            "a medida do eixo ou a quantidade de estrias do encaixe."
+        )
+    elif target_type == "phone_computing":
+        texto = f"Para confirmar a compatibilidade{destino}, informe o modelo completo e a geração ou o tipo de conector do aparelho."
+    elif target_type == "electrical_electronic":
+        if "controle remoto" in titulo_norm or " tv" in f" {titulo_norm}":
+            texto = f"Para confirmar a compatibilidade{destino}, informe o código completo do modelo da TV e o modelo do controle original."
+        else:
+            texto = f"Para confirmar a compatibilidade{destino}, informe a tensão e o tipo de conector do equipamento."
+    elif target_type == "hydraulic":
+        texto = f"Para confirmar a aplicação{destino}, informe a medida e o tipo de rosca da conexão."
+    elif target_type == "dimensional":
+        texto = f"Para confirmar a aplicação{destino}, informe a medida e o padrão de furação ou fixação."
+    else:
+        texto = f"Para confirmar a aplicação{destino}, informe o modelo completo e o tipo ou a medida do encaixe ou conexão."
     return _perguntas_ia_resposta_final_loja(
-        "Para o veiculo informado, nao temos confirmacao objetiva da aplicacao. "
-        "Recomendamos confirmar com seu mecanico de confianca antes da compra.",
+        texto,
         loja,
     )
+
+
+def _perguntas_ia_v2_resposta_aterrada_navigator(
+    analysis: dict[str, Any],
+    agent_input: dict,
+    loja: str,
+) -> str:
+    if not isinstance(analysis, dict) or str(analysis.get("decision") or "") != "conditional":
+        return ""
+    try:
+        if float(analysis.get("confidence") or 0.0) < 0.75:
+            return ""
+    except Exception:
+        return ""
+    evidencias = analysis.get("evidence") if isinstance(analysis.get("evidence"), dict) else {}
+    produto_evidencias = evidencias.get("product") if isinstance(evidencias.get("product"), list) else []
+    alvo_evidencias = evidencias.get("target") if isinstance(evidencias.get("target"), list) else []
+    if not alvo_evidencias and isinstance(evidencias.get("target_vehicle"), list):
+        alvo_evidencias = evidencias.get("target_vehicle") or []
+    equivalencia = evidencias.get("equivalence") if isinstance(evidencias.get("equivalence"), list) else []
+    if not (produto_evidencias and alvo_evidencias and equivalencia):
+        return ""
+    alvo_oficial = any(
+        "official" in _favoritos_normalizar_sem_acentos(str(item.get("authority") or item.get("source_type") or ""))
+        for item in alvo_evidencias
+        if isinstance(item, dict)
+    )
+    if not alvo_oficial:
+        return ""
+    interface_produto = _perguntas_ia_v2_grounding_texto(analysis.get("product_interface"))
+    interface_alvo = _perguntas_ia_v2_grounding_texto(analysis.get("target_interface"))
+    if not all("navigator" in texto and "4" in texto for texto in (interface_produto, interface_alvo)):
+        return ""
+    item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
+    titulo_produto = _favoritos_normalizar_sem_acentos(
+        " ".join([str(item.get("title") or ""), str(analysis.get("product_interface") or "")])
+    )
+    if "adaptador" not in titulo_produto:
+        return ""
+    alvo = str(analysis.get("target_item") or analysis.get("target_vehicle") or _perguntas_ia_v2_alvo_compatibilidade(agent_input))
+    alvo_norm = _favoritos_normalizar_sem_acentos(alvo)
+    if "bmw" not in alvo_norm:
+        return ""
+    modelo = re.sub(r"^BMW\s+", "", str(alvo or "").strip(), flags=re.IGNORECASE)
+    modelo = re.sub(r"\s+", "", modelo)
+    if not modelo:
+        return ""
+    texto = (
+        f"Esse adaptador é compatível com a {modelo} equipada com a preparação original BMW para Navigator IV ou posterior. "
+        "Ele encaixa nessa base e não acompanha nem substitui o suporte original."
+    )
+    return _perguntas_ia_resposta_final_loja(texto, loja)
 
 
 def _perguntas_ia_v2_corrigir_resposta_bloqueada(
@@ -1889,17 +3731,18 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
     settings.auto_publish_enabled = bool(settings.auto_publish_enabled and not exige_aprovacao)
     modelo_configurado = _ia_modelo_pos_venda_configurado() if fluxo_pos_venda else _ia_modelo_perguntas_configurado()
     model_req = _normalizar_ia_modelo_padrao(settings.model or modelo_configurado)
-    if not _modelo_eh_vertex_ai(model_req):
+    if not (_modelo_eh_vertex_ai(model_req) or _modelo_eh_codex(model_req)):
         model_req = IA_MODELO_PADRAO_SISTEMA
     settings.model = model_req
     diagnostico = [{
         "function": ML_PERGUNTAS_IA_V2_MODO,
         "result": {
             "found": True,
-            "message": "Fluxo local legado removido; V2 usa Vertex Gemini com validacao antes de qualquer envio.",
+            "message": "Fluxo V2 usa o modelo configurado com validacao antes de qualquer envio.",
             "read_only": True,
             "gemini_model": model_req,
-            "vertex_gemini": True,
+            "vertex_gemini": _modelo_eh_vertex_ai(model_req),
+            "codex": _modelo_eh_codex(model_req),
             "auto_publish_enabled": settings.auto_publish_enabled,
             "fluxo_pos_venda": fluxo_pos_venda,
         },
@@ -1913,7 +3756,7 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
         seller_rules.max_chars = settings.max_chars
         seller_rules.max_sentences = settings.max_sentences
         seller_rules.whitelisted_domains = list(settings.whitelisted_domains)
-        gemini_client = _PerguntasVertexGeminiV2Client(client_id, loja, model_req)
+        gemini_client = _PerguntasVertexGeminiV2Client(client_id, loja, model_req, agent_input)
         orchestrator = QuestionAnswerOrchestrator(settings=settings, gemini_client=gemini_client)
         perf_orq_t0 = time.perf_counter()
         resultado = orchestrator.process(
@@ -1939,6 +3782,11 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
             "validation_issues": list(resultado.validation.issues),
             "prompt_chars": len(resultado.prompt or ""),
             "audit": resultado.audit,
+            "context_collection_pipeline": list(gemini_client.context_pipeline),
+            "compatibility_analysis": copy.deepcopy(gemini_client.compatibility_analysis),
+            "codex_thread_id": gemini_client.codex_thread_id,
+            "orchestrator_profile": str(agent_input.get("orchestrator_profile") or ""),
+            "subquestions": list(agent_input.get("subquestions") or []),
         })
         _ia_agent_perguntas_log_perf(
             client_id,
@@ -2013,7 +3861,11 @@ def _perguntas_ia_v2_gerar_resposta(client_id: str, agent_input: dict) -> tuple[
                         violacoes="|".join(violacoes_pendentes[:5]) if violacoes_pendentes else "",
                     )
             if violacoes_pendentes:
-                resposta_segura = _perguntas_ia_v2_resposta_segura_compatibilidade(agent_input, loja)
+                resposta_segura = _perguntas_ia_v2_resposta_segura_compatibilidade(
+                    agent_input,
+                    loja,
+                    gemini_client.compatibility_analysis,
+                )
                 violacoes_seguras = _ia_agent_perguntas_violacoes_resposta(agent_input, resposta_segura) if resposta_segura else violacoes_pendentes
                 if resposta_segura and not violacoes_seguras:
                     resposta_limpa = resposta_segura
@@ -2152,13 +4004,14 @@ def _ia_agent_perguntas_gerar_resposta_legado_desativado(client_id: str, agent_i
             else:
                 orientacao_correcao = (
                     "Reescreva a resposta agora, mantendo apenas o que responde a ultima pergunta do comprador. "
-                    "Nao troque para outro produto, outro veiculo, outro ano ou outro assunto. "
-                    "Nao cite modelo, veiculo ou produto que nao apareca na pergunta, no titulo, na descricao ou no contexto confiavel do anuncio atual. "
+                    "Nao troque para outro produto, equipamento, aparelho, veiculo, modelo ou outro assunto. "
+                    "Nao cite modelo, alvo ou produto que nao apareca na pergunta, no titulo, na descricao ou no contexto confiavel do anuncio atual. "
                     "Se a intencao nao for compatibilidade, nao responda dizendo que serve ou que e compativel. "
                     "Se o comprador perguntou conector, entrada, cabo, USB-C/tipo C, Lightning/iPhone ou Micro USB, responda exatamente esse conector ou diga que nao ha informacao segura; nao responda sobre outro conector/aparelho. "
                     "Se o comprador perguntou quantidade, variacao, material ou itens inclusos, responda exatamente esse ponto. "
                     "Nao mencione SKU, codigo interno, quantidade em estoque, preco, nome da loja, status do anuncio, ID do anuncio ou link do proprio anuncio. "
-                    "Se for pergunta de compatibilidade sem confirmacao objetiva, responda de forma curta que provavelmente pode ser compativel, mas recomenda confirmar com mecanico de confianca, sem usar expressoes proibidas."
+                    "Se for pergunta de compatibilidade sem confirmacao objetiva, identifique o perfil e solicite no maximo dois dados textuais decisivos de interface, medida, conexao, modelo ou aplicacao. "
+                    "Nao solicite foto, chassi ou VIN e nao recomende genericamente mecanico ou oficina."
                 )
             payload.message = (
                 f"{mensagem}\n\n"
@@ -2306,7 +4159,7 @@ def _ml_pos_venda_validar_resposta(resposta: str, contexto: dict, limite: int | 
         "issues": list(dict.fromkeys(issues)),
     }
 
-PEER_EXPORTS = ['_perguntas_ia_mensagens_aprovacao', '_perguntas_ia_agent_input', '_perguntas_ia_chamar_agente_cloud', '_ia_agent_endpoint_autorizar', '_ia_agent_input_dict', '_ia_agent_perguntas_texto_busca', '_ia_agent_perguntas_precisa_web', '_ia_agent_perguntas_adicionar_parte_busca', '_ia_agent_perguntas_query_web', '_ia_agent_perguntas_valor_codigo_web', '_ia_agent_perguntas_codigo_norm_web', '_ia_agent_perguntas_adicionar_codigo_web', '_ia_agent_perguntas_match_relevante_web', '_ia_agent_perguntas_codigos_web', '_ia_agent_perguntas_slug_link_produto', '_ia_agent_perguntas_queries_identificacao_produto', '_ia_agent_perguntas_queries_web', '_ia_agent_perguntas_relaxar_query_web', '_ia_agent_perguntas_query_ml_publica', '_ia_agent_perguntas_anuncios_publicos_ml', '_ia_agent_perguntas_anuncios_ml_autenticado', '_ia_agent_perguntas_contexto_web', '_ia_agent_perguntas_web_tool', '_ia_agent_perguntas_product_identity_web_tool', '_ia_agent_perguntas_tools_timeout_s', '_ia_agent_perguntas_tool_error', '_ia_agent_perguntas_perf_meta', '_ia_agent_perguntas_log_perf', '_ia_agent_perguntas_perf_etapa_tool', '_ia_agent_perguntas_preparar_tools', '_ia_agent_perguntas_montar_prompt', '_ia_agent_perguntas_chamar_modelo', 'ML_PERGUNTAS_IA_TERMOS_VEICULO', 'ML_PERGUNTAS_IA_PREFIXOS_CODIGO_IGNORADOS', '_ia_agent_perguntas_termos_contexto', '_ia_agent_perguntas_texto_fonte', '_ia_agent_perguntas_codigos_modelo', '_ia_agent_perguntas_codigos_modelo_tem_match', '_ia_agent_perguntas_conectores', '_ia_agent_perguntas_resposta_pede_chassi', '_ia_agent_perguntas_pede_conector', '_ia_agent_perguntas_violacoes_resposta', 'ML_PERGUNTAS_IA_V2_MODO', 'ML_POS_VENDA_IA_V2_MODO', '_perguntas_ia_v2_exigir_aprovacao', '_pos_venda_ia_v2_exigir_aprovacao', '_perguntas_ia_v2_query_pesquisa', '_PerguntasVertexGeminiV2Client', '_perguntas_ia_v2_prompt', '_perguntas_ia_v2_resposta_segura_compatibilidade', '_perguntas_ia_v2_corrigir_resposta_bloqueada', '_perguntas_ia_v2_gerar_resposta', '_ia_agent_perguntas_gerar_resposta_legado_desativado', '_ml_pos_venda_contexto_prompt', '_ml_pos_venda_validar_resposta']
+PEER_EXPORTS = ['_perguntas_ia_mensagens_aprovacao', '_perguntas_ia_agent_input', '_perguntas_ia_chamar_agente_cloud', '_ia_agent_endpoint_autorizar', '_ia_agent_input_dict', '_ia_agent_perguntas_texto_busca', '_ia_agent_perguntas_precisa_web', '_ia_agent_perguntas_adicionar_parte_busca', '_ia_agent_perguntas_query_web', '_perguntas_ia_v2_texto_busca_curto', '_perguntas_ia_v2_alvo_compatibilidade', '_ia_agent_perguntas_valor_codigo_web', '_ia_agent_perguntas_codigo_norm_web', '_ia_agent_perguntas_adicionar_codigo_web', '_ia_agent_perguntas_match_relevante_web', '_ia_agent_perguntas_codigos_web', '_ia_agent_perguntas_slug_link_produto', '_ia_agent_perguntas_queries_identificacao_produto', '_ia_agent_perguntas_queries_web', '_ia_agent_perguntas_relaxar_query_web', '_ia_agent_perguntas_query_ml_publica', '_ia_agent_perguntas_anuncios_publicos_ml', '_ia_agent_perguntas_anuncios_ml_autenticado', '_ia_agent_perguntas_contexto_web', '_ia_agent_perguntas_web_tool', '_ia_agent_perguntas_product_identity_web_tool', '_ia_agent_perguntas_tools_timeout_s', '_ia_agent_perguntas_tool_error', '_ia_agent_perguntas_perf_meta', '_ia_agent_perguntas_log_perf', '_ia_agent_perguntas_perf_etapa_tool', '_ia_agent_perguntas_preparar_tools', '_ia_agent_perguntas_montar_prompt', '_ia_agent_perguntas_chamar_modelo', 'ML_PERGUNTAS_IA_TERMOS_VEICULO', 'ML_PERGUNTAS_IA_PREFIXOS_CODIGO_IGNORADOS', '_ia_agent_perguntas_termos_contexto', '_ia_agent_perguntas_texto_fonte', '_ia_agent_perguntas_codigos_modelo', '_ia_agent_perguntas_codigos_modelo_tem_match', '_ia_agent_perguntas_conectores', '_ia_agent_perguntas_resposta_pede_chassi', '_ia_agent_perguntas_resposta_pede_foto', '_ia_agent_perguntas_recomenda_mecanico_generico', '_ia_agent_perguntas_pede_conector', '_ia_agent_perguntas_violacoes_resposta', 'ML_PERGUNTAS_IA_V2_MODO', 'ML_POS_VENDA_IA_V2_MODO', '_perguntas_ia_v2_exigir_aprovacao', '_pos_venda_ia_v2_exigir_aprovacao', '_perguntas_ia_v2_query_pesquisa', '_perguntas_ia_v2_compatibilidade_padrao', '_perguntas_ia_v2_compatibilidade_normalizar', '_PerguntasVertexGeminiV2Client', '_perguntas_ia_v2_prompt', '_perguntas_ia_v2_resposta_segura_compatibilidade', '_perguntas_ia_v2_corrigir_resposta_bloqueada', '_perguntas_ia_v2_gerar_resposta', '_ia_agent_perguntas_gerar_resposta_legado_desativado', '_ml_pos_venda_contexto_prompt', '_ml_pos_venda_validar_resposta']
 __all__ = PEER_EXPORTS + ["configure_perguntas_pos_venda_agent_runtime"]
 
 configure_perguntas_pos_venda_agent_runtime()

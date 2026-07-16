@@ -839,6 +839,7 @@
         let cotacaoDolarTopo = 0;
         let ultimaListaCarregada = null;
         let ultimosItensCarregados = [];
+        let ultimaAnaliseCustoPosto = null;
         let skuArrastadoIndex = -1;
         let skuArrasteSalvando = false;
         let faturamentoVendas12m = null;
@@ -1273,11 +1274,38 @@
             'Handling': 'handling',
             'Honorários Trading': 'honorarios_trading',
             'Honorários Trading': 'honorarios_trading',
+            'Fornecedor': 'supplier',
+            'Moeda': 'currency',
+            'Incoterm': 'incoterm',
+            'Cotação na Compra': 'exchange_rate',
+            'Lead time (dias)': 'lead_time_days',
+            'Data do pedido': 'order_date',
+            'Embarque previsto': 'promised_ship_date',
+            'Embarque real': 'actual_ship_date',
+            'Chegada prevista': 'eta_date',
+            'Data desembaraço': 'customs_clearance_date',
+            'Recebido em': 'received_at',
         };
+
+        const RESUMO_CARDS_BACKEND = new Set([
+            'supplier', 'currency', 'incoterm', 'exchange_rate', 'lead_time_days',
+            'order_date', 'promised_ship_date',
+            'actual_ship_date', 'eta_date', 'customs_clearance_date', 'received_at'
+        ]);
 
         const RESUMO_CARDS_FORMATO = {
             numero_invoice: 'TEXT',
-            valor_por_m3: 'USD'
+            valor_por_m3: 'USD',
+            supplier: 'TEXT',
+            currency: 'TEXT',
+            incoterm: 'TEXT',
+            lead_time_days: 'TEXT',
+            order_date: 'TEXT',
+            promised_ship_date: 'TEXT',
+            actual_ship_date: 'TEXT',
+            eta_date: 'TEXT',
+            customs_clearance_date: 'TEXT',
+            received_at: 'TEXT'
         };
 
         function carregarResumoEditavel(listaId) {
@@ -1406,7 +1434,11 @@
                     valorFinal = (formato === 'TEXT')
                         ? String(input.value || '').trim()
                         : formatarMoedaEditavel(input.value || '', formato);
-                    salvarResumoEditavel(listaId, editKey, valorFinal);
+                    if (RESUMO_CARDS_BACKEND.has(editKey)) {
+                        void atualizarCampoLogisticoLista(listaId, editKey, input.value || '');
+                    } else {
+                        salvarResumoEditavel(listaId, editKey, valorFinal);
+                    }
                 }
 
                 const textoExibicao = (valorFinal && valorFinal.trim()) ? valorFinal : '-';
@@ -1449,6 +1481,27 @@
             }
 
             return resp.json().catch(() => ({}));
+        }
+
+        async function atualizarCampoLogisticoLista(listaId, campo, valor) {
+            const numericos = new Set(['exchange_rate', 'lead_time_days']);
+            const bodyValue = numericos.has(campo) ? valorNumerico(valor) : String(valor || '').trim();
+            try {
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                    body: JSON.stringify({ [campo]: bodyValue })
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Nao foi possivel salvar o dado logistico.');
+                }
+                if (ultimaListaCarregada) ultimaListaCarregada[campo] = bodyValue;
+                ultimaAnaliseCustoPosto = null;
+                void carregarCustoPostoBackend(listaId);
+            } catch (e) {
+                setErro(e.message || 'Falha ao salvar dado logistico.');
+            }
         }
 
         function iniciarEdicaoLojaResumo(card, listaId) {
@@ -1573,6 +1626,9 @@
             const invoice = String(lista && (lista.invoice || lista.numero_invoice || lista.nr_invoice) || '').trim() || '-';
             const lojaLista = obterLojaLista(lista);
             const lojaFiltroFaturamento = obterLojaFiltroVendas(lista);
+            const analiseCustoPosto = ultimaAnaliseCustoPosto && String(ultimaAnaliseCustoPosto.order_id || '') === listaId
+                ? ultimaAnaliseCustoPosto
+                : null;
             const chaveFaturamento = obterChaveFaturamentoLoja(lista);
             const faturamentoDaLoja = lojaFiltroFaturamento && faturamentoVendasLoja === chaveFaturamento
                 ? faturamentoVendas12m
@@ -1580,10 +1636,10 @@
             const textoFaturamentoLoja = lojaFiltroFaturamento
                 ? (faturamentoDaLoja !== null ? formatarMoedaBR(faturamentoDaLoja) : 'Carregando...')
                 : 'Loja nao definida';
-            const faixaImposto = (faturamentoDaLoja !== null)
-                ? calcularFaixaImpostoPorFaturamento(faturamentoDaLoja)
-                : '-';
-            const dolarHoje = valorNumerico(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+            const faixaImposto = analiseCustoPosto && analiseCustoPosto.tax_band_pct != null
+                ? formatarPct(analiseCustoPosto.tax_band_pct)
+                : ((faturamentoDaLoja !== null) ? calcularFaixaImpostoPorFaturamento(faturamentoDaLoja) : '-');
+            const dolarHoje = valorNumerico(lista && (lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
             const dolarHojeCalc = dolarHoje > 0 ? Number(dolarHoje.toFixed(2)) : 0;
             const dolarBaseCalc = dolarHojeCalc > 0 ? dolarHojeCalc : cotacaoDolarTopo;
             atualizarFxCompraTopo(dolarHoje);
@@ -1715,11 +1771,22 @@
             const afrmm = (freteInternacionalNum > 0 && dolarBaseCalc > 0)
                 ? formatarMoedaBR((freteInternacionalNum * 0.08) * dolarBaseCalc)
                 : '-';
-
+            const custoPostoBackend = analiseCustoPosto && analiseCustoPosto.cash_required_brl != null
+                ? formatarMoedaBR(analiseCustoPosto.cash_required_brl)
+                : '-';
+            const tributosBackend = analiseCustoPosto && analiseCustoPosto.taxes_brl != null
+                ? formatarMoedaBR(analiseCustoPosto.taxes_brl)
+                : '-';
+            const custosComunsBackend = analiseCustoPosto && analiseCustoPosto.common_costs_brl != null
+                ? formatarMoedaBR(analiseCustoPosto.common_costs_brl)
+                : '-';
             const cards = [
                 { label: 'Modalidade', value: modalidade },
                 { label: 'Nº Invoice', value: invoice, editable: true },
                 { label: 'Loja', value: lojaLista },
+                { label: 'Fornecedor', value: String(lista && (lista.supplier || lista.fornecedor) || '-') , editable: true },
+                { label: 'Moeda', value: String(lista && (lista.currency || lista.moeda) || 'USD'), editable: true },
+                { label: 'Incoterm', value: String(lista && lista.incoterm || '-'), editable: true },
                 { label: 'Faturamento Loja', value: textoFaturamentoLoja },
                 { label: 'Faixa de Imposto', value: faixaImposto },
                 { label: 'M³ Total', value: formatarM3(totalM3), alertaM3: !Number.isFinite(totalM3) || totalM3 <= 0 },
@@ -1727,8 +1794,18 @@
                 { label: 'VMLE', value: vmleUsd, valueExtra: vmleBrl },
                 { label: 'Frete Internacional', value: freteInternacional, valueExtra: freteInternacionalUsd },
                 { label: 'Seguro Internacional 0,28%', value: seguroInternacional, valueExtra: seguroInternacionalUsd },
-                { label: 'Cotação na Compra', value: dolarHoje > 0 ? formatarMoedaBR(dolarHoje) : '-' },
+                { label: 'Cotação na Compra', value: dolarHoje > 0 ? formatarMoedaBR(dolarHoje) : '-', editable: true },
+                { label: 'Lead time (dias)', value: String(lista && lista.lead_time_days != null ? lista.lead_time_days : '-'), editable: true },
+                { label: 'Data do pedido', value: String(lista && lista.order_date || '-'), editable: true },
+                { label: 'Embarque previsto', value: String(lista && lista.promised_ship_date || '-'), editable: true },
+                { label: 'Embarque real', value: String(lista && lista.actual_ship_date || '-'), editable: true },
+                { label: 'Chegada prevista', value: String(lista && lista.eta_date || '-'), editable: true },
+                { label: 'Data desembaraço', value: String(lista && lista.customs_clearance_date || '-'), editable: true },
+                { label: 'Recebido em', value: String(lista && lista.received_at || '-'), editable: true },
                 { label: 'VMLD', value: vmld },
+                { label: 'Custo posto total estimado', value: custoPostoBackend },
+                { label: 'Tributos importação', value: tributosBackend },
+                { label: 'Custos comuns rateados', value: custosComunsBackend },
                 { label: 'II', value: iiResumo, valueExtra: iiValorResumo },
                 { label: 'IPI', value: ipiResumo, valueExtra: ipiValorResumo },
                 { label: 'PIS', value: pisResumo, valueExtra: pisValorResumo },
@@ -2706,10 +2783,28 @@
                 renderMeta(lista);
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
+                void carregarCustoPostoBackend(listaId);
             } catch (e) {
                 setErro(e.message || 'Erro ao carregar lista de importação.');
                 renderResumoTopo({}, []);
                 renderItens([], {});
+            }
+        }
+
+        async function carregarCustoPostoBackend(listaId) {
+            try {
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/landed-cost', {
+                    method: 'GET',
+                    headers: { ...obterAuthHeaders() }
+                });
+                if (!resp.ok) return;
+                const data = await resp.json().catch(() => ({}));
+                ultimaAnaliseCustoPosto = data && data.analysis ? data.analysis : null;
+                if (ultimaListaCarregada && String(ultimaListaCarregada.id || '') === String(listaId || '')) {
+                    renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+                }
+            } catch (_e) {
+                ultimaAnaliseCustoPosto = null;
             }
         }
 

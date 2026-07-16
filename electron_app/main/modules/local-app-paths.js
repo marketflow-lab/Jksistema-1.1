@@ -22,9 +22,35 @@ const { spawn } = require('child_process');
 const nodeNet = require('net');
 const http = require('http');
 const { pathToFileURL } = require('url');
+
+function loadElectronUpdaterModule() {
+    const candidates = ['electron-updater'];
+    if (process.resourcesPath) {
+        candidates.push(
+            path.join(process.resourcesPath, 'app.asar', 'node_modules', 'electron-updater'),
+            path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'electron-updater'),
+            path.join(process.resourcesPath, 'node_modules', 'electron-updater')
+        );
+    }
+    candidates.push(
+        path.join(__dirname, 'electron_app', 'node_modules', 'electron-updater'),
+        path.join(__dirname, '..', 'electron_app', 'node_modules', 'electron-updater')
+    );
+
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            return require(candidate);
+        } catch (err) {
+            lastError = err;
+        }
+    }
+    throw lastError || new Error('electron-updater nao encontrado.');
+}
+
 let autoUpdater = null;
 try {
-    ({ autoUpdater } = require('electron-updater'));
+    ({ autoUpdater } = loadElectronUpdaterModule());
 } catch (err) {
     console.warn('[Atualizacao] electron-updater indisponivel:', err && err.message ? err.message : err);
 }
@@ -50,6 +76,7 @@ const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';
 const JK_FIREBASE_PRESENCE_ENV_FILE_NAME = 'firebase-presence.env';
 let localBackendProcess = null;
 let localBackendStartupPromise = null;
+let localBackendStopPromise = null;
 
 function resolveAppRootDir() {
     const packagedRoot = app.isPackaged && process.resourcesPath
@@ -86,10 +113,30 @@ function resolveAppRootDir() {
 }
 
 const JK_APP_ROOT_DIR = resolveAppRootDir();
-const JK_DEFAULT_ELECTRON_USER_DATA_DIR = app.isPackaged
-    ? app.getPath('userData')
-    : path.join(JK_APP_ROOT_DIR, 'info', 'electron_user_data');
-const JK_ELECTRON_USER_DATA_DIR = process.env.JK_ELECTRON_USER_DATA_DIR || JK_DEFAULT_ELECTRON_USER_DATA_DIR;
+
+function resolveElectronUserDataDir(options = {}) {
+    const configuredDir = String(options.configuredDir || '').trim();
+    if (configuredDir) return path.resolve(configuredDir);
+    const platform = String(options.platform || process.platform);
+    const appDataDir = String(options.appDataDir || '').trim();
+    if (platform === 'win32' && appDataDir) {
+        return path.resolve(appDataDir, 'JK Sistema Cliente');
+    }
+    const defaultUserDataDir = String(options.defaultUserDataDir || '').trim();
+    return path.resolve(defaultUserDataDir || path.join(JK_APP_ROOT_DIR, 'info', 'electron_user_data'));
+}
+
+const JK_DEFAULT_ELECTRON_USER_DATA_DIR = resolveElectronUserDataDir({
+    appDataDir: app.getPath('appData'),
+    defaultUserDataDir: app.getPath('userData'),
+    platform: process.platform
+});
+const JK_ELECTRON_USER_DATA_DIR = resolveElectronUserDataDir({
+    configuredDir: process.env.JK_ELECTRON_USER_DATA_DIR,
+    appDataDir: app.getPath('appData'),
+    defaultUserDataDir: JK_DEFAULT_ELECTRON_USER_DATA_DIR,
+    platform: process.platform
+});
 try {
     fs.mkdirSync(JK_ELECTRON_USER_DATA_DIR, { recursive: true });
     app.setPath('userData', JK_ELECTRON_USER_DATA_DIR);
@@ -108,6 +155,8 @@ let avantProStorageRecoveryAttempted = false;
 let avantProStorageRecoveryPromise = null;
 let avantProStorageImportAttempted = false;
 let avantProStorageImportPromise = null;
+let avantProStorageSnapshotPromise = null;
+let avantProSnapshotArtifactsRecovered = false;
 let updateEventsRegistered = false;
 let updateCheckInProgress = false;
 let updateInstallInProgress = false;
@@ -144,6 +193,47 @@ function logElectronLifecycle(...args) {
             process.stdout.write(message);
         }
     } catch (_err) {}
+}
+
+let JK_PRIMARY_INSTANCE_LOCK_ACQUIRED = true;
+try {
+    if (typeof app.requestSingleInstanceLock === 'function') {
+        JK_PRIMARY_INSTANCE_LOCK_ACQUIRED = app.requestSingleInstanceLock();
+    }
+} catch (err) {
+    JK_PRIMARY_INSTANCE_LOCK_ACQUIRED = true;
+    logElectronLifecycle('single-instance-lock-warning', {
+        error: err && err.message ? err.message : String(err)
+    });
+}
+
+function focusPrimaryJkWindow() {
+    const target = mainWindow && !mainWindow.isDestroyed()
+        ? mainWindow
+        : BrowserWindow.getAllWindows().find(win => win && !win.isDestroyed());
+    if (!target) return false;
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
+    return true;
+}
+
+if (JK_PRIMARY_INSTANCE_LOCK_ACQUIRED) {
+    logElectronLifecycle('authentication-profile-selected', {
+        userDataDir: JK_ELECTRON_USER_DATA_DIR,
+        appRootDir: JK_APP_ROOT_DIR,
+        packaged: !!app.isPackaged
+    });
+    app.on('second-instance', () => {
+        logElectronLifecycle('second-instance-focused-primary', {
+            focused: focusPrimaryJkWindow()
+        });
+    });
+} else {
+    logElectronLifecycle('second-instance-rejected', {
+        userDataDir: JK_ELECTRON_USER_DATA_DIR
+    });
+    setImmediate(() => app.quit());
 }
 
 function formatPathTimestamp(date = new Date()) {
@@ -183,6 +273,80 @@ function getAvantProLastGoodStorageDir() {
 
 function getAvantProLastGoodManifestPath() {
     return path.join(getAvantProLastGoodStorageRootDir(), 'manifest.json');
+}
+
+function recoverAvantProSnapshotTransactionArtifacts() {
+    if (avantProSnapshotArtifactsRecovered) return;
+    avantProSnapshotArtifactsRecovered = true;
+    const snapshotRoot = getAvantProLastGoodStorageRootDir();
+    if (!fs.existsSync(snapshotRoot)) return;
+    const snapshotDir = getAvantProLastGoodStorageDir();
+    const manifestPath = getAvantProLastGoodManifestPath();
+    let entries = [];
+    try { entries = fs.readdirSync(snapshotRoot, { withFileTypes: true }); } catch (_err) { return; }
+    const candidates = entries
+        .filter(entry => entry && entry.isDirectory() && (
+            entry.name.startsWith(`${AVANTPRO_CHROME_EXTENSION_ID}.previous_`)
+            || entry.name.startsWith(`${AVANTPRO_CHROME_EXTENSION_ID}.tmp_`)
+        ))
+        .map(entry => path.join(snapshotRoot, entry.name))
+        .sort((left, right) => getDirectoryLatestFileMtimeMs(right) - getDirectoryLatestFileMtimeMs(left));
+    let currentAuth = inspectAvantProExtensionStorage(snapshotDir);
+    if (!avantProStorageAuthLooksUsable(currentAuth)) {
+        const recoveryDir = candidates.find(candidate => (
+            avantProStorageAuthLooksUsable(inspectAvantProExtensionStorage(candidate))
+        ));
+        if (recoveryDir) {
+            try {
+                removeManagedDirectory(snapshotDir, snapshotRoot);
+                fs.renameSync(recoveryDir, snapshotDir);
+                currentAuth = inspectAvantProExtensionStorage(snapshotDir);
+                logElectronLifecycle('avantpro-storage-snapshot-transaction-recovered', {
+                    recoveryDir,
+                    snapshotDir,
+                    auth: publicAvantProAuthInfo(currentAuth)
+                });
+            } catch (err) {
+                logElectronLifecycle('avantpro-storage-snapshot-transaction-recovery-failed', {
+                    recoveryDir,
+                    snapshotDir,
+                    error: err && err.message ? err.message : String(err)
+                });
+            }
+        }
+    }
+    let manifestValid = false;
+    try {
+        manifestValid = !!JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    } catch (_err) {}
+    if (avantProStorageAuthLooksUsable(currentAuth) && !manifestValid) {
+        try {
+            const recoveredFiles = countDirectoryFilesWithoutLocks(snapshotDir);
+            const manifest = {
+                savedAt: new Date().toISOString(),
+                reason: 'transaction-artifact-recovery',
+                sourceDir: snapshotDir,
+                snapshotDir,
+                copied: recoveredFiles,
+                sourceFiles: recoveredFiles,
+                auth: publicAvantProAuthInfo(currentAuth)
+            };
+            const tempManifest = `${manifestPath}.recovery_${process.pid}`;
+            fs.writeFileSync(tempManifest, JSON.stringify(manifest, null, 2), 'utf8');
+            if (fs.existsSync(manifestPath)) fs.rmSync(manifestPath, { force: true });
+            fs.renameSync(tempManifest, manifestPath);
+        } catch (_err) {}
+    }
+    if (!avantProStorageAuthLooksUsable(currentAuth)) return;
+    for (const candidate of candidates) {
+        if (path.resolve(candidate) === path.resolve(snapshotDir)) continue;
+        try { removeManagedDirectory(candidate, snapshotRoot); } catch (_err) {}
+    }
+    for (const entry of entries) {
+        if (!entry || entry.isDirectory()) continue;
+        if (!/^manifest\.json\.(?:tmp|previous)_/i.test(entry.name)) continue;
+        try { fs.rmSync(path.join(snapshotRoot, entry.name), { force: true }); } catch (_err) {}
+    }
 }
 
 function getChromeUserDataDir() {
@@ -234,6 +398,8 @@ function inspectAvantProExtensionStorage(storageDir) {
     const info = {
         hasUser: false,
         hasAccounts: false,
+        hasAccessToken: false,
+        hasLoginAt: false,
         maxExpiresInMs: 0,
         latestMtimeMs: 0
     };
@@ -270,6 +436,8 @@ function inspectAvantProExtensionStorage(storageDir) {
                 const text = buffer.toString('latin1');
                 if (/avantproUser/i.test(text)) info.hasUser = true;
                 if (/avantproAccounts/i.test(text)) info.hasAccounts = true;
+                if (/accessToken/i.test(text)) info.hasAccessToken = true;
+                if (/loginAt/i.test(text)) info.hasLoginAt = true;
                 const regex = /expiresIn[^0-9]{0,40}([0-9]{10,})/gi;
                 let match = null;
                 while ((match = regex.exec(text))) {
@@ -281,8 +449,13 @@ function inspectAvantProExtensionStorage(storageDir) {
             } catch (_err) {}
         }
     }
-    info.hasLikelyAuth = !!(info.hasUser || info.hasAccounts || info.maxExpiresInMs > 0);
-    info.authValid = info.maxExpiresInMs > Date.now();
+    // Na extensao atual, accessToken + loginAt formam o registro de login.
+    // avantproAccounts.expiresIn e apenas a validade do cache de contas e
+    // nao pode fazer o aplicativo descartar uma sessao que ainda pode renovar.
+    info.hasAuthRecord = !!(info.hasAccessToken && info.hasLoginAt);
+    info.hasLikelyAuth = !!info.hasAuthRecord;
+    info.cacheFresh = info.maxExpiresInMs > Date.now();
+    info.authValid = info.hasLikelyAuth;
     return info;
 }
 
@@ -366,6 +539,17 @@ function copyDirectoryWithoutLocks(sourceDir, targetDir) {
     return copied;
 }
 
+function countDirectoryFilesWithoutLocks(sourceDir) {
+    if (!sourceDir || !fs.existsSync(sourceDir)) return 0;
+    let total = 0;
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+        if (!entry || entry.name === 'LOCK') continue;
+        const sourcePath = path.join(sourceDir, entry.name);
+        total += entry.isDirectory() ? countDirectoryFilesWithoutLocks(sourcePath) : 1;
+    }
+    return total;
+}
+
 function pathIsInside(parentDir, candidatePath) {
     const parent = path.resolve(parentDir);
     const candidate = path.resolve(candidatePath);
@@ -381,23 +565,26 @@ function removeManagedDirectory(targetDir, allowedRootDir) {
 }
 
 function avantProStorageAuthLooksUsable(authInfo) {
-    if (!authInfo || !authInfo.hasLikelyAuth) return false;
-    const expires = Number(authInfo.maxExpiresInMs || 0);
-    return !(expires > 0 && expires <= Date.now());
+    return !!(authInfo && authInfo.hasAuthRecord);
 }
 
 function publicAvantProAuthInfo(authInfo) {
     return {
         hasUser: !!(authInfo && authInfo.hasUser),
         hasAccounts: !!(authInfo && authInfo.hasAccounts),
+        hasAccessToken: !!(authInfo && authInfo.hasAccessToken),
+        hasLoginAt: !!(authInfo && authInfo.hasLoginAt),
+        hasAuthRecord: !!(authInfo && authInfo.hasAuthRecord),
         hasLikelyAuth: !!(authInfo && authInfo.hasLikelyAuth),
         authValid: !!(authInfo && authInfo.authValid),
+        cacheFresh: !!(authInfo && authInfo.cacheFresh),
         maxExpiresInMs: Number(authInfo && authInfo.maxExpiresInMs || 0),
         latestMtimeMs: Number(authInfo && authInfo.latestMtimeMs || 0)
     };
 }
 
 function getAvantProStorageSnapshotStatus() {
+    recoverAvantProSnapshotTransactionArtifacts();
     const currentDir = getAvantProExtensionStorageDir();
     const snapshotDir = getAvantProLastGoodStorageDir();
     const currentAuth = inspectAvantProExtensionStorage(currentDir);
@@ -425,6 +612,22 @@ function getAvantProStorageSnapshotStatus() {
 }
 
 async function saveAvantProExtensionStorageSnapshot(reason = 'manual', details = {}) {
+    const previousSnapshot = avantProStorageSnapshotPromise || Promise.resolve(null);
+    let queuedSnapshot = null;
+    queuedSnapshot = previousSnapshot
+        .catch(() => null)
+        .then(() => saveAvantProExtensionStorageSnapshotUnlocked(reason, details))
+        .finally(() => {
+            if (avantProStorageSnapshotPromise === queuedSnapshot) {
+                avantProStorageSnapshotPromise = null;
+            }
+        });
+    avantProStorageSnapshotPromise = queuedSnapshot;
+    return queuedSnapshot;
+}
+
+async function saveAvantProExtensionStorageSnapshotUnlocked(reason = 'manual', details = {}) {
+    recoverAvantProSnapshotTransactionArtifacts();
     if (!isAvantProExtensionEnabled()) {
         return { success: false, skipped: true, reason: 'avantpro-disabled' };
     }
@@ -438,6 +641,7 @@ async function saveAvantProExtensionStorageSnapshot(reason = 'manual', details =
     }
     const sourceDir = getAvantProExtensionStorageDir();
     const sourceAuth = inspectAvantProExtensionStorage(sourceDir);
+    const sourceFiles = countDirectoryFilesWithoutLocks(sourceDir);
     if (!avantProStorageAuthLooksUsable(sourceAuth)) {
         logElectronLifecycle('avantpro-storage-snapshot-skipped-no-auth', {
             reason,
@@ -454,19 +658,41 @@ async function saveAvantProExtensionStorageSnapshot(reason = 'manual', details =
     }
     const snapshotRoot = getAvantProLastGoodStorageRootDir();
     const snapshotDir = getAvantProLastGoodStorageDir();
+    const liveAuthConfirmed = !!(details && details.liveAuthConfirmed === true);
+    const existingSnapshotAuth = inspectAvantProExtensionStorage(snapshotDir);
+    if (!liveAuthConfirmed && avantProStorageAuthLooksUsable(existingSnapshotAuth)) {
+        return {
+            success: false,
+            skipped: true,
+            reason: 'existing-good-kept-without-live-auth-confirmation',
+            sourceDir,
+            snapshotDir,
+            sourceAuth: publicAvantProAuthInfo(sourceAuth),
+            snapshotAuth: publicAvantProAuthInfo(existingSnapshotAuth)
+        };
+    }
     const tempDir = path.join(snapshotRoot, `${AVANTPRO_CHROME_EXTENSION_ID}.tmp_${process.pid}_${Date.now()}`);
+    const previousDir = path.join(snapshotRoot, `${AVANTPRO_CHROME_EXTENSION_ID}.previous_${process.pid}_${Date.now()}`);
+    const manifestPath = getAvantProLastGoodManifestPath();
+    const tempManifestPath = `${manifestPath}.tmp_${process.pid}_${Date.now()}`;
+    const previousManifestPath = `${manifestPath}.previous_${process.pid}_${Date.now()}`;
     fs.mkdirSync(snapshotRoot, { recursive: true });
     removeManagedDirectory(tempDir, snapshotRoot);
+    removeManagedDirectory(previousDir, snapshotRoot);
     let copied = 0;
+    let previousMoved = false;
+    let previousManifestMoved = false;
+    let snapshotPromoted = false;
     try {
         copied = copyDirectoryWithoutLocks(sourceDir, tempDir);
         const tempAuth = inspectAvantProExtensionStorage(tempDir);
-        if (!copied || !avantProStorageAuthLooksUsable(tempAuth)) {
+        if (!copied || copied !== sourceFiles || !avantProStorageAuthLooksUsable(tempAuth)) {
             removeManagedDirectory(tempDir, snapshotRoot);
             logElectronLifecycle('avantpro-storage-snapshot-skipped-empty', {
                 reason,
                 sourceDir,
                 copied,
+                sourceFiles,
                 tempAuth: publicAvantProAuthInfo(tempAuth)
             });
             return {
@@ -474,12 +700,17 @@ async function saveAvantProExtensionStorageSnapshot(reason = 'manual', details =
                 skipped: true,
                 reason: 'snapshot-copy-without-usable-auth',
                 copied,
+                sourceFiles,
                 sourceDir,
                 auth: publicAvantProAuthInfo(tempAuth)
             };
         }
-        removeManagedDirectory(snapshotDir, snapshotRoot);
+        if (fs.existsSync(snapshotDir)) {
+            fs.renameSync(snapshotDir, previousDir);
+            previousMoved = true;
+        }
         fs.renameSync(tempDir, snapshotDir);
+        snapshotPromoted = true;
         const manifest = {
             savedAt: new Date().toISOString(),
             reason: String(reason || 'manual'),
@@ -487,13 +718,52 @@ async function saveAvantProExtensionStorageSnapshot(reason = 'manual', details =
             sourceDir,
             snapshotDir,
             copied,
+            sourceFiles,
             auth: publicAvantProAuthInfo(tempAuth)
         };
-        fs.writeFileSync(getAvantProLastGoodManifestPath(), JSON.stringify(manifest, null, 2), 'utf8');
+        fs.writeFileSync(tempManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+        if (fs.existsSync(manifestPath)) {
+            fs.renameSync(manifestPath, previousManifestPath);
+            previousManifestMoved = true;
+        }
+        fs.renameSync(tempManifestPath, manifestPath);
+        try { if (previousMoved) removeManagedDirectory(previousDir, snapshotRoot); } catch (_cleanupErr) {}
+        try {
+            if (previousManifestMoved && fs.existsSync(previousManifestPath)) {
+                fs.rmSync(previousManifestPath, { force: true });
+            }
+        } catch (_cleanupErr) {}
         logElectronLifecycle('avantpro-storage-snapshot-saved', manifest);
         return { success: true, copied, sourceDir, snapshotDir, auth: manifest.auth, manifest };
     } catch (err) {
         try { removeManagedDirectory(tempDir, snapshotRoot); } catch (_err) {}
+        try { if (fs.existsSync(tempManifestPath)) fs.rmSync(tempManifestPath, { force: true }); } catch (_err) {}
+        try {
+            if (previousManifestMoved && fs.existsSync(previousManifestPath)) {
+                if (fs.existsSync(manifestPath)) fs.rmSync(manifestPath, { force: true });
+                fs.renameSync(previousManifestPath, manifestPath);
+            }
+        } catch (manifestRollbackErr) {
+            logElectronLifecycle('avantpro-storage-snapshot-manifest-rollback-failed', {
+                manifestPath,
+                previousManifestPath,
+                error: manifestRollbackErr && manifestRollbackErr.message ? manifestRollbackErr.message : String(manifestRollbackErr)
+            });
+        }
+        try {
+            if (previousMoved && fs.existsSync(previousDir)) {
+                removeManagedDirectory(snapshotDir, snapshotRoot);
+                fs.renameSync(previousDir, snapshotDir);
+            } else if (snapshotPromoted) {
+                removeManagedDirectory(snapshotDir, snapshotRoot);
+            }
+        } catch (rollbackErr) {
+            logElectronLifecycle('avantpro-storage-snapshot-rollback-failed', {
+                snapshotDir,
+                previousDir,
+                error: rollbackErr && rollbackErr.message ? rollbackErr.message : String(rollbackErr)
+            });
+        }
         logElectronLifecycle('avantpro-storage-snapshot-failed', {
             reason,
             sourceDir,
@@ -512,12 +782,45 @@ async function saveAvantProExtensionStorageSnapshot(reason = 'manual', details =
     }
 }
 
+function rollbackAvantProStorageRestore(backup, targetDir) {
+    const backupDir = backup && backup.success ? String(backup.backupDir || '') : '';
+    if (!backupDir || !fs.existsSync(backupDir)) {
+        if (!(backup && backup.missing)) return false;
+        try {
+            if (fs.existsSync(targetDir)) removeManagedDirectory(targetDir, JK_ELECTRON_USER_DATA_DIR);
+            return true;
+        } catch (_err) {
+            return false;
+        }
+    }
+    if (!pathIsInside(JK_ELECTRON_USER_DATA_DIR, backupDir) || !pathIsInside(JK_ELECTRON_USER_DATA_DIR, targetDir)) {
+        return false;
+    }
+    try {
+        if (fs.existsSync(targetDir)) {
+            removeManagedDirectory(targetDir, JK_ELECTRON_USER_DATA_DIR);
+        }
+        fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+        fs.renameSync(backupDir, targetDir);
+        return true;
+    } catch (err) {
+        logElectronLifecycle('avantpro-storage-snapshot-restore-rollback-failed', {
+            backupDir,
+            targetDir,
+            error: err && err.message ? err.message : String(err)
+        });
+        return false;
+    }
+}
+
 async function restoreAvantProExtensionStorageSnapshot(reason = 'manual', details = {}, options = {}) {
+    recoverAvantProSnapshotTransactionArtifacts();
     if (!isAvantProExtensionEnabled()) {
         return { success: false, skipped: true, reason: 'avantpro-disabled' };
     }
     const snapshotDir = getAvantProLastGoodStorageDir();
     const snapshotAuth = inspectAvantProExtensionStorage(snapshotDir);
+    const snapshotFiles = countDirectoryFilesWithoutLocks(snapshotDir);
     if (!avantProStorageAuthLooksUsable(snapshotAuth)) {
         return {
             success: false,
@@ -529,7 +832,9 @@ async function restoreAvantProExtensionStorageSnapshot(reason = 'manual', detail
     }
     const targetDir = getAvantProExtensionStorageDir();
     const targetAuth = inspectAvantProExtensionStorage(targetDir);
-    if (!options.force && avantProStorageAuthLooksUsable(targetAuth)) {
+    const targetUsable = avantProStorageAuthLooksUsable(targetAuth);
+    const targetAtLeastAsRecent = Number(targetAuth.latestMtimeMs || 0) >= Number(snapshotAuth.latestMtimeMs || 0);
+    if (targetUsable && (!options.force || targetAtLeastAsRecent)) {
         return {
             success: false,
             skipped: true,
@@ -553,23 +858,44 @@ async function restoreAvantProExtensionStorageSnapshot(reason = 'manual', detail
     if (!backup.success && !backup.missing) {
         return { success: false, reason: 'target-backup-failed', backup, snapshotDir, targetDir };
     }
-    fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-    const copied = copyDirectoryWithoutLocks(snapshotDir, targetDir);
-    const restoredAuth = inspectAvantProExtensionStorage(targetDir);
-    if (!copied || !avantProStorageAuthLooksUsable(restoredAuth)) {
+    let copied = 0;
+    let restoredAuth = null;
+    try {
+        fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+        copied = copyDirectoryWithoutLocks(snapshotDir, targetDir);
+        restoredAuth = inspectAvantProExtensionStorage(targetDir);
+    } catch (err) {
+        const rolledBack = rollbackAvantProStorageRestore(backup, targetDir);
+        return {
+            success: false,
+            reason: 'snapshot-restore-copy-failed',
+            copied,
+            backup,
+            rolledBack,
+            snapshotDir,
+            targetDir,
+            error: err && err.message ? err.message : String(err)
+        };
+    }
+    if (!copied || copied !== snapshotFiles || !avantProStorageAuthLooksUsable(restoredAuth)) {
+        const rolledBack = rollbackAvantProStorageRestore(backup, targetDir);
         logElectronLifecycle('avantpro-storage-snapshot-restore-no-auth', {
             reason,
             snapshotDir,
             targetDir,
             copied,
+            snapshotFiles,
             restoredAuth: publicAvantProAuthInfo(restoredAuth),
-            backup
+            backup,
+            rolledBack
         });
         return {
             success: false,
             reason: 'restored-without-usable-auth',
             copied,
+            snapshotFiles,
             backup,
+            rolledBack,
             snapshotDir,
             targetDir,
             restoredAuth: publicAvantProAuthInfo(restoredAuth)
@@ -689,10 +1015,12 @@ async function recoverAvantProExtensionStorage(reason = 'avantpro-not-detected',
             success: false,
             error: err && err.message ? err.message : String(err)
         }));
-        if (snapshotRestore && snapshotRestore.success) {
+        if (snapshotRestore && (snapshotRestore.success || snapshotRestore.reason === 'target-current')) {
             return {
                 ...snapshotRestore,
-                recoveredFromSnapshot: true
+                success: true,
+                recoveredFromSnapshot: !!snapshotRestore.success,
+                preservedCurrentStorage: snapshotRestore.reason === 'target-current'
             };
         }
         await unloadAvantProExtensionForRecovery();
@@ -744,23 +1072,12 @@ async function importAvantProExtensionStorageFromChrome(reason = 'avantpro-accou
             });
             return { success: false, noAuthSource: true, source };
         }
-        if (sourceAuth.maxExpiresInMs > 0 && sourceAuth.maxExpiresInMs <= Date.now()) {
-            logElectronLifecycle('avantpro-storage-import-expired-source', {
-                reason,
-                details,
-                sourceProfile: source.profile,
-                sourceDir: source.storageDir,
-                sourceAuth
-            });
-            return { success: false, expiredSource: true, source };
-        }
         avantProStorageImportAttempted = true;
         const targetDir = getAvantProExtensionStorageDir();
         const targetAuth = inspectAvantProExtensionStorage(targetDir);
         if (
-            targetAuth.hasLikelyAuth
-            && targetAuth.maxExpiresInMs > Date.now()
-            && targetAuth.maxExpiresInMs >= Number(sourceAuth.maxExpiresInMs || 0) - 60000
+            avantProStorageAuthLooksUsable(targetAuth)
+            && Number(targetAuth.latestMtimeMs || 0) >= Number(source.latestMtimeMs || 0) - 1000
         ) {
             logElectronLifecycle('avantpro-storage-import-skipped-target-current', {
                 reason,
@@ -781,6 +1098,26 @@ async function importAvantProExtensionStorageFromChrome(reason = 'avantpro-accou
             targetDir,
             targetAuth
         });
+        let sourceFiles = 0;
+        try {
+            sourceFiles = countDirectoryFilesWithoutLocks(source.storageDir);
+        } catch (err) {
+            logElectronLifecycle('avantpro-storage-import-source-enumeration-failed', {
+                reason,
+                sourceProfile: source.profile,
+                sourceDir: source.storageDir,
+                error: err && err.message ? err.message : String(err)
+            });
+            return {
+                success: false,
+                reason: 'source-enumeration-failed',
+                source,
+                error: err && err.message ? err.message : String(err)
+            };
+        }
+        if (!sourceFiles) {
+            return { success: false, reason: 'source-empty', source, sourceFiles };
+        }
         await unloadAvantProExtensionForRecovery();
         const backup = backupAndResetAvantProExtensionStorage(`import_from_${source.profile}_${reason}`);
         if (!backup.success && !backup.missing) {
@@ -793,17 +1130,39 @@ async function importAvantProExtensionStorageFromChrome(reason = 'avantpro-accou
             });
             return { success: false, resetFailed: true, backup, source };
         }
-        fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-        const copied = copyDirectoryWithoutLocks(source.storageDir, targetDir);
-        if (!copied) {
+        let copied = 0;
+        let importedAuth = null;
+        try {
+            fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+            copied = copyDirectoryWithoutLocks(source.storageDir, targetDir);
+            importedAuth = inspectAvantProExtensionStorage(targetDir);
+        } catch (err) {
+            const rolledBack = rollbackAvantProStorageRestore(backup, targetDir);
+            return {
+                success: false,
+                reason: 'import-copy-failed',
+                copied,
+                sourceFiles,
+                rolledBack,
+                backup,
+                source,
+                error: err && err.message ? err.message : String(err)
+            };
+        }
+        if (!copied || copied !== sourceFiles || !avantProStorageAuthLooksUsable(importedAuth)) {
+            const rolledBack = rollbackAvantProStorageRestore(backup, targetDir);
             logElectronLifecycle('avantpro-storage-import-empty', {
                 reason,
                 sourceProfile: source.profile,
                 sourceDir: source.storageDir,
                 targetDir,
-                backup
+                backup,
+                copied,
+                sourceFiles,
+                rolledBack,
+                importedAuth: publicAvantProAuthInfo(importedAuth)
             });
-            return { success: false, empty: true, backup, source };
+            return { success: false, empty: true, copied, sourceFiles, rolledBack, backup, source };
         }
         chromeExtensionsLoadPromise = reloadExtensions ? null : chromeExtensionsLoadPromise;
         const loaded = reloadExtensions
@@ -920,8 +1279,6 @@ function recoverProfileIfStartupCrashed() {
     const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
     const recoveryDir = path.join(JK_ELECTRON_USER_DATA_DIR, `electron_user_data_recovery_${stamp}`);
     const entries = [
-        'Local Storage',
-        'Session Storage',
         'Cache',
         'Code Cache',
         'GPUCache',
@@ -929,6 +1286,10 @@ function recoverProfileIfStartupCrashed() {
         'blob_storage',
         'Shared Dictionary'
     ];
+    const resetAuthStorage = /^(1|true|sim|yes|on)$/i.test(String(process.env.JK_RESET_AUTH_STORAGE_ON_STARTUP_CRASH || ''));
+    if (resetAuthStorage) {
+        entries.unshift('Local Storage', 'Session Storage', 'WebStorage');
+    }
     const moved = [];
     for (const entry of entries) {
         try {
@@ -937,7 +1298,11 @@ function recoverProfileIfStartupCrashed() {
             logElectronLifecycle('profile-recovery-failed', { entry, error: err && err.message ? err.message : String(err) });
         }
     }
-    logElectronLifecycle('profile-recovery-after-startup-crash', { moved, recoveryDir });
+    logElectronLifecycle('profile-recovery-after-startup-crash', {
+        moved,
+        recoveryDir,
+        authenticationStoragePreserved: !resetAuthStorage
+    });
 }
 
 function markStartupIncomplete() {

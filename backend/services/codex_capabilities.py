@@ -1,4 +1,4 @@
-"""Unified capability registry for Joao Pretinho."""
+"""Unified capability registry for Black Jhon."""
 
 from __future__ import annotations
 
@@ -358,7 +358,9 @@ def _capabilities_from_tools() -> list[dict[str, Any]]:
     try:
         from backend.services import codex_assistant
 
-        tools = codex_assistant._assistant_tools_public()
+        # O catalogo interno precisa conhecer todas as capacidades. A filtragem
+        # por usuario ocorre antes de expor/enviar o catalogo ao agente.
+        tools = codex_assistant._assistant_tools_public({"full": True})
     except Exception:
         tools = []
     caps: list[dict[str, Any]] = []
@@ -734,8 +736,16 @@ def resolve_capability(
     }
 
 
-def compact_capability_catalog(*, client_id: str = "", limit: int = 120) -> dict[str, Any]:
+def compact_capability_catalog(*, client_id: str = "", limit: int = 120, read_only_only: bool = False) -> dict[str, Any]:
     caps = build_capabilities(client_id)
+    if read_only_only:
+        caps = [
+            cap
+            for cap in caps
+            if cap.get("read_only") is True
+            and not bool(cap.get("mutating"))
+            and not bool(cap.get("requires_approval"))
+        ]
     grouped: dict[str, dict[str, Any]] = {}
     for cap in caps:
         module = str(cap.get("module") or "sistema")

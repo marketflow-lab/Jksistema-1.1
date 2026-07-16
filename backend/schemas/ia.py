@@ -22,6 +22,7 @@ class IAChatRequest(BaseModel):
     conversa_id: Optional[str] = None
     modulo: Optional[str] = None
     conversa_mensagens: Optional[list[dict]] = None
+    fallback_read_only: bool = False
 
 
 class IAAgentQueryRequest(BaseModel):

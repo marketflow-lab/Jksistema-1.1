@@ -34,6 +34,7 @@ LEGACY_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("POST", "/historico/realtime-sync", "favoritos_historico_realtime_sync"),
     LegacyRouteSpec("GET", "/planilhas-lojas", "favoritos_planilhas_lojas_get"),
     LegacyRouteSpec("PUT", "/planilhas-lojas", "favoritos_planilhas_lojas_put"),
+    LegacyRouteSpec("POST", "/planilhas-lojas/colar-historico", "favoritos_planilhas_colar_historico"),
     LegacyRouteSpec("GET", "/ml/skus-anuncios", "favoritos_ml_listar_skus_anuncios"),
     LegacyRouteSpec("GET", "/ml/promocoes", "favoritos_ml_listar_promocoes_ativas"),
     LegacyRouteSpec("POST", "/ml/validar-efetivacao", "favoritos_ml_validar_efetivacao"),
@@ -51,6 +52,7 @@ LEGACY_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
 
 JOB_FAVORITOS_ROUTES: tuple[LegacyRouteSpec, ...] = (
     LegacyRouteSpec("POST", "/jobs", "favoritos_jobs_start"),
+    LegacyRouteSpec("GET", "/jobs/latest", "favoritos_jobs_latest"),
     LegacyRouteSpec("GET", "/jobs/{job_id}/status", "favoritos_jobs_status"),
     LegacyRouteSpec("GET", "/jobs/{job_id}/proxima-coleta", "favoritos_jobs_proxima_coleta"),
     LegacyRouteSpec("POST", "/jobs/{job_id}/coleta-termo", "favoritos_jobs_coleta_termo"),

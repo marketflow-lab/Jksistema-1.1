@@ -24,6 +24,7 @@ from backend.schemas import (
     SharedSyncConfigRequest,
     SharedSyncMachineConfigRequest,
     SharedSyncRunRequest,
+    SharedSyncPreviewRequest,
     SharedSyncUserInviteActionRequest,
     SharedSyncUserInviteCreateRequest,
     SharedSyncUserLinkRunRequest,
@@ -59,6 +60,37 @@ def shared_sync_machine_salvar_config(
     config = _shared_sync_machine_config_save(sessao, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
     return _shared_sync_machine_status_payload(sessao, "")
 
+
+def _shared_sync_machine_bundle_ids(sessao: dict, scopes: list[str]) -> dict[str, str]:
+    return {
+        scope: _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
+        for scope in scopes
+    }
+
+
+def shared_sync_machine_preview(
+    payload: SharedSyncPreviewRequest,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    sessao = _shared_sync_session(authorization, client_id)
+    direction = _shared_sync_operation_direction(payload.direction)
+    scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    bundle_ids = _shared_sync_machine_bundle_ids(sessao, scopes)
+    if direction == "pull":
+        missing = [scope for scope, bundle_id in bundle_ids.items() if not _shared_sync_remote_meta_by_id(bundle_id)]
+        if missing:
+            raise HTTPException(status_code=404, detail="Ainda nao existe snapshot remoto para todos os modulos selecionados.")
+    return _shared_sync_create_preview(
+        sessao,
+        kind="machine",
+        resource_id="self",
+        direction=direction,
+        scopes=scopes,
+        bundle_ids=bundle_ids,
+        machine_id=payload.machine_id or "",
+    )
+
 def shared_sync_machine_push(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
@@ -66,7 +98,13 @@ def shared_sync_machine_push(
 ):
     sessao = _shared_sync_session(authorization, client_id)
     scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    bundle_ids = _shared_sync_machine_bundle_ids(sessao, scopes)
+    operation = _shared_sync_require_operation(
+        payload.operation_id, sessao, kind="machine", resource_id="self",
+        direction="push", scopes=scopes, bundle_ids=bundle_ids,
+    )
     results = [_shared_sync_machine_push_scope(sessao, scope, payload.machine_id or "") for scope in scopes]
+    _shared_sync_audit(sessao, record=operation, results=results)
     return {"success": True, "direction": "machine-push", "results": results}
 
 def shared_sync_machine_pull(
@@ -76,7 +114,13 @@ def shared_sync_machine_pull(
 ):
     sessao = _shared_sync_session(authorization, client_id)
     scopes = _shared_sync_machine_resolver_scopes(sessao, payload.scopes, require_enabled=True)
+    bundle_ids = _shared_sync_machine_bundle_ids(sessao, scopes)
+    operation = _shared_sync_require_operation(
+        payload.operation_id, sessao, kind="machine", resource_id="self",
+        direction="pull", scopes=scopes, bundle_ids=bundle_ids,
+    )
     results = [_shared_sync_machine_pull_scope(sessao, scope) for scope in scopes]
+    _shared_sync_audit(sessao, record=operation, results=results)
     return {"success": True, "direction": "machine-pull", "results": results}
 
 def shared_sync_machine_auto(
@@ -218,25 +262,16 @@ def shared_sync_push(
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
-    sessao = _shared_sync_session(authorization, client_id)
-    config = _shared_sync_config_read(client_id)
-    scopes = _shared_sync_resolver_scopes(config, payload.scopes, sessao)
-    resultados = [_shared_sync_push_scope(client_id, scope, sessao, payload.machine_id or "") for scope in scopes]
-    return {"success": True, "direction": "push", "results": resultados}
+    _shared_sync_session(authorization, client_id)
+    return _shared_sync_manual_only_payload("legacy-push-use-machine-preview")
 
 def shared_sync_pull(
     payload: SharedSyncRunRequest,
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
 ):
-    sessao = _shared_sync_session(authorization, client_id)
-    config = _shared_sync_config_read(client_id)
-    scopes = _shared_sync_resolver_scopes(config, payload.scopes, sessao)
-    resultados = [
-        _shared_sync_pull_scope(client_id, scope, sessao, payload.machine_id or "", ((config.get("scopes") or {}).get(scope) or {}))
-        for scope in scopes
-    ]
-    return {"success": True, "direction": "pull", "results": resultados}
+    _shared_sync_session(authorization, client_id)
+    return _shared_sync_manual_only_payload("legacy-pull-use-machine-preview")
 
 configure_shared_sync_machine_endpoints_runtime()
 
@@ -244,6 +279,7 @@ __all__ = [
     "configure_shared_sync_machine_endpoints_runtime",
     "shared_sync_machine_status",
     "shared_sync_machine_salvar_config",
+    "shared_sync_machine_preview",
     "shared_sync_machine_push",
     "shared_sync_machine_pull",
     "shared_sync_machine_auto",

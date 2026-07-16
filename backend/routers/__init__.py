@@ -21,8 +21,14 @@ from .promocoes import create_promocoes_router
 from .renovacao import RenovacaoRouterConfig, create_renovacao_router
 from .registry import include_feature_routers
 from .sala_reuniao import create_sala_reuniao_router
-from .shared_sync import create_shared_sync_router
 from .vendas import create_vendas_router
+from .whatsapp_bridge import create_whatsapp_bridge_router
+
+
+def create_shared_sync_router():
+    """Importa Shared Sync somente quando o runtime ja possui get_tenant_path."""
+    from .shared_sync import create_shared_sync_router as factory
+    return factory()
 
 __all__ = [
     "FrontendRouterConfig",
@@ -55,6 +61,7 @@ __all__ = [
     "create_sala_reuniao_router",
     "create_shared_sync_router",
     "create_vendas_router",
+    "create_whatsapp_bridge_router",
     "include_feature_routers",
     "mount_static_assets",
 ]

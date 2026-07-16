@@ -632,13 +632,13 @@ async function chamarAssistenteBackendVendas(pergunta, anexos = []) {
             }
             ultimoErro = new Error(resp.status === 405
                 ? 'O servidor local ainda está com uma versão antiga. Reinicie o programa para ativar a IA.'
-                : (data?.detail || resp.statusText || 'Falha ao consultar o assistente IA.'));
+                : (data?.detail || resp.statusText || 'Falha ao consultar o Black Jhon.'));
             if (resp.status !== 405) break;
         } catch (error) {
             if (!ultimoErro) ultimoErro = error;
         }
     }
-    throw ultimoErro || new Error('Falha ao consultar o assistente IA.');
+    throw ultimoErro || new Error('Falha ao consultar o Black Jhon.');
 }
 
 async function enviarPerguntaAssistenteVendas(perguntaManual) {
@@ -742,7 +742,21 @@ if (_iaModelSel) {
     });
     carregarModelosAssistenteVendas().catch(() => {});
 }
-btnSidebarAssistenteVendas?.addEventListener('click', () => alternarAbaSidebarVendas('assistente', true));
+btnSidebarAssistenteVendas?.addEventListener('click', () => {
+    const fab = document.getElementById('jk-ia-fab');
+    if (fab) {
+        fab.click();
+        return;
+    }
+    const lightFab = document.getElementById('jk-ia-light-fab');
+    if (lightFab) {
+        lightFab.click();
+        return;
+    }
+    if (typeof window.__JK_IA_SIDEBAR_LOAD_FULL__ === 'function') {
+        void window.__JK_IA_SIDEBAR_LOAD_FULL__({ openAfterLoad: true });
+    }
+});
 btnSidebarAiEnviarVendas?.addEventListener('click', () => enviarPerguntaAssistenteVendas());
 btnSidebarAiAnexoVendas?.addEventListener('click', () => sidebarAiFileInputVendas?.click());
 sidebarAiFileInputVendas?.addEventListener('change', async (event) => {

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 class SharedSyncScopeConfigRequest(BaseModel):
     enabled: bool = False
     allowed_users: Optional[list[str]] = None
-    auto_pull: bool = True
+    auto_pull: bool = False
     auto_push: bool = False
     share_between_users: bool = False
     conflict: Optional[str] = "latest_wins"
@@ -21,13 +21,20 @@ class SharedSyncConfigRequest(BaseModel):
 class SharedSyncRunRequest(BaseModel):
     scopes: Optional[list[str]] = None
     machine_id: Optional[str] = None
+    operation_id: str = ""
+
+
+class SharedSyncPreviewRequest(BaseModel):
+    direction: str = "pull"
+    scopes: Optional[list[str]] = None
+    machine_id: Optional[str] = None
 
 
 class SharedSyncMachineConfigRequest(BaseModel):
     enabled: bool = False
     scopes: Optional[list[str]] = None
-    auto_pull: bool = True
-    auto_push: bool = True
+    auto_pull: bool = False
+    auto_push: bool = False
 
 
 class SharedSyncUserInviteCreateRequest(BaseModel):
@@ -52,15 +59,26 @@ class SharedSyncUserLinkUpdateRequest(BaseModel):
 class SharedSyncUserLinkRunRequest(BaseModel):
     scopes: Optional[list[str]] = None
     machine_id: Optional[str] = None
+    operation_id: str = ""
+
+
+class SharedSyncUserLinkCreateRequest(BaseModel):
+    target_username: str = ""
+    target_client_id: Optional[str] = None
+    scopes: Optional[list[str]] = None
+    message: Optional[str] = ""
+    machine_id: Optional[str] = None
 
 
 __all__ = [
     "SharedSyncScopeConfigRequest",
     "SharedSyncConfigRequest",
     "SharedSyncRunRequest",
+    "SharedSyncPreviewRequest",
     "SharedSyncMachineConfigRequest",
     "SharedSyncUserInviteCreateRequest",
     "SharedSyncUserInviteActionRequest",
     "SharedSyncUserLinkUpdateRequest",
     "SharedSyncUserLinkRunRequest",
+    "SharedSyncUserLinkCreateRequest",
 ]

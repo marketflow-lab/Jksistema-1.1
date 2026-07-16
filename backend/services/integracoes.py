@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import threading
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Callable
+from datetime import datetime, timezone
 from urllib.parse import quote, quote_plus, urlencode
 
 import requests
@@ -181,7 +183,9 @@ def _integracoes_restaurar_backup_imediato(caminho: str, erro_original: Exceptio
         return None
 
 
-def _integracoes_validar_regressao_lojas(caminho: str, novas_lojas: list) -> None:
+def _integracoes_validar_regressao_lojas(caminho: str, novas_lojas: list, permitir_reducao_confirmada: bool = False) -> None:
+    if permitir_reducao_confirmada:
+        return
     if not os.path.exists(caminho):
         return
     try:
@@ -358,6 +362,92 @@ def _integracoes_normalizar_oauth_compartilhado_lojas(lojas):
     return lojas, mudou
 
 
+def _integracoes_sync_clean(value):
+    if isinstance(value, list):
+        return [_integracoes_sync_clean(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _integracoes_sync_clean(item)
+            for key, item in value.items()
+            if key not in {"_sync_version", "_sync_updated_at"}
+        }
+    return value
+
+
+def _integracoes_store_id(client_id: str, loja: dict) -> str:
+    existing = str((loja or {}).get("store_id") or "").strip()
+    if existing:
+        return existing
+    seed = f"{str(client_id or 'default').strip().lower()}|{_integracoes_nome_normalizado((loja or {}).get('nome'))}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+
+
+def _integracoes_normalizar_sync_metadata(client_id: str, lojas: list, atuais: list | None = None):
+    atuais_por_id = {
+        _integracoes_store_id(client_id, item): item
+        for item in (atuais or []) if isinstance(item, dict)
+    }
+    changed = False
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for loja in lojas or []:
+        if not isinstance(loja, dict):
+            continue
+        store_id = _integracoes_store_id(client_id, loja)
+        if loja.get("store_id") != store_id:
+            loja["store_id"] = store_id
+            changed = True
+        current = atuais_por_id.get(store_id) or {}
+        content_changed = _integracoes_sync_clean(loja) != _integracoes_sync_clean(current)
+        current_version = int(current.get("_sync_version") or 0)
+        expected_version = max(1, current_version + (1 if current and content_changed else 0))
+        if int(loja.get("_sync_version") or 0) != expected_version:
+            loja["_sync_version"] = expected_version
+            changed = True
+        if content_changed or not loja.get("_sync_updated_at"):
+            loja["_sync_updated_at"] = now
+            changed = True
+        integracoes = loja.get("integracoes") if isinstance(loja.get("integracoes"), dict) else {}
+        current_integracoes = current.get("integracoes") if isinstance(current.get("integracoes"), dict) else {}
+        for service, data in integracoes.items():
+            if not isinstance(data, dict):
+                continue
+            current_data = current_integracoes.get(service) if isinstance(current_integracoes.get(service), dict) else {}
+            integration_changed = _integracoes_sync_clean(data) != _integracoes_sync_clean(current_data)
+            current_iv = int(current_data.get("_sync_version") or 0)
+            expected_iv = max(1, current_iv + (1 if current_data and integration_changed else 0))
+            if int(data.get("_sync_version") or 0) != expected_iv:
+                data["_sync_version"] = expected_iv
+                changed = True
+            if integration_changed or not data.get("_sync_updated_at"):
+                data["_sync_updated_at"] = now
+                changed = True
+    return lojas, changed
+
+
+def _integracoes_tombstones_path(client_id: str) -> str:
+    return os.path.join(_tenant_path(client_id), "lojas_sync_tombstones.json")
+
+
+def registrar_tombstone_integracao(client_id: str, *, loja: dict, servico: str = "", tipo: str = "store") -> None:
+    with _LOJAS_CONFIG_LOCK:
+        path = _integracoes_tombstones_path(client_id)
+        payload = _integracoes_ler_json(path, [])
+        if not isinstance(payload, list):
+            payload = []
+        store_id = _integracoes_store_id(client_id, loja or {})
+        key = f"{tipo}:{store_id}:{str(servico or '').strip().lower()}"
+        payload = [item for item in payload if str((item or {}).get("key") or "") != key]
+        payload.append({
+            "key": key,
+            "type": tipo,
+            "store_id": store_id,
+            "service": str(servico or "").strip().lower(),
+            "version": int((loja or {}).get("_sync_version") or 0) + 1,
+            "deleted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        _integracoes_escrever_lojas_config_atomico(path, payload)
+
+
 def carregar_lojas(client_id: str):
     """Carrega as lojas do cliente do arquivo JSON."""
     with _LOJAS_CONFIG_LOCK:
@@ -377,18 +467,22 @@ def carregar_lojas(client_id: str):
             lojas, mudou = _integracoes_mesclar_legadas(client_id, lojas)
             lojas, mudou_oauth = _integracoes_normalizar_oauth_compartilhado_lojas(lojas)
             mudou = mudou or mudou_oauth
+            lojas, mudou_sync = _integracoes_normalizar_sync_metadata(client_id, lojas, lojas)
+            mudou = mudou or mudou_sync
             if mudou:
                 salvar_lojas(client_id, lojas)
             return lojas
         lojas, mudou = _integracoes_mesclar_legadas(client_id, [])
         lojas, mudou_oauth = _integracoes_normalizar_oauth_compartilhado_lojas(lojas)
         mudou = mudou or mudou_oauth
+        lojas, mudou_sync = _integracoes_normalizar_sync_metadata(client_id, lojas, lojas)
+        mudou = mudou or mudou_sync
         if mudou:
             salvar_lojas(client_id, lojas)
         return lojas
 
 
-def salvar_lojas(client_id: str, lojas: list):
+def salvar_lojas(client_id: str, lojas: list, *, permitir_reducao_confirmada: bool = False):
     """Salva as lojas do cliente no arquivo JSON."""
     tenant_path = _tenant_path(client_id)
     arquivo_lojas = os.path.join(tenant_path, "lojas_config.json")
@@ -396,7 +490,14 @@ def salvar_lojas(client_id: str, lojas: list):
     with _LOJAS_CONFIG_LOCK:
         try:
             _integracoes_validar_lojas_config(lojas, "payload de lojas")
-            _integracoes_validar_regressao_lojas(arquivo_lojas, lojas)
+            atuais = []
+            if os.path.exists(arquivo_lojas):
+                try:
+                    atuais = _integracoes_ler_lojas_config_arquivo(arquivo_lojas)
+                except Exception:
+                    atuais = []
+            lojas, _ = _integracoes_normalizar_sync_metadata(client_id, lojas, atuais)
+            _integracoes_validar_regressao_lojas(arquivo_lojas, lojas, permitir_reducao_confirmada)
             _integracoes_salvar_backup_imediato(arquivo_lojas)
             _integracoes_escrever_lojas_config_atomico(arquivo_lojas, lojas)
         except HTTPException:
@@ -454,6 +555,7 @@ def desconectar_api_loja(client_id: str, nome_loja: str, api_nome: str) -> dict:
             continue
         integracoes = loja.setdefault("integracoes", {})
         integracoes[api_nome] = {"connected": False}
+        registrar_tombstone_integracao(client_id, loja=loja, servico=api_nome, tipo="integration")
         salvar_lojas(client_id, lojas)
         return loja
     raise HTTPException(status_code=404, detail="Loja nao encontrada.")
@@ -559,7 +661,7 @@ def auth_ml_exchange(app_id, client_secret, code, redirect_uri=None):
         if resp.status_code == 200:
             result = resp.json()
             logger.info("[ML EXCHANGE] SUCCESS")
-            logger.info("[ML EXCHANGE] Access Token: %s...", result.get("access_token", "N/A")[:30])
+            logger.info("[ML EXCHANGE] Credenciais recebidas: %s", bool(result.get("access_token")))
             logger.info("[ML EXCHANGE] User ID: %s", result.get("user_id", "N/A"))
             return True, result
 
@@ -591,6 +693,7 @@ __all__ = [
     "buscar_loja",
     "atualizar_api_loja",
     "desconectar_api_loja",
+    "registrar_tombstone_integracao",
     "salvar_temp_auth",
     "ler_temp_auth",
     "limpar_temp_auth",

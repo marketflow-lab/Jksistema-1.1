@@ -471,9 +471,11 @@ public class MainActivity extends Activity {
         injectAndroidRuntimeHelpers();
         String script = "(function(){"
                 + "function abrir(){"
-                + "var panel=document.getElementById('jk-ia-panel');"
-                + "if(panel){panel.classList.add('aberto');var fab=document.getElementById('jk-ia-fab');if(fab){fab.textContent='x';}return true;}"
+                + "var ia=document.getElementById('jk-ia-panel'),codex=document.getElementById('jk-codex-panel');"
+                + "if((ia&&ia.classList.contains('aberto'))||(codex&&codex.classList.contains('aberto'))){return true;}"
                 + "var fab=document.getElementById('jk-ia-fab');if(fab){fab.click();return true;}"
+                + "var light=document.getElementById('jk-ia-light-fab');if(light){light.click();return true;}"
+                + "if(typeof window.__JK_IA_SIDEBAR_LOAD_FULL__==='function'){window.__JK_IA_SIDEBAR_LOAD_FULL__({openAfterLoad:true});return true;}"
                 + "var global=document.getElementById('jk-global-ai-sidebar');"
                 + "if(global){global.classList.add('open');try{localStorage.setItem('jk-global-ai-sidebar-open','true');}catch(e){}return true;}"
                 + "return false;"
@@ -492,7 +494,7 @@ public class MainActivity extends Activity {
                 + "if(document.getElementById('jk-android-runtime-style')) return;"
                 + "var style=document.createElement('style');"
                 + "style.id='jk-android-runtime-style';"
-                + "style.textContent='html,body{overscroll-behavior:contain;} body{min-width:0!important;} #jk-ia-panel{max-width:calc(100vw - 18px)!important;width:min(390px,calc(100vw - 18px))!important;} #jk-ia-fab{bottom:18px!important;right:18px!important;} #jk-global-ai-sidebar{max-width:calc(100vw - 46px)!important;}';"
+                + "style.textContent='html,body{overscroll-behavior:contain;} body{min-width:0!important;} #jk-ia-panel,#jk-codex-panel{max-width:calc(100vw - 18px)!important;width:min(410px,calc(100vw - 18px))!important;} #jk-ia-fab{bottom:18px!important;right:18px!important;} #jk-global-ai-sidebar{max-width:calc(100vw - 46px)!important;}';"
                 + "document.head.appendChild(style);"
                 + "})();";
         webView.evaluateJavascript(script, null);

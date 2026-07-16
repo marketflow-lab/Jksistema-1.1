@@ -9,6 +9,9 @@ let skuAtualGrafico = null;
 let mostrarEstoqueGeralGrafico = true;
 let mostrarEstoqueSkuGrafico = false;
 let carregarGraficoToken = 0;
+let carregarGraficoController = null;
+let carregarGraficoPromise = null;
+let carregarGraficoRequestKey = '';
 let rankingSidebarModo = 'vendidos';
 let compararAnoPassado = false;
 const GRAFICO_ESTOQUE_LAYOUT_VERSION = 2;
@@ -467,90 +470,94 @@ function alinharSerieComparativa(labelsBase, labelsComparativo, serieComparativo
 }
 
 async function carregarGrafico() {
+    const params = new URLSearchParams({ periodo: periodoGrafico, intervalo: intervaloGrafico });
+    const dataInicioAtual = getDataIniISO();
+    const dataFimAtual = getDataFimISO();
+    if (dataInicioAtual) params.append('data_inicio', dataInicioAtual);
+    if (dataFimAtual) params.append('data_fim', dataFimAtual);
+    if (lojaSelecionada && lojaSelecionada !== '__todas') params.append('loja', lojaSelecionada);
+    if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+        params.append('unidade_negocio', unidadeNegocioSelect.value);
+    }
+
+    skuAtualGrafico = String(graficoEstoqueSkuInput?.value || '').trim() || null;
+    const skuGraficoConsulta = mostrarEstoqueSkuGrafico ? skuAtualGrafico : null;
+    if (mostrarEstoqueGeralGrafico) params.append('mostrar_estoque_geral', 'true');
+    if (mostrarEstoqueSkuGrafico) params.append('mostrar_estoque_sku', 'true');
+    if (skuGraficoConsulta) params.append('sku', skuGraficoConsulta);
+
+    let paramsComp = null;
+    if (compararAnoPassado && dataInicioAtual && dataFimAtual) {
+        const iniComp = deslocarAnoIso(dataInicioAtual, -1);
+        const fimComp = deslocarAnoIso(dataFimAtual, -1);
+        if (iniComp && fimComp) {
+            paramsComp = new URLSearchParams({
+                periodo: periodoGrafico,
+                intervalo: intervaloGrafico,
+                data_inicio: iniComp,
+                data_fim: fimComp
+            });
+            if (lojaSelecionada && lojaSelecionada !== '__todas') paramsComp.append('loja', lojaSelecionada);
+            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+                paramsComp.append('unidade_negocio', unidadeNegocioSelect.value);
+            }
+            if (skuGraficoConsulta) paramsComp.append('sku', skuGraficoConsulta);
+        }
+    }
+
+    const requestKey = `${params.toString()}|compare=${paramsComp?.toString() || ''}`;
+    if (carregarGraficoPromise && carregarGraficoRequestKey === requestKey) return carregarGraficoPromise;
+    if (carregarGraficoController) carregarGraficoController.abort();
+
+    const controller = new AbortController();
     const tokenAtual = ++carregarGraficoToken;
-    try {
-        const params = new URLSearchParams({
-            periodo: periodoGrafico,
-            intervalo: intervaloGrafico
-        });
+    carregarGraficoController = controller;
+    carregarGraficoRequestKey = requestKey;
+    carregarGraficoPromise = (async () => {
+        try {
+            const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
+                headers: obterAuthHeaders(),
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
 
-        if (getDataIniISO()) {
-            params.append('data_inicio', getDataIniISO());
-        }
-        if (getDataFimISO()) {
-            params.append('data_fim', getDataFimISO());
-        }
-        if (lojaSelecionada && lojaSelecionada !== '__todas') {
-            params.append('loja', lojaSelecionada);
-        }
-        if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-            params.append('unidade_negocio', unidadeNegocioSelect.value);
-        }
-
-        skuAtualGrafico = String(graficoEstoqueSkuInput?.value || '').trim() || null;
-        const skuGraficoConsulta = mostrarEstoqueSkuGrafico ? skuAtualGrafico : null;
-        if (mostrarEstoqueGeralGrafico) {
-            params.append('mostrar_estoque_geral', 'true');
-        }
-        if (mostrarEstoqueSkuGrafico) {
-            params.append('mostrar_estoque_sku', 'true');
-        }
-        if (skuGraficoConsulta) {
-            params.append('sku', skuGraficoConsulta);
-        }
-
-        const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
-            headers: obterAuthHeaders(),
-            cache: 'no-store'
-        });
-        const data = await response.json();
-
-        let dataComparativo = null;
-        if (compararAnoPassado && getDataIniISO() && getDataFimISO()) {
-            const iniComp = deslocarAnoIso(getDataIniISO(), -1);
-            const fimComp = deslocarAnoIso(getDataFimISO(), -1);
-            if (iniComp && fimComp) {
-                const paramsComp = new URLSearchParams({
-                    periodo: periodoGrafico,
-                    intervalo: intervaloGrafico,
-                    data_inicio: iniComp,
-                    data_fim: fimComp
-                });
-                if (lojaSelecionada && lojaSelecionada !== '__todas') {
-                    paramsComp.append('loja', lojaSelecionada);
-                }
-                if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-                    paramsComp.append('unidade_negocio', unidadeNegocioSelect.value);
-                }
-                if (skuGraficoConsulta) {
-                    paramsComp.append('sku', skuGraficoConsulta);
-                }
-
+            let dataComparativo = null;
+            if (paramsComp) {
                 const respComp = await fetchComTimeout(`/api/vendas/grafico?${paramsComp.toString()}`, {
                     headers: obterAuthHeaders(),
-                    cache: 'no-store'
+                    cache: 'no-store',
+                    signal: controller.signal
                 });
-                if (respComp.ok) {
-                    dataComparativo = await respComp.json();
-                }
+                if (respComp.ok) dataComparativo = await respComp.json();
+            }
+
+            if (tokenAtual !== carregarGraficoToken) return;
+            renderizarGrafico(data, dataComparativo);
+            atualizarObservacoesGraficoVendas(data);
+            agendarSegundoPlano(() => carregarOciososSidebarVendas(), 180);
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+            console.error('Erro ao carregar gráfico:', error);
+            if (graficoObservacoesVendas) {
+                graficoObservacoesVendas.innerHTML = '<li>Não foi possível carregar observações do gráfico.</li>';
+            }
+            if (graficoRankingVendas) {
+                graficoRankingVendas.innerHTML = '<li>Não foi possível carregar o ranking de SKUs.</li>';
+            }
+            if (graficoOciososVendas) {
+                graficoOciososVendas.innerHTML = '<li>Não foi possível carregar SKUs ociosos.</li>';
             }
         }
+    })();
 
-        if (tokenAtual !== carregarGraficoToken) return;
-
-        renderizarGrafico(data, dataComparativo);
-        atualizarObservacoesGraficoVendas(data);
-        agendarSegundoPlano(() => carregarOciososSidebarVendas(), 180);
-    } catch (error) {
-        console.error('Erro ao carregar gráfico:', error);
-        if (graficoObservacoesVendas) {
-            graficoObservacoesVendas.innerHTML = '<li>Não foi possível carregar observações do gráfico.</li>';
-        }
-        if (graficoRankingVendas) {
-            graficoRankingVendas.innerHTML = '<li>Não foi possível carregar o ranking de SKUs.</li>';
-        }
-        if (graficoOciososVendas) {
-            graficoOciososVendas.innerHTML = '<li>Não foi possível carregar SKUs ociosos.</li>';
+    try {
+        return await carregarGraficoPromise;
+    } finally {
+        if (carregarGraficoController === controller) {
+            carregarGraficoController = null;
+            carregarGraficoPromise = null;
         }
     }
 }

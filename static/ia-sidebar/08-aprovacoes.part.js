@@ -577,6 +577,7 @@
             resolved_at: new Date().toISOString(),
           };
           _approvalSalvarNoHistorico(atualizado);
+          _approvalPersistirNoHistoricoBlackJhon(atualizado);
           _approvalMontarCard(container, atualizado);
         } catch (error) {
           approve.disabled = false;
@@ -596,7 +597,59 @@
       return card;
     }
 
+    function _approvalPersistirNoHistoricoBlackJhon(payload) {
+      if (!_usuarioLocalEhFull()) return;
+      const approvalId = String(payload && payload.id || '').trim();
+      if (!approvalId) return;
+      if (!codexMessagesAtuais.length) codexMessagesAtuais = _codexLerHistoricoLocal();
+      const idx = codexMessagesAtuais.findIndex(item => item && item.kind === 'approval'
+        && String(item.approval_payload && item.approval_payload.id || '').trim() === approvalId);
+      const anterior = idx >= 0 ? codexMessagesAtuais[idx] : null;
+      const textoCompacto = _approvalSerializarMensagem(payload);
+      const payloadCompacto = _approvalParseMensagem(textoCompacto) || { id: approvalId };
+      const item = {
+        role: 'assistant',
+        text: textoCompacto,
+        classExtra: 'black-jhon-approval',
+        kind: 'approval',
+        approval_payload: payloadCompacto,
+        task_id: '',
+        report_formats: [],
+        at: String(anterior && anterior.at || new Date().toISOString()),
+      };
+      if (idx >= 0) codexMessagesAtuais[idx] = item;
+      else codexMessagesAtuais.push(item);
+      codexMessagesAtuais = codexMessagesAtuais.slice(-CODEX_HISTORY_LIMIT);
+      _codexSalvarHistoricoLocal();
+    }
+
+    function _approvalRenderNoPainelBlackJhon(payload, options = {}) {
+      if (!_usuarioLocalEhFull() || blackJhonUsandoIaSecundaria) return false;
+      const approvalId = String(payload && payload.id || '').trim();
+      const lista = document.getElementById('jk-codex-messages');
+      if (!approvalId || !lista) return false;
+      let card = Array.from(lista.querySelectorAll('.jk-ia-approval-card'))
+        .find(item => String(item && item.dataset && item.dataset.approvalId || '').trim() === approvalId);
+      let container = card && card.closest ? card.closest('.jk-codex-msg') : null;
+      if (!container) {
+        container = document.createElement('div');
+        container.className = 'jk-codex-msg assistant black-jhon-approval';
+        lista.appendChild(container);
+      }
+      _approvalPersistirNoHistoricoBlackJhon(payload);
+      _approvalMontarCard(container, payload);
+      if (options.abrirPainel !== false) {
+        toggleBlackJhonPanel(true);
+      } else if (!codexPanelAberto) {
+        codexAprovacaoNaoVista = true;
+      }
+      _sidebarAtualizarAlertas();
+      lista.scrollTop = lista.scrollHeight + 9999;
+      return true;
+    }
+
     function _adicionarNotificacaoAprovacao(payload, options = {}) {
+      if (!_usuarioLocalEhFull()) return;
       payload = payload || {};
       const approvalId = String(payload.id || '').trim();
       if (!approvalId) return;
@@ -605,6 +658,7 @@
       const idxExistente = _approvalIndexNoHistorico(approvalId);
       const jaNotificada = !!window.__JK_IA_APPROVAL_NOTIFIED__[approvalId];
       if (jaNotificada && idxExistente >= 0) {
+        if (_approvalRenderNoPainelBlackJhon(payload, { abrirPainel })) return;
         if (abrirPainel) {
           mostrarChat();
           togglePanel(true);
@@ -618,6 +672,11 @@
 
       if (idxExistente < 0) {
         _approvalSalvarNoHistorico(payload);
+      }
+
+      if (_approvalRenderNoPainelBlackJhon(payload, { abrirPainel })) {
+        void _perguntasNotificarWindowsAprovacaoUmaVez(payload);
+        return;
       }
 
       const deveRenderizarAgora = abrirPainel || panelAberto === true;
@@ -634,6 +693,7 @@
     }
 
     function _resolverNotificacaoAprovacao(approvalId, mensagem) {
+      if (!_usuarioLocalEhFull()) return;
       const id = String(approvalId || '').trim();
       if (!id) return;
       if (Array.isArray(window.__JK_PENDING_IA_APPROVALS__)) {
@@ -651,6 +711,7 @@
           resolved_at: new Date().toISOString(),
         };
         _approvalSalvarNoHistorico(payloadHistorico);
+        _approvalPersistirNoHistoricoBlackJhon(payloadHistorico);
       }
       document.querySelectorAll('.jk-ia-approval-card').forEach((card) => {
         if (String((card.dataset && card.dataset.approvalId) || '').trim() !== id) return;

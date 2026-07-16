@@ -24,11 +24,13 @@ from .shared_sync import (
     SharedSyncScopeConfigRequest,
     SharedSyncConfigRequest,
     SharedSyncRunRequest,
+    SharedSyncPreviewRequest,
     SharedSyncMachineConfigRequest,
     SharedSyncUserInviteCreateRequest,
     SharedSyncUserInviteActionRequest,
     SharedSyncUserLinkUpdateRequest,
     SharedSyncUserLinkRunRequest,
+    SharedSyncUserLinkCreateRequest,
 )
 from .ia import (
     IAChatAttachment,
@@ -86,6 +88,7 @@ from .favoritos import (
     FavoritosHistoricoRealtimeSyncRequest,
     FavoritosPlanilhaLojaItem,
     FavoritosPlanilhasLojasRequest,
+    FavoritosPlanilhaColarHistoricoRequest,
 )
 from .promocoes import (
     PromoAnaliseApiRequest,
@@ -171,11 +174,13 @@ __all__ = [
     "SharedSyncScopeConfigRequest",
     "SharedSyncConfigRequest",
     "SharedSyncRunRequest",
+    "SharedSyncPreviewRequest",
     "SharedSyncMachineConfigRequest",
     "SharedSyncUserInviteCreateRequest",
     "SharedSyncUserInviteActionRequest",
     "SharedSyncUserLinkUpdateRequest",
     "SharedSyncUserLinkRunRequest",
+    "SharedSyncUserLinkCreateRequest",
     "IAChatAttachment",
     "IAChatRequest",
     "IAAgentQueryRequest",
@@ -261,6 +266,7 @@ __all__ = [
     "FavoritosHistoricoRealtimeSyncRequest",
     "FavoritosPlanilhaLojaItem",
     "FavoritosPlanilhasLojasRequest",
+    "FavoritosPlanilhaColarHistoricoRequest",
     "IASalvarConversaRequest",
     "EtiquetaAvulsaItem",
     "ImpressaoAvulsaPayload",

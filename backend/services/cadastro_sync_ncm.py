@@ -38,14 +38,80 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
 from fastapi import Depends
 
 from backend.services.cadastro_common import *
+from backend.services.monofasico_rules import avaliar_monofasico
 
 SYNC_NCM_JOBS: dict[str, dict] = {}
+
+MONOFASICO_CADASTRO_COLUNAS = (
+    "monofasico",
+    "monofasico_status",
+    "monofasico_confianca",
+    "monofasico_fundamento",
+    "monofasico_fonte",
+    "monofasico_motivo",
+    "monofasico_verificado_em",
+)
+
+
+def _classificar_monofasico_cadastro(df_cad: pd.DataFrame) -> tuple[int, dict[str, int]]:
+    """Apply the shared conservative classifier to every Cadastro row."""
+    for coluna in MONOFASICO_CADASTRO_COLUNAS:
+        if coluna not in df_cad.columns:
+            df_cad[coluna] = ""
+
+    alterados = 0
+    contagens: dict[str, int] = {}
+    verificado_em = datetime.now(timezone.utc).isoformat()
+    campos_resultado = {
+        "monofasico": "rotulo",
+        "monofasico_status": "status",
+        "monofasico_confianca": "confianca",
+        "monofasico_fundamento": "fundamento",
+        "monofasico_fonte": "fonte",
+        "monofasico_motivo": "motivo",
+    }
+
+    for idx, row in df_cad.iterrows():
+        descricao = " | ".join(
+            str(row.get(coluna, "") or "").strip()
+            for coluna in ("produto_bling", "nome", "produto", "descricao", "categoria")
+            if str(row.get(coluna, "") or "").strip()
+        )
+        ncm_principal = str(row.get("ncm", "") or "").strip()
+        ncm_auditoria = str(row.get("ncm_auditoria", "") or "").strip()
+        resultado = avaliar_monofasico(ncm_principal or ncm_auditoria, descricao)
+        fonte_auditoria = str(row.get("ncm_fonte_auditoria", "") or "").lower()
+        correspondencia = str(row.get("ncm_correspondencia", "") or "").lower()
+        if (not ncm_principal and "histórico" in fonte_auditoria) or correspondencia == "ambígua":
+            resultado = {
+                **resultado,
+                "is_monofasico": None,
+                "status": "revisao",
+                "rotulo": "Revisão necessária",
+                "confianca": "pendente",
+                "motivo": "O NCM usado na auditoria ainda precisa ser reconfirmado na fonte atual.",
+            }
+        status = str(resultado.get("status") or "nao_verificado")
+        contagens[status] = contagens.get(status, 0) + 1
+        mudou_linha = False
+        for coluna, chave in campos_resultado.items():
+            novo = str(resultado.get(chave) or "")
+            atual = str(row.get(coluna, "") or "")
+            if atual != novo:
+                df_cad.at[idx, coluna] = novo
+                mudou_linha = True
+        if mudou_linha:
+            df_cad.at[idx, "monofasico_verificado_em"] = verificado_em
+            alterados += 1
+
+    return alterados, contagens
 
 
 def configure_cadastro_sync_ncm_runtime(runtime_module=None):
@@ -286,11 +352,16 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
             ncm_preservados = int((~mask_ncm_novo & ncm_atual_series.str.strip().ne("")).sum())
             cest_preservados = int((~mask_cest_novo & cest_atual_series.str.strip().ne("")).sum())
 
+            df_cad.loc[mask_ncm_novo, "ncm"] = ncm_series.loc[mask_ncm_novo]
+            df_cad.loc[mask_cest_novo, "cest"] = cest_series.loc[mask_cest_novo]
+            classificados_alterados, contagens_monofasico = _classificar_monofasico_cadastro(df_cad)
+
             mudou_cadastro = (
                 criou_col_ncm or
                 criou_col_cest or
                 (ncm_atualizados > 0) or
-                (cest_atualizados > 0)
+                (cest_atualizados > 0) or
+                (classificados_alterados > 0)
             )
             if mudou_cadastro:
                 # SÃƒÂ³ sobrescreve quando hÃƒÂ¡ valor novo vindo do estoque/Bling;
@@ -307,6 +378,13 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str):
                 cest_atualizados,
                 ncm_preservados,
                 cest_preservados,
+            )
+            logger.info(
+                "[CADASTRO MONOFASICO][%s][job=%s] linhas_alteradas=%d | contagens=%s",
+                client_id,
+                job_id,
+                classificados_alterados,
+                contagens_monofasico,
             )
 
         _set_sync_ncm_job(
@@ -347,4 +425,4 @@ async def progresso_sync_ncm_cadastro(job_id: str, client_id: str = Depends(get_
         raise HTTPException(status_code=403, detail="Acesso negado a este job.")
     return {k: v for k, v in job.items() if k != "client_id"}
 
-__all__ = ['SYNC_NCM_JOBS', '_sku_lookup_keys_sync_ncm', '_set_sync_ncm_job', '_sync_ncm_cadastro_worker', 'iniciar_sync_ncm_cadastro', 'progresso_sync_ncm_cadastro', 'configure_cadastro_sync_ncm_runtime']
+__all__ = ['SYNC_NCM_JOBS', 'MONOFASICO_CADASTRO_COLUNAS', '_classificar_monofasico_cadastro', '_sku_lookup_keys_sync_ncm', '_set_sync_ncm_job', '_sync_ncm_cadastro_worker', 'iniciar_sync_ncm_cadastro', 'progresso_sync_ncm_cadastro', 'configure_cadastro_sync_ncm_runtime']

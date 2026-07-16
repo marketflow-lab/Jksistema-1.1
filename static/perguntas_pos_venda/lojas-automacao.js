@@ -406,11 +406,15 @@ function renderizarLojas() {
                 <span class="store-options">
                     <label class="store-option">
                         <input class="store-config-checkbox" type="checkbox" data-config="responder_automaticamente" ${config.responder_automaticamente ? 'checked' : ''}>
-                        <span>Responder automaticamente</span>
+                        <span>Gerar sugestões automaticamente</span>
                     </label>
                     <label class="store-option">
-                        <input class="store-config-checkbox" type="checkbox" data-config="solicitar_aprovacao" ${config.solicitar_aprovacao ? 'checked' : ''}>
-                        <span>Nova IA V2 gera rascunho para aprovação antes de enviar</span>
+                        <input class="store-config-checkbox" type="checkbox" data-config="solicitar_aprovacao" checked disabled>
+                        <span>Aprovação obrigatória antes de qualquer envio</span>
+                    </label>
+                    <label class="store-option whatsapp-approval-option">
+                        <input class="store-config-checkbox" type="checkbox" data-config="notificar_whatsapp_aprovacoes" ${config.notificar_whatsapp_aprovacoes ? 'checked' : ''}>
+                        <span>Enviar sugestão ao WhatsApp cadastrado com Aprovar, Negar e Gerar nova resposta</span>
                     </label>
                     <label class="store-option">
                         <input class="store-config-checkbox" type="checkbox" data-config="habilitar_pos_venda_automatico" ${config.habilitar_pos_venda_automatico ? 'checked' : ''}>
@@ -484,6 +488,7 @@ async function salvarConfigLoja(card) {
     if (!nome) return;
     const responderAutomaticamente = !!card.querySelector('[data-config="responder_automaticamente"]')?.checked;
     const solicitarAprovacao = !!card.querySelector('[data-config="solicitar_aprovacao"]')?.checked;
+    const notificarWhatsappAprovacoes = !!card.querySelector('[data-config="notificar_whatsapp_aprovacoes"]')?.checked;
     const habilitarPosVendaAutomatico = !!card.querySelector('[data-config="habilitar_pos_venda_automatico"]')?.checked;
     const lojaAtual = state.lojas.find((item) => String(item.nome || '') === nome);
     const configAtual = lojaAtual && lojaAtual.config_perguntas ? lojaAtual.config_perguntas : {};
@@ -501,6 +506,7 @@ async function salvarConfigLoja(card) {
                 loja: nome,
                 responder_automaticamente: responderAutomaticamente,
                 solicitar_aprovacao: solicitarAprovacao,
+                notificar_whatsapp_aprovacoes: notificarWhatsappAprovacoes,
                 habilitar_pos_venda_automatico: habilitarPosVendaAutomatico,
                 intervalo_minutos: intervaloMinutos
             })
@@ -561,6 +567,7 @@ async function salvarIntervaloLojaSelecionada() {
                 loja: loja.nome || '',
                 responder_automaticamente: config.responder_automaticamente === true,
                 solicitar_aprovacao: config.solicitar_aprovacao === true,
+                notificar_whatsapp_aprovacoes: config.notificar_whatsapp_aprovacoes === true,
                 habilitar_pos_venda_automatico: config.habilitar_pos_venda_automatico === true,
                 intervalo_minutos: intervaloMinutos
             })

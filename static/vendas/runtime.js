@@ -328,6 +328,163 @@ let anexosAssistenteVendas = [];
 let periodoApplyTimer = null;
 let periodoSelecionadoPeloUsuario = false;
 let carregarVendasPromise = null;
+let carregarVendasRequestKey = '';
+let carregarVendasController = null;
 let tabelaRenderToken = 0;
 let filtrarToken = 0;
 let cacheSaveTimer = null;
+
+function criarMonitorSyncVendas() {
+    const listeners = new Set();
+    const activeIntervalMs = 3000;
+    const idleIntervalMs = 15000;
+    const retryDelaysMs = [3000, 6000, 12000, 30000];
+    let timer = null;
+    let inFlight = null;
+    let started = false;
+    let failures = 0;
+    let lastPayload = null;
+    let completionSequence = 0;
+
+    function clearTimer() {
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
+    }
+
+    function schedule(delayMs) {
+        clearTimer();
+        if (!started || document.visibilityState === 'hidden') return;
+        timer = setTimeout(() => {
+            void refresh();
+        }, Math.max(0, delayMs));
+    }
+
+    function notify(payload) {
+        listeners.forEach(listener => {
+            try { listener(payload); } catch (error) { console.warn('[VENDAS] Falha em listener de sync:', error); }
+        });
+        window.dispatchEvent(new CustomEvent('jk:vendas-sync-state', { detail: payload }));
+    }
+
+    function publish(payload) {
+        const wasActive = !!lastPayload?.active;
+        lastPayload = payload;
+        failures = 0;
+        notify(payload);
+        if (wasActive && !payload?.active) {
+            completionSequence += 1;
+            window.dispatchEvent(new CustomEvent('jk:vendas-sync-finished', {
+                detail: { id: completionSequence, payload }
+            }));
+        }
+        schedule(payload?.active ? activeIntervalMs : idleIntervalMs);
+        return payload;
+    }
+
+    async function refresh(options = {}) {
+        if (document.visibilityState === 'hidden') return lastPayload;
+        if (inFlight) return inFlight;
+        clearTimer();
+        inFlight = (async () => {
+            try {
+                const response = await fetch('/api/vendas/sync/progress', {
+                    headers: obterAuthHeaders(),
+                    cache: 'no-store'
+                });
+                if (!response.ok) {
+                    throw new Error(`Falha ao consultar progresso: HTTP ${response.status}`);
+                }
+                return publish(await response.json());
+            } catch (error) {
+                failures += 1;
+                const retryIndex = Math.min(failures - 1, retryDelaysMs.length - 1);
+                schedule(retryDelaysMs[retryIndex]);
+                if (options.propagateError) throw error;
+                return lastPayload;
+            } finally {
+                inFlight = null;
+            }
+        })();
+        return inFlight;
+    }
+
+    function subscribe(listener, options = {}) {
+        if (typeof listener !== 'function') return () => {};
+        listeners.add(listener);
+        if (options.immediate !== false && lastPayload) listener(lastPayload);
+        return () => listeners.delete(listener);
+    }
+
+    function start() {
+        if (!started) started = true;
+        if (document.visibilityState !== 'hidden') void refresh();
+    }
+
+    function stop() {
+        started = false;
+        clearTimer();
+    }
+
+    function waitForInactive(options = {}) {
+        let sawActive = !!lastPayload?.active;
+        return new Promise((resolve, reject) => {
+            let unsubscribe = () => {};
+            let settled = false;
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                unsubscribe();
+                if (options.signal) options.signal.removeEventListener('abort', onAbort);
+                callback(value);
+            };
+            const onAbort = () => finish(reject, new DOMException('Operação cancelada.', 'AbortError'));
+            const onState = (payload, fresh = false) => {
+                if (payload?.active) {
+                    sawActive = true;
+                    return;
+                }
+                if (!sawActive && !fresh) return;
+                const etapa = String(payload?.progress?.etapa || '').toLowerCase();
+                if (etapa === 'erro') {
+                    finish(reject, new Error(corrigirTextoVendas(payload?.progress?.mensagem || 'Erro na sincronização.')));
+                    return;
+                }
+                finish(resolve, payload);
+            };
+            unsubscribe = subscribe(payload => onState(payload, false), { immediate: false });
+            if (options.signal) {
+                if (options.signal.aborted) {
+                    onAbort();
+                    return;
+                }
+                options.signal.addEventListener('abort', onAbort, { once: true });
+            }
+            void refresh({ propagateError: false }).then(payload => {
+                if (payload) onState(payload, true);
+            });
+        });
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            clearTimer();
+            return;
+        }
+        if (started) void refresh();
+    });
+
+    return {
+        start,
+        stop,
+        refresh,
+        subscribe,
+        waitForInactive,
+        getLastPayload: () => lastPayload,
+        isRequestInFlight: () => !!inFlight
+    };
+}
+
+const vendasSyncMonitor = window.__jkVendasSyncMonitor || criarMonitorSyncVendas();
+window.__jkVendasSyncMonitor = vendasSyncMonitor;

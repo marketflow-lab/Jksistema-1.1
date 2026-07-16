@@ -127,6 +127,8 @@
         .tab-btn[data-tab="ia"]::before { content: "02"; }
         .tab-btn[data-tab="credenciais"]::before { content: "03"; }
         .tab-btn[data-tab="usuarios"]::before { content: "04"; }
+        .tab-btn[data-tab="whatsapp"]::before { content: "05"; }
+        .tab-btn[data-tab="whatsapp-history"]::before { content: "06"; }
         .tab-btn.active { background: var(--teal-soft); border-color: rgba(57, 184, 166, 0.34); color: var(--text); }
         .tabs .btn-save-top { min-height: 58px; background: var(--teal); color: #06201d; border-color: transparent; }
         .page-layout { display: grid; grid-template-columns: minmax(0, 1fr) 294px; gap: 16px; align-items: start; }
@@ -177,12 +179,15 @@
             color: var(--text);
             font-size: 1.08rem;
         }
+        .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border-bottom: 1px solid var(--line-soft); background: linear-gradient(180deg, rgba(36, 42, 46, 0.88), rgba(23, 26, 29, 0.88)); }
+        .card-head h2 { padding: 0; border: 0; background: none; }
+        .card-head .hint { margin-top: 4px; }
         .card > .hint:first-of-type { margin: 16px 16px 0; }
         .row, .grid-2, .ia-grid, .users-layout { padding: 16px; }
         .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
         .label { color: #d9e1df; font-size: 0.86rem; font-weight: 800; margin-bottom: 7px; display: block; }
         .hint { color: var(--muted); font-size: 0.84rem; line-height: 1.35; margin-top: 8px; }
-        input[type="number"], input[type="text"], input[type="password"], input[type="email"], input[type="url"], select {
+        input[type="number"], input[type="text"], input[type="tel"], input[type="password"], input[type="email"], input[type="url"], textarea, select {
             width: 100%;
             min-height: 40px;
             padding: 8px 10px;
@@ -192,6 +197,7 @@
             color: var(--text);
             outline: none;
         }
+        textarea { width: 100%; min-height: 88px; resize: vertical; font: inherit; line-height: 1.4; }
         input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(57, 184, 166, 0.14); }
         select { min-height: 40px; }
         .actions { margin: 14px 16px 16px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -263,6 +269,68 @@
             white-space: nowrap;
         }
         .api-key-status.empty { background: var(--amber-soft); color: #f4d291; border-color: rgba(217, 164, 65, 0.28); }
+        .wa-config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 16px; }
+        .wa-health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .wa-health-item { padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; font-size: 0.8rem; }
+        .wa-health-item.ok { color: #b8efc7; border-color: rgba(119, 201, 141, 0.35); }
+        .wa-health-item.fail { color: #ffd0cc; border-color: rgba(220, 106, 95, 0.35); }
+        .wa-voice-card { grid-column: 1 / -1; }
+        .wa-voice-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .wa-voice-state { border-radius: 999px; padding: 5px 10px; font-size: 0.78rem; font-weight: 900; background: var(--amber-soft); color: #f4d291; border: 1px solid rgba(217, 164, 65, 0.28); }
+        .wa-voice-state.ready { background: var(--green-soft); color: #b8efc7; border-color: rgba(119, 201, 141, 0.28); }
+        .wa-voice-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+        .wa-voice-calls { display: grid; gap: 7px; margin-top: 8px; }
+        .wa-voice-call { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; }
+        .wa-voice-call small { color: var(--muted); }
+        .wa-binding-list { display: grid; gap: 8px; margin-top: 8px; }
+        .wa-binding-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; }
+        .wa-binding-item span { color: var(--text); font-weight: 800; }
+        .wa-binding-item small { color: var(--muted); }
+        .wa-binding-item button { min-height: 32px; padding: 6px 10px; }
+        .user-whatsapp-settings { margin-top: 14px; padding: 14px; border: 1px solid rgba(57, 184, 166, 0.28); border-radius: 8px; background: rgba(57, 184, 166, 0.07); display: grid; gap: 10px; }
+        .user-whatsapp-settings__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .user-whatsapp-settings__head h3 { margin-bottom: 4px; }
+        .user-phone-register { display: grid; gap: 10px; padding: 12px; border: 1px solid rgba(57, 184, 166, 0.32); border-radius: 8px; background: #101315; }
+        .user-phone-register__fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+        .user-phone-register .actions { margin: 0; }
+        .user-phone-card { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; }
+        .user-phone-card__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .user-phone-card__identity { display: grid; gap: 2px; }
+        .user-phone-card__identity strong { color: var(--text); }
+        .user-phone-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+        .user-phone-card .actions { margin: 0; }
+        .wa-template-list { display: grid; gap: 6px; }
+        .wa-template-item { display: flex; justify-content: space-between; gap: 8px; font-size: 0.78rem; padding: 7px; border: 1px solid var(--line-soft); border-radius: 7px; }
+        .wa-history-layout { display: grid; grid-template-columns: minmax(250px, 320px) minmax(0, 1fr); gap: 14px; padding: 16px; }
+        .wa-history-sidebar, .wa-history-main { min-width: 0; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; }
+        .wa-history-sidebar { padding: 10px; }
+        .wa-history-list { display: grid; gap: 8px; max-height: 66vh; overflow: auto; }
+        .wa-history-phone { width: 100%; min-height: 68px; padding: 10px; text-align: left; border: 1px solid var(--line-soft); background: #151a1d; display: grid; gap: 4px; }
+        .wa-history-phone:hover, .wa-history-phone.active { border-color: rgba(57, 184, 166, 0.48); background: var(--teal-soft); }
+        .wa-history-phone strong { color: var(--text); }
+        .wa-history-phone span, .wa-history-phone small { color: var(--muted); font-size: 12px; }
+        .wa-history-main { display: grid; grid-template-rows: auto minmax(220px, 1fr) auto; min-height: 470px; }
+        .wa-history-head { padding: 14px; border-bottom: 1px solid var(--line-soft); }
+        .wa-history-head h3 { margin: 0 0 4px; }
+        .wa-history-timeline { display: grid; align-content: start; gap: 14px; padding: 14px; max-height: 66vh; overflow: auto; }
+        .wa-history-exchange { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
+        .wa-history-exchange:last-child { border-bottom: 0; }
+        .wa-history-meta { color: var(--muted); font-size: 11px; text-align: center; }
+        .wa-history-kind { display: inline-flex; align-items: center; border: 1px solid rgba(57, 184, 166, 0.28); border-radius: 999px; padding: 2px 7px; margin-right: 6px; color: #bce9e2; font-weight: 800; }
+        .wa-history-bubble { width: min(88%, 780px); border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px 12px; }
+        .wa-history-bubble.user { justify-self: end; background: rgba(57, 184, 166, 0.13); border-color: rgba(57, 184, 166, 0.28); }
+        .wa-history-bubble.assistant { justify-self: start; background: #192024; }
+        .wa-history-bubble strong { display: block; margin-bottom: 6px; font-size: 12px; color: #bce9e2; }
+        .wa-history-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; max-height: 420px; overflow: auto; }
+        .wa-history-more { margin-top: 8px; min-height: 34px; padding: 6px 10px; background: var(--panel-2); }
+        .wa-history-pager { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line-soft); }
+        .wa-history-empty { color: var(--muted); padding: 24px; text-align: center; }
+        .wa-history-dialog { width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--line); border-radius: 10px; background: #111719; color: var(--text); }
+        .wa-history-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
+        .wa-history-dialog-head { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: #1a2225; }
+        .wa-history-dialog pre { margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.5; max-height: calc(100vh - 110px); overflow: auto; }
+        #waHistoryStatus { margin: 12px 16px 0; }
+        #waWhisperProgress { width: 100%; accent-color: var(--teal); }
         .hidden { display: none !important; }
         .small { color: var(--muted); font-size: 12px; }
         @media (max-width: 1180px) {
@@ -271,11 +339,12 @@
         }
         @media (max-width: 900px) {
             .container { width: min(100% - 20px, 760px); padding-top: 8px; }
-            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout { grid-template-columns: 1fr; }
+            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout, .wa-config-grid, .wa-health-grid, .wa-history-layout, .wa-voice-fields { grid-template-columns: 1fr; }
             .tabs { position: static; }
             .header > div:last-child { justify-content: stretch; }
             .header > div:last-child .back-btn { flex: 1 1 calc(50% - 8px); }
             .tabs .btn-save-top { min-height: 44px; }
+            .user-phone-register__fields, .user-phone-options { grid-template-columns: 1fr; }
         }
     </style>
     <script src="/auth.js?v=20260618-persist-login"></script>
@@ -295,6 +364,8 @@
         <button id="tabIaBtn" class="tab-btn hidden" data-tab="ia">IA por função</button>
         <button id="tabCredenciaisBtn" class="tab-btn hidden" data-tab="credenciais">Credenciais</button>
         <button id="tabUsuariosBtn" class="tab-btn hidden" data-tab="usuarios">Usuários</button>
+        <button id="tabWhatsappBtn" class="tab-btn hidden" data-tab="whatsapp">WhatsApp — Black John</button>
+        <button id="tabWhatsappHistoryBtn" class="tab-btn" data-tab="whatsapp-history">Histórico do WhatsApp</button>
         <button id="btnSalvarTopo" class="btn-save btn-save-top" type="button">Salvar alterações</button>
     </div>
 
@@ -378,6 +449,43 @@
                         </div>
                     </div>
                 </div>
+                <div id="cardAgentGuidance" class="card hidden">
+                    <div class="card-head">
+                        <div>
+                            <h2>Orientações do agente</h2>
+                            <div class="hint">Regras versionadas aplicadas por escopo. Segurança, permissões e políticas fixas continuam acima destas orientações.</div>
+                        </div>
+                        <button id="btnAgentGuidanceReload" class="btn-refresh" type="button">Atualizar</button>
+                    </div>
+                    <div class="ia-grid">
+                        <div class="setting-card">
+                            <h3>Nova versão</h3>
+                            <label class="label" for="agentGuidanceScope">Escopo</label>
+                            <select id="agentGuidanceScope">
+                                <option value="global">Global</option>
+                                <option value="module">Módulo</option>
+                                <option value="store">Loja</option>
+                                <option value="supplier">Fornecedor</option>
+                                <option value="sku">SKU</option>
+                            </select>
+                            <label class="label" for="agentGuidanceKey">Identificador do escopo</label>
+                            <input id="agentGuidanceKey" type="text" placeholder="Ex.: vendas, JK Peças, fornecedor ou SKU">
+                            <label class="label" for="agentGuidanceText">Orientação</label>
+                            <textarea id="agentGuidanceText" placeholder="Descreva a regra operacional que o agente deve seguir."></textarea>
+                            <label class="check-item"><input id="agentGuidanceActive" type="checkbox" checked><span>Orientação ativa</span></label>
+                            <div class="actions">
+                                <button id="btnAgentGuidanceSimulate" class="btn-refresh" type="button">Simular hierarquia</button>
+                                <button id="btnAgentGuidanceSave" class="btn-save" type="button">Salvar nova versão</button>
+                            </div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Regras resolvidas e auditoria</h3>
+                            <div id="agentGuidanceStatus" class="status">Carregue ou simule para conferir as regras aplicadas.</div>
+                            <div id="agentGuidanceList" class="wa-template-list"></div>
+                            <pre id="agentGuidancePreview" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;margin:0;color:var(--muted);font:12px/1.45 ui-monospace,Consolas,monospace;"></pre>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div id="tab-credenciais" class="tab-panel">
@@ -439,6 +547,153 @@
                 </div>
             </div>
 
+            <div id="tab-whatsapp" class="tab-panel">
+                <div id="cardWhatsappJoao" class="card hidden">
+                    <h2>WhatsApp — Black John</h2>
+                    <div class="hint">Ponte local com Cloudflare Free, mídia privada e bloqueio automático antes de qualquer risco de cobrança.</div>
+                    <div class="wa-config-grid">
+                        <div class="setting-card">
+                            <h3>Gateway gratuito</h3>
+                            <label class="label" for="waWorkerUrl">URL do Worker</label>
+                            <input id="waWorkerUrl" type="url" placeholder="https://jk-whatsapp-gateway.seu-usuario.workers.dev" autocomplete="off">
+                            <label class="label" for="waBridgeToken">Bridge token</label>
+                            <input id="waBridgeToken" type="password" placeholder="Token gerenciado automaticamente" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" disabled>
+                            <label class="label" for="waBusinessPhone">Número empresarial dedicado</label>
+                            <input id="waBusinessPhone" type="text" placeholder="+55 11 99999-9999" autocomplete="off">
+                            <label class="label" for="waTargetUser">Usuário do JK que utilizará os números</label>
+                            <select id="waTargetUser"><option value="">Carregando usuários...</option></select>
+                            <div class="small">Cada usuário pode autorizar até 3 números pessoais.</div>
+                            <label class="check-item"><input id="waEnabled" type="checkbox"><span>Integração ativa</span></label>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Dois agentes Codex</h3>
+                            <label class="label" for="waConversationAgentModel">Agente de conversa</label>
+                            <select id="waConversationAgentModel"><option value="gpt-5.6-luna">Codex GPT-5.6 Luna</option></select>
+                            <label class="label" for="waConversationAgentReasoning">Inteligência da conversa</label>
+                            <select id="waConversationAgentReasoning">
+                                <option value="low">Baixa — resposta rápida</option>
+                                <option value="medium">Média</option>
+                                <option value="high">Alta</option>
+                            </select>
+                            <label class="label" for="waTaskAgentModel">Agente de tarefa e pesquisa</label>
+                            <select id="waTaskAgentModel"><option value="gpt-5.6-sol">Codex GPT-5.6 Sol</option></select>
+                            <label class="label" for="waTaskAgentReasoning">Inteligência da tarefa</label>
+                            <select id="waTaskAgentReasoning" disabled>
+                                <option value="low">Baixa — rápida</option>
+                            </select>
+                            <label class="label" for="waConversationInterval">Conversar durante tarefas a cada</label>
+                            <select id="waConversationInterval">
+                                <option value="30">30 segundos</option>
+                                <option value="45">45 segundos</option>
+                                <option value="60">60 segundos</option>
+                            </select>
+                            <label class="label" for="waConversationWorkers">Conversas simultâneas</label>
+                            <select id="waConversationWorkers"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select>
+                            <label class="label" for="waConversationRuntimePool">Runtimes Luna aquecidos</label>
+                            <select id="waConversationRuntimePool"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select>
+                            <label class="label" for="waGlobalTaskAgents">Pesquisas Sol simultâneas</label>
+                            <select id="waGlobalTaskAgents"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select>
+                            <div class="small">Luna Conversa → Luna Gerenciador → funções → Sol, quando necessário. Os dois Luna mantêm 4 runtimes aquecidos em Fast 1,5×; o Sol trabalha em low, com até 6 agentes por telefone e sem prazo global.</div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Estado da integração</h3>
+                            <div id="waHealthGrid" class="wa-health-grid"></div>
+                            <div class="small">Números do usuário selecionado: <strong id="waPersonalPhoneCount">0/3</strong></div>
+                            <div id="waPersonalPhones" class="wa-binding-list"></div>
+                            <div class="small">Política de custo zero: <strong id="waPolicyUntil">verificando</strong></div>
+                            <div class="small">Último processamento: <strong id="waLastProcessing">—</strong></div>
+                        </div>
+                        <div class="setting-card wa-voice-card">
+                            <div class="wa-voice-card__head">
+                                <div>
+                                    <h3>Ligações com Black Jhon</h3>
+                                    <div class="small">Usa a chave OpenAI já cadastrada. Áudio não é salvo e todas as funções de voz são somente leitura.</div>
+                                </div>
+                                <span id="waVoiceState" class="wa-voice-state">Desabilitada</span>
+                            </div>
+                            <div id="waVoiceHealthGrid" class="wa-health-grid"></div>
+                            <div class="wa-voice-fields">
+                                <div><label class="label" for="waVoiceModel">Modelo de voz</label><select id="waVoiceModel"><option value="gpt-realtime-2.1">GPT Realtime 2.1</option></select></div>
+                                <div><label class="label" for="waVoiceName">Voz</label><select id="waVoiceName"><option value="cedar">Cedar</option></select></div>
+                                <div><label class="label" for="waVoiceMaxMinutes">Limite por ligação</label><select id="waVoiceMaxMinutes"><option value="15">15 minutos</option><option value="30">30 minutos</option><option value="45">45 minutos</option></select></div>
+                                <div><label class="label" for="waVoiceMaxConcurrent">Chamadas simultâneas</label><select id="waVoiceMaxConcurrent"><option value="1">1 chamada</option><option value="2">2 chamadas</option><option value="3">3 chamadas</option></select></div>
+                            </div>
+                            <div id="waVoiceSummary" class="small">Execute a validação para conferir Meta, SIP, OpenAI, gateway e backend.</div>
+                            <div id="waVoiceCalls" class="wa-voice-calls"></div>
+                            <div class="actions">
+                                <button id="waVoicePreflight" type="button" class="btn-refresh">Validar ligações</button>
+                                <button id="waVoiceEnable" type="button" class="btn-save">Habilitar ligações</button>
+                                <button id="waVoiceDisable" type="button" class="btn-danger">Desabilitar ligações</button>
+                            </div>
+                            <div id="waVoiceActionStatus" class="status"></div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Whisper Small local</h3>
+                            <div id="waWhisperText" class="small">Verificando modelo...</div>
+                            <progress id="waWhisperProgress" max="100" value="0"></progress>
+                            <div class="small">Áudio permanece nesta máquina; nenhuma API de transcrição é usada.</div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Franquias e filas</h3>
+                            <div id="waUsageText" class="small">Aguardando status do Worker...</div>
+                            <div id="waPendingText" class="small"></div>
+                            <div id="waTemplates" class="wa-template-list"></div>
+                        </div>
+                        <div class="setting-card">
+                            <h3>Modo móvel completo</h3>
+                            <div class="small">Usuários com permissão <strong>full</strong> podem consultar Bling, anúncios do Mercado Livre, histórico de vendas e gerar relatórios pelo celular.</div>
+                            <div class="small">Consultas são executadas imediatamente. Ações que alteram o sistema recebem um código único no mesmo número.</div>
+                            <div class="small">Confirme com <strong>APROVAR CÓDIGO</strong> ou rejeite com <strong>NEGAR CÓDIGO</strong>. O código vale 10 minutos e não funciona em outro número.</div>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button id="waSave" class="btn-save">Salvar</button>
+                        <button id="waTest" class="btn-refresh">Testar tudo</button>
+                        <button id="waPair" class="btn-refresh">Gerar código</button>
+                        <button id="waRevoke" class="btn-danger">Desvincular todos</button>
+                        <button id="waDownloadWhisper" class="btn-refresh">Baixar Whisper</button>
+                        <button id="waSyncTemplates" class="btn-refresh">Criar/sincronizar templates</button>
+                    </div>
+                    <div id="waPairingResult" class="status"></div>
+                    <div id="waStatus" class="status"></div>
+                    <div id="waLastError" class="status error"></div>
+                </div>
+            </div>
+
+            <div id="tab-whatsapp-history" class="tab-panel">
+                <div class="card">
+                    <div class="card-head">
+                        <div>
+                            <h2>Histórico do WhatsApp</h2>
+                            <div class="hint">Consulta somente leitura das conversas do seu usuário, separadas por número de telefone.</div>
+                        </div>
+                        <button id="waHistoryRefresh" class="btn-refresh" type="button">Atualizar</button>
+                    </div>
+                    <div id="waHistoryStatus" class="status"></div>
+                    <div class="wa-history-layout">
+                        <aside class="wa-history-sidebar" aria-label="Telefones com histórico">
+                            <div id="waHistoryConversationList" class="wa-history-list">
+                                <div class="wa-history-empty">Abra a aba para carregar os telefones.</div>
+                            </div>
+                        </aside>
+                        <section class="wa-history-main" aria-label="Conversa selecionada">
+                            <div class="wa-history-head">
+                                <h3 id="waHistoryTitle">Selecione um telefone</h3>
+                                <div id="waHistorySubtitle" class="small">As conversas não são misturadas com o chat lateral.</div>
+                            </div>
+                            <div id="waHistoryTimeline" class="wa-history-timeline">
+                                <div class="wa-history-empty">Nenhuma conversa selecionada.</div>
+                            </div>
+                            <div class="wa-history-pager">
+                                <button id="waHistoryNewer" class="btn-refresh" type="button" disabled>Mais recentes</button>
+                                <span id="waHistoryPageInfo" class="small">—</span>
+                                <button id="waHistoryOlder" class="btn-refresh" type="button" disabled>Mais antigas</button>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
             <div id="tab-usuarios" class="tab-panel">
                 <div id="cardAdminUsuarios" class="card hidden">
                     <h2>Usuários cadastrados</h2>
@@ -461,6 +716,49 @@
                                 <div class="grid-2"><div><label class="label">Limite de máquinas</label><input id="maxMachines" type="number" min="0" value="1" placeholder="1"></div><div><label class="label">Observação</label><input value="0 = ilimitado" disabled></div></div>
                                 <label class="check-item" style="margin: 10px 0;"><input id="active" type="checkbox" checked><span>Usuário ativo</span></label>
                                 <label class="label">Permissões</label><div id="permissionsGrid" class="checkbox-grid"></div>
+                                <div id="userWhatsappSettings" class="user-whatsapp-settings">
+                                    <div class="user-whatsapp-settings__head">
+                                        <div><h3>Telefones e envios pelo WhatsApp</h3><div class="small">Cadastre o telefone deste usuário e escolha separadamente o que cada número deve receber.</div></div>
+                                        <strong id="userWaPhoneCount" class="api-key-status empty">0/3</strong>
+                                    </div>
+                                    <div class="user-phone-register">
+                                        <div class="user-phone-register__fields">
+                                            <div><label class="label" for="userWaNewPhoneName">Nome para identificar</label><input id="userWaNewPhoneName" type="text" maxlength="60" placeholder="Ex.: Paraiba, Comercial ou Gerência"></div>
+                                            <div><label class="label" for="userWaNewPhoneNumber">Número do WhatsApp</label><input id="userWaNewPhoneNumber" type="tel" inputmode="tel" maxlength="24" placeholder="Ex.: (37) 99999-3818"></div>
+                                        </div>
+                                        <div class="user-phone-options">
+                                            <label class="check-item"><input id="userWaNewQuestions" type="checkbox" checked><span>Enviar sugestão de pergunta do Mercado Livre</span></label>
+                                            <label class="check-item"><input id="userWaNewWeekly" type="checkbox"><span>Enviar relatório semanal</span></label>
+                                            <label class="check-item"><input id="userWaNewMonthly" type="checkbox"><span>Enviar relatório mensal</span></label>
+                                            <label class="check-item"><input id="userWaNewVoice" type="checkbox"><span>Permitir ligações com o Black Jhon</span></label>
+                                        </div>
+                                        <div>
+                                            <label class="label" for="userWaWelcomeMessage">Mensagem de boas-vindas</label>
+                                            <textarea id="userWaWelcomeMessage" maxlength="1000" rows="3">Olá! Seu número foi cadastrado no WhatsApp do JK Sistema. Seja bem-vindo(a)! Você já pode conversar com o Black Jhon por aqui.</textarea>
+                                            <label class="check-item" style="margin-top:8px;"><input id="userWaSendWelcome" type="checkbox" checked><span>Preparar a mensagem de boas-vindas ao salvar o telefone</span></label>
+                                        </div>
+                                        <div class="actions">
+                                            <button id="userWaSavePhone" type="button" class="btn-save">Salvar telefone</button>
+                                            <button id="userWaRefresh" type="button" class="btn-refresh">Atualizar telefones</button>
+                                        </div>
+                                        <div class="small">O nome e o número são salvos diretamente. Por regra da Meta, texto livre só pode ser enviado depois que esse telefone iniciar a conversa. Se ainda não houver uma janela de atendimento aberta, a boas-vindas ficará aguardando e será enviada automaticamente após a primeira mensagem do telefone. Relatório semanal: segunda-feira após 08h. Relatório mensal: primeiro dia do mês após 08h.</div>
+                                    </div>
+                                    <div class="user-phone-register">
+                                        <div><h3>Mensagem avulsa</h3><div class="small">Envie uma mensagem independente para qualquer número de WhatsApp.</div></div>
+                                        <div>
+                                            <label class="label" for="userWaAdhocPhone">Número do WhatsApp</label>
+                                            <input id="userWaAdhocPhone" type="tel" inputmode="tel" maxlength="24" placeholder="Ex.: (37) 99999-3818">
+                                        </div>
+                                        <div>
+                                            <label class="label" for="userWaAdhocMessage">Mensagem</label>
+                                            <textarea id="userWaAdhocMessage" maxlength="3500" rows="4" placeholder="Escreva a mensagem que deseja enviar..."></textarea>
+                                        </div>
+                                        <div class="actions"><button id="userWaSendAdhoc" type="button" class="btn-save">Enviar mensagem</button></div>
+                                        <div class="small">O WhatsApp permite texto livre apenas durante a janela de atendimento. Se o número ainda não tiver falado com a empresa, a mensagem ficará aguardando automaticamente a primeira interação.</div>
+                                    </div>
+                                    <div id="userWaPhones" class="wa-binding-list"><div class="small">Selecione um usuário para carregar os telefones.</div></div>
+                                    <div id="userWaStatus" class="status"></div>
+                                </div>
                                 <div class="actions"><button id="btnSalvarUsuario">Salvar usuário</button><button id="btnTrocarSenha" class="btn-warning">Trocar senha</button><button id="btnResetarDispositivos" class="btn-warning">Resetar dispositivos</button><button id="btnAlternarStatus" class="btn-refresh">Desativar</button><button id="btnExcluirUsuario" class="btn-danger">Excluir</button><button id="btnCancelarEdicao" class="btn-refresh">Limpar</button></div>
                                 <div id="userStatus" class="status"></div>
                             </div>
@@ -476,6 +774,7 @@
                 <div class="impact-item"><strong>Estoque</strong><span>Janela de auto-sync e recarregamento das configurações.</span></div>
                 <div class="impact-item"><strong>IA</strong><span>Modelos por função, provedores ativos e uso de imagem em Favoritos.</span></div>
                 <div class="impact-item"><strong>Credenciais</strong><span>Chaves OpenAI, DeepSeek, Gemini e Vertex/agente ficam em cards separados.</span></div>
+                <div class="impact-item"><strong>Histórico do WhatsApp</strong><span>Conversas do usuário atual, isoladas por telefone e disponíveis somente para consulta.</span></div>
                 <div id="status" class="status"></div>
             </div>
         </aside>
@@ -534,6 +833,17 @@
     const checkIaVertexAtiva = document.getElementById('iaVertexAtiva');
     const cardIaPadrao = document.getElementById('cardIaPadrao');
     const cardIaCredenciais = document.getElementById('cardIaCredenciais');
+    const cardAgentGuidance = document.getElementById('cardAgentGuidance');
+    const agentGuidanceScope = document.getElementById('agentGuidanceScope');
+    const agentGuidanceKey = document.getElementById('agentGuidanceKey');
+    const agentGuidanceText = document.getElementById('agentGuidanceText');
+    const agentGuidanceActive = document.getElementById('agentGuidanceActive');
+    const agentGuidanceStatus = document.getElementById('agentGuidanceStatus');
+    const agentGuidanceList = document.getElementById('agentGuidanceList');
+    const agentGuidancePreview = document.getElementById('agentGuidancePreview');
+    const btnAgentGuidanceReload = document.getElementById('btnAgentGuidanceReload');
+    const btnAgentGuidanceSimulate = document.getElementById('btnAgentGuidanceSimulate');
+    const btnAgentGuidanceSave = document.getElementById('btnAgentGuidanceSave');
     const btnSalvarTopo = document.getElementById('btnSalvarTopo');
     const btnRecarregar = document.getElementById('btnRecarregar');
     const statusEl = document.getElementById('status');
@@ -600,11 +910,114 @@
         cardAdminUsuarios.classList.remove('hidden');
         cardIaPadrao.classList.remove('hidden');
         cardIaCredenciais.classList.remove('hidden');
+        cardAgentGuidance.classList.remove('hidden');
     }
 
     function setStatus(texto, tipo = '') {
         statusEl.className = 'status' + (tipo ? ` ${tipo}` : '');
         statusEl.textContent = texto || '';
+    }
+
+    function setAgentGuidanceStatus(texto, tipo = '') {
+        if (!agentGuidanceStatus) return;
+        agentGuidanceStatus.className = 'status' + (tipo ? ` ${tipo}` : '');
+        agentGuidanceStatus.textContent = texto || '';
+    }
+
+    function renderAgentGuidance(items) {
+        if (!agentGuidanceList) return;
+        agentGuidanceList.replaceChildren();
+        const list = Array.isArray(items) ? items : [];
+        if (!list.length) {
+            const empty = document.createElement('div');
+            empty.className = 'hint';
+            empty.textContent = 'Nenhuma orientação administrativa cadastrada.';
+            agentGuidanceList.appendChild(empty);
+            return;
+        }
+        list.forEach(item => {
+            const row = document.createElement('div');
+            row.className = 'wa-template-item';
+            const info = document.createElement('span');
+            const scope = `${item.scope_type || 'global'}${item.scope_key ? `: ${item.scope_key}` : ''}`;
+            info.textContent = `${scope} — v${item.version || 1}`;
+            const state = document.createElement('small');
+            state.textContent = item.active === false ? 'inativa' : 'ativa';
+            row.title = String(item.text || '');
+            row.append(info, state);
+            agentGuidanceList.appendChild(row);
+        });
+    }
+
+    async function carregarAgentGuidance() {
+        if (!canManageUsers || !cardAgentGuidance) return;
+        setAgentGuidanceStatus('Carregando orientações...', 'loading');
+        try {
+            const resp = await fetch('/api/admin/codex/agent/settings', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || data.message || 'Falha ao carregar orientações.');
+            renderAgentGuidance(data.guidance || []);
+            setAgentGuidanceStatus(`${(data.guidance || []).length} orientação(ões) versionada(s).`, 'success');
+        } catch (err) {
+            setAgentGuidanceStatus(err.message || String(err), 'error');
+        }
+    }
+
+    function agentGuidanceContext() {
+        const scope = String(agentGuidanceScope?.value || 'global');
+        const key = String(agentGuidanceKey?.value || '').trim();
+        const context = {};
+        if (scope === 'module') context.module = key;
+        if (scope === 'store') context.store = key;
+        if (scope === 'supplier') context.supplier = key;
+        if (scope === 'sku') context.sku = key;
+        return context;
+    }
+
+    async function simularAgentGuidance() {
+        setAgentGuidanceStatus('Resolvendo a hierarquia...', 'loading');
+        try {
+            const resp = await fetch('/api/admin/codex/agent/guidance/simulate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                body: JSON.stringify(agentGuidanceContext())
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || data.message || 'Falha na simulação.');
+            agentGuidancePreview.textContent = String(data.prompt_preview || 'Nenhuma regra aplicável.');
+            setAgentGuidanceStatus(`${(data.guidance_applied || []).length} regra(s) seriam aplicadas, na ordem de precedência.`, 'success');
+        } catch (err) {
+            setAgentGuidanceStatus(err.message || String(err), 'error');
+        }
+    }
+
+    async function salvarAgentGuidance() {
+        const scope = String(agentGuidanceScope?.value || 'global');
+        const scopeKey = String(agentGuidanceKey?.value || '').trim();
+        const text = String(agentGuidanceText?.value || '').trim();
+        if (!text) {
+            setAgentGuidanceStatus('Informe o texto da orientação.', 'error');
+            return;
+        }
+        if (scope !== 'global' && !scopeKey) {
+            setAgentGuidanceStatus('Informe o identificador deste escopo.', 'error');
+            return;
+        }
+        setAgentGuidanceStatus('Salvando nova versão...', 'loading');
+        try {
+            const resp = await fetch('/api/admin/codex/agent/guidance', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                body: JSON.stringify({ scope_type: scope, scope_key: scopeKey, text, active: agentGuidanceActive?.checked !== false })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || data.message || 'Falha ao salvar orientação.');
+            agentGuidancePreview.textContent = `Salva como versão ${data.guidance?.version || 1}.\n\n${data.guidance?.text || text}`;
+            setAgentGuidanceStatus('Nova versão salva e auditada.', 'success');
+            await carregarAgentGuidance();
+        } catch (err) {
+            setAgentGuidanceStatus(err.message || String(err), 'error');
+        }
     }
 
     function setUserStatus(texto, tipo = '') {
@@ -619,6 +1032,13 @@
 
     function nomeModeloIALimpo(modelo) {
         const nomesFixos = {
+            'codex:gpt-5.6-sol': 'Codex GPT-5.6 Sol',
+            'codex:gpt-5.6-terra': 'Codex GPT-5.6 Terra',
+            'codex:gpt-5.6-luna': 'Codex GPT-5.6 Luna',
+            'codex:gpt-5.5': 'Codex GPT-5.5',
+            'codex:gpt-5.4': 'Codex GPT-5.4',
+            'codex:gpt-5.4-mini': 'Codex GPT-5.4 Mini',
+            'codex:gpt-5.3-codex-spark': 'Codex GPT-5.3 Codex Spark',
             'gpt-5.4-nano': 'Nano',
             'gpt-5.4-mini': 'Mini',
             'gpt-5.4': 'GPT-5.4',
@@ -649,7 +1069,7 @@
             const modeloLower = modeloSelecionado.toLowerCase();
             if (modeloLower.startsWith('gemini-')) {
                 modeloSelecionado = `vertex:${modeloSelecionado}`;
-            } else if (!modeloLower.startsWith('gpt-') && !modeloLower.startsWith('deepseek-') && !modeloLower.startsWith('gemini:')) {
+            } else if (!modeloLower.startsWith('codex:') && !modeloLower.startsWith('gpt-') && !modeloLower.startsWith('deepseek-') && !modeloLower.startsWith('gemini:')) {
                 modeloSelecionado = fallbackValue;
             }
         }
@@ -679,6 +1099,15 @@
 
     async function carregarModelosIA(selecionados = {}) {
         const fallback = [
+            { label: 'Codex', itens: [
+                { name: 'codex:gpt-5.6-sol', display_name: 'Codex GPT-5.6 Sol' },
+                { name: 'codex:gpt-5.6-terra', display_name: 'Codex GPT-5.6 Terra' },
+                { name: 'codex:gpt-5.6-luna', display_name: 'Codex GPT-5.6 Luna' },
+                { name: 'codex:gpt-5.5', display_name: 'Codex GPT-5.5' },
+                { name: 'codex:gpt-5.4', display_name: 'Codex GPT-5.4' },
+                { name: 'codex:gpt-5.4-mini', display_name: 'Codex GPT-5.4 Mini' },
+                { name: 'codex:gpt-5.3-codex-spark', display_name: 'Codex GPT-5.3 Codex Spark' },
+            ]},
             { label: 'Vertex AI', itens: [
                 { name: 'vertex:gemini-2.5-flash', display_name: 'Vertex Gemini 2.5 Flash' },
                 { name: 'vertex:gemini-2.5-pro', display_name: 'Vertex Gemini 2.5 Pro' },
@@ -705,6 +1134,7 @@
             if (resp.ok) {
                 const data = await resp.json();
                 grupos = [
+                    { label: 'Codex', itens: data.codex || [] },
                     { label: 'Vertex AI', itens: data.vertex || [] },
                     { label: 'OpenAI', itens: data.openai || [] },
                     { label: 'DeepSeek', itens: data.deepseek || [] },
@@ -818,6 +1248,7 @@
         setUserStatus('');
         mostrarPainelUsuario(mostrar);
         renderListaUsuarios(usuariosCache);
+        if (typeof window.jkWhatsappSelecionarUsuario === 'function') window.jkWhatsappSelecionarUsuario(null);
     }
 
     function resumoPermissoes(perms) {
@@ -873,6 +1304,7 @@
         }
         btnAlternarStatus.textContent = user.active ? '⛔ Desativar' : '✅ Ativar';
         mostrarPainelUsuario(true);
+        if (typeof window.jkWhatsappSelecionarUsuario === 'function') window.jkWhatsappSelecionarUsuario(user);
         setUserStatus('Usuário carregado.', 'success');
         renderListaUsuarios(usuariosCache);
     }
@@ -1204,12 +1636,18 @@
     btnAlternarStatus.addEventListener('click', alternarStatusUsuario);
     btnExcluirUsuario.addEventListener('click', excluirUsuario);
     btnCancelarEdicao.addEventListener('click', () => limparFormularioUsuario(false));
+    btnAgentGuidanceReload?.addEventListener('click', carregarAgentGuidance);
+    btnAgentGuidanceSimulate?.addEventListener('click', simularAgentGuidance);
+    btnAgentGuidanceSave?.addEventListener('click', salvarAgentGuidance);
 
     renderPermissionGrid();
     limparFormularioUsuario(false);
     carregarConfiguracoes();
     if (canManageUsers) carregarUsuarios();
+    if (canManageUsers) carregarAgentGuidance();
 </script>
-<script src="/ia-sidebar.js"></script>
+<script src="/configuracoes-whatsapp.js?v=20260715-voice-calls-v1"></script>
+<script src="/configuracoes-whatsapp-history.js?v=20260715-voice-calls-v1"></script>
+<script src="/ia-sidebar.js?v=20260714-operational-agent-v1"></script>
 </body>
 </html>

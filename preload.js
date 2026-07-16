@@ -25,17 +25,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
     extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url),
     startFavoritosJobBrowserBackground: (url) => ipcRenderer.invoke('favoritos-job-browser-start', url || ''),
     stopFavoritosJobBrowserBackground: () => ipcRenderer.invoke('favoritos-job-browser-stop'),
-    startFavoritosWorkerBrowser: (url) => ipcRenderer.invoke('favoritos-worker:start', url || ''),
-    pauseFavoritosWorkerBrowser: () => ipcRenderer.invoke('favoritos-worker:pause'),
-    resumeFavoritosWorkerBrowser: () => ipcRenderer.invoke('favoritos-worker:resume'),
-    cancelFavoritosWorkerBrowser: () => ipcRenderer.invoke('favoritos-worker:cancel'),
-    getFavoritosWorkerBrowserStatus: () => ipcRenderer.invoke('favoritos-worker:status'),
-    showFavoritosWorkerBrowser: () => ipcRenderer.invoke('favoritos-worker:show'),
-    hideFavoritosWorkerBrowser: () => ipcRenderer.invoke('favoritos-worker:hide'),
-    stopFavoritosWorkerBrowser: (options) => ipcRenderer.invoke('favoritos-worker:stop', options || {}),
-    executeFavoritosWorkerBrowser: (code) => ipcRenderer.invoke('favoritos-worker:execute', code),
-    clickFavoritosWorkerBrowser: (point) => ipcRenderer.invoke('favoritos-worker:click', point || {}),
-    typeFavoritosWorkerBrowser: (payload) => ipcRenderer.invoke('favoritos-worker:type', payload || {}),
+    startFavoritosWorkerBrowser: (url, workerId = 'w0', options = {}) => ipcRenderer.invoke('favoritos-worker:start', url || '', workerId || 'w0', options || {}),
+    pauseFavoritosWorkerBrowser: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:pause', workerId || 'w0'),
+    resumeFavoritosWorkerBrowser: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:resume', workerId || 'w0'),
+    cancelFavoritosWorkerBrowser: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:cancel', workerId || 'w0'),
+    getFavoritosWorkerBrowserStatus: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:status', workerId || 'w0'),
+    showFavoritosWorkerBrowser: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:show', workerId || 'w0'),
+    hideFavoritosWorkerBrowser: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:hide', workerId || 'w0'),
+    stopFavoritosWorkerBrowser: (options, workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:stop', options || {}, workerId || 'w0'),
+    executeFavoritosWorkerBrowser: (code, workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:execute', code, workerId || 'w0'),
+    clickFavoritosWorkerBrowser: (point, workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:click', point || {}, workerId || 'w0'),
+    typeFavoritosWorkerBrowser: (payload, workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:type', payload || {}, workerId || 'w0'),
+    startFavoritosWorkersPool: (payload) => ipcRenderer.invoke('favoritos-workers:start-pool', payload || {}),
+    getFavoritosWorkersPoolStatus: () => ipcRenderer.invoke('favoritos-workers:status'),
+    pauseFavoritosWorkersPool: () => ipcRenderer.invoke('favoritos-workers:pause'),
+    resumeFavoritosWorkersPool: () => ipcRenderer.invoke('favoritos-workers:resume'),
+    showFavoritosWorkersPool: () => ipcRenderer.invoke('favoritos-workers:show'),
+    hideFavoritosWorkersPool: () => ipcRenderer.invoke('favoritos-workers:hide'),
+    stopFavoritosWorkersPool: (options) => ipcRenderer.invoke('favoritos-workers:stop-pool', options || {}),
+    startFavoritosWorkerPool: (payload) => ipcRenderer.invoke('favoritos-workers:start-pool', payload || {}),
+    getFavoritosWorkerPoolStatus: () => ipcRenderer.invoke('favoritos-workers:status'),
+    stopFavoritosWorkerPool: (options) => ipcRenderer.invoke('favoritos-workers:stop-pool', options || {}),
+    onFavoritosWorkersProgress: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('favoritos-workers:progress', listener);
+        return () => ipcRenderer.removeListener('favoritos-workers:progress', listener);
+    },
+    onFavoritosWorkersDone: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('favoritos-workers:done', listener);
+        return () => ipcRenderer.removeListener('favoritos-workers:done', listener);
+    },
     onFavoritosWorkerProgress: (callback) => {
         if (typeof callback !== 'function') return () => {};
         const listener = (_event, payload) => callback(payload);
@@ -55,6 +77,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('favoritos-worker:error', listener);
     },
     showEmbeddedMlBrowser: (url, bounds) => ipcRenderer.invoke('embedded-ml-browser-show', url, bounds),
+    getEmbeddedMlBrowserState: () => ipcRenderer.invoke('embedded-ml-browser-state'),
     positionEmbeddedMlBrowser: (bounds) => ipcRenderer.invoke('embedded-ml-browser-position', bounds),
     hideEmbeddedMlBrowser: (options) => ipcRenderer.invoke('embedded-ml-browser-hide', options || {}),
     executeEmbeddedMlBrowser: (code) => ipcRenderer.invoke('embedded-ml-browser-execute', code),

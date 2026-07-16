@@ -647,6 +647,29 @@ async function salvarExemploRespostaPergunta(questionId, loja, textarea, botao, 
     }
 }
 
+async function aguardarJobAtendimentoCodex(jobId, atualizarStatus) {
+    const inicio = Date.now();
+    while ((Date.now() - inicio) < 185000) {
+        const response = await fetch(`/api/mercadolivre/assistant/jobs/${encodeURIComponent(jobId)}`, {
+            headers: obterAuthHeaders(),
+            cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao acompanhar o agente Codex.'));
+        if (typeof atualizarStatus === 'function') {
+            const etapa = String(data.current_step || data.agent_state || 'consultando').replaceAll('_', ' ');
+            atualizarStatus(`Agente Codex: ${etapa}...`);
+        }
+        if (data.status === 'completed') return data;
+        if (data.status === 'failed') throw new Error(data.error || 'O agente Codex nao conseguiu gerar a resposta.');
+        if (data.status === 'cancelled') throw new Error('A geracao foi cancelada.');
+        await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    throw new Error('O agente excedeu o limite de 180 segundos. Tente novamente.');
+}
+
+window.aguardarJobAtendimentoCodex = aguardarJobAtendimentoCodex;
+
 async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, btnGerar, status) {
     const pergunta = obterPerguntaPorId(questionId, loja);
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
@@ -664,14 +687,23 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             body: JSON.stringify({
                 loja: lojaResposta,
                 pergunta,
-                resposta_atual: String(textarea.value || '').trim()
+                resposta_atual: String(textarea.value || '').trim(),
+                async: true
             })
         });
-        const data = await response.json().catch(() => ({}));
+        let data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Erro ao gerar resposta com IA.');
-        textarea.value = data.resposta || '';
+        if (data.job_id && data.status !== 'completed') {
+            data = await aguardarJobAtendimentoCodex(data.job_id, (texto) => setStatusRespostaPergunta(status, texto));
+        }
+        const result = data.result && typeof data.result === 'object' ? data.result : data;
+        textarea.value = result.resposta || data.resposta || '';
+        textarea.dataset.codexProposalId = String(result.proposal_id || data.proposal_id || data.job_id || '');
+        textarea.dataset.codexProposalVersion = String(result.proposal_version || data.proposal_version || 1);
+        textarea.dataset.codexProposalHash = String(result.proposal_hash || data.proposal_hash || '');
         textarea.dispatchEvent(new Event('input'));
-        setStatusRespostaPergunta(status, 'Sugestao gerada. Revise e edite antes de enviar.', 'ok');
+        const aviso = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings[0]}` : '';
+        setStatusRespostaPergunta(status, `Sugestao gerada pelo agente Codex. Revise antes de enviar.${aviso}`, 'ok');
         textarea.focus();
     } catch (error) {
         setStatusRespostaPergunta(status, `Erro ao gerar IA: ${mensagemErro(error)}`, 'error');
@@ -706,7 +738,10 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
                 resposta: texto,
                 pergunta,
                 sku: skuResposta,
-                item_id: itemIdResposta
+                item_id: itemIdResposta,
+                proposal_id: String(textarea.dataset.codexProposalId || ''),
+                proposal_version: Number(textarea.dataset.codexProposalVersion || 0),
+                proposal_hash: String(textarea.dataset.codexProposalHash || '')
             })
         });
         const data = await response.json().catch(() => ({}));
@@ -717,6 +752,9 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
             date_created: new Date().toISOString()
         };
         pergunta.status = 'ANSWERED';
+        delete textarea.dataset.codexProposalId;
+        delete textarea.dataset.codexProposalVersion;
+        delete textarea.dataset.codexProposalHash;
         if (opcoes.salvarExemplo) {
             await salvarTreinamentoAtendimentoPergunta(pergunta, {
                 exemplo: montarExemploRespostaPergunta(pergunta, texto)

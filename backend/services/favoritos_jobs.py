@@ -29,6 +29,11 @@ FAVORITOS_JOB_STEP_SLEEP_S = 0.18
 FAVORITOS_JOB_MAX_RESULTS = 60
 FAVORITOS_JOB_ENRICH_MAX = 30
 FAVORITOS_JOB_MODE_AVANTPRO_BROWSER = "avantpro_browser"
+FAVORITOS_JOB_MEMORY_TTL_S = 60 * 60
+FAVORITOS_JOB_STORAGE_TTL_S = 30 * 24 * 60 * 60
+FAVORITOS_JOB_STORAGE_MAX_PER_CLIENT = 100
+FAVORITOS_JOB_MAX_SELECTED = 1000
+FAVORITOS_JOB_RUNNING_STATUSES = {"running", "paused", "canceling"}
 FAVORITOS_JOB_ACTIVE: dict[str, dict] = {}
 FAVORITOS_JOB_BY_OWNER: dict[str, str] = {}
 FAVORITOS_JOB_LOCK = threading.RLock()
@@ -48,6 +53,42 @@ def _model_dict(model: Any) -> dict:
 
 def _owner_key(client_id: str, username: str) -> str:
     return f"{str(client_id or '').strip()}:{str(username or 'default').strip().lower()}"
+
+
+def _job_owner_matches(job: dict, client_id: str, username: str) -> bool:
+    if not isinstance(job, dict):
+        return False
+    return (
+        str(job.get("client_id") or "").strip() == str(client_id or "").strip()
+        and str(job.get("username") or "").strip().lower() == str(username or "").strip().lower()
+    )
+
+
+def _job_timestamp(job: dict) -> float:
+    for field in ("finished_at", "updated_at", "started_at"):
+        value = str((job or {}).get(field) or "").strip()
+        if not value:
+            continue
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+    return 0.0
+
+
+def _job_prune_memory() -> None:
+    now = time.time()
+    with FAVORITOS_JOB_LOCK:
+        for job_id, job in list(FAVORITOS_JOB_ACTIVE.items()):
+            if str((job or {}).get("status") or "") in FAVORITOS_JOB_RUNNING_STATUSES:
+                continue
+            timestamp = _job_timestamp(job)
+            if timestamp and now - timestamp < FAVORITOS_JOB_MEMORY_TTL_S:
+                continue
+            FAVORITOS_JOB_ACTIVE.pop(job_id, None)
+            owner = str((job or {}).get("owner_key") or "")
+            if owner and FAVORITOS_JOB_BY_OWNER.get(owner) == job_id:
+                FAVORITOS_JOB_BY_OWNER.pop(owner, None)
 
 
 def _safe_client_dir(client_id: str) -> Path:
@@ -78,63 +119,98 @@ def _job_persist(job: dict) -> None:
     tmp_path.replace(path)
 
 
-def _job_load(job_id: str, client_id: str | None = None) -> dict | None:
-    candidates: list[Path] = []
-    if client_id:
-        candidates.append(_job_find_storage_path(job_id, client_id))
-    candidates.extend(Path("info").glob(f"*/favoritos_jobs/{job_id}.json"))
-    for path in candidates:
-        if not path.exists():
-            continue
+def _job_prune_storage(client_id: str) -> None:
+    directory = _safe_client_dir(client_id)
+    now = time.time()
+    retained = 0
+    for path in sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
         try:
             with path.open("r", encoding="utf-8") as fh:
                 job = json.load(fh)
-            if not isinstance(job, dict) or str(job.get("id") or "") != str(job_id):
+            if str((job or {}).get("status") or "") in FAVORITOS_JOB_RUNNING_STATUSES:
                 continue
-            with FAVORITOS_JOB_LOCK:
-                FAVORITOS_JOB_ACTIVE[job_id] = job
-                owner = job.get("owner_key")
-                if owner:
-                    FAVORITOS_JOB_BY_OWNER[owner] = job_id
-            return copy.deepcopy(job)
+            age = max(0.0, now - path.stat().st_mtime)
+            retained += 1
+            if age <= FAVORITOS_JOB_STORAGE_TTL_S and retained <= FAVORITOS_JOB_STORAGE_MAX_PER_CLIENT:
+                continue
+            if path.parent.resolve() != directory.resolve():
+                continue
+            path.unlink(missing_ok=True)
         except Exception:
             continue
-    return None
 
 
-def _job_load_latest(client_id: str) -> dict | None:
+def _normalize_orphaned_loaded_job(job: dict) -> bool:
+    if str(job.get("status") or "").lower() != "canceling" or not job.get("cancel_requested"):
+        return False
+    job["status"] = "canceled"
+    job["etapa"] = "Cancelado"
+    job["mensagem"] = "Favoritos cancelado pelo usuario."
+    job["finished_at"] = job.get("finished_at") or _now_iso()
+    job["updated_at"] = _now_iso()
+    return True
+
+
+def _job_load(job_id: str, client_id: str, username: str) -> dict | None:
+    path = _job_find_storage_path(job_id, client_id)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            job = json.load(fh)
+        if (
+            not isinstance(job, dict)
+            or str(job.get("id") or "") != str(job_id)
+            or not _job_owner_matches(job, client_id, username)
+        ):
+            return None
+        normalized = _normalize_orphaned_loaded_job(job)
+        with FAVORITOS_JOB_LOCK:
+            FAVORITOS_JOB_ACTIVE[job_id] = job
+            owner = str(job.get("owner_key") or _owner_key(client_id, username))
+            FAVORITOS_JOB_BY_OWNER[owner] = job_id
+        if normalized:
+            _job_persist(job)
+        return copy.deepcopy(job)
+    except Exception:
+        return None
+
+
+def _job_load_latest(client_id: str, username: str) -> dict | None:
     favoritos_jobs_dir = _safe_client_dir(client_id)
     files = sorted(favoritos_jobs_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
     for path in files:
         try:
             with path.open("r", encoding="utf-8") as fh:
                 job = json.load(fh)
-            if isinstance(job, dict) and job.get("id"):
-                job_id = str(job.get("id") or "")
-                with FAVORITOS_JOB_LOCK:
-                    FAVORITOS_JOB_ACTIVE[job_id] = job
-                return copy.deepcopy(job)
+            if not job.get("id") or not _job_owner_matches(job, client_id, username):
+                continue
+            normalized = _normalize_orphaned_loaded_job(job)
+            job_id = str(job.get("id") or "")
+            with FAVORITOS_JOB_LOCK:
+                FAVORITOS_JOB_ACTIVE[job_id] = job
+                FAVORITOS_JOB_BY_OWNER[_owner_key(client_id, username)] = job_id
+            if normalized:
+                _job_persist(job)
+            return copy.deepcopy(job)
         except Exception:
             continue
     return None
 
 
-def _job_resolve_active(job_id: str, client_id: str | None = None) -> dict | None:
+def _job_resolve_active(job_id: str, client_id: str, username: str) -> dict | None:
+    _job_prune_memory()
     with FAVORITOS_JOB_LOCK:
         job = FAVORITOS_JOB_ACTIVE.get(job_id or "")
-    if job:
+    if job and _job_owner_matches(job, client_id, username):
         return copy.deepcopy(job)
-    if job_id:
-        loaded = _job_load(job_id, client_id)
-        if loaded:
-            return loaded
-    if client_id:
-        return _job_load_latest(client_id)
-    return None
+    if not job_id:
+        return None
+    return _job_load(job_id, client_id, username)
 
 
-def _job_get(job_id: str, client_id: str | None = None) -> dict:
-    job = _job_resolve_active(job_id, client_id)
+def _job_get(job_id: str, client_id: str, username: str) -> dict:
+    job = _job_resolve_active(job_id, client_id, username)
     if not job:
         raise HTTPException(status_code=404, detail="Job de favoritos nao encontrado.")
     return job
@@ -726,6 +802,13 @@ def favoritos_jobs_start(
     client_id: str = Depends(favoritos_endpoints.get_tenant_id),
 ):
     username = favoritos_endpoints._extrair_username_do_request(request)
+    if len(req.selecionados or []) > FAVORITOS_JOB_MAX_SELECTED:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Selecione no maximo {FAVORITOS_JOB_MAX_SELECTED} SKUs por execucao.",
+        )
+    _job_prune_memory()
+    _job_prune_storage(client_id)
     quantidade = max(1, min(3, int(req.quantidade_pesquisas or 1)))
     selecionados = [_normalizar_item_job(item, quantidade) for item in (req.selecionados or [])]
     selecionados = [item for item in selecionados if item]
@@ -783,16 +866,37 @@ def favoritos_jobs_start(
     return {**_job_public(job), "started": True}
 
 
-def favoritos_jobs_status(job_id: str, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
-    job = _job_get(job_id, client_id)
+def favoritos_jobs_latest(
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
+    _job_prune_memory()
+    _job_prune_storage(client_id)
+    job = _job_load_latest(client_id, username)
     if not job:
-        raise HTTPException(status_code=404, detail="Job de favoritos nao encontrado.")
+        raise HTTPException(status_code=404, detail="Nenhum job de favoritos encontrado.")
     return _job_public(job)
 
 
-def favoritos_jobs_pause(job_id: str, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+def favoritos_jobs_status(
+    job_id: str,
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
+    job = _job_get(job_id, client_id, username)
+    return _job_public(job)
+
+
+def favoritos_jobs_pause(
+    job_id: str,
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
     with FAVORITOS_JOB_LOCK:
-        job = _job_get(job_id, client_id)
+        job = _job_get(job_id, client_id, username)
         if job.get("status") == "running":
             job["status"] = "paused"
             job["mensagem"] = "Favoritos pausado. Clique em retomar para continuar."
@@ -802,9 +906,14 @@ def favoritos_jobs_pause(job_id: str, client_id: str = Depends(favoritos_endpoin
     return _job_public(job)
 
 
-def favoritos_jobs_resume(job_id: str, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+def favoritos_jobs_resume(
+    job_id: str,
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
     with FAVORITOS_JOB_LOCK:
-        job = _job_get(job_id, client_id)
+        job = _job_get(job_id, client_id, username)
         if job.get("status") == "paused":
             job["status"] = "running"
             job["mensagem"] = "Favoritos retomado."
@@ -814,31 +923,63 @@ def favoritos_jobs_resume(job_id: str, client_id: str = Depends(favoritos_endpoi
     return _job_public(job)
 
 
-def favoritos_jobs_cancel(job_id: str, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+def favoritos_jobs_cancel(
+    job_id: str,
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
     with FAVORITOS_JOB_LOCK:
-        job = _job_get(job_id, client_id)
+        job = _job_get(job_id, client_id, username)
         if job.get("status") in {"done", "error", "canceled"}:
             return _job_public(job)
-        job["status"] = "canceling"
         job["cancel_requested"] = True
-        job["mensagem"] = "Cancelamento solicitado."
+        if job.get("modo_coleta") == FAVORITOS_JOB_MODE_AVANTPRO_BROWSER:
+            job["status"] = "canceled"
+            job["etapa"] = "Cancelado"
+            job["finished_at"] = _now_iso()
+            job["mensagem"] = "Favoritos cancelado pelo usuario."
+        else:
+            job["status"] = "canceling"
+            job["mensagem"] = "Cancelamento solicitado."
         job["updated_at"] = _now_iso()
         FAVORITOS_JOB_ACTIVE[job_id] = job
         _job_persist(job)
     return _job_public(job)
 
 
-def favoritos_jobs_proxima_coleta(job_id: str, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
-    job = _job_resolve_active(job_id, client_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job de favoritos nao encontrado.")
-    if job.get("modo_coleta") != FAVORITOS_JOB_MODE_AVANTPRO_BROWSER:
-        raise HTTPException(status_code=400, detail="Job nao usa coleta visual AvantPro.")
-    coletas = job.get("coletas") or {}
-    fila = job.get("fila_coletas") or []
-    for index, tarefa in enumerate(fila, start=1):
-        key = tarefa.get("key") or _coleta_key(tarefa)
-        if key not in coletas:
+def favoritos_jobs_proxima_coleta(
+    job_id: str,
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
+    with FAVORITOS_JOB_LOCK:
+        job = _job_resolve_active(job_id, client_id, username)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job de favoritos nao encontrado.")
+        if job.get("modo_coleta") != FAVORITOS_JOB_MODE_AVANTPRO_BROWSER:
+            raise HTTPException(status_code=400, detail="Job nao usa coleta visual AvantPro.")
+        if job.get("cancel_requested") or job.get("status") in {"canceling", "canceled"}:
+            if job.get("status") != "canceled":
+                job.update(
+                    {
+                        "status": "canceled",
+                        "etapa": "Cancelado",
+                        "finished_at": job.get("finished_at") or _now_iso(),
+                        "updated_at": _now_iso(),
+                        "mensagem": "Favoritos cancelado pelo usuario.",
+                    }
+                )
+                FAVORITOS_JOB_ACTIVE[job_id] = job
+                _job_persist(job)
+            return {"success": True, "pending": False, **_job_public(job)}
+        coletas = job.get("coletas") or {}
+        fila = job.get("fila_coletas") or []
+        for index, tarefa in enumerate(fila, start=1):
+            key = tarefa.get("key") or _coleta_key(tarefa)
+            if key in coletas:
+                continue
             job.update(
                 {
                     "status": "running",
@@ -850,46 +991,9 @@ def favoritos_jobs_proxima_coleta(job_id: str, client_id: str = Depends(favorito
                     "updated_at": _now_iso(),
                 }
             )
-            with FAVORITOS_JOB_LOCK:
-                FAVORITOS_JOB_ACTIVE[job_id] = job
+            FAVORITOS_JOB_ACTIVE[job_id] = job
             _job_persist(job)
             return {"success": True, "pending": True, "job_id": job_id, "coleta": tarefa}
-
-    resultados = _build_resultados_browser_job(job)
-    job.update(
-        {
-            "status": "done",
-            "etapa": "Finalizado",
-            "percentual": 100,
-            "resultados": resultados,
-            "finished_at": _now_iso(),
-            "updated_at": _now_iso(),
-            "mensagem": "Favoritos concluido pela coleta visual.",
-        }
-    )
-    with FAVORITOS_JOB_LOCK:
-        FAVORITOS_JOB_ACTIVE[job_id] = job
-    _job_persist(job)
-    return {"success": True, "pending": False, **_job_public(job)}
-
-
-def favoritos_jobs_coleta_termo(
-    job_id: str,
-    req: FavoritosJobColetaTermoRequest,
-    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
-):
-    job = _job_resolve_active(job_id, client_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job de favoritos nao encontrado.")
-    payload = _model_dict(req)
-    key = _coleta_key(payload)
-    coletas = dict(job.get("coletas") or {})
-    coletas[key] = payload
-    job["coletas"] = coletas
-    job["mensagem"] = f"Coleta recebida: {payload.get('termo') or ''}"
-    job["updated_at"] = _now_iso()
-    fila = job.get("fila_coletas") or []
-    if fila and all((item.get("key") or _coleta_key(item)) in coletas for item in fila):
         resultados = _build_resultados_browser_job(job)
         job.update(
             {
@@ -898,17 +1002,56 @@ def favoritos_jobs_coleta_termo(
                 "percentual": 100,
                 "resultados": resultados,
                 "finished_at": _now_iso(),
+                "updated_at": _now_iso(),
                 "mensagem": "Favoritos concluido pela coleta visual.",
             }
         )
-    with FAVORITOS_JOB_LOCK:
         FAVORITOS_JOB_ACTIVE[job_id] = job
-    _job_persist(job)
-    return _job_public(job)
+        _job_persist(job)
+        return {"success": True, "pending": False, **_job_public(job)}
+
+
+def favoritos_jobs_coleta_termo(
+    job_id: str,
+    req: FavoritosJobColetaTermoRequest,
+    request: Request,
+    client_id: str = Depends(favoritos_endpoints.get_tenant_id),
+):
+    username = favoritos_endpoints._extrair_username_do_request(request)
+    with FAVORITOS_JOB_LOCK:
+        job = _job_resolve_active(job_id, client_id, username)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job de favoritos nao encontrado.")
+        if job.get("cancel_requested") or job.get("status") in {"canceling", "canceled"}:
+            raise HTTPException(status_code=409, detail="Job de favoritos ja foi cancelado.")
+        payload = _model_dict(req)
+        key = _coleta_key(payload)
+        coletas = dict(job.get("coletas") or {})
+        coletas[key] = payload
+        job["coletas"] = coletas
+        job["mensagem"] = f"Coleta recebida: {payload.get('termo') or ''}"
+        job["updated_at"] = _now_iso()
+        fila = job.get("fila_coletas") or []
+        if fila and all((item.get("key") or _coleta_key(item)) in coletas for item in fila):
+            resultados = _build_resultados_browser_job(job)
+            job.update(
+                {
+                    "status": "done",
+                    "etapa": "Finalizado",
+                    "percentual": 100,
+                    "resultados": resultados,
+                    "finished_at": _now_iso(),
+                    "mensagem": "Favoritos concluido pela coleta visual.",
+                }
+            )
+        FAVORITOS_JOB_ACTIVE[job_id] = job
+        _job_persist(job)
+        return _job_public(job)
 
 
 __all__ = [
     "favoritos_jobs_start",
+    "favoritos_jobs_latest",
     "favoritos_jobs_status",
     "favoritos_jobs_proxima_coleta",
     "favoritos_jobs_coleta_termo",

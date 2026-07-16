@@ -53,7 +53,7 @@ function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false) {
     }
     periodoApplyTimer = setTimeout(() => {
         carregarVendas().then(() => agendarSegundoPlano(() => carregarGrafico(), 220));
-    }, 140);
+    }, 250);
 }
 
 function setSyncButtons(isSyncing) {
@@ -74,118 +74,81 @@ function renderProgresso(p, logs) {
         <div style="margin-top:8px;font-size:0.85rem;">${logsList}</div>`;
 }
 
-function iniciarMonitoramentoProgresso() {
-    if (progressTimer) clearInterval(progressTimer);
-    progressTimer = setInterval(async () => {
-        if (progressPollInFlight) return;
-        progressPollInFlight = true;
-        try {
-            clientId = clientId || obterClientId();
-            if (!clientId) {
-                console.warn('ClientId n\u00e3o obtido');
-                return;
-            }
-            const resp = await fetch('/api/vendas/sync/progress', {
-                headers: obterAuthHeaders()
-            });
-            if (!resp.ok) {
-                console.error(`Erro na resposta: ${resp.status} ${resp.statusText}`);
-                return;
-            }
-            const data = await resp.json();
-            console.log('Dados do progresso recebidos:', data);
-            const progresso = data && data.progress ? data.progress : null;
-            const etapa = String((progresso && progresso.etapa) || '').toLowerCase();
-            if (data && data.active === false && syncEmAndamento && etapa === 'erro') {
-                syncEmAndamento = false;
-                setSyncButtons(false);
-                pararMonitoramentoProgresso();
-                statusEl.className = 'status-bar error';
-                statusEl.textContent = `Erro ao sincronizar: ${corrigirTextoVendas((progresso && progresso.mensagem) || 'Falha na sincroniza\u00e7\u00e3o.')}`;
-                return;
-            }
-            if (data && data.active === false && syncEmAndamento && etapa === 'cancelamento') {
-                syncEmAndamento = false;
-                setSyncButtons(false);
-                pararMonitoramentoProgresso();
-                statusEl.className = 'status-bar';
-                statusEl.textContent = corrigirTextoVendas((progresso && progresso.mensagem) || 'Sincroniza\u00e7\u00e3o cancelada.');
-                return;
-            }
-            if (data && data.active === false && syncEmAndamento) {
-                syncEmAndamento = false;
-                setSyncButtons(false);
-                pararMonitoramentoProgresso();
-                statusEl.className = 'status-bar loading';
-                statusEl.innerHTML = `${spinnerHtml}Sincroniza\u00e7\u00e3o finalizada. Atualizando dados...`;
-                await carregarVendas();
-                await carregarGrafico();
-                statusEl.className = 'status-bar';
-                statusEl.textContent = '';
-                return;
-            }
-            if (progresso) {
-                console.log('Progresso atualizado:', progresso.percentual + '%', progresso.mensagem);
-                renderProgresso(progresso, data.logs);
-            } else if (syncEmAndamento) {
-                // Se esta sincronizando mas nao recebeu progresso ainda, mostrar status
-                console.log('Aguardando progresso do servidor...');
-                statusEl.className = 'status-bar loading';
-                statusEl.innerHTML = `${spinnerHtml}<strong>Aguardando resposta do servidor...</strong>`;
-            }
-        } catch (e) {
-            console.error('Erro ao buscar progresso:', e);
-            if (syncEmAndamento) {
-                statusEl.className = 'status-bar loading';
-                statusEl.innerHTML = `${spinnerHtml}<strong>Conectando...</strong><div style="color:#ff6b6b; font-size:0.85rem;">${e.message}</div>`;
-            }
-        } finally {
-            progressPollInFlight = false;
+let progressMonitorSubscribed = false;
+let progressReloadInFlight = false;
+
+function aplicarEstadoMonitorSyncVendas(data) {
+    if (!data) return;
+    const progresso = data.progress || null;
+    const etapa = String(progresso?.etapa || '').toLowerCase();
+    const loteLocalAtivo = !!syncController;
+
+    if (data.active) {
+        syncEmAndamento = true;
+        setSyncButtons(true);
+        if (progresso) {
+            renderProgresso(progresso, data.logs);
+        } else {
+            statusEl.className = 'status-bar loading';
+            statusEl.innerHTML = `${spinnerHtml}<strong>Aguardando resposta do servidor...</strong>`;
         }
-    }, 3000); // Atualizar a cada 3 segundos
+        return;
+    }
+
+    if (!loteLocalAtivo) {
+        syncEmAndamento = false;
+        setSyncButtons(false);
+    }
+    if (etapa === 'erro' && !loteLocalAtivo) {
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = `Erro ao sincronizar: ${corrigirTextoVendas(progresso?.mensagem || 'Falha na sincronização.')}`;
+    } else if (etapa === 'cancelamento' && !loteLocalAtivo) {
+        statusEl.className = 'status-bar';
+        statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Sincronização cancelada.');
+    }
+}
+
+function iniciarMonitoramentoProgresso() {
+    if (!progressMonitorSubscribed) {
+        vendasSyncMonitor.subscribe(aplicarEstadoMonitorSyncVendas);
+        progressMonitorSubscribed = true;
+    }
+    vendasSyncMonitor.start();
+    void vendasSyncMonitor.refresh();
 }
 
 function pararMonitoramentoProgresso() {
-    if (progressTimer) {
-        clearInterval(progressTimer);
-        progressTimer = null;
-    }
+    progressTimer = null;
     progressPollInFlight = false;
 }
 
 async function verificarSyncEmAndamentoNaEntrada() {
-    try {
-        clientId = clientId || obterClientId();
-        if (!clientId) return false;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const resp = await fetch('/api/vendas/sync/progress', {
-            headers: obterAuthHeaders(),
-            cache: 'no-store',
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (!resp.ok) return false;
-        const data = await resp.json();
-        if (data && data.active) {
-            syncEmAndamento = true;
-            setSyncButtons(true);
-            if (data.progress) {
-                renderProgresso(data.progress, data.logs);
-            } else {
-                statusEl.className = 'status-bar loading';
-                statusEl.innerHTML = `${spinnerHtml}Sincroniza\u00e7\u00e3o em andamento...`;
-            }
-            iniciarMonitoramentoProgresso();
-            return true;
-        }
-        syncEmAndamento = false;
-        setSyncButtons(false);
-    } catch (e) {
-        console.warn('Falha ao verificar sincroniza\u00e7\u00e3o ativa:', e);
-    }
-    return false;
+    clientId = clientId || obterClientId();
+    if (!clientId) return false;
+    iniciarMonitoramentoProgresso();
+    const data = await vendasSyncMonitor.refresh();
+    aplicarEstadoMonitorSyncVendas(data);
+    return !!data?.active;
 }
+
+window.addEventListener('jk:vendas-sync-finished', event => {
+    const payload = event?.detail?.payload || {};
+    const etapa = String(payload?.progress?.etapa || '').toLowerCase();
+    if (syncController || progressReloadInFlight || etapa === 'erro' || etapa === 'cancelamento') return;
+    progressReloadInFlight = true;
+    statusEl.className = 'status-bar loading';
+    statusEl.innerHTML = `${spinnerHtml}Sincronização finalizada. Atualizando dados...`;
+    void (async () => {
+        try {
+            await carregarVendas();
+            await carregarGrafico();
+            statusEl.className = 'status-bar';
+            statusEl.textContent = '';
+        } finally {
+            progressReloadInFlight = false;
+        }
+    })();
+});
 
 // Funções utilitárias
 function formatDate(dateStr) {

@@ -25,6 +25,54 @@ function getAuthHeadersWithClient(extra = {}) {
     };
 }
 
+function getPromoClientId() {
+    try {
+        const userData = JSON.parse(localStorage.getItem('user_data') || '{}');
+        return String(userData.client_id || '').trim();
+    } catch (_e) {
+        return '';
+    }
+}
+
+async function fetchJsonOrThrow(url, options, fallbackMessage) {
+    const resp = await fetch(url, options || {});
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok || !payload.success) {
+        throw new Error(buildApiErrorMessage(resp, payload, fallbackMessage || 'Falha na consulta.'));
+    }
+    return payload;
+}
+
+async function consultarProgressoAnaliseApi(jobId) {
+    const progressUrl = `/api/promo/analise-via-api-arquivos/progresso/${encodeURIComponent(jobId)}`;
+    try {
+        return await fetchJsonOrThrow(
+            progressUrl,
+            { headers: getAuthHeadersWithClient() },
+            'Erro ao consultar o andamento da analise.'
+        );
+    } catch (backendError) {
+        const message = String(backendError && backendError.message ? backendError.message : backendError || '');
+        const pareceFalhaRede = !message || /failed to fetch|networkerror|load failed|falha.*fetch/i.test(message);
+        if (!pareceFalhaRede) {
+            throw backendError;
+        }
+        const clientId = getPromoClientId();
+        if (!clientId) {
+            throw backendError;
+        }
+        try {
+            return await fetchJsonOrThrow(
+                `http://127.0.0.1:8011/api/promo/jobs/${encodeURIComponent(jobId)}?client_id=${encodeURIComponent(clientId)}`,
+                { headers: { 'X-Client-ID': clientId } },
+                'Erro ao consultar o worker de promocoes.'
+            );
+        } catch (_workerError) {
+            throw backendError;
+        }
+    }
+}
+
 async function carregarLojasApiPromo() {
     const selectApi = document.getElementById('apiLojaSelect');
     const selectMlb = document.getElementById('mlbLojaSelect');
@@ -1102,14 +1150,7 @@ async function acompanharJobAnaliseApi(jobId) {
             if (apiAnaliseCancelada) {
                 return { status: 'canceled', payload: { message: 'Verificacao cancelada pelo usuario.' } };
             }
-            const resp = await fetch(`/api/promo/analise-via-api-arquivos/progresso/${encodeURIComponent(jobId)}`, {
-                headers: getAuthHeadersWithClient(),
-            });
-            const payload = await resp.json().catch(() => ({}));
-            if (!resp.ok || !payload.success) {
-                throw new Error(payload.detail || 'Erro ao consultar o andamento da análise.');
-            }
-
+            const payload = await consultarProgressoAnaliseApi(jobId);
             const status = String(payload.status || '').toLowerCase();
             const progress = Number(payload.progress || 0);
             const message = payload.message || 'Processando análise em segundo plano...';
@@ -1143,6 +1184,7 @@ async function acompanharJobAnaliseApi(jobId) {
                 apiAnaliseAtiva = primeiraComDados >= 0 ? primeiraComDados : 0;
                 const analiseInicial = apiAnalisesPorCampanha[apiAnaliseAtiva] || null;
                 currentData = normalizeApiDatasetRules(analiseInicial?.data || result.data || []);
+                const concluidaSemLinhas = currentData.length === 0;
                 mlFileName = null;
                 planilhaGeradaAtual = analiseInicial?.planilha_gerada || result.planilha_gerada || null;
                 garantirColunasVisiveis(['Preço Final', 'Preço Final ML']);
@@ -1161,7 +1203,9 @@ async function acompanharJobAnaliseApi(jobId) {
                 atualizarApiStatusBar({
                     status: 'completed',
                     progress: 100,
-                    message: payload.message || 'Analise concluida.',
+                    message: concluidaSemLinhas
+                        ? 'Analise concluida sem anuncios para exibir.'
+                        : (payload.message || 'Analise concluida.'),
                     logs: payload.logs,
                     updated_at: payload.updated_at,
                 });
@@ -1314,6 +1358,7 @@ async function processarAnaliseApi(opcoes = {}) {
     const promocaoAType = selectPromoA?.selectedOptions?.[0]?.dataset?.promoType || '';
     let promoBOptions = getApiPromoBSelections();
     const margemMinima = Number(document.getElementById('apiMargemMinima')?.value || 15);
+    const margemTolerancia = getActionTolerancePct();
     const loading = document.getElementById('apiLoading');
     const loadingDetails = document.getElementById('apiLoadingDetails');
     const errorMsg = document.getElementById('apiErrorMsg');
@@ -1378,6 +1423,7 @@ async function processarAnaliseApi(opcoes = {}) {
         formData.append('promocao_a_id', promocaoA);
         formData.append('promocao_a_type', promocaoAType || '');
         formData.append('margem_minima', String(Number.isFinite(margemMinima) ? margemMinima : 15));
+        formData.append('margem_tolerancia', String(margemTolerancia));
         formData.append('promocoes_b_meta', JSON.stringify(promoBOptions.map((promo) => ({
             promo_b_id: promo.value,
             promo_b_type: promo.promoType || '',

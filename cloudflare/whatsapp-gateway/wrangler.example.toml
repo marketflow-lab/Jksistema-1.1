@@ -1,0 +1,38 @@
+name = "jk-whatsapp-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-07-10"
+workers_dev = true
+preview_urls = false
+
+[vars]
+META_GRAPH_API_VERSION = "REPLACE_WITH_CURRENT_META_GRAPH_VERSION"
+META_APP_ID = "REPLACE_WITH_META_APP_ID"
+ZERO_COST_POLICY_VALID_UNTIL = "2026-09-30T23:59:59Z"
+FREE_WINDOW_SECONDS = "84600"
+MEDIA_ACTIVE_BYTES_LIMIT = "943718400"
+MEDIA_UPLOADS_MONTH_LIMIT = "10000"
+MEDIA_UPLOADS_DAY_LIMIT = "900"
+MEDIA_DOWNLOADS_MONTH_LIMIT = "50000"
+TYPING_PULSES_DAY_LIMIT = "10000"
+VOICE_SIP_HOST = "voice.example.com"
+VOICE_REALTIME_MODEL = "gpt-realtime-2.1"
+VOICE_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
+VOICE_DEFAULT_NAME = "cedar"
+VOICE_MAX_CONCURRENT_CALLS = "3"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jk-whatsapp-gateway"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[kv_namespaces]]
+binding = "MEDIA"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Defina apenas com `wrangler secret put`:
+# BRIDGE_TOKEN, META_VERIFY_TOKEN, META_APP_SECRET, META_ACCESS_TOKEN,
+# META_SYSTEM_USER_TOKEN, META_WABA_ID, META_PHONE_NUMBER_ID
+# OPENAI_REALTIME_API_KEY, OPENAI_WEBHOOK_SECRET, OPENAI_PROJECT_ID

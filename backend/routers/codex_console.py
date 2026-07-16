@@ -22,6 +22,24 @@ def create_codex_console_router() -> APIRouter:
         name="codex_listar_tarefas",
     )
     router.add_api_route(
+        "/api/admin/codex/conversations/whatsapp",
+        codex_console.codex_listar_conversas_whatsapp,
+        methods=["GET"],
+        name="codex_listar_conversas_whatsapp",
+    )
+    router.add_api_route(
+        "/api/admin/codex/conversations/whatsapp/{conversation_id}/messages",
+        codex_console.codex_listar_mensagens_conversa_whatsapp,
+        methods=["GET"],
+        name="codex_listar_mensagens_conversa_whatsapp",
+    )
+    router.add_api_route(
+        "/api/admin/codex/conversations/whatsapp/{conversation_id}/messages/{task_id}",
+        codex_console.codex_obter_mensagem_conversa_whatsapp,
+        methods=["GET"],
+        name="codex_obter_mensagem_conversa_whatsapp",
+    )
+    router.add_api_route(
         "/api/admin/codex/tasks",
         codex_console.codex_criar_tarefa,
         methods=["POST"],
@@ -46,6 +64,12 @@ def create_codex_console_router() -> APIRouter:
         name="codex_deletar_tarefa",
     )
     router.add_api_route(
+        "/api/admin/codex/conversations/current/reset",
+        codex_console.codex_reset_current_conversation,
+        methods=["POST"],
+        name="codex_reset_current_conversation",
+    )
+    router.add_api_route(
         "/api/admin/codex/conversations/{conversation_id}",
         codex_console.codex_deletar_conversa,
         methods=["DELETE"],
@@ -62,6 +86,99 @@ def create_codex_console_router() -> APIRouter:
         codex_console.codex_cancelar_tarefa,
         methods=["POST"],
         name="codex_cancelar_tarefa",
+    )
+    router.add_api_route(
+        "/api/admin/codex/tasks/{task_id}/steer",
+        codex_console.codex_complementar_tarefa,
+        methods=["POST"],
+        name="codex_complementar_tarefa",
+    )
+    # Alias sem o prefixo administrativo para o chat universal do Black Jhon.
+    # As rotas antigas permanecem por compatibilidade; a autorizacao real fica
+    # nos handlers (leitura para autenticados, mutacoes/aprovacoes apenas full).
+    router.add_api_route(
+        "/api/codex/status",
+        codex_console.codex_status,
+        methods=["GET"],
+        name="codex_status_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks",
+        codex_console.codex_listar_tarefas,
+        methods=["GET"],
+        name="codex_listar_tarefas_user",
+    )
+    router.add_api_route(
+        "/api/codex/conversations/whatsapp",
+        codex_console.codex_listar_conversas_whatsapp,
+        methods=["GET"],
+        name="codex_listar_conversas_whatsapp_user",
+    )
+    router.add_api_route(
+        "/api/codex/conversations/whatsapp/{conversation_id}/messages",
+        codex_console.codex_listar_mensagens_conversa_whatsapp,
+        methods=["GET"],
+        name="codex_listar_mensagens_conversa_whatsapp_user",
+    )
+    router.add_api_route(
+        "/api/codex/conversations/whatsapp/{conversation_id}/messages/{task_id}",
+        codex_console.codex_obter_mensagem_conversa_whatsapp,
+        methods=["GET"],
+        name="codex_obter_mensagem_conversa_whatsapp_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks",
+        codex_console.codex_criar_tarefa,
+        methods=["POST"],
+        name="codex_criar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/attachments",
+        codex_console.codex_upload_attachments,
+        methods=["POST"],
+        name="codex_upload_attachments_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}",
+        codex_console.codex_obter_tarefa,
+        methods=["GET"],
+        name="codex_obter_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}",
+        codex_console.codex_deletar_tarefa,
+        methods=["DELETE"],
+        name="codex_deletar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/conversations/current/reset",
+        codex_console.codex_reset_current_conversation,
+        methods=["POST"],
+        name="codex_reset_current_conversation_user",
+    )
+    router.add_api_route(
+        "/api/codex/conversations/{conversation_id}",
+        codex_console.codex_deletar_conversa,
+        methods=["DELETE"],
+        name="codex_deletar_conversa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}/approve",
+        codex_console.codex_aprovar_tarefa,
+        methods=["POST"],
+        name="codex_aprovar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}/cancel",
+        codex_console.codex_cancelar_tarefa,
+        methods=["POST"],
+        name="codex_cancelar_tarefa_user",
+    )
+    router.add_api_route(
+        "/api/codex/tasks/{task_id}/steer",
+        codex_console.codex_complementar_tarefa,
+        methods=["POST"],
+        name="codex_complementar_tarefa_user",
     )
     router.add_api_route(
         "/api/admin/codex/actions",
@@ -100,10 +217,28 @@ def create_codex_console_router() -> APIRouter:
         name="codex_actions_criar_proposta",
     )
     router.add_api_route(
+        "/api/admin/codex/actions/proposals",
+        codex_console.codex_actions_listar_propostas,
+        methods=["GET"],
+        name="codex_actions_listar_propostas",
+    )
+    router.add_api_route(
         "/api/admin/codex/actions/proposals/{proposal_id}/approve",
         codex_console.codex_actions_aprovar_proposta,
         methods=["POST"],
         name="codex_actions_aprovar_proposta",
+    )
+    router.add_api_route(
+        "/api/admin/codex/actions/proposals/{proposal_id}/revise",
+        codex_console.codex_actions_revisar_proposta,
+        methods=["POST"],
+        name="codex_actions_revisar_proposta",
+    )
+    router.add_api_route(
+        "/api/admin/codex/actions/proposals/{proposal_id}/reject",
+        codex_console.codex_actions_rejeitar_proposta,
+        methods=["POST"],
+        name="codex_actions_rejeitar_proposta",
     )
     router.add_api_route(
         "/api/admin/codex/actions/runs/{run_id}",
@@ -116,6 +251,36 @@ def create_codex_console_router() -> APIRouter:
         codex_console.codex_actions_cancelar_execucao,
         methods=["POST"],
         name="codex_actions_cancelar_execucao",
+    )
+    router.add_api_route(
+        "/api/admin/codex/agent/settings",
+        codex_console.codex_agent_settings_get,
+        methods=["GET"],
+        name="codex_agent_settings_get",
+    )
+    router.add_api_route(
+        "/api/admin/codex/agent/guidance",
+        codex_console.codex_agent_guidance_put,
+        methods=["PUT"],
+        name="codex_agent_guidance_put",
+    )
+    router.add_api_route(
+        "/api/admin/codex/agent/guidance/simulate",
+        codex_console.codex_agent_guidance_simulate,
+        methods=["POST"],
+        name="codex_agent_guidance_simulate",
+    )
+    router.add_api_route(
+        "/api/admin/codex/agent/capability-coverage",
+        codex_console.codex_agent_capability_coverage,
+        methods=["GET"],
+        name="codex_agent_capability_coverage",
+    )
+    router.add_api_route(
+        "/api/codex/agent/plans/{plan_id}",
+        codex_console.codex_agent_plan_get,
+        methods=["GET"],
+        name="codex_agent_plan_get",
     )
     router.add_api_route(
         "/api/admin/codex/assistant/chat",
@@ -188,6 +353,60 @@ def create_codex_console_router() -> APIRouter:
         codex_assistant.codex_assistant_daily_analysis_run,
         methods=["POST"],
         name="codex_assistant_daily_analysis_run",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/weekly-analysis/run",
+        codex_assistant.codex_assistant_weekly_analysis_run,
+        methods=["POST"],
+        name="codex_assistant_weekly_analysis_run",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/report-settings",
+        codex_assistant.codex_assistant_report_settings_get,
+        methods=["GET"],
+        name="codex_assistant_report_settings_get",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/report-settings",
+        codex_assistant.codex_assistant_report_settings_put,
+        methods=["PUT"],
+        name="codex_assistant_report_settings_put",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/financial-adjustments",
+        codex_assistant.codex_assistant_financial_adjustments_get,
+        methods=["GET"],
+        name="codex_assistant_financial_adjustments_get",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/financial-adjustments",
+        codex_assistant.codex_assistant_financial_adjustments_post,
+        methods=["POST"],
+        name="codex_assistant_financial_adjustments_post",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/financial-adjustments/{adjustment_id}",
+        codex_assistant.codex_assistant_financial_adjustments_delete,
+        methods=["DELETE"],
+        name="codex_assistant_financial_adjustments_delete",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/action-queue",
+        codex_assistant.codex_assistant_action_queue_get,
+        methods=["GET"],
+        name="codex_assistant_action_queue_get",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/action-queue",
+        codex_assistant.codex_assistant_action_queue_post,
+        methods=["POST"],
+        name="codex_assistant_action_queue_post",
+    )
+    router.add_api_route(
+        "/api/admin/codex/assistant/action-queue/{action_id}",
+        codex_assistant.codex_assistant_action_queue_patch,
+        methods=["PATCH"],
+        name="codex_assistant_action_queue_patch",
     )
     router.add_api_route(
         "/api/admin/codex/assistant/reports",

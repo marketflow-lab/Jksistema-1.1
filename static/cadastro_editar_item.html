@@ -192,7 +192,7 @@
     }
 
     function ordemCampos(campos) {
-        const prioridade = ['sku', 'nome', 'categoria', 'marca', CAMPO_M3_INDIVIDUAL, 'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
+        const prioridade = ['sku', 'nome', 'categoria', 'marca', CAMPO_M3_INDIVIDUAL, 'ncm', 'ncm_validade', 'ncm_descricao_oficial', 'ncm_fonte_auditoria', 'monofasico', 'monofasico_status', 'monofasico_confianca', 'monofasico_motivo', 'monofasico_fundamento', 'monofasico_fonte', 'monofasico_verificado_em', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'];
         const score = (c) => {
             const i = prioridade.indexOf(c);
             return i === -1 ? 999 : i;
@@ -262,6 +262,10 @@
         }
         input.id = `f_${chave}`;
         input.name = chave;
+        if (String(chave || '').toLowerCase().startsWith('monofasico') || ['ncm_validade', 'ncm_descricao_oficial', 'ncm_fonte_auditoria', 'ncm_verificado_em'].includes(String(chave || '').toLowerCase())) {
+            input.readOnly = true;
+            input.title = 'Campo gerado pela auditoria fiscal do cadastro.';
+        }
         if (String(chave || '').trim().toLowerCase() === CAMPO_M3_INDIVIDUAL) {
             input.inputMode = 'decimal';
             input.placeholder = 'Ex.: 0,000054';
@@ -286,7 +290,7 @@
 
         if (['sku', 'nome', 'produto', 'produto_bling', 'categoria', 'marca'].includes(c)) return 'identificacao';
         if (['fabricante', 'fornecedor', 'modelo', 'linha'].includes(c) || c.includes('fabricante') || c.includes('fornecedor')) return 'fabricante';
-        if (['ncm', 'cest', 'imposto', CAMPO_M3_INDIVIDUAL, 'm3'].includes(c)) return 'fiscal';
+        if (['ncm', 'cest', 'imposto', CAMPO_M3_INDIVIDUAL, 'm3'].includes(c) || c.startsWith('monofasico') || c.startsWith('ncm_')) return 'fiscal';
         if (['custo', 'preco'].includes(c)) return 'precos';
         if (['mlb_ids', 'custos_frete_mlb', 'mlb_principal', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'modalidades_mlb', 'gtins_mlb'].includes(c)) return 'anuncios';
         if (['descricao', 'foto', 'link', 'url'].includes(c) || c.includes('descricao') || c.includes('link') || c.includes('url')) return 'identificacao';

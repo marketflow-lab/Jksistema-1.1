@@ -56,6 +56,10 @@
       return null;
     };
     const chamarWorkerDireto = (name, args = []) => {
+      const controller = browser.workerController;
+      if (usarWorkerFavoritos() && controller && typeof controller.invoke === 'function') {
+        return controller.invoke(name, args);
+      }
       const api = electronApi();
       if (!usarWorkerFavoritos() || !api || typeof api[name] !== 'function') return null;
       try {
@@ -121,6 +125,31 @@
       const bounds = getBounds();
       if (!bounds) return;
       enviar('jk-ml-browser-position', { bounds });
+    }
+
+    function verificarEstado(urlEsperada = '', timeoutMs = 2600) {
+      if (!usarNavegadorMlNoShellElectron()) {
+        return Promise.resolve({
+          success: false,
+          reason: 'shell-indisponivel',
+          url: ''
+        });
+      }
+      const requestIdAtual = `ml-shell-status-${Date.now()}-${++requestId}`;
+      const bounds = getBounds();
+      return new Promise((resolve, reject) => {
+        pending.set(requestIdAtual, { resolve, reject });
+        enviar('jk-ml-browser-status', {
+          requestId: requestIdAtual,
+          expectedUrl: String(urlEsperada || '').trim(),
+          bounds
+        });
+        setTimeout(() => {
+          if (!pending.has(requestIdAtual)) return;
+          pending.delete(requestIdAtual);
+          reject(new Error('Tempo limite ao confirmar o estado real do navegador do Mercado Livre.'));
+        }, Math.max(600, Number(timeoutMs) || 2600));
+      });
     }
 
     function ocultarTemporariamente() {
@@ -288,11 +317,13 @@
         data.channel === 'jk-ml-browser-execute-result'
         || data.channel === 'jk-ml-browser-click-result'
         || data.channel === 'jk-ml-browser-type-result'
+        || data.channel === 'jk-ml-browser-status-result'
       ) {
         const item = pending.get(data.requestId);
         if (!item) return false;
         pending.delete(data.requestId);
         if (data.error) item.reject(new Error(data.error));
+        else if (data.channel === 'jk-ml-browser-status-result') item.resolve(data.result || data);
         else item.resolve(data.result);
         return true;
       }
@@ -342,6 +373,7 @@
       enviar,
       ocultarDefinitivo,
       atualizarPosicao,
+      verificarEstado,
       ocultarTemporariamente,
       restaurarSeVisivel,
       agendarAtualizacaoPosicao,

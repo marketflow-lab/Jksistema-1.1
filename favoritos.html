@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Favoritos ML - JK Sistema</title>
 
-    <link rel="stylesheet" href="/favoritos/styles.css?v=20260708-fav-historico-favoritos-v13">
+    <link rel="stylesheet" href="/favoritos/styles.css?v=20260715-favoritos-browser-confirm-v1">
     <script src="/auth.js?v=20260618-persist-login"></script>
 </head>
 <body class="favoritos-store-pending">
@@ -248,7 +248,10 @@
 
         <div id="aba-anuncios-ignorados" class="aba-conteudo">
             <div class="panel">
-                <h3 class="section-title">An&uacute;ncios ignorados por SKU</h3>
+                <div class="ml-ignored-page-toolbar">
+                    <h3 class="section-title">An&uacute;ncios ignorados por SKU</h3>
+                    <button id="ml-anuncios-ignorados-voltar-geral" type="button" class="btn-back ml-ignored-page-back-btn" hidden>Voltar</button>
+                </div>
                 <div id="ml-anuncios-ignorados-status" class="status"></div>
                 <div id="ml-anuncios-ignorados-empty" class="muted">Nenhum an&uacute;ncio ignorado por SKU.</div>
                 <div id="ml-anuncios-ignorados-list" class="ml-ignored-page-list"></div>
@@ -398,40 +401,47 @@
     </div>
 
 
-    <script src="/favoritos/runtime.js?v=20260708-fav-recarregar-sku-v1"></script>
+    <script src="/favoritos/runtime.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/v2/ui/status-modal.js?v=20260708-fav-worker-browser-rollback-v2"></script>
+    <script src="/favoritos/v2/ui/status-modal.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/v2/browser/url-utils.js?v=20260708-fav-browser-v2-v1"></script>
+    <script src="/favoritos/v2/browser/url-utils.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/v2/browser/shell-bridge.js?v=20260708-fav-worker-context-v22"></script>
+    <script src="/favoritos/v2/browser/worker-controller.js?v=20260715-favoritos-browser-confirm-v1"></script>
+    <script src="/favoritos/v2/browser/worker-pool.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/v2/browser/avant-cache.js?v=20260708-fav-browser-v2-v1"></script>
+    <script src="/favoritos/v2/browser/shell-bridge.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/lojas-planilhas.js?v=20260626-fav-avant-ready-v8"></script>
+    <script src="/favoritos/v2/browser/avant-cache.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/sku.js?v=20260626-fav-avant-ready-v8"></script>
+    <script src="/favoritos/lojas-planilhas.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/ml-browser.js?v=20260709-fav-worker-proxy-v1"></script>
+    <script src="/favoritos/sku.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/ranking.js?v=20260708-fav-historico-price-discount-v2"></script>
+    <script src="/favoritos/ml-browser.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/promocoes-efetivacao.js?v=20260708-fav-historico-alteracoes-v3"></script>
+    <script src="/favoritos/ranking.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/tabelas-layout.js?v=20260708-fav-historico-favoritos-v12-20260709-fav-worker-direct-v1"></script>
+    <script src="/favoritos/promocoes-efetivacao.js?v=20260715-favoritos-browser-confirm-v1"></script>
 
 
-    <script src="/favoritos/init.js?v=20260626-fav-avant-ready-v8"></script>
+    <script src="/favoritos/planilhas-colar-historico.js?v=20260715-favoritos-browser-confirm-v1"></script>
+
+
+    <script src="/favoritos/tabelas-layout.js?v=20260715-favoritos-browser-confirm-v1"></script>
+
+
+    <script src="/favoritos/init.js?v=20260715-favoritos-browser-confirm-v1"></script>
 <script src="/ia-sidebar.js?v=20260516-favoritos-ia"></script>
 </body>
 </html>

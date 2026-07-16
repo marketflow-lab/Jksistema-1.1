@@ -213,6 +213,50 @@ def _ia_web_normalizar_result_url(url: str) -> str:
     return url_txt
 
 
+def _ia_web_extrair_resultados_jina_duckduckgo(texto_md: str, max_results: int = 5) -> list[dict]:
+    """Extrai resultados do Markdown devolvido pelo Jina para o DuckDuckGo.
+
+    Os links dos resultados chegam normalmente encapsulados em ``/l/?uddg=``.
+    A normalizacao precisa ocorrer antes de descartar links internos do buscador.
+    """
+    texto = str(texto_md or "")
+    limite = max(1, int(max_results or 1))
+    resultados = []
+    urls_vistas = set()
+    matches = list(
+        re.finditer(
+            r"^##\s+\[(?P<title>[^\]]+)\]\((?P<url>https?://[^)]+)\)",
+            texto,
+            flags=re.MULTILINE,
+        )
+    )
+    for idx, match in enumerate(matches):
+        titulo = re.sub(r"\s+", " ", match.group("title") or "").strip()
+        url = _ia_web_normalizar_result_url(match.group("url") or "")
+        if not titulo or not url or "duckduckgo.com/y.js" in url or "ad_domain=" in url:
+            continue
+        parsed = urlparse(url)
+        if "duckduckgo.com" in (parsed.netloc or ""):
+            continue
+        url_chave = url.lower()
+        if url_chave in urls_vistas:
+            continue
+        urls_vistas.add(url_chave)
+        trecho_inicio = match.end()
+        trecho_fim = matches[idx + 1].start() if idx + 1 < len(matches) else min(len(texto), trecho_inicio + 800)
+        snippet = re.sub(r"\s+", " ", texto[trecho_inicio:trecho_fim]).strip()
+        snippet = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", snippet)
+        resultados.append({
+            "title": titulo[:180],
+            "url": url[:600],
+            "snippet": snippet[:360],
+            "provider": "jina_duckduckgo",
+        })
+        if len(resultados) >= limite:
+            break
+    return resultados
+
+
 def _ia_web_buscar_noticias(query: str, max_results: int = 5) -> list[dict]:
     if not _ia_web_busca_ativa():
         return []
@@ -263,14 +307,18 @@ def _ia_web_buscar_noticias(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
-def _ia_web_buscar(query: str, max_results: int = 5) -> list[dict]:
+def _ia_web_buscar(query: str, max_results: int = 5, *, fast: bool = False) -> list[dict]:
     if not _ia_web_busca_ativa():
         return []
     consulta = str(query or "").strip()
     if not consulta:
         return []
     try:
-        resultado_api = _favoritos_busca_externa_chamar_api(consulta, max_results=max_results)
+        resultado_api = _favoritos_busca_externa_chamar_api(
+            consulta,
+            max_results=max_results,
+            timeout_s=4 if fast else 18,
+        )
         if isinstance(resultado_api, dict) and resultado_api.get("resultados"):
             return [
                 {
@@ -293,7 +341,7 @@ def _ia_web_buscar(query: str, max_results: int = 5) -> list[dict]:
             "https://html.duckduckgo.com/html/",
             params={"q": consulta},
             headers=headers,
-            timeout=12,
+            timeout=4 if fast else 12,
             verify=False,
         )
         resp.raise_for_status()
@@ -318,10 +366,13 @@ def _ia_web_buscar(query: str, max_results: int = 5) -> list[dict]:
             })
             if len(resultados) >= max_results:
                 break
-        return resultados
+        if resultados:
+            return resultados
     except Exception as exc:
         logger.warning(f"[IA WEB] Falha na busca web: {type(exc).__name__}: {exc}")
     try:
+        if fast:
+            raise RuntimeError("fallback_lite_omitido_no_modo_rapido")
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)",
             "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
@@ -363,69 +414,71 @@ def _ia_web_buscar(query: str, max_results: int = 5) -> list[dict]:
         if resultados:
             return resultados
     except Exception as exc:
-        logger.warning(f"[IA WEB] Falha na busca web lite: {type(exc).__name__}: {exc}")
+        if not fast:
+            logger.warning(f"[IA WEB] Falha na busca web lite: {type(exc).__name__}: {exc}")
     try:
         jina_url = "https://r.jina.ai/http://https://duckduckgo.com/html/?" + urlencode({"q": consulta})
         resp = requests.get(
             jina_url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; JKSistema/1.0; +https://jksistema.local)"},
-            timeout=18,
+            timeout=5 if fast else 18,
             verify=False,
         )
         resp.raise_for_status()
-        texto_md = resp.text or ""
-        resultados = []
-        matches = list(re.finditer(r"^##\s+\[(?P<title>[^\]]+)\]\((?P<url>https?://[^)]+)\)", texto_md, flags=re.MULTILINE))
-        for idx, match in enumerate(matches):
-            titulo = re.sub(r"\s+", " ", match.group("title") or "").strip()
-            url = _ia_web_normalizar_result_url(match.group("url") or "")
-            if not titulo or not url or "duckduckgo.com/y.js" in url or "ad_domain=" in url:
-                continue
-            parsed = urlparse(url)
-            if "duckduckgo.com" in (parsed.netloc or ""):
-                continue
-            trecho_inicio = match.end()
-            trecho_fim = matches[idx + 1].start() if idx + 1 < len(matches) else min(len(texto_md), trecho_inicio + 800)
-            snippet = re.sub(r"\s+", " ", texto_md[trecho_inicio:trecho_fim]).strip()
-            snippet = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", snippet)
-            resultados.append({
-                "title": titulo[:180],
-                "url": url[:600],
-                "snippet": snippet[:360],
-                "provider": "jina_duckduckgo",
-            })
-            if len(resultados) >= max_results:
-                break
-        return resultados
+        return _ia_web_extrair_resultados_jina_duckduckgo(resp.text or "", max_results=max_results)
     except Exception as exc:
         logger.warning(f"[IA WEB] Falha na busca web jina: {type(exc).__name__}: {exc}")
         return []
 
 
-def _ia_web_buscar_cached(query: str, client_id: Optional[str] = None, max_results: int = 5) -> list[dict]:
+def _ia_web_buscar_cached(
+    query: str,
+    client_id: Optional[str] = None,
+    max_results: int = 5,
+    *,
+    fast: bool = False,
+) -> list[dict]:
     if not client_id:
-        return _ia_web_buscar_noticias(query, max_results=max_results) if _ia_chat_pede_noticias(query) else _ia_web_buscar(query, max_results=max_results)
+        if _ia_chat_pede_noticias(query):
+            return _ia_web_buscar_noticias(query, max_results=max_results)
+        return _ia_web_buscar(query, max_results=max_results, fast=True) if fast else _ia_web_buscar(query, max_results=max_results)
     tipo = "news" if _ia_chat_pede_noticias(query) else "web"
     chave = _ia_web_cache_key(query, tipo=tipo)
     with IA_WEB_CACHE_LOCK:
         cache = _ia_web_ler_cache(client_id)
-        item = (cache.get("consultas") or {}).get(chave)
+        consultas = cache.setdefault("consultas", {})
+        item = consultas.get(chave)
         if item and _ia_web_cache_valido(item):
             resultados = item.get("resultados")
-            if isinstance(resultados, list):
+            if isinstance(resultados, list) and resultados:
                 return resultados
+        if item and isinstance(item.get("resultados"), list) and not item.get("resultados"):
+            # Defesa adicional para caches negativos legados, mesmo que um
+            # validador customizado os classifique incorretamente como validos.
+            consultas.pop(chave, None)
+            _ia_web_salvar_cache(client_id, cache)
 
-    resultados = _ia_web_buscar_noticias(query, max_results=max_results) if tipo == "news" else _ia_web_buscar(query, max_results=max_results)
+    if tipo == "news":
+        resultados = _ia_web_buscar_noticias(query, max_results=max_results)
+    else:
+        resultados = _ia_web_buscar(query, max_results=max_results, fast=True) if fast else _ia_web_buscar(query, max_results=max_results)
     if tipo == "news" and not resultados:
-        resultados = _ia_web_buscar(query, max_results=max_results)
+        resultados = _ia_web_buscar(query, max_results=max_results, fast=True) if fast else _ia_web_buscar(query, max_results=max_results)
     with IA_WEB_CACHE_LOCK:
         cache = _ia_web_ler_cache(client_id)
-        cache.setdefault("consultas", {})[chave] = {
-            "query": str(query or "").strip(),
-            "tipo": tipo,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "resultados": resultados,
-        }
+        consultas = cache.setdefault("consultas", {})
+        if resultados:
+            consultas[chave] = {
+                "query": str(query or "").strip(),
+                "tipo": tipo,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "resultados": resultados,
+            }
+        else:
+            # Uma lista vazia representa falha de pesquisa, nao um resultado
+            # reutilizavel. Remove inclusive entradas negativas de versoes
+            # anteriores para que a proxima tentativa alcance os fallbacks.
+            consultas.pop(chave, None)
         _ia_web_salvar_cache(client_id, cache)
     return resultados
 

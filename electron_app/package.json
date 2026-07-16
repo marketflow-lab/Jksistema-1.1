@@ -1,17 +1,18 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.90",
+  "version": "1.0.98",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "scripts": {
     "prestart": "npm run verify:package",
     "start": "electron .",
+    "prepare:runtime": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare_installer_runtime.ps1",
     "verify:package": "node scripts/verify-installer-package.js",
     "verify:package:built": "node scripts/verify-installer-package.js --packaged dist-client-setup/win-unpacked/resources",
-    "predist": "npm run verify:package",
+    "predist": "npm run prepare:runtime && npm run verify:package",
     "dist": "electron-builder",
     "postdist": "npm run verify:package:built",
-    "predist:publish": "npm run verify:package",
+    "predist:publish": "npm run prepare:runtime && npm run verify:package",
     "postdist:publish": "npm run verify:package:built",
     "dist:publish": "electron-builder --publish always"
   },

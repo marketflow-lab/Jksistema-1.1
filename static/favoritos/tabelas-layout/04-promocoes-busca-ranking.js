@@ -2,8 +2,8 @@
             return window.FavoritosV2?.ui?.statusModal?.mostrarBalaoFavoritosStatus?.(mensagem, opcoes);
         }
 
-        function esconderBalaoFavoritosStatus() {
-            return window.FavoritosV2?.ui?.statusModal?.esconderBalaoFavoritosStatus?.();
+        function esconderBalaoFavoritosStatus(opcoes = {}) {
+            return window.FavoritosV2?.ui?.statusModal?.esconderBalaoFavoritosStatus?.(opcoes);
         }
 
         function resolverAcaoBalaoFavoritos(resolve, valor, botao, opcoes = {}) {
@@ -350,6 +350,261 @@
             if (existente && existente.parentElement) existente.parentElement.removeChild(existente);
         }
 
+        function urlEmFluxoAutenticacaoMercadoLivreFavoritos(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return false;
+            try {
+                const url = new URL(raw);
+                const host = String(url.hostname || '').toLowerCase();
+                const mercadoLivreHost = host === 'mercadolivre.com'
+                    || host.endsWith('.mercadolivre.com')
+                    || host === 'mercadolivre.com.br'
+                    || host.endsWith('.mercadolivre.com.br')
+                    || host === 'mercadolibre.com'
+                    || host.endsWith('.mercadolibre.com');
+                if (!mercadoLivreHost) return false;
+                const pathname = String(url.pathname || '/').toLowerCase().replace(/\/{2,}/g, '/');
+                const specificAuthRoute = /^\/gz\/account-verification(?:\/|$)|^\/jms\/[^/]+\/lgz(?:\/|$)|^\/password\/validation(?:\/|$)|^\/totp(?:\/|$)|^\/login\/challenges?(?:\/|$)/.test(pathname);
+                const genericAuthHost = host === 'mercadolivre.com'
+                    || host === 'mercadolivre.com.br'
+                    || host === 'mercadolibre.com'
+                    || /^(?:www|auth|accounts?|account)\./.test(host);
+                const genericAuthRoute = /^\/login(?:\/|$)|^\/(?:captcha|recaptcha|security[-_/]?check|identity[-_/]?verification)(?:\/|$)/.test(pathname);
+                let negativeTraffic = false;
+                let explicitAuthParam = false;
+                for (const [name, itemValueRaw] of url.searchParams.entries()) {
+                    const key = String(name || '').toLowerCase();
+                    const itemValue = String(itemValueRaw || '').toLowerCase();
+                    if (key === 'logintype' && itemValue === 'negative_traffic') negativeTraffic = true;
+                    if (['captcha', 'recaptcha', 'security_check', 'identity_verification'].includes(key) && itemValue) {
+                        explicitAuthParam = true;
+                    }
+                }
+                return specificAuthRoute
+                    || negativeTraffic
+                    || (genericAuthHost && (genericAuthRoute || explicitAuthParam));
+            } catch (_err) {
+                return false;
+            }
+        }
+
+        async function obterEstadoAutenticacaoMercadoLivreFavoritos() {
+            let urlAtual = '';
+            let needsLogin = false;
+            let leituraConfiavel = false;
+            const podeExecutarDireto = !!(mlWebviewEl && typeof mlWebviewEl.executeJavaScript === 'function');
+            if (mlWebviewEl && typeof mlWebviewEl.getURL === 'function') {
+                try { urlAtual = String(mlWebviewEl.getURL() || '').trim(); } catch (_err) {}
+                if (!podeExecutarDireto && /^https?:\/\//i.test(urlAtual)) leituraConfiavel = true;
+            }
+            if (podeExecutarDireto) {
+                const estado = await mlWebviewEl.executeJavaScript(`
+                    (function () {
+                        var texto = String(document.body && (document.body.innerText || document.body.textContent) || '').toLowerCase();
+                        try { texto = texto.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
+                        return {
+                            url: String(location.href || ''),
+                            needsLogin: texto.indexOf('digite seu e-mail') >= 0
+                                || texto.indexOf('digite seu email') >= 0
+                                || texto.indexOf('para iniciar sessao') >= 0
+                                || texto.indexOf('codigo de verificacao') >= 0
+                                || texto.indexOf('verifique sua identidade') >= 0
+                        };
+                    })();
+                `, true).catch(() => null);
+                if (estado && /^https?:\/\//i.test(String(estado.url || '').trim())) {
+                    urlAtual = String(estado.url).trim();
+                    leituraConfiavel = true;
+                }
+                needsLogin = !!(estado && estado.needsLogin);
+            }
+            return {
+                url: urlAtual,
+                indeterminado: !leituraConfiavel,
+                pendente: needsLogin || urlEmFluxoAutenticacaoMercadoLivreFavoritos(urlAtual)
+            };
+        }
+
+        async function validarLoginMercadoLivreAntesDeContinuarFavoritos(onContinuar, botao) {
+            const estado = await obterEstadoAutenticacaoMercadoLivreFavoritos().catch(() => ({ url: '', pendente: false, indeterminado: true }));
+            if (!estado || estado.indeterminado) {
+                if (botao) botao.disabled = false;
+                mostrarBalaoFavoritosStatus('A pagina de login ainda esta mudando e nao foi possivel confirmar seu estado. Aguarde alguns segundos e clique em Continuar favoritos novamente.', {
+                    manterAcoes: true,
+                    manterNavegadorVisivel: true,
+                    larga: true,
+                    titulo: 'Aguardando login'
+                });
+                return false;
+            }
+            if (estado && estado.pendente) {
+                if (botao) botao.disabled = false;
+                abrirBalaoResultadosMl({
+                    titulo: 'Login Mercado Livre',
+                    subtitulo: 'Conclua todas as etapas de acesso antes de continuar.',
+                    mostrarFavoritos: true,
+                    browserCompleto: true,
+                    forcarExibicao: true
+                });
+                mostrarBalaoFavoritosStatus('Conclua o e-mail, senha e eventual codigo de verificacao do Mercado Livre. Aguarde a pagina da pesquisa voltar e so entao clique em Continuar favoritos.', {
+                    manterAcoes: true,
+                    manterNavegadorVisivel: true,
+                    larga: true,
+                    titulo: 'Login Mercado Livre'
+                });
+                return false;
+            }
+            if (typeof onContinuar === 'function') {
+                const resultado = await onContinuar();
+                return resultado !== false;
+            }
+            return true;
+        }
+
+        function obterElectronApiPersistenciaAvantProFavoritos() {
+            try {
+                const controller = window.FavoritosV2?.browser?.workerController;
+                if (controller && typeof controller.electronApi === 'function') {
+                    const apiController = controller.electronApi();
+                    if (apiController) return apiController;
+                }
+            } catch (_err) {}
+            try {
+                if (window.electronAPI) return window.electronAPI;
+            } catch (_err) {}
+            try {
+                if (window.top && window.top !== window && window.top.electronAPI) return window.top.electronAPI;
+            } catch (_err) {}
+            return null;
+        }
+
+        async function obterStatusPersistenciaAvantProFavoritos() {
+            const api = obterElectronApiPersistenciaAvantProFavoritos();
+            if (!api || typeof api.getAvantProStorageStatus !== 'function') {
+                return {
+                    disponivel: false,
+                    currentUsable: false,
+                    snapshotUsable: false,
+                    usable: false
+                };
+            }
+            const status = await api.getAvantProStorageStatus().catch(() => null);
+            const currentUsable = !!(status && status.currentUsable);
+            const snapshotUsable = !!(status && status.snapshotUsable);
+            return {
+                disponivel: !!(status && status.success !== false),
+                currentUsable,
+                snapshotUsable,
+                usable: currentUsable || snapshotUsable,
+                manifest: status && status.manifest || null
+            };
+        }
+
+        async function obterEstadoAutenticacaoAvantProFavoritos() {
+            const persistencia = await obterStatusPersistenciaAvantProFavoritos().catch(() => ({
+                disponivel: false,
+                currentUsable: false,
+                snapshotUsable: false,
+                usable: false
+            }));
+            const podeExecutarDireto = !!(mlWebviewEl && typeof mlWebviewEl.executeJavaScript === 'function');
+            if (!podeExecutarDireto) {
+                return {
+                    indeterminado: true,
+                    pendente: false,
+                    detectado: false,
+                    storageUsable: !!persistencia.usable,
+                    currentStorageUsable: !!persistencia.currentUsable,
+                    snapshotStorageUsable: !!persistencia.snapshotUsable
+                };
+            }
+            const estado = await mlWebviewEl.executeJavaScript(`
+                (function () {
+                    var normalizar = function (value) {
+                        var text = String(value || '').replace(/\\s+/g, ' ').trim();
+                        try { text = text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_err) {}
+                        return text.toLowerCase();
+                    };
+                    var texto = normalizar(document.body && (document.body.innerText || document.body.textContent) || '');
+                    var marcadores = 0;
+                    try { marcadores = document.querySelectorAll('[class*="avant" i], [id*="avant" i]').length; } catch (_err) {}
+                    var recursos = [];
+                    try {
+                        recursos = performance.getEntriesByType('resource')
+                            .map(function (entry) { return String(entry && entry.name || ''); })
+                            .filter(function (name) { return /chrome-extension:\/\/jdefnfmbnchmnjkcknaadaddgjbgephh|avantpro/i.test(name); });
+                    } catch (_err) {}
+                    var pendente = /comece\\s+a\\s+usar\\s+o?\\s*avantpro|entre\\s+na\\s+sua\\s+conta\\s+para\\s+liberar\\s+os\\s+recursos\\s+da\\s+extensao|nao\\s+possui\\s+uma\\s+conta\\?\\s*crie\\s+uma\\s+aqui|fazer\\s+login\\s+no\\s+avant|entrar\\s+no\\s+avant|login\\s+avant\\s*pro/.test(texto);
+                    var detectado = marcadores > 0 || recursos.length > 0 || /avant\\s*pro|avantpro/.test(texto);
+                    return {
+                        url: String(location.href || ''),
+                        pendente: pendente,
+                        detectado: detectado,
+                        marcadores: marcadores,
+                        recursos: recursos.length
+                    };
+                })();
+            `, true).catch(() => null);
+            return {
+                url: String(estado && estado.url || ''),
+                indeterminado: !(estado && estado.detectado),
+                pendente: !!(estado && estado.pendente),
+                detectado: !!(estado && estado.detectado),
+                marcadores: Number(estado && estado.marcadores || 0),
+                recursos: Number(estado && estado.recursos || 0),
+                storageUsable: !!persistencia.usable,
+                currentStorageUsable: !!persistencia.currentUsable,
+                snapshotStorageUsable: !!persistencia.snapshotUsable
+            };
+        }
+
+        async function validarLoginAvantProAntesDeContinuarFavoritos(onContinuar, botao) {
+            mostrarBalaoFavoritosStatus('Validando login e sessao salva do Avant Pro...', {
+                manterAcoes: true,
+                manterNavegadorVisivel: true,
+                larga: true,
+                titulo: 'Validando Avant Pro'
+            });
+            const estado = await obterEstadoAutenticacaoAvantProFavoritos().catch(() => ({ indeterminado: true, pendente: false }));
+            const storageUsable = !!(estado && estado.storageUsable);
+            if (!estado || estado.pendente || (estado.indeterminado && !storageUsable)) {
+                if (botao) botao.disabled = false;
+                abrirBalaoResultadosMl({
+                    titulo: 'Login Avant Pro',
+                    subtitulo: 'Conclua o login antes de continuar.',
+                    mostrarFavoritos: true,
+                    browserCompleto: true,
+                    forcarExibicao: true
+                });
+                mostrarBalaoFavoritosStatus(
+                    estado && estado.pendente
+                        ? 'O Avant Pro ainda mostra a tela de login. Entre na conta e clique em Continuar favoritos novamente.'
+                        : 'Ainda nao encontrei login ativo nem uma sessao salva do Avant Pro. Aguarde a extensao carregar e clique em Continuar favoritos novamente.',
+                    {
+                        manterAcoes: true,
+                        manterNavegadorVisivel: true,
+                        larga: true,
+                        titulo: 'Login Avant Pro'
+                    }
+                );
+                return false;
+            }
+            const snapshot = estado.indeterminado && storageUsable
+                ? { success: true, skipped: true, reason: 'persisted-session-reused' }
+                : await registrarConfirmacaoUsuarioLoginAvantProFavoritos('validacao_dom_apos_login', estado);
+            if (!snapshot || snapshot.success !== true) {
+                console.warn('Login Avant Pro reconhecido; snapshot sera tentado novamente sem bloquear Favoritos.', {
+                    reason: snapshot && snapshot.reason || '',
+                    storageUsable
+                });
+            }
+            if (typeof onContinuar === 'function') {
+                const resultado = await onContinuar();
+                return resultado !== false;
+            }
+            return true;
+        }
+
         function mostrarBotaoContinuarLoginAvantProFavoritos(onContinuar) {
             const acoes = document.querySelector('.ml-work-modal-actions');
             const fechar = document.getElementById('ml-work-modal-close');
@@ -361,7 +616,7 @@
                 botao.type = 'button';
                 botao.className = 'ml-work-modal-control';
                 botao.textContent = 'Continuar favoritos';
-                botao.title = 'Clique depois de concluir o login do Avant Pro';
+                botao.title = 'Clique depois de concluir o login do Mercado Livre e do Avant Pro';
                 if (fechar && fechar.parentElement === acoes) {
                     acoes.insertBefore(botao, fechar);
                 } else {
@@ -369,35 +624,49 @@
                 }
             }
             botao.classList.remove('hidden');
-            botao.onclick = () => {
+            botao.onclick = async () => {
                 botao.disabled = true;
-                if (typeof onContinuar === 'function') onContinuar();
+                try {
+                    const concluiu = typeof onContinuar === 'function' ? await onContinuar(botao) : true;
+                    if (concluiu === false) botao.disabled = false;
+                } catch (err) {
+                    botao.disabled = false;
+                    console.warn('Falha ao validar login antes de continuar Favoritos:', err);
+                }
             };
             return botao;
         }
 
-        function registrarConfirmacaoUsuarioLoginAvantProFavoritos(origem = 'prompt') {
+        async function registrarConfirmacaoUsuarioLoginAvantProFavoritos(origem = 'prompt', estado = {}) {
+            const api = obterElectronApiPersistenciaAvantProFavoritos();
+            if (api && typeof api.saveAvantProStorageSnapshot === 'function') {
+                const resultado = await api.saveAvantProStorageSnapshot('favoritos_usuario_confirmou_login_avant', {
+                    source: 'favoritos',
+                    origem,
+                    confirmedAt: Date.now(),
+                    liveAuthConfirmed: true,
+                    validation: {
+                        url: String(estado && estado.url || '').split('#')[0],
+                        markers: Number(estado && estado.marcadores || 0),
+                        resources: Number(estado && estado.recursos || 0)
+                    }
+                }).catch(() => null);
+                if (!resultado || resultado.success !== true) return resultado || { success: false };
+            }
             try {
                 localStorage.setItem('jk_favoritos_avant_login_confirmado_usuario_at', String(Date.now()));
             } catch (_err) {}
-            const api = window.electronAPI || null;
-            if (api && typeof api.saveAvantProStorageSnapshot === 'function') {
-                api.saveAvantProStorageSnapshot('favoritos_usuario_confirmou_login_avant', {
-                    source: 'favoritos',
-                    origem,
-                    confirmedAt: Date.now()
-                }).catch(() => null);
-            }
+            return { success: true };
         }
 
-        function perguntarLoginAvantProAntesFavoritos(opcoes = {}) {
+        async function perguntarLoginAvantProAntesFavoritos(opcoes = {}) {
             if (opcoes.avantLoginConfirmadoPeloUsuario === true || opcoes.pularPerguntaAvantLogin === true) {
-                return Promise.resolve(true);
+                return true;
             }
 
             const termo = String(opcoes.termo || obterTermoInicialLoginAvantProFavoritos(opcoes.selecionados, opcoes.quantidade)).trim();
             if (!mlFavoritosBalloonEl || !mlFavoritosBalloonActionsEl) {
-                return Promise.resolve(window.confirm('Antes de fazer favoritos, o Avant Pro ja esta logado?'));
+                return window.confirm('Antes de fazer favoritos, o Avant Pro ja esta logado?');
             }
             if (mlFavoritosPerguntaResolver) {
                 mlFavoritosPerguntaResolver(null);
@@ -411,9 +680,6 @@
                     if (concluido) return;
                     concluido = true;
                     mlFavoritosPerguntaResolver = null;
-                    if (valor === true) {
-                        registrarConfirmacaoUsuarioLoginAvantProFavoritos('pergunta_login_avant');
-                    }
                     limparBotaoContinuarLoginAvantProFavoritos();
                     if (valor === true) esconderBalaoFavoritosStatus();
                     resolve(valor);
@@ -457,13 +723,32 @@
                     if (typeof agendarAtualizacaoPosicaoNavegadorMlShell === 'function') {
                         setTimeout(() => agendarAtualizacaoPosicaoNavegadorMlShell(), 120);
                     }
-                    mostrarBotaoContinuarLoginAvantProFavoritos(() => finalizar(true));
+                    const estadoLoginMl = await obterEstadoAutenticacaoMercadoLivreFavoritos().catch(() => ({ pendente: false }));
+                    const loginMercadoLivrePendente = !!(estadoLoginMl && estadoLoginMl.pendente);
+                    if (loginMercadoLivrePendente) {
+                        abrirBalaoResultadosMl({
+                            titulo: 'Login Mercado Livre',
+                            subtitulo: 'Conclua todas as etapas de acesso antes de continuar.',
+                            mostrarFavoritos: true,
+                            browserCompleto: true,
+                            forcarExibicao: true
+                        });
+                    }
+                    const validarEFinalizar = botao => validarLoginMercadoLivreAntesDeContinuarFavoritos(
+                        () => validarLoginAvantProAntesDeContinuarFavoritos(() => finalizar(true), botao),
+                        botao
+                    );
+                    mostrarBotaoContinuarLoginAvantProFavoritos(validarEFinalizar);
                     mlFavoritosBalloonActionsEl.innerHTML = '';
 
                     const continuar = document.createElement('button');
                     continuar.type = 'button';
                     continuar.textContent = 'Continuar favoritos';
-                    continuar.addEventListener('click', () => finalizar(true));
+                    continuar.addEventListener('click', async () => {
+                        continuar.disabled = true;
+                        const concluiu = await validarEFinalizar(continuar).catch(() => false);
+                        if (!concluiu) continuar.disabled = false;
+                    });
 
                     const abrirNovamente = document.createElement('button');
                     abrirNovamente.type = 'button';
@@ -484,11 +769,14 @@
                     mlFavoritosBalloonActionsEl.appendChild(continuar);
                     mlFavoritosBalloonActionsEl.appendChild(abrirNovamente);
                     mlFavoritosBalloonActionsEl.appendChild(cancelar);
-                    mostrarBalaoFavoritosStatus('Faça o login do Avant Pro no navegador interno. Quando terminar, clique em Continuar favoritos.', {
+                    const mensagemLogin = loginMercadoLivrePendente
+                        ? 'Conclua o login ou verificacao do Mercado Livre. Aguarde a pagina da pesquisa voltar e depois clique em Continuar favoritos.'
+                        : 'Faça o login do Avant Pro no navegador interno. Quando terminar, clique em Continuar favoritos.';
+                    mostrarBalaoFavoritosStatus(mensagemLogin, {
                         manterAcoes: true,
                         manterNavegadorVisivel: true,
                         larga: true,
-                        titulo: 'Login Avant Pro'
+                        titulo: loginMercadoLivrePendente ? 'Login Mercado Livre' : 'Login Avant Pro'
                     });
                 };
 
@@ -497,7 +785,14 @@
                 const sim = document.createElement('button');
                 sim.type = 'button';
                 sim.textContent = 'Sim, continuar';
-                sim.addEventListener('click', () => finalizar(true));
+                sim.addEventListener('click', async () => {
+                    sim.disabled = true;
+                    const confirmado = await validarLoginAvantProAntesDeContinuarFavoritos(() => finalizar(true), sim).catch(() => false);
+                    if (!confirmado && !concluido) {
+                        sim.disabled = false;
+                        await abrirTelaLogin().catch(() => null);
+                    }
+                });
 
                 const nao = document.createElement('button');
                 nao.type = 'button';
@@ -869,15 +1164,54 @@
             return erro;
         }
 
+        function aplicarEstadoWorkerFavoritos(status = {}) {
+            const dados = status && typeof status === 'object' ? status : {};
+            const statusTexto = String(dados.status || '').toLowerCase();
+            const cancelado = dados.cancelRequested === true
+                || statusTexto === 'cancel_requested'
+                || statusTexto === 'canceling'
+                || statusTexto === 'canceled'
+                || statusTexto === 'cancelled';
+            if (cancelado && mlFavoritosEmExecucao) {
+                mlFavoritosCancelado = true;
+                mlFavoritosPausado = false;
+                if (mlFavoritosAbortController) {
+                    try {
+                        mlFavoritosAbortController.abort();
+                    } catch (_err) {}
+                }
+            }
+            return cancelado;
+        }
+
         function verificarCancelamentoFavoritos() {
             if (mlFavoritosCancelado) {
                 throw criarErroFavoritosCancelado();
             }
         }
 
+        async function sincronizarEstadoWorkerFavoritos() {
+            const api = obterElectronApiFavoritosExecucao();
+            if (!api) return null;
+            try {
+                const status = window.__JK_FAVORITOS_WORKERS_POOL_ACTIVE && typeof api.getFavoritosWorkersPoolStatus === 'function'
+                    ? await api.getFavoritosWorkersPoolStatus()
+                    : (typeof api.getFavoritosWorkerBrowserStatus === 'function'
+                        ? await api.getFavoritosWorkerBrowserStatus()
+                        : null);
+                if (!status) return null;
+                aplicarEstadoWorkerFavoritos(status);
+                return status;
+            } catch (_err) {
+                return null;
+            }
+        }
+
         async function aguardarControleFavoritos() {
+            await sincronizarEstadoWorkerFavoritos();
             verificarCancelamentoFavoritos();
             while (mlFavoritosPausado && !mlFavoritosCancelado) {
+                await sincronizarEstadoWorkerFavoritos();
                 await new Promise(resolve => setTimeout(resolve, 180));
             }
             verificarCancelamentoFavoritos();
@@ -885,6 +1219,37 @@
 
         function sinalFavoritosAtual() {
             return mlFavoritosAbortController ? mlFavoritosAbortController.signal : undefined;
+        }
+
+        function executarComTimeoutFavoritos(tarefa, timeoutMs = 45000, sinalPai = undefined) {
+            const limiteMs = Math.max(50, Number(timeoutMs) || 45000);
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            let timeoutId = null;
+            let onAbortPai = null;
+            const erroTimeout = new Error(`A etapa excedeu o limite de ${Math.ceil(limiteMs / 1000)}s.`);
+            erroTimeout.name = 'TimeoutError';
+            erroTimeout.favoritosTimeout = true;
+            const abortarPeloPai = () => {
+                if (controller && !controller.signal.aborted) controller.abort();
+            };
+            if (sinalPai && typeof sinalPai.addEventListener === 'function') {
+                onAbortPai = abortarPeloPai;
+                if (sinalPai.aborted) abortarPeloPai();
+                else sinalPai.addEventListener('abort', onAbortPai, { once: true });
+            }
+            const execucao = Promise.resolve().then(() => tarefa(controller ? controller.signal : sinalPai));
+            const prazo = new Promise((_resolve, reject) => {
+                timeoutId = setTimeout(() => {
+                    reject(erroTimeout);
+                    if (controller && !controller.signal.aborted) controller.abort();
+                }, limiteMs);
+            });
+            return Promise.race([execucao, prazo]).finally(() => {
+                if (timeoutId) clearTimeout(timeoutId);
+                if (sinalPai && onAbortPai && typeof sinalPai.removeEventListener === 'function') {
+                    sinalPai.removeEventListener('abort', onAbortPai);
+                }
+            });
         }
 
         function cancelarFavoritosEmExecucao() {
@@ -901,10 +1266,45 @@
                     console.warn('Nao foi possivel cancelar job de favoritos no backend:', err);
                 });
             }
+            if (typeof pararPollingFavoritosJob === 'function') pararPollingFavoritosJob();
+            if (mlFavoritosJobRenderRaf) {
+                try {
+                    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(mlFavoritosJobRenderRaf);
+                    else clearTimeout(mlFavoritosJobRenderRaf);
+                } catch (_err) {}
+                mlFavoritosJobRenderRaf = 0;
+            }
+            mlFavoritosJobRenderPendente = false;
+            if (typeof limparStatusTerminalFavoritos === 'function') {
+                limparStatusTerminalFavoritos({ status: 'canceled' });
+            } else {
+                esconderBalaoFavoritosStatus();
+                atualizarStatusFavoritosNoNavegadorMl('', false, { imediato: true, forcar: true });
+            }
+            if (typeof pararNavegadorFavoritosBackground === 'function') {
+                pararNavegadorFavoritosBackground({
+                    status: 'canceled',
+                    message: '',
+                    reason: 'favoritos-cancelado-pelo-usuario'
+                });
+            }
             atualizarContadorSkuSidebarSelecionados();
-            mostrarBalaoFavoritosStatus('Cancelando favoritos... a etapa atual sera interrompida assim que possivel.', {
-                tempoMs: 4500
-            });
+            atualizarFiltroAzulFavoritos();
+        }
+
+        function inicializarSincronizacaoWorkerFavoritos() {
+            const api = obterElectronApiFavoritosExecucao();
+            if (!api || window.__favoritosCancelSyncReady) return;
+            window.__favoritosCancelSyncReady = true;
+            const ouvir = (nome, handler) => {
+                if (typeof api[nome] !== 'function') return;
+                try {
+                    api[nome](handler);
+                } catch (_err) {}
+            };
+            ouvir('onFavoritosWorkerProgress', (status) => aplicarEstadoWorkerFavoritos(status));
+            ouvir('onFavoritosWorkerDone', (status) => aplicarEstadoWorkerFavoritos(status));
+            ouvir('onFavoritosWorkerError', (status) => aplicarEstadoWorkerFavoritos(status));
         }
 
         function obterCadastroSkuFavoritos(sku, loja = '') {
@@ -2034,7 +2434,166 @@
             return Array.from(mapa.values());
         }
 
-        async function enriquecerAnunciosFavoritosRanking(anuncios) {
+        function criarContextoEnriquecimentoFavoritosExecucao() {
+            const criarLimitador = (limite) => {
+                const estado = { limite: Math.max(1, Number(limite) || 1), ativos: 0, fila: [] };
+                const liberar = () => {
+                    while (estado.ativos < estado.limite && estado.fila.length) {
+                        const entrada = estado.fila.shift();
+                        estado.ativos += 1;
+                        Promise.resolve()
+                            .then(entrada.tarefa)
+                            .then(entrada.resolve, entrada.reject)
+                            .finally(() => {
+                                estado.ativos = Math.max(0, estado.ativos - 1);
+                                liberar();
+                            });
+                    }
+                };
+                return {
+                    estado,
+                    executar(tarefa) {
+                        return new Promise((resolve, reject) => {
+                            estado.fila.push({ tarefa, resolve, reject });
+                            liberar();
+                        });
+                    }
+                };
+            };
+            return {
+                cache: new Map(),
+                backendInflight: new Map(),
+                backendLimiter: criarLimitador(4),
+                apiLimiter: criarLimitador(8),
+                estatisticas: {
+                    cache_hits: 0,
+                    cache_misses: 0,
+                    backend_solicitados: 0,
+                    backend_resultados: 0,
+                    backend_retries: 0,
+                    backend_timeouts: 0,
+                    completos_na_coleta: 0
+                }
+            };
+        }
+
+        function anuncioFavoritosEnriquecimentoCompleto(item) {
+            if (!item || !(item.id || item.url || item.permalink || item.link)) return false;
+            const fonteVendas = normalizarFonte(item.vendasFonte || item.vendas_fonte || item.fonte_vendas || '');
+            return !tituloAnuncioFavoritosPrecisaComplemento(item.titulo || item.title, item.id)
+                && !!normalizarUrlAnuncioFavoritosRanking(item.url || item.permalink || item.link, item.id)
+                && !!obterImagemAnuncioFavoritos(item)
+                && !precisaComplementoPrecoFavoritos(item)
+                && vendedorValido(item.vendedor)
+                && !!String(item.data_criacao || item.date_created || '').trim()
+                && fonteVendasConfiavel(fonteVendas)
+                && hasNumeroVendas(item.vendas)
+                && !!obterTipoAnuncioFavoritos(item)
+                && !fullAnuncioDesconhecidoFavoritos(item)
+                && !!obterCondicaoAnuncioFavoritos(item);
+        }
+
+        function aplicarInfoEnriquecimentoFavoritos(alvo, info) {
+            if (!alvo || !info) return false;
+            let alterou = false;
+            if (aplicarMetadataBasicaAnuncioFavoritos(alvo, info)) alterou = true;
+            if (preencherPrecoAnuncioFavoritos(alvo, info)) alterou = true;
+            if (preencherTipoAnuncioFavoritos(alvo, info)) alterou = true;
+            if (preencherCondicaoAnuncioFavoritos(alvo, info)) alterou = true;
+            const dataCriacao = String(info.data_criacao || info.date_created || '').trim();
+            if (dataCriacao && alvo.data_criacao !== dataCriacao) {
+                alvo.data_criacao = dataCriacao;
+                alterou = true;
+            }
+            const fonteData = info.fonte_data_criacao || info.dataCriacaoFonte || info.data_criacao_fonte || '';
+            if (fonteData && !alvo.dataCriacaoFonte) {
+                alvo.dataCriacaoFonte = fonteData;
+                alvo.data_criacao_fonte = fonteData;
+            }
+            const vendedor = String(info.vendedor || '').trim();
+            const fonteVendedor = normalizarFonte(info.fonte_vendedor || info.vendedorFonte || info.vendedor_fonte || 'pagina_produto');
+            if (deveAtualizarVendedor(alvo.vendedor, alvo.vendedorFonte, vendedor, fonteVendedor)) {
+                alvo.vendedor = vendedor;
+                alvo.vendedorFonte = fonteVendedor;
+                alvo.vendedor_fonte = fonteVendedor;
+                alterou = true;
+            }
+            const vendas = parseNumeroVendas(info.vendas);
+            const fonteVendas = normalizarFonte(info.fonte_vendas || info.vendasFonte || info.vendas_fonte || '');
+            if (deveAtualizarVendas(alvo.vendas, alvo.vendasFonte, vendas, fonteVendas)) {
+                alvo.vendas = vendas;
+                alvo.vendasFonte = fonteVendas;
+                alvo.vendas_fonte = fonteVendas;
+                alterou = true;
+            }
+            const mediaNova = parseNumeroDecimalFavoritos(info.media_mensal ?? info.ritmo_atual ?? info.ritmo_vendas_mes ?? '');
+            const mediaAtual = parseNumeroDecimalFavoritos(alvo.media_mensal ?? alvo.ritmo_atual ?? alvo.ritmo_vendas_mes ?? '');
+            const fonteMediaNova = normalizarFonte(info.media_mensal_fonte || info.ritmo_atual_fonte || fonteVendas || '');
+            const fonteMediaAtual = normalizarFonte(alvo.media_mensal_fonte || alvo.ritmo_atual_fonte || '');
+            if (Number.isFinite(mediaNova) && (!Number.isFinite(mediaAtual) || (!fonteVendasConfiavel(fonteMediaAtual) && fonteVendasConfiavel(fonteMediaNova)))) {
+                alvo.media_mensal = mediaNova;
+                alvo.ritmo_atual = mediaNova;
+                alvo.ritmo_vendas_mes = mediaNova;
+                alvo.media_mensal_fonte = fonteMediaNova;
+                alvo.ritmo_atual_fonte = fonteMediaNova;
+                alterou = true;
+            }
+            if ((alvo.visitas === null || alvo.visitas === undefined || alvo.visitas === '') && info.visitas !== null && info.visitas !== undefined && info.visitas !== '') {
+                alvo.visitas = info.visitas;
+                alterou = true;
+            }
+            return alterou;
+        }
+
+        function aplicarCacheEnriquecimentoFavoritos(contexto, item, opcoes = {}) {
+            if (!contexto || !(contexto.cache instanceof Map) || !item) return false;
+            const registro = chavesAnuncioFavoritos(item)
+                .map(chave => contexto.cache.get(chave))
+                .find(Boolean);
+            if (!registro) return false;
+            aplicarInfoEnriquecimentoFavoritos(item, registro.metadata);
+            const requisicaoEmAndamento = contexto.backendInflight instanceof Map
+                && chavesAnuncioFavoritos(item).some(chave => contexto.backendInflight.has(chave));
+            if (requisicaoEmAndamento) return false;
+            const completo = !!registro.completo && anuncioFavoritosEnriquecimentoCompleto(item);
+            const tentativasBackend = Math.max(0, Number(registro.tentativasBackend) || 0);
+            const backendConcluido = registro.backendConcluido === true;
+            const fechamento = opcoes && opcoes.fechamento === true;
+            const deveRepetirNoFechamento = fechamento && !backendConcluido && tentativasBackend < 2;
+            const reutilizar = completo
+                || backendConcluido
+                || (tentativasBackend > 0 && !deveRepetirNoFechamento);
+            if (reutilizar) contexto.estatisticas.cache_hits += 1;
+            return reutilizar;
+        }
+
+        function registrarCacheEnriquecimentoFavoritos(contexto, item) {
+            if (!contexto || !(contexto.cache instanceof Map) || !item) return null;
+            const chavesIniciais = chavesAnuncioFavoritos(item);
+            if (!chavesIniciais.length) return null;
+            let registro = chavesIniciais.map(chave => contexto.cache.get(chave)).find(Boolean) || null;
+            const metadata = { ...item };
+            if (registro && registro.metadata) aplicarInfoEnriquecimentoFavoritos(metadata, registro.metadata);
+            if (!registro) {
+                registro = {
+                    metadata: {},
+                    completo: false,
+                    chaves: new Set(),
+                    tentativasBackend: 0,
+                    backendConcluido: false
+                };
+            }
+            registro.metadata = metadata;
+            registro.completo = anuncioFavoritosEnriquecimentoCompleto(metadata);
+            [...chavesIniciais, ...chavesAnuncioFavoritos(metadata)].forEach(chave => {
+                if (!chave) return;
+                registro.chaves.add(chave);
+                contexto.cache.set(chave, registro);
+            });
+            return registro;
+        }
+
+        async function enriquecerAnunciosFavoritosRanking(anuncios, contextoEnriquecimento = null, opcoes = {}) {
             const pendentes = (anuncios || [])
                 .filter(item => item && (item.url || item.id))
                 .filter(item => !(typeof anuncioRankingHistoricoEstaticoFavoritos === 'function' && anuncioRankingHistoricoEstaticoFavoritos(item)));
@@ -2068,54 +2627,154 @@
                 fonte_vendas: item.fonte_vendas || item.vendasFonte || item.vendas_fonte || '',
                 data_criacao: item.data_criacao || item.date_created || '',
                 fonte_data_criacao: item.fonte_data_criacao || item.fonte || '',
-                data_criacao_confianca: item.data_criacao_confianca || ''
+                data_criacao_confianca: item.data_criacao_confianca || '',
+                sku: item.sku || item.sku_favorito || '',
+                listing_type_id: item.listing_type_id || item.listingTypeId || '',
+                listing_type_name: item.listing_type_name || '',
+                tipo_anuncio: obterTipoAnuncioFavoritos(item),
+                parcelamento_sem_juros: obterParcelamentoSemJurosFavoritos(item),
+                shipping: item.shipping || null,
+                logistic_type: item.logistic_type || item.logisticType || '',
+                shipping_mode: item.shipping_mode || item.shippingMode || '',
+                is_full: fullAnuncioDesconhecidoFavoritos(item) ? null : obterFullAnuncioFavoritos(item),
+                condicao: obterCondicaoAnuncioFavoritos(item),
+                condition: obterCondicaoAnuncioFavoritos(item),
+                item_condition: obterCondicaoAnuncioFavoritos(item)
             });
-            const pendentesBackend = pendentes;
+            const contexto = contextoEnriquecimento && contextoEnriquecimento.cache instanceof Map
+                ? contextoEnriquecimento
+                : null;
+            const mapaAlvos = new Map();
+            const registrarAlvo = (item) => {
+                chavesAnuncioFavoritos(item).forEach(chave => {
+                    if (!mapaAlvos.has(chave)) mapaAlvos.set(chave, new Set());
+                    mapaAlvos.get(chave).add(item);
+                });
+            };
+            pendentes.forEach(registrarAlvo);
+            const gruposBackend = new Map();
+            pendentes.forEach(item => {
+                if (anuncioFavoritosEnriquecimentoCompleto(item)) {
+                    registrarCacheEnriquecimentoFavoritos(contexto, item);
+                    if (contexto) contexto.estatisticas.completos_na_coleta += 1;
+                    return;
+                }
+                if (aplicarCacheEnriquecimentoFavoritos(contexto, item, opcoes)) return;
+                const chave = chaveAnuncioFavoritos(item) || chavesAnuncioFavoritos(item)[0];
+                if (!chave) return;
+                registrarCacheEnriquecimentoFavoritos(contexto, item);
+                if (!gruposBackend.has(chave)) gruposBackend.set(chave, item);
+            });
+            const pendentesBackend = Array.from(gruposBackend.values());
+            if (contexto) {
+                contexto.estatisticas.cache_misses += pendentesBackend.length;
+                contexto.estatisticas.backend_solicitados += pendentesBackend.length;
+            }
             let resultados = [];
             if (pendentesBackend.length) {
-                try {
-                    const response = await fetch('/api/favoritos/ml/enriquecer-datas', {
-                        method: 'POST',
-                        headers: headersJsonAutenticado(),
-                        signal: sinalFavoritosAtual(),
-                        body: JSON.stringify({
-                            max_anuncios: Math.min(200, pendentesBackend.length),
-                            anuncios: pendentesBackend.map(payloadEnriquecimento)
-                        })
-                    });
-                    if (response.ok) {
-                        const data = await response.json();
-                        resultados = Array.isArray(data.resultados) ? data.resultados : [];
+                if (contexto && !(contexto.backendInflight instanceof Map)) contexto.backendInflight = new Map();
+                const novosBackend = [];
+                const aguardandoBackend = [];
+                pendentesBackend.forEach(item => {
+                    if (!contexto) {
+                        novosBackend.push({ item, entrada: null });
+                        return;
                     }
-                } catch (err) {
-                    if (mlFavoritosCancelado || (err && err.name === 'AbortError')) throw err;
-                    console.warn('Nao foi possivel enriquecer ranking pelo backend:', err);
+                    const chaves = chavesAnuncioFavoritos(item);
+                    const existente = chaves.map(chave => contexto.backendInflight.get(chave)).find(Boolean);
+                    if (existente) {
+                        aguardandoBackend.push(existente.promise);
+                        return;
+                    }
+                    let resolveEntrada;
+                    let rejectEntrada;
+                    const promise = new Promise((resolve, reject) => {
+                        resolveEntrada = resolve;
+                        rejectEntrada = reject;
+                    });
+                    const entrada = { promise, resolve: resolveEntrada, reject: rejectEntrada, chaves };
+                    chaves.forEach(chave => contexto.backendInflight.set(chave, entrada));
+                    novosBackend.push({ item, entrada });
+                });
+                for (let inicio = 0; inicio < novosBackend.length; inicio += 200) {
+                    const loteEntradas = novosBackend.slice(inicio, inicio + 200);
+                    const lote = loteEntradas.map(entrada => entrada.item);
+                    lote.forEach(item => {
+                        if (!contexto) return;
+                        const registro = chavesAnuncioFavoritos(item)
+                            .map(chave => contexto.cache.get(chave))
+                            .find(Boolean);
+                        if (!registro) return;
+                        registro.tentativasBackend = Math.max(0, Number(registro.tentativasBackend) || 0) + 1;
+                        if (registro.tentativasBackend > 1) contexto.estatisticas.backend_retries += 1;
+                    });
+                    try {
+                        if (typeof setTimeout === 'function') {
+                            await new Promise(resolve => setTimeout(resolve, 25));
+                        }
+                        const sinalExecucao = sinalFavoritosAtual();
+                        const executarRequest = () => executarComTimeoutFavoritos(async (signal) => {
+                            const response = await fetch('/api/favoritos/ml/enriquecer-datas', {
+                                method: 'POST',
+                                headers: headersJsonAutenticado(),
+                                signal,
+                                body: JSON.stringify({
+                                    max_anuncios: lote.length,
+                                    anuncios: lote.map(payloadEnriquecimento)
+                                })
+                            });
+                            if (!response.ok) return [];
+                            const data = await response.json();
+                            return Array.isArray(data.resultados) ? data.resultados : [];
+                        }, 45000, sinalExecucao);
+                        const resultadosLote = contexto && contexto.backendLimiter && typeof contexto.backendLimiter.executar === 'function'
+                            ? await contexto.backendLimiter.executar(executarRequest)
+                            : await executarRequest();
+                        resultados.push(...resultadosLote);
+                        loteEntradas.forEach(({ item, entrada }) => {
+                            if (!entrada) return;
+                            const info = resultadosLote.find(resultado => chavesAnuncioFavoritos(resultado).some(chave => entrada.chaves.includes(chave))) || null;
+                            entrada.resolve(info);
+                            entrada.chaves.forEach(chave => {
+                                if (contexto.backendInflight.get(chave) === entrada) contexto.backendInflight.delete(chave);
+                            });
+                        });
+                    } catch (err) {
+                        if (contexto && err && err.favoritosTimeout) contexto.estatisticas.backend_timeouts += 1;
+                        loteEntradas.forEach(({ entrada }) => {
+                            if (!entrada) return;
+                            if (mlFavoritosCancelado || (sinalFavoritosAtual() && sinalFavoritosAtual().aborted)) entrada.reject(err);
+                            else entrada.resolve(null);
+                            entrada.chaves.forEach(chave => {
+                                if (contexto.backendInflight.get(chave) === entrada) contexto.backendInflight.delete(chave);
+                            });
+                        });
+                        if (mlFavoritosCancelado || (sinalFavoritosAtual() && sinalFavoritosAtual().aborted)) throw err;
+                        console.warn(`Nao foi possivel enriquecer o lote ${Math.floor(inicio / 200) + 1} do ranking pelo backend:`, err);
+                    }
+                }
+                if (aguardandoBackend.length) {
+                    const compartilhados = await Promise.all(aguardandoBackend);
+                    resultados.push(...compartilhados.filter(Boolean));
                 }
             }
             const mapa = new Map();
             anuncios.forEach(item => {
-                chavesAnuncioFavoritos(item).forEach(chave => mapa.set(chave, item));
+                chavesAnuncioFavoritos(item).forEach(chave => {
+                    if (!mapa.has(chave)) mapa.set(chave, new Set());
+                    mapa.get(chave).add(item);
+                });
             });
             resultados.forEach(info => {
-                const alvo = chavesAnuncioFavoritos(info).map(chave => mapa.get(chave)).find(Boolean);
-                if (!alvo) return;
-                aplicarMetadataBasicaAnuncioFavoritos(alvo, info);
-                preencherTipoAnuncioFavoritos(alvo, info);
-                preencherCondicaoAnuncioFavoritos(alvo, info);
-                if (info.data_criacao) alvo.data_criacao = info.data_criacao;
-                const vendedor = String(info.vendedor || '').trim();
-                const fonteVendedor = normalizarFonte(info.fonte_vendedor || 'pagina_produto');
-                if (deveAtualizarVendedor(alvo.vendedor, alvo.vendedorFonte, vendedor, fonteVendedor)) {
-                    alvo.vendedor = vendedor;
-                    alvo.vendedorFonte = fonteVendedor;
-                }
-                const vendas = parseNumeroVendas(info.vendas);
-                const fonteVendas = normalizarFonte(info.fonte_vendas || '');
-                if (deveAtualizarVendas(alvo.vendas, alvo.vendasFonte, vendas, fonteVendas)) {
-                    alvo.vendas = vendas;
-                    alvo.vendasFonte = fonteVendas;
-                }
+                const alvos = new Set();
+                chavesAnuncioFavoritos(info).forEach(chave => {
+                    (mapa.get(chave) || mapaAlvos.get(chave) || []).forEach(alvo => alvos.add(alvo));
+                    const registro = contexto && contexto.cache.get(chave);
+                    if (registro) registro.backendConcluido = true;
+                });
+                alvos.forEach(alvo => aplicarInfoEnriquecimentoFavoritos(alvo, info));
             });
+            if (contexto) contexto.estatisticas.backend_resultados += resultados.length;
             const precisaDadosAvant = (item) => {
                 if (!item || !item.url) return false;
                 const fonteVendas = normalizarFonte(item.vendasFonte || item.vendas_fonte || item.fonte_vendas || '');
@@ -2141,32 +2800,39 @@
                 }
             }
             const semComplemento = pendentes.filter(item => item && (!item.url || tituloAnuncioFavoritosPrecisaComplemento(item.titulo, item.id) || !vendedorValido(item.vendedor) || !obterImagemAnuncioFavoritos(item) || precisaComplementoPrecoFavoritos(item) || !obterTipoAnuncioFavoritos(item) || fullAnuncioDesconhecidoFavoritos(item) || !obterCondicaoAnuncioFavoritos(item)));
-            if (!semComplemento.length) return;
-            await executarComConcorrencia(semComplemento, Math.min(ML_API_WORKERS, 4), async (alvo) => {
+            const semComplementoUnicos = Array.from(new Map(semComplemento.map(item => [
+                chaveAnuncioFavoritos(item) || chavesAnuncioFavoritos(item)[0],
+                item
+            ]).filter(([chave]) => Boolean(chave))).values());
+            const deadlineApiDireta = Date.now() + (mlFavoritosEmExecucao ? 15000 : 45000);
+            await executarComConcorrencia(semComplementoUnicos, Math.min(ML_API_WORKERS, 4), async (alvo) => {
                 verificarCancelamentoFavoritos();
+                const restanteMs = deadlineApiDireta - Date.now();
+                if (restanteMs <= 0) return;
                 const itemId = alvo.id || extrairItemIdAnuncio(alvo.url);
                 if (!itemId) return;
                 try {
-                    const apiInfo = await consultarItemApiMercadoLivre(itemId);
+                    const consultar = () => executarComTimeoutFavoritos(
+                        () => consultarItemApiMercadoLivre(itemId),
+                        Math.min(6000, restanteMs),
+                        sinalFavoritosAtual()
+                    );
+                    const apiInfo = contexto && contexto.apiLimiter && typeof contexto.apiLimiter.executar === 'function'
+                        ? await contexto.apiLimiter.executar(consultar)
+                        : await consultar();
                     if (!apiInfo) return;
-                    aplicarMetadataBasicaAnuncioFavoritos(alvo, apiInfo);
-                    preencherPrecoAnuncioFavoritos(alvo, apiInfo);
-                    preencherTipoAnuncioFavoritos(alvo, apiInfo);
-                    preencherCondicaoAnuncioFavoritos(alvo, apiInfo);
-                    const vendedorApi = normalizarNomeVendedor(apiInfo.vendedor || '');
-                    const fonteApi = normalizarFonte(apiInfo.vendedorFonte || apiInfo.vendedor_fonte || apiInfo.fonte_vendedor || apiInfo.source || 'mercado_livre_api');
-                    if (deveAtualizarVendedor(alvo.vendedor, alvo.vendedorFonte, vendedorApi, fonteApi)) {
-                        alvo.vendedor = vendedorApi;
-                        alvo.vendedorFonte = fonteApi;
-                    }
-                    if (apiInfo.data_criacao && !alvo.data_criacao) {
-                        alvo.data_criacao = apiInfo.data_criacao;
-                    }
+                    const alvos = new Set([alvo]);
+                    chavesAnuncioFavoritos(alvo).forEach(chave => {
+                        (mapaAlvos.get(chave) || []).forEach(item => alvos.add(item));
+                    });
+                    alvos.forEach(item => aplicarInfoEnriquecimentoFavoritos(item, apiInfo));
                 } catch (err) {
                     if (mlFavoritosCancelado || (err && err.canceladoFavoritos)) throw err;
+                    if (err && err.favoritosTimeout) return;
                     console.warn('Nao foi possivel preencher vendedor do ranking pelo MLB:', itemId, err);
                 }
             });
+            pendentes.forEach(item => registrarCacheEnriquecimentoFavoritos(contexto, item));
         }
 
         async function complementarTiposRankingFavoritos(sku, anuncios) {

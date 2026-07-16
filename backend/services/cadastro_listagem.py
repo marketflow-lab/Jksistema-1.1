@@ -469,6 +469,10 @@ async def listar_produtos_cadastro(
             except Exception as e:
                 logger.warning(f"[CADASTRO] NÃƒÂ£o foi possÃƒÂ­vel enriquecer com Produto Bling: {e}")
 
+            classificados_alterados, _ = _classificar_monofasico_cadastro(df)
+            if classificados_alterados:
+                precisa_salvar = True
+
             if precisa_salvar:
                 df.to_csv(alvo, index=False)
 

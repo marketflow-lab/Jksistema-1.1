@@ -463,6 +463,22 @@
             letter-spacing: 0;
             white-space: nowrap;
         }
+        .favoritos-worker-elapsed {
+            background: rgba(37, 99, 235, 0.28);
+            border: 1px solid rgba(147, 197, 253, 0.55);
+            border-radius: 999px;
+            color: #ffffff;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+            font-weight: 800;
+            letter-spacing: 0.03em;
+            padding: 3px 8px;
+            white-space: nowrap;
+        }
+        .favoritos-worker-elapsed.hidden {
+            display: none;
+        }
         .favoritos-worker-message {
             color: #dbeafe;
             font-size: 12px;
@@ -510,6 +526,7 @@
         </header>
         <div id="favoritos-worker-bar" class="favoritos-worker-bar hidden" aria-live="polite">
             <span class="favoritos-worker-label">Favoritos rodando:</span>
+            <span id="favoritos-worker-elapsed" class="favoritos-worker-elapsed hidden" aria-hidden="true">00:00:00</span>
             <span id="favoritos-worker-message" class="favoritos-worker-message">Preparando coleta.</span>
             <div class="favoritos-worker-actions">
                 <button id="favoritos-worker-show" class="favoritos-worker-btn" type="button">Ver</button>
@@ -541,6 +558,7 @@
     </div>
     <div id="tab-detach-hint" class="tab-detach-hint">Solte para abrir esta aba em outra janela</div>
 
+    <script src="static/favoritos/v2/ui/elapsed-timer.js?v=20260714-favoritos-workers-pool-opt-v1"></script>
     <script>
         function normalizeInitialAppUrl(value) {
             const fallback = 'http://127.0.0.1:8001/dashboard.html';
@@ -581,6 +599,7 @@
         const tabDetachHint = document.getElementById('tab-detach-hint');
         const favoritosWorkerBar = document.getElementById('favoritos-worker-bar');
         const favoritosWorkerMessage = document.getElementById('favoritos-worker-message');
+        const favoritosWorkerElapsed = document.getElementById('favoritos-worker-elapsed');
         const favoritosWorkerShowBtn = document.getElementById('favoritos-worker-show');
         const favoritosWorkerHideBtn = document.getElementById('favoritos-worker-hide');
         const favoritosWorkerPauseBtn = document.getElementById('favoritos-worker-pause');
@@ -596,12 +615,64 @@
         let favoritosWorkerBrowserActive = false;
         let favoritosWorkerBrowserPaused = false;
         let favoritosWorkerLastStatus = null;
+        let favoritosWorkerCancellationLocked = false;
+        let favoritosWorkerTerminalLocked = false;
+        const favoritosWorkerElapsedTimer = window.FavoritosElapsedTimer?.create({
+            onTick: (timerStatus) => {
+                if (!favoritosWorkerElapsed) return;
+                const started = Number(timerStatus && timerStatus.startedAt || 0) > 0;
+                favoritosWorkerElapsed.textContent = timerStatus && timerStatus.formatted
+                    ? timerStatus.formatted
+                    : '00:00:00';
+                favoritosWorkerElapsed.classList.toggle('hidden', !started);
+                favoritosWorkerElapsed.dataset.status = String(timerStatus && timerStatus.status || 'idle');
+            }
+        }) || null;
         let mlBrowserWebview = null;
         let mlBrowserOwnerId = '';
         let tabDragState = null;
         const mlBrowserBoundsByTab = new Map();
         const mlBrowserUrlByTab = new Map();
+        const mlBrowserRestorableUrlByTab = new Map();
         const mlBrowserVisibleByTab = new Map();
+
+        function urlEmFluxoAutenticacaoMercadoLivreShell(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return false;
+            try {
+                const url = new URL(raw);
+                const host = String(url.hostname || '').toLowerCase();
+                const mercadoLivreHost = host === 'mercadolivre.com'
+                    || host.endsWith('.mercadolivre.com')
+                    || host === 'mercadolivre.com.br'
+                    || host.endsWith('.mercadolivre.com.br')
+                    || host === 'mercadolibre.com'
+                    || host.endsWith('.mercadolibre.com');
+                if (!mercadoLivreHost) return false;
+                const pathname = String(url.pathname || '/').toLowerCase().replace(/\/{2,}/g, '/');
+                const specificAuthRoute = /^\/gz\/account-verification(?:\/|$)|^\/jms\/[^/]+\/lgz(?:\/|$)|^\/password\/validation(?:\/|$)|^\/totp(?:\/|$)|^\/login\/challenges?(?:\/|$)/.test(pathname);
+                const genericAuthHost = host === 'mercadolivre.com'
+                    || host === 'mercadolivre.com.br'
+                    || host === 'mercadolibre.com'
+                    || /^(?:www|auth|accounts?|account)\./.test(host);
+                const genericAuthRoute = /^\/login(?:\/|$)|^\/(?:captcha|recaptcha|security[-_/]?check|identity[-_/]?verification)(?:\/|$)/.test(pathname);
+                let negativeTraffic = false;
+                let explicitAuthParam = false;
+                for (const [name, itemValueRaw] of url.searchParams.entries()) {
+                    const key = String(name || '').toLowerCase();
+                    const itemValue = String(itemValueRaw || '').toLowerCase();
+                    if (key === 'logintype' && itemValue === 'negative_traffic') negativeTraffic = true;
+                    if (['captcha', 'recaptcha', 'security_check', 'identity_verification'].includes(key) && itemValue) {
+                        explicitAuthParam = true;
+                    }
+                }
+                return specificAuthRoute
+                    || negativeTraffic
+                    || (genericAuthHost && (genericAuthRoute || explicitAuthParam));
+            } catch (_err) {
+                return false;
+            }
+        }
         const TAB_LOAD_TIMEOUT_MS = 12000;
         const TAB_MAX_AUTO_RETRIES = 2;
 
@@ -822,25 +893,54 @@
             return isFavoritosTab(found.tab);
         }
 
-        function setFavoritosWorkerBar(payload = {}) {
+        function setFavoritosWorkerBar(payload = {}, contexto = {}) {
             const status = String(payload.status || '').toLowerCase();
-            const message = String(payload.message || payload.mensagem || payload.label || '').trim();
+            const canceled = ['canceled', 'cancelled'].includes(status);
             const isFinal = ['done', 'stopped', 'closed', 'canceled', 'cancelled', 'error'].includes(status);
+            const startSignal = contexto && contexto.start === true && payload.active !== false;
+            if (startSignal) {
+                favoritosWorkerCancellationLocked = false;
+                favoritosWorkerTerminalLocked = false;
+            }
+            if (favoritosWorkerTerminalLocked && !isFinal && !startSignal) return;
+            if (favoritosWorkerCancellationLocked && !canceled && !startSignal) return;
+            if (canceled) favoritosWorkerCancellationLocked = true;
+            const fila = payload.queue || (favoritosWorkerLastStatus && favoritosWorkerLastStatus.queue) || null;
+            const messageFila = fila && Number(fila.total) > 0
+                ? `${Number(fila.active) || 0} ativos | ${Number(fila.queued) || 0} na fila | ${Number(fila.completed) || 0} concluidos | ${Number(fila.retrying) || 0} em nova tentativa`
+                : '';
+            const message = canceled ? '' : (messageFila || String(payload.message || payload.mensagem || payload.label || '').trim());
+            if (favoritosWorkerElapsedTimer) {
+                const timerStatus = favoritosWorkerElapsedTimer.snapshot();
+                if (isFinal) {
+                    favoritosWorkerElapsedTimer.finish({
+                        status,
+                        finishedAt: Number(payload.finishedAt || 0) || Date.now()
+                    });
+                } else if (payload.active !== false && (!timerStatus.active || !timerStatus.startedAt)) {
+                    favoritosWorkerElapsedTimer.start({
+                        status: status || 'running',
+                        startedAt: Number(payload.startedAt || 0) || Date.now()
+                    });
+                }
+            }
+            if (isFinal) favoritosWorkerTerminalLocked = true;
             favoritosWorkerLastStatus = { ...(favoritosWorkerLastStatus || {}), ...(payload || {}) };
             favoritosWorkerBrowserActive = payload.active === false || isFinal ? false : !!(payload.active || message || favoritosWorkerBrowserActive);
             favoritosWorkerBrowserPaused = !!(payload.paused || status === 'paused');
             if (favoritosWorkerPauseBtn) favoritosWorkerPauseBtn.textContent = favoritosWorkerBrowserPaused ? 'Retomar' : 'Pausar';
             if (favoritosWorkerMessage) {
-                favoritosWorkerMessage.textContent = message || (favoritosWorkerBrowserPaused
+                favoritosWorkerMessage.textContent = canceled ? '' : (message || (favoritosWorkerBrowserPaused
                     ? 'Favoritos pausado.'
-                    : 'Coleta do Favoritos em andamento.');
+                    : 'Coleta do Favoritos em andamento.'));
             }
             if (!favoritosWorkerBar) return;
             if (favoritosWorkerBarHideTimer) {
                 clearTimeout(favoritosWorkerBarHideTimer);
                 favoritosWorkerBarHideTimer = null;
             }
-            favoritosWorkerBar.classList.toggle('hidden', !favoritosWorkerBrowserActive && !message);
+            favoritosWorkerBar.classList.toggle('hidden', canceled || (!favoritosWorkerBrowserActive && !message));
+            if (canceled) return;
             if (isFinal) {
                 favoritosWorkerBarHideTimer = setTimeout(() => {
                     favoritosWorkerBar.classList.add('hidden');
@@ -858,7 +958,19 @@
             });
             const api = window.electronAPI || null;
             if (!api) return;
-            if (normalized === 'pause' && typeof api.pauseFavoritosWorkerBrowser === 'function') {
+            const poolAtivo = !!(favoritosWorkerLastStatus && (favoritosWorkerLastStatus.poolId || favoritosWorkerLastStatus.queue));
+            if (normalized === 'pause' && poolAtivo && typeof api.pauseFavoritosWorkersPool === 'function') {
+                api.pauseFavoritosWorkersPool().catch(() => {});
+            } else if (normalized === 'resume' && poolAtivo && typeof api.resumeFavoritosWorkersPool === 'function') {
+                api.resumeFavoritosWorkersPool().catch(() => {});
+            } else if (normalized === 'cancel' && poolAtivo && typeof api.stopFavoritosWorkersPool === 'function') {
+                api.stopFavoritosWorkersPool({
+                    status: 'canceled',
+                    reason: 'favoritos-cancelado-pela-barra',
+                    destroy: true,
+                    message: ''
+                }).catch(() => {});
+            } else if (normalized === 'pause' && typeof api.pauseFavoritosWorkerBrowser === 'function') {
                 api.pauseFavoritosWorkerBrowser().catch(() => {});
             } else if (normalized === 'resume' && typeof api.resumeFavoritosWorkerBrowser === 'function') {
                 api.resumeFavoritosWorkerBrowser().catch(() => {});
@@ -871,7 +983,10 @@
             if (favoritosWorkerShowBtn) {
                 favoritosWorkerShowBtn.addEventListener('click', () => {
                     const api = window.electronAPI || null;
-                    if (api && typeof api.showFavoritosWorkerBrowser === 'function') {
+                    const poolAtivo = !!(favoritosWorkerLastStatus && (favoritosWorkerLastStatus.poolId || favoritosWorkerLastStatus.queue));
+                    if (api && poolAtivo && typeof api.showFavoritosWorkersPool === 'function') {
+                        api.showFavoritosWorkersPool().then(setFavoritosWorkerBar).catch(() => {});
+                    } else if (api && typeof api.showFavoritosWorkerBrowser === 'function') {
                         api.showFavoritosWorkerBrowser().then(setFavoritosWorkerBar).catch(() => {});
                     }
                 });
@@ -879,7 +994,10 @@
             if (favoritosWorkerHideBtn) {
                 favoritosWorkerHideBtn.addEventListener('click', () => {
                     const api = window.electronAPI || null;
-                    if (api && typeof api.hideFavoritosWorkerBrowser === 'function') {
+                    const poolAtivo = !!(favoritosWorkerLastStatus && (favoritosWorkerLastStatus.poolId || favoritosWorkerLastStatus.queue));
+                    if (api && poolAtivo && typeof api.hideFavoritosWorkersPool === 'function') {
+                        api.hideFavoritosWorkersPool().then(setFavoritosWorkerBar).catch(() => {});
+                    } else if (api && typeof api.hideFavoritosWorkerBrowser === 'function') {
                         api.hideFavoritosWorkerBrowser().then(setFavoritosWorkerBar).catch(() => {});
                     }
                 });
@@ -892,12 +1010,13 @@
             if (favoritosWorkerCancelBtn) {
                 favoritosWorkerCancelBtn.addEventListener('click', () => {
                     if (!confirm('Cancelar o Favoritos em andamento?')) return;
-                    enviarAcaoFavoritosWorker('cancel');
                     setFavoritosWorkerBar({
-                        active: true,
-                        status: 'cancel_requested',
-                        message: 'Cancelamento solicitado. A etapa atual sera interrompida.'
+                        active: false,
+                        paused: false,
+                        status: 'canceled',
+                        message: ''
                     });
+                    enviarAcaoFavoritosWorker('cancel');
                 });
             }
             const api = window.electronAPI || null;
@@ -919,10 +1038,29 @@
                     message: payload && (payload.message || payload.mensagem) || 'Favoritos encontrou um erro.'
                 }));
             }
+            if (api && typeof api.onFavoritosWorkersProgress === 'function') {
+                api.onFavoritosWorkersProgress(payload => setFavoritosWorkerBar(payload || {}, {
+                    start: !!(payload && payload.active && payload.startedAt)
+                }));
+            }
+            if (api && typeof api.onFavoritosWorkersDone === 'function') {
+                api.onFavoritosWorkersDone(payload => setFavoritosWorkerBar({
+                    ...(payload || {}),
+                    active: false,
+                    status: payload && payload.status || 'done'
+                }));
+            }
+            if (api && typeof api.getFavoritosWorkersPoolStatus === 'function') {
+                api.getFavoritosWorkersPoolStatus()
+                    .then(status => {
+                        if (status && status.active) setFavoritosWorkerBar(status, { start: true });
+                    })
+                    .catch(() => {});
+            }
             if (api && typeof api.getFavoritosWorkerBrowserStatus === 'function') {
                 api.getFavoritosWorkerBrowserStatus()
                     .then(status => {
-                        if (status && status.active) setFavoritosWorkerBar(status);
+                        if (status && status.active) setFavoritosWorkerBar(status, { start: true });
                     })
                     .catch(() => {});
             }
@@ -1632,21 +1770,62 @@
 
         function restaurarEmbeddedMlBrowserSeAtivo() {
             if (!activeId) return;
-            const url = mlBrowserUrlByTab.get(activeId);
-            if (!url) return;
-            if (!mlBrowserVisibleByTab.get(activeId)) return;
-            const tab = tabs.get(activeId);
+            const tabId = activeId;
+            if (!mlBrowserVisibleByTab.get(tabId)) return;
+            const tab = tabs.get(tabId);
             if (!tab) return;
-            const boundsSalvos = mlBrowserBoundsByTab.get(activeId) || null;
+            const boundsSalvos = mlBrowserBoundsByTab.get(tabId) || null;
             if (boundsSalvos && boundsSalvos.background) return;
             const data = getMlBrowserBoundsForTab(tab, boundsSalvos);
             if (!data || !data.bounds) return;
             const embeddedApi = getEmbeddedMlBrowserApi();
             if (embeddedApi) {
-                embeddedApi.showEmbeddedMlBrowser(url, data.bounds).catch(() => {});
+                const ownerAnterior = mlBrowserOwnerId;
+                if (ownerAnterior === tabId) {
+                    embeddedApi.positionEmbeddedMlBrowser(data.bounds)
+                        .then(result => {
+                            if (result && result.success === false) return;
+                            const resultUrl = String(result && result.url || '').trim();
+                            if (/^https?:\/\//i.test(resultUrl)) {
+                                mlBrowserUrlByTab.set(tabId, resultUrl);
+                                if (!(result && result.authFlow) && !urlEmFluxoAutenticacaoMercadoLivreShell(resultUrl)) {
+                                    mlBrowserRestorableUrlByTab.set(tabId, resultUrl);
+                                }
+                            }
+                        })
+                        .catch(() => {});
+                    return;
+                }
+                const url = mlBrowserRestorableUrlByTab.get(tabId);
+                if (!url) return;
+                embeddedApi.showEmbeddedMlBrowser(url, data.bounds)
+                    .then(result => {
+                        const bloqueadoPorAuthDeOutraAba = !!(
+                            ownerAnterior
+                            && ownerAnterior !== tabId
+                            && result
+                            && (result.authFlow || result.preservedAuthFlow)
+                        );
+                        if (bloqueadoPorAuthDeOutraAba) {
+                            reposicionarEmbeddedMlBrowserParaDono(ownerAnterior, embeddedApi);
+                            return;
+                        }
+                        if (result && result.success === false) return;
+                        mlBrowserOwnerId = tabId;
+                        const resultUrl = String(result && result.url || '').trim();
+                        if (/^https?:\/\//i.test(resultUrl)) {
+                            mlBrowserUrlByTab.set(tabId, resultUrl);
+                            if (!(result && result.authFlow) && !urlEmFluxoAutenticacaoMercadoLivreShell(resultUrl)) {
+                                mlBrowserRestorableUrlByTab.set(tabId, resultUrl);
+                            }
+                        }
+                    })
+                    .catch(() => {});
                 return;
             }
-            const positioned = positionMlBrowserForTabId(activeId, mlBrowserBoundsByTab.get(activeId) || null);
+            const url = mlBrowserRestorableUrlByTab.get(tabId);
+            if (!url) return;
+            const positioned = positionMlBrowserForTabId(tabId, mlBrowserBoundsByTab.get(tabId) || null);
             if (!positioned || !positioned.webview) return;
             const currentUrl = typeof positioned.webview.getURL === 'function'
                 ? positioned.webview.getURL()
@@ -1664,6 +1843,16 @@
             const embeddedApi = getEmbeddedMlBrowserApi();
             if (!embeddedApi) return;
             embeddedApi.hideEmbeddedMlBrowser(options || {}).catch(() => {});
+        }
+
+        function reposicionarEmbeddedMlBrowserParaDono(ownerId, embeddedApi = getEmbeddedMlBrowserApi()) {
+            if (!ownerId || !embeddedApi || typeof embeddedApi.positionEmbeddedMlBrowser !== 'function') return;
+            const ownerTab = tabs.get(ownerId);
+            if (!ownerTab) return;
+            const ownerBounds = mlBrowserBoundsByTab.get(ownerId) || null;
+            const ownerData = getMlBrowserBoundsForTab(ownerTab, ownerBounds);
+            if (!ownerData || !ownerData.bounds) return;
+            embeddedApi.positionEmbeddedMlBrowser(ownerData.bounds).catch(() => {});
         }
 
         function updateVisibleState() {
@@ -1690,11 +1879,6 @@
             const activeMlBackground = !!(activeMlBounds && activeMlBounds.background);
             const activeHasMlState = !!(activeId && mlBrowserUrlByTab.get(activeId));
             const activeMlVisible = !!(activeId && mlBrowserVisibleByTab.get(activeId));
-            if (activeHasMlState) {
-                mlBrowserOwnerId = activeId;
-            } else {
-                mlBrowserOwnerId = '';
-            }
             if (mlBrowserWebview) {
                 mlBrowserWebview.classList.toggle('is-active', !!activeHasMlState && activeMlVisible && !activeMlBackground);
             }
@@ -1741,6 +1925,7 @@
             }
             mlBrowserBoundsByTab.delete(id);
             mlBrowserUrlByTab.delete(id);
+            mlBrowserRestorableUrlByTab.delete(id);
             mlBrowserVisibleByTab.delete(id);
             clearTabLoadTimer(tab);
             tab.button.remove();
@@ -1959,7 +2144,55 @@
                     ...payload,
                     active: data.channel === 'jk-favoritos-worker-done' ? false : payload.active !== false,
                     status: payload.status || (data.channel === 'jk-favoritos-worker-done' ? 'done' : 'running')
-                });
+                }, { start: data.channel === 'jk-favoritos-worker-enable' });
+                return;
+            }
+
+            if (data.channel === 'jk-ml-browser-status') {
+                const payload = data.payload || {};
+                const requestId = String(payload.requestId || '').trim();
+                const sourceTab = findTabBySource(event.source);
+                const sourceWindow = event.source;
+                const responder = (result = {}) => {
+                    postToSourceOrTab(sourceWindow, sourceTab && sourceTab.tab, {
+                        channel: 'jk-ml-browser-status-result',
+                        requestId,
+                        result
+                    });
+                };
+                const embeddedApi = getEmbeddedMlBrowserApi();
+                if (!requestId || !sourceTab || !embeddedApi) {
+                    responder({
+                        success: false,
+                        reason: !sourceTab ? 'aba-nao-encontrada' : 'navegador-interno-indisponivel',
+                        url: ''
+                    });
+                    return;
+                }
+                const consultarEstado = typeof embeddedApi.getEmbeddedMlBrowserState === 'function'
+                    ? embeddedApi.getEmbeddedMlBrowserState()
+                    : (() => {
+                        const boundsPayload = sourceTab.id !== activeId
+                            ? { ...(payload.bounds || {}), background: true }
+                            : (payload.bounds || null);
+                        const embedded = getMlBrowserBoundsForMainWindow(sourceWindow, boundsPayload);
+                        if (!embedded) return Promise.resolve({ success: false, reason: 'posicao-indisponivel', url: '' });
+                        return embeddedApi.positionEmbeddedMlBrowser(embedded.bounds);
+                    })();
+                consultarEstado
+                    .then(result => responder({
+                        success: !!(result && result.success !== false && /^https?:\/\//i.test(String(result.url || ''))),
+                        url: String(result && result.url || ''),
+                        authFlow: !!(result && result.authFlow),
+                        available: !!(result && result.available !== false),
+                        attached: !!(result && result.attached !== false),
+                        expectedUrl: String(payload.expectedUrl || '')
+                    }))
+                    .catch(err => responder({
+                        success: false,
+                        reason: err && err.message ? err.message : String(err),
+                        url: ''
+                    }));
                 return;
             }
 
@@ -2024,38 +2257,71 @@
                     : (payload.bounds || null);
                 const embedded = getMlBrowserBoundsForMainWindow(event.source, boundsPayload);
                 if (embedded && embeddedApi) {
-                    mlBrowserOwnerId = embedded.found.id;
+                    const ownerAntesDaAcao = mlBrowserOwnerId;
                     mlBrowserBoundsByTab.set(embedded.found.id, boundsPayload || null);
                     mlBrowserVisibleByTab.set(embedded.found.id, !(embedded.bounds && embedded.bounds.background));
-                    if (payload.url && /^https?:\/\//i.test(payload.url)) {
-                        mlBrowserUrlByTab.set(embedded.found.id, payload.url);
-                    }
+                    const requestedUrl = String(
+                        payload.url
+                        || mlBrowserRestorableUrlByTab.get(embedded.found.id)
+                        || mlBrowserUrlByTab.get(embedded.found.id)
+                        || ''
+                    ).trim();
                     const action = data.channel === 'jk-ml-browser-show'
-                        ? embeddedApi.showEmbeddedMlBrowser(mlBrowserUrlByTab.get(embedded.found.id) || payload.url, embedded.bounds)
+                        ? embeddedApi.showEmbeddedMlBrowser(requestedUrl, embedded.bounds)
                         : embeddedApi.positionEmbeddedMlBrowser(embedded.bounds);
                     action
                         .then(result => {
-                            if (data.channel === 'jk-ml-browser-show') {
-                                if (result && result.success === false) {
-                                    postToTab(embedded.found.tab, {
+                            const outraAbaEraDona = !!(ownerAntesDaAcao && ownerAntesDaAcao !== embedded.found.id);
+                            const bloqueadoPorAuthDeOutraAba = !!(
+                                outraAbaEraDona
+                                && result
+                                && (result.authFlow || result.preservedAuthFlow)
+                            );
+                            const apenasPosicionandoOutraAba = data.channel === 'jk-ml-browser-position' && outraAbaEraDona;
+                            if (bloqueadoPorAuthDeOutraAba || apenasPosicionandoOutraAba) {
+                                reposicionarEmbeddedMlBrowserParaDono(ownerAntesDaAcao, embeddedApi);
+                                return;
+                            }
+                            if (result && result.success === false) {
+                                if (data.channel === 'jk-ml-browser-show') {
+                                    postToSourceOrTab(sourceWindow, embedded.found.tab, {
                                         channel: 'jk-ml-browser-event',
                                         event: 'did-fail-load',
-                                        url: result.url || payload.url || '',
+                                        url: result.url || requestedUrl,
                                         errorDescription: result.loadWarning || result.reason || 'Falha ao carregar o Mercado Livre no navegador interno.',
                                         errorCode: -1
                                     });
-                                    return;
                                 }
-                                postToTab(embedded.found.tab, {
+                                return;
+                            }
+                            mlBrowserOwnerId = embedded.found.id;
+                            const resultUrl = String(result && result.url || '').trim();
+                            const previousUrl = mlBrowserUrlByTab.get(embedded.found.id) || '';
+                            if (/^https?:\/\//i.test(resultUrl)) {
+                                mlBrowserUrlByTab.set(embedded.found.id, resultUrl);
+                                if (!(result && result.authFlow) && !urlEmFluxoAutenticacaoMercadoLivreShell(resultUrl)) {
+                                    mlBrowserRestorableUrlByTab.set(embedded.found.id, resultUrl);
+                                }
+                                if (data.channel === 'jk-ml-browser-position' && resultUrl !== previousUrl) {
+                                    postToTab(embedded.found.tab, {
+                                        channel: 'jk-ml-browser-event',
+                                        event: 'url-sync',
+                                        url: resultUrl,
+                                        authFlow: !!(result && result.authFlow)
+                                    });
+                                }
+                            }
+                            if (data.channel === 'jk-ml-browser-show') {
+                                postToSourceOrTab(sourceWindow, embedded.found.tab, {
                                     channel: 'jk-ml-browser-event',
                                     event: 'did-finish-load',
-                                    url: result && result.url || payload.url || '',
+                                    url: result && result.url || requestedUrl,
                                     warning: result && result.loadWarning || ''
                                 });
                             }
                         })
                         .catch(err => {
-                            postToTab(embedded.found.tab, {
+                            postToSourceOrTab(sourceWindow, embedded.found.tab, {
                                 channel: 'jk-ml-browser-event',
                                 event: 'did-fail-load',
                                 url: payload.url || '',
@@ -2107,12 +2373,14 @@
                     if (payload.destroy || payload.unload) {
                         mlBrowserBoundsByTab.delete(found.id);
                         mlBrowserUrlByTab.delete(found.id);
+                        mlBrowserRestorableUrlByTab.delete(found.id);
                     }
                 } else if (mlBrowserOwnerId) {
                     mlBrowserVisibleByTab.set(mlBrowserOwnerId, false);
                     if (payload.destroy || payload.unload) {
                         mlBrowserBoundsByTab.delete(mlBrowserOwnerId);
                         mlBrowserUrlByTab.delete(mlBrowserOwnerId);
+                        mlBrowserRestorableUrlByTab.delete(mlBrowserOwnerId);
                     }
                 }
                 if (found && found.id === mlBrowserOwnerId) {
@@ -2134,20 +2402,58 @@
                 if (found.id !== mlBrowserOwnerId && !mlBrowserUrlByTab.has(found.id) && mlBrowserOwnerId) {
                     return Promise.resolve(false);
                 }
-                mlBrowserOwnerId = found.id;
+                const ownerAnterior = mlBrowserOwnerId;
+                const donoMudou = !!ownerAnterior && ownerAnterior !== found.id;
                 const boundsSalvos = mlBrowserBoundsByTab.get(found.id) || null;
-                const urlSalva = mlBrowserUrlByTab.get(found.id) || '';
+                const urlSalva = mlBrowserRestorableUrlByTab.get(found.id) || '';
                 if (!mlBrowserVisibleByTab.has(found.id)) {
                     mlBrowserVisibleByTab.set(found.id, true);
                 }
-                if (!urlSalva || typeof embeddedApi.showEmbeddedMlBrowser !== 'function') {
-                    return Promise.resolve(true);
-                }
                 const dataBounds = getMlBrowserBoundsForTab(found.tab, boundsSalvos);
-                if (!dataBounds || !dataBounds.bounds) return Promise.resolve(true);
-                return embeddedApi.showEmbeddedMlBrowser(urlSalva, dataBounds.bounds)
-                    .then(() => true)
-                    .catch(() => true);
+                if (!dataBounds || !dataBounds.bounds) return Promise.resolve(!donoMudou);
+                const restaurarUrlDaAba = (forcar = false) => {
+                    if ((!donoMudou && !forcar) || !urlSalva || typeof embeddedApi.showEmbeddedMlBrowser !== 'function') {
+                        return Promise.resolve(!donoMudou && !forcar);
+                    }
+                    return embeddedApi.showEmbeddedMlBrowser(urlSalva, dataBounds.bounds)
+                        .then(result => {
+                            if (result && result.success === false) return false;
+                            mlBrowserOwnerId = found.id;
+                            const resultUrl = String(result && result.url || '').trim();
+                            if (/^https?:\/\//i.test(resultUrl)) {
+                                mlBrowserUrlByTab.set(found.id, resultUrl);
+                                if (!(result && result.authFlow) && !urlEmFluxoAutenticacaoMercadoLivreShell(resultUrl)) {
+                                    mlBrowserRestorableUrlByTab.set(found.id, resultUrl);
+                                }
+                            }
+                            return true;
+                        })
+                        .catch(() => false);
+                };
+                if (typeof embeddedApi.positionEmbeddedMlBrowser !== 'function') {
+                    return restaurarUrlDaAba(true);
+                }
+                return embeddedApi.positionEmbeddedMlBrowser(dataBounds.bounds)
+                    .then(result => {
+                        const currentUrl = String(result && result.url || '').trim();
+                        const authFlow = !!(result && result.authFlow)
+                            || urlEmFluxoAutenticacaoMercadoLivreShell(currentUrl);
+                        if (donoMudou && authFlow) {
+                            mlBrowserOwnerId = ownerAnterior;
+                            return false;
+                        }
+                        if (!/^https?:\/\//i.test(currentUrl)) {
+                            return restaurarUrlDaAba(true);
+                        }
+                        if (!donoMudou || authFlow) {
+                            mlBrowserOwnerId = found.id;
+                            mlBrowserUrlByTab.set(found.id, currentUrl);
+                            if (!authFlow) mlBrowserRestorableUrlByTab.set(found.id, currentUrl);
+                            return true;
+                        }
+                        return restaurarUrlDaAba();
+                    })
+                    .catch(() => Promise.resolve(false));
             }
 
             if (data.channel === 'jk-ml-browser-execute') {

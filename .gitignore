@@ -15,6 +15,10 @@ jkjkjk-*.json
 .env
 firebase-presence.env
 node_modules
+cloudflare/whatsapp-gateway/.wrangler/
+cloudflare/whatsapp-gateway/wrangler.toml
+cloudflare/whatsapp-gateway/.dev.vars
+cloudflare/whatsapp-gateway/coverage/
 node_modules
 bug-hunter-report/
 test-results/
@@ -22,6 +26,14 @@ playwright-report/
 .codex-remote-attachments/
 .firebase/
 .tmp_*/
+.tmp/
+.pytest_cache/
+.pytest-tmp-*/
+.pytest_tmp_*/
+pytest-*/
+pytest_*/
+tmp/
+.codex_tmp/
 .tmp_*.err
 .tmp_*.out
 tmp_*.png
@@ -93,6 +105,7 @@ electron_app/dist-client/
 electron_app/dist-client-final/
 electron_app/dist-client-nosign/
 electron_app/dist-client-setup/
+electron_app/dist-client-setup-next/
 electron_app/dist-client-setup.zip
 electron_app/dist-private/
 dist-private/

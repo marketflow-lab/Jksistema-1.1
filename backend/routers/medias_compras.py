@@ -98,6 +98,12 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_lista_pedido_importar_excel_nova_lista",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/landed-cost",
+        medias_compras.api_medias_compras_lista_pedido_custo_posto,
+        methods=["GET"],
+        name="api_medias_compras_lista_pedido_custo_posto",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/{lista_id}",
         medias_compras.api_medias_compras_lista_pedido_detalhe,
         methods=["GET"],

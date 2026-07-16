@@ -153,9 +153,99 @@ def _ml_obter_preco_detalhado(
     return info, cfg
 
 
+def _ml_valor_embalagem_normalizado(atributo: dict, *, tipo: str) -> Optional[float]:
+    if not isinstance(atributo, dict):
+        return None
+
+    candidatos = []
+    value_struct = atributo.get("value_struct")
+    if isinstance(value_struct, dict):
+        candidatos.append((value_struct.get("number"), value_struct.get("unit")))
+
+    value_name = str(atributo.get("value_name") or "").strip()
+    if value_name:
+        match = re.search(r"(-?\d+(?:[\.,]\d+)?)\s*([^\d\s]+)?", value_name)
+        if match:
+            candidatos.append((match.group(1), match.group(2)))
+
+    conversoes = {
+        "comprimento": {
+            "mm": 0.1,
+            "cm": 1.0,
+            "m": 100.0,
+            "in": 2.54,
+            "pol": 2.54,
+        },
+        "peso": {
+            "mg": 0.001,
+            "g": 1.0,
+            "kg": 1000.0,
+            "oz": 28.349523125,
+            "lb": 453.59237,
+        },
+    }
+    unidades = conversoes.get(tipo) or {}
+    for numero_raw, unidade_raw in candidatos:
+        try:
+            numero = float(str(numero_raw).strip().replace(",", "."))
+        except Exception:
+            continue
+        unidade = unicodedata.normalize("NFKD", str(unidade_raw or "").strip().lower())
+        unidade = "".join(ch for ch in unidade if not unicodedata.combining(ch)).rstrip(".")
+        fator = unidades.get(unidade)
+        if fator is None:
+            continue
+        valor = numero * fator
+        if math.isfinite(valor) and valor > 0:
+            return float(valor)
+    return None
+
+
+def _ml_formatar_numero_dimensao(valor: float) -> str:
+    if abs(float(valor) - round(float(valor))) <= 1e-9:
+        return str(int(round(float(valor))))
+    return f"{float(valor):.3f}".rstrip("0").rstrip(".")
+
+
+def _ml_extrair_dimensoes_embalagem_item(item: dict) -> str:
+    atributos = item.get("attributes") if isinstance(item, dict) else None
+    if not isinstance(atributos, list):
+        return ""
+    por_id = {
+        str(atributo.get("id") or "").strip().upper(): atributo
+        for atributo in atributos
+        if isinstance(atributo, dict) and atributo.get("id")
+    }
+    comprimento = _ml_valor_embalagem_normalizado(
+        por_id.get("SELLER_PACKAGE_LENGTH") or {},
+        tipo="comprimento",
+    )
+    largura = _ml_valor_embalagem_normalizado(
+        por_id.get("SELLER_PACKAGE_WIDTH") or {},
+        tipo="comprimento",
+    )
+    altura = _ml_valor_embalagem_normalizado(
+        por_id.get("SELLER_PACKAGE_HEIGHT") or {},
+        tipo="comprimento",
+    )
+    peso = _ml_valor_embalagem_normalizado(
+        por_id.get("SELLER_PACKAGE_WEIGHT") or {},
+        tipo="peso",
+    )
+    if any(valor is None for valor in (comprimento, largura, altura, peso)):
+        return ""
+    return "x".join(
+        _ml_formatar_numero_dimensao(valor)
+        for valor in (comprimento, largura, altura)
+    ) + f",{_ml_formatar_numero_dimensao(peso)}"
+
+
 def _ml_contexto_frete_item(item: dict, item_price: Any = None) -> dict:
     item = item or {}
     shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    dimensions = str(shipping.get("dimensions") or "").strip()
+    if not dimensions or dimensions.lower() == "null":
+        dimensions = _ml_extrair_dimensoes_embalagem_item(item)
     contexto = {
         "item_price": item_price if item_price not in (None, "") else item.get("price"),
         "listing_type_id": item.get("listing_type_id") or "",
@@ -163,7 +253,7 @@ def _ml_contexto_frete_item(item: dict, item_price: Any = None) -> dict:
         "category_id": item.get("category_id") or "",
         "mode": shipping.get("mode") or "",
         "logistic_type": shipping.get("logistic_type") or "",
-        "dimensions": shipping.get("dimensions") or "",
+        "dimensions": dimensions,
         "free_shipping": bool(shipping.get("free_shipping")),
     }
     return contexto
@@ -212,11 +302,14 @@ def _ml_obter_frete_detalhado(
     contexto_listing_type = str(_pick_contexto("listing_type_id", "listing_type") or "").strip()
     contexto_mode = str(_pick_contexto("mode", "shipping_mode") or shipping_info.get("mode") or "").strip()
     contexto_logistic_type = str(_pick_contexto("logistic_type") or shipping_info.get("logistic_type") or "").strip()
-    contexto_cache = ""
-    if contexto_preco is not None:
-        contexto_cache = f":p{round(float(contexto_preco), 2)}:{contexto_listing_type}:{contexto_mode}:{contexto_logistic_type}"
+    contexto_dimensions = str(_pick_contexto("dimensions") or shipping_info.get("dimensions") or "").strip()
+    if contexto_dimensions.lower() == "null":
+        contexto_dimensions = ""
+    dimensions_cache = re.sub(r"\s+", "", contexto_dimensions.lower()) or "-"
+    preco_cache = round(float(contexto_preco), 2) if contexto_preco is not None else "-"
+    contexto_cache = f":p{preco_cache}:{contexto_listing_type}:{contexto_mode}:{contexto_logistic_type}:d{dimensions_cache}"
 
-    cache_key = f"v4:{client_id}:{loja}:{item_id}{contexto_cache}"
+    cache_key = f"v5:{client_id}:{loja}:{item_id}{contexto_cache}"
     cached = _cache_get(ML_ITEM_SHIPPING_CACHE, cache_key, ML_ITEM_SHIPPING_CACHE_TTL)
     if cached and cached.get("shipping_cost") is not None and not _deve_reconsultar_zero(cached):
         return cached, cfg
@@ -234,6 +327,9 @@ def _ml_obter_frete_detalhado(
         "logistic_type": shipping_info.get("logistic_type") or "",
         "shipping_mode": shipping_info.get("mode") or "",
         "shipping_zip": "01310930",
+        "shipping_exact_for_price": False,
+        "shipping_price_context": contexto_preco,
+        "shipping_dimensions_context": contexto_dimensions,
     }
 
     def _valores_positivos_frete_payload(payload) -> list[float]:
@@ -296,13 +392,29 @@ def _ml_obter_frete_detalhado(
         logistic_type = contexto_logistic_type
         if logistic_type:
             params["logistic_type"] = logistic_type
-        dimensions = str(_pick_contexto("dimensions") or shipping_info.get("dimensions") or "").strip()
-        if dimensions and dimensions.lower() != "null":
-            params["dimensions"] = dimensions
+        if contexto_dimensions:
+            params["dimensions"] = contexto_dimensions
         if bool(_pick_contexto("free_shipping") if _pick_contexto("free_shipping") is not None else info["free_shipping"]):
             params["free_shipping"] = "true"
         params["verbose"] = "true"
         return params
+
+    def _aplicar_frete_payload(payload: dict, fonte: str, *, exato_para_preco: bool = False) -> bool:
+        valores = _valores_positivos_frete_payload(payload)
+        if not valores:
+            return False
+        charged_cost = min(valores)
+        info["shipping_cost"] = charged_cost
+        info["shipping_seller_cost"] = charged_cost
+        info["shipping_text"] = f"R$ {charged_cost:.2f}"
+        info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: {fonte}"
+        info["shipping_cost_retry_source"] = fonte
+        info["shipping_exact_for_price"] = bool(exato_para_preco)
+        if exato_para_preco:
+            info["shipping_buyer_cost"] = 0.0
+            info["shipping_buyer_text"] = "GrÃ¡tis"
+            info["free_shipping"] = True
+        return True
 
     item_list_cost = _shipping_to_money(shipping_info.get("list_cost"))
     item_base_cost = _shipping_to_money(shipping_info.get("base_cost"))
@@ -335,6 +447,31 @@ def _ml_obter_frete_detalhado(
         info["shipping_seller_cost"] = val_inicial
         info["shipping_text"] = "Gratis" if val_inicial <= 0 else f"R$ {val_inicial:.2f}"
         info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: item.shipping.{fonte_inicial}"
+
+    # Para frete gratis, o custo do vendedor muda conforme o preco final.
+    # Consulta primeiro o endpoint que aceita item_price; o endpoint generico
+    # /items/{id}/shipping_options considera o preco atual do anuncio.
+    if info["free_shipping"] and contexto_preco is not None and contexto_preco > 0 and cfg.get("user_id"):
+        try:
+            fonte_contextual = "users/shipping_options/free/contexto"
+            resp, cfg = request_fn(
+                client_id,
+                loja,
+                cfg,
+                "GET",
+                f"https://api.mercadolibre.com/users/{cfg.get('user_id')}/shipping_options/free",
+                params=_params_frete_gratis_contexto(),
+                timeout=12,
+            )
+            if resp.status_code == 200 and _aplicar_frete_payload(
+                resp.json() or {},
+                fonte_contextual,
+                exato_para_preco=True,
+            ):
+                _cache_set(ML_ITEM_SHIPPING_CACHE, cache_key, info)
+                return info, cfg
+        except Exception as e:
+            logger.warning(f"[ML API] Falha ao consultar frete contextual do item {item_id}: {e}")
 
     try:
         url = f"https://api.mercadolibre.com/items/{item_id}/shipping_options"
@@ -444,16 +581,12 @@ def _ml_obter_frete_detalhado(
                 if resp.status_code != 200:
                     continue
                 data = resp.json() or {}
-                valores = _valores_positivos_frete_payload(data)
-                if not valores:
-                    continue
-                charged_cost = min(valores)
-                info["shipping_cost"] = charged_cost
-                info["shipping_seller_cost"] = charged_cost
-                info["shipping_text"] = "Gratis" if charged_cost <= 0 else f"R$ {charged_cost:.2f}"
-                info["shipping_breakdown"] = f"Custo vendedor: {info['shipping_text']} | Fonte: {fonte_retry}"
-                info["shipping_cost_retry_source"] = fonte_retry
-                break
+                if _aplicar_frete_payload(
+                    data,
+                    fonte_retry,
+                    exato_para_preco=bool(contexto_preco is not None and fonte_retry.endswith("/contexto")),
+                ):
+                    break
         except Exception as e:
             logger.warning(f"[ML API] Falha ao consultar frete grÃ¡tis do item {item_id}: {e}")
 
@@ -876,6 +1009,10 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
         return None, None
 
     chaves_preco_ordem = (
+        # A analise enriquece candidatos de SELLER_CAMPAIGN com o mesmo preco
+        # escolhido pelo painel de Anuncios do ML. O endpoint publico informa
+        # apenas limite e sugestao; a escolha depende das ofertas SMART do item.
+        "_jk_preco_painel_seller_campaign",
         "price",
         "deal_price",
         "promotion_price",
@@ -883,9 +1020,15 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
         "campaign_price",
         "new_price",
         "loyalty_price",
-        "max_discounted_price",
         "discounted_price",
+        # Fora da analise enriquecida, a sugestao continua sendo a melhor
+        # aproximacao disponivel antes do limite maximo da campanha.
+        "suggested_discounted_price",
+        "suggested_deal_price",
+        "recommended_discounted_price",
         "suggested_price",
+        "recommended_price",
+        "max_discounted_price",
     )
     chaves_preco = set(chaves_preco_ordem)
     termos_preco = (
@@ -899,6 +1042,10 @@ def _ml_extrair_preco_promocao_raw(entry: dict, priorizar_percentual_total_api: 
         "campaign_price",
         "new_price",
         "suggested_price",
+        "suggested_discounted_price",
+        "suggested_deal_price",
+        "recommended_discounted_price",
+        "recommended_price",
         "max_discounted_price",
         "discounted_price",
     )

@@ -61,8 +61,7 @@
     }
 
     function atualizarMenuLateral() {
-      document.getElementById('jk-ia-fab')?.classList.toggle('ativo', panelAberto);
-      document.getElementById('jk-codex-fab')?.classList.toggle('ativo', codexPanelAberto);
+      document.getElementById('jk-ia-fab')?.classList.toggle('ativo', panelAberto || codexPanelAberto);
       document.getElementById('jk-msg-fab')?.classList.toggle('ativo', msgPanelAberto);
       document.getElementById('jk-right-sidebar-hotspot')?.classList.remove('menu-aberto');
       _sidebarAtualizarAlertas();
@@ -70,10 +69,18 @@
 
     function setIAPanelAberto(aberto) {
       panelAberto = !!aberto;
+      if (panelAberto) blackJhonUsandoIaSecundaria = true;
       if (panelAberto) iaTemMensagemNaoVista = false;
       document.getElementById('jk-ia-panel')?.classList.toggle('aberto', panelAberto);
       atualizarMenuLateral();
-      if (panelAberto) void garantirConversaInicial().catch(console.error);
+      if (panelAberto) {
+        void garantirConversaInicial().catch(console.error);
+        if (!iaModelosLazyStarted) {
+          iaModelosLazyStarted = true;
+          const select = document.getElementById('jk-ia-model-sel');
+          if (select) _carregarModelosRemotos(select, 'ia_model_sidebar').catch(() => {});
+        }
+      }
     }
 
     function setMsgPanelAberto(aberto) {
@@ -92,21 +99,27 @@
 
     function setCodexPanelAberto(aberto) {
       codexPanelAberto = !!aberto;
+      if (codexPanelAberto) blackJhonUsandoIaSecundaria = false;
+      if (codexPanelAberto) codexTemMensagemNaoVista = false;
+      if (codexPanelAberto) codexAprovacaoNaoVista = false;
       document.getElementById('jk-codex-panel')?.classList.toggle('aberto', codexPanelAberto);
       _codexSalvarEstadoPainel();
       atualizarMenuLateral();
       if (codexPanelAberto) {
         _codexAtualizarVisibilidade();
+        if (!codexMessagesAtuais.length) _codexRenderizarHistoricoLocal();
         if (!codexLazyStarted) {
           codexLazyStarted = true;
           void _codexCarregarStatus(true);
-          void _codexCarregarHistoricoPersistido();
-          void _codexCarregarSugestoes().then(_codexAssistantMarkSeen);
-          _codexIniciarAssistenteProativo();
+          if (codexInitialTaskId) {
+            const taskId = codexInitialTaskId;
+            codexInitialTaskId = '';
+            void _codexRestaurarTarefaAtiva(taskId);
+          }
         } else {
           void _codexCarregarStatus(true);
         }
-        document.getElementById('jk-codex-fab')?.classList.remove('piscando');
+        document.getElementById('jk-ia-fab')?.classList.remove('piscando');
       }
     }
 
@@ -135,6 +148,10 @@
         setMsgPanelAberto(false);
       }
       setCodexPanelAberto(abrir);
+    }
+
+    function toggleBlackJhonPanel(forcar) {
+      toggleCodexPanel(forcar);
     }
 
     /* ── Anexos ── */
@@ -425,27 +442,39 @@
     }
 
     /* ── Eventos ── */
-    document.getElementById('jk-ia-fab').addEventListener('click', () => togglePanel());
-    document.getElementById('jk-codex-fab').addEventListener('click', () => toggleCodexPanel());
+    document.getElementById('jk-ia-fab').addEventListener('click', () => toggleBlackJhonPanel());
     document.getElementById('jk-msg-fab').addEventListener('click', () => toggleMsgPanel());
     document.getElementById('jk-ia-btn-fechar').addEventListener('click', () => togglePanel(false));
-    document.getElementById('jk-codex-new').addEventListener('click', () => _codexNovaConversa());
+    document.getElementById('jk-codex-new').addEventListener('click', () => { void _codexReiniciarMemoria(); });
     document.getElementById('jk-codex-history-toggle')?.addEventListener('click', () => _codexToggleHistorico());
     document.getElementById('jk-codex-history-refresh')?.addEventListener('click', () => _codexCarregarListaHistorico());
     document.getElementById('jk-codex-close').addEventListener('click', () => toggleCodexPanel(false));
     document.getElementById('jk-codex-refresh').addEventListener('click', () => _codexCarregarStatus());
+    document.getElementById('jk-codex-report-settings')?.addEventListener('click', () => { void _codexAbrirConfiguracoesRelatorio(); });
+    document.getElementById('jk-codex-report-settings-close')?.addEventListener('click', () => _codexFecharConfiguracoesRelatorio());
+    document.getElementById('jk-codex-report-settings-cancel')?.addEventListener('click', () => _codexFecharConfiguracoesRelatorio());
+    document.getElementById('jk-codex-report-settings-save')?.addEventListener('click', () => { void _codexSalvarConfiguracoesRelatorio(); });
+    document.getElementById('jk-codex-report-settings-dialog')?.addEventListener('click', event => {
+      if (event.target === event.currentTarget) _codexFecharConfiguracoesRelatorio();
+    });
     _codexAplicarSettings();
     ['jk-codex-access', 'jk-codex-model', 'jk-codex-reasoning', 'jk-codex-speed'].forEach(id => {
       document.getElementById(id)?.addEventListener('change', () => {
+        if (!_usuarioLocalEhFull()) {
+          _codexAtualizarVisibilidade();
+          return;
+        }
         _codexPersistSettings();
         _codexAtualizarConfigTooltips();
       });
     });
     document.getElementById('jk-codex-add-toggle')?.addEventListener('click', () => {
+      if (!_usuarioLocalEhFull()) return;
       const menu = document.getElementById('jk-codex-add-menu');
       if (menu) menu.hidden = !menu.hidden;
     });
     document.getElementById('jk-codex-path-toggle')?.addEventListener('click', () => {
+      if (!_usuarioLocalEhFull()) return;
       const row = document.getElementById('jk-codex-path-row');
       if (row) {
         row.hidden = !row.hidden;
@@ -453,6 +482,7 @@
       }
     });
     document.getElementById('jk-codex-goal-toggle')?.addEventListener('click', () => {
+      if (!_usuarioLocalEhFull()) return;
       const row = document.getElementById('jk-codex-goal-row');
       if (row) {
         row.hidden = !row.hidden;
@@ -460,16 +490,23 @@
       }
     });
     document.getElementById('jk-codex-plan-toggle')?.addEventListener('click', event => {
+      if (!_usuarioLocalEhFull()) return;
       const btn = event.currentTarget;
       const ativo = !btn.classList.contains('is-active');
       btn.classList.toggle('is-active', ativo);
       btn.setAttribute('aria-pressed', ativo ? 'true' : 'false');
       _codexPersistSettings();
     });
-    document.getElementById('jk-codex-report')?.addEventListener('click', () => _codexGerarRelatorioAssistente());
-    document.getElementById('jk-codex-capabilities')?.addEventListener('click', () => _codexMostrarCapacidades());
+    document.getElementById('jk-codex-report')?.addEventListener('click', () => {
+      if (_usuarioLocalEhFull()) _codexGerarRelatorioAssistente();
+    });
+    document.getElementById('jk-codex-capabilities')?.addEventListener('click', () => {
+      if (_usuarioLocalEhFull()) _codexMostrarCapacidades();
+    });
     document.getElementById('jk-codex-path-add')?.addEventListener('click', () => _codexAdicionarPathAtual());
-    document.getElementById('jk-codex-attach-file')?.addEventListener('click', () => document.getElementById('jk-codex-file-input')?.click());
+    document.getElementById('jk-codex-attach-file')?.addEventListener('click', () => {
+      if (_usuarioLocalEhFull()) document.getElementById('jk-codex-file-input')?.click();
+    });
     document.getElementById('jk-codex-file-input')?.addEventListener('change', event => {
       void _codexUploadArquivos(event.target?.files || []).then(() => {
         if (event.target) event.target.value = '';
@@ -494,6 +531,7 @@
       }
     });
     document.getElementById('jk-codex-input').addEventListener('paste', event => {
+      if (!_usuarioLocalEhFull()) return;
       const items = Array.from(event.clipboardData?.items || []);
       let files = Array.from(event.clipboardData?.files || []);
       if (!files.length) {
@@ -570,7 +608,6 @@
           localStorage.setItem('ia_model_sidebar', _modelSelSidebar.value);
         }
       });
-      _carregarModelosRemotos(_modelSelSidebar, 'ia_model_sidebar').catch(() => {});
     }
     // Fechar painel ao clicar fora
     _msgPrepararNotificacoesWindows();
@@ -578,25 +615,24 @@
     _msgRenderAnexosComposer();
     _msgAtualizarSelecao();
     setTimeout(() => { void _msgBuscarUsuariosOnline().catch(() => {}); }, 10 * 60 * 1000);
-    setTimeout(() => { _perguntasIniciarMonitorGlobal(); }, 2 * 60 * 1000);
+    if (_usuarioLocalEhFull()) setTimeout(() => { _perguntasIniciarMonitorGlobal(); }, 2 * 60 * 1000);
     _codexAtualizarVisibilidade();
-    if (_usuarioLocalEhFull()) {
-      const codexEstadoInicial = _codexLerEstadoPainel();
-      if (codexEstadoInicial.conversation_id) _codexSetActiveConversationId(codexEstadoInicial.conversation_id);
-      if (codexEstadoInicial.thread_id) {
-        codexThreadId = String(codexEstadoInicial.thread_id || '');
-        localStorage.setItem('jk_codex_thread_id', codexThreadId);
-      }
-      if (codexEstadoInicial.history_visible) {
-        codexHistoryVisible = true;
-        document.getElementById('jk-codex-history-panel')?.classList.add('ativo');
-      }
-    }
+    const codexEstadoInicial = _codexLerEstadoPainel();
+    codexInitialTaskId = String(codexEstadoInicial.task_id || '').trim();
+    codexConversationGeneration = Math.max(1, Number(codexEstadoInicial.conversation_generation || 1));
+    _codexSetThreadId('');
+    codexHistoryVisible = false;
+    document.getElementById('jk-codex-history-panel')?.classList.remove('ativo');
+    if (_usuarioLocalEhFull()) _codexIniciarAssistenteProativo();
     document.getElementById('jk-codex-messages')?.addEventListener('scroll', () => {
       if (window.__JK_CODEX_SCROLL_SAVE_TIMER__) clearTimeout(window.__JK_CODEX_SCROLL_SAVE_TIMER__);
       window.__JK_CODEX_SCROLL_SAVE_TIMER__ = setTimeout(() => _codexSalvarEstadoPainel(), 180);
     });
     window.addEventListener('beforeunload', () => {
+      _codexPararAssistenteProativo();
+      if (codexPollTimer) clearTimeout(codexPollTimer);
+      if (codexActionPollTimer) clearTimeout(codexActionPollTimer);
+      codexFullTextCache.clear();
       _codexSalvarEstadoPainel();
       _msgPararToqueChamada();
     });

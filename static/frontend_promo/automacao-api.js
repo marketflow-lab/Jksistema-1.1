@@ -20,6 +20,7 @@ function getApiAutoPrefs() {
             intervalValue,
             intervalMinutes,
             nextRunAt,
+            margemTolerancia: Math.max(0, Math.min(100, Number(parsed.margemTolerancia || 0) || 0)),
             promoBSelectedIds: Array.isArray(parsed.promoBSelectedIds) ? parsed.promoBSelectedIds.map((id) => String(id || '').trim()).filter(Boolean) : [],
         };
     } catch (_e) {
@@ -30,6 +31,7 @@ function getApiAutoPrefs() {
             intervalValue: API_AUTO_DEFAULT_INTERVAL_MIN,
             intervalMinutes: API_AUTO_DEFAULT_INTERVAL_MIN,
             nextRunAt: 0,
+            margemTolerancia: 0,
             promoBSelectedIds: [],
         };
     }
@@ -93,6 +95,7 @@ function saveApiAutoPrefs() {
             intervalValue: interval.intervalValue,
             intervalMinutes: interval.intervalMinutes,
             nextRunAt,
+            margemTolerancia: getActionTolerancePct(),
             promoBSelectedIds: getApiPromoBSelections().map((promo) => promo.value),
         }));
     } catch (_e) {}
@@ -107,6 +110,7 @@ function persistApiAutoPrefsObject(prefs) {
             intervalValue: Number(prefs.intervalValue || API_AUTO_DEFAULT_INTERVAL_MIN),
             intervalMinutes: Number(prefs.intervalMinutes || API_AUTO_DEFAULT_INTERVAL_MIN),
             nextRunAt: Number(prefs.nextRunAt || 0),
+            margemTolerancia: Math.max(0, Math.min(100, Number(prefs.margemTolerancia || 0) || 0)),
             promoBSelectedIds: Array.isArray(prefs.promoBSelectedIds) ? prefs.promoBSelectedIds : getApiPromoBSelections().map((promo) => promo.value),
         }));
     } catch (_e) {}
@@ -135,6 +139,7 @@ function apiAutoPrefsFromServerConfig(config) {
         intervalValue,
         intervalMinutes,
         nextRunAt: Number.isFinite(nextRunAtSec) && nextRunAtSec > 0 ? nextRunAtSec * 1000 : 0,
+        margemTolerancia: Math.max(0, Math.min(100, Number(cfg.margem_tolerancia || 0) || 0)),
         lastJobId: String(cfg.last_job_id || ''),
         lastJobStatus: String(cfg.last_job_status || ''),
         lastJobMessage: String(cfg.last_job_message || ''),
@@ -163,6 +168,7 @@ function montarPayloadApiAutoServidor() {
         promocao_a_id: selectPromoA?.value || '',
         promocao_a_type: selectPromoA?.selectedOptions?.[0]?.dataset?.promoType || '',
         margem_minima: Number(document.getElementById('apiMargemMinima')?.value || 15),
+        margem_tolerancia: getActionTolerancePct(),
         promocoes_b_meta: getApiPromoBSelections().map((promo) => ({
             promo_b_id: promo.value,
             promo_b_type: promo.promoType || '',
@@ -178,6 +184,9 @@ function aplicarApiAutoPrefsTela(prefs) {
     const approvalEl = document.getElementById('apiAutoApprovalRequired');
     if (enabledEl) enabledEl.checked = !!prefs.enabled;
     if (approvalEl) approvalEl.checked = prefs.approvalRequired !== false;
+    actionTolerancePct = Math.max(0, Math.min(100, Number(prefs.margemTolerancia || 0) || 0));
+    const toleranciaEl = document.getElementById('apiMargemTolerancia');
+    if (toleranciaEl) toleranciaEl.value = String(actionTolerancePct);
     aplicarApiAutoIntervalPrefs(prefs);
     if (Array.isArray(prefs.promoBSelectedIds) && prefs.promoBSelectedIds.length) {
         apiPromoBPendingSelectedIds = new Set(prefs.promoBSelectedIds.map((id) => String(id || '').trim()).filter(Boolean));
@@ -334,6 +343,7 @@ function inicializarAutomacaoPromoApi() {
     const approvalEl = document.getElementById('apiAutoApprovalRequired');
     const intervalEl = document.getElementById('apiAutoIntervalMinutes');
     const unitEl = document.getElementById('apiAutoIntervalUnit');
+    const toleranciaEl = document.getElementById('apiMargemTolerancia');
     if (!enabledEl || !approvalEl || !intervalEl || !unitEl) return;
     const prefsLocal = getApiAutoPrefs();
     enabledEl.checked = !!prefsLocal.enabled;
@@ -366,6 +376,16 @@ function inicializarAutomacaoPromoApi() {
     });
     document.getElementById('apiPromoASelect')?.addEventListener('change', () => {
         if (enabledEl.checked) salvarServidor();
+    });
+    toleranciaEl?.addEventListener('change', () => {
+        getActionTolerancePct();
+        saveActionTolerance();
+        if (Array.isArray(currentData) && currentData.length) {
+            normalizeApiDatasetRules(currentData);
+            renderTable(currentData);
+        }
+        if (enabledEl.checked) salvarServidor();
+        else saveApiAutoPrefs();
     });
 
     atualizarStatusAutomacaoPromo('Sincronizando automacao com o servidor...');

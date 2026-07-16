@@ -1,0 +1,90 @@
+#!KAMAILIO
+
+debug=2
+log_stderror=yes
+fork=yes
+children=4
+auto_aliases=no
+alias="${PUBLIC_SIP_HOST}"
+listen=tls:0.0.0.0:5061 advertise ${PUBLIC_IPV4}:5061
+enable_tls=yes
+
+loadmodule "tm.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "sanity.so"
+loadmodule "siputils.so"
+loadmodule "textops.so"
+loadmodule "pv.so"
+loadmodule "xlog.so"
+loadmodule "tls.so"
+loadmodule "ipops.so"
+loadmodule "rtpengine.so"
+loadmodule "ctl.so"
+
+modparam("tls", "config", "/etc/kamailio/tls.cfg")
+modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:2223")
+modparam("ctl", "binrpc", "unix:/run/kamailio/kamailio_ctl")
+
+request_route {
+    if (!mf_process_maxfwd_header("16")) {
+        sl_send_reply("483", "Too Many Hops");
+        exit;
+    }
+    if (!sanity_check("17895", "7")) {
+        sl_send_reply("400", "Malformed SIP Request");
+        exit;
+    }
+
+    route(CHECK_TRUSTED_SOURCE);
+
+    if (is_method("OPTIONS")) {
+        sl_send_reply("200", "Ready");
+        exit;
+    }
+
+    if (has_totag()) {
+        if (loose_route()) {
+            if (is_method("BYE|CANCEL") || has_body("application/sdp")) {
+                rtpengine_manage("replace-origin replace-session-connection ICE=remove");
+            }
+            route(RELAY);
+        }
+        if (is_method("ACK")) route(RELAY);
+        sl_send_reply("404", "Dialog Not Found");
+        exit;
+    }
+
+    if (!is_method("INVITE")) {
+        sl_send_reply("405", "Method Not Allowed");
+        exit;
+    }
+
+    record_route();
+    if (has_body("application/sdp")) {
+        rtpengine_manage("replace-origin replace-session-connection ICE=remove");
+    }
+    remove_hf("Route");
+    $ru = "sip:${OPENAI_PROJECT_ID}@sip.api.openai.com;transport=tls";
+    t_on_reply("MANAGE_MEDIA");
+    route(RELAY);
+}
+
+route[CHECK_TRUSTED_SOURCE] {
+#!include_file "/etc/kamailio/trusted-cidrs.cfg"
+    xlog("L_WARN", "Rejected untrusted SIP source $si:$sp\n");
+    sl_send_reply("403", "Forbidden");
+    exit;
+}
+
+route[RELAY] {
+    if (!t_relay()) sl_reply_error();
+    exit;
+}
+
+onreply_route[MANAGE_MEDIA] {
+    if (has_body("application/sdp")) {
+        rtpengine_manage("replace-origin replace-session-connection ICE=remove");
+    }
+}

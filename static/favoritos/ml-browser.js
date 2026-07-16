@@ -1070,6 +1070,74 @@
             });
         }
 
+        function urlPertenceAoMercadoLivre(url) {
+            try {
+                const host = new URL(String(url || '')).hostname.toLowerCase();
+                return host === 'mercadolivre.com.br'
+                    || host.endsWith('.mercadolivre.com.br')
+                    || host === 'mercadolibre.com'
+                    || host.endsWith('.mercadolibre.com');
+            } catch (_err) {
+                return false;
+            }
+        }
+
+        function urlNavegadorMlSeguraParaLog(url) {
+            try {
+                const parsed = new URL(String(url || ''));
+                return `${parsed.origin}${parsed.pathname}`;
+            } catch (_err) {
+                return '';
+            }
+        }
+
+        async function confirmarAberturaNavegadorMlAposTimeout(urlEsperada, erroOriginal = null) {
+            if (!usarNavegadorMlNoShellElectron()) {
+                return { confirmado: false, reason: 'shell-indisponivel', url: '' };
+            }
+            const bridge = favoritosBrowserShellBridge;
+            if (!bridge || typeof bridge.verificarEstado !== 'function') {
+                return { confirmado: false, reason: 'verificacao-indisponivel', url: '' };
+            }
+            try {
+                const estado = await bridge.verificarEstado(urlEsperada, 2600);
+                const urlAtual = String(estado && estado.url || '').trim();
+                const confirmado = !!(
+                    estado
+                    && estado.success !== false
+                    && estado.attached !== false
+                    && urlPertenceAoMercadoLivre(urlEsperada)
+                    && urlPertenceAoMercadoLivre(urlAtual)
+                );
+                if (!confirmado) {
+                    return {
+                        confirmado: false,
+                        reason: estado && estado.reason || 'url-real-nao-confirmada',
+                        url: urlAtual,
+                        estado
+                    };
+                }
+                if (mlWebviewEl && mlWebviewEl.__isShellBrowserProxy) {
+                    mlWebviewEl.currentUrl = urlAtual;
+                    mlWebviewEl.__visible = !navegadorMlEmSegundoPlano();
+                }
+                if (mlUrlInput && urlAtual) mlUrlInput.value = urlAtual;
+                if (!navegadorMlEmSegundoPlano()) agendarAtualizacaoPosicaoNavegadorMlShell();
+                console.warn('A confirmacao de carregamento nao chegou, mas o navegador interno esta aberto.', {
+                    erro: erroOriginal && erroOriginal.message ? erroOriginal.message : String(erroOriginal || ''),
+                    urlEsperada: urlNavegadorMlSeguraParaLog(urlEsperada),
+                    urlAtual: urlNavegadorMlSeguraParaLog(urlAtual)
+                });
+                return { confirmado: true, url: urlAtual, estado };
+            } catch (err) {
+                return {
+                    confirmado: false,
+                    reason: err && err.message ? err.message : String(err),
+                    url: ''
+                };
+            }
+        }
+
         async function navegarMlWebview(url) {
             await garantirExtensoesNavegadorMl();
             const webview = criarMlWebview();
@@ -2438,6 +2506,15 @@
         }
 
         window.addEventListener('message', (event) => {
+            const origemConhecida = event && (
+                event.source === window
+                || event.source === window.parent
+                || event.source === window.top
+            );
+            const origemCompativel = !event.origin
+                || event.origin === 'null'
+                || event.origin === window.location.origin;
+            if (!origemConhecida || !origemCompativel) return;
             const data = event && event.data ? event.data : {};
             if (!data || typeof data !== 'object') return;
             favoritosBrowserShellBridge?.handleMessage(data);
@@ -5566,10 +5643,16 @@
             return resultadoCompleto;
         }
 
+        function resolverWebviewFavoritosColeta(opcoes = {}) {
+            const informado = opcoes && typeof opcoes === 'object' ? opcoes.webview : null;
+            return informado || mlWebviewEl || null;
+        }
+
         async function extrairAnunciosWebviewFastDom(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
             const maxFastDom = Math.max(20, Math.min(Number(opcoes.maxFastDom) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 100));
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var maxFastDom = Number(window.__JK_ML_FAST_DOM_MAX || ${JSON.stringify(maxFastDom)}) || ${JSON.stringify(maxFastDom)};
                     var normalizar = function (value) {
@@ -5683,9 +5766,10 @@
         }
 
         async function extrairAnunciosAvantProDomWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
             const limite = Math.max(1, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 120));
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var limite = ${JSON.stringify(limite)};
                     var normalizar = function (value) {
@@ -6384,9 +6468,10 @@
         }
 
         async function extrairCardsMercadoLivreBasicoWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
             const limite = Math.max(1, Math.min(Number(opcoes.limite) || 100, 160));
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var limite = ${JSON.stringify(limite)};
                     var cleanUrl = function (href) {
@@ -7010,23 +7095,26 @@
         }
 
         async function extrairBaseMercadoLivreEmergencialWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') {
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') {
                 return { success: false, total: 0, anuncios: [], error: 'webview_indisponivel' };
             }
             const limite = Math.max(1, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 160));
             let resultado = null;
             try {
-                resultado = await extrairAnunciosWebviewVisivel({
-                    clicarAvant: false,
-                    permitirFerramentasAvant: false,
-                    permitirAutoLoginAvant: false,
-                    clicarCardsSemDados: false,
-                    ignorarLoginAvant: true,
-                    fastLinks: false,
-                    maxAnuncios: limite,
-                    maxFastDom: limite,
-                    timeoutMs: Number(opcoes.timeoutMs) || 9000
-                });
+                resultado = opcoes.webview
+                    ? await extrairCardsMercadoLivreBasicoWebview({ limite, webview })
+                    : await extrairAnunciosWebviewVisivel({
+                        clicarAvant: false,
+                        permitirFerramentasAvant: false,
+                        permitirAutoLoginAvant: false,
+                        clicarCardsSemDados: false,
+                        ignorarLoginAvant: true,
+                        fastLinks: false,
+                        maxAnuncios: limite,
+                        maxFastDom: limite,
+                        timeoutMs: Number(opcoes.timeoutMs) || 9000
+                    });
             } catch (err) {
                 resultado = {
                     success: false,
@@ -7040,7 +7128,8 @@
                 : [];
             if (!anuncios.length) {
                 const rapido = await extrairAnunciosWebviewFastDom({
-                    maxFastDom: limite
+                    maxFastDom: limite,
+                    webview
                 }).catch(() => null);
                 anuncios = Array.isArray(rapido && rapido.anuncios)
                     ? rapido.anuncios.map(item => prepararAnuncioMercadoLivreCanonico(item, 'mercado_livre_dom_emergencial_links')).filter(item => item.chave_canonica)
@@ -7069,6 +7158,7 @@
         }
 
         async function aguardarBaseMercadoLivreColetavelFavoritos(opcoes = {}) {
+            const webview = resolverWebviewFavoritosColeta(opcoes);
             const limite = Math.max(1, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 160));
             const timeoutMs = Math.max(4000, Math.min(Number(opcoes.timeoutMs) || 28000, 45000));
             const pollMs = Math.max(250, Math.min(Number(opcoes.pollMs) || 650, 1500));
@@ -7085,13 +7175,14 @@
                         timeoutMs: Math.min(2600, restante),
                         idleMs: 160,
                         acaoUsuario: true,
-                        solicitadoPeloUsuario: true
+                        solicitadoPeloUsuario: true,
+                        webview
                     }).catch(() => null);
                 } else {
                     await esperar(Math.min(420, restante));
                 }
 
-                ultimoBasico = await extrairCardsMercadoLivreBasicoWebview({ limite }).catch(() => null);
+                ultimoBasico = await extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null);
                 const anuncios = Array.isArray(ultimoBasico && ultimoBasico.anuncios) ? ultimoBasico.anuncios : [];
                 if (anuncios.length) {
                     return {
@@ -7123,7 +7214,8 @@
                 if (paginaProntaSemBase) {
                     const emergencia = await extrairBaseMercadoLivreEmergencialWebview({
                         limite,
-                        timeoutMs: Math.min(5000, Math.max(1200, deadline - Date.now()))
+                        timeoutMs: Math.min(5000, Math.max(1200, deadline - Date.now())),
+                        webview
                     }).catch(() => null);
                     const emergenciaAnuncios = Array.isArray(emergencia && emergencia.anuncios) ? emergencia.anuncios : [];
                     if (emergenciaAnuncios.length) {
@@ -7223,6 +7315,70 @@
             };
         }
 
+        function assinaturaEstabilidadePrimeiraPaginaFavoritos(anuncios) {
+            const lista = Array.isArray(anuncios) ? anuncios.filter(Boolean) : [];
+            return lista.map(item => {
+                const chave = typeof chaveCanonicaAnuncioFavoritos === 'function'
+                    ? chaveCanonicaAnuncioFavoritos(item)
+                    : String(item && (item.id || item.mlb || item.url || item.link) || '').trim().toLowerCase();
+                return JSON.stringify([
+                    chave,
+                    item && (item.titulo || item.title) || '',
+                    obterImagemAnuncioFavoritos(item),
+                    item && (item.preco ?? item.price ?? ''),
+                    item && (item.preco_original ?? item.original_price ?? ''),
+                    item && (item.preco_promocional ?? item.promotional_price ?? ''),
+                    item && item.vendedor || '',
+                    item ? (item.vendas ?? '') : '',
+                    item && (item.vendasFonte || item.vendas_fonte) || '',
+                    item && item.data_criacao || '',
+                    item && (item.tipo_anuncio || item.listing_type_id) || '',
+                    item && (item.is_full ?? item.full ?? ''),
+                    item && (item.condicao || item.condition || item.item_condition) || '',
+                    item && (item.media_mensal ?? item.ritmo_atual ?? ''),
+                    item ? (item.visitas ?? '') : ''
+                ]);
+            }).sort().join('|');
+        }
+
+        function deveEncerrarPlateauPrimeiraPaginaFavoritos(estado = {}) {
+            return Number(estado.passada) >= 2
+                && estado.passadaCompleta === true
+                && !!String(estado.assinaturaAtual || '')
+                && String(estado.assinaturaAtual) === String(estado.assinaturaAnterior || '')
+                && Number(estado.pendentesAvant) === 0
+                && (estado.mutationQuietMs === undefined || Number(estado.mutationQuietMs) >= 800);
+        }
+
+        function montarPosicoesVarreduraPrimeiraPaginaFavoritos(alturaPagina, alturaViewport, limiteAnuncios) {
+            const viewport = Math.max(560, Number(alturaViewport) || 800);
+            const altura = Math.max(viewport, Number(alturaPagina) || viewport);
+            const finalPagina = Math.max(0, altura - viewport - 20);
+            const passo = Math.max(540, Math.floor(viewport * 0.9));
+            const posicoes = [];
+            for (let y = 0; y <= finalPagina; y += passo) {
+                posicoes.push(Math.max(0, Math.floor(y)));
+            }
+            posicoes.push(finalPagina);
+            const completas = Array.from(new Set(posicoes)).sort((a, b) => a - b);
+            const maxPosicoes = Math.max(6, Math.ceil((Number(limiteAnuncios) || 80) / 5) + 3);
+            if (completas.length <= maxPosicoes) return completas;
+            const amostradas = [];
+            for (let indice = 0; indice < maxPosicoes; indice += 1) {
+                const origem = Math.round((indice * (completas.length - 1)) / (maxPosicoes - 1));
+                amostradas.push(completas[origem]);
+            }
+            return Array.from(new Set(amostradas)).sort((a, b) => a - b);
+        }
+
+        function alturaVarreduraPrimeiraPaginaFavoritos(alturaDocumento, fimResultados, alturaViewport) {
+            const viewport = Math.max(560, Number(alturaViewport) || 800);
+            const documento = Math.max(viewport, Number(alturaDocumento) || viewport);
+            const resultados = Math.max(0, Number(fimResultados) || 0);
+            if (resultados <= viewport) return documento;
+            return Math.min(documento, Math.max(viewport, resultados + Math.floor(viewport * 0.35)));
+        }
+
         function emitirProgressoPrimeiraPaginaFavoritos(onProgress, payload) {
             if (typeof onProgress !== 'function') return;
             try {
@@ -7290,9 +7446,10 @@
         }
 
         async function extrairCacheAvantProCardsWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
             const limite = Math.max(1, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 120));
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var cache = window.__JK_AVANT_CARD_DATA_CACHE || {};
                     var anuncios = Object.keys(cache)
@@ -7322,9 +7479,10 @@
         }
 
         async function capturarAvantProCardsVisiveisRapidoWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { success: false, total: 0, anuncios: [] };
             const limite = Math.max(1, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 120));
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var limite = ${JSON.stringify(limite)};
                     var normalizar = function (value) {
@@ -7496,6 +7654,11 @@
                     var cache = window.__JK_AVANT_CARD_DATA_CACHE || {};
                     anuncios.forEach(function (item) {
                         cache[item.chave_canonica] = Object.assign({}, cache[item.chave_canonica] || {}, item);
+                        var incremental = window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1;
+                        if (incremental && incremental.resolvedKeys) {
+                            incremental.resolvedKeys[item.chave_canonica] = Date.now();
+                            if (incremental.pendingKeys) delete incremental.pendingKeys[item.chave_canonica];
+                        }
                     });
                     window.__JK_AVANT_CARD_DATA_CACHE = cache;
                     return { success: true, total: anuncios.length, anuncios: anuncios };
@@ -7508,9 +7671,9 @@
             }));
         }
 
-        async function obterMetricaRolagemMercadoLivreFavoritos() {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { y: 0, height: 0, view: 800, atBottom: true };
-            return await mlWebviewEl.executeJavaScript(`
+        async function obterMetricaRolagemMercadoLivreFavoritos(webview = mlWebviewEl) {
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { y: 0, height: 0, view: 800, atBottom: true };
+            return await webview.executeJavaScript(`
                 (function () {
                     var candidatos = [document.scrollingElement, document.documentElement, document.body]
                         .concat(Array.prototype.slice.call(document.querySelectorAll('main, section, div, ol, ul')));
@@ -7537,15 +7700,28 @@
                         document.documentElement ? document.documentElement.clientHeight || 0 : 0,
                         800
                     );
-                    return { y: y, height: height, view: view, atBottom: y + view >= height - 48 };
+                    var rootsResultados = Array.prototype.slice.call(document.querySelectorAll(
+                        'ol.ui-search-layout, ul.ui-search-layout, main .ui-search-layout, [class*="ui-search-layout"][class*="results"]'
+                    ));
+                    var cardsResultados = Array.prototype.slice.call(document.querySelectorAll(
+                        'li.ui-search-layout__item, div.ui-search-result__wrapper, article.ui-search-result, div.poly-card, article.poly-card'
+                    ));
+                    var alvosResultados = rootsResultados.length ? rootsResultados : cardsResultados;
+                    var fimResultados = alvosResultados.reduce(function (maior, node) {
+                        if (!node || !node.getBoundingClientRect) return maior;
+                        var rect = node.getBoundingClientRect();
+                        if (!rect || rect.height <= 0 || rect.width <= 0) return maior;
+                        return Math.max(maior, y + rect.bottom);
+                    }, 0);
+                    return { y: y, height: height, view: view, resultsBottom: fimResultados, atBottom: y + view >= height - 48 };
                 })();
             `, true).catch(() => ({ y: 0, height: 0, view: 800, atBottom: true }));
         }
 
-        async function rolarMercadoLivreFavoritos(y) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return null;
+        async function rolarMercadoLivreFavoritos(y, webview = mlWebviewEl) {
+            if (!webview || typeof webview.executeJavaScript !== 'function') return null;
             const destino = Math.max(0, Math.floor(Number(y) || 0));
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var doc = document.scrollingElement || document.documentElement || document.body;
                     window.scrollTo(0, ${destino});
@@ -7571,13 +7747,14 @@
         }
 
         async function materializarCardsPrimeiraPaginaMercadoLivreFavoritos(opcoes = {}) {
+            const webview = resolverWebviewFavoritosColeta(opcoes);
             const limite = Math.max(20, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 100));
             const deadline = Number(opcoes.deadlineMs) || (Date.now() + 25000);
             const onProgress = opcoes.onProgress;
             let anuncios = [];
             let ultimaAssinatura = '';
             let estaveis = 0;
-            const metricaInicial = await obterMetricaRolagemMercadoLivreFavoritos();
+            const metricaInicial = await obterMetricaRolagemMercadoLivreFavoritos(webview);
             const originalY = Math.max(0, Number(metricaInicial && metricaInicial.y) || 0);
             let viewport = Math.max(560, Number(metricaInicial && metricaInicial.view) || 800);
             let y = 0;
@@ -7585,11 +7762,11 @@
 
             while (Date.now() < deadline) {
                 passos += 1;
-                await rolarMercadoLivreFavoritos(y);
+                await rolarMercadoLivreFavoritos(y, webview);
                 await esperar(420);
-                const basico = await extrairCardsMercadoLivreBasicoWebview({ limite }).catch(() => null);
+                const basico = await extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null);
                 anuncios = mesclarAnunciosAvant(anuncios, (basico && basico.anuncios) || []);
-                const metricaAtual = await obterMetricaRolagemMercadoLivreFavoritos();
+                const metricaAtual = await obterMetricaRolagemMercadoLivreFavoritos(webview);
                 viewport = Math.max(560, Number(metricaAtual && metricaAtual.view) || viewport);
                 const resumo = resumoPrimeiraPaginaFavoritos(anuncios.length, anuncios, {
                     etapa: 'materializando',
@@ -7608,7 +7785,7 @@
                 y = proximoY;
             }
 
-            await rolarMercadoLivreFavoritos(originalY);
+            await rolarMercadoLivreFavoritos(originalY, webview);
             return {
                 anuncios: anuncios.slice(0, limite),
                 totalVisiveis: Math.min(limite, anuncios.length),
@@ -7617,18 +7794,23 @@
         }
 
         async function acionarCardsAvantProFilaWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return { clicked: 0, totalCandidates: 0, keys: [] };
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return { clicked: 0, totalCandidates: 0, keys: [] };
             const maxClicksValor = opcoes.maxClicks === undefined ? 0 : Number(opcoes.maxClicks);
             const maxClicks = Math.max(0, Math.min(8, Number.isFinite(maxClicksValor) ? maxClicksValor : 0));
             const maxTentativasPorCard = Math.max(1, Math.min(3, Number(opcoes.maxTentativasPorCard) || 3));
             const maxRuntimeMsValor = opcoes.maxRuntimeMs === undefined ? 4500 : Number(opcoes.maxRuntimeMs);
             const maxRuntimeMs = Math.max(1200, Math.min(8000, Number.isFinite(maxRuntimeMsValor) ? maxRuntimeMsValor : 4500));
+            const deepScan = opcoes.deepScan !== false;
+            const checkLogin = opcoes.checkLogin !== false;
             if (maxClicks <= 0) return { clicked: 0, totalCandidates: 0, keys: [], capturados: 0, skipped: true };
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (async function () {
                     var maxClicks = ${JSON.stringify(maxClicks)};
                     var maxTentativasPorCard = ${JSON.stringify(maxTentativasPorCard)};
                     var maxRuntimeMs = ${JSON.stringify(maxRuntimeMs)};
+                    var deepScan = ${JSON.stringify(deepScan)};
+                    var checkLogin = ${JSON.stringify(checkLogin)};
                     var startedAt = Date.now();
                     var endAt = startedAt + maxRuntimeMs;
                     var hasTime = function (bufferMs) { return Date.now() + (Number(bufferMs) || 0) < endAt; };
@@ -8377,14 +8559,18 @@
                         return true;
                     };
                     try {
-                        var cardsSelector = queryAllDeep(cardSelectors);
+                        var cardsSelector = deepScan
+                            ? queryAllDeep(cardSelectors)
+                            : Array.prototype.slice.call(document.querySelectorAll(cardSelectors));
                         debugFila.selectorNodes = cardsSelector.length;
                         cardsSelector.forEach(function (card) {
                             if (incluirCard(card)) debugFila.includedBySelector += 1;
                         });
                     } catch (_cardsErr) {}
                     try {
-                        var anchorsProduto = queryAllDeep('a[href]');
+                        var anchorsProduto = deepScan
+                            ? queryAllDeep('a[href]')
+                            : Array.prototype.slice.call(document.querySelectorAll('a[href]'));
                         debugFila.anchorNodes = anchorsProduto.length;
                         anchorsProduto.forEach(function (anchor) {
                             var href = anchor.href || anchor.getAttribute('href') || '';
@@ -8412,6 +8598,9 @@
                     });
                     var permitirClique = window.__JK_AVANT_CARD_QUEUE_CLICK_SLOW !== true;
                     var clicked = 0;
+                    var eligiblePending = 0;
+                    var pendingKeys = [];
+                    var resolvedKeys = [];
                     var keys = [];
                     var capturados = [];
                     var controleSelector = 'button, [role="button"], input[type="button"], input[type="submit"], [aria-label], [title], [class*="andes-button"]';
@@ -8423,20 +8612,29 @@
                         var canonicalCache = baseParaCache.mlb ? ('mlb:' + baseParaCache.mlb) : (baseParaCache.link ? ('link:' + String(baseParaCache.link).toLowerCase()) : '');
                         var cacheAtual = canonicalCache && window.__JK_AVANT_CARD_DATA_CACHE && window.__JK_AVANT_CARD_DATA_CACHE[canonicalCache];
                         var cacheTemDados = !!(cacheAtual && (cacheAtual.vendasFonte || cacheAtual.vendedorFonte || cacheAtual.data_criacao || cacheAtual.media_mensal || cacheAtual.visitas));
-                        if (!key || tentativas >= maxTentativasPorCard || cacheTemDados) continue;
+                        if (!key || tentativas >= maxTentativasPorCard) continue;
+                        if (cacheTemDados) {
+                            resolvedKeys.push(key);
+                            continue;
+                        }
                         if (cardTemDadosAvant(card)) {
                             var capturadoExistente = await capturarPainelAvantParaCard(card, '', baseParaCache);
                             if (capturadoExistente) {
                                 store[key] = { count: tentativas + 1, at: Date.now(), semClique: true };
                                 keys.push(key);
                                 capturados.push(capturadoExistente);
+                                resolvedKeys.push(key);
                                 continue;
                             }
                         }
-                        if (!permitirClique || clicked >= maxClicks) continue;
+                        if (!permitirClique || clicked >= maxClicks) {
+                            eligiblePending += 1;
+                            pendingKeys.push(key);
+                            continue;
+                        }
                         var controles = [];
                         try { controles = Array.prototype.slice.call(card && card.querySelectorAll ? card.querySelectorAll(controleSelector) : []); } catch (_directControlErr) {}
-                        if (!controles.length) controles = queryAllDeep(controleSelector, card);
+                        if (!controles.length && deepScan) controles = queryAllDeep(controleSelector, card);
                         controles = controles
                             .filter(function (node) { return visible(node) && ehControleAvant(node, card); });
                         if (!controles.length) continue;
@@ -8463,10 +8661,15 @@
                             });
                         } catch (_clickOuterErr) {}
                         var capturado = await capturarPainelAvantParaCard(card, snapshotAntes, baseParaCache);
-                        if (capturado) capturados.push(capturado);
+                        if (capturado) {
+                            capturados.push(capturado);
+                            resolvedKeys.push(key);
+                        } else {
+                            pendingKeys.push(key);
+                        }
                         await sleep(80);
                     }
-                    var textoPaginaAvant = normalizar([
+                    var textoPaginaAvant = checkLogin ? normalizar([
                         document.body && (document.body.innerText || document.body.textContent),
                         queryAllDeep('[role="dialog"], [aria-modal="true"], [class*="modal"], [class*="Modal"], [class*="avant"], [class*="login"], form, input, button, label, h1, h2, h3, p')
                             .slice(0, 360)
@@ -8485,17 +8688,17 @@
                                 ].filter(Boolean).join(' ');
                             })
                             .join(' ')
-                    ].filter(Boolean).join(' '));
-                    var inputsLoginAvant = queryAllDeep('input, textarea').some(function (node) {
+                    ].filter(Boolean).join(' ')) : '';
+                    var inputsLoginAvant = checkLogin && queryAllDeep('input, textarea').some(function (node) {
                         if (!visible(node)) return false;
                         var alvo = textoAlvoClique(node);
                         return /e\s*mail|email|senha|password|credential|credencial/.test(alvo);
                     });
-                    var textoLoginAvant = queryAllDeep('[role="dialog"], [aria-modal="true"], [class*="modal"], [class*="Modal"], [class*="avant"], [class*="login"], form')
+                    var textoLoginAvant = checkLogin ? queryAllDeep('[role="dialog"], [aria-modal="true"], [class*="modal"], [class*="Modal"], [class*="avant"], [class*="login"], form')
                         .filter(visible)
                         .slice(0, 16)
                         .map(textoNode)
-                        .join(' ');
+                        .join(' ') : '';
                     var marcaAvantLogin = /avant\s*pro|avantpro/.test(textoPaginaAvant + ' ' + textoLoginAvant);
                     var sinaisLoginAvant = /iniciar\s+sessao|insira\s+suas\s+credenciais|credenciais\s+para\s+acessar|seu\s+e\s*mail|seu\s+email|e-?mail|entrar\s+na\s+sua\s+conta|login\s+avant|avantpro\s+mercado\s+livre|ainda\s+nao\s+tem\s+um\s+cadastro/.test(textoPaginaAvant + ' ' + textoLoginAvant);
                     var loginAvantBloqueando = !!((marcaAvantLogin && sinaisLoginAvant) || (inputsLoginAvant && marcaAvantLogin));
@@ -8503,7 +8706,17 @@
                     if (clicked > 0 && capturados.length === 0 && loginAvantBloqueando) {
                         window.__JK_AVANT_CARD_QUEUE_CLICK_SLOW = true;
                     }
-                    var resultadoFila = { clicked: clicked, totalCandidates: cards.length, keys: keys, capturados: capturados.length, elapsedMs: elapsed, timedOut: !hasTime(1), slowDisabled: window.__JK_AVANT_CARD_QUEUE_CLICK_SLOW === true, loginBlocked: loginAvantBloqueando, debug: window.__JK_AVANT_CARD_QUEUE_DEBUG || debugFila };
+                    var incrementalState = window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1;
+                    if (incrementalState) {
+                        Array.from(new Set(pendingKeys)).forEach(function (key) {
+                            incrementalState.pendingKeys[key] = Date.now();
+                        });
+                        Array.from(new Set(resolvedKeys)).forEach(function (key) {
+                            incrementalState.resolvedKeys[key] = Date.now();
+                            delete incrementalState.pendingKeys[key];
+                        });
+                    }
+                    var resultadoFila = { clicked: clicked, totalCandidates: cards.length, eligiblePending: eligiblePending, pendingKeys: Array.from(new Set(pendingKeys)), resolvedKeys: Array.from(new Set(resolvedKeys)), keys: keys, capturados: capturados.length, elapsedMs: elapsed, timedOut: !hasTime(1), slowDisabled: window.__JK_AVANT_CARD_QUEUE_CLICK_SLOW === true, loginBlocked: loginAvantBloqueando, deepScan: deepScan, checkLogin: checkLogin, mutationVersion: incrementalState ? Number(incrementalState.mutationVersion) || 0 : 0, debug: window.__JK_AVANT_CARD_QUEUE_DEBUG || debugFila };
                     window.__JK_AVANT_LAST_QUEUE_RESULT = resultadoFila;
                     return resultadoFila;
                 })();
@@ -8517,9 +8730,33 @@
         }
 
         async function coletarPrimeiraPaginaFavoritosControlada(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') {
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') {
                 return { success: false, totalVisiveis: 0, anuncios: [], error: 'webview_indisponivel' };
             }
+            const signal = opcoes.signal || null;
+            const erroCancelamento = () => {
+                const err = new Error('Coleta de favoritos cancelada pelo usuario.');
+                err.name = 'AbortError';
+                err.canceladoFavoritos = true;
+                return err;
+            };
+            const verificarCancelamento = () => {
+                if (signal && signal.aborted) throw erroCancelamento();
+            };
+            const aguardarCancelavel = (promise) => {
+                verificarCancelamento();
+                if (!signal || typeof signal.addEventListener !== 'function') return Promise.resolve(promise);
+                let onAbort = null;
+                const cancelamento = new Promise((_resolve, reject) => {
+                    onAbort = () => reject(erroCancelamento());
+                    signal.addEventListener('abort', onAbort, { once: true });
+                });
+                return Promise.race([Promise.resolve(promise), cancelamento]).finally(() => {
+                    if (onAbort) signal.removeEventListener('abort', onAbort);
+                });
+            };
+            const esperarCancelavel = (ms) => aguardarCancelavel(esperar(ms));
             const limite = Math.max(20, Math.min(Number(opcoes.maxAnuncios) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 100));
             const tempoLimiteMs = Math.max(30000, Math.min(Number(opcoes.tempoLimiteMs) || 180000, 180000));
             const maxPassadas = Math.max(1, Math.min(Number(opcoes.maxPassadas) || 3, 3));
@@ -8534,7 +8771,7 @@
                 ? Math.max(inicio + 8000, deadline - reservaAvantMs)
                 : deadline;
             const onProgress = opcoes.onProgress;
-            await mlWebviewEl.executeJavaScript(`
+            const incrementalPreparado = await aguardarCancelavel(webview.executeJavaScript(`
                 (function () {
                     window.__JK_AVANT_CARD_QUEUE_CLICKED_KEYS = {};
                     window.__JK_AVANT_CARD_DATA_CACHE = {};
@@ -8542,6 +8779,32 @@
                     window.__JK_AVANT_LAST_CARD_CLICKED = null;
                     window.__JK_AVANT_CARD_CLICKED_AT = 0;
                     window.__JK_AVANT_CARD_QUEUE_CLICK_SLOW = false;
+                    try {
+                        var anterior = window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1;
+                        if (anterior && anterior.observer && typeof anterior.observer.disconnect === 'function') {
+                            anterior.observer.disconnect();
+                        }
+                        var incremental = {
+                            version: 1,
+                            mutationVersion: 0,
+                            lastMutationAt: Date.now(),
+                            resolvedKeys: {},
+                            pendingKeys: {},
+                            observer: null
+                        };
+                        incremental.observer = new MutationObserver(function () {
+                            incremental.mutationVersion += 1;
+                            incremental.lastMutationAt = Date.now();
+                        });
+                        incremental.observer.observe(document.body || document.documentElement, {
+                            subtree: true,
+                            childList: true,
+                            characterData: true
+                        });
+                        window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1 = incremental;
+                    } catch (_incrementalErr) {
+                        window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1 = null;
+                    }
                     if (!window.__JK_FAVORITOS_DOWNLOAD_GUARD_REGISTERED) {
                         window.__JK_FAVORITOS_DOWNLOAD_GUARD_REGISTERED = true;
                         document.addEventListener('click', function (event) {
@@ -8566,22 +8829,26 @@
                             }
                         }, true);
                     }
-                    return true;
+                    return !!window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1;
                 })();
-            `, true).catch(() => false);
+            `, true).catch(() => false));
+            let incrementalAtivo = opcoes.incremental !== false && incrementalPreparado === true;
+            verificarCancelamento();
             let materializado = null;
             let anuncios = [];
             let totalVisiveis = 0;
             if (loteCliques > 0) {
-                const metricaInicialRapida = await obterMetricaRolagemMercadoLivreFavoritos();
+                verificarCancelamento();
+                const metricaInicialRapida = await aguardarCancelavel(obterMetricaRolagemMercadoLivreFavoritos(webview));
                 const originalYRapido = Math.max(0, Number(metricaInicialRapida && metricaInicialRapida.y) || 0);
-                await rolarMercadoLivreFavoritos(0);
-                await esperar(350);
-                const basicoInicial = await aguardarBaseMercadoLivreColetavelFavoritos({
+                await aguardarCancelavel(rolarMercadoLivreFavoritos(0, webview));
+                await esperarCancelavel(350);
+                const basicoInicial = await aguardarCancelavel(aguardarBaseMercadoLivreColetavelFavoritos({
                     limite,
                     timeoutMs: Math.min(30000, Math.max(8000, deadlinePreparacao - Date.now())),
-                    onProgress
-                }).catch(() => null);
+                    onProgress,
+                    webview
+                }).catch(() => null));
                 anuncios = (basicoInicial && basicoInicial.anuncios) || [];
                 totalVisiveis = Math.min(limite, Number(basicoInicial && basicoInicial.total) || anuncios.length);
                 materializado = {
@@ -8590,21 +8857,23 @@
                     originalY: originalYRapido
                 };
                 if (!anuncios.length && Date.now() < deadlinePreparacao) {
-                    materializado = await materializarCardsPrimeiraPaginaMercadoLivreFavoritos({
+                    materializado = await aguardarCancelavel(materializarCardsPrimeiraPaginaMercadoLivreFavoritos({
                         limite,
                         deadlineMs: Math.min(deadlinePreparacao, Date.now() + 16000),
-                        onProgress
-                    }).catch(() => null);
+                        onProgress,
+                        webview
+                    }).catch(() => null));
                     anuncios = (materializado && materializado.anuncios) || [];
                     totalVisiveis = Math.min(limite, Number(materializado && materializado.totalVisiveis) || anuncios.length);
                     materializado = materializado || { anuncios, totalVisiveis };
                     materializado.originalY = originalYRapido;
                 }
                 if (!anuncios.length && Date.now() < deadlinePreparacao) {
-                    const emergenciaInicial = await extrairBaseMercadoLivreEmergencialWebview({
+                    const emergenciaInicial = await aguardarCancelavel(extrairBaseMercadoLivreEmergencialWebview({
                         limite,
-                        timeoutMs: Math.min(9000, Math.max(3500, deadlinePreparacao - Date.now()))
-                    }).catch(() => null);
+                        timeoutMs: Math.min(9000, Math.max(3500, deadlinePreparacao - Date.now())),
+                        webview
+                    }).catch(() => null));
                     if (emergenciaInicial && Array.isArray(emergenciaInicial.anuncios) && emergenciaInicial.anuncios.length) {
                         anuncios = emergenciaInicial.anuncios;
                         totalVisiveis = Math.min(limite, Number(emergenciaInicial.total) || anuncios.length);
@@ -8623,18 +8892,20 @@
                     height: metricaInicialRapida && metricaInicialRapida.height
                 }));
             } else {
-                materializado = await materializarCardsPrimeiraPaginaMercadoLivreFavoritos({
+                materializado = await aguardarCancelavel(materializarCardsPrimeiraPaginaMercadoLivreFavoritos({
                     limite,
                     deadlineMs: Math.min(deadlinePreparacao, Date.now() + 28000),
-                    onProgress
-                });
+                    onProgress,
+                    webview
+                }));
                 anuncios = (materializado && materializado.anuncios) || [];
                 totalVisiveis = Math.min(limite, Number(materializado && materializado.totalVisiveis) || anuncios.length);
                 if (!anuncios.length && Date.now() < deadlinePreparacao) {
-                    const emergenciaMaterializacao = await extrairBaseMercadoLivreEmergencialWebview({
+                    const emergenciaMaterializacao = await aguardarCancelavel(extrairBaseMercadoLivreEmergencialWebview({
                         limite,
-                        timeoutMs: Math.min(9000, Math.max(3500, deadlinePreparacao - Date.now()))
-                    }).catch(() => null);
+                        timeoutMs: Math.min(9000, Math.max(3500, deadlinePreparacao - Date.now())),
+                        webview
+                    }).catch(() => null));
                     if (emergenciaMaterializacao && Array.isArray(emergenciaMaterializacao.anuncios) && emergenciaMaterializacao.anuncios.length) {
                         anuncios = emergenciaMaterializacao.anuncios;
                         totalVisiveis = Math.min(limite, Number(emergenciaMaterializacao.total) || anuncios.length);
@@ -8647,66 +8918,117 @@
                     }
                 }
             }
-            anuncios = await completarBaseMercadoLivreComApiFavoritos(anuncios, {
+            verificarCancelamento();
+            anuncios = await aguardarCancelavel(completarBaseMercadoLivreComApiFavoritos(anuncios, {
                 concorrencia: 4,
                 deadlineMs: Math.min(deadlinePreparacao, Date.now() + (loteCliques > 0 ? 2500 : 18000)),
                 maxItens: loteCliques > 0 ? 4 : 0,
                 timeoutMs: loteCliques > 0 ? 1200 : 3500
-            });
-            let metrica = await obterMetricaRolagemMercadoLivreFavoritos();
+            }));
+            const fimMaterializacao = Date.now();
+            let metrica = await aguardarCancelavel(obterMetricaRolagemMercadoLivreFavoritos(webview));
             let viewport = Math.max(560, Number(metrica && metrica.view) || 800);
-            let altura = Math.max(viewport, Number(metrica && metrica.height) || viewport);
-            const posicoes = [];
-            for (let y = 0; y <= altura - viewport + 80; y += Math.max(540, Math.floor(viewport * 0.78))) {
-                posicoes.push(Math.max(0, Math.floor(y)));
-            }
-            posicoes.push(Math.max(0, altura - viewport - 20));
-            const posicoesUnicas = Array.from(new Set(posicoes)).slice(0, Math.max(6, Math.ceil(limite / 5) + 3));
+            let altura = alturaVarreduraPrimeiraPaginaFavoritos(
+                Number(metrica && metrica.height) || viewport,
+                Number(metrica && metrica.resultsBottom) || 0,
+                viewport
+            );
+            const posicoesUnicas = montarPosicoesVarreduraPrimeiraPaginaFavoritos(altura, viewport, limite);
             let cliquesAvantDesligados = false;
             let loginAvantBloqueado = false;
+            let assinaturaPassadaAnterior = '';
+            let motivoEncerramento = '';
+            let passadasExecutadas = 0;
+            let posicoesPercorridasTotal = 0;
+            let totalCliquesAvant = 0;
+            let totalCapturadosAvant = 0;
+            const chavesCapturadasAvant = new Set();
+            const normalizarChavePendenciaAvant = (chave) => String(chave || '')
+                .replace(/^id:/i, 'mlb:')
+                .replace(/^url:/i, 'link:')
+                .toLowerCase();
 
             for (let passada = 1; passada <= maxPassadas && Date.now() < deadline && !loginAvantBloqueado; passada += 1) {
+                let posicoesPercorridasPassada = 0;
+                const pendentesAvantPassada = new Set();
                 for (let index = 0; index < posicoesUnicas.length && Date.now() < deadline && !loginAvantBloqueado; index += 1) {
-                    await rolarMercadoLivreFavoritos(posicoesUnicas[index]);
-                    await esperar(180);
-                    const avantVisivelAntes = await capturarAvantProCardsVisiveisRapidoWebview({ limite }).catch(() => null);
+                    posicoesPercorridasPassada = index + 1;
+                    posicoesPercorridasTotal += 1;
+                    verificarCancelamento();
+                    await aguardarCancelavel(rolarMercadoLivreFavoritos(posicoesUnicas[index], webview));
+                    await esperarCancelavel(100);
+                    const avantVisivelAntes = await aguardarCancelavel(capturarAvantProCardsVisiveisRapidoWebview({ limite, webview }).catch(() => null));
                     anuncios = mesclarAnunciosAvant(anuncios, (avantVisivelAntes && avantVisivelAntes.anuncios) || []);
+                    ((avantVisivelAntes && avantVisivelAntes.anuncios) || []).forEach(item => {
+                        const chave = normalizarChavePendenciaAvant(chaveCanonicaAnuncioFavoritos(item));
+                        if (!chave) return;
+                        pendentesAvantPassada.delete(chave);
+                        chavesCapturadasAvant.add(chave);
+                    });
                     const deveTentarCliqueAvant = loteCliques > 0 && !cliquesAvantDesligados;
+                    const usarBuscaProfunda = !incrementalAtivo
+                        || index === posicoesUnicas.length - 1
+                        || !(avantVisivelAntes && Number(avantVisivelAntes.total) > 0);
+                    const verificarLoginNestaPosicao = !incrementalAtivo
+                        || index === 0
+                        || index === posicoesUnicas.length - 1;
                     const clickInfo = deveTentarCliqueAvant
-                        ? await acionarCardsAvantProFilaWebview({
+                        ? await aguardarCancelavel(acionarCardsAvantProFilaWebview({
                             maxClicks: loteCliques,
                             maxRuntimeMs: cliquesAvantDesligados
                                 ? Math.min(1600, Math.max(1200, deadline - Date.now() - 500))
-                                : Math.min(5500, Math.max(1500, deadline - Date.now() - 500))
-                        })
+                                : Math.min(4000, Math.max(1500, deadline - Date.now() - 500)),
+                            deepScan: usarBuscaProfunda,
+                            checkLogin: verificarLoginNestaPosicao,
+                            webview
+                        }))
                         : { clicked: 0, totalCandidates: 0, keys: [], capturados: 0, skipped: true, slowDisabled: cliquesAvantDesligados };
                     if (clickInfo && clickInfo.slowDisabled) cliquesAvantDesligados = true;
+                    if (clickInfo && clickInfo.error && incrementalAtivo) incrementalAtivo = false;
+                    (Array.isArray(clickInfo && clickInfo.pendingKeys) ? clickInfo.pendingKeys : []).forEach(chave => {
+                        const normalizada = normalizarChavePendenciaAvant(chave);
+                        if (normalizada) pendentesAvantPassada.add(normalizada);
+                    });
+                    (Array.isArray(clickInfo && clickInfo.resolvedKeys) ? clickInfo.resolvedKeys : []).forEach(chave => {
+                        const normalizada = normalizarChavePendenciaAvant(chave);
+                        if (!normalizada) return;
+                        pendentesAvantPassada.delete(normalizada);
+                        chavesCapturadasAvant.add(normalizada);
+                    });
+                    if (loteCliques > 0 && cliquesAvantDesligados && pendentesAvantPassada.size === 0) {
+                        pendentesAvantPassada.add('__avant_slow_disabled__');
+                    }
+                    totalCliquesAvant += Math.max(0, Number(clickInfo && clickInfo.clicked) || 0);
+                    totalCapturadosAvant = Math.max(chavesCapturadasAvant.size, totalCapturadosAvant);
                     if (clickInfo && clickInfo.loginBlocked) {
                         cliquesAvantDesligados = true;
                         loginAvantBloqueado = true;
                     }
                     if (clickInfo && clickInfo.clicked) {
-                        await esperar(Math.min(3200, 900 + (clickInfo.clicked * 350)));
-                        await aguardarDadosAvantProEstaveisWebview({
+                        await esperarCancelavel(Math.min(1800, 500 + (clickInfo.clicked * 200)));
+                        await aguardarCancelavel(aguardarDadosAvantProEstaveisWebview({
                             minWaitMs: 120,
-                            stableMs: 360,
-                            maxWaitMs: 2400
-                        }).catch(() => null);
+                            stableMs: 300,
+                            maxWaitMs: 1600,
+                            webview
+                        }).catch(() => null));
                     }
                     const avantVisivelDepois = clickInfo && clickInfo.clicked
-                        ? await capturarAvantProCardsVisiveisRapidoWebview({ limite }).catch(() => null)
+                        ? await aguardarCancelavel(capturarAvantProCardsVisiveisRapidoWebview({ limite, webview }).catch(() => null))
                         : null;
                     anuncios = mesclarAnunciosAvant(anuncios, (avantVisivelDepois && avantVisivelDepois.anuncios) || []);
-                    const avantDomDepois = await extrairAnunciosAvantProDomWebview({ limite }).catch(() => null);
+                    const avantDomDepois = (!incrementalAtivo || usarBuscaProfunda || (clickInfo && clickInfo.clicked))
+                        ? await aguardarCancelavel(extrairAnunciosAvantProDomWebview({ limite, webview }).catch(() => null))
+                        : null;
                     anuncios = mesclarAnunciosAvant(anuncios, (avantDomDepois && avantDomDepois.anuncios) || []);
-                    const avantCache = await extrairCacheAvantProCardsWebview({ limite }).catch(() => null);
+                    const avantCache = await aguardarCancelavel(extrairCacheAvantProCardsWebview({ limite, webview }).catch(() => null));
                     anuncios = mesclarAnunciosAvant(anuncios, (avantCache && avantCache.anuncios) || []);
                     const deveAtualizarBaseMl = index === 0
                         || index === posicoesUnicas.length - 1
                         || index % 4 === 3
                         || Date.now() + 4500 >= deadline;
                     const basico = deveAtualizarBaseMl
-                        ? await extrairCardsMercadoLivreBasicoWebview({ limite }).catch(() => null)
+                        ? await aguardarCancelavel(extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null))
                         : null;
                     if (basico && Array.isArray(basico.anuncios)) {
                         anuncios = mesclarAnunciosAvant(basico.anuncios, anuncios);
@@ -8731,43 +9053,95 @@
                         cliquesAvantDesligados: !!(clickInfo && clickInfo.slowDisabled),
                         tempoRestanteMs: Math.max(0, deadline - Date.now())
                     });
+                    verificarCancelamento();
                     emitirProgressoPrimeiraPaginaFavoritos(onProgress, resumo);
                     if (loginAvantBloqueado && anuncios.length) break;
                     if (totalVisiveis > 0 && resumo.com_dados_avant >= totalVisiveis) break;
-                    await esperar(50);
+                    await esperarCancelavel(20);
                 }
+                passadasExecutadas = passada;
+                if (incrementalAtivo) await esperarCancelavel(800);
+                const estadoIncremental = incrementalAtivo
+                    ? await aguardarCancelavel(webview.executeJavaScript(`
+                        (function () {
+                            var state = window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1;
+                            return state ? {
+                                mutationVersion: Number(state.mutationVersion) || 0,
+                                lastMutationAt: Number(state.lastMutationAt) || 0,
+                                quietMs: Math.max(0, Date.now() - (Number(state.lastMutationAt) || Date.now()))
+                            } : null;
+                        })();
+                    `, true).catch(() => null))
+                    : null;
+                const assinaturaPassadaAtual = assinaturaEstabilidadePrimeiraPaginaFavoritos(anuncios);
+                const passadaCompleta = posicoesPercorridasPassada >= posicoesUnicas.length;
+                const plateauEstavel = deveEncerrarPlateauPrimeiraPaginaFavoritos({
+                    passada,
+                    passadaCompleta,
+                    assinaturaAtual: assinaturaPassadaAtual,
+                    assinaturaAnterior: assinaturaPassadaAnterior,
+                    pendentesAvant: pendentesAvantPassada.size,
+                    mutationQuietMs: estadoIncremental ? estadoIncremental.quietMs : undefined
+                });
                 const resumoPassada = resumoPrimeiraPaginaFavoritos(totalVisiveis, anuncios, {
                     etapa: 'passada',
                     passada,
                     maxPassadas,
                     loginAvantBloqueado,
                     login_avant_bloqueado: loginAvantBloqueado,
+                    passada_completa: passadaCompleta,
+                    pendentes_avant: pendentesAvantPassada.size,
+                    mutation_quiet_ms: estadoIncremental ? estadoIncremental.quietMs : 0,
+                    incremental: incrementalAtivo,
+                    plateau_estavel: plateauEstavel,
                     tempoRestanteMs: Math.max(0, deadline - Date.now())
                 });
                 emitirProgressoPrimeiraPaginaFavoritos(onProgress, resumoPassada);
-                if (loginAvantBloqueado && anuncios.length) break;
-                if (totalVisiveis > 0 && resumoPassada.com_dados_avant >= totalVisiveis) break;
+                if (loginAvantBloqueado && anuncios.length) {
+                    motivoEncerramento = 'login_avant';
+                    break;
+                }
+                if (totalVisiveis > 0 && resumoPassada.com_dados_avant >= totalVisiveis) {
+                    motivoEncerramento = 'completude_avant';
+                    break;
+                }
+                if (plateauEstavel) {
+                    motivoEncerramento = 'stable_plateau';
+                    break;
+                }
+                assinaturaPassadaAnterior = assinaturaPassadaAtual;
+            }
+            const fimAvant = Date.now();
+            if (!motivoEncerramento) {
+                motivoEncerramento = Date.now() >= deadline ? 'tempo_limite' : 'max_passadas';
             }
 
-            const basicoFinal = await extrairCardsMercadoLivreBasicoWebview({ limite }).catch(() => null);
-            const avantCacheFinal = await extrairCacheAvantProCardsWebview({ limite }).catch(() => null);
-            const avantDomFinal = await extrairAnunciosAvantProDomWebview({ limite }).catch(() => null);
+            verificarCancelamento();
+            const basicoFinal = await aguardarCancelavel(extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null));
+            const avantCacheFinal = Date.now() < deadline
+                ? await aguardarCancelavel(extrairCacheAvantProCardsWebview({ limite, webview }).catch(() => null))
+                : null;
+            const avantDomFinal = Date.now() < deadline
+                ? await aguardarCancelavel(extrairAnunciosAvantProDomWebview({ limite, webview }).catch(() => null))
+                : null;
             anuncios = mesclarAnunciosAvant((basicoFinal && basicoFinal.anuncios) || [], anuncios);
             anuncios = mesclarAnunciosAvant(anuncios, (avantCacheFinal && avantCacheFinal.anuncios) || []);
             anuncios = mesclarAnunciosAvant(anuncios, (avantDomFinal && avantDomFinal.anuncios) || []);
             if (!anuncios.length) {
-                const emergenciaFinal = await extrairBaseMercadoLivreEmergencialWebview({
+                const emergenciaFinal = await aguardarCancelavel(extrairBaseMercadoLivreEmergencialWebview({
                     limite,
-                    timeoutMs: Math.min(12000, Math.max(4500, deadline - Date.now()))
-                }).catch(() => null);
+                    timeoutMs: Math.min(12000, Math.max(4500, deadline - Date.now())),
+                    webview
+                }).catch(() => null));
                 if (emergenciaFinal && Array.isArray(emergenciaFinal.anuncios) && emergenciaFinal.anuncios.length) {
                     anuncios = mesclarAnunciosAvant(emergenciaFinal.anuncios, anuncios);
                 }
             }
-            anuncios = await completarBaseMercadoLivreComApiFavoritos(anuncios, {
+            anuncios = await aguardarCancelavel(completarBaseMercadoLivreComApiFavoritos(anuncios, {
                 concorrencia: 4,
                 deadlineMs: deadline
-            });
+            }));
+            const fimFinalizacao = Date.now();
             totalVisiveis = Math.max(
                 totalVisiveis,
                 Math.min(limite, Number(basicoFinal && basicoFinal.total) || ((basicoFinal && basicoFinal.anuncios && basicoFinal.anuncios.length) || 0)),
@@ -8775,12 +9149,21 @@
                 Math.min(limite, Number(avantDomFinal && avantDomFinal.total) || ((avantDomFinal && avantDomFinal.anuncios && avantDomFinal.anuncios.length) || 0)),
                 anuncios.length
             );
-            await rolarMercadoLivreFavoritos(Number(materializado && materializado.originalY) || 0);
+            await aguardarCancelavel(rolarMercadoLivreFavoritos(Number(materializado && materializado.originalY) || 0, webview));
+            verificarCancelamento();
             const resumoFinal = resumoPrimeiraPaginaFavoritos(totalVisiveis, anuncios, {
                 etapa: 'final',
                 loginAvantBloqueado,
                 login_avant_bloqueado: loginAvantBloqueado,
                 tempo_esgotado: Date.now() >= deadline,
+                motivo_encerramento: motivoEncerramento,
+                passadas: passadasExecutadas,
+                posicoes_percorridas: posicoesPercorridasTotal,
+                cliques_avant: totalCliquesAvant,
+                capturados_avant: totalCapturadosAvant,
+                tempo_materializacao_ms: Math.max(0, fimMaterializacao - inicio),
+                tempo_avant_ms: Math.max(0, fimAvant - fimMaterializacao),
+                tempo_finalizacao_ms: Math.max(0, fimFinalizacao - fimAvant),
                 elapsedMs: Date.now() - inicio
             });
             emitirProgressoPrimeiraPaginaFavoritos(onProgress, resumoFinal);
@@ -8800,17 +9183,23 @@
                 resumo: resumoFinal,
                 loginAvantBloqueado,
                 tempoEsgotado: !!resumoFinal.tempo_esgotado,
-                elapsedMs: resumoFinal.elapsedMs
+                elapsedMs: resumoFinal.elapsedMs,
+                motivoEncerramento,
+                passadasExecutadas,
+                posicoesPercorridas: posicoesPercorridasTotal,
+                totalCliquesAvant,
+                totalCapturadosAvant
             };
         }
 
         async function aguardarDadosAvantProEstaveisWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return null;
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return null;
             const minWaitMs = Math.max(0, Number(opcoes.minWaitMs) || AVANT_PRO_ESTABILIDADE_MIN_MS);
             const stableMs = Math.max(250, Number(opcoes.stableMs) || AVANT_PRO_ESTABILIDADE_MS);
             const maxWaitMs = Math.max(minWaitMs + stableMs, Number(opcoes.maxWaitMs) || AVANT_PRO_ESTABILIDADE_MAX_MS);
             const pollMs = Math.max(120, Number(opcoes.pollMs) || 220);
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (async function () {
                     var minWaitMs = ${JSON.stringify(minWaitMs)};
                     var stableMs = ${JSON.stringify(stableMs)};
@@ -9202,7 +9591,8 @@
         }
 
         async function aguardarPrimeirosDadosAvantOuCardsWebview(opcoes = {}) {
-            if (!mlWebviewEl || typeof mlWebviewEl.executeJavaScript !== 'function') return null;
+            const webview = resolverWebviewFavoritosColeta(opcoes);
+            if (!webview || typeof webview.executeJavaScript !== 'function') return null;
             if (!monitoramentoPaginaFavoritosAutomaticoAtivo() && !acaoUsuarioFavoritosPermiteLeituraPagina(opcoes)) {
                 return statusMonitoramentoPaginaFavoritosDesativado({
                     etapa: 'aguardar_primeiros_dados'
@@ -9210,7 +9600,7 @@
             }
             const timeoutMs = Math.max(800, Number(opcoes.timeoutMs) || 3200);
             const idleMs = Math.max(120, Number(opcoes.idleMs) || 260);
-            return await mlWebviewEl.executeJavaScript(`
+            return await webview.executeJavaScript(`
                 (function () {
                     var timeoutMs = ${JSON.stringify(timeoutMs)};
                     var idleMs = ${JSON.stringify(idleMs)};

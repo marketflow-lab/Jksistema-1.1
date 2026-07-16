@@ -222,6 +222,9 @@ def _extrair_info_anuncio(
     client_id: str | None = None,
     imagem: str | None = None,
     dados_base: dict | None = None,
+    datas_cache_local: dict | None = None,
+    api_item_precarregado: dict | None = None,
+    api_item_precarregado_tentado: bool = False,
 ):
     item_id = _extrair_item_id(item_id or "") or _extrair_item_id(url) or item_id
     info = {
@@ -268,6 +271,43 @@ def _extrair_info_anuncio(
             info["fonte"] = str(dados_base.get("fonte_data_criacao") or dados_base.get("fonte") or "entrada_extensao").strip()
             info["fonte_data_criacao"] = info["fonte"]
             info["data_criacao_confianca"] = str(dados_base.get("data_criacao_confianca") or "media").strip()
+        sku_base = str(dados_base.get("sku") or "").strip()
+        if sku_base:
+            info["sku"] = sku_base
+        listing_type_id_base = str(dados_base.get("listing_type_id") or dados_base.get("listingTypeId") or "").strip()
+        listing_type_name_base = str(dados_base.get("listing_type_name") or "").strip()
+        tipo_anuncio_base = str(dados_base.get("tipo_anuncio") or "").strip()
+        if listing_type_id_base:
+            info["listing_type_id"] = listing_type_id_base
+        if listing_type_name_base:
+            info["listing_type_name"] = listing_type_name_base
+        if tipo_anuncio_base:
+            info["tipo_anuncio"] = tipo_anuncio_base
+        parcelamento_base = dados_base.get("parcelamento_sem_juros")
+        if isinstance(parcelamento_base, bool):
+            info["parcelamento_sem_juros"] = parcelamento_base
+        shipping_base = dados_base.get("shipping")
+        if isinstance(shipping_base, dict):
+            info["shipping"] = shipping_base
+        logistic_type_base = str(dados_base.get("logistic_type") or dados_base.get("logisticType") or "").strip()
+        shipping_mode_base = str(dados_base.get("shipping_mode") or dados_base.get("shippingMode") or "").strip()
+        if logistic_type_base:
+            info["logistic_type"] = logistic_type_base
+        if shipping_mode_base:
+            info["shipping_mode"] = shipping_mode_base
+        is_full_base = dados_base.get("is_full")
+        if isinstance(is_full_base, bool):
+            info["is_full"] = is_full_base
+        condicao_base = str(
+            dados_base.get("condicao")
+            or dados_base.get("condition")
+            or dados_base.get("item_condition")
+            or ""
+        ).strip()
+        if condicao_base:
+            info["condicao"] = condicao_base
+            info["condition"] = condicao_base
+            info["item_condition"] = condicao_base
 
     def _vendas_da_api(dados: dict | None):
         if not isinstance(dados, dict):
@@ -309,10 +349,14 @@ def _extrair_info_anuncio(
     def _vendedor_confirmado() -> bool:
         return bool(info["vendedor"]) and not _fonte_vendedor_fraca(info.get("fonte_vendedor"))
 
-    def _aplicar_data_criacao_aproximada():
+    def _aplicar_data_criacao_aproximada(permitir_rede: bool = True):
         if info["data_criacao"] or not item_id:
             return
-        data_cache = _ml_data_criacao_cache_local(client_id, item_id)
+        data_cache = (
+            datas_cache_local.get(item_id)
+            if isinstance(datas_cache_local, dict)
+            else _ml_data_criacao_cache_local(client_id, item_id)
+        )
         if data_cache:
             info["data_criacao"] = data_cache
             info["fonte"] = "cache_local_item"
@@ -325,6 +369,8 @@ def _extrair_info_anuncio(
             info["fonte"] = "imagem_ml_mes"
             info["fonte_data_criacao"] = "imagem_ml_mes"
             info["data_criacao_confianca"] = "baixa"
+            return
+        if not permitir_rede:
             return
         candidatos = []
         data_wayback = _ml_wayback_primeira_captura_data(item_id, url)
@@ -341,12 +387,20 @@ def _extrair_info_anuncio(
         info["fonte_data_criacao"] = fonte
         info["data_criacao_confianca"] = confianca
 
-    _aplicar_data_criacao_aproximada()
+    # Prioriza cache/imagem e as APIs oficiais. Wayback/perguntas permanecem
+    # como contingencia somente depois das fontes rapidas e autoritativas.
+    _aplicar_data_criacao_aproximada(permitir_rede=False)
     if info["data_criacao"] and _vendedor_confirmado() and info["vendas"] is not None:
         return info
 
+    visitas_api_tentada = False
     if item_id:
-        api_data = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id)
+        if isinstance(api_item_precarregado, dict) and api_item_precarregado.get("id"):
+            api_data = api_item_precarregado
+        elif api_item_precarregado_tentado:
+            api_data = None
+        else:
+            api_data = _ml_api_item_com_oauth_tenant(client_id, item_id) or _ml_api_item(item_id)
         if isinstance(api_data, dict):
             data_api = _normalizar_data_ml(api_data.get("date_created") or api_data.get("start_time"))
             if data_api:
@@ -386,15 +440,17 @@ def _extrair_info_anuncio(
             if vendas_api is not None:
                 info["vendas"] = vendas_api
                 info["fonte_vendas"] = "api_item_vendas"
-            visitas_api = _ml_api_visitas_com_oauth_tenant(client_id, item_id)
-            if isinstance(visitas_api, dict) and visitas_api.get("visitas") is not None:
-                info["visitas"] = visitas_api.get("visitas")
-                info["fonte_visitas"] = visitas_api.get("fonte") or "api_visitas"
+            if info["visitas"] is None:
+                visitas_api_tentada = True
+                visitas_api = _ml_api_visitas_com_oauth_tenant(client_id, item_id)
+                if isinstance(visitas_api, dict) and visitas_api.get("visitas") is not None:
+                    info["visitas"] = visitas_api.get("visitas")
+                    info["fonte_visitas"] = visitas_api.get("fonte") or "api_visitas"
 
             if info["data_criacao"] and _vendedor_confirmado() and info["vendas"] is not None and info["parcelamento_sem_juros"] is not None:
                 return info
 
-    if item_id and info["visitas"] is None:
+    if item_id and info["visitas"] is None and not visitas_api_tentada:
         visitas_api = _ml_api_visitas_com_oauth_tenant(client_id, item_id)
         if isinstance(visitas_api, dict) and visitas_api.get("visitas") is not None:
             info["visitas"] = visitas_api.get("visitas")

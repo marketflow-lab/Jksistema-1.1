@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const appDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(appDir, '..');
@@ -26,6 +27,20 @@ function fileExists(file) {
   }
 }
 
+function filesEqual(left, right) {
+  if (!fileExists(left) || !fileExists(right)) return false;
+  const leftStat = fs.statSync(left);
+  const rightStat = fs.statSync(right);
+  if (leftStat.size !== rightStat.size) return false;
+  return fs.readFileSync(left).equals(fs.readFileSync(right));
+}
+
+function sha256File(file) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(file));
+  return hash.digest('hex');
+}
+
 function dirExists(dir) {
   try {
     return fs.statSync(dir).isDirectory();
@@ -40,7 +55,14 @@ function walkFiles(dir) {
   const stack = [dir];
   while (stack.length) {
     const current = stack.pop();
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (err) {
+      if (err && (err.code === 'EACCES' || err.code === 'EPERM')) continue;
+      throw err;
+    }
+    for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) stack.push(full);
       else if (entry.isFile()) out.push(full);
@@ -197,6 +219,51 @@ function validateRuntimeCopyGuards(manifest, failures) {
   }
 }
 
+function validateOfflineRuntimeAtRoot(manifest, failures, baseDir, label) {
+  const config = manifest.offlineRuntime || {};
+  if (!Object.keys(config).length) return;
+
+  const requirementsRel = toPosix(config.requirementsFile || 'requirements.txt');
+  const wheelDirectoryRel = toPosix(config.wheelDirectory || 'python_wheels');
+  const markerPrefix = String(config.markerPrefix || '.requirements-');
+  const requirementsPath = path.join(baseDir, requirementsRel);
+  const wheelDirectory = path.join(baseDir, wheelDirectoryRel);
+
+  if (!fileExists(requirementsPath)) {
+    failures.push(`Requirements offline ausente em ${label}: ${requirementsRel}`);
+    return;
+  }
+  if (!dirExists(wheelDirectory)) {
+    failures.push(`Wheelhouse offline ausente em ${label}: ${wheelDirectoryRel}`);
+    return;
+  }
+
+  const expectedMarker = `${markerPrefix}${sha256File(requirementsPath)}.ok`;
+  if (!fileExists(path.join(wheelDirectory, expectedMarker))) {
+    failures.push(`Wheelhouse offline desatualizado em ${label}: marcador ${wheelDirectoryRel}/${expectedMarker} ausente`);
+  }
+
+  const wheelFiles = walkFiles(wheelDirectory).filter((file) => file.toLowerCase().endsWith('.whl'));
+  const minimumWheels = Number(config.minimumWheels || 1);
+  if (wheelFiles.length < minimumWheels) {
+    failures.push(`Wheelhouse offline incompleto em ${label}: ${wheelFiles.length} wheel(s), minimo ${minimumWheels}`);
+  }
+
+  for (const pattern of config.requiredWheelPatterns || []) {
+    const found = findGlob(wheelDirectory, pattern);
+    if (!found.length) {
+      failures.push(`Dependencia offline obrigatoria ausente em ${label}: ${wheelDirectoryRel}/${pattern}`);
+    }
+  }
+}
+
+function validateOfflineRuntime(manifest, failures) {
+  validateOfflineRuntimeAtRoot(manifest, failures, repoRoot, 'fonte');
+  if (packagedRoot) {
+    validateOfflineRuntimeAtRoot(manifest, failures, path.join(packagedRoot, 'local_app'), 'pacote');
+  }
+}
+
 function validatePackagedOutput(manifest, failures) {
   if (!packagedRoot) return;
   if (!dirExists(packagedRoot)) {
@@ -206,6 +273,61 @@ function validatePackagedOutput(manifest, failures) {
 
   for (const rel of manifest.requiredPackagedFiles || []) {
     if (!fileExists(path.join(packagedRoot, rel))) failures.push(`Arquivo ausente no pacote: ${rel}`);
+  }
+
+  for (const rel of manifest.requiredPackagedSourceParity || []) {
+    const normalized = toPosix(rel);
+    const sourcePath = path.join(repoRoot, normalized);
+    const packagedPath = path.join(packagedRoot, 'local_app', normalized);
+    if (!fileExists(sourcePath)) {
+      failures.push(`Fonte obrigatoria para paridade ausente: ${normalized}`);
+      continue;
+    }
+    if (!fileExists(packagedPath)) {
+      failures.push(`Arquivo de paridade ausente no pacote: local_app/${normalized}`);
+      continue;
+    }
+    if (!filesEqual(sourcePath, packagedPath)) {
+      failures.push(`Arquivo desatualizado no pacote: local_app/${normalized}`);
+    }
+  }
+
+  const rootExtensions = new Set(
+    (manifest.requiredPackagedRootFileExtensions || []).map((value) => String(value || '').toLowerCase())
+  );
+  if (rootExtensions.size) {
+    for (const entry of fs.readdirSync(repoRoot, { withFileTypes: true })) {
+      if (!entry.isFile() || !rootExtensions.has(path.extname(entry.name).toLowerCase())) continue;
+      const sourcePath = path.join(repoRoot, entry.name);
+      const packagedPath = path.join(packagedRoot, 'local_app', entry.name);
+      if (!fileExists(packagedPath)) {
+        failures.push(`Arquivo raiz ausente no pacote: local_app/${entry.name}`);
+      } else if (!filesEqual(sourcePath, packagedPath)) {
+        failures.push(`Arquivo raiz desatualizado no pacote: local_app/${entry.name}`);
+      }
+    }
+  }
+
+  for (const relDir of manifest.requiredPackagedSourceParityDirectories || []) {
+    const normalizedDir = toPosix(relDir);
+    const sourceDir = path.join(repoRoot, normalizedDir);
+    const sourceFiles = walkFiles(sourceDir).filter((file) => {
+      const relative = toPosix(path.relative(sourceDir, file));
+      return !relative.includes('__pycache__/') && !relative.endsWith('.pyc');
+    });
+    if (!sourceFiles.length) {
+      failures.push(`Diretorio de paridade ausente ou vazio: ${normalizedDir}`);
+      continue;
+    }
+    for (const sourcePath of sourceFiles) {
+      const relative = toPosix(path.relative(repoRoot, sourcePath));
+      const packagedPath = path.join(packagedRoot, 'local_app', relative);
+      if (!fileExists(packagedPath)) {
+        failures.push(`Arquivo de paridade ausente no pacote: local_app/${relative}`);
+      } else if (!filesEqual(sourcePath, packagedPath)) {
+        failures.push(`Arquivo desatualizado no pacote: local_app/${relative}`);
+      }
+    }
   }
 
   for (const rule of manifest.requiredPackagedGlobs || []) {
@@ -252,6 +374,7 @@ function main() {
   failIfMissingSource(manifest, failures);
   validatePackageConfig(manifest, failures);
   validateRuntimeCopyGuards(manifest, failures);
+  validateOfflineRuntime(manifest, failures);
   validatePackagedOutput(manifest, failures);
 
   if (failures.length) {

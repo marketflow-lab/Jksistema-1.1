@@ -40,6 +40,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.vendas_sync_progress import _corrigir_texto_mojibake
+from ml_questions_gemini.compatibility import is_compatibility_question
 
 
 def configure_perguntas_pos_venda_state_runtime(runtime_module=None, peers=None):
@@ -155,7 +156,9 @@ def _perguntas_loja_config_normalizar(config: dict | None = None) -> dict:
         pos_venda_raw = config.get("usar_pos_venda") if "usar_pos_venda" in config else config.get("responder_automaticamente")
     return {
         "responder_automaticamente": bool(config.get("responder_automaticamente")),
-        "solicitar_aprovacao": bool(config.get("solicitar_aprovacao")),
+        # Automatico significa gerar o rascunho; publicar sempre exige humano.
+        "solicitar_aprovacao": True,
+        "notificar_whatsapp_aprovacoes": bool(config.get("notificar_whatsapp_aprovacoes")),
         "habilitar_pos_venda_automatico": bool(pos_venda_raw),
         "intervalo_minutos": intervalo_minutos,
     }
@@ -189,6 +192,7 @@ def _perguntas_loja_config_salvar(
     loja: str,
     responder_automaticamente: bool,
     solicitar_aprovacao: bool,
+    notificar_whatsapp_aprovacoes: bool,
     habilitar_pos_venda_automatico: bool,
     intervalo_minutos: float | None = None,
 ) -> dict:
@@ -199,7 +203,8 @@ def _perguntas_loja_config_salvar(
     intervalo_cfg = _perguntas_loja_config_normalizar({"intervalo_minutos": intervalo_minutos})
     payload = {
         "responder_automaticamente": bool(responder_automaticamente),
-        "solicitar_aprovacao": bool(solicitar_aprovacao),
+        "solicitar_aprovacao": True,
+        "notificar_whatsapp_aprovacoes": bool(notificar_whatsapp_aprovacoes),
         "habilitar_pos_venda_automatico": bool(habilitar_pos_venda_automatico),
         "intervalo_minutos": intervalo_cfg["intervalo_minutos"],
         "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -526,9 +531,12 @@ def _perguntas_ia_intencao_heuristica(pergunta: dict, item: dict | None = None) 
         "entrega", "rastreio", "rastreamento", "correio", "transportadora", "nao chegou",
         "atrasou", "rota de entrega",
     )
-    sinais_compat = (
-        "serve", "servi", "compativel", "compatibilidade", "aplica", "encaixa", "da certo",
-        "ano", "motor", "modelo", "veiculo", "chassi", "vin", "corolla", "civic", "focus", "hilux",
+    sinais_compat_contextuais = (
+        "da certo", "veiculo", "chassi", " vin ", "corolla", "civic", "focus", "hilux",
+    )
+    tem_compatibilidade = bool(
+        is_compatibility_question(texto)
+        or any(sinal in texto for sinal in sinais_compat_contextuais)
     )
     sinais_outra = (
         "voces tem", "voce tem", "tem essa peca", "tem o", "tem a", "manda link", "envia link",
@@ -564,7 +572,7 @@ def _perguntas_ia_intencao_heuristica(pergunta: dict, item: dict | None = None) 
             "usar_bling": False,
             "source": "heuristica",
         }
-    if tem_troca and not any(s in texto for s in sinais_compat):
+    if tem_troca and not tem_compatibilidade:
         return {
             "intencao": "troca_garantia",
             "fluxo": "pos_venda",
@@ -588,7 +596,7 @@ def _perguntas_ia_intencao_heuristica(pergunta: dict, item: dict | None = None) 
             "usar_bling": True,
             "source": "heuristica",
         }
-    if any(s in texto for s in sinais_compat):
+    if tem_compatibilidade:
         return {
             "intencao": "compatibilidade",
             "fluxo": "perguntas_anuncio",

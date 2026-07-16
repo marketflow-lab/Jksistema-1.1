@@ -168,6 +168,7 @@ class CodexAssistantSqliteTest(unittest.TestCase):
     def test_backfill_console_encontra_db_e_json_legado(self):
         db_report = {
             "report_id": "db-report",
+            "created_by": "caio",
             "title": "Relatorio DB",
             "prompt": "db",
             "created_at": "2026-07-08T10:00:00",
@@ -181,6 +182,7 @@ class CodexAssistantSqliteTest(unittest.TestCase):
             legacy_dir / "metadata.json",
             {
                 "report_id": "legacy-backfill",
+                "created_by": "caio",
                 "title": "Relatorio JSON",
                 "prompt": "json",
                 "created_at": "2026-07-08T11:00:00",

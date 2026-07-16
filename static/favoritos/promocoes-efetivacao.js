@@ -793,7 +793,26 @@
             });
             return wrap;
         }
-        function renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemStatus = '', falhas = []) {
+        function criarBlocoColarPlanilhaResultadoFavoritos(historicoAlteracoes, compacto = false) {
+            if (!historicoAlteracoes || !Array.isArray(historicoAlteracoes.vinculos) || !historicoAlteracoes.vinculos.length) {
+                return null;
+            }
+            if (typeof window.favoritosCriarBotaoColarHistoricoPlanilha !== 'function') {
+                return null;
+            }
+            const wrap = document.createElement('div');
+            wrap.className = compacto
+                ? 'ml-favoritos-resultado-planilha is-compact'
+                : 'ml-favoritos-resultado-planilha';
+            const statusEl = document.createElement('div');
+            statusEl.className = 'ml-favoritos-resultado-planilha-status';
+            const botao = window.favoritosCriarBotaoColarHistoricoPlanilha(historicoAlteracoes, { statusEl });
+            botao.classList.add('ml-favoritos-resultado-planilha-btn');
+            wrap.appendChild(botao);
+            wrap.appendChild(statusEl);
+            return wrap;
+        }
+        function renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemStatus = '', falhas = [], historicoAlteracoes = null) {
             const lista = (Array.isArray(sucessos) ? sucessos : [])
                 .filter(item => item && item.registro && item.data);
             const listaFalhas = (Array.isArray(falhas) ? falhas : [])
@@ -920,6 +939,8 @@
                 titleEl.textContent = `Comparacao dos anuncios processados: ${totalProcessados} anuncio(s) (${lista.length} alterado(s), ${listaFalhas.length} nao feito(s)).`;
                 row.appendChild(titleEl);
                 row.appendChild(criarTabela('ml-favoritos-comparacao-table-wrap', 'ml-favoritos-comparacao-table'));
+                const blocoPlanilha = criarBlocoColarPlanilhaResultadoFavoritos(historicoAlteracoes);
+                if (blocoPlanilha) row.appendChild(blocoPlanilha);
                 favMlEfetivarLogEl.appendChild(row);
                 favMlEfetivarLogEl.scrollTop = favMlEfetivarLogEl.scrollHeight;
             }
@@ -949,6 +970,8 @@
                 mlFavoritosBalloonTextEl.appendChild(criarTabela('ml-favoritos-balloon-comparison-wrap', 'ml-favoritos-balloon-comparison-table'));
             }
             if (mlFavoritosBalloonActionsEl) {
+                const blocoPlanilha = criarBlocoColarPlanilhaResultadoFavoritos(historicoAlteracoes, true);
+                if (blocoPlanilha) mlFavoritosBalloonActionsEl.appendChild(blocoPlanilha);
                 const fecharBtn = document.createElement('button');
                 fecharBtn.type = 'button';
                 fecharBtn.textContent = 'Fechar';
@@ -965,7 +988,18 @@
             if (!anuncio || typeof anuncio !== 'object') return {};
             try {
                 if (typeof anuncioHistoricoPayload === 'function') {
-                    return anuncioHistoricoPayload(anuncio);
+                    const payloadPadrao = anuncioHistoricoPayload(anuncio);
+                    const custoAnuncio = anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? '';
+                    const custoFrete = anuncio.custo_frete ?? anuncio.frete_ml ?? anuncio.shipping_cost ?? anuncio.shipping_seller_cost ?? '';
+                    return {
+                        ...payloadPadrao,
+                        custo: payloadPadrao.custo ?? custoAnuncio,
+                        custo_unitario: payloadPadrao.custo_unitario ?? custoAnuncio,
+                        custo_produto: payloadPadrao.custo_produto ?? custoAnuncio,
+                        preco_custo: payloadPadrao.preco_custo ?? custoAnuncio,
+                        valor_custo: payloadPadrao.valor_custo ?? custoAnuncio,
+                        custo_frete: payloadPadrao.custo_frete ?? custoFrete
+                    };
                 }
             } catch (err) {
                 console.warn('Nao foi possivel usar payload padrao do historico de favoritos:', err);
@@ -1001,6 +1035,12 @@
                 preco_original: precos.promocional !== null && precos.promocional !== undefined ? precos.preco : '',
                 preco_promocional: precos.promocional,
                 discount_pct: precos.desconto || '',
+                custo: anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? '',
+                custo_unitario: anuncio.custo_unitario ?? anuncio.custo ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? '',
+                custo_produto: anuncio.custo_produto ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.preco_custo ?? anuncio.valor_custo ?? '',
+                preco_custo: anuncio.preco_custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.valor_custo ?? '',
+                valor_custo: anuncio.valor_custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? '',
+                custo_frete: anuncio.custo_frete ?? anuncio.frete_ml ?? anuncio.shipping_cost ?? anuncio.shipping_seller_cost ?? '',
                 moeda: anuncio.moeda || anuncio.currency_id || 'BRL',
                 currency_id: anuncio.currency_id || anuncio.moeda || 'BRL',
                 tipo_anuncio: tipoAnuncio,
@@ -1058,6 +1098,10 @@
 
         function montarSimulacaoHistoricoAlteracaoFavoritos(registro, data = null) {
             const sim = registro && registro.sim || {};
+            const anuncio = registro && registro.anuncio || {};
+            const custoBase = sim.custo ?? anuncio.custo ?? anuncio.custo_unitario ?? anuncio.custo_produto ?? anuncio.preco_custo ?? anuncio.valor_custo ?? null;
+            const custoIdeal = sim.custoIdealAbaixoBase ?? sim.custo_ideal_abaixo_base ?? null;
+            const precoAlvoCustoIdeal = sim.precoAlvoCustoIdeal ?? sim.preco_alvo_custo_ideal ?? null;
             return {
                 ok: !!sim.ok,
                 preco_previsto: sim.preco ?? null,
@@ -1065,9 +1109,23 @@
                 preco_aplicado: data && data.preco_anuncio !== undefined ? data.preco_anuncio : null,
                 preco_promocional_aplicado: data && data.preco_promocional !== undefined ? data.preco_promocional : null,
                 margem_prevista: sim.margem ?? null,
+                margem_aplicada: data && data.margem_estimada_contingencia !== undefined ? data.margem_estimada_contingencia : sim.margem ?? null,
+                custo: custoBase,
+                custo_base: custoBase,
+                custo_unitario: custoBase,
+                custo_produto: custoBase,
+                preco_custo: custoBase,
+                valor_custo: custoBase,
                 limite_margem_aplicado: !!sim.limiteMargemAplicado,
-                preco_alvo_custo_ideal: sim.precoAlvoCustoIdeal ?? null,
-                custo_ideal_abaixo_base: sim.custoIdealAbaixoBase ?? null,
+                limiteMargemAplicado: !!sim.limiteMargemAplicado,
+                preco_minimo_margem: sim.precoMinimoMargem ?? null,
+                preco_alvo_custo_ideal: precoAlvoCustoIdeal,
+                precoAlvoCustoIdeal: precoAlvoCustoIdeal,
+                custo_ideal_abaixo_base: custoIdeal,
+                custoIdealAbaixoBase: custoIdeal,
+                preco_custo_necessario: custoIdeal,
+                custo_para_concorrer: custoIdeal,
+                custo_maximo_para_concorrer: custoIdeal,
                 reducao_custo_ideal: sim.reducaoCustoIdeal ?? null,
                 tipo_anuncio_atual: sim.tipoAnuncioAtual || '',
                 tipo_anuncio_alvo: sim.tipoAnuncioAlvo || '',
@@ -2043,6 +2101,7 @@
                         adicionarStatusEfetivarFavoritos('success', 'Processo concluido', `${sucessos.length} anuncio(s) alterado(s), com promocao aplicada e conferida no Mercado Livre.`);
                     }
                 }
+                let historicoAlteracoesResultado = null;
                 try {
                     const historicoAlteracoes = montarHistoricoAlteracoesFavoritosPayload({
                         sku,
@@ -2054,6 +2113,7 @@
                         falhas,
                         mensagemFinal: mensagemFinalEfetivacao
                     });
+                    historicoAlteracoesResultado = historicoAlteracoes;
                     const entradaHistorico = salvarHistoricoAlteracoesFavoritosProcesso(historicoAlteracoes);
                     if (entradaHistorico) {
                         adicionarStatusEfetivarFavoritos(
@@ -2070,7 +2130,7 @@
                         err && err.message ? err.message : String(err || 'Falha desconhecida ao salvar historico.')
                     );
                 }
-                renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemFinalEfetivacao, falhas);
+                renderizarComparativoEfetivacaoFavoritos(sucessos, mensagemFinalEfetivacao, falhas, historicoAlteracoesResultado);
                 agendarOcultarStatusEfetivarFavoritos(5000);
             } finally {
                 if (protecaoElectronAtiva) {
