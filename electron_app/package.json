@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.98",
+  "version": "1.0.99",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "packageManager": "npm@11.6.2",
@@ -75,6 +75,8 @@
           "!backend/**/__pycache__/**",
           "!backend/**/*.pyc",
           "requirements.txt",
+          "runtime-versions.json",
+          "scripts/provision_python_runtime.py",
           "*.html",
           "*.js",
           "electron_app/main/modules/**",
@@ -119,6 +121,7 @@
       "signAndEditExecutable": false
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,

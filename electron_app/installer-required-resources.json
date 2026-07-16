@@ -3,10 +3,13 @@
     "backend_api.py",
     "requirements.in",
     "requirements.txt",
+    "runtime-versions.json",
     "scripts/lock_python_dependencies.py",
+    "scripts/provision_python_runtime.py",
     "scripts/verify-dependency-locks.js",
     "scripts/prepare_installer_runtime.ps1",
     "scripts/verify-installer-offline.ps1",
+    "electron_app/build/installer.nsh",
     ".installer_runtime/runtime-manifest.json",
     ".installer_runtime/prerequisites/VC_redist.x64.exe",
     "auth.js",
@@ -90,7 +93,7 @@
     "firebase-presence.env"
   ],
   "requiredSourceGlobs": [
-    { "pattern": "python_runtime/python-*.exe", "min": 1 },
+    { "pattern": "python_runtime/portable/python.exe", "min": 1 },
     { "pattern": "python_wheels/*.whl", "min": 20 },
     { "pattern": "python_wheels/openai_codex-0.1.0b3-*.whl", "min": 1 },
     { "pattern": "python_wheels/openai_codex_cli_bin-0.137.0a4-*.whl", "min": 1 },
@@ -100,6 +103,9 @@
   "offlineRuntime": {
     "requirementsFile": "requirements.txt",
     "wheelDirectory": "python_wheels",
+    "runtimeVersionsFile": "runtime-versions.json",
+    "portablePython": "python_runtime/portable/python.exe",
+    "provisioner": "scripts/provision_python_runtime.py",
     "markerPrefix": ".requirements-",
     "minimumWheels": 100,
     "requiredWheelPatterns": [
@@ -109,7 +115,7 @@
       "ctranslate2-*-win_amd64.whl",
       "onnxruntime-*-win_amd64.whl",
       "av-*-win_amd64.whl",
-      "websockets-15.*-win_amd64.whl"
+      "websockets-15.*.whl"
     ]
   },
   "requiredSourceDirectories": [
@@ -122,6 +128,7 @@
     { "path": "ml_questions_gemini", "minFiles": 10 },
     { "path": "static", "minFiles": 20 },
     { "path": "img", "minFiles": 1 },
+    { "path": "python_runtime/portable", "minFiles": 5 },
     { "path": ".installer_runtime/black_jhon/faster-whisper-small", "minFiles": 8 },
     { "path": ".installer_runtime/prerequisites", "minFiles": 1 }
   ],
@@ -169,6 +176,8 @@
     "!backend/**/__pycache__/**",
     "!backend/**/*.pyc",
     "requirements.txt",
+    "runtime-versions.json",
+    "scripts/provision_python_runtime.py",
     "*.html",
     "*.js",
     "electron_app/main/modules/**",
@@ -202,6 +211,9 @@
     ".venv",
     "node_modules",
     "electron_app",
+    "python_runtime",
+    "python_wheels",
+    "prerequisites",
     "info",
     "logs",
     "backups"
@@ -212,6 +224,9 @@
     "local_app/backend_api.py",
     "local_app/backend/__init__.py",
     "local_app/requirements.txt",
+    "local_app/runtime-versions.json",
+    "local_app/scripts/provision_python_runtime.py",
+    "local_app/python_runtime/portable/python.exe",
     "local_app/runtime-manifest.json",
     "local_app/prerequisites/VC_redist.x64.exe",
     "local_app/black_jhon_runtime/faster-whisper-small/model-manifest.json",
@@ -296,6 +311,8 @@
   "requiredPackagedSourceParity": [
     "backend_api.py",
     "requirements.txt",
+    "runtime-versions.json",
+    "scripts/provision_python_runtime.py",
     "backend/lifecycle.py",
     "backend/routers/__init__.py",
     "backend/routers/whatsapp_bridge.py",
@@ -354,7 +371,7 @@
     "img"
   ],
   "requiredPackagedGlobs": [
-    { "pattern": "local_app/python_runtime/python-*.exe", "min": 1 },
+    { "pattern": "local_app/python_runtime/portable/python.exe", "min": 1 },
     { "pattern": "local_app/python_wheels/*.whl", "min": 20 },
     { "pattern": "local_app/python_wheels/openai_codex-0.1.0b3-*.whl", "min": 1 },
     { "pattern": "local_app/python_wheels/openai_codex_cli_bin-0.137.0a4-*.whl", "min": 1 },
@@ -371,9 +388,23 @@
     { "path": "local_app/ml_questions_gemini", "minFiles": 10 },
     { "path": "local_app/static", "minFiles": 20 },
     { "path": "local_app/img", "minFiles": 1 },
+    { "path": "local_app/python_runtime/portable", "minFiles": 5 },
     { "path": "local_app/black_jhon_runtime/faster-whisper-small", "minFiles": 8 },
     { "path": "local_app/prerequisites", "minFiles": 1 }
   ],
+  "installerProvisioning": {
+    "nsisInclude": "build/installer.nsh",
+    "portablePython": "python_runtime/portable/python.exe",
+    "provisioner": "scripts/provision_python_runtime.py",
+    "runtimeVersionsFile": "runtime-versions.json",
+    "statusFile": "info/python-runtime-status.json",
+    "readyMarker": ".venv/.jk-venv-ready.json",
+    "preserveExistingInstallMode": true,
+    "deferFreshAllUsersProvisioning": true,
+    "updateVcFailureIsNonFatal": true,
+    "installLog": "logs/python-runtime-install.log",
+    "selfHealLog": "logs/python-runtime-provision.log"
+  },
   "forbiddenBuildReferences": [
     ".jkcred",
     "resources/private",

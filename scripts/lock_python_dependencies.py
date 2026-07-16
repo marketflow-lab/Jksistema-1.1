@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -15,9 +17,41 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = ROOT / "requirements.in"
 DEFAULT_OUTPUT = ROOT / "requirements.txt"
 DEFAULT_CACHE = ROOT / ".dependency-lock"
-TARGET_PYTHON = "3.11"
+RUNTIME_VERSIONS_FILE = ROOT / "runtime-versions.json"
+
+
+def load_python_runtime() -> dict[str, str]:
+    try:
+        config = json.loads(RUNTIME_VERSIONS_FILE.read_text(encoding="utf-8"))
+        python_config = config["python"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"Configuracao de runtime invalida: {RUNTIME_VERSIONS_FILE}") from exc
+
+    required_fields = ("version", "minor", "implementation", "abi")
+    values = {field: str(python_config.get(field) or "").strip() for field in required_fields}
+    if any(not value for value in values.values()):
+        raise RuntimeError("runtime-versions.json nao possui todos os campos Python obrigatorios")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", values["version"]):
+        raise RuntimeError(f"Versao Python invalida: {values['version']}")
+
+    major, minor, _patch = values["version"].split(".")
+    expected_minor = f"{major}.{minor}"
+    expected_abi = f"cp{major}{minor}"
+    if values["minor"] != expected_minor:
+        raise RuntimeError(f"Minor Python deve ser {expected_minor}, encontrado {values['minor']}")
+    if values["implementation"] != "cp":
+        raise RuntimeError("A geracao de locks exige a implementacao CPython (cp)")
+    if values["abi"] != expected_abi:
+        raise RuntimeError(f"ABI Python deve ser {expected_abi}, encontrada {values['abi']}")
+    return values
+
+
+PYTHON_RUNTIME = load_python_runtime()
+PYTHON_VERSION = PYTHON_RUNTIME["version"]
+TARGET_PYTHON = PYTHON_RUNTIME["minor"]
+TARGET_ABI = PYTHON_RUNTIME["abi"]
 TARGETS = {
-    "win32": (["win_amd64"], "cp311"),
+    "win32": (["win_amd64"], TARGET_ABI),
     "linux": (
         [
             "manylinux_2_28_x86_64",
@@ -25,7 +59,7 @@ TARGETS = {
             "manylinux_2_17_x86_64",
             "manylinux1_x86_64",
         ],
-        "cp311",
+        TARGET_ABI,
     ),
 }
 
@@ -82,6 +116,7 @@ def download_target(requirements: Path, cache_dir: Path, platforms: list[str], a
         sys.executable,
         "-m",
         "pip",
+        "--isolated",
         "download",
         "--disable-pip-version-check",
         "--quiet",
@@ -99,7 +134,16 @@ def download_target(requirements: Path, cache_dir: Path, platforms: list[str], a
     ]
     for platform in platforms:
         command[command.index("--python-version"):command.index("--python-version")] = ["--platform", platform]
-    subprocess.run(command, cwd=ROOT, check=True)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+        }
+    )
+    subprocess.run(command, cwd=ROOT, env=environment, check=True)
 
 
 def inventory(cache_dir: Path) -> dict[str, dict[str, object]]:
@@ -124,7 +168,7 @@ def render_lock(inventories: dict[str, dict[str, dict[str, object]]]) -> str:
     package_names = sorted({name for packages in inventories.values() for name in packages})
     lines = [
         "# Gerado por scripts/lock_python_dependencies.py. Nao edite manualmente.",
-        "# Alvos: CPython 3.11 em Windows x64 e Linux x64; somente wheels binarias.",
+        f"# Alvos: CPython {TARGET_PYTHON} em Windows x64 e Linux x64; somente wheels binarias.",
         "--require-hashes",
         "--only-binary=:all:",
         "",
@@ -159,7 +203,9 @@ def render_lock(inventories: dict[str, dict[str, dict[str, object]]]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Gera o lock Python 3.11 com hashes Windows e Linux.")
+    parser = argparse.ArgumentParser(
+        description=f"Gera o lock Python {TARGET_PYTHON} com hashes Windows e Linux."
+    )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)

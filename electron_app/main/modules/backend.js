@@ -590,6 +590,9 @@ function shouldSkipBackendCopyEntry(name, fullPath) {
         lower === '.venv' ||
         lower === 'node_modules' ||
         lower === 'electron_app' ||
+        lower === 'python_runtime' ||
+        lower === 'python_wheels' ||
+        lower === 'prerequisites' ||
         lower === 'info' ||
         lower === 'logs' ||
         lower === 'backups' ||
@@ -757,12 +760,34 @@ function stopProcessListeningOnPort(port) {
     });
 }
 
-function sanitizeMarkerVersion(value) {
-    return String(value || 'dev').replace(/[^a-zA-Z0-9._-]+/g, '_');
-}
-
 function cmdValue(value) {
     return String(value || '').replace(/"/g, '');
+}
+
+function isolatedPythonChildEnv(overrides = {}) {
+    const env = { ...process.env, ...overrides };
+    for (const key of Object.keys(env)) {
+        const normalized = String(key).toUpperCase();
+        if (
+            normalized === 'PYTHONHOME'
+            || normalized === 'PYTHONPATH'
+            || normalized === 'PYTHONUSERBASE'
+            || normalized === 'VIRTUAL_ENV'
+            || normalized.startsWith('PIP_')
+        ) {
+            delete env[key];
+        }
+    }
+    return {
+        ...env,
+        PYTHONNOUSERSITE: '1',
+        PYTHONDONTWRITEBYTECODE: '1',
+        PYTHONUTF8: '1',
+        PYTHONUNBUFFERED: '1',
+        PIP_CONFIG_FILE: 'NUL',
+        PIP_DISABLE_PIP_VERSION_CHECK: '1',
+        PIP_NO_INDEX: '1'
+    };
 }
 
 function firebaseRuntimeCmdLines(firebaseEnv) {
@@ -788,17 +813,203 @@ function firebaseRuntimeCmdLines(firebaseEnv) {
         .map((key) => `set "${key}=${cmdValue(firebaseEnv[key])}"`);
 }
 
+function readPythonRuntimeProvisionStatus(localAppDir) {
+    const statusPath = path.join(localAppDir, 'info', 'python-runtime-status.json');
+    try {
+        const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+        return { statusPath, status: status && typeof status === 'object' ? status : null };
+    } catch (_err) {
+        return { statusPath, status: null };
+    }
+}
+
+function pythonRuntimeStageFromStatus(status) {
+    const explicit = String(status && (status.stage || status.step) || '').trim();
+    if (explicit) return explicit;
+    const code = String(status && (status.error_code || status.errorCode || status.code) || '').toLowerCase();
+    if (/lock/.test(code)) return 'provision_lock';
+    if (/portable|runtime|python_(?:missing|probe|version|abi|arch)/.test(code)) return 'portable_runtime';
+    if (/wheel|requirements/.test(code)) return 'wheelhouse_validation';
+    if (/venv/.test(code)) return 'venv_creation';
+    if (/pip|ensurepip|offline_install/.test(code)) return 'dependency_install';
+    if (/critical_import|health/.test(code)) return 'health_check';
+    return 'provision_exit';
+}
+
+function pythonRuntimeDiagnosticError(message, details = {}) {
+    const statusInfo = details.statusInfo || readPythonRuntimeProvisionStatus(details.targetRoot || getLocalBackendRuntimeDir());
+    const status = statusInfo.status || {};
+    const stage = String(details.stage || status.stage || status.step || 'python_runtime').trim();
+    const rawCode = details.code ?? status.code ?? status.error_code ?? status.errorCode;
+    const code = rawCode === undefined || rawCode === null || rawCode === '' ? 'indisponivel' : String(rawCode);
+    const logPath = String(details.logPath || status.log_file || status.logPath || '').trim();
+    const statusMessage = String(status.state || '').toLowerCase() === 'failed'
+        ? String(status.message || status.error || status.detail || '').trim()
+        : '';
+    const lines = [
+        String(message || 'Falha ao preparar o ambiente Python local.'),
+        `Etapa: ${stage}`,
+        `Codigo: ${code}`,
+        ...(statusMessage && !String(message || '').includes(statusMessage) ? [`Detalhe: ${statusMessage}`] : []),
+        ...(logPath ? [`Log: ${logPath}`] : []),
+        `Status: ${statusInfo.statusPath}`
+    ];
+    const error = new Error(lines.join('\n'));
+    error.jkLocalBackendDiagnostic = true;
+    error.jkStage = stage;
+    error.jkCode = code;
+    error.jkLogPath = logPath;
+    return error;
+}
+
+function appendProvisionerOutput(logPath, label, output) {
+    const text = String(output || '').trim();
+    if (!text) return;
+    try {
+        fs.appendFileSync(logPath, `\n[${label}]\n${text}\n`, 'utf8');
+    } catch (_err) {}
+}
+
+function ensurePythonRuntimeProvisioned(sourceRoot, targetRoot) {
+    const portablePython = path.join(sourceRoot, 'python_runtime', 'portable', 'python.exe');
+    const provisioner = path.join(sourceRoot, 'scripts', 'provision_python_runtime.py');
+    const logPath = path.join(targetRoot, 'logs', 'python-runtime-provision.log');
+    const statusPath = path.join(targetRoot, 'info', 'python-runtime-status.json');
+    const venvPython = path.join(targetRoot, '.venv', 'Scripts', 'python.exe');
+    const readyMarker = path.join(targetRoot, '.venv', '.jk-venv-ready.json');
+    const incompleteInstallerMarker = path.join(targetRoot, 'info', 'installer-python-runtime.incomplete');
+
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.mkdirSync(path.dirname(statusPath), { recursive: true });
+    try {
+        fs.appendFileSync(
+            logPath,
+            `\n==== JK Sistema Python self-heal ${new Date().toISOString()} ====\nSource: ${sourceRoot}\nTarget: ${targetRoot}\n`,
+            'utf8'
+        );
+    } catch (_err) {}
+
+    if (!fs.existsSync(portablePython)) {
+        return Promise.reject(pythonRuntimeDiagnosticError(
+            'Python portatil nao foi encontrado no pacote. Reinstale o JK Sistema usando o instalador completo.',
+            { stage: 'portable_python', code: 'PORTABLE_PYTHON_MISSING', logPath, targetRoot }
+        ));
+    }
+    if (!fs.existsSync(provisioner)) {
+        return Promise.reject(pythonRuntimeDiagnosticError(
+            'Provisionador do ambiente Python nao foi encontrado no pacote.',
+            { stage: 'provisioner', code: 'PROVISIONER_MISSING', logPath, targetRoot }
+        ));
+    }
+
+    logElectronLifecycle('python-runtime-provision-starting', {
+        sourceRoot,
+        targetRoot,
+        portablePython,
+        provisioner,
+        logPath,
+        statusPath
+    });
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let stdout = '';
+        let stderr = '';
+        const outputLimit = 512 * 1024;
+        const collect = (current, chunk) => `${current}${String(chunk || '')}`.slice(-outputLimit);
+        const child = spawn(portablePython, [
+            '-B',
+            '-I',
+            provisioner,
+            '--source-root', sourceRoot,
+            '--target-root', targetRoot,
+            '--log-file', logPath,
+            '--quick-reuse',
+            '--command-timeout', '1500'
+        ], {
+            cwd: sourceRoot,
+            env: isolatedPythonChildEnv(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
+        });
+        const timeout = setTimeout(async () => {
+            if (settled) return;
+            settled = true;
+            const treeStopped = await stopTrackedProcessTree(child.pid);
+            if (!treeStopped) {
+                try { child.kill(); } catch (_err) {}
+            }
+            appendProvisionerOutput(logPath, 'stdout', stdout);
+            appendProvisionerOutput(logPath, 'stderr', stderr);
+            reject(pythonRuntimeDiagnosticError(
+                'O preparo do ambiente Python excedeu o tempo limite de 40 minutos.',
+                { stage: 'provision_timeout', code: 'TIMEOUT', logPath, targetRoot }
+            ));
+        }, 40 * 60 * 1000);
+
+        if (child.stdout) child.stdout.on('data', chunk => { stdout = collect(stdout, chunk); });
+        if (child.stderr) child.stderr.on('data', chunk => { stderr = collect(stderr, chunk); });
+        child.once('error', (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            appendProvisionerOutput(logPath, 'stdout', stdout);
+            appendProvisionerOutput(logPath, 'stderr', `${stderr}\n${err && err.stack ? err.stack : err}`);
+            reject(pythonRuntimeDiagnosticError(
+                'Nao foi possivel executar o provisionador do ambiente Python.',
+                { stage: 'provision_spawn', code: err && err.code ? err.code : 'SPAWN_FAILED', logPath, targetRoot }
+            ));
+        });
+        child.once('close', (code, signal) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            appendProvisionerOutput(logPath, 'stdout', stdout);
+            appendProvisionerOutput(logPath, 'stderr', stderr);
+            const statusInfo = readPythonRuntimeProvisionStatus(targetRoot);
+            const ready = Number(code) === 0
+                && statusInfo.status
+                && String(statusInfo.status.state || '').toLowerCase() === 'ready'
+                && fs.existsSync(venvPython)
+                && fs.existsSync(readyMarker);
+            if (!ready) {
+                const statusCode = statusInfo.status && (
+                    statusInfo.status.error_code
+                    || statusInfo.status.errorCode
+                    || statusInfo.status.code
+                );
+                reject(pythonRuntimeDiagnosticError(
+                    'O ambiente Python local nao foi preparado ou validado.',
+                    {
+                        stage: pythonRuntimeStageFromStatus(statusInfo.status),
+                        code: statusCode || (code === null ? (signal || 'NO_EXIT_CODE') : code),
+                        logPath,
+                        targetRoot,
+                        statusInfo
+                    }
+                ));
+                return;
+            }
+            logElectronLifecycle('python-runtime-provision-ready', {
+                code,
+                sourceRoot,
+                targetRoot,
+                statusPath,
+                logPath
+            });
+            try { fs.rmSync(incompleteInstallerMarker, { force: true }); } catch (_err) {}
+            resolve({ portablePython, venvPython, readyMarker, statusPath, logPath, status: statusInfo.status });
+        });
+    });
+}
+
 function writeLocalBackendLauncher(localAppDir) {
     const infoDir = path.join(localAppDir, 'info');
     const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
     const launcherPath = path.join(JK_ELECTRON_USER_DATA_DIR, 'start-local-backend.cmd');
-    const logPath = path.join(localAppDir, 'logs', 'local_backend_start_%RANDOM%.log');
-    const depsMarker = `.venv\\.jk_deps_${sanitizeMarkerVersion(app.getVersion())}.ok`;
+    const logPath = path.join(localAppDir, 'logs', `local_backend_start_${Date.now()}_${process.pid}.log`);
     const localCallback = process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback';
     const localGoogleCallback = process.env.JK_LOCAL_GOOGLE_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/google/callback';
-    const pythonRuntimeDir = '.python-runtime';
-    const requiredPythonVersion = '3.11.9';
-    const pythonVersionCheck = 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 11, 9) else 1)';
     const lines = [
         '@echo off',
         'setlocal EnableExtensions EnableDelayedExpansion',
@@ -825,111 +1036,27 @@ function writeLocalBackendLauncher(localAppDir) {
             `set "FIREBASE_PROJECT_ID=${cmdValue(firebaseEnv.FIREBASE_PROJECT_ID)}"`
         ] : []),
         ...firebaseRuntimeCmdLines(firebaseEnv),
+        'set "PYTHONHOME="',
+        'set "PYTHONPATH="',
+        'set "PYTHONUSERBASE="',
+        'set "VIRTUAL_ENV="',
+        'set "PYTHONNOUSERSITE=1"',
+        'set "PYTHONDONTWRITEBYTECODE=1"',
         'set "PYTHONUNBUFFERED=1"',
         'set "PYTHONUTF8=1"',
+        'set "PIP_CONFIG_FILE=NUL"',
+        'set "PIP_NO_INDEX=1"',
         'echo.>> "%LOG_FILE%"',
         'echo ==== JK Sistema local backend %date% %time% ====>> "%LOG_FILE%"',
-        `set "PYTHON_RUNTIME_DIR=${pythonRuntimeDir}"`,
-        'reg query "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64" /v Installed 2>nul | find "0x1" >nul',
-        'if errorlevel 1 (',
-        '  if exist "%VC_REDIST%" (',
-        '    echo Instalando Microsoft Visual C++ Runtime empacotado...>> "%LOG_FILE%"',
-        '    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:VC_REDIST; if($s.Status -ne \'Valid\' -or $s.SignerCertificate.Subject -notmatch \'Microsoft\'){exit 1}" >> "%LOG_FILE%" 2>&1',
-        '    if errorlevel 1 (',
-        '      echo Assinatura do Visual C++ Runtime invalida.>> "%LOG_FILE%"',
-        '      exit /b 1',
-        '    )',
-        '    "%VC_REDIST%" /install /passive /norestart >> "%LOG_FILE%" 2>&1',
-        '    set "VC_EXIT=!ERRORLEVEL!"',
-        '    if not "!VC_EXIT!"=="0" if not "!VC_EXIT!"=="3010" (',
-        '      echo Falha ao instalar Visual C++ Runtime: !VC_EXIT!.>> "%LOG_FILE%"',
-        '      exit /b !VC_EXIT!',
-        '    )',
-        '  ) else (',
-        '    echo Visual C++ Runtime ausente e instalador empacotado nao encontrado.>> "%LOG_FILE%"',
-        '  )',
-        ')',
-        `set "BUNDLED_PYTHON_INSTALLER=python_runtime\\python-${requiredPythonVersion}-amd64.exe"`,
-        'if not exist "%BUNDLED_PYTHON_INSTALLER%" set "BUNDLED_PYTHON_INSTALLER="',
-        'if exist "%PYTHON_RUNTIME_DIR%\\python.exe" (',
-        `  "%PYTHON_RUNTIME_DIR%\\python.exe" -c "${pythonVersionCheck}" >> "%LOG_FILE%" 2>&1`,
-        '  if errorlevel 1 (',
-        `    echo Python runtime local incompativel com ${requiredPythonVersion}. Recriando runtime empacotado...>> "%LOG_FILE%"`,
-        '    rmdir /s /q "%PYTHON_RUNTIME_DIR%" >> "%LOG_FILE%" 2>&1',
-        '  )',
-        ')',
-        'if not exist "%PYTHON_RUNTIME_DIR%\\python.exe" (',
-        '  if defined BUNDLED_PYTHON_INSTALLER (',
-        '    echo Instalando Python empacotado: %BUNDLED_PYTHON_INSTALLER%>> "%LOG_FILE%"',
-        '    "%BUNDLED_PYTHON_INSTALLER%" /quiet InstallAllUsers=0 TargetDir="%CD%\\%PYTHON_RUNTIME_DIR%" Include_pip=1 Include_launcher=0 AssociateFiles=0 Shortcuts=0 Include_test=0 PrependPath=0 >> "%LOG_FILE%" 2>&1',
-        '  ) else (',
-        '    echo Instalador Python empacotado nao encontrado em python_runtime.>> "%LOG_FILE%"',
-        '  )',
-        ')',
-        'if exist "%PYTHON_RUNTIME_DIR%\\python.exe" (',
-        `  "%PYTHON_RUNTIME_DIR%\\python.exe" -c "${pythonVersionCheck}" >> "%LOG_FILE%" 2>&1`,
-        '  if errorlevel 1 (',
-        `    echo Instalador nao produziu o Python ${requiredPythonVersion} esperado.>> "%LOG_FILE%"`,
-        '    rmdir /s /q "%PYTHON_RUNTIME_DIR%" >> "%LOG_FILE%" 2>&1',
-        '  )',
-        ')',
-        'if exist ".venv\\Scripts\\python.exe" (',
-        `  ".venv\\Scripts\\python.exe" -c "${pythonVersionCheck}" >> "%LOG_FILE%" 2>&1`,
-        '  if errorlevel 1 (',
-        `    echo Ambiente Python virtual incompativel com ${requiredPythonVersion}. Recriando .venv...>> "%LOG_FILE%"`,
-        '    rmdir /s /q ".venv" >> "%LOG_FILE%" 2>&1',
-        '  )',
-        ')',
-        'if not exist ".venv\\Scripts\\python.exe" (',
-        '  if exist "%PYTHON_RUNTIME_DIR%\\python.exe" "%PYTHON_RUNTIME_DIR%\\python.exe" -m venv ".venv" >> "%LOG_FILE%" 2>&1',
-        ')',
-        'if not exist ".venv\\Scripts\\python.exe" (',
-        '  where py >nul 2>nul',
-        `  if not errorlevel 1 py -3.11 -c "${pythonVersionCheck}" >nul 2>&1`,
-        '  if not errorlevel 1 py -3.11 -m venv ".venv" >> "%LOG_FILE%" 2>&1',
-        ')',
-        'if not exist ".venv\\Scripts\\python.exe" (',
-        '  where python >nul 2>nul',
-        `  if not errorlevel 1 python -c "${pythonVersionCheck}" >nul 2>&1`,
-        '  if not errorlevel 1 python -m venv ".venv" >> "%LOG_FILE%" 2>&1',
-        ')',
-        'if not exist ".venv\\Scripts\\python.exe" (',
-        `  echo Python ${requiredPythonVersion} nao encontrado. Reinstale o JK Sistema com o runtime completo.>> "%LOG_FILE%"`,
-        '  exit /b 1',
-        ')',
         'set "PYTHON_EXE=.venv\\Scripts\\python.exe"',
-        `"%PYTHON_EXE%" -c "${pythonVersionCheck}" >> "%LOG_FILE%" 2>&1`,
-        'if errorlevel 1 (',
-        `  echo Ambiente Python virtual continuou incompativel com ${requiredPythonVersion} apos recriacao.>> "%LOG_FILE%"`,
-        '  rmdir /s /q ".venv" >> "%LOG_FILE%" 2>&1',
-        '  exit /b 1',
+        'if not exist ".venv\\Scripts\\python.exe" (',
+        '  echo Ambiente Python provisionado nao encontrado. Execute novamente o instalador completo.>> "%LOG_FILE%"',
+        '  exit /b 21',
         ')',
-        `if not exist "${depsMarker}" (`,
-        '  "%PYTHON_EXE%" -m ensurepip --upgrade >> "%LOG_FILE%" 2>&1',
-        '  if exist "python_wheels\\*.whl" (',
-        '    echo Instalando dependencias offline em python_wheels...>> "%LOG_FILE%"',
-        '    "%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-index --find-links "python_wheels" -r requirements.txt >> "%LOG_FILE%" 2>&1',
-        '    if errorlevel 1 (',
-        '      echo Instalacao offline travada falhou. O pacote pode estar incompleto.>> "%LOG_FILE%"',
-        '      exit /b !ERRORLEVEL!',
-        '    )',
-        '  ) else (',
-        '    echo Wheelhouse offline ausente. Reinstale o JK Sistema com o pacote completo.>> "%LOG_FILE%"',
-        '    exit /b 1',
-        '  )',
-        '  if errorlevel 1 (',
-        '    echo Falha ao instalar dependencias. Verifique este log.>> "%LOG_FILE%"',
-        '    exit /b %errorlevel%',
-        '  )',
-        '  "%PYTHON_EXE%" -m pip check >> "%LOG_FILE%" 2>&1',
-        '  if errorlevel 1 exit /b !ERRORLEVEL!',
-        '  "%PYTHON_EXE%" -c "import ctranslate2, faster_whisper, onnxruntime, openai_codex; from codex_cli_bin import bundled_codex_path; from pathlib import Path; assert Path(bundled_codex_path()).is_file()" >> "%LOG_FILE%" 2>&1',
-        '  if errorlevel 1 (',
-        '    echo Runtime offline do Black Jhon incompleto.>> "%LOG_FILE%"',
-        '    exit /b !ERRORLEVEL!',
-        '  )',
-        '  "%PYTHON_EXE%" -m pip uninstall -y fitz >> "%LOG_FILE%" 2>&1',
-        `  echo ok> "${depsMarker}"`,
+        '"%PYTHON_EXE%" -B -I -c "import sys, uvicorn; print(sys.version)" >> "%LOG_FILE%" 2>&1',
+        'if errorlevel 1 (',
+        '  echo Ambiente Python provisionado ficou indisponivel antes de iniciar o backend.>> "%LOG_FILE%"',
+        '  exit /b 22',
         ')',
         'set "JK_CA_BUNDLE=%CD%\\.venv\\Lib\\site-packages\\certifi\\cacert.pem"',
         'if exist "%JK_CA_BUNDLE%" (',
@@ -938,10 +1065,10 @@ function writeLocalBackendLauncher(localAppDir) {
         '  set "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=%JK_CA_BUNDLE%"',
         '  echo Usando certificados Python: %JK_CA_BUNDLE%>> "%LOG_FILE%"',
         ')',
-        `"%PYTHON_EXE%" -m uvicorn backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
+        `"%PYTHON_EXE%" -B -I -m uvicorn --app-dir "%CD%" backend_api:app --host 127.0.0.1 --port ${JK_LOCAL_BACKEND_PORT} >> "%LOG_FILE%" 2>&1`
     ];
     fs.writeFileSync(launcherPath, `${lines.join('\r\n')}\r\n`, 'utf8');
-    return launcherPath;
+    return { launcherPath, logPath };
 }
 
 function ensureLocalBackendStarted() {
@@ -949,9 +1076,10 @@ function ensureLocalBackendStarted() {
         return localBackendStartupPromise;
     }
 
+    let startupLogPath = '';
     localBackendStartupPromise = (async () => {
         const localAppDir = syncBundledLocalBackend();
-        const launcherPath = writeLocalBackendLauncher(localAppDir);
+        const bundledSourceDir = getBundledLocalBackendDir();
         const firebaseEnv = getLocalBackendFirebaseEnv(localAppDir);
 
         if (await isTcpPortOpen(JK_LOCAL_BACKEND_PORT)) {
@@ -980,11 +1108,14 @@ function ensureLocalBackendStarted() {
             }
         }
 
-        logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath });
+        await ensurePythonRuntimeProvisioned(bundledSourceDir, localAppDir);
+        const launcher = writeLocalBackendLauncher(localAppDir);
+        const launcherPath = launcher.launcherPath;
+        startupLogPath = launcher.logPath;
+        logElectronLifecycle('local-backend-starting', { localAppDir, launcherPath, logPath: startupLogPath });
         const child = spawn('cmd.exe', ['/d', '/c', launcherPath], {
             cwd: localAppDir,
-            env: {
-                ...process.env,
+            env: isolatedPythonChildEnv({
                 ...firebaseEnv,
                 JK_INFO_DIR: path.join(localAppDir, 'info'),
                 JK_REDIRECT_URI: process.env.JK_LOCAL_OAUTH_CALLBACK_URL || 'https://jkjkjk-485920.web.app/auth/callback',
@@ -996,13 +1127,28 @@ function ensureLocalBackendStarted() {
                 IA_RAG_ENABLED: 'true',
                 IA_RAG_BACKEND: 'local',
                 IA_RAG_TOP_K: '5',
-                IA_RAG_SEARCH_TIMEOUT_S: '4',
-                PYTHONUNBUFFERED: '1',
-                PYTHONUTF8: '1'
-            },
+                IA_RAG_SEARCH_TIMEOUT_S: '4'
+            }),
             stdio: 'ignore',
             windowsHide: true
         });
+        let backendBecameReady = false;
+        let runtimeMarkerInvalidated = false;
+        const invalidateRuntimeMarker = (reason, details = {}) => {
+            if (runtimeMarkerInvalidated || backendBecameReady) return;
+            runtimeMarkerInvalidated = true;
+            const readyMarker = path.join(localAppDir, '.venv', '.jk-venv-ready.json');
+            try {
+                fs.rmSync(readyMarker, { force: true });
+                logElectronLifecycle('python-runtime-marker-invalidated', {
+                    reason,
+                    readyMarker,
+                    ...details
+                });
+            } catch (markerError) {
+                logElectronLifecycle('python-runtime-marker-invalidation-failed', markerError);
+            }
+        };
         localBackendProcess = child;
         child.on('error', (err) => {
             logElectronLifecycle('local-backend-process-error', err);
@@ -1017,18 +1163,45 @@ function ensureLocalBackendStarted() {
 
         const exitPromise = new Promise((_resolve, reject) => {
             child.once('exit', (code, signal) => {
-                reject(new Error(`Servidor local finalizou antes de iniciar. Codigo: ${code ?? ''} ${signal || ''}`.trim()));
+                invalidateRuntimeMarker('backend_exited_before_ready', { code, signal });
+                reject(pythonRuntimeDiagnosticError(
+                    'Servidor local finalizou antes de responder.',
+                    {
+                        stage: 'backend_start',
+                        code: code === null ? (signal || 'NO_EXIT_CODE') : code,
+                        logPath: startupLogPath,
+                        targetRoot: localAppDir
+                    }
+                ));
             });
         });
-        await Promise.race([
-            waitForTcpPortOpen(JK_LOCAL_BACKEND_PORT, 180000),
-            exitPromise
-        ]);
+        try {
+            await Promise.race([
+                waitForTcpPortOpen(JK_LOCAL_BACKEND_PORT, 180000),
+                exitPromise
+            ]);
+        } catch (startupError) {
+            invalidateRuntimeMarker('backend_not_ready', {
+                error: startupError && startupError.message ? startupError.message : String(startupError)
+            });
+            await stopTrackedProcessTree(child.pid);
+            throw startupError;
+        }
+        backendBecameReady = true;
         logElectronLifecycle('local-backend-ready', { port: JK_LOCAL_BACKEND_PORT });
         return { success: true, localAppDir, port: JK_LOCAL_BACKEND_PORT };
     })().catch((err) => {
         localBackendStartupPromise = null;
-        throw err;
+        if (err && err.jkLocalBackendDiagnostic) throw err;
+        throw pythonRuntimeDiagnosticError(
+            err && err.message ? err.message : String(err),
+            {
+                stage: startupLogPath ? 'backend_health' : 'backend_prepare',
+                code: err && err.code ? err.code : 'STARTUP_FAILED',
+                logPath: startupLogPath,
+                targetRoot: getLocalBackendRuntimeDir()
+            }
+        );
     });
 
     return localBackendStartupPromise;
@@ -1320,7 +1493,7 @@ function renderLocalBackendStartupScreen(win, options = {}) {
     const error = options.error ? String(options.error) : '';
     const logsDir = path.join(getLocalBackendRuntimeDir(), 'logs');
     const detail = error
-        ? `Nao consegui iniciar o servidor local. Veja os logs em ${logsDir} (local_backend_start_*.log ou local_backend.log)`
+        ? `${error}\n\nPasta de logs: ${logsDir}`
         : String(options.detail || 'Preparando o servidor local. Na primeira abertura isso pode levar alguns minutos enquanto as dependencias sao instaladas.');
     const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1332,7 +1505,7 @@ function renderLocalBackendStartupScreen(win, options = {}) {
         body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07111f; color: #eef6ff; }
         main { width: min(560px, calc(100vw - 48px)); }
         h1 { margin: 0 0 10px; font-size: 28px; font-weight: 800; }
-        p { margin: 0; color: #b8c9dc; line-height: 1.5; }
+        p { margin: 0; color: #b8c9dc; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
         .bar { height: 5px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,0.12); margin-top: 24px; }
         .bar::before { content: ""; display: block; width: 42%; height: 100%; background: #5db7ff; border-radius: inherit; animation: load 1.2s ease-in-out infinite; }
         .error { color: #ffb4b4; }

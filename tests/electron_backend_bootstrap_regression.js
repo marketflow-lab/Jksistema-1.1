@@ -37,6 +37,44 @@ assert(
   'backend sync must have an explicit packaged local_app source'
 );
 assert(
+  backendSource.includes('await stopTrackedProcessTree(child.pid)'),
+  'Python runtime timeout must terminate the complete provisioner process tree'
+);
+assert(
+  backendSource.includes("'--command-timeout', '1500'") && backendSource.includes('40 * 60 * 1000'),
+  'Electron timeout must remain longer than each provisioner command timeout'
+);
+assert(
+  backendSource.includes("'--quick-reuse'") && backendSource.includes('function ensurePythonRuntimeProvisioned'),
+  'Electron backend bootstrap must request the safe quick reuse path'
+);
+assert(
+  backendSource.includes('function isolatedPythonChildEnv(overrides = {})')
+    && backendSource.includes("normalized === 'PYTHONHOME'")
+    && backendSource.includes("normalized === 'PYTHONPATH'")
+    && backendSource.includes("normalized === 'PYTHONUSERBASE'")
+    && backendSource.includes("normalized === 'VIRTUAL_ENV'")
+    && backendSource.includes("normalized.startsWith('PIP_')")
+    && backendSource.includes("PYTHONNOUSERSITE: '1'")
+    && backendSource.includes("PIP_CONFIG_FILE: 'NUL'"),
+  'Python child processes must not inherit ambient Python or pip configuration'
+);
+assert(
+  backendSource.includes("'set \"PYTHONHOME=\"'")
+    && backendSource.includes("'set \"PYTHONPATH=\"'")
+    && backendSource.includes("'set \"PYTHONUSERBASE=\"'")
+    && backendSource.includes("'set \"PYTHONNOUSERSITE=1\"'")
+    && backendSource.includes("-B -I -m uvicorn --app-dir \"%CD%\""),
+  'generated backend launcher must remain isolated when invoked manually'
+);
+assert(
+  backendSource.includes("fs.rmSync(readyMarker, { force: true })")
+    && backendSource.includes("invalidateRuntimeMarker('backend_exited_before_ready'")
+    && backendSource.includes("invalidateRuntimeMarker('backend_not_ready'")
+    && backendSource.includes('await stopTrackedProcessTree(child.pid)'),
+  'a backend crash or timeout before readiness must invalidate the marker and stop the process tree'
+);
+assert(
   backendSource.includes('sameResolvedPath(resolved, getLocalBackendRuntimeDir())'),
   'backend sync must ignore JK_LOCAL_BACKEND_SOURCE_DIR when it points at the runtime dir'
 );

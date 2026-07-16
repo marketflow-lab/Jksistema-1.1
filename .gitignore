@@ -73,7 +73,12 @@ android_app/*.keystore
 __pycache__/
 *.py[cod]
 .venv/
+.venv.new/
+.venv.previous/
 .python-runtime/
+.python-runtime.new/
+.python-runtime.previous/
+.python-runtime-provision.lock
 .tmp_checks/
 python_runtime/
 python_wheels/

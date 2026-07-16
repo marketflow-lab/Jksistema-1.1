@@ -434,10 +434,10 @@ def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
     assert tombstones[-1]["store_id"] == lojas[0]["store_id"]
 
 
-def test_versoes_fonte_e_electron_estao_alinhadas_em_1_0_98():
+def test_versoes_fonte_e_electron_estao_alinhadas_em_1_0_99():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.98"
-    assert electron_package["version"] == "1.0.98"
-    assert 'VERSAO_MINIMA_APP_PADRAO = "1.0.98"' in backend_source
+    assert root_package["version"] == "1.0.99"
+    assert electron_package["version"] == "1.0.99"
+    assert 'VERSAO_MINIMA_APP_PADRAO = "1.0.99"' in backend_source

@@ -4,8 +4,18 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const expectedNode = '24.13.0';
 const expectedNpm = '11.6.2';
-const expectedPython = '3.11.9';
-const expectedPythonImageDigest = 'sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317';
+const runtimeVersions = JSON.parse(fs.readFileSync(path.join(root, 'runtime-versions.json'), 'utf8').replace(/^\uFEFF/, ''));
+const pythonRuntime = runtimeVersions.python || {};
+const expectedPython = String(pythonRuntime.version || '').trim();
+const expectedPythonMinor = String(pythonRuntime.minor || '').trim();
+const expectedPythonImplementation = String(pythonRuntime.implementation || '').trim();
+const expectedPythonAbi = String(pythonRuntime.abi || '').trim();
+const expectedPythonInstaller = String(pythonRuntime.windowsInstaller || '').trim();
+const expectedPythonInstallerSize = Number(pythonRuntime.windowsInstallerSize);
+const expectedPythonInstallerSha256 = String(pythonRuntime.windowsInstallerSha256 || '').trim().toLowerCase();
+const expectedPythonPortable = pythonRuntime.windowsPortable || {};
+const expectedPythonImage = String(pythonRuntime.dockerImage || '').trim();
+const expectedPythonImageDigest = String(pythonRuntime.dockerDigest || '').trim();
 const projects = [
   '.',
   'electron_app',
@@ -91,16 +101,78 @@ function verifyHashedPythonLock(inputPath, lockPath, label) {
 }
 
 function verifyPythonLock() {
+  if (runtimeVersions.schemaVersion !== 1) failures.push('Python: runtime-versions.json deve usar schemaVersion 1');
+  if (!/^\d+\.\d+\.\d+$/.test(expectedPython)) failures.push('Python: version invalida em runtime-versions.json');
+  const pythonParts = expectedPython.split('.');
+  const derivedMinor = pythonParts.length === 3 ? `${pythonParts[0]}.${pythonParts[1]}` : '';
+  const derivedAbi = pythonParts.length === 3 ? `cp${pythonParts[0]}${pythonParts[1]}` : '';
+  if (expectedPythonMinor !== derivedMinor) failures.push(`Python: minor deve ser ${derivedMinor}`);
+  if (expectedPythonImplementation !== 'cp') failures.push('Python: implementation deve ser cp');
+  if (expectedPythonAbi !== derivedAbi) failures.push(`Python: ABI deve ser ${derivedAbi}`);
+  if (expectedPythonInstaller !== `python-${expectedPython}-amd64.exe`) {
+    failures.push(`Python: windowsInstaller deve ser python-${expectedPython}-amd64.exe`);
+  }
+  if (!Number.isSafeInteger(expectedPythonInstallerSize) || expectedPythonInstallerSize < 1) {
+    failures.push('Python: windowsInstallerSize deve ser um inteiro positivo');
+  }
+  if (!/^[a-f0-9]{64}$/.test(expectedPythonInstallerSha256)) {
+    failures.push('Python: windowsInstallerSha256 deve conter um SHA256 valido');
+  }
+  if (
+    String(expectedPythonPortable.path || '') !== 'portable'
+    || !Number.isInteger(Number(expectedPythonPortable.fileCount))
+    || Number(expectedPythonPortable.fileCount) < 1
+    || !Number.isSafeInteger(Number(expectedPythonPortable.totalSize))
+    || Number(expectedPythonPortable.totalSize) < 1
+    || !/^[a-f0-9]{64}$/.test(String(expectedPythonPortable.treeSha256 || '').trim().toLowerCase())
+  ) {
+    failures.push('Python: windowsPortable deve fixar path, fileCount, totalSize e treeSha256 validos');
+  }
+  if (expectedPythonImage !== `python:${expectedPython}-slim-bookworm`) {
+    failures.push(`Python: dockerImage deve ser python:${expectedPython}-slim-bookworm`);
+  }
+  if (!/^sha256:[a-f0-9]{64}$/.test(expectedPythonImageDigest)) {
+    failures.push('Python: dockerDigest deve conter um digest sha256 valido');
+  }
   verifyHashedPythonLock('requirements.in', 'requirements.txt', 'Python runtime');
   verifyHashedPythonLock('requirements-test.in', 'requirements-test.txt', 'Python testes');
   if (readText('.python-version').trim() !== expectedPython) failures.push(`Python: .python-version deve ser ${expectedPython}`);
-  if (!readText('scripts/prepare_installer_runtime.ps1').includes(`$pythonVersion = "${expectedPython}"`)) {
-    failures.push(`Python: preparador do instalador deve usar ${expectedPython}`);
+  if (!readText('scripts/lock_python_dependencies.py').includes('runtime-versions.json')) {
+    failures.push('Python: gerador de locks deve ler runtime-versions.json');
+  }
+  const installerPreparer = readText('scripts/prepare_installer_runtime.ps1');
+  if (!installerPreparer.includes('runtime-versions.json') && !installerPreparer.includes(`$pythonVersion = "${expectedPython}"`)) {
+    failures.push(`Python: preparador do instalador deve ler runtime-versions.json ou usar ${expectedPython}`);
+  }
+  for (const pinField of ['windowsInstallerSize', 'windowsInstallerSha256', 'windowsPortable']) {
+    if (!installerPreparer.includes(pinField)) {
+      failures.push(`Python: preparador do instalador nao fiscaliza ${pinField}`);
+    }
+  }
+  const pinnedPortableStart = installerPreparer.indexOf('function Test-PinnedPortablePython');
+  const pinnedPortableEnd = installerPreparer.indexOf('\nfunction ', pinnedPortableStart + 1);
+  const pinnedPortableBody = pinnedPortableStart >= 0
+    ? installerPreparer.slice(pinnedPortableStart, pinnedPortableEnd >= 0 ? pinnedPortableEnd : undefined)
+    : '';
+  const portableInventoryCheck = pinnedPortableBody.indexOf('Get-PortableInventory $Path');
+  const portableExecutionProbe = pinnedPortableBody.indexOf('Test-PortablePython $Path');
+  if (
+    portableInventoryCheck < 0
+    || portableExecutionProbe < 0
+    || portableInventoryCheck > portableExecutionProbe
+  ) {
+    failures.push('Python: preparador deve validar o tree SHA do runtime portatil antes de executar python.exe');
+  }
+  const provisioner = readText('scripts/provision_python_runtime.py');
+  for (const pinField of ['windowsInstallerSize', 'windowsInstallerSha256', 'windowsPortable']) {
+    if (!provisioner.includes(pinField)) {
+      failures.push(`Python: provisionador nao fiscaliza ${pinField}`);
+    }
   }
   const dockerfile = readText('Dockerfile');
-  const expectedImage = `FROM python:${expectedPython}-slim-bookworm@${expectedPythonImageDigest}`;
-  if (!dockerfile.startsWith(`${expectedImage}\n`) && !dockerfile.startsWith(`${expectedImage}\r\n`)) {
-    failures.push(`Python: Dockerfile deve fixar ${expectedImage}`);
+  const expectedDockerFrom = `FROM ${expectedPythonImage}@${expectedPythonImageDigest}`;
+  if (!dockerfile.startsWith(`${expectedDockerFrom}\n`) && !dockerfile.startsWith(`${expectedDockerFrom}\r\n`)) {
+    failures.push(`Python: Dockerfile deve fixar ${expectedDockerFrom}`);
   }
   if (!/pip install[^\r\n]*--require-hashes[^\r\n]*-r requirements\.txt/.test(dockerfile)) {
     failures.push('Python: Dockerfile deve instalar o lock com --require-hashes');
@@ -118,16 +190,25 @@ function verifyInstallCommands() {
   for (const file of deterministicNodeFiles) {
     if (/\bnpm install\b/i.test(readText(file))) failures.push(`${file}: use npm ci em vez de npm install`);
   }
-  const pythonLaunchers = ['iniciar_servidor.bat', 'iniciar_servidor_dev.bat', 'electron_app/main/modules/backend.js'];
-  const expectedPythonTuple = expectedPython.split('.').join(', ');
+  const pythonLaunchers = ['iniciar_servidor.bat', 'iniciar_servidor_dev.bat'];
   for (const file of pythonLaunchers) {
     const content = readText(file);
     if (/pip install[^\r\n]*--upgrade\s+(?:pip|watchfiles)/i.test(content)) {
       failures.push(`${file}: atualizacao Python sem lock detectada`);
     }
-    if (!content.includes(`sys.version_info[:3] == (${expectedPythonTuple})`)) {
-      failures.push(`${file}: deve exigir exatamente Python ${expectedPython}`);
+    if (!content.includes('runtime-versions.json')) {
+      failures.push(`${file}: deve ler runtime-versions.json`);
     }
+    if (!content.includes("platform.python_version() == '%PYTHON_VERSION%'")) {
+      failures.push(`${file}: deve exigir a versao Python configurada`);
+    }
+  }
+  const backendLauncher = readText('electron_app/main/modules/backend.js');
+  if (/pip install[^\r\n]*--upgrade\s+(?:pip|watchfiles)/i.test(backendLauncher)) {
+    failures.push('electron_app/main/modules/backend.js: atualizacao Python sem lock detectada');
+  }
+  if (!backendLauncher.includes('provision_python_runtime.py')) {
+    failures.push('electron_app/main/modules/backend.js: deve delegar a validacao do runtime ao provisionador canonico');
   }
   if (!/\bcall\s+"?%~dp0iniciar_servidor\.bat"?/i.test(readText('Executar.bat'))) {
     failures.push('Executar.bat: deve iniciar o backend pelo bootstrap Python canonico');

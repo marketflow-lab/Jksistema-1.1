@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "python": {
+    "version": "3.14.6",
+    "minor": "3.14",
+    "implementation": "cp",
+    "abi": "cp314",
+    "windowsArchitecture": "amd64",
+    "windowsInstaller": "python-3.14.6-amd64.exe",
+    "windowsInstallerSize": 30774112,
+    "windowsInstallerSha256": "14b3e9a710a3fcf0bd9b55ab6b60412bd91227563f813fc49040cabc0209e0bd",
+    "windowsPortable": {
+      "path": "portable",
+      "fileCount": 2125,
+      "totalSize": 49431142,
+      "treeSha256": "abb169e5f6c422761af643df722192a245f827ea3515aa7535cc3725f932b096"
+    },
+    "dockerImage": "python:3.14.6-slim-bookworm",
+    "dockerDigest": "sha256:f70215e5dbe2a47dee6d23f9c6d358bf3c148f59cce2fd165b61118e9d80f2bb"
+  }
+}

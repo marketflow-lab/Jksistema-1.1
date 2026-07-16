@@ -1,5 +1,5 @@
 # Gerado por scripts/lock_python_dependencies.py. Nao edite manualmente.
-# Alvos: CPython 3.11 em Windows x64 e Linux x64; somente wheels binarias.
+# Alvos: CPython 3.14 em Windows x64 e Linux x64; somente wheels binarias.
 --require-hashes
 --only-binary=:all:
 
@@ -7,8 +7,8 @@ colorama==0.4.6 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
 
 coverage==7.15.2 \
-    --hash=sha256:8bb9f4b4279187560796a4cdaca3b0a93dd97e48ee667df005f4ed9a97403688 \
-    --hash=sha256:d50dd325e18ec25bfcc10cd7f99b04df1ab9ec76b0918c260e60817ad0643dee
+    --hash=sha256:9911f31aad8906abe337c271343485cf20df5e70df5d2f57f9f136e7b55f26bc \
+    --hash=sha256:b9a6367e4aff723e8ee8190836836124284e8fcd4265e307c844010cfa074f3f
 
 iniconfig==2.3.0 \
     --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12

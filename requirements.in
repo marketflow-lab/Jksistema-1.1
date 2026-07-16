@@ -9,7 +9,7 @@ plotly
 bcrypt
 urllib3
 python-dotenv
-numpy
+numpy==2.4.6
 beautifulsoup4
 lxml
 openpyxl
