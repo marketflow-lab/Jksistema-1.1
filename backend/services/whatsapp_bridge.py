@@ -42,6 +42,7 @@ from backend.services.whatsapp import gateway as whatsapp_gateway
 from backend.services.whatsapp import intent as whatsapp_intent
 from backend.services.whatsapp import media as whatsapp_media
 from backend.services.whatsapp import message as whatsapp_message
+from backend.services.whatsapp import retry_policy as whatsapp_retry_policy
 from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp.contracts import (
     _QuestionResearchPending,
@@ -136,8 +137,8 @@ WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION
 WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT
 WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT
 WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT = whatsapp_settings.WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT
-WHATSAPP_RETRY_DELAYS_SECONDS = (2, 5, 15)
-WHATSAPP_MAX_RETRY_ATTEMPTS = 3
+WHATSAPP_RETRY_DELAYS_SECONDS = whatsapp_retry_policy.WHATSAPP_RETRY_DELAYS_SECONDS
+WHATSAPP_MAX_RETRY_ATTEMPTS = whatsapp_retry_policy.WHATSAPP_MAX_RETRY_ATTEMPTS
 WHATSAPP_LOCAL_QUEUE_CAPACITY = 32
 DUAL_AGENT_STATE_LOCK = threading.RLock()
 BRIDGE_STATE_LOCK = threading.RLock()
@@ -3350,46 +3351,24 @@ def _update_pending_codex_tasks(pending: dict[str, Any], **changes: Any) -> None
 
 
 def _dual_retry_reason_text(task: dict[str, Any], result: dict[str, Any]) -> str:
-    parts = [
-        str(task.get("error") or ""),
-        str(result.get("summary") or ""),
-        " ".join(str(item or "") for item in list(result.get("missing") or [])),
-    ]
-    return re.sub(r"\s+", " ", " ".join(parts)).strip()[:2000]
+    return whatsapp_retry_policy.retry_reason_text(task, result)
 
 
 def _dual_retry_is_auth_error(reason: Any) -> bool:
-    text = unicodedata.normalize("NFKD", str(reason or "")).encode("ascii", "ignore").decode("ascii").lower()
-    return bool(
-        re.search(
-            r"(?:\b401\b|\b403\b|unauthori[sz]ed|forbidden|token.*expir|autentic|credencial|reconect)",
-            text,
-        )
-    )
+    return whatsapp_retry_policy.retry_is_auth_error(reason)
 
 
 def _dual_retry_classification(reason: Any) -> tuple[str, bool]:
-    text = unicodedata.normalize("NFKD", str(reason or "")).encode("ascii", "ignore").decode("ascii").lower()
-    if _dual_retry_is_auth_error(text):
-        return "authentication", False
-    if re.search(r"\b(permission|permissao|acesso negado|not allowed|nao autorizado)\b", text):
-        return "permission", False
-    if re.search(r"\b(invalid|invalido|entrada incompleta|missing input|campo obrigatorio|store_required)\b", text):
-        return "invalid_input", False
-    if re.search(r"\b(unsupported|nao suportad|somente consulta|read.?only|executor seguro)\b", text):
-        return "unsupported", False
-    if re.search(r"\b(429|rate.?limit|too many requests)\b", text):
-        return "rate_limited", True
-    if re.search(r"\b(timeout|timed out|connection|conexao|temporar\w*|remote.*closed|502|503|504|5\d\d)\b", text):
-        return "transient_dependency", True
-    if re.search(r"\b(evidencia|evidence|cobertura|coverage|resultado incompleto|dados insuficientes|fonte indisponivel)\b", text):
-        return "insufficient_evidence", False
-    return "incomplete_result", False
+    return whatsapp_retry_policy.retry_classification(reason)
 
 
 def _dual_retry_delay_seconds(retry_count: int, reason: Any, key: Any = "") -> int:
-    index = max(0, min(int(retry_count or 1) - 1, len(WHATSAPP_RETRY_DELAYS_SECONDS) - 1))
-    return int(WHATSAPP_RETRY_DELAYS_SECONDS[index])
+    return whatsapp_retry_policy.retry_delay_seconds(
+        retry_count,
+        reason,
+        key,
+        delays=WHATSAPP_RETRY_DELAYS_SECONDS,
+    )
 
 
 def _local_web_fallback_context(query: str, client_id: str) -> dict[str, Any]:
@@ -3452,77 +3431,15 @@ def _local_web_fallback_context(query: str, client_id: str) -> dict[str, Any]:
 
 
 def _dual_append_unique(target: list[str], values: Any, *, limit: int, item_limit: int) -> list[str]:
-    output = [str(item or "").strip()[:item_limit] for item in list(target or []) if str(item or "").strip()]
-    for value in list(values or []):
-        text = str(value or "").strip()[:item_limit]
-        if text and text not in output:
-            output.append(text)
-    return output[:limit]
+    return whatsapp_retry_policy.append_unique(target, values, limit=limit, item_limit=item_limit)
 
 
 def _dual_preserve_worker_result(pending: dict[str, Any], result: dict[str, Any]) -> None:
-    pending["verified_facts"] = _dual_append_unique(
-        list(pending.get("verified_facts") or []),
-        result.get("verified_facts"),
-        limit=30,
-        item_limit=2000,
-    )
-    pending["verified_sources"] = _dual_append_unique(
-        list(pending.get("verified_sources") or []),
-        result.get("sources"),
-        limit=30,
-        item_limit=1000,
-    )
+    whatsapp_retry_policy.preserve_worker_result(pending, result)
 
 
 def _dual_worker_disposition(task: dict[str, Any], result: dict[str, Any]) -> str:
-    task_status = str(task.get("status") or "")
-    if task_status == "canceled" and str(task.get("cancel_source") or "") in {
-        "whatsapp",
-        "whatsapp_conversation_agent",
-    }:
-        return "canceled"
-    result_status = str(result.get("status") or "failed")
-    if list(result.get("data_requests") or []):
-        return "manager_request"
-    if result_status == "blocked" and list(result.get("questions") or []):
-        return "awaiting_input"
-    if task_status in {"partial", "failed", "canceled"}:
-        return "waiting_retry"
-    verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
-    if verification.get("confirmed") is False or str(verification.get("status") or "") == "partial":
-        return "waiting_retry"
-    validations = [
-        item.get("tool_validation")
-        for item in list(task.get("tool_results_summary") or [])
-        if isinstance(item, dict) and isinstance(item.get("tool_validation"), dict)
-    ]
-    consolidated_sufficient = bool(
-        verification.get("confirmed") is True
-        or any(item.get("dados_suficientes") is True for item in validations)
-    )
-    if validations and not consolidated_sufficient:
-        return "waiting_retry"
-    if result_status == "completed":
-        facts = [str(item or "").strip() for item in list(result.get("verified_facts") or []) if str(item or "").strip()]
-        sources = [str(item or "").strip() for item in list(result.get("sources") or []) if str(item or "").strip()]
-        confidence = str(result.get("confidence") or "unknown")
-        if result.get("evidence_sufficient") is not True or not facts or not sources or confidence not in {"high", "medium"}:
-            return "waiting_retry"
-        absence_text = unicodedata.normalize(
-            "NFKD",
-            " ".join([str(result.get("summary") or ""), *facts]),
-        ).encode("ascii", "ignore").decode("ascii").lower()
-        confirms_absence = bool(
-            re.search(
-                r"\b(?:nenhum|nenhuma|nao (?:foi )?encontrad[oa]s?|zero registros?|sem registros?|inexistente|ausencia confirmada)\b",
-                absence_text,
-            )
-        )
-        if confirms_absence and result.get("coverage_complete") is not True:
-            return "waiting_retry"
-        return "completed"
-    return "waiting_retry"
+    return whatsapp_retry_policy.worker_disposition(task, result)
 
 
 def _dual_schedule_retry(
