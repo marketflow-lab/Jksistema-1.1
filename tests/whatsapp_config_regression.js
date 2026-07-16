@@ -10,6 +10,13 @@ const service = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp
 const bridgeContracts = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'contracts.py'), 'utf8');
 const bridgeFormatting = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'formatting.py'), 'utf8');
 const bridgeGateway = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'gateway.py'), 'utf8');
+const bridgeSettings = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'settings.py'), 'utf8');
+const bridgeMedia = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'media.py'), 'utf8');
+const bridgeMessage = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'message.py'), 'utf8');
+const bridgeIntent = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'intent.py'), 'utf8');
+const bridgeRetryPolicy = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'retry_policy.py'), 'utf8');
+const bridgeToolResults = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'tool_results.py'), 'utf8');
+const bridgeReportScheduling = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'report_scheduling.py'), 'utf8');
 const voiceService = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_voice.py'), 'utf8');
 const codexConsole = fs.readFileSync(path.join(root, 'backend', 'services', 'codex_console.py'), 'utf8');
 const bridgeStore = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge_store.py'), 'utf8');
@@ -89,16 +96,16 @@ assert(service.includes('TYPING_REFRESH_SECONDS = 20'), 'typing refresh must rem
 assert(service.includes('TYPING_MAX_SECONDS = 10 * 60'), 'typing maximum duration must remain at 10 minutes');
 assert(service.includes('/typing"'), 'local bridge typing endpoint missing');
 assert(service.includes('pairing_pending'), 'pairing no longer auto-activates the local bridge');
-assert(service.includes('WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"'), 'WhatsApp Codex default changed');
+assert(bridgeSettings.includes('WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"'), 'WhatsApp Codex default changed');
 assert(service.includes('def _create_selected_ai_task('), 'selected WhatsApp AI is not routed');
 assert(service.includes('def _progress_pulse_worker('), 'WhatsApp Codex progress worker is missing');
 assert(service.includes('/progress"'), 'WhatsApp progress endpoint is not called');
 assert(service.includes('config.get("progress_messages_enabled") is False'), 'legacy progress pulse is not disabled by configuration');
 assert(service.includes('def _process_dual_codex_message('), 'dual Codex WhatsApp orchestrator is missing');
 assert(service.includes('def _complete_dual_worker_pending('), 'worker result handoff to Luna is missing');
-assert(service.includes('WHATSAPP_RETRY_DELAYS_SECONDS = (2, 5, 15)'), 'bounded retry intervals changed');
-assert(service.includes('WHATSAPP_MAX_RETRY_ATTEMPTS = 3'), 'bounded retry limit changed');
-assert(service.includes('WHATSAPP_JOB_DEADLINE_DEFAULT = 120'), 'standard job deadline changed');
+assert(bridgeRetryPolicy.includes('WHATSAPP_RETRY_DELAYS_SECONDS = (2, 5, 15)'), 'bounded retry intervals changed');
+assert(bridgeRetryPolicy.includes('WHATSAPP_MAX_RETRY_ATTEMPTS = 3'), 'bounded retry limit changed');
+assert(bridgeSettings.includes('WHATSAPP_JOB_DEADLINE_DEFAULT = 120'), 'standard job deadline changed');
 assert(service.includes('WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 5 * 60'), 'Mercado Livre research deadline changed');
 assert(service.includes('WHATSAPP_REPORT_DEADLINE_SECONDS = 10 * 60'), 'report deadline changed');
 assert(service.includes('def _normalize_tool_result_contract('), 'tool result contract normalization is missing');
@@ -117,10 +124,17 @@ assert(bridgeContracts.includes('class WhatsappPhoneRegistrationRequest(BaseMode
 assert(service.includes('from backend.services.whatsapp.contracts import ('), 'bridge compatibility facade is missing');
 assert(bridgeFormatting.includes('def _whatsapp_response_parts('), 'WhatsApp formatting component is missing');
 assert(bridgeGateway.includes('def gateway_request('), 'WhatsApp gateway component is missing');
+assert(bridgeSettings.includes('def dual_agent_settings('), 'WhatsApp settings component is missing');
+assert(bridgeMedia.includes('def image_mime('), 'WhatsApp media component is missing');
+assert(bridgeMessage.includes('def message_prompt('), 'WhatsApp message component is missing');
+assert(bridgeIntent.includes('def mutation_intent('), 'WhatsApp intent component is missing');
+assert(bridgeRetryPolicy.includes('def worker_disposition('), 'WhatsApp retry component is missing');
+assert(bridgeToolResults.includes('def stock_balance_contract('), 'WhatsApp tool-result component is missing');
+assert(bridgeReportScheduling.includes('def scheduled_report_period('), 'WhatsApp report scheduling component is missing');
 assert(service.includes('def whatsapp_bridge_update_phone_settings('), 'phone settings endpoint is missing');
 assert(service.includes('def _normalize_phone_ai_behavior('), 'per-phone AI behavior normalization is missing');
 assert(service.includes('"phone_ai_behavior": phone_ai_behavior'), 'per-phone AI behavior is not attached to WhatsApp tasks');
-assert(service.includes('Instrucoes administrativas especificas para atender este numero'), 'per-phone AI behavior is not applied to provider prompts');
+assert(bridgeMessage.includes('Instrucoes administrativas especificas para atender este numero'), 'per-phone AI behavior is not applied to provider prompts');
 assert(codexConsole.includes('Instrucao administrativa especifica para este numero de WhatsApp'), 'per-phone AI behavior is not applied as a Codex developer instruction');
 assert(service.includes('def whatsapp_bridge_register_phone('), 'direct phone registration endpoint is missing');
 assert(service.includes('"/bridge/welcome"'), 'welcome message is not sent by the local bridge');
@@ -175,6 +189,13 @@ const whatsappComponentFiles = [
   'backend/services/whatsapp/contracts.py',
   'backend/services/whatsapp/formatting.py',
   'backend/services/whatsapp/gateway.py',
+  'backend/services/whatsapp/settings.py',
+  'backend/services/whatsapp/media.py',
+  'backend/services/whatsapp/message.py',
+  'backend/services/whatsapp/intent.py',
+  'backend/services/whatsapp/retry_policy.py',
+  'backend/services/whatsapp/tool_results.py',
+  'backend/services/whatsapp/report_scheduling.py',
 ];
 for (const relativeFile of whatsappComponentFiles) {
   assert(manifest.requiredSourceFiles.includes(relativeFile), `${relativeFile} missing from source verification`);
@@ -182,11 +203,11 @@ for (const relativeFile of whatsappComponentFiles) {
   assert(manifest.requiredPackagedSourceParity.includes(relativeFile), `${relativeFile} missing from package parity verification`);
 }
 assert(
-  manifest.requiredSourceDirectories.some(item => item.path === 'backend/services/whatsapp' && item.minFiles >= 4),
+  manifest.requiredSourceDirectories.some(item => item.path === 'backend/services/whatsapp' && item.minFiles >= 11),
   'WhatsApp component source directory is not protected by installer verification',
 );
 assert(
-  manifest.requiredPackagedDirectories.some(item => item.path === 'local_app/backend/services/whatsapp' && item.minFiles >= 4),
+  manifest.requiredPackagedDirectories.some(item => item.path === 'local_app/backend/services/whatsapp' && item.minFiles >= 11),
   'WhatsApp component packaged directory is not protected by installer verification',
 );
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_bridge_store.py'), 'SQLite bridge store missing from installer verification');

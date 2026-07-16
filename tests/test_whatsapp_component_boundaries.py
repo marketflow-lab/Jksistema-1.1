@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 
 from backend.routers.whatsapp_bridge import create_whatsapp_bridge_router
+from backend.services import whatsapp as whatsapp_package
 from backend.services import whatsapp_bridge
 from backend.services.whatsapp import contracts, formatting, gateway
 
@@ -121,3 +124,31 @@ def test_bridge_gateway_facade_delegates_to_component(monkeypatch) -> None:
 
     assert whatsapp_bridge._gateway_json(config, "POST", "/bridge/test", {"value": 1}, timeout=7) is expected
     assert calls == [(config, "POST", "/bridge/test", {"value": 1}, 7)]
+
+
+def test_new_components_are_explicit_and_do_not_import_the_facade() -> None:
+    component_names = {
+        "settings.py",
+        "media.py",
+        "message.py",
+        "intent.py",
+        "retry_policy.py",
+        "tool_results.py",
+        "report_scheduling.py",
+    }
+    package_dir = Path(whatsapp_package.__file__).resolve().parent
+    for name in component_names:
+        source = (package_dir / name).read_text(encoding="utf-8")
+        assert "import whatsapp_bridge" not in source
+        assert "from backend.services import whatsapp_bridge" not in source
+
+    assert whatsapp_package.__all__ == [
+        "WhatsappAdhocMessageRequest",
+        "WhatsappBindingRevokeRequest",
+        "WhatsappBridgeConfigRequest",
+        "WhatsappPairingCodeRequest",
+        "WhatsappPhoneRegistrationRequest",
+        "WhatsappPhoneSettingsRequest",
+        "WhatsappTemplatesRequest",
+        "WhatsappVoiceToggleRequest",
+    ]
