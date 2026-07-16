@@ -97,7 +97,7 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_backend_has_dedicated_pos_venda_config(self):
         source = backend_text()
-        self.assertIn('"ia_modelo_pos_venda": "vertex:gemini-2.5-flash"', source)
+        self.assertIn('"ia_modelo_pos_venda": "codex:gpt-5.5"', source)
         self.assertIn('"ia_modo_pos_venda": "modelo"', source)
         self.assertIn("def _ia_modelo_pos_venda_configurado()", source)
         self.assertIn("def _ia_modo_pos_venda_configurado()", source)

@@ -16,11 +16,11 @@ from backend.services.env_config import _env_config_bool
 
 CONFIG_GLOBAIS_DEFAULT = {
     "auto_sync_estoque_janela_minutos": 30,
-    "ia_modelo_padrao": "vertex:gemini-2.5-flash",
-    "ia_modelo_perguntas": "vertex:gemini-2.5-flash",
-    "ia_modelo_pos_venda": "vertex:gemini-2.5-flash",
-    "ia_modelo_chat": "vertex:gemini-2.5-flash",
-    "ia_modelo_favoritos": "vertex:gemini-2.5-flash",
+    "ia_modelo_padrao": "codex:gpt-5.5",
+    "ia_modelo_perguntas": "codex:gpt-5.6-sol",
+    "ia_modelo_pos_venda": "codex:gpt-5.5",
+    "ia_modelo_chat": "codex:gpt-5.5",
+    "ia_modelo_favoritos": "codex:gpt-5.5",
     "ia_modo_padrao": "modelo",
     "ia_modo_perguntas": "modelo",
     "ia_modo_pos_venda": "modelo",
@@ -35,8 +35,8 @@ CONFIG_GLOBAIS_DEFAULT = {
     "ia_favoritos_usar_imagem": False,
     "ia_openai_ativa": True,
     "ia_deepseek_ativa": True,
-    "ia_gemini_ativa": False,
-    "ia_vertex_ativa": True,
+    "ia_gemini_ativa": True,
+    "ia_vertex_ativa": False,
 }
 
 

@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from backend.services import ia as _ia_facade  # noqa: F401
-from backend.services import ia_endpoints, ia_providers
+from backend.services import configuracoes, ia_endpoints, ia_providers
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +15,17 @@ def test_codex_model_is_preserved_by_configuration_normalizer():
     assert ia_providers._normalizar_ia_modelo_padrao("codex:gpt-5.6-sol") == "codex:gpt-5.6-sol"
     assert ia_providers._ia_provedor_por_modelo("codex:gpt-5.5") == "codex"
     assert ia_providers._codex_modelo_nome_curto("codex:gpt-5.5") == "gpt-5.5"
+
+
+def test_global_ai_defaults_match_installed_codex_routing():
+    defaults = configuracoes.CONFIG_GLOBAIS_DEFAULT
+
+    assert defaults["ia_modelo_padrao"] == "codex:gpt-5.5"
+    assert defaults["ia_modelo_perguntas"] == "codex:gpt-5.6-sol"
+    assert defaults["ia_modelo_pos_venda"] == "codex:gpt-5.5"
+    assert defaults["ia_modelo_chat"] == "codex:gpt-5.5"
+    assert defaults["ia_modelo_favoritos"] == "codex:gpt-5.5"
+    assert defaults["ia_vertex_ativa"] is False
 
 
 def test_model_catalog_exposes_codex_to_admin(monkeypatch):
