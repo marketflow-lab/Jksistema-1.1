@@ -196,8 +196,11 @@ function logElectronLifecycle(...args) {
 }
 
 let JK_PRIMARY_INSTANCE_LOCK_ACQUIRED = true;
+const JK_ALLOW_MULTIPLE_INSTANCES_FOR_TESTS = /^(1|true|yes)$/i.test(
+    String(process.env.JK_ALLOW_MULTIPLE_INSTANCES_FOR_TESTS || '')
+);
 try {
-    if (typeof app.requestSingleInstanceLock === 'function') {
+    if (!JK_ALLOW_MULTIPLE_INSTANCES_FOR_TESTS && typeof app.requestSingleInstanceLock === 'function') {
         JK_PRIMARY_INSTANCE_LOCK_ACQUIRED = app.requestSingleInstanceLock();
     }
 } catch (err) {

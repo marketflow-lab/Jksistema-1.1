@@ -1,0 +1,21 @@
+[run]
+branch = True
+source =
+    backend
+    backend_api
+
+[report]
+show_missing = True
+skip_covered = True
+precision = 2
+fail_under = 30
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+
+[html]
+directory = test-results/coverage/html
+
+[xml]
+output = test-results/coverage/coverage.xml

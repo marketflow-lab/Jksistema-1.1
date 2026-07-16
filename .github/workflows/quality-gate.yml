@@ -1,0 +1,81 @@
+name: Quality Gate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-suite:
+    name: Full suite
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: '1'
+      BUG_HUNTER_ALLOW_MISSING_SECRETS: 'true'
+      BUG_HUNTER_DRY_RUN: 'true'
+      BUG_HUNTER_ALLOW_MUTATIONS: 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            cloudflare/whatsapp-gateway/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+
+      - name: Install Node dependencies
+        run: |
+          npm.cmd ci
+          npm.cmd --prefix cloudflare/whatsapp-gateway ci
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements.txt
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements-test.txt
+
+      - name: Install Chromium
+        run: npx.cmd playwright install chromium
+
+      - name: Run complete quality gate
+        run: npm.cmd test
+
+      - name: Publish job summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path test-results/full-suite/report.md) {
+            Get-Content test-results/full-suite/report.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-reports
+          path: |
+            test-results/
+            bug-hunter-report/
+          if-no-files-found: warn
+          retention-days: 14

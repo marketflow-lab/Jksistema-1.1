@@ -2,6 +2,8 @@
 .gitignore
 .gcloud
 .dependency-lock
+.dependency-lock-test
+.test-runtime
 .installer_runtime
 .tmp_checks
 .venv

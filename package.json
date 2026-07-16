@@ -10,7 +10,22 @@
   },
   "scripts": {
     "deps:verify": "node scripts/verify-dependency-locks.js",
-    "deps:python:lock": "python scripts/lock_python_dependencies.py"
+    "deps:python:lock": "python scripts/lock_python_dependencies.py",
+    "deps:python:test-lock": "python scripts/lock_python_dependencies.py --input requirements-test.in --output requirements-test.txt --cache-dir .dependency-lock-test",
+    "test": "npm run test:full",
+    "test:full": "node scripts/run-full-test-suite.js",
+    "test:inventory": "node scripts/test-inventory.js",
+    "test:node": "node scripts/run-node-regressions.js",
+    "test:probes:syntax": "node scripts/verify-diagnostic-probes.js",
+    "test:gateway": "npm --prefix cloudflare/whatsapp-gateway test",
+    "test:gateway:check": "npm --prefix cloudflare/whatsapp-gateway run check",
+    "test:bug-hunter:contract": "playwright test --config=playwright.bug-hunter.config.js",
+    "test:python": "node scripts/run-python-tests.js",
+    "test:python:coverage": "node scripts/run-python-tests.js --coverage",
+    "bug-hunter": "playwright test --config=playwright.bug-hunter.config.js",
+    "bug-hunter:headed": "playwright test --config=playwright.bug-hunter.config.js --headed",
+    "bug-hunter:install": "playwright install chromium",
+    "bug-hunter:report": "playwright show-report bug-hunter-report/playwright-html"
   },
   "author": "JK",
   "license": "ISC",

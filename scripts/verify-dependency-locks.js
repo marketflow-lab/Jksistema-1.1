@@ -63,30 +63,36 @@ function verifyNodeProject(relativeDir) {
   }
 }
 
-function verifyPythonLock() {
-  const input = readText('requirements.in');
-  const lock = readText('requirements.txt');
-  if (!lock.includes('--require-hashes')) failures.push('Python: requirements.txt nao exige hashes');
-  if (!lock.includes('--only-binary=:all:')) failures.push('Python: requirements.txt nao restringe a wheels');
+function verifyHashedPythonLock(inputPath, lockPath, label) {
+  const input = readText(inputPath);
+  const lock = readText(lockPath);
+  if (!lock.includes('--require-hashes')) failures.push(`${label}: ${lockPath} nao exige hashes`);
+  if (!lock.includes('--only-binary=:all:')) failures.push(`${label}: ${lockPath} nao restringe a wheels`);
   if (!lock.startsWith('# Gerado por scripts/lock_python_dependencies.py.')) {
-    failures.push('Python: cabecalho do lock gerado ausente');
+    failures.push(`${label}: cabecalho do lock gerado ausente`);
   }
   const blocks = lock.split(/\r?\n\r?\n/).slice(1).filter((block) => block.trim());
   const packageBlocks = blocks.filter((block) => /^[a-z0-9][a-z0-9-]*==/m.test(block));
   for (const block of packageBlocks) {
     const first = block.split(/\r?\n/, 1)[0];
     if (!/^[a-z0-9][a-z0-9-]*==[^\s;]+(?:\s*;\s*sys_platform\s*==\s*"(?:win32|linux)")?\s*\\$/.test(first)) {
-      failures.push(`Python: requisito sem versao exata: ${first}`);
+      failures.push(`${label}: requisito sem versao exata: ${first}`);
     }
-    if (!/--hash=sha256:[a-f0-9]{64}/.test(block)) failures.push(`Python: requisito sem hash: ${first}`);
+    if (!/--hash=sha256:[a-f0-9]{64}/.test(block)) failures.push(`${label}: requisito sem hash: ${first}`);
   }
   const directRequirements = input
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+#.*$/, '').trim())
     .filter((line) => line && !line.startsWith('#')).length;
   if (packageBlocks.length < directRequirements) {
-    failures.push(`Python: lock incompleto (${packageBlocks.length} pacotes para ${directRequirements} entradas diretas)`);
+    failures.push(`${label}: lock incompleto (${packageBlocks.length} pacotes para ${directRequirements} entradas diretas)`);
   }
+  return packageBlocks.length;
+}
+
+function verifyPythonLock() {
+  verifyHashedPythonLock('requirements.in', 'requirements.txt', 'Python runtime');
+  verifyHashedPythonLock('requirements-test.in', 'requirements-test.txt', 'Python testes');
   if (readText('.python-version').trim() !== expectedPython) failures.push(`Python: .python-version deve ser ${expectedPython}`);
   if (!readText('scripts/prepare_installer_runtime.ps1').includes(`$pythonVersion = "${expectedPython}"`)) {
     failures.push(`Python: preparador do instalador deve usar ${expectedPython}`);
@@ -113,6 +119,10 @@ function verifyInstallCommands() {
       failures.push(`${file}: atualizacao Python sem lock detectada`);
     }
   }
+  const qualityWorkflow = readText('.github/workflows/quality-gate.yml');
+  if (!qualityWorkflow.includes('npm.cmd test')) failures.push('Quality Gate: deve executar npm.cmd test');
+  if (!qualityWorkflow.includes('-r requirements-test.txt')) failures.push('Quality Gate: deve instalar requirements-test.txt');
+  if (!qualityWorkflow.includes('--require-hashes')) failures.push('Quality Gate: dependencias Python devem exigir hashes');
 }
 
 for (const project of projects) verifyNodeProject(project);
@@ -128,4 +138,6 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`[dependency-lock] OK - ${projects.length} lockfiles Node e ${readText('requirements.txt').match(/^[a-z0-9][a-z0-9-]*==/gm)?.length || 0} pacotes Python controlados.`);
+const runtimePythonCount = readText('requirements.txt').match(/^[a-z0-9][a-z0-9-]*==/gm)?.length || 0;
+const testPythonCount = readText('requirements-test.txt').match(/^[a-z0-9][a-z0-9-]*==/gm)?.length || 0;
+console.log(`[dependency-lock] OK - ${projects.length} lockfiles Node, ${runtimePythonCount} pacotes Python de runtime e ${testPythonCount} de teste controlados.`);
