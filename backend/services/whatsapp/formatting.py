@@ -233,6 +233,69 @@ def _whatsapp_report_date(value: Any) -> str:
     return f"{match.group(3)}/{match.group(2)}/{match.group(1)}" if match else raw
 
 
+def _whatsapp_sales_report_sku_lines(rows: list[dict[str, Any]]) -> list[str]:
+    if not rows:
+        return ["Nenhum SKU vendido no período consultado."]
+    lines: list[str] = []
+    for row in rows:
+        sku = _whatsapp_plain_inline(
+            row.get("sku")
+            or row.get("seller_sku")
+            or row.get("item_id")
+            or row.get("mlb")
+            or row.get("id")
+            or "não informado"
+        )
+        title = _whatsapp_plain_inline(
+            row.get("title") or row.get("produto") or row.get("nome") or "Produto sem título"
+        )
+        quantity = float(row.get("quantity") or 0)
+        gross = float(row.get("gross_amount") or 0)
+        unit = gross / quantity if quantity > 0 else 0.0
+        lines.extend([
+            f"- **SKU:** {sku}",
+            f"  **Produto:** {title}",
+            f"  **Qtd.:** {_whatsapp_number(quantity)}",
+            f"  **Valor unitário médio:** {_whatsapp_money(unit)}",
+            f"  **Total vendido:** {_whatsapp_money(gross)}",
+        ])
+    return lines
+
+
+def _whatsapp_sales_report_coverage_lines(
+    data: dict[str, Any],
+    paging: dict[str, Any],
+    totals: dict[str, Any],
+    rows: list[dict[str, Any]],
+    store: str,
+    period_label: str,
+) -> list[str]:
+    coverage_complete = (
+        data.get("coverage_complete") is not False
+        and not bool(data.get("truncated"))
+        and not bool(paging.get("has_more"))
+    )
+    pages = int(paging.get("pages_fetched") or 0)
+    scanned_orders = int(paging.get("scanned") or paging.get("returned") or totals.get("orders") or 0)
+    considered_orders = int(totals.get("orders") or paging.get("returned") or 0)
+    lines = [
+        "",
+        "## Fontes e cobertura",
+        (
+            f"Consulta direta à API do Mercado Livre da loja {store or 'selecionada'}, "
+            f"no período {period_label or 'informado'}, com {pages} página(s), "
+            f"{scanned_orders} pedido(s) verificado(s), {considered_orders} pedido(s) considerado(s) "
+            f"e {len(rows)} SKU(s) consolidado(s)."
+        ),
+    ]
+    lines.append(
+        "Cobertura completa para o período informado."
+        if coverage_complete
+        else "A API indicou mais registros além da cobertura recebida; o relatório está incompleto e não estimou valores."
+    )
+    return lines
+
+
 def _whatsapp_daily_ml_sales_report(
     tool_results: list[dict[str, Any]],
     query_policy: dict[str, Any],
@@ -308,52 +371,8 @@ def _whatsapp_daily_ml_sales_report(
         lines.append(f"- **Valor líquido:** {_whatsapp_money(totals.get('net_amount'))}")
 
     lines.extend(["", "## SKUs vendidos"])
-    if rows:
-        for row in rows:
-            sku = _whatsapp_plain_inline(
-                row.get("sku")
-                or row.get("seller_sku")
-                or row.get("item_id")
-                or row.get("mlb")
-                or row.get("id")
-                or "não informado"
-            )
-            title = _whatsapp_plain_inline(row.get("title") or row.get("produto") or row.get("nome") or "Produto sem título")
-            quantity = float(row.get("quantity") or 0)
-            gross = float(row.get("gross_amount") or 0)
-            unit = gross / quantity if quantity > 0 else 0.0
-            lines.extend([
-                f"- **SKU:** {sku}",
-                f"  **Produto:** {title}",
-                f"  **Qtd.:** {_whatsapp_number(quantity)}",
-                f"  **Valor unitário médio:** {_whatsapp_money(unit)}",
-                f"  **Total vendido:** {_whatsapp_money(gross)}",
-            ])
-    else:
-        lines.append("Nenhum SKU vendido no período consultado.")
-
-    coverage_complete = (
-        data.get("coverage_complete") is not False
-        and not bool(data.get("truncated"))
-        and not bool(paging.get("has_more"))
-    )
-    pages = int(paging.get("pages_fetched") or 0)
-    scanned_orders = int(paging.get("scanned") or paging.get("returned") or totals.get("orders") or 0)
-    considered_orders = int(totals.get("orders") or paging.get("returned") or 0)
-    lines.extend([
-        "",
-        "## Fontes e cobertura",
-        (
-            f"Consulta direta à API do Mercado Livre da loja {store or 'selecionada'}, "
-            f"no período {period_label or 'informado'}, com {pages} página(s), "
-            f"{scanned_orders} pedido(s) verificado(s), {considered_orders} pedido(s) considerado(s) "
-            f"e {len(rows)} SKU(s) consolidado(s)."
-        ),
-    ])
-    if coverage_complete:
-        lines.append("Cobertura completa para o período informado.")
-    else:
-        lines.append("A API indicou mais registros além da cobertura recebida; o relatório está incompleto e não estimou valores.")
+    lines.extend(_whatsapp_sales_report_sku_lines(rows))
+    lines.extend(_whatsapp_sales_report_coverage_lines(data, paging, totals, rows, store, period_label))
     return "\n".join(lines).strip()
 
 

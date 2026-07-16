@@ -101,6 +101,43 @@ def _function_manager_extract_identifiers(value: Any) -> tuple[str, str]:
         str(item_match.group(1) if item_match else "").upper(),
     )
 
+def _function_manager_request_flags(
+    request_text: str,
+    query_policy: dict[str, Any],
+) -> dict[str, bool]:
+    text = _whatsapp_text_key(request_text)
+    domains = list(query_policy.get("domains") or [])
+    return {
+        "explicit_sales": bool(re.search(r"\b(venda|vendas|vendido|vendidos|pedido|pedidos|faturamento|ranking)\b", text)),
+        "explicit_returns": bool(re.search(r"\b(devolucao|devolucoes|reembolso|reembolsos|estorno|estornos)\b", text)),
+        "explicit_stock": bool(
+            re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque|full|fulfillment)\b", text)
+            or "estoque" in domains
+            or "mercado_full" in domains
+        ),
+        "explicit_image": bool(re.search(r"\b(foto|fotos|imagem|imagens)\b", text)),
+        "mentions_ml": bool(re.search(r"\b(mercado livre|mercadolivre|mlb\d+)\b", text)),
+        "product_query": bool(re.search(r"\b(sku\s*[a-z0-9._/-]+|produto|anuncio|informacao|informacoes|detalhe|detalhes)\b", text)),
+        "technical_web": bool(re.search(r"\b(serve|funciona|encaixa|compativel|compatibilidade|aplica|aplicacao|manual|oem|fabricante)\b", text)),
+    }
+
+def _function_manager_apply_scope(
+    result: dict[str, Any],
+    query_policy: dict[str, Any],
+    context_request: str,
+) -> str:
+    sku, item_id = _function_manager_extract_identifiers(context_request)
+    result["sku"] = str(result.get("sku") or query_policy.get("sku") or sku)[:100]
+    result["item_id"] = str(result.get("item_id") or query_policy.get("item_id") or item_id)[:60]
+    exact_store = str(query_policy.get("store") or "").strip()
+    if exact_store:
+        result["store"] = exact_store
+        result["store_mode"] = "single"
+    elif str(query_policy.get("store_mode") or "") == "all":
+        result["store"] = ""
+        result["store_mode"] = "all"
+    return exact_store
+
 def _function_manager_enforce_plan(
     plan: dict[str, Any],
     *,
@@ -115,27 +152,15 @@ def _function_manager_enforce_plan(
     allowed = {str(item.get("id") or "") for item in catalog if isinstance(item, dict)}
     source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
     forbidden = {str(item or "") for item in list(source_policy.get("forbidden_tools") or []) if str(item or "")}
-    explicit_sales = bool(re.search(r"\b(venda|vendas|vendido|vendidos|pedido|pedidos|faturamento|ranking)\b", text))
-    explicit_returns = bool(re.search(r"\b(devolucao|devolucoes|reembolso|reembolsos|estorno|estornos)\b", text))
-    explicit_stock = bool(
-        re.search(r"\b(estoque|saldo|quantidade em estoque|disponivel em estoque|full|fulfillment)\b", text)
-        or "estoque" in list(query_policy.get("domains") or [])
-        or "mercado_full" in list(query_policy.get("domains") or [])
-    )
-    explicit_image = bool(re.search(r"\b(foto|fotos|imagem|imagens)\b", text))
-    mentions_ml = bool(re.search(r"\b(mercado livre|mercadolivre|mlb\d+)\b", text))
-    product_query = bool(re.search(r"\b(sku\s*[a-z0-9._/-]+|produto|anuncio|informacao|informacoes|detalhe|detalhes)\b", text))
-    technical_web = bool(re.search(r"\b(serve|funciona|encaixa|compativel|compatibilidade|aplica|aplicacao|manual|oem|fabricante)\b", text))
-    sku, item_id = _function_manager_extract_identifiers(context_request)
-    result["sku"] = str(result.get("sku") or query_policy.get("sku") or sku)[:100]
-    result["item_id"] = str(result.get("item_id") or query_policy.get("item_id") or item_id)[:60]
-    exact_store = str(query_policy.get("store") or "").strip()
-    if exact_store:
-        result["store"] = exact_store
-        result["store_mode"] = "single"
-    elif str(query_policy.get("store_mode") or "") == "all":
-        result["store"] = ""
-        result["store_mode"] = "all"
+    flags = _function_manager_request_flags(request_text, query_policy)
+    explicit_sales = flags["explicit_sales"]
+    explicit_returns = flags["explicit_returns"]
+    explicit_stock = flags["explicit_stock"]
+    explicit_image = flags["explicit_image"]
+    mentions_ml = flags["mentions_ml"]
+    product_query = flags["product_query"]
+    technical_web = flags["technical_web"]
+    exact_store = _function_manager_apply_scope(result, query_policy, context_request)
 
     heavy_sales_tools = {
         "mercado_livre_orders", "bling_sales_orders", "sales_returns_query", "sales_ranking", "sales_summary",
@@ -460,218 +485,224 @@ def _function_manager_retry(pending: dict[str, Any], reason: str) -> None:
         }
     )
 
+def _function_manager_pending_snapshot(state: dict[str, Any], message_id: str) -> dict[str, Any]:
+    with BRIDGE_STATE_LOCK:
+        current = (state.get("pending_messages") or {}).get(message_id) if isinstance(state.get("pending_messages"), dict) else None
+    return dict(current) if isinstance(current, dict) else {}
+
+def _function_manager_revision_matches(state: dict[str, Any], message_id: str, revision: int) -> bool:
+    latest = _function_manager_pending_snapshot(state, message_id)
+    return bool(latest and int(latest.get("manager_revision") or 0) == revision)
+
+def _function_manager_build_plan(
+    config: dict[str, Any],
+    pending: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]], int]:
+    settings = _whatsapp_dual_agent_settings(config)
+    catalog = _function_manager_catalog(pending.get("session_permissions"))
+    manager_policy = (
+        pending.get("manager_query_policy")
+        if isinstance(pending.get("manager_query_policy"), dict)
+        else pending.get("query_policy") if isinstance(pending.get("query_policy"), dict) else {}
+    )
+    planning_started = time.monotonic()
+    deterministic_plan = pending.get("deterministic_plan") if isinstance(pending.get("deterministic_plan"), dict) else {}
+    if deterministic_plan:
+        raw_plan = dict(deterministic_plan)
+        raw_plan.update(
+            {
+                "thread_id": "",
+                "effective_model": "deterministic-router",
+                "reasoning_effort": "none",
+                "speed": "direct",
+                "service_tier": "local",
+            }
+        )
+    else:
+        raw_plan = codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.run_manager(
+            thread_id=str(pending.get("function_manager_thread_id") or ""),
+            model=settings["conversation_agent_model"],
+            reasoning_effort=settings["conversation_agent_reasoning"],
+            speed=settings["conversation_agent_speed"],
+            service_tier=settings["conversation_agent_service_tier"],
+            request_text=str(pending.get("request_text") or ""),
+            job_prompt=str(pending.get("job_prompt") or pending.get("request_text") or ""),
+            query_policy=manager_policy,
+            tool_catalog=catalog,
+            previous_evidence=pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else {},
+            data_requests=pending.get("manager_data_requests") if isinstance(pending.get("manager_data_requests"), list) else [],
+            max_calls=settings["max_subtasks_per_job"],
+        )
+    duration_ms = int(round((time.monotonic() - planning_started) * 1000))
+    plan = _function_manager_enforce_plan(
+        raw_plan,
+        request_text=str(pending.get("request_text") or ""),
+        query_policy=manager_policy,
+        catalog=catalog,
+        max_calls=settings["max_subtasks_per_job"],
+    )
+    return plan, raw_plan, manager_policy, catalog, duration_ms
+
+def _function_manager_apply_plan(
+    pending: dict[str, Any],
+    plan: dict[str, Any],
+    raw_plan: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    duration_ms: int,
+) -> None:
+    pending.update(
+        {
+            "manager_tool_catalog": catalog,
+            "function_manager_thread_id": str(raw_plan.get("thread_id") or "")[:200],
+            "manager_effective_model": str(raw_plan.get("effective_model") or "")[:100],
+            "manager_reasoning_effort": str(raw_plan.get("reasoning_effort") or "")[:20],
+            "manager_speed": str(raw_plan.get("speed") or "")[:20],
+            "manager_service_tier": str(raw_plan.get("service_tier") or "")[:40],
+            "manager_plan": plan,
+            "manager_planned_at": _now(),
+            "manager_planning_duration_ms": duration_ms,
+        }
+    )
+
+def _function_manager_request_missing_input(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+    plan: dict[str, Any],
+    started: float,
+) -> bool:
+    missing = list(plan.get("missing_user_fields") or [])
+    if not missing:
+        return False
+    evidence = {
+        "status": "blocked",
+        "summary": "Faltam dados do usuario para executar as consultas internas.",
+        "verified_facts": [],
+        "sources": [],
+        "confidence": "low",
+        "evidence_sufficient": False,
+        "coverage_complete": False,
+        "missing": missing,
+        "questions": missing[:2],
+        "data_requests": [],
+    }
+    pending.update({"manager_evidence": evidence, "manager_state": "awaiting_input", "job_state": "awaiting_input"})
+    pending["manager_total_duration_ms"] = int(round((time.monotonic() - started) * 1000))
+    _save_pending(state, message_id, pending)
+    _record_function_manager_diagnostic(state, pending, status="awaiting_input", reason="missing_user_fields")
+    questions = [str(item or "").strip() for item in missing if str(item or "").strip()]
+    prompt = "Preciso desta informação para continuar: " + (questions[0] if questions else "informe os dados que faltam no pedido.")
+    delivery = _post_proactive(
+        config,
+        {
+            "subject_id": str(pending.get("subject_id") or ""),
+            "fingerprint": f"manager:{pending.get('job_group_id')}:input",
+            "event_type": "task_partial",
+            "severity": "info",
+            "text": prompt[:3500],
+        },
+    )
+    pending["awaiting_notified"] = str(delivery.get("status") or "") in {"sent", "queued", "duplicate", "waiting_free_window"}
+    pending["delivery_state"] = f"awaiting_input_{str(delivery.get('status') or 'failed')}"
+    _save_pending(state, message_id, pending)
+    return True
+
+def _function_manager_run_tools(
+    pending: dict[str, Any],
+    plan: dict[str, Any],
+    manager_policy: dict[str, Any],
+    started: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    tools_started = time.monotonic()
+    results = _function_manager_execute_tools(pending, plan, manager_policy)
+    pending["manager_tools_duration_ms"] = int(round((time.monotonic() - tools_started) * 1000))
+    evidence = _function_manager_merge_evidence(pending.get("manager_evidence"), _function_manager_evidence(plan, results))
+    pending.update(
+        {
+            "manager_evidence": evidence,
+            "manager_state": "completed" if evidence.get("evidence_sufficient") else "partial",
+            "manager_completed_at": _now(),
+            "verified_facts": list(evidence.get("verified_facts") or []),
+            "verified_sources": list(evidence.get("sources") or []),
+            "manager_total_duration_ms": int(round((time.monotonic() - started) * 1000)),
+        }
+    )
+    return results, evidence
+
+def _function_manager_finish_job(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+    plan: dict[str, Any],
+    results: list[dict[str, Any]],
+    evidence: dict[str, Any],
+) -> None:
+    required_retryable = any(
+        isinstance(item, dict)
+        and item.get("required") is True
+        and item.get("dados_suficientes") is not True
+        and item.get("retryable") is True
+        for item in list(evidence.get("validations") or [])
+    )
+    deterministic_terminal = bool(
+        pending.get("deterministic_plan")
+        and results
+        and not required_retryable
+        and not plan.get("requires_sol")
+        and not plan.get("requires_web")
+    )
+    if (evidence.get("evidence_sufficient") is True or deterministic_terminal) and not plan.get("requires_sol") and not plan.get("requires_web"):
+        _record_function_manager_diagnostic(
+            state,
+            pending,
+            status="completed_without_sol" if evidence.get("evidence_sufficient") is True else "partial_without_sol",
+            reason="internal_evidence_sufficient" if evidence.get("evidence_sufficient") is True else "non_retryable_partial_evidence",
+        )
+        _function_manager_deliver_direct(config, state, message_id, pending)
+        return
+    if plan.get("requires_sol") or plan.get("requires_web"):
+        _record_function_manager_diagnostic(state, pending, status="handed_to_sol", reason="technical_or_external_analysis_required")
+        if _function_manager_start_sol(config, state, message_id, pending):
+            return
+        _function_manager_retry(pending, "sol_creation_failed")
+        _save_pending(state, message_id, pending)
+        return
+    _function_manager_retry(pending, "evidencia_interna_insuficiente")
+    _record_function_manager_diagnostic(state, pending, status="waiting_retry", reason="evidencia_interna_insuficiente")
+    _save_pending(state, message_id, pending)
+
 def _function_manager_job(config: dict[str, Any], state: dict[str, Any], message_id: str) -> None:
     started = time.monotonic()
     try:
-        with BRIDGE_STATE_LOCK:
-            current = (state.get("pending_messages") or {}).get(message_id) if isinstance(state.get("pending_messages"), dict) else None
-            pending = dict(current) if isinstance(current, dict) else {}
+        pending = _function_manager_pending_snapshot(state, message_id)
         if not pending or str(pending.get("kind") or "") != "dual_function_manager":
             return
         run_revision = max(0, int(pending.get("manager_revision") or 0))
         pending.update({"manager_state": "running", "job_state": "manager_running", "manager_started_at": _now()})
         _save_pending(state, message_id, pending)
-        settings = _whatsapp_dual_agent_settings(config)
-        catalog = _function_manager_catalog(pending.get("session_permissions"))
-        pending["manager_tool_catalog"] = catalog
-        manager_policy = (
-            pending.get("manager_query_policy")
-            if isinstance(pending.get("manager_query_policy"), dict)
-            else pending.get("query_policy") if isinstance(pending.get("query_policy"), dict) else {}
-        )
-        planning_started = time.monotonic()
-        deterministic_plan = pending.get("deterministic_plan") if isinstance(pending.get("deterministic_plan"), dict) else {}
-        if deterministic_plan:
-            raw_plan = dict(deterministic_plan)
-            raw_plan.update(
-                {
-                    "thread_id": "",
-                    "effective_model": "deterministic-router",
-                    "reasoning_effort": "none",
-                    "speed": "direct",
-                    "service_tier": "local",
-                }
-            )
-        else:
-            raw_plan = codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.run_manager(
-                thread_id=str(pending.get("function_manager_thread_id") or ""),
-                model=settings["conversation_agent_model"],
-                reasoning_effort=settings["conversation_agent_reasoning"],
-                speed=settings["conversation_agent_speed"],
-                service_tier=settings["conversation_agent_service_tier"],
-                request_text=str(pending.get("request_text") or ""),
-                job_prompt=str(pending.get("job_prompt") or pending.get("request_text") or ""),
-                query_policy=manager_policy,
-                tool_catalog=catalog,
-                previous_evidence=pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else {},
-                data_requests=pending.get("manager_data_requests") if isinstance(pending.get("manager_data_requests"), list) else [],
-                max_calls=settings["max_subtasks_per_job"],
-            )
-        planning_duration_ms = int(round((time.monotonic() - planning_started) * 1000))
-        plan = _function_manager_enforce_plan(
-            raw_plan,
-            request_text=str(pending.get("request_text") or ""),
-            query_policy=manager_policy,
-            catalog=catalog,
-            max_calls=settings["max_subtasks_per_job"],
-        )
-        with BRIDGE_STATE_LOCK:
-            latest = (
-                (state.get("pending_messages") or {}).get(message_id)
-                if isinstance(state.get("pending_messages"), dict)
-                else None
-            )
-        if not isinstance(latest, dict) or int(latest.get("manager_revision") or 0) != run_revision:
+        plan, raw_plan, manager_policy, catalog, planning_duration_ms = _function_manager_build_plan(config, pending)
+        if not _function_manager_revision_matches(state, message_id, run_revision):
             return
-        pending.update(
-            {
-                "function_manager_thread_id": str(raw_plan.get("thread_id") or "")[:200],
-                "manager_effective_model": str(raw_plan.get("effective_model") or "")[:100],
-                "manager_reasoning_effort": str(raw_plan.get("reasoning_effort") or "")[:20],
-                "manager_speed": str(raw_plan.get("speed") or "")[:20],
-                "manager_service_tier": str(raw_plan.get("service_tier") or "")[:40],
-                "manager_plan": plan,
-                "manager_planned_at": _now(),
-                "manager_planning_duration_ms": planning_duration_ms,
-            }
-        )
-        if list(plan.get("missing_user_fields") or []):
-            evidence = {
-                "status": "blocked",
-                "summary": "Faltam dados do usuario para executar as consultas internas.",
-                "verified_facts": [],
-                "sources": [],
-                "confidence": "low",
-                "evidence_sufficient": False,
-                "coverage_complete": False,
-                "missing": list(plan.get("missing_user_fields") or []),
-                "questions": list(plan.get("missing_user_fields") or [])[:2],
-                "data_requests": [],
-            }
-            pending.update({"manager_evidence": evidence, "manager_state": "awaiting_input", "job_state": "awaiting_input"})
-            pending["manager_total_duration_ms"] = int(round((time.monotonic() - started) * 1000))
-            _save_pending(state, message_id, pending)
-            _record_function_manager_diagnostic(
-                state,
-                pending,
-                status="awaiting_input",
-                reason="missing_user_fields",
-            )
-            questions = [str(item or "").strip() for item in list(evidence.get("questions") or []) if str(item or "").strip()]
-            prompt = "Preciso desta informação para continuar: " + (questions[0] if questions else "informe os dados que faltam no pedido.")
-            delivery = _post_proactive(
-                config,
-                {
-                    "subject_id": str(pending.get("subject_id") or ""),
-                    "fingerprint": f"manager:{pending.get('job_group_id')}:input",
-                    "event_type": "task_partial",
-                    "severity": "info",
-                    "text": prompt[:3500],
-                },
-            )
-            pending["awaiting_notified"] = str(delivery.get("status") or "") in {
-                "sent",
-                "queued",
-                "duplicate",
-                "waiting_free_window",
-            }
-            pending["delivery_state"] = f"awaiting_input_{str(delivery.get('status') or 'failed')}"
-            _save_pending(state, message_id, pending)
+        _function_manager_apply_plan(pending, plan, raw_plan, catalog, planning_duration_ms)
+        if _function_manager_request_missing_input(config, state, message_id, pending, plan, started):
             return
-        tools_started = time.monotonic()
-        results = _function_manager_execute_tools(pending, plan, manager_policy)
-        pending["manager_tools_duration_ms"] = int(round((time.monotonic() - tools_started) * 1000))
-        evidence = _function_manager_merge_evidence(
-            pending.get("manager_evidence"),
-            _function_manager_evidence(plan, results),
-        )
-        with BRIDGE_STATE_LOCK:
-            latest = (
-                (state.get("pending_messages") or {}).get(message_id)
-                if isinstance(state.get("pending_messages"), dict)
-                else None
-            )
-        if not isinstance(latest, dict) or int(latest.get("manager_revision") or 0) != run_revision:
+        results, evidence = _function_manager_run_tools(pending, plan, manager_policy, started)
+        if not _function_manager_revision_matches(state, message_id, run_revision):
             return
-        pending.update(
-            {
-                "manager_evidence": evidence,
-                "manager_state": "completed" if evidence.get("evidence_sufficient") else "partial",
-                "manager_completed_at": _now(),
-                "verified_facts": list(evidence.get("verified_facts") or []),
-                "verified_sources": list(evidence.get("sources") or []),
-                "manager_total_duration_ms": int(round((time.monotonic() - started) * 1000)),
-            }
-        )
         _save_pending(state, message_id, pending)
-        with BRIDGE_STATE_LOCK:
-            still_pending = (
-                (state.get("pending_messages") or {}).get(message_id)
-                if isinstance(state.get("pending_messages"), dict)
-                else None
-            )
-        if not isinstance(still_pending, dict) or still_pending.get("cancel_requested") is True:
+        current = _function_manager_pending_snapshot(state, message_id)
+        if not current or current.get("cancel_requested") is True:
             return
-        required_retryable = any(
-            isinstance(item, dict)
-            and item.get("required") is True
-            and item.get("dados_suficientes") is not True
-            and item.get("retryable") is True
-            for item in list(evidence.get("validations") or [])
-        )
-        deterministic_terminal = bool(
-            pending.get("deterministic_plan")
-            and results
-            and not required_retryable
-            and not plan.get("requires_sol")
-            and not plan.get("requires_web")
-        )
-        if (
-            evidence.get("evidence_sufficient") is True
-            or deterministic_terminal
-        ) and not plan.get("requires_sol") and not plan.get("requires_web"):
-            _record_function_manager_diagnostic(
-                state,
-                pending,
-                status="completed_without_sol" if evidence.get("evidence_sufficient") is True else "partial_without_sol",
-                reason="internal_evidence_sufficient" if evidence.get("evidence_sufficient") is True else "non_retryable_partial_evidence",
-            )
-            _function_manager_deliver_direct(config, state, message_id, pending)
-            return
-        if plan.get("requires_sol") or plan.get("requires_web"):
-            _record_function_manager_diagnostic(
-                state,
-                pending,
-                status="handed_to_sol",
-                reason="technical_or_external_analysis_required",
-            )
-            if _function_manager_start_sol(config, state, message_id, pending):
-                return
-            _function_manager_retry(pending, "sol_creation_failed")
-            _save_pending(state, message_id, pending)
-            return
-        _function_manager_retry(pending, "evidencia_interna_insuficiente")
-        _record_function_manager_diagnostic(
-            state,
-            pending,
-            status="waiting_retry",
-            reason="evidencia_interna_insuficiente",
-        )
-        _save_pending(state, message_id, pending)
+        _function_manager_finish_job(config, state, message_id, pending, plan, results, evidence)
     except Exception as exc:
-        with BRIDGE_STATE_LOCK:
-            current = (state.get("pending_messages") or {}).get(message_id) if isinstance(state.get("pending_messages"), dict) else None
-            pending = dict(current) if isinstance(current, dict) else {}
+        pending = _function_manager_pending_snapshot(state, message_id)
         if pending:
             _function_manager_retry(pending, str(exc)[:1000])
             pending["manager_last_error"] = str(exc)[:1000]
             pending["manager_total_duration_ms"] = int(round((time.monotonic() - started) * 1000))
-            _record_function_manager_diagnostic(
-                state,
-                pending,
-                status="waiting_retry",
-                reason=str(exc)[:1000],
-            )
+            _record_function_manager_diagnostic(state, pending, status="waiting_retry", reason=str(exc)[:1000])
             _save_pending(state, message_id, pending)
         RUNTIME_STATE["dual_agent_last_error"] = str(exc)[:1000]
     finally:

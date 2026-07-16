@@ -373,18 +373,13 @@ def _function_manager_requeue_from_sol(
     _submit_function_manager_job(config, state, message_id)
     return True
 
-def _complete_dual_job_group_pending(
-    config: dict[str, Any],
-    state: dict[str, Any],
-    message_id: str,
+def _collect_dual_group_tasks(
     pending: dict[str, Any],
-) -> bool:
+    subtasks: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any], set[str], bool, list[dict[str, Any]], list[dict[str, Any]]]:
     terminal = {"completed", "partial", "failed", "canceled"}
-    subtasks = [item for item in list(pending.get("subtasks") or []) if isinstance(item, dict)]
-    if not subtasks:
-        return False
     results = dict(pending.get("group_results") or {}) if isinstance(pending.get("group_results"), dict) else {}
-    collected = set(str(item or "") for item in list(pending.get("collected_task_ids") or []))
+    collected = {str(item or "") for item in list(pending.get("collected_task_ids") or [])}
     tasks: dict[str, dict[str, Any]] = {}
     changed = False
     manager_requests: list[dict[str, Any]] = []
@@ -395,69 +390,41 @@ def _complete_dual_job_group_pending(
         if not isinstance(task, dict):
             continue
         tasks[task_id] = task
-        if str(task.get("status") or "") in terminal and task_id not in collected:
-            worker_result = codex_whatsapp_agents.normalize_worker_result(task)
-            results[task_id] = worker_result
-            collected.add(task_id)
-            changed = True
-            _dual_preserve_worker_result(pending, worker_result)
-            disposition = _dual_worker_disposition(task, worker_result)
-            if disposition == "completed":
-                item.update(
-                    {
-                        "state": "completed",
-                        "next_retry_at_epoch": 0,
-                        "last_attempt_at": str(task.get("completed_at") or _now()),
-                        "last_progress_at": str(task.get("last_progress_at") or task.get("completed_at") or _now()),
-                    }
-                )
-            elif disposition == "manager_request":
-                item.update(
-                    {
-                        "state": "manager_waiting",
-                        "next_retry_at_epoch": 0,
-                        "last_attempt_at": str(task.get("completed_at") or _now()),
-                    }
-                )
-                manager_requests.extend(
-                    item for item in list(worker_result.get("data_requests") or []) if isinstance(item, dict)
-                )
-                manager_holders.append(dict(item))
-            else:
-                _dual_schedule_retry(
-                    pending,
-                    item,
-                    task,
-                    worker_result,
-                    key=f"{pending.get('job_group_id')}:{item.get('logical_subtask_id') or item.get('subtask_id')}",
-                )
-            codex_console._codex_update_task(
-                task_id,
-                worker_result=worker_result,
-                handoff_status=(
-                    "group_result_ready"
-                    if disposition == "completed"
-                    else "manager_data_requested" if disposition == "manager_request" else str(item.get("state") or "waiting_retry")
-                ),
-                delivery_state=(
-                    "group_aggregating"
-                    if disposition == "completed"
-                    else "manager_recollecting" if disposition == "manager_request" else str(item.get("state") or "waiting_retry")
-                ),
+        if str(task.get("status") or "") not in terminal or task_id in collected:
+            continue
+        worker_result = codex_whatsapp_agents.normalize_worker_result(task)
+        results[task_id] = worker_result
+        collected.add(task_id)
+        changed = True
+        _dual_preserve_worker_result(pending, worker_result)
+        disposition = _dual_worker_disposition(task, worker_result)
+        if disposition == "completed":
+            item.update(
+                {
+                    "state": "completed",
+                    "next_retry_at_epoch": 0,
+                    "last_attempt_at": str(task.get("completed_at") or _now()),
+                    "last_progress_at": str(task.get("last_progress_at") or task.get("completed_at") or _now()),
+                }
             )
-    pending["group_results"] = results
-    pending["collected_task_ids"] = sorted(collected)
-    if manager_requests:
-        pending["prior_group_results"] = results
-        _function_manager_requeue_from_sol(
-            config,
-            state,
-            message_id,
-            pending,
-            manager_requests,
-            manager_holders,
-        )
-        return False
+        elif disposition == "manager_request":
+            item.update({"state": "manager_waiting", "next_retry_at_epoch": 0, "last_attempt_at": str(task.get("completed_at") or _now())})
+            manager_requests.extend(value for value in list(worker_result.get("data_requests") or []) if isinstance(value, dict))
+            manager_holders.append(dict(item))
+        else:
+            _dual_schedule_retry(
+                pending,
+                item,
+                task,
+                worker_result,
+                key=f"{pending.get('job_group_id')}:{item.get('logical_subtask_id') or item.get('subtask_id')}",
+            )
+        handoff = "group_result_ready" if disposition == "completed" else "manager_data_requested" if disposition == "manager_request" else str(item.get("state") or "waiting_retry")
+        delivery = "group_aggregating" if disposition == "completed" else "manager_recollecting" if disposition == "manager_request" else str(item.get("state") or "waiting_retry")
+        codex_console._codex_update_task(task_id, worker_result=worker_result, handoff_status=handoff, delivery_state=delivery)
+    return tasks, results, collected, changed, manager_requests, manager_holders
+
+def _update_dual_group_job_state(pending: dict[str, Any], subtasks: list[dict[str, Any]]) -> bool:
     holder_states = {str(item.get("state") or "") for item in subtasks}
     all_terminal = bool(subtasks) and holder_states.issubset({"completed", "partial", "canceled"})
     if all_terminal:
@@ -468,49 +435,51 @@ def _complete_dual_job_group_pending(
         pending["job_state"] = "awaiting_input"
     else:
         pending["job_state"] = "waiting_retry"
-    delivered = set(str(item or "") for item in list(pending.get("delivered_task_ids") or []))
+    return all_terminal
+
+def _dual_group_meaningful_results(
+    pending: dict[str, Any],
+    results: dict[str, Any],
+    collected: set[str],
+) -> tuple[list[str], bool]:
+    delivered = {str(item or "") for item in list(pending.get("delivered_task_ids") or [])}
     delivered_before_filter = set(delivered)
-    new_meaningful = []
+    meaningful: list[str] = []
     for task_id in collected:
         result = results.get(task_id) or {}
         if task_id in delivered or not _dual_worker_result_is_meaningful(result):
             continue
         if pending.get("auth_notice_sent") is True and _dual_worker_result_is_auth_error(result):
-            # A pesquisa permanece pendente, mas a mesma desconexao nao deve
-            # gerar um novo aviso a cada tentativa de quinze minutos.
             delivered.add(task_id)
             continue
-        new_meaningful.append(task_id)
-    if delivered != delivered_before_filter:
-        pending["delivered_task_ids"] = sorted(delivered)
-        changed = True
-    now_epoch = time.time()
-    if new_meaningful and not pending.get("partial_pending_since_epoch"):
-        pending["partial_pending_since_epoch"] = now_epoch
-        changed = True
+        meaningful.append(task_id)
+    changed = delivered != delivered_before_filter
     if changed:
-        _save_pending(state, message_id, pending)
+        pending["delivered_task_ids"] = sorted(delivered)
+    if meaningful and not pending.get("partial_pending_since_epoch"):
+        pending["partial_pending_since_epoch"] = time.time()
+        changed = True
+    return meaningful, changed
 
-    if not all_terminal and new_meaningful:
-        # Resultados parciais permanecem anexados ao job, mas os avisos de
-        # espera sao fixos. Nenhum agente conversa sozinho durante a espera.
-        pending["delivered_task_ids"] = sorted(delivered.union(new_meaningful))
-        pending["partial_pending_since_epoch"] = 0
-        pending["delivery_state"] = "partial_evidence_buffered"
-        _save_pending(state, message_id, pending)
+def _buffer_dual_group_partial(
+    state: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+    meaningful: list[str],
+) -> None:
+    delivered = {str(item or "") for item in list(pending.get("delivered_task_ids") or [])}
+    pending["delivered_task_ids"] = sorted(delivered.union(meaningful))
+    pending["partial_pending_since_epoch"] = 0
+    pending["delivery_state"] = "partial_evidence_buffered"
+    _save_pending(state, message_id, pending)
 
-    if not all_terminal:
-        synthetic_status = "running" if any(str(task.get("status") or "") == "running" for task in tasks.values()) else "queued"
-        _maybe_send_dual_conversation_tick(
-            config,
-            state,
-            message_id,
-            pending,
-            {"task_id": str(pending.get("job_group_id") or message_id), "status": synthetic_status},
-        )
-        return False
-
-    final_result = _aggregate_dual_group_results(pending)
+def _dual_group_final_response(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    pending: dict[str, Any],
+    message_id: str,
+    final_result: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
     synthetic = {"task_id": str(pending.get("job_group_id") or message_id), "status": "completed"}
     try:
         decision = _run_conversation_agent(
@@ -524,45 +493,55 @@ def _complete_dual_job_group_pending(
             ai_behavior=str(pending.get("phone_ai_behavior") or ""),
             tick_index=int(pending.get("tick_index") or 0),
         )
-        final_text = str(decision.get("reply_text") or "").strip()
+        return decision, str(decision.get("reply_text") or "").strip()
     except Exception as exc:
-        decision = {}
-        final_text = _worker_result_fallback_text(final_result, pending)
         RUNTIME_STATE["conversation_fallback_last_error"] = str(exc)[:500]
+        return {}, _worker_result_fallback_text(final_result, pending)
+
+def _dual_group_report_response(
+    config: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+    tasks: dict[str, dict[str, Any]],
+    final_text: str,
+) -> str:
     report_request = str(pending.get("request_text") or "")
-    if whatsapp_report_files.report_requested(report_request):
-        artifacts = [
-            artifact
-            for task in tasks.values()
-            for artifact in list(task.get("whatsapp_artifacts") or [])
-            if isinstance(artifact, dict)
-        ][:4]
-        artifact_results = _whatsapp_deliver_report_artifacts(
-            config,
-            message_id,
-            artifacts,
-            pending.get("client_id") or "default",
-            max_images=4,
-        ) if artifacts else []
-        summaries = [
-            summary
-            for task in tasks.values()
-            for summary in list(task.get("tool_results_summary") or [])
-            if isinstance(summary, dict)
-        ]
-        final_text = "\n\n".join(
-            item
-            for item in (
-                final_text,
-                _whatsapp_report_metadata_text(report_request, pending.get("query_policy"), summaries),
-                whatsapp_report_files.report_offer_text(report_request),
-            )
-            if item
-        ).strip()
-        if artifacts and not all(item.get("success") for item in artifact_results):
-            final_text += "\n\nUm ou mais arquivos nao puderam ser anexados; o resumo em texto foi preservado."
-        for task_id in tasks:
-            codex_console._codex_update_task(task_id, whatsapp_artifacts=[])
+    if not whatsapp_report_files.report_requested(report_request):
+        return final_text
+    artifacts = [
+        artifact for task in tasks.values() for artifact in list(task.get("whatsapp_artifacts") or [])
+        if isinstance(artifact, dict)
+    ][:4]
+    artifact_results = _whatsapp_deliver_report_artifacts(
+        config, message_id, artifacts, pending.get("client_id") or "default", max_images=4,
+    ) if artifacts else []
+    summaries = [
+        summary for task in tasks.values() for summary in list(task.get("tool_results_summary") or [])
+        if isinstance(summary, dict)
+    ]
+    final_text = "\n\n".join(
+        item for item in (
+            final_text,
+            _whatsapp_report_metadata_text(report_request, pending.get("query_policy"), summaries),
+            whatsapp_report_files.report_offer_text(report_request),
+        ) if item
+    ).strip()
+    if artifacts and not all(item.get("success") for item in artifact_results):
+        final_text += "\n\nUm ou mais arquivos nao puderam ser anexados; o resumo em texto foi preservado."
+    for task_id in tasks:
+        codex_console._codex_update_task(task_id, whatsapp_artifacts=[])
+    return final_text
+
+def _deliver_dual_group_final(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+    tasks: dict[str, dict[str, Any]],
+    final_result: dict[str, Any],
+    decision: dict[str, Any],
+    final_text: str,
+) -> bool:
     group_id = str(pending.get("job_group_id") or message_id)
     result = _post_proactive(
         config,
@@ -586,17 +565,52 @@ def _complete_dual_job_group_pending(
         conversation_agent_thread_id=str(decision.get("thread_id") or "")[:200],
         user_facing_response=final_text[:12000],
     )
-    representative = next(iter(tasks.values()), {})
-    _whatsapp_update_query_context_from_task(state, pending, representative)
+    _whatsapp_update_query_context_from_task(state, pending, next(iter(tasks.values()), {}))
     _record_message_timing(message_id, completed_at=_now(), sent_at=_now())
-    _remove_pending(
-        state,
-        message_id,
-        status="completed" if str(final_result.get("status") or "") == "completed" else "partial",
-        reason="" if str(final_result.get("status") or "") == "completed" else "resultado_parcial",
-    )
+    status = "completed" if str(final_result.get("status") or "") == "completed" else "partial"
+    _remove_pending(state, message_id, status=status, reason="" if status == "completed" else "resultado_parcial")
     return True
 
+def _complete_dual_job_group_pending(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message_id: str,
+    pending: dict[str, Any],
+) -> bool:
+    subtasks = [item for item in list(pending.get("subtasks") or []) if isinstance(item, dict)]
+    if not subtasks:
+        return False
+    tasks, results, collected, changed, manager_requests, manager_holders = _collect_dual_group_tasks(pending, subtasks)
+    pending["group_results"] = results
+    pending["collected_task_ids"] = sorted(collected)
+    if manager_requests:
+        pending["prior_group_results"] = results
+        _function_manager_requeue_from_sol(
+            config, state, message_id, pending, manager_requests, manager_holders,
+        )
+        return False
+    all_terminal = _update_dual_group_job_state(pending, subtasks)
+    meaningful, meaningful_changed = _dual_group_meaningful_results(pending, results, collected)
+    if changed or meaningful_changed:
+        _save_pending(state, message_id, pending)
+    if not all_terminal and meaningful:
+        _buffer_dual_group_partial(state, message_id, pending, meaningful)
+    if not all_terminal:
+        synthetic_status = "running" if any(str(task.get("status") or "") == "running" for task in tasks.values()) else "queued"
+        _maybe_send_dual_conversation_tick(
+            config,
+            state,
+            message_id,
+            pending,
+            {"task_id": str(pending.get("job_group_id") or message_id), "status": synthetic_status},
+        )
+        return False
+    final_result = _aggregate_dual_group_results(pending)
+    decision, final_text = _dual_group_final_response(config, state, pending, message_id, final_result)
+    final_text = _dual_group_report_response(config, message_id, pending, tasks, final_text)
+    return _deliver_dual_group_final(
+        config, state, message_id, pending, tasks, final_result, decision, final_text,
+    )
 
 _COMPONENT_FUNCTIONS = frozenset((
     '_dual_task_snapshot',

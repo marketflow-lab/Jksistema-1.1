@@ -71,6 +71,95 @@ WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
+def _dual_worker_channel_metadata(
+    settings: dict[str, Any],
+    message: dict[str, Any],
+    message_id: str,
+    subject: str,
+    phone: str,
+    group_id: str,
+    child_id: str,
+    logical_id: str,
+    attempt: int,
+    subtask_index: int,
+    subtask_total: int,
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    query_policy: dict[str, Any],
+    phone_ai_behavior: str,
+    request_text: str,
+    requires_web: bool,
+) -> dict[str, Any]:
+    return {
+        "message_id": f"{message_id}:worker:{child_id}",
+        "parent_job_id": group_id,
+        "job_group_id": group_id,
+        "subtask_id": child_id,
+        "logical_subtask_id": logical_id,
+        "attempt": attempt,
+        "subtask_index": max(1, int(subtask_index or 1)),
+        "subtask_total": max(1, int(subtask_total or 1)),
+        "subject_id": subject,
+        "wa_id": phone,
+        "message_type": str(message.get("message_type") or "text"),
+        "media": media or {},
+        "transcription": transcription or {},
+        "received_at": message.get("received_at"),
+        "mobile_full_access": False,
+        "query_policy": query_policy,
+        "phone_ai_behavior": phone_ai_behavior,
+        "general_answer": False,
+        "request_text": request_text,
+        "agent_role": "task",
+        "agent_lane": "worker",
+        "handoff_status": "delegated",
+        "delivery_state": "worker_running",
+        "orchestration_profile": "whatsapp_dual_codex_worker",
+        "allow_web_search": bool(requires_web),
+        "web_search_requested": bool(requires_web),
+        "max_active_task_agents_global": settings["max_active_task_agents_global"],
+        "max_active_task_agents_per_conversation": settings["max_active_task_agents_per_conversation"],
+        "retry_policy": "bounded",
+        "job_deadline_seconds": _job_deadline_seconds(request_text, requires_web=bool(requires_web)),
+    }
+
+
+def _finalize_dual_worker_task(
+    task: dict[str, Any], group_id: str, child_id: str, logical_id: str, attempt: int, requires_web: bool,
+) -> dict[str, Any]:
+    if not isinstance(task, dict) or not str(task.get("task_id") or ""):
+        raise RuntimeError("task_agent_creation_failed")
+    task_id = str(task.get("task_id") or "")
+    metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
+    if (
+        str(metadata.get("orchestration_profile") or "") != "whatsapp_dual_codex_worker"
+        or str(metadata.get("agent_role") or "") != "task"
+        or str(metadata.get("agent_lane") or "") != "worker"
+    ):
+        metadata = {
+            **metadata,
+            "orchestration_profile": "whatsapp_dual_codex_worker",
+            "agent_role": "task",
+            "agent_lane": "worker",
+            "allow_web_search": bool(requires_web),
+            "web_search_requested": bool(requires_web),
+            "job_group_id": group_id,
+            "subtask_id": child_id,
+            "logical_subtask_id": logical_id,
+            "attempt": attempt,
+        }
+        codex_console._codex_update_task(
+            task_id, orchestration_profile="whatsapp_dual_codex_worker", agent_role="task",
+            agent_lane="worker", parent_job_id=group_id, job_group_id=group_id,
+            subtask_id=child_id, channel_metadata=metadata,
+        )
+    codex_console._codex_update_task(
+        task_id, job_group_id=group_id, subtask_id=child_id, logical_subtask_id=logical_id,
+        current_attempt=attempt, attempt_task_ids=[task_id], retry_count=max(0, attempt - 1),
+    )
+    return codex_console._codex_load_task(task_id) or {**task, "channel_metadata": metadata}
+
+
 def _create_dual_worker_task(
     config: dict[str, Any],
     *,
@@ -97,116 +186,44 @@ def _create_dual_worker_task(
     attempt: int = 1,
 ) -> dict[str, Any]:
     settings = _whatsapp_dual_agent_settings(config)
-    effective_task_model = codex_whatsapp_agents.CONVERSATION_RUNTIME.resolve_model(settings["task_agent_model"])
-    effective_reasoning = settings["task_agent_reasoning"]
+    task_model = codex_whatsapp_agents.CONVERSATION_RUNTIME.resolve_model(settings["task_agent_model"])
+    reasoning = settings["task_agent_reasoning"]
     group_id = str(job_group_id or message_id).strip()
     child_id = str(subtask_id or "main").strip()
     logical_id = str(logical_subtask_id or child_id).strip()
     attempt_number = max(1, int(attempt or 1))
     worker_config = {
         **dict(config),
-        "ai_model": f"codex:{effective_task_model}",
-        "codex_reasoning_effort": effective_reasoning,
+        "ai_model": f"codex:{task_model}",
+        "codex_reasoning_effort": reasoning,
         "codex_reasoning_policy": "fixed",
-        "codex_reasoning_max": effective_reasoning,
+        "codex_reasoning_max": reasoning,
     }
     worker_message = {**message, "text_body": job_prompt or request_text, "message_type": "text"}
     worker_prompt = codex_whatsapp_agents.worker_output_instruction() + _message_prompt(
-        worker_message,
-        media,
-        transcription,
-        mobile_full_access=False,
-        query_policy=query_policy,
-        ai_behavior=phone_ai_behavior,
-        general_answer=False,
+        worker_message, media, transcription, mobile_full_access=False,
+        query_policy=query_policy, ai_behavior=phone_ai_behavior, general_answer=False,
     )
-    screen_context = _mobile_screen_context(message_id, subject, media, transcription, query_policy)
+    metadata = _dual_worker_channel_metadata(
+        settings, message, message_id, subject, phone, group_id, child_id, logical_id,
+        attempt_number, subtask_index, subtask_total, media, transcription, query_policy,
+        phone_ai_behavior, job_prompt or request_text, requires_web,
+    )
     result = _create_selected_ai_task(
         worker_config,
         prompt=worker_prompt,
         session=session,
         conversation_id=conversation_id,
         paths=[str(media.get("path"))] if media else [],
-        screen_context=screen_context,
+        screen_context=_mobile_screen_context(message_id, subject, media, transcription, query_policy),
         safe_read_only=True,
         mobile_full_access=False,
-        channel_metadata={
-            "message_id": f"{message_id}:worker:{child_id}",
-            "parent_job_id": group_id,
-            "job_group_id": group_id,
-            "subtask_id": child_id,
-            "logical_subtask_id": logical_id,
-            "attempt": attempt_number,
-            "subtask_index": max(1, int(subtask_index or 1)),
-            "subtask_total": max(1, int(subtask_total or 1)),
-            "subject_id": subject,
-            "wa_id": phone,
-            "message_type": str(message.get("message_type") or "text"),
-            "media": media or {},
-            "transcription": transcription or {},
-            "received_at": message.get("received_at"),
-            "mobile_full_access": False,
-            "query_policy": query_policy,
-            "phone_ai_behavior": phone_ai_behavior,
-            "general_answer": False,
-            "request_text": job_prompt or request_text,
-            "agent_role": "task",
-            "agent_lane": "worker",
-            "handoff_status": "delegated",
-            "delivery_state": "worker_running",
-            "orchestration_profile": "whatsapp_dual_codex_worker",
-            "allow_web_search": bool(requires_web),
-            "web_search_requested": bool(requires_web),
-            "max_active_task_agents_global": settings["max_active_task_agents_global"],
-            "max_active_task_agents_per_conversation": settings["max_active_task_agents_per_conversation"],
-            "retry_policy": "bounded",
-            "job_deadline_seconds": _job_deadline_seconds(request_text, requires_web=bool(requires_web)),
-        },
+        channel_metadata=metadata,
     )
     task = result.get("task") if isinstance(result, dict) else {}
-    if not isinstance(task, dict) or not str(task.get("task_id") or ""):
-        raise RuntimeError("task_agent_creation_failed")
-    metadata = task.get("channel_metadata") if isinstance(task.get("channel_metadata"), dict) else {}
-    if (
-        str(metadata.get("orchestration_profile") or "") != "whatsapp_dual_codex_worker"
-        or str(metadata.get("agent_role") or "") != "task"
-        or str(metadata.get("agent_lane") or "") != "worker"
-    ):
-        metadata = {
-            **metadata,
-            "orchestration_profile": "whatsapp_dual_codex_worker",
-            "agent_role": "task",
-            "agent_lane": "worker",
-            "allow_web_search": bool(requires_web),
-            "web_search_requested": bool(requires_web),
-            "job_group_id": group_id,
-            "subtask_id": child_id,
-            "logical_subtask_id": logical_id,
-            "attempt": attempt_number,
-        }
-        codex_console._codex_update_task(
-            str(task.get("task_id") or ""),
-            orchestration_profile="whatsapp_dual_codex_worker",
-            agent_role="task",
-            agent_lane="worker",
-            parent_job_id=group_id,
-            job_group_id=group_id,
-            subtask_id=child_id,
-            channel_metadata=metadata,
-        )
-        task = codex_console._codex_load_task(str(task.get("task_id") or "")) or {**task, "channel_metadata": metadata}
-    task_id = str(task.get("task_id") or "")
-    codex_console._codex_update_task(
-        task_id,
-        job_group_id=group_id,
-        subtask_id=child_id,
-        logical_subtask_id=logical_id,
-        current_attempt=attempt_number,
-        attempt_task_ids=[task_id],
-        retry_count=max(0, attempt_number - 1),
+    return _finalize_dual_worker_task(
+        task, group_id, child_id, logical_id, attempt_number, requires_web,
     )
-    task = codex_console._codex_load_task(task_id) or task
-    return task
 
 def _function_manager_worker_query_policy(pending: dict[str, Any]) -> dict[str, Any]:
     base_policy = pending.get("manager_query_policy") if isinstance(pending.get("manager_query_policy"), dict) else pending.get("query_policy")
@@ -224,6 +241,108 @@ def _function_manager_worker_query_policy(pending: dict[str, Any]) -> dict[str, 
     policy["source_policy"] = source
     return policy
 
+
+def _start_sol_subtask(
+    config: dict[str, Any],
+    pending: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    worker_policy: dict[str, Any],
+    packet: str,
+    group_id: str,
+    subtask: dict[str, Any],
+    index: int,
+    total: int,
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    logical_id = str(subtask.get("logical_subtask_id") or subtask.get("subtask_id") or f"s{index}-{uuid.uuid4().hex[:8]}")
+    attempt = max(1, int(subtask.get("current_attempt") or 1))
+    child_id = logical_id if attempt <= 1 else f"{logical_id}-a{attempt}"
+    base_prompt = str(subtask.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or "").strip()
+    worker_prompt = (
+        base_prompt
+        + "\n\nPACOTE INTERNO JA COLETADO PELO LUNA GERENCIADOR:\n"
+        + packet
+        + "\n\nUse esse pacote como fonte interna. Nao repita ferramentas internas do JK Sistema. "
+        "Pesquise na internet quando autorizado. Se ainda faltar dado interno, retorne data_requests no JSON final."
+    )[:36000]
+    item = {
+        "subtask_id": child_id,
+        "logical_subtask_id": logical_id,
+        "title": str(subtask.get("title") or pending.get("job_title") or "Pesquisa")[:180],
+        "prompt": base_prompt[:12000],
+        "requires_web": bool(subtask.get("requires_web")) if "requires_web" in subtask else bool(plan.get("requires_web")),
+        "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        "task_id": "",
+        "current_attempt": attempt,
+        "attempt_task_ids": list(subtask.get("attempt_task_ids") or []),
+        "retry_count": max(0, attempt - 1),
+        "next_retry_at_epoch": 0,
+        "state": "running",
+    }
+    try:
+        task = _create_dual_worker_task(
+            config, message=message, message_id=str(message.get("message_id") or ""),
+            subject=str(pending.get("subject_id") or ""), phone=str(pending.get("wa_id") or ""),
+            session=session, conversation_id=str(pending.get("conversation_id") or ""),
+            request_text=str(pending.get("request_text") or ""), job_prompt=worker_prompt,
+            job_title=item["title"],
+            media=pending.get("media") if isinstance(pending.get("media"), dict) and pending.get("media") else None,
+            transcription=pending.get("transcription") if isinstance(pending.get("transcription"), dict) and pending.get("transcription") else None,
+            phone_ai_behavior=str(pending.get("phone_ai_behavior") or ""), query_policy=worker_policy,
+            job_group_id=group_id, subtask_id=child_id, logical_subtask_id=logical_id,
+            attempt=attempt, subtask_index=index, subtask_total=total,
+            requires_web=item["requires_web"], reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        )
+        task_id = str(task.get("task_id") or "")
+        item["task_id"] = task_id
+        item["attempt_task_ids"] = list(dict.fromkeys([*item["attempt_task_ids"], task_id])) if task_id else item["attempt_task_ids"]
+    except Exception as exc:
+        reason = str(exc)[:1000]
+        error_class, retryable = _dual_retry_classification(reason)
+        delay = _dual_retry_delay_seconds(1, reason, f"{group_id}:{logical_id}:create") if retryable else 0
+        item.update({
+            "state": "waiting_retry" if retryable else "partial", "retry_count": 1,
+            "retry_reason": reason, "next_retry_at_epoch": time.time() + delay if retryable else 0,
+            "next_retry_delay_seconds": delay, "auth_retry": False, "retryable": retryable,
+            "error_class": error_class,
+        })
+    return item
+
+
+def _apply_started_sol_group(
+    pending: dict[str, Any], created: list[dict[str, Any]], worker_policy: dict[str, Any], plan: dict[str, Any],
+) -> str:
+    first_id = next((str(item.get("task_id") or "") for item in created if item.get("task_id")), "")
+    is_group = len(created) > 1 or not first_id
+    first = created[0] if created else {}
+    pending.update({
+        "task_id": first_id,
+        "kind": "dual_job_group" if is_group else "dual_worker",
+        "subtasks": created if is_group else [],
+        "group_results": {},
+        "collected_task_ids": [],
+        "delivered_task_ids": [],
+        "job_state": "running" if first_id else "waiting_retry",
+        "handoff_status": "worker_running",
+        "delivery_state": "manager_evidence_delivered_to_sol",
+        "query_policy": worker_policy,
+        "manager_completed_before_sol": True,
+        "manager_completed_at": _now(),
+        "retry_count": int(first.get("retry_count") or 0) if not is_group else 0,
+        "next_retry_at_epoch": float(first.get("next_retry_at_epoch") or 0) if not is_group else 0,
+        "retry_reason": str(first.get("retry_reason") or "") if not is_group else "",
+        "attempt_task_ids": list(first.get("attempt_task_ids") or []) if not is_group else [],
+        "current_attempt": int(first.get("current_attempt") or 1) if not is_group else 1,
+        "subtask_id": str(first.get("subtask_id") or "main") if not is_group else "",
+        "logical_subtask_id": str(first.get("logical_subtask_id") or "main") if not is_group else "",
+        "prompt": str(first.get("prompt") or pending.get("job_prompt") or "")[:12000] if not is_group else "",
+        "title": str(first.get("title") or pending.get("job_title") or "")[:180] if not is_group else "",
+        "requires_web": bool(first.get("requires_web", True)) if not is_group else bool(plan.get("requires_web")),
+    })
+    return first_id
+
+
 def _function_manager_start_sol(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -233,15 +352,15 @@ def _function_manager_start_sol(
     evidence = pending.get("manager_evidence") if isinstance(pending.get("manager_evidence"), dict) else {}
     plan = pending.get("manager_plan") if isinstance(pending.get("manager_plan"), dict) else {}
     settings = _whatsapp_dual_agent_settings(config)
-    proposed = [item for item in list(pending.get("sol_subtasks") or []) if isinstance(item, dict)][: settings["max_subtasks_per_job"]]
+    proposed = [
+        item for item in list(pending.get("sol_subtasks") or []) if isinstance(item, dict)
+    ][: settings["max_subtasks_per_job"]]
     if not proposed:
-        proposed = [
-            {
-                "title": str(pending.get("job_title") or pending.get("request_text") or "Pesquisa")[:180],
-                "prompt": str(pending.get("job_prompt") or pending.get("request_text") or "")[:12000],
-                "requires_web": bool(plan.get("requires_web")),
-            }
-        ]
+        proposed = [{
+            "title": str(pending.get("job_title") or pending.get("request_text") or "Pesquisa")[:180],
+            "prompt": str(pending.get("job_prompt") or pending.get("request_text") or "")[:12000],
+            "requires_web": bool(plan.get("requires_web")),
+        }]
     session = {
         "username": str(pending.get("username") or "").strip().lower(),
         "client_id": str(pending.get("client_id") or "").strip(),
@@ -257,120 +376,22 @@ def _function_manager_start_sol(
         "received_at": pending.get("created_at") or _now(),
     }
     worker_policy = _function_manager_worker_query_policy(pending)
-    packet = json.dumps(
-        {
-            "manager_plan": plan,
-            "evidence": {key: evidence.get(key) for key in ("summary", "verified_facts", "sources", "confidence", "validations", "missing", "failures")},
+    packet = json.dumps({
+        "manager_plan": plan,
+        "evidence": {
+            key: evidence.get(key)
+            for key in ("summary", "verified_facts", "sources", "confidence", "validations", "missing", "failures")
         },
-        ensure_ascii=False,
-        default=str,
-    )[:24000]
+    }, ensure_ascii=False, default=str)[:24000]
     group_id = str(pending.get("job_group_id") or f"wa-{uuid.uuid4().hex[:20]}")
-    created: list[dict[str, Any]] = []
-    for index, subtask in enumerate(proposed, start=1):
-        logical_id = str(subtask.get("logical_subtask_id") or subtask.get("subtask_id") or f"s{index}-{uuid.uuid4().hex[:8]}")
-        attempt = max(1, int(subtask.get("current_attempt") or 1))
-        child_id = logical_id if attempt <= 1 else f"{logical_id}-a{attempt}"
-        base_prompt = str(subtask.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or "").strip()
-        worker_prompt = (
-            base_prompt
-            + "\n\nPACOTE INTERNO JA COLETADO PELO LUNA GERENCIADOR:\n"
-            + packet
-            + "\n\nUse esse pacote como fonte interna. Nao repita ferramentas internas do JK Sistema. "
-            "Pesquise na internet quando autorizado. Se ainda faltar dado interno, retorne data_requests no JSON final."
-        )[:36000]
-        item = {
-            "subtask_id": child_id,
-            "logical_subtask_id": logical_id,
-            "title": str(subtask.get("title") or pending.get("job_title") or "Pesquisa")[:180],
-            "prompt": base_prompt[:12000],
-            "requires_web": (
-                bool(subtask.get("requires_web"))
-                if "requires_web" in subtask
-                else bool(plan.get("requires_web"))
-            ),
-            "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
-            "task_id": "",
-            "current_attempt": attempt,
-            "attempt_task_ids": list(subtask.get("attempt_task_ids") or []),
-            "retry_count": max(0, attempt - 1),
-            "next_retry_at_epoch": 0,
-            "state": "running",
-        }
-        try:
-            task = _create_dual_worker_task(
-                config,
-                message=message,
-                message_id=message_id,
-                subject=str(pending.get("subject_id") or ""),
-                phone=str(pending.get("wa_id") or ""),
-                session=session,
-                conversation_id=str(pending.get("conversation_id") or ""),
-                request_text=str(pending.get("request_text") or ""),
-                job_prompt=worker_prompt,
-                job_title=item["title"],
-                media=pending.get("media") if isinstance(pending.get("media"), dict) and pending.get("media") else None,
-                transcription=pending.get("transcription") if isinstance(pending.get("transcription"), dict) and pending.get("transcription") else None,
-                phone_ai_behavior=str(pending.get("phone_ai_behavior") or ""),
-                query_policy=worker_policy,
-                job_group_id=group_id,
-                subtask_id=child_id,
-                logical_subtask_id=logical_id,
-                attempt=attempt,
-                subtask_index=index,
-                subtask_total=len(proposed),
-                requires_web=item["requires_web"],
-                reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
-            )
-            task_id = str(task.get("task_id") or "")
-            item["task_id"] = task_id
-            item["attempt_task_ids"] = list(dict.fromkeys([*item["attempt_task_ids"], task_id])) if task_id else item["attempt_task_ids"]
-        except Exception as exc:
-            reason = str(exc)[:1000]
-            error_class, retryable = _dual_retry_classification(reason)
-            delay = _dual_retry_delay_seconds(1, reason, f"{group_id}:{logical_id}:create") if retryable else 0
-            item.update(
-                {
-                    "state": "waiting_retry" if retryable else "partial",
-                    "retry_count": 1,
-                    "retry_reason": reason,
-                    "next_retry_at_epoch": time.time() + delay if retryable else 0,
-                    "next_retry_delay_seconds": delay,
-                    "auth_retry": False,
-                    "retryable": retryable,
-                    "error_class": error_class,
-                }
-            )
-        created.append(item)
-    first_id = next((str(item.get("task_id") or "") for item in created if item.get("task_id")), "")
-    is_group = len(created) > 1 or not first_id
-    first = created[0] if created else {}
-    pending.update(
-        {
-            "task_id": first_id,
-            "kind": "dual_job_group" if is_group else "dual_worker",
-            "subtasks": created if is_group else [],
-            "group_results": {},
-            "collected_task_ids": [],
-            "delivered_task_ids": [],
-            "job_state": "running" if first_id else "waiting_retry",
-            "handoff_status": "worker_running",
-            "delivery_state": "manager_evidence_delivered_to_sol",
-            "query_policy": worker_policy,
-            "manager_completed_before_sol": True,
-            "manager_completed_at": _now(),
-            "retry_count": int(first.get("retry_count") or 0) if not is_group else 0,
-            "next_retry_at_epoch": float(first.get("next_retry_at_epoch") or 0) if not is_group else 0,
-            "retry_reason": str(first.get("retry_reason") or "") if not is_group else "",
-            "attempt_task_ids": list(first.get("attempt_task_ids") or []) if not is_group else [],
-            "current_attempt": int(first.get("current_attempt") or 1) if not is_group else 1,
-            "subtask_id": str(first.get("subtask_id") or "main") if not is_group else "",
-            "logical_subtask_id": str(first.get("logical_subtask_id") or "main") if not is_group else "",
-            "prompt": str(first.get("prompt") or pending.get("job_prompt") or "")[:12000] if not is_group else "",
-            "title": str(first.get("title") or pending.get("job_title") or "")[:180] if not is_group else "",
-            "requires_web": bool(first.get("requires_web", True)) if not is_group else bool(plan.get("requires_web")),
-        }
-    )
+    created = [
+        _start_sol_subtask(
+            config, pending, message, session, worker_policy, packet, group_id,
+            subtask, index, len(proposed), plan,
+        )
+        for index, subtask in enumerate(proposed, start=1)
+    ]
+    first_id = _apply_started_sol_group(pending, created, worker_policy, plan)
     _save_pending(state, message_id, pending)
     if first_id:
         _record_message_timing(message_id, sol_started_at=_now())

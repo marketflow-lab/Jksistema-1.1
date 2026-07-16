@@ -146,6 +146,113 @@ def _retry_dual_pending_interrupts(pending: dict[str, Any]) -> int:
             )
     return interrupted
 
+
+def _monitor_function_manager_item(
+    config: dict[str, Any], state: dict[str, Any], message_id: str, item: dict[str, Any],
+) -> bool:
+    if str(item.get("kind") or "") != "dual_function_manager":
+        return False
+    manager_state = str(item.get("manager_state") or "queued")
+    if _expire_dual_pending_if_due(config, state, message_id, item):
+        return True
+    if manager_state == "partial" or str(item.get("job_state") or "") == "partial":
+        _terminate_pending_partial(
+            config, state, message_id, item,
+            reason=str(item.get("terminal_reason") or item.get("manager_retry_reason") or "resultado_parcial"),
+        )
+        return True
+    due = float(item.get("manager_next_retry_at_epoch") or 0) <= time.time()
+    if manager_state == "queued" or (manager_state == "waiting_retry" and due):
+        item.update({"manager_state": "queued", "job_state": "manager_queued"})
+        _save_pending(state, message_id, item)
+        _submit_function_manager_job(config, state, message_id)
+    if manager_state in {"running", "queued", "partial", "waiting_retry"}:
+        synthetic = {
+            "task_id": str(item.get("job_group_id") or message_id),
+            "status": "running" if manager_state == "running" else "queued",
+        }
+        if _dual_waiting_tick_due(config, state, item, synthetic):
+            _enqueue_phone_event(
+                config, state, kind="waiting_tick", event_id=str(item.get("job_group_id") or message_id),
+                pending=item, message_id=message_id,
+            )
+    return True
+
+
+def _monitor_dual_group(
+    config: dict[str, Any], state: dict[str, Any], message_id: str, item: dict[str, Any],
+) -> None:
+    tasks = _pending_codex_tasks(item)
+    if not tasks:
+        synthetic = {"task_id": str(item.get("job_group_id") or message_id), "status": "queued"}
+        if _dual_waiting_tick_due(config, state, item, synthetic):
+            _enqueue_phone_event(
+                config, state, kind="waiting_tick", event_id=str(item.get("job_group_id") or message_id),
+                pending=item, message_id=message_id,
+            )
+        return
+    statuses = {str(task.get("status") or "") for task in tasks}
+    if statuses & {"completed", "partial", "failed", "canceled"}:
+        signature = hashlib.sha256(
+            "|".join(sorted(f"{task.get('task_id')}:{task.get('status')}" for task in tasks)).encode("utf-8")
+        ).hexdigest()[:16]
+        _enqueue_phone_event(
+            config, state, kind="worker_result", event_id=f"{item.get('job_group_id')}:{signature}",
+            pending=item, message_id=message_id,
+        )
+        return
+    synthetic = {
+        "task_id": str(item.get("job_group_id") or message_id),
+        "status": "running" if "running" in statuses else "queued",
+    }
+    if _dual_waiting_tick_due(config, state, item, synthetic):
+        _enqueue_phone_event(
+            config, state, kind="waiting_tick", event_id=str(item.get("job_group_id") or message_id),
+            pending=item, message_id=message_id,
+        )
+
+
+def _monitor_dual_worker(
+    config: dict[str, Any], state: dict[str, Any], message_id: str, item: dict[str, Any],
+) -> None:
+    task_id = str(item.get("task_id") or "")
+    task = codex_console._codex_load_task(task_id) if task_id else None
+    if not isinstance(task, dict):
+        return
+    status = str(task.get("status") or "")
+    if status in {"completed", "partial", "failed", "canceled"}:
+        _enqueue_phone_event(
+            config, state, kind="worker_result", event_id=f"{task_id}:{status}",
+            pending=item, message_id=message_id,
+        )
+    elif _dual_waiting_tick_due(config, state, item, task):
+        _enqueue_phone_event(
+            config, state, kind="waiting_tick", event_id=task_id, pending=item, message_id=message_id,
+        )
+
+
+def _monitor_pending_item(
+    config: dict[str, Any], state: dict[str, Any], message_id: str, item: dict[str, Any],
+) -> None:
+    if _monitor_function_manager_item(config, state, message_id, item):
+        return
+    kind = str(item.get("kind") or "")
+    if kind in {"dual_worker", "dual_job_group"}:
+        if _expire_dual_pending_if_due(config, state, message_id, item):
+            return
+        _dual_retry_pending_due(config, state, message_id, item)
+        _retry_dual_pending_interrupts(item)
+        _maybe_send_dual_auth_notice(config, state, message_id, item)
+    if _whatsapp_ai_settings(config).get("provider") == "codex":
+        _start_progress_pulse(config, message_id, str(item.get("task_id") or ""))
+    if kind not in {"dual_worker", "dual_job_group"}:
+        _complete_pending(config, state, message_id, item)
+    elif kind == "dual_job_group":
+        _monitor_dual_group(config, state, message_id, item)
+    else:
+        _monitor_dual_worker(config, state, message_id, item)
+
+
 def _monitor_pending(config: dict[str, Any], state: dict[str, Any]) -> None:
     with BRIDGE_STATE_LOCK:
         pending = dict(state.get("pending_messages") or {}) if isinstance(state.get("pending_messages"), dict) else {}
@@ -153,124 +260,7 @@ def _monitor_pending(config: dict[str, Any], state: dict[str, Any]) -> None:
         if not isinstance(item, dict):
             continue
         try:
-            kind = str(item.get("kind") or "")
-            if kind == "dual_function_manager":
-                manager_state = str(item.get("manager_state") or "queued")
-                if _expire_dual_pending_if_due(config, state, str(message_id), item):
-                    continue
-                if manager_state == "partial" or str(item.get("job_state") or "") == "partial":
-                    _terminate_pending_partial(
-                        config,
-                        state,
-                        str(message_id),
-                        item,
-                        reason=str(item.get("terminal_reason") or item.get("manager_retry_reason") or "resultado_parcial"),
-                    )
-                    continue
-                due = float(item.get("manager_next_retry_at_epoch") or 0) <= time.time()
-                if manager_state == "queued" or (manager_state == "waiting_retry" and due):
-                    item.update({"manager_state": "queued", "job_state": "manager_queued"})
-                    _save_pending(state, str(message_id), item)
-                    _submit_function_manager_job(config, state, str(message_id))
-                if manager_state in {"running", "queued", "partial", "waiting_retry"}:
-                    synthetic = {
-                        "task_id": str(item.get("job_group_id") or message_id),
-                        "status": "running" if manager_state == "running" else "queued",
-                    }
-                    if _dual_waiting_tick_due(config, state, item, synthetic):
-                        _enqueue_phone_event(
-                            config,
-                            state,
-                            kind="waiting_tick",
-                            event_id=str(item.get("job_group_id") or message_id),
-                            pending=item,
-                            message_id=str(message_id),
-                        )
-                continue
-            if str(item.get("kind") or "") in {"dual_worker", "dual_job_group"}:
-                if _expire_dual_pending_if_due(config, state, str(message_id), item):
-                    continue
-                _dual_retry_pending_due(config, state, str(message_id), item)
-                _retry_dual_pending_interrupts(item)
-                _maybe_send_dual_auth_notice(config, state, str(message_id), item)
-            if _whatsapp_ai_settings(config).get("provider") == "codex":
-                _start_progress_pulse(config, str(message_id), str(item.get("task_id") or ""))
-            kind = str(item.get("kind") or "")
-            if kind not in {"dual_worker", "dual_job_group"}:
-                _complete_pending(config, state, str(message_id), item)
-                continue
-            if kind == "dual_job_group":
-                tasks = _pending_codex_tasks(item)
-                if not tasks:
-                    synthetic = {
-                        "task_id": str(item.get("job_group_id") or message_id),
-                        "status": "queued",
-                    }
-                    if _dual_waiting_tick_due(config, state, item, synthetic):
-                        _enqueue_phone_event(
-                            config,
-                            state,
-                            kind="waiting_tick",
-                            event_id=str(item.get("job_group_id") or message_id),
-                            pending=item,
-                            message_id=str(message_id),
-                        )
-                    continue
-                statuses = {str(task.get("status") or "") for task in tasks}
-                terminal = {"completed", "partial", "failed", "canceled"}
-                if statuses & terminal:
-                    signature = hashlib.sha256(
-                        "|".join(
-                            sorted(f"{task.get('task_id')}:{task.get('status')}" for task in tasks)
-                        ).encode("utf-8")
-                    ).hexdigest()[:16]
-                    _enqueue_phone_event(
-                        config,
-                        state,
-                        kind="worker_result",
-                        event_id=f"{item.get('job_group_id')}:{signature}",
-                        pending=item,
-                        message_id=str(message_id),
-                    )
-                else:
-                    synthetic_status = "running" if "running" in statuses else "queued"
-                    synthetic = {
-                        "task_id": str(item.get("job_group_id") or message_id),
-                        "status": synthetic_status,
-                    }
-                    if _dual_waiting_tick_due(config, state, item, synthetic):
-                        _enqueue_phone_event(
-                            config,
-                            state,
-                            kind="waiting_tick",
-                            event_id=str(item.get("job_group_id") or message_id),
-                            pending=item,
-                            message_id=str(message_id),
-                        )
-                continue
-            task_id = str(item.get("task_id") or "")
-            task = codex_console._codex_load_task(task_id) if task_id else None
-            if not isinstance(task, dict):
-                continue
-            status = str(task.get("status") or "")
-            if status in {"completed", "partial", "failed", "canceled"}:
-                _enqueue_phone_event(
-                    config,
-                    state,
-                    kind="worker_result",
-                    event_id=f"{task_id}:{status}",
-                    pending=item,
-                    message_id=str(message_id),
-                )
-            elif _dual_waiting_tick_due(config, state, item, task):
-                _enqueue_phone_event(
-                    config,
-                    state,
-                    kind="waiting_tick",
-                    event_id=task_id,
-                    pending=item,
-                    message_id=str(message_id),
-                )
+            _monitor_pending_item(config, state, str(message_id), item)
         except Exception as exc:
             RUNTIME_STATE["last_error"] = str(exc)[:1000]
 

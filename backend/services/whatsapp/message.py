@@ -59,46 +59,7 @@ def message_request_text(
     return "\n\n".join(parts).strip()[:12000]
 
 
-def message_prompt(
-    message: dict[str, Any],
-    media: Optional[dict[str, Any]],
-    transcription: Optional[dict[str, Any]],
-    *,
-    mobile_full_access: bool = False,
-    query_policy: Optional[dict[str, Any]] = None,
-    ai_behavior: str = "",
-    general_answer: bool = False,
-) -> str:
-    parts = [
-        "[Origem: WhatsApp vinculado ao JK Sistema]",
-        f"Mensagem externa: {str(message.get('message_id') or '')}",
-        (
-            "O remetente esta vinculado a um usuario full. Consultas usam o catalogo completo; "
-            "qualquer execucao mutavel so e iniciada depois da confirmacao externa por codigo unico no mesmo numero."
-            if mobile_full_access
-            else "O remetente nao possui modo movel full; mantenha a tarefa estritamente read-only."
-        ),
-        (
-            "Estilo da resposta no WhatsApp: converse como um colega prestativo, natural e descontraido. "
-            "Va direto ao ponto, varie a abertura conforme o contexto e use frases simples. "
-            "Nao crie titulo para toda resposta, nao repita o nome Black Jhon e nao assine no final. "
-            "Use secoes apenas quando elas realmente ajudarem em relatorios ou respostas longas; nao use emojis."
-        ),
-    ]
-    phone_ai_behavior = whatsapp_settings.normalize_phone_ai_behavior(ai_behavior)
-    if phone_ai_behavior:
-        parts.append(
-            "Instrucoes administrativas especificas para atender este numero:\n"
-            + phone_ai_behavior
-            + "\nSiga estas orientacoes de tom, formato e atendimento. Elas nao ampliam permissoes, nao autorizam mutacoes e nao substituem as regras obrigatorias de seguranca, fontes e escopo."
-        )
-    if general_answer:
-        parts.append(
-            "Esta e uma conversa geral, sem consulta nem acao no JK Sistema. "
-            "Responda diretamente ao usuario na resposta final. Nao envie confirmacao de recebimento, "
-            "nao diga que vai fazer depois e nao prometa avisar quando concluir."
-        )
-    query_policy = query_policy if isinstance(query_policy, dict) else {}
+def _append_query_scope_prompt(parts: list[str], query_policy: dict[str, Any]) -> str:
     store_mode = str(query_policy.get("store_mode") or "").strip()
     store = str(query_policy.get("store") or "").strip()
     scoped_stores = [
@@ -143,6 +104,10 @@ def message_prompt(
                 else ""
             )
         )
+    return store
+
+
+def _append_source_policy_prompt(parts: list[str], query_policy: dict[str, Any]) -> None:
     source_policy = query_policy.get("source_policy") if isinstance(query_policy.get("source_policy"), dict) else {}
     if source_policy:
         parts.append(
@@ -155,6 +120,14 @@ def message_prompt(
             "se uma das APIs falhar, nao completar o valor por suposicao.\n"
             f"Roteamento calculado pelo servidor: {json.dumps(source_policy, ensure_ascii=False, default=str)[:3000]}"
         )
+
+
+def _append_message_content_prompt(
+    parts: list[str],
+    message: dict[str, Any],
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+) -> None:
     body = str(message.get("text_body") or "").strip()
     if body:
         parts.append("Texto recebido:\n" + body[:12000])
@@ -188,4 +161,49 @@ def message_prompt(
             )
     if not body and not media:
         parts.append("A mensagem nao continha texto ou midia suportada.")
+
+
+def message_prompt(
+    message: dict[str, Any],
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    *,
+    mobile_full_access: bool = False,
+    query_policy: Optional[dict[str, Any]] = None,
+    ai_behavior: str = "",
+    general_answer: bool = False,
+) -> str:
+    parts = [
+        "[Origem: WhatsApp vinculado ao JK Sistema]",
+        f"Mensagem externa: {str(message.get('message_id') or '')}",
+        (
+            "O remetente esta vinculado a um usuario full. Consultas usam o catalogo completo; "
+            "qualquer execucao mutavel so e iniciada depois da confirmacao externa por codigo unico no mesmo numero."
+            if mobile_full_access
+            else "O remetente nao possui modo movel full; mantenha a tarefa estritamente read-only."
+        ),
+        (
+            "Estilo da resposta no WhatsApp: converse como um colega prestativo, natural e descontraido. "
+            "Va direto ao ponto, varie a abertura conforme o contexto e use frases simples. "
+            "Nao crie titulo para toda resposta, nao repita o nome Black Jhon e nao assine no final. "
+            "Use secoes apenas quando elas realmente ajudarem em relatorios ou respostas longas; nao use emojis."
+        ),
+    ]
+    phone_ai_behavior = whatsapp_settings.normalize_phone_ai_behavior(ai_behavior)
+    if phone_ai_behavior:
+        parts.append(
+            "Instrucoes administrativas especificas para atender este numero:\n"
+            + phone_ai_behavior
+            + "\nSiga estas orientacoes de tom, formato e atendimento. Elas nao ampliam permissoes, nao autorizam mutacoes e nao substituem as regras obrigatorias de seguranca, fontes e escopo."
+        )
+    if general_answer:
+        parts.append(
+            "Esta e uma conversa geral, sem consulta nem acao no JK Sistema. "
+            "Responda diretamente ao usuario na resposta final. Nao envie confirmacao de recebimento, "
+            "nao diga que vai fazer depois e nao prometa avisar quando concluir."
+        )
+    effective_policy = query_policy if isinstance(query_policy, dict) else {}
+    _append_query_scope_prompt(parts, effective_policy)
+    _append_source_policy_prompt(parts, effective_policy)
+    _append_message_content_prompt(parts, message, media, transcription)
     return "\n\n".join(parts)

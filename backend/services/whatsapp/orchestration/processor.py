@@ -487,32 +487,30 @@ def _create_selected_ai_task(
         channel_metadata=channel_metadata,
     )
 
-def _process_message(config: dict[str, Any], state: dict[str, Any], message: dict[str, Any]) -> None:
+def _prepare_inbound_message(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+) -> Optional[dict[str, Any]]:
     message_id = str(message.get("message_id") or "").strip()
     if not message_id:
-        return
+        return None
     if str(message.get("machine_id") or "") != str(config.get("machine_id") or ""):
         raise RuntimeError("message_not_owned_by_this_machine")
     _start_typing_pulse(config, message_id)
     existing = _pending_task_for_message(state, message_id)
     if existing:
         _complete_pending(config, state, message_id, existing)
-        return
+        return {"handled": True}
     subject = str(message.get("subject_id") or "").strip()
     if subject and subject != str(config.get("subject_id") or ""):
-        # The dispatcher gives each phone an isolated config snapshot.  Do not
-        # persist the last phone globally, otherwise concurrent conversations
-        # can overwrite each other's binding identity.
         config["subject_id"] = subject
         config["personal_phone"] = str(message.get("wa_id") or "")
     session = _reload_bound_session(config, message)
-    phone_settings = _phone_notification_settings(
-        config,
-        subject,
-        client_id=session.get("client_id"),
-        username=session.get("username"),
+    settings = _phone_notification_settings(
+        config, subject, client_id=session.get("client_id"), username=session.get("username"),
     )
-    phone_ai_behavior = _normalize_phone_ai_behavior(phone_settings.get("ai_behavior"))
+    phone_ai_behavior = _normalize_phone_ai_behavior(settings.get("ai_behavior"))
     phone = ""
     conversation_id = ""
     media: Optional[dict[str, Any]] = None
@@ -524,23 +522,286 @@ def _process_message(config: dict[str, Any], state: dict[str, Any], message: dic
         conversation_id = _conversation_id(config, message)
         media = _download_media(config, message, conversation_id)
         if str(media.get("mime_type") or "") in SUPPORTED_AUDIO_MIMES:
-            path = (_base_dir() / str(media.get("path") or "")).resolve()
-            transcription = _transcribe_audio(path)
+            transcription = _transcribe_audio((_base_dir() / str(media.get("path") or "")).resolve())
     request_text = _message_request_text(message, transcription)
     action_message = {**message, "text_body": request_text}
     if transcription and transcription.get("success") and request_text:
         action_message["message_type"] = "text"
+    return {
+        "handled": False, "message_id": message_id, "subject": subject, "session": session,
+        "phone_ai_behavior": phone_ai_behavior, "phone": phone, "conversation_id": conversation_id,
+        "media": media, "transcription": transcription, "request_text": request_text,
+        "message": action_message,
+    }
 
-    # Audios precisam ser transcritos antes de interpretar os botoes e as
-    # orientacoes da pergunta ativa. Caso contrario, a fala cai na conversa
-    # geral e deixa de atualizar o rascunho que sera aprovado no Mercado Livre.
-    if _handle_question_approval_command(config, state, action_message, session):
+def _handle_inbound_commands(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+) -> bool:
+    return bool(
+        _handle_question_approval_command(config, state, message, session)
+        or _handle_question_natural_language(config, state, message, session)
+        or _handle_approval_command(config, state, message, session)
+    )
+
+def _apply_store_selection(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    conversation_id: str,
+    request_text: str,
+    message_id: str,
+    subject: str,
+) -> tuple[dict[str, Any], str, bool]:
+    token = _whatsapp_store_selection_token(request_text)
+    if not token:
+        return message, request_text, False
+    selection = _whatsapp_consume_store_selection(
+        state, token, subject_id=subject, session=session, conversation_id=conversation_id,
+    )
+    if not selection:
+        _post_command_reply(
+            config, message_id,
+            "Essa escolha de loja expirou ou ja foi utilizada. Envie novamente a sua pergunta para escolher outra vez.",
+            "BLACK JOHN - ESCOLHA EXPIRADA",
+        )
+        return message, request_text, True
+    original = str(selection.get("request_text") or "").strip()
+    if str(selection.get("store_mode") or "single") == "all":
+        stores = [str(store or "").strip() for store in selection.get("stores") or [] if str(store or "").strip()]
+        request_text = (
+            f"{original}\n\nSelecao confirmada: todas as lojas. "
+            f"Consulte separadamente estas lojas: {', '.join(stores)}. Nao some nem misture os totais entre lojas."
+        ).strip()
+    else:
+        request_text = f"{original}\n\nLoja selecionada: {str(selection.get('store') or '').strip()}".strip()
+    return {**message, "text_body": request_text, "message_type": "text"}, request_text, False
+
+def _try_steer_standard_task(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    session: dict[str, Any],
+    conversation_id: str,
+    message_id: str,
+    subject: str,
+    phone: str,
+    request_text: str,
+) -> bool:
+    if (
+        _whatsapp_ai_settings(config).get("provider") != "codex"
+        or str(config.get("active_task_policy") or "steer_or_queue") != "steer_or_queue"
+        or not _whatsapp_is_task_complement(request_text)
+    ):
+        return False
+    _, active_pending, active_task = _active_pending_for_conversation(
+        state, conversation_id, exclude_message_id=message_id,
+    )
+    if not active_task:
+        return False
+    result = codex_console.codex_complementar_tarefa_para_sessao(
+        str(active_task.get("task_id") or ""), request_text, session,
+        request_id=message_id, subject_id=subject, wa_id=phone,
+    )
+    if result.get("accepted") is not True:
+        return False
+    active_request = str(active_pending.get("request_text") or "").strip()
+    response = "Incluí esta informação na consulta em andamento."
+    if active_request:
+        response += f" Pedido em análise: {active_request[:220]}"
+    _post_message_result(
+        config, message_id,
+        {"status": "completed", "task_id": str(active_task.get("task_id") or ""), "response": response},
+    )
+    return True
+
+def _standard_query_candidates(
+    request_text: str,
+    session: dict[str, Any],
+    state: dict[str, Any],
+    conversation_id: str,
+) -> tuple[dict[str, Any], bool, bool, bool]:
+    general_answer = _whatsapp_general_answer_request(request_text, session)
+    pagination = _whatsapp_pagination_request(request_text)
+    contextual_report = _whatsapp_contextual_report_request(request_text)
+    direct = {} if pagination or general_answer else _whatsapp_query_policy(request_text, session)
+    inherited = {} if pagination or contextual_report else _whatsapp_inherit_query_store_context(
+        request_text, direct, state, conversation_id, session,
+    )
+    direct_resolved = bool(
+        direct and (
+            not direct.get("store_required") or direct.get("store_mode") == "all"
+            or len(direct.get("store_matches") or []) == 1
+        )
+    )
+    if pagination:
+        policy = _whatsapp_query_continuation_policy(request_text, state, conversation_id, session)
+    elif direct_resolved:
+        policy = direct
+    elif contextual_report:
+        policy = _whatsapp_query_continuation_policy(request_text, state, conversation_id, session) or direct
+    elif inherited:
+        policy = inherited
+    else:
+        policy = direct
+    general_answer = bool(general_answer and not policy)
+    if not general_answer and not policy and not _whatsapp_mutation_intent(request_text):
+        policy = _whatsapp_store_scope_policy(request_text, session)
+    return policy, general_answer, pagination, contextual_report
+
+def _validate_standard_query_policy(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    conversation_id: str,
+    message_id: str,
+    request_text: str,
+    policy: dict[str, Any],
+    pagination: bool,
+    contextual_report: bool,
+) -> bool:
+    if (pagination or contextual_report) and not policy:
+        _post_command_reply(
+            config, message_id,
+            "Nao encontrei uma consulta anterior recente nesta conversa. Repita o pedido informando os filtros e, para API, a loja exata.",
+            "BLACK JOHN — REPITA A CONSULTA",
+        )
+        return False
+    if policy.get("no_more_results") is True:
+        _post_command_reply(
+            config, message_id,
+            "A consulta anterior ja chegou ao fim dos resultados retornados pelas APIs. Para iniciar outra busca, envie novamente os filtros e a loja.",
+            "BLACK JOHN — FIM DOS RESULTADOS",
+        )
+        return False
+    missing_store = bool(
+        policy.get("store_required") and policy.get("store_mode") != "all"
+        and len(policy.get("store_matches") or []) != 1
+    )
+    mutation_stores = _whatsapp_session_stores(session) if not policy else []
+    mutation_missing_store = bool(
+        not policy and _whatsapp_mutation_intent(request_text) and _whatsapp_store_scoped_request(request_text)
+        and len(_whatsapp_exact_store_matches(request_text, mutation_stores)) != 1
+    )
+    if not missing_store and not mutation_missing_store:
+        return True
+    stores = list(policy.get("authorized_stores") or []) if missing_store else mutation_stores
+    if _whatsapp_send_store_selection(
+        config, state, message, session, conversation_id, request_text, stores, allow_all=missing_store,
+    ):
+        return False
+    fallback = policy or {"authorized_stores": stores, "store_matches": _whatsapp_exact_store_matches(request_text, stores)}
+    _post_command_reply(config, message_id, _whatsapp_store_required_text(fallback), "BLACK JOHN — INFORME A LOJA")
+    return False
+
+def _standard_task_pending(
+    session: dict[str, Any],
+    task: dict[str, Any],
+    proposal: dict[str, Any],
+    conversation_id: str,
+    subject: str,
+    phone: str,
+    request_text: str,
+    mobile_full_access: bool,
+    query_policy: dict[str, Any],
+    general_answer: bool,
+    app_confirmation_only: bool,
+) -> dict[str, Any]:
+    return {
+        "task_id": str(task.get("task_id") or ""), "kind": "task", "conversation_id": conversation_id,
+        "subject_id": subject, "username": str(session.get("username") or "").strip().lower(),
+        "client_id": str(session.get("client_id") or "").strip(),
+        "request_text": request_text or "Pedido com anexo recebido pelo WhatsApp.",
+        "mobile_full_access": mobile_full_access, "query_policy": query_policy, "general_answer": general_answer,
+        "created_at": _now(), "awaiting_notified": app_confirmation_only,
+        "trusted_bound_number": mobile_full_access, "proposal_id": str(proposal.get("proposal_id") or ""),
+        "proposal_version": int(proposal.get("version") or 1), "proposal_hash": str(proposal.get("proposal_hash") or ""),
+        "action_summary": str(proposal.get("summary") or proposal.get("title") or ""),
+        "risk": str(proposal.get("risk") or ""), "wa_id": phone,
+    }
+
+def _launch_standard_ai_task(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    conversation_id: str,
+    message_id: str,
+    subject: str,
+    phone: str,
+    request_text: str,
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    phone_ai_behavior: str,
+    mobile_full_access: bool,
+    query_policy: dict[str, Any],
+    general_answer: bool,
+) -> None:
+    result = _create_selected_ai_task(
+        config,
+        prompt=_message_prompt(
+            message, media, transcription, mobile_full_access=mobile_full_access,
+            query_policy=query_policy, ai_behavior=phone_ai_behavior, general_answer=general_answer,
+        ),
+        session=session, conversation_id=conversation_id,
+        paths=[str(media.get("path"))] if media else [],
+        screen_context=_mobile_screen_context(message_id, subject, media, transcription, query_policy),
+        safe_read_only=bool(general_answer or query_policy.get("mode") == "query_only" or _whatsapp_readonly_inquiry(request_text)),
+        mobile_full_access=mobile_full_access,
+        channel_metadata={
+            "message_id": message_id, "subject_id": subject, "wa_id": phone,
+            "message_type": str(message.get("message_type") or "text"), "media": media or {},
+            "transcription": transcription or {}, "received_at": message.get("received_at"),
+            "mobile_full_access": mobile_full_access, "query_policy": query_policy,
+            "phone_ai_behavior": phone_ai_behavior, "general_answer": general_answer, "request_text": request_text,
+        },
+    )
+    task = result.get("task") if isinstance(result, dict) else {}
+    proposal = task.get("proposal") if isinstance(task.get("proposal"), dict) else {}
+    app_only = bool(proposal and (
+        proposal.get("requires_app_confirmation") is True or "whatsapp" not in list(proposal.get("channels_allowed") or [])
+    ))
+    _whatsapp_remember_query_context(state, conversation_id, request_text, query_policy)
+    pending = _standard_task_pending(
+        session, task, proposal, conversation_id, subject, phone, request_text,
+        mobile_full_access, query_policy, general_answer, app_only,
+    )
+    _save_pending(state, message_id, pending)
+    if _whatsapp_ai_settings(config).get("provider") == "codex":
+        _start_progress_pulse(config, message_id, str(task.get("task_id") or ""))
+    if app_only:
+        parts = _whatsapp_response_parts(
+            "A proposta foi preparada, mas esta ação só pode ser confirmada no aplicativo JK Sistema. "
+            f"Identificador: `{str(proposal.get('proposal_id') or task.get('task_id') or '')}`.",
+            "BLACK JHON - CONFIRME NO APLICATIVO",
+        )
+        _post_message_result(
+            config, message_id,
+            {"status": "completed", "task_id": str(task.get("task_id") or ""), "response": parts[0], "response_parts": parts},
+        )
+        _remove_pending(state, message_id)
         return
-    if _handle_question_natural_language(config, state, action_message, session):
+    _complete_pending(config, state, message_id, pending)
+
+def _process_message(config: dict[str, Any], state: dict[str, Any], message: dict[str, Any]) -> None:
+    context = _prepare_inbound_message(config, state, message)
+    if context is None or context.get("handled") is True:
         return
-    if _handle_approval_command(config, state, action_message, session):
+    message_id = context["message_id"]
+    subject = context["subject"]
+    session = context["session"]
+    phone_ai_behavior = context["phone_ai_behavior"]
+    phone = context["phone"]
+    conversation_id = context["conversation_id"]
+    media = context["media"]
+    transcription = context["transcription"]
+    request_text = context["request_text"]
+    message = context["message"]
+    if _handle_inbound_commands(config, state, message, session):
         return
-    message = action_message
     if not phone:
         phone = _message_phone(config, message)
     if not phone:
@@ -548,284 +809,45 @@ def _process_message(config: dict[str, Any], state: dict[str, Any], message: dic
     if not conversation_id:
         conversation_id = _conversation_id(config, message)
     mobile_full_access = bool(session.get("is_full") and (session.get("permissions") or {}).get("full") is True)
-    selection_token = _whatsapp_store_selection_token(request_text)
-    if selection_token:
-        selection = _whatsapp_consume_store_selection(
-            state,
-            selection_token,
-            subject_id=subject,
-            session=session,
-            conversation_id=conversation_id,
-        )
-        if not selection:
-            _post_command_reply(
-                config,
-                message_id,
-                "Essa escolha de loja expirou ou ja foi utilizada. Envie novamente a sua pergunta para escolher outra vez.",
-                "BLACK JOHN - ESCOLHA EXPIRADA",
-            )
-            return
-        if str(selection.get("store_mode") or "single") == "all":
-            selected_stores = [
-                str(store or "").strip()
-                for store in (selection.get("stores") or [])
-                if str(store or "").strip()
-            ]
-            request_text = (
-                f"{str(selection.get('request_text') or '').strip()}\n\n"
-                "Selecao confirmada: todas as lojas. "
-                f"Consulte separadamente estas lojas: {', '.join(selected_stores)}. "
-                "Nao some nem misture os totais entre lojas."
-            ).strip()
-        else:
-            request_text = (
-                f"{str(selection.get('request_text') or '').strip()}\n\n"
-                f"Loja selecionada: {str(selection.get('store') or '').strip()}"
-            ).strip()
-        message = {**message, "text_body": request_text, "message_type": "text"}
+    message, request_text, selection_handled = _apply_store_selection(
+        config, state, message, session, conversation_id,
+        request_text, message_id, subject,
+    )
+    if selection_handled:
+        return
     if str(config.get("agent_architecture") or "").strip().lower() == "dual_codex":
         _process_dual_codex_message(
-            config,
-            state,
-            message,
-            session=session,
-            conversation_id=conversation_id,
-            message_id=message_id,
-            subject=subject,
-            phone=phone,
-            request_text=request_text,
-            media=media,
-            transcription=transcription,
-            phone_ai_behavior=phone_ai_behavior,
+            config, state, message, session=session, conversation_id=conversation_id,
+            message_id=message_id, subject=subject, phone=phone, request_text=request_text,
+            media=media, transcription=transcription, phone_ai_behavior=phone_ai_behavior,
         )
         return
-    if (
-        _whatsapp_ai_settings(config).get("provider") == "codex"
-        and str(config.get("active_task_policy") or "steer_or_queue") == "steer_or_queue"
-        and _whatsapp_is_task_complement(request_text)
+    if _try_steer_standard_task(
+        config, state, session, conversation_id, message_id,
+        subject, phone, request_text,
     ):
-        _, active_pending, active_task = _active_pending_for_conversation(
-            state,
-            conversation_id,
-            exclude_message_id=message_id,
-        )
-        if active_task:
-            steer_result = codex_console.codex_complementar_tarefa_para_sessao(
-                str(active_task.get("task_id") or ""),
-                request_text,
-                session,
-                request_id=message_id,
-                subject_id=subject,
-                wa_id=phone,
-            )
-            if steer_result.get("accepted") is True:
-                active_request = str(active_pending.get("request_text") or "").strip()
-                response = "Incluí esta informação na consulta em andamento."
-                if active_request:
-                    response += f" Pedido em análise: {active_request[:220]}"
-                _post_message_result(
-                    config,
-                    message_id,
-                    {
-                        "status": "completed",
-                        "task_id": str(active_task.get("task_id") or ""),
-                        "response": response,
-                    },
-                )
-                return
-
-    general_answer = _whatsapp_general_answer_request(request_text, session)
-    protected_mutation_domains = [] if general_answer else _whatsapp_protected_mutation_domains(request_text)
-    if protected_mutation_domains and not mobile_full_access:
+        return
+    initial_general = _whatsapp_general_answer_request(request_text, session)
+    protected = [] if initial_general else _whatsapp_protected_mutation_domains(request_text)
+    if protected and not mobile_full_access:
         _post_command_reply(
-            config,
-            message_id,
-            _whatsapp_query_only_block_text(protected_mutation_domains),
+            config, message_id, _whatsapp_query_only_block_text(protected),
             "BLACK JOHN — SOMENTE CONSULTA",
         )
         return
-    pagination_request = _whatsapp_pagination_request(request_text)
-    contextual_report_request = _whatsapp_contextual_report_request(request_text)
-    direct_query_policy = {} if pagination_request or general_answer else _whatsapp_query_policy(request_text, session)
-    inherited_store_policy = (
-        {}
-        if pagination_request or contextual_report_request
-        else _whatsapp_inherit_query_store_context(
-            request_text,
-            direct_query_policy,
-            state,
-            conversation_id,
-            session,
-        )
+    query_policy, general_answer, pagination, contextual_report = _standard_query_candidates(
+        request_text, session, state, conversation_id,
     )
-    direct_scope_resolved = bool(
-        direct_query_policy
-        and (
-            not direct_query_policy.get("store_required")
-            or direct_query_policy.get("store_mode") == "all"
-            or len(direct_query_policy.get("store_matches") or []) == 1
-        )
-    )
-    if pagination_request:
-        query_policy = _whatsapp_query_continuation_policy(request_text, state, conversation_id, session)
-    elif direct_scope_resolved:
-        query_policy = direct_query_policy
-    elif contextual_report_request:
-        query_policy = (
-            _whatsapp_query_continuation_policy(request_text, state, conversation_id, session)
-            or direct_query_policy
-        )
-    elif inherited_store_policy:
-        query_policy = inherited_store_policy
-    else:
-        query_policy = direct_query_policy
-    # Uma pergunta curta como "e o motivo?" pode depender da consulta anterior.
-    # Nesse caso, o contexto operacional confirmado prevalece sobre a heuristica
-    # de conversa geral.
-    general_answer = bool(general_answer and not query_policy)
-    if not general_answer and not query_policy and not _whatsapp_mutation_intent(request_text):
-        query_policy = _whatsapp_store_scope_policy(request_text, session)
-    if (pagination_request or contextual_report_request) and not query_policy:
-        _post_command_reply(
-            config,
-            message_id,
-            "Nao encontrei uma consulta anterior recente nesta conversa. Repita o pedido informando os filtros e, para API, a loja exata.",
-            "BLACK JOHN — REPITA A CONSULTA",
-        )
+    if not _validate_standard_query_policy(
+        config, state, message, session, conversation_id, message_id,
+        request_text, query_policy, pagination, contextual_report,
+    ):
         return
-    if query_policy.get("no_more_results") is True:
-        _post_command_reply(
-            config,
-            message_id,
-            "A consulta anterior ja chegou ao fim dos resultados retornados pelas APIs. Para iniciar outra busca, envie novamente os filtros e a loja.",
-            "BLACK JOHN — FIM DOS RESULTADOS",
-        )
-        return
-    missing_store = bool(
-        query_policy.get("store_required")
-        and query_policy.get("store_mode") != "all"
-        and len(query_policy.get("store_matches") or []) != 1
+    _launch_standard_ai_task(
+        config, state, message, session, conversation_id, message_id,
+        subject, phone, request_text, media, transcription, phone_ai_behavior,
+        mobile_full_access, query_policy, general_answer,
     )
-    mutation_stores = _whatsapp_session_stores(session) if not query_policy else []
-    mutation_missing_store = bool(
-        not query_policy
-        and _whatsapp_mutation_intent(request_text)
-        and _whatsapp_store_scoped_request(request_text)
-        and len(_whatsapp_exact_store_matches(request_text, mutation_stores)) != 1
-    )
-    if missing_store or mutation_missing_store:
-        stores = list(query_policy.get("authorized_stores") or []) if missing_store else mutation_stores
-        if _whatsapp_send_store_selection(
-            config,
-            state,
-            message,
-            session,
-            conversation_id,
-            request_text,
-            stores,
-            allow_all=missing_store,
-        ):
-            return
-        fallback_policy = query_policy or {
-            "authorized_stores": stores,
-            "store_matches": _whatsapp_exact_store_matches(request_text, stores),
-        }
-        _post_command_reply(config, message_id, _whatsapp_store_required_text(fallback_policy), "BLACK JOHN — INFORME A LOJA")
-        return
-    screen_context = _mobile_screen_context(message_id, subject, media, transcription, query_policy)
-    prompt = _message_prompt(
-        message,
-        media,
-        transcription,
-        mobile_full_access=mobile_full_access,
-        query_policy=query_policy,
-        ai_behavior=phone_ai_behavior,
-        general_answer=general_answer,
-    )
-    paths = [str(media.get("path"))] if media else []
-    query_only = query_policy.get("mode") == "query_only"
-    readonly_inquiry = _whatsapp_readonly_inquiry(request_text)
-    safe_read_only = bool(general_answer or query_only or readonly_inquiry)
-    result = _create_selected_ai_task(
-        config,
-        prompt=prompt,
-        session=session,
-        conversation_id=conversation_id,
-        paths=paths,
-        screen_context=screen_context,
-        safe_read_only=safe_read_only,
-        mobile_full_access=mobile_full_access,
-        channel_metadata={
-            "message_id": message_id,
-            "subject_id": subject,
-            "wa_id": phone,
-            "message_type": str(message.get("message_type") or "text"),
-            "media": media or {},
-            "transcription": transcription or {},
-            "received_at": message.get("received_at"),
-            "mobile_full_access": mobile_full_access,
-            "query_policy": query_policy,
-            "phone_ai_behavior": phone_ai_behavior,
-            "general_answer": general_answer,
-            "request_text": request_text,
-        },
-    )
-    task = result.get("task") if isinstance(result, dict) else {}
-    task_proposal = task.get("proposal") if isinstance((task or {}).get("proposal"), dict) else {}
-    app_confirmation_only = bool(
-        task_proposal
-        and (
-            task_proposal.get("requires_app_confirmation") is True
-            or "whatsapp" not in list(task_proposal.get("channels_allowed") or [])
-        )
-    )
-    _whatsapp_remember_query_context(state, conversation_id, request_text, query_policy)
-    pending = {
-        "task_id": str((task or {}).get("task_id") or ""),
-        "kind": "task",
-        "conversation_id": conversation_id,
-        "subject_id": subject,
-        "username": str(session.get("username") or "").strip().lower(),
-        "client_id": str(session.get("client_id") or "").strip(),
-        "request_text": request_text or "Pedido com anexo recebido pelo WhatsApp.",
-        "mobile_full_access": mobile_full_access,
-        "query_policy": query_policy,
-        "general_answer": general_answer,
-        "created_at": _now(),
-        "awaiting_notified": app_confirmation_only,
-        "trusted_bound_number": mobile_full_access,
-        "proposal_id": str(task_proposal.get("proposal_id") or ""),
-        "proposal_version": int(task_proposal.get("version") or 1),
-        "proposal_hash": str(task_proposal.get("proposal_hash") or ""),
-        "action_summary": str(task_proposal.get("summary") or task_proposal.get("title") or ""),
-        "risk": str(task_proposal.get("risk") or ""),
-        "wa_id": phone,
-    }
-    _save_pending(state, message_id, pending)
-    if _whatsapp_ai_settings(config).get("provider") == "codex":
-        _start_progress_pulse(config, message_id, str((task or {}).get("task_id") or ""))
-    if app_confirmation_only:
-        parts = _whatsapp_response_parts(
-            (
-                "A proposta foi preparada, mas esta ação só pode ser confirmada no aplicativo JK Sistema. "
-                f"Identificador: `{str(task_proposal.get('proposal_id') or (task or {}).get('task_id') or '')}`."
-            ),
-            "BLACK JHON - CONFIRME NO APLICATIVO",
-        )
-        _post_message_result(
-            config,
-            message_id,
-            {
-                "status": "completed",
-                "task_id": str((task or {}).get("task_id") or ""),
-                "response": parts[0],
-                "response_parts": parts,
-            },
-        )
-        _remove_pending(state, message_id)
-        return
-    _complete_pending(config, state, message_id, pending)
-
 
 _COMPONENT_FUNCTIONS = frozenset((
     '_provider_tool_summary',

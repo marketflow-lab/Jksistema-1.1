@@ -237,6 +237,54 @@ def _dual_preserve_worker_result(pending: dict[str, Any], result: dict[str, Any]
 def _dual_worker_disposition(task: dict[str, Any], result: dict[str, Any]) -> str:
     return whatsapp_retry_policy.worker_disposition(task, result)
 
+
+def _apply_local_web_retry_fallback(pending: dict[str, Any], holder: dict[str, Any], retryable: bool) -> None:
+    if not retryable or not bool(holder.get("requires_web")) or holder.get("local_web_fallback_attempted"):
+        return
+    fallback = _local_web_fallback_context(
+        str(pending.get("request_text") or holder.get("prompt") or ""),
+        str(pending.get("client_id") or "default"),
+    )
+    holder["local_web_fallback_attempted"] = True
+    holder["local_web_fallback"] = fallback
+    if fallback.get("success") is not True:
+        return
+    lines = [
+        f"- {str(item.get('title') or '')[:200]} | {str(item.get('url') or '')[:600]} | {str(item.get('snippet') or '')[:500]}"
+        for item in list(fallback.get("data") or [])[:5] if isinstance(item, dict)
+    ]
+    if lines:
+        holder["prompt"] = (
+            str(holder.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or "")
+            + "\n\nFallback local de busca (validar nas paginas antes de concluir):\n"
+            + "\n".join(lines)
+        )[:12000]
+    pending["verified_sources"] = _dual_append_unique(
+        list(pending.get("verified_sources") or []), fallback.get("sources"), limit=30, item_limit=1000,
+    )
+
+
+def _record_retry_attempt(
+    pending: dict[str, Any],
+    task_id: str,
+    retry_count: int,
+    retryable: bool,
+    error_class: str,
+    reason: str,
+) -> None:
+    try:
+        _bridge_store().record_attempt(
+            str(pending.get("message_id") or pending.get("job_group_id") or task_id),
+            retry_count,
+            "running" if retryable else "partial",
+            error_class=error_class,
+            retryable=retryable,
+            details={"task_id": task_id, "reason": reason[:500]},
+        )
+    except Exception:
+        pass
+
+
 def _dual_schedule_retry(
     pending: dict[str, Any],
     holder: dict[str, Any],
@@ -274,42 +322,8 @@ def _dual_schedule_retry(
     retry_count = max(0, int(holder.get("retry_count") or 0)) + 1
     reason = _dual_retry_reason_text(task, result) or "resultado_incompleto"
     error_class, retryable = _dual_retry_classification(reason)
-    if retryable and bool(holder.get("requires_web")) and not holder.get("local_web_fallback_attempted"):
-        fallback = _local_web_fallback_context(
-            str(pending.get("request_text") or holder.get("prompt") or ""),
-            str(pending.get("client_id") or "default"),
-        )
-        holder["local_web_fallback_attempted"] = True
-        holder["local_web_fallback"] = fallback
-        if fallback.get("success") is True:
-            fallback_lines = [
-                f"- {str(item.get('title') or '')[:200]} | {str(item.get('url') or '')[:600]} | {str(item.get('snippet') or '')[:500]}"
-                for item in list(fallback.get("data") or [])[:5]
-                if isinstance(item, dict)
-            ]
-            if fallback_lines:
-                holder["prompt"] = (
-                    str(holder.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or "")
-                    + "\n\nFallback local de busca (validar nas paginas antes de concluir):\n"
-                    + "\n".join(fallback_lines)
-                )[:12000]
-            pending["verified_sources"] = _dual_append_unique(
-                list(pending.get("verified_sources") or []),
-                fallback.get("sources"),
-                limit=30,
-                item_limit=1000,
-            )
-    try:
-        _bridge_store().record_attempt(
-            str(pending.get("message_id") or pending.get("job_group_id") or task_id),
-            retry_count,
-            "running" if retryable else "partial",
-            error_class=error_class,
-            retryable=retryable,
-            details={"task_id": task_id, "reason": reason[:500]},
-        )
-    except Exception:
-        pass
+    _apply_local_web_retry_fallback(pending, holder, retryable)
+    _record_retry_attempt(pending, task_id, retry_count, retryable, error_class, reason)
     if not retryable or retry_count > WHATSAPP_MAX_RETRY_ATTEMPTS:
         holder.update(
             {
@@ -482,6 +496,109 @@ def _recover_dual_pending_after_restart(state: dict[str, Any]) -> int:
             _save_pending(state, str(message_id), pending)
     return recovered
 
+
+def _create_retry_worker_task(
+    config: dict[str, Any],
+    pending: dict[str, Any],
+    holder: dict[str, Any],
+    message_id: str,
+    logical_id: str,
+    child_id: str,
+    attempt: int,
+    index: int,
+    total: int,
+) -> dict[str, Any]:
+    session = {
+        "username": str(pending.get("username") or "").strip().lower(),
+        "client_id": str(pending.get("client_id") or "").strip(),
+        "permissions": dict(pending.get("session_permissions") or {}),
+        "is_full": bool(pending.get("session_is_full")),
+    }
+    message = {
+        "message_id": message_id,
+        "subject_id": str(pending.get("subject_id") or ""),
+        "wa_id": str(pending.get("wa_id") or ""),
+        "message_type": "text",
+        "text_body": str(pending.get("request_text") or ""),
+        "received_at": pending.get("created_at") or _now(),
+    }
+    return _create_dual_worker_task(
+        config,
+        message=message,
+        message_id=message_id,
+        subject=str(pending.get("subject_id") or ""),
+        phone=str(pending.get("wa_id") or ""),
+        session=session,
+        conversation_id=str(pending.get("conversation_id") or ""),
+        request_text=str(pending.get("request_text") or ""),
+        job_prompt=str(holder.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or ""),
+        job_title=str(holder.get("title") or pending.get("job_title") or "")[:180],
+        media=pending.get("media") if isinstance(pending.get("media"), dict) and pending.get("media") else None,
+        transcription=pending.get("transcription") if isinstance(pending.get("transcription"), dict) and pending.get("transcription") else None,
+        phone_ai_behavior=str(pending.get("phone_ai_behavior") or ""),
+        query_policy=dict(pending.get("query_policy") or {}),
+        job_group_id=str(pending.get("job_group_id") or message_id),
+        subtask_id=child_id,
+        logical_subtask_id=logical_id,
+        attempt=attempt,
+        subtask_index=index,
+        subtask_total=max(1, total),
+        requires_web=bool(holder.get("requires_web", True)),
+        reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+    )
+
+
+def _mark_retry_task_started(
+    pending: dict[str, Any],
+    holder: dict[str, Any],
+    task_id: str,
+    old_task_id: str,
+    logical_id: str,
+    attempt: int,
+    kind: str,
+) -> None:
+    history = [str(item or "") for item in list(holder.get("attempt_task_ids") or []) if str(item or "")]
+    for value in (old_task_id, task_id):
+        if value and value not in history:
+            history.append(value)
+    holder.update({
+        "task_id": task_id,
+        "logical_subtask_id": logical_id,
+        "state": "running",
+        "current_attempt": attempt,
+        "retry_count": max(int(holder.get("retry_count") or 0), attempt - 1),
+        "attempt_task_ids": history[-50:],
+        "next_retry_at_epoch": 0,
+        "next_retry_delay_seconds": 0,
+        "retry_started_at": "",
+        "last_attempt_started_at": _now(),
+    })
+    if kind != "dual_job_group":
+        pending["task_id"] = task_id
+    else:
+        results = pending.get("group_results") if isinstance(pending.get("group_results"), dict) else {}
+        results.pop(old_task_id, None)
+        pending["group_results"] = results
+        pending["collected_task_ids"] = [
+            str(item or "") for item in list(pending.get("collected_task_ids") or [])
+            if str(item or "") != old_task_id
+        ]
+    pending.update({
+        "task_id": str(pending.get("task_id") or task_id),
+        "job_state": "running",
+        "handoff_status": "worker_retry_running",
+        "delivery_state": "worker_retry_running",
+        "last_retry_started_at": _now(),
+    })
+    codex_console._codex_update_task(
+        task_id,
+        retry_root_job_id=str(pending.get("job_group_id") or pending.get("message_id") or ""),
+        retry_count=int(holder.get("retry_count") or 0),
+        current_attempt=attempt,
+        attempt_task_ids=history[-50:],
+    )
+
+
 def _dual_retry_pending_due(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -506,48 +623,9 @@ def _dual_retry_pending_due(
         logical_id = str(holder.get("logical_subtask_id") or holder.get("subtask_id") or ("main" if kind != "dual_job_group" else f"s{index}"))
         attempt = max(1, int(holder.get("current_attempt") or len(list(holder.get("attempt_task_ids") or [])) or 1)) + 1
         child_id = f"{logical_id}-a{attempt}"
-        session = {
-            "username": str(pending.get("username") or "").strip().lower(),
-            "client_id": str(pending.get("client_id") or "").strip(),
-            "permissions": dict(pending.get("session_permissions") or {}),
-            "is_full": bool(pending.get("session_is_full")),
-        }
-        message = {
-            "message_id": message_id,
-            "subject_id": str(pending.get("subject_id") or ""),
-            "wa_id": str(pending.get("wa_id") or ""),
-            "message_type": "text",
-            "text_body": str(pending.get("request_text") or ""),
-            "received_at": pending.get("created_at") or _now(),
-        }
         try:
-            task = _create_dual_worker_task(
-                config,
-                message=message,
-                message_id=message_id,
-                subject=str(pending.get("subject_id") or ""),
-                phone=str(pending.get("wa_id") or ""),
-                session=session,
-                conversation_id=str(pending.get("conversation_id") or ""),
-                request_text=str(pending.get("request_text") or ""),
-                job_prompt=str(holder.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or ""),
-                job_title=str(holder.get("title") or pending.get("job_title") or "")[:180],
-                media=pending.get("media") if isinstance(pending.get("media"), dict) and pending.get("media") else None,
-                transcription=(
-                    pending.get("transcription")
-                    if isinstance(pending.get("transcription"), dict) and pending.get("transcription")
-                    else None
-                ),
-                phone_ai_behavior=str(pending.get("phone_ai_behavior") or ""),
-                query_policy=dict(pending.get("query_policy") or {}),
-                job_group_id=str(pending.get("job_group_id") or message_id),
-                subtask_id=child_id,
-                logical_subtask_id=logical_id,
-                attempt=attempt,
-                subtask_index=index,
-                subtask_total=max(1, len(holders)),
-                requires_web=bool(holder.get("requires_web", True)),
-                reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+            task = _create_retry_worker_task(
+                config, pending, holder, message_id, logical_id, child_id, attempt, index, len(holders),
             )
         except Exception as exc:
             failure = {
@@ -569,52 +647,7 @@ def _dual_retry_pending_due(
             changed = True
             continue
         task_id = str(task.get("task_id") or "")
-        history = [str(item or "") for item in list(holder.get("attempt_task_ids") or []) if str(item or "")]
-        if old_task_id and old_task_id not in history:
-            history.append(old_task_id)
-        if task_id and task_id not in history:
-            history.append(task_id)
-        holder.update(
-            {
-                "task_id": task_id,
-                "logical_subtask_id": logical_id,
-                "state": "running",
-                "current_attempt": attempt,
-                "retry_count": max(int(holder.get("retry_count") or 0), attempt - 1),
-                "attempt_task_ids": history[-50:],
-                "next_retry_at_epoch": 0,
-                "next_retry_delay_seconds": 0,
-                "retry_started_at": "",
-                "last_attempt_started_at": _now(),
-            }
-        )
-        if kind != "dual_job_group":
-            pending["task_id"] = task_id
-        else:
-            results = pending.get("group_results") if isinstance(pending.get("group_results"), dict) else {}
-            results.pop(old_task_id, None)
-            pending["group_results"] = results
-            pending["collected_task_ids"] = [
-                str(item or "")
-                for item in list(pending.get("collected_task_ids") or [])
-                if str(item or "") != old_task_id
-            ]
-        pending.update(
-            {
-                "task_id": str(pending.get("task_id") or task_id),
-                "job_state": "running",
-                "handoff_status": "worker_retry_running",
-                "delivery_state": "worker_retry_running",
-                "last_retry_started_at": _now(),
-            }
-        )
-        codex_console._codex_update_task(
-            task_id,
-            retry_root_job_id=str(pending.get("job_group_id") or message_id),
-            retry_count=int(holder.get("retry_count") or 0),
-            current_attempt=attempt,
-            attempt_task_ids=history[-50:],
-        )
+        _mark_retry_task_started(pending, holder, task_id, old_task_id, logical_id, attempt, kind)
         created += 1
         changed = True
     if changed:

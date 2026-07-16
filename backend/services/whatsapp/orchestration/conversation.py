@@ -380,6 +380,415 @@ def _dual_delegate_query_policy(
         policy = _whatsapp_store_scope_policy(request_text, session)
     return policy if isinstance(policy, dict) else {}
 
+def _record_dual_user_message(state: dict[str, Any], conversation_id: str, request_text: str) -> None:
+    with DUAL_AGENT_STATE_LOCK:
+        record = _dual_conversation_record(state, conversation_id)
+        record["last_inbound_at"] = _now()
+        record["last_inbound_at_epoch"] = time.time()
+        _dual_append_conversation_turn(record, role="user", text=request_text, event_type="user_message")
+        _save_dual_conversation_record(state, conversation_id, record)
+
+def _dual_initial_decision(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    conversation_id: str,
+    request_text: str,
+    active_task: dict[str, Any],
+    active_snapshot: dict[str, Any],
+    phone_ai_behavior: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    query_policy: dict[str, Any] = {}
+    deterministic_plan: dict[str, Any] = {}
+    if not active_task:
+        query_policy = _dual_delegate_query_policy(request_text, session, state, conversation_id)
+        missing_store = bool(
+            query_policy.get("store_required")
+            and query_policy.get("store_mode") != "all"
+            and len(query_policy.get("store_matches") or []) != 1
+        )
+        if missing_store:
+            delivered = _whatsapp_send_store_selection(
+                config, state, message, session, conversation_id, request_text,
+                list(query_policy.get("authorized_stores") or []), allow_all=True,
+            )
+            if delivered:
+                return {"action": "selection_sent"}, query_policy, deterministic_plan
+            raise RuntimeError("store_selection_delivery_failed")
+        deterministic_plan = _deterministic_direct_query_plan(request_text, query_policy, session.get("permissions"))
+    if deterministic_plan:
+        tool_call = (deterministic_plan.get("tool_calls") or [{}])[0]
+        decision = {
+            "action": "delegate",
+            "reply_text": "Vou consultar os dados confirmados e retorno assim que a fonte responder.",
+            "job_prompt": request_text,
+            "job_title": str(tool_call.get("reason") or "Consulta direta")[:180],
+            "subtasks": [],
+            "requires_web": False,
+            "thread_id": "",
+            "deterministic_route": True,
+        }
+    else:
+        decision = _run_conversation_agent(
+            config, state, conversation_id,
+            event_type="user_message", user_message=request_text,
+            active_job=active_snapshot, ai_behavior=phone_ai_behavior,
+        )
+    return decision, query_policy, deterministic_plan
+
+def _normalized_dual_action(
+    decision: dict[str, Any],
+    active_task: dict[str, Any],
+    request_text: str,
+) -> str:
+    action = str(decision.get("action") or "")
+    if not active_task:
+        return action
+    if _whatsapp_is_job_status_probe(request_text):
+        return "reply"
+    related_job_id = str(decision.get("related_job_id") or "").strip()
+    active_task_id = str(active_task.get("task_id") or "").strip()
+    if action in {"delegate", "queue"} and (
+        _whatsapp_is_task_complement(request_text) or (related_job_id and related_job_id == active_task_id)
+    ):
+        return "steer"
+    if action == "delegate":
+        return "queue"
+    return action
+
+def _cancel_dual_active_job(
+    state: dict[str, Any],
+    session: dict[str, Any],
+    active_message_id: str,
+    active_pending: dict[str, Any],
+) -> None:
+    for task_id in _pending_task_ids(active_pending):
+        codex_console.codex_cancelar_tarefa_para_sessao(task_id, session, cancel_source="whatsapp_conversation_agent")
+        codex_console._codex_update_task(task_id, handoff_status="canceled_by_conversation_agent", delivery_state="canceled")
+    if active_message_id:
+        _remove_pending(state, active_message_id, status="canceled", reason="cancelado_pelo_usuario")
+
+def _steer_dual_active_job(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    session: dict[str, Any],
+    decision: dict[str, Any],
+    active_message_id: str,
+    active_pending: dict[str, Any],
+    active_task: dict[str, Any],
+    request_text: str,
+    message_id: str,
+    subject: str,
+    phone: str,
+    reply_text: str,
+) -> bool:
+    active_task_id = str(active_task.get("task_id") or "").strip()
+    prompt = str(decision.get("job_prompt") or request_text)
+    if str(active_pending.get("kind") or "") == "dual_function_manager" and active_message_id:
+        _resume_dual_pending_with_message(config, state, active_message_id, active_pending, prompt)
+        _post_message_result(config, message_id, {"status": "completed", "task_id": active_task_id, "response": reply_text})
+        return True
+    accepted = False
+    for task_id in _pending_task_ids(active_pending):
+        task = active_task if task_id == active_task_id else (codex_console._codex_load_task(task_id) or {})
+        if str(task.get("status") or "") not in {"queued", "running"}:
+            continue
+        steer = codex_console.codex_complementar_tarefa_para_sessao(
+            task_id, prompt, session,
+            request_id=f"{message_id}:{task_id}", subject_id=subject, wa_id=phone,
+        )
+        accepted = steer.get("accepted") is True or accepted
+    if accepted:
+        _post_message_result(config, message_id, {"status": "completed", "task_id": active_task_id, "response": reply_text})
+    return accepted
+
+def _handle_dual_control_action(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    session: dict[str, Any],
+    decision: dict[str, Any],
+    action: str,
+    active_message_id: str,
+    active_pending: dict[str, Any],
+    active_task: dict[str, Any],
+    request_text: str,
+    message_id: str,
+    subject: str,
+    phone: str,
+    reply_text: str,
+) -> tuple[bool, str]:
+    active_task_id = str(active_task.get("task_id") or "").strip() if active_task else ""
+    if action == "cancel_job":
+        if active_task:
+            _cancel_dual_active_job(state, session, active_message_id, active_pending)
+        _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
+        return True, action
+    active_job_state = str(active_pending.get("job_state") or "") if active_pending else ""
+    should_resume = bool(
+        active_pending and not _whatsapp_is_job_status_probe(request_text)
+        and (active_job_state == "awaiting_input" or (
+            active_job_state in {"waiting_retry", "retry_starting"} and _whatsapp_is_retry_command(request_text)
+        ))
+    )
+    if should_resume and active_message_id and _resume_dual_pending_with_message(
+        config, state, active_message_id, active_pending, request_text,
+    ):
+        _post_message_result(config, message_id, {"status": "completed", "task_id": active_task_id, "response": reply_text})
+        return True, action
+    if action == "steer" and active_task:
+        if _steer_dual_active_job(
+            config, state, session, decision, active_message_id, active_pending,
+            active_task, request_text, message_id, subject, phone, reply_text,
+        ):
+            return True, action
+        return False, "queue"
+    if action == "steer":
+        return False, "delegate"
+    if action in {"reply", "request_information"}:
+        _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
+        return True, action
+    if action not in {"delegate", "queue"}:
+        raise RuntimeError("conversation_agent_unhandled_action")
+    return False, action
+
+def _dual_resolve_job_policy(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    conversation_id: str,
+    request_text: str,
+    job_prompt: str,
+    precomputed: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    policy = precomputed or _dual_delegate_query_policy(request_text, session, state, conversation_id)
+    if not policy:
+        policy = _dual_delegate_query_policy(job_prompt, session, state, conversation_id)
+    missing_store = bool(
+        policy.get("store_required") and policy.get("store_mode") != "all"
+        and len(policy.get("store_matches") or []) != 1
+    )
+    if not missing_store:
+        return policy
+    if _whatsapp_send_store_selection(
+        config, state, message, session, conversation_id, request_text,
+        list(policy.get("authorized_stores") or []), allow_all=True,
+    ):
+        return None
+    raise RuntimeError("store_selection_delivery_failed")
+
+def _queue_dual_function_manager(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    session: dict[str, Any],
+    decision: dict[str, Any],
+    deterministic_plan: dict[str, Any],
+    query_policy: dict[str, Any],
+    message_id: str,
+    subject: str,
+    phone: str,
+    conversation_id: str,
+    request_text: str,
+    job_prompt: str,
+    job_title: str,
+    reply_text: str,
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    phone_ai_behavior: str,
+) -> bool:
+    settings = _whatsapp_dual_agent_settings(config)
+    if not settings.get("function_manager_enabled") or not settings.get("function_manager_required_before_sol"):
+        return False
+    job_group_id = f"wa-{uuid.uuid4().hex[:20]}"
+    now_epoch = time.time()
+    pending = {
+        "task_id": "", "kind": "dual_function_manager", "conversation_id": conversation_id,
+        "conversation_agent_thread_id": str(decision.get("thread_id") or ""), "function_manager_thread_id": "",
+        "parent_job_id": job_group_id, "job_group_id": job_group_id, "job_title": job_title,
+        "subject_id": subject, "username": str(session.get("username") or "").strip().lower(),
+        "client_id": str(session.get("client_id") or "").strip(), "request_text": request_text,
+        "job_prompt": job_prompt, "query_policy": query_policy, "manager_query_policy": query_policy,
+        "deterministic_plan": deterministic_plan, "phone_ai_behavior": phone_ai_behavior,
+        "media": media or {}, "transcription": transcription or {},
+        "screen_context": _mobile_screen_context(message_id, subject, media, transcription, query_policy),
+        "session_permissions": {str(key): value is True for key, value in dict(session.get("permissions") or {}).items() if str(key or "").strip()},
+        "session_is_full": bool(session.get("is_full")), "created_at": _now(), "created_at_epoch": now_epoch,
+        "job_state": "manager_queued", "manager_state": "queued", "manager_retry_count": 0,
+        "manager_revision": 0, "manager_next_retry_at_epoch": 0, "retry_policy": "bounded",
+        "sol_subtasks": list(decision.get("subtasks") or [])[: settings["max_subtasks_per_job"]],
+        "verified_facts": [], "verified_sources": [], "last_conversation_at": _now(),
+        "last_conversation_at_epoch": now_epoch, "tick_index": 0, "wait_notice_count": 0,
+        "awaiting_notified": True, "handoff_status": "manager_queued", "delivery_state": "initial_reply_sent",
+        "wa_id": phone,
+    }
+    _save_pending(state, message_id, pending)
+    _whatsapp_remember_query_context(state, conversation_id, request_text, query_policy)
+    _post_message_result(
+        config, message_id,
+        {"status": "completed", "task_id": "", "job_group_id": job_group_id, "subtask_count": 0, "response": reply_text},
+    )
+    _submit_function_manager_job(config, state, message_id)
+    return True
+
+def _create_dual_subtask(
+    config: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    subtask: dict[str, Any],
+    index: int,
+    total: int,
+    job_group_id: str,
+    job_prompt: str,
+    job_title: str,
+    message_id: str,
+    subject: str,
+    phone: str,
+    conversation_id: str,
+    request_text: str,
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    phone_ai_behavior: str,
+    query_policy: dict[str, Any],
+) -> dict[str, Any]:
+    subtask_id = f"s{index}-{uuid.uuid4().hex[:8]}"
+    subtask_prompt = str(subtask.get("prompt") or job_prompt).strip()
+    item = {
+        "subtask_id": subtask_id, "logical_subtask_id": subtask_id,
+        "title": str(subtask.get("title") or job_title).strip()[:180], "prompt": subtask_prompt[:12000],
+        "requires_web": bool(subtask.get("requires_web")), "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        "task_id": "", "current_attempt": 1, "attempt_task_ids": [], "retry_count": 0,
+        "next_retry_at_epoch": 0, "state": "running",
+    }
+    try:
+        task = _create_dual_worker_task(
+            config, message=message, message_id=message_id, subject=subject, phone=phone, session=session,
+            conversation_id=conversation_id, request_text=request_text, job_prompt=subtask_prompt,
+            job_title=item["title"], media=media, transcription=transcription,
+            phone_ai_behavior=phone_ai_behavior, query_policy=query_policy, job_group_id=job_group_id,
+            subtask_id=subtask_id, logical_subtask_id=subtask_id, attempt=1,
+            subtask_index=index, subtask_total=total, requires_web=bool(subtask.get("requires_web")),
+            reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        )
+        task_id = str(task.get("task_id") or "")
+        item.update({"task_id": task_id, "attempt_task_ids": [task_id] if task_id else []})
+    except Exception as exc:
+        reason = str(exc)[:1000]
+        error_class, retryable = _dual_retry_classification(reason)
+        delay = _dual_retry_delay_seconds(1, reason, f"{job_group_id}:{subtask_id}:create") if retryable else 0
+        item.update({
+            "state": "waiting_retry" if retryable else "partial", "retry_count": 1,
+            "retry_reason": reason, "next_retry_at_epoch": time.time() + delay if retryable else 0,
+            "next_retry_delay_seconds": delay, "auth_retry": False, "retryable": retryable, "error_class": error_class,
+        })
+    return item
+
+def _build_dual_worker_pending(
+    session: dict[str, Any],
+    decision: dict[str, Any],
+    created: list[dict[str, Any]],
+    job_group_id: str,
+    conversation_id: str,
+    subject: str,
+    phone: str,
+    request_text: str,
+    job_prompt: str,
+    job_title: str,
+    query_policy: dict[str, Any],
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    phone_ai_behavior: str,
+) -> tuple[dict[str, Any], bool, str]:
+    first_task_id = next((str(item.get("task_id") or "") for item in created if item.get("task_id")), "")
+    is_group = len(created) > 1 or not first_task_id
+    terminal = bool(created) and all(str(item.get("state") or "") in {"partial", "canceled"} for item in created)
+    initial_auth_retry = any(item.get("auth_retry") is True for item in created)
+    now_epoch = time.time()
+    first = created[0] if created else {}
+    pending = {
+        "task_id": first_task_id, "kind": "dual_job_group" if is_group else "dual_worker",
+        "conversation_id": conversation_id, "conversation_agent_thread_id": str(decision.get("thread_id") or ""),
+        "parent_job_id": job_group_id, "job_group_id": job_group_id, "subtasks": created if is_group else [],
+        "group_results": {}, "collected_task_ids": [], "delivered_task_ids": [], "results_revision": 0,
+        "job_title": job_title, "subject_id": subject, "username": str(session.get("username") or "").strip().lower(),
+        "client_id": str(session.get("client_id") or "").strip(), "request_text": request_text,
+        "job_prompt": job_prompt, "query_policy": query_policy, "phone_ai_behavior": phone_ai_behavior,
+        "media": media or {}, "transcription": transcription or {},
+        "session_permissions": {str(key): value is True for key, value in dict(session.get("permissions") or {}).items() if str(key or "").strip()},
+        "session_is_full": bool(session.get("is_full")), "created_at": _now(), "created_at_epoch": now_epoch,
+        "job_state": "running" if first_task_id else ("partial" if terminal else "waiting_retry"), "retry_policy": "bounded",
+        "retry_count": int(first.get("retry_count") or 0) if not is_group else 0,
+        "next_retry_at_epoch": float(first.get("next_retry_at_epoch") or 0) if not is_group else 0,
+        "retry_reason": str(first.get("retry_reason") or "") if not is_group else "",
+        "attempt_task_ids": list(first.get("attempt_task_ids") or []) if not is_group else [],
+        "current_attempt": int(first.get("current_attempt") or 1) if not is_group else 1,
+        "subtask_id": str(first.get("subtask_id") or "main") if not is_group else "",
+        "logical_subtask_id": str(first.get("logical_subtask_id") or "main") if not is_group else "",
+        "prompt": str(first.get("prompt") or job_prompt)[:12000] if not is_group else "",
+        "title": str(first.get("title") or job_title)[:180] if not is_group else "",
+        "requires_web": bool(first.get("requires_web", True)) if not is_group else True,
+        "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT, "verified_facts": [], "verified_sources": [],
+        "auth_retry_active": initial_auth_retry, "auth_notice_pending": initial_auth_retry, "auth_notice_sent": False,
+        "last_conversation_at": _now(), "last_conversation_at_epoch": now_epoch, "tick_index": 0,
+        "wait_notice_count": 0, "awaiting_notified": True, "handoff_status": "worker_running",
+        "delivery_state": "initial_reply_sent", "wa_id": phone,
+    }
+    return pending, terminal, first_task_id
+
+def _queue_dual_workers(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+    decision: dict[str, Any],
+    query_policy: dict[str, Any],
+    message_id: str,
+    subject: str,
+    phone: str,
+    conversation_id: str,
+    request_text: str,
+    job_prompt: str,
+    job_title: str,
+    reply_text: str,
+    media: Optional[dict[str, Any]],
+    transcription: Optional[dict[str, Any]],
+    phone_ai_behavior: str,
+) -> bool:
+    settings = _whatsapp_dual_agent_settings(config)
+    proposed = list(decision.get("subtasks") or [])[: settings["max_subtasks_per_job"]]
+    if len(proposed) <= 1:
+        proposed = [proposed[0] if proposed else {
+            "title": job_title, "prompt": job_prompt,
+            "requires_web": bool(decision.get("requires_web")), "reasoning_effort": settings["task_agent_reasoning"],
+        }]
+    job_group_id = f"wa-{uuid.uuid4().hex[:20]}"
+    created = [
+        _create_dual_subtask(
+            config, message, session, subtask, index, len(proposed), job_group_id,
+            job_prompt, job_title, message_id, subject, phone, conversation_id,
+            request_text, media, transcription, phone_ai_behavior, query_policy,
+        )
+        for index, subtask in enumerate(proposed, start=1)
+    ]
+    pending, creation_terminal, first_task_id = _build_dual_worker_pending(
+        session, decision, created, job_group_id, conversation_id, subject, phone,
+        request_text, job_prompt, job_title, query_policy, media, transcription, phone_ai_behavior,
+    )
+    _save_pending(state, message_id, pending)
+    _whatsapp_remember_query_context(state, conversation_id, request_text, query_policy)
+    _post_message_result(
+        config, message_id,
+        {"status": "completed", "task_id": first_task_id, "job_group_id": job_group_id,
+         "subtask_count": len(created), "response": reply_text},
+    )
+    if creation_terminal:
+        first = created[0] if created else {}
+        _terminate_pending_partial(
+            config, state, message_id, pending,
+            reason=str(first.get("retry_reason") or "nao_foi_possivel_iniciar_a_consulta"),
+        )
+    return True
+
 def _process_dual_codex_message(
     config: dict[str, Any],
     state: dict[str, Any],
@@ -396,433 +805,42 @@ def _process_dual_codex_message(
     phone_ai_behavior: str,
 ) -> bool:
     active_message_id, active_pending, active_task, active_snapshot = _dual_active_job_snapshot(
-        state,
-        conversation_id,
-        exclude_message_id=message_id,
+        state, conversation_id, exclude_message_id=message_id,
     )
-    with DUAL_AGENT_STATE_LOCK:
-        record = _dual_conversation_record(state, conversation_id)
-        record["last_inbound_at"] = _now()
-        record["last_inbound_at_epoch"] = time.time()
-        _dual_append_conversation_turn(record, role="user", text=request_text, event_type="user_message")
-        _save_dual_conversation_record(state, conversation_id, record)
-    precomputed_query_policy: dict[str, Any] = {}
-    deterministic_plan: dict[str, Any] = {}
-    if not active_task:
-        precomputed_query_policy = _dual_delegate_query_policy(request_text, session, state, conversation_id)
-        missing_store = bool(
-            precomputed_query_policy.get("store_required")
-            and precomputed_query_policy.get("store_mode") != "all"
-            and len(precomputed_query_policy.get("store_matches") or []) != 1
-        )
-        if missing_store:
-            stores = list(precomputed_query_policy.get("authorized_stores") or [])
-            if _whatsapp_send_store_selection(
-                config,
-                state,
-                message,
-                session,
-                conversation_id,
-                request_text,
-                stores,
-                allow_all=True,
-            ):
-                return True
-            raise RuntimeError("store_selection_delivery_failed")
-        deterministic_plan = _deterministic_direct_query_plan(
-            request_text,
-            precomputed_query_policy,
-            session.get("permissions"),
-        )
-    if deterministic_plan:
-        tool_call = (deterministic_plan.get("tool_calls") or [{}])[0]
-        decision = {
-            "action": "delegate",
-            "reply_text": "Vou consultar os dados confirmados e retorno assim que a fonte responder.",
-            "job_prompt": request_text,
-            "job_title": str(tool_call.get("reason") or "Consulta direta")[:180],
-            "subtasks": [],
-            "requires_web": False,
-            "thread_id": "",
-            "deterministic_route": True,
-        }
-    else:
-        decision = _run_conversation_agent(
-            config,
-            state,
-            conversation_id,
-            event_type="user_message",
-            user_message=request_text,
-            active_job=active_snapshot,
-            ai_behavior=phone_ai_behavior,
-        )
-    action = str(decision.get("action") or "")
+    _record_dual_user_message(state, conversation_id, request_text)
+    decision, precomputed_policy, deterministic_plan = _dual_initial_decision(
+        config, state, message, session, conversation_id, request_text,
+        active_task, active_snapshot, phone_ai_behavior,
+    )
+    if decision.get("action") == "selection_sent":
+        return True
     reply_text = str(decision.get("reply_text") or "").strip()
-    related_job_id = str(decision.get("related_job_id") or "").strip()
-    active_task_id = str(active_task.get("task_id") or "").strip() if active_task else ""
-    if active_task and _whatsapp_is_job_status_probe(request_text):
-        # Perguntas de estado pertencem ao Luna. Elas nunca abrem, alteram ou
-        # enfileiram outro trabalho Sol, mesmo que uma decisao imperfeita tente
-        # delega-las.
-        action = "reply"
-    if active_task and action in {"delegate", "queue"} and (
-        _whatsapp_is_task_complement(request_text)
-        or (related_job_id and related_job_id == active_task_id)
-    ):
-        # Uma correcao/complemento nunca abre outro Sol. Mesmo que o Luna use
-        # delegate/queue por engano, o bridge preserva a tarefa ativa.
-        action = "steer"
-    elif active_task and action == "delegate":
-        # Com um Sol ativo, uma pesquisa realmente independente deve aguardar
-        # na mesma fila em vez de parecer outra execucao concorrente.
-        action = "queue"
-    if action == "cancel_job":
-        if active_task:
-            for task_id in _pending_task_ids(active_pending):
-                codex_console.codex_cancelar_tarefa_para_sessao(
-                    task_id,
-                    session,
-                    cancel_source="whatsapp_conversation_agent",
-                )
-                codex_console._codex_update_task(
-                    task_id,
-                    handoff_status="canceled_by_conversation_agent",
-                    delivery_state="canceled",
-                )
-            if active_message_id:
-                _remove_pending(state, active_message_id, status="canceled", reason="cancelado_pelo_usuario")
-        _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
-        return True
-    active_job_state = str(active_pending.get("job_state") or "") if active_pending else ""
-    should_resume_waiting = bool(
-        active_pending
-        and not _whatsapp_is_job_status_probe(request_text)
-        and (
-            active_job_state == "awaiting_input"
-            or (active_job_state in {"waiting_retry", "retry_starting"} and _whatsapp_is_retry_command(request_text))
-        )
+    action = _normalized_dual_action(decision, active_task, request_text)
+    handled, action = _handle_dual_control_action(
+        config, state, session, decision, action, active_message_id, active_pending,
+        active_task, request_text, message_id, subject, phone, reply_text,
     )
-    if should_resume_waiting and active_message_id:
-        resumed = _resume_dual_pending_with_message(
-            config,
-            state,
-            active_message_id,
-            active_pending,
-            request_text,
-        )
-        if resumed:
-            _post_message_result(
-                config,
-                message_id,
-                {"status": "completed", "task_id": active_task_id, "response": reply_text},
-            )
-            return True
-    if action == "steer" and active_task:
-        if str(active_pending.get("kind") or "") == "dual_function_manager" and active_message_id:
-            _resume_dual_pending_with_message(
-                config,
-                state,
-                active_message_id,
-                active_pending,
-                str(decision.get("job_prompt") or request_text),
-            )
-            _post_message_result(
-                config,
-                message_id,
-                {"status": "completed", "task_id": active_task_id, "response": reply_text},
-            )
-            return True
-        accepted = False
-        for task_id in _pending_task_ids(active_pending):
-            task = (
-                active_task
-                if task_id == str(active_task.get("task_id") or "")
-                else (codex_console._codex_load_task(task_id) or {})
-            )
-            if str(task.get("status") or "") not in {"queued", "running"}:
-                continue
-            steer = codex_console.codex_complementar_tarefa_para_sessao(
-                task_id,
-                str(decision.get("job_prompt") or request_text),
-                session,
-                request_id=f"{message_id}:{task_id}",
-                subject_id=subject,
-                wa_id=phone,
-            )
-            accepted = steer.get("accepted") is True or accepted
-        if accepted:
-            _post_message_result(
-                config,
-                message_id,
-                {"status": "completed", "task_id": active_task_id, "response": reply_text},
-            )
-            return True
-        action = "queue"
-    elif action == "steer":
-        action = "delegate"
-    if action in {"reply", "request_information"}:
-        _post_message_result(config, message_id, {"status": "completed", "response": reply_text})
+    if handled:
         return True
-    if action not in {"delegate", "queue"}:
-        raise RuntimeError("conversation_agent_unhandled_action")
-
     job_prompt = str(decision.get("job_prompt") or request_text).strip()
     job_title = str(decision.get("job_title") or request_text).strip()[:180]
-    # O texto original governa o escopo. O detalhamento produzido pelo Luna
-    # Conversa nao pode acrescentar vendas, pedidos ou estoque que o usuario
-    # nao solicitou.
-    query_policy = precomputed_query_policy or _dual_delegate_query_policy(request_text, session, state, conversation_id)
-    if not query_policy:
-        query_policy = _dual_delegate_query_policy(job_prompt, session, state, conversation_id)
-    missing_store = bool(
-        query_policy.get("store_required")
-        and query_policy.get("store_mode") != "all"
-        and len(query_policy.get("store_matches") or []) != 1
+    query_policy = _dual_resolve_job_policy(
+        config, state, message, session, conversation_id,
+        request_text, job_prompt, precomputed_policy,
     )
-    if missing_store:
-        stores = list(query_policy.get("authorized_stores") or [])
-        if _whatsapp_send_store_selection(
-            config,
-            state,
-            message,
-            session,
-            conversation_id,
-            request_text,
-            stores,
-            allow_all=True,
-        ):
-            return True
-        raise RuntimeError("store_selection_delivery_failed")
-
-    settings = _whatsapp_dual_agent_settings(config)
-    if settings.get("function_manager_enabled") and settings.get("function_manager_required_before_sol"):
-        job_group_id = f"wa-{uuid.uuid4().hex[:20]}"
-        now_epoch = time.time()
-        pending = {
-            "task_id": "",
-            "kind": "dual_function_manager",
-            "conversation_id": conversation_id,
-            "conversation_agent_thread_id": str(decision.get("thread_id") or ""),
-            "function_manager_thread_id": "",
-            "parent_job_id": job_group_id,
-            "job_group_id": job_group_id,
-            "job_title": job_title,
-            "subject_id": subject,
-            "username": str(session.get("username") or "").strip().lower(),
-            "client_id": str(session.get("client_id") or "").strip(),
-            "request_text": request_text,
-            "job_prompt": job_prompt,
-            "query_policy": query_policy,
-            "manager_query_policy": query_policy,
-            "deterministic_plan": deterministic_plan,
-            "phone_ai_behavior": phone_ai_behavior,
-            "media": media or {},
-            "transcription": transcription or {},
-            "screen_context": _mobile_screen_context(message_id, subject, media, transcription, query_policy),
-            "session_permissions": {
-                str(key): value is True
-                for key, value in dict(session.get("permissions") or {}).items()
-                if str(key or "").strip()
-            },
-            "session_is_full": bool(session.get("is_full")),
-            "created_at": _now(),
-            "created_at_epoch": now_epoch,
-            "job_state": "manager_queued",
-            "manager_state": "queued",
-            "manager_retry_count": 0,
-            "manager_revision": 0,
-            "manager_next_retry_at_epoch": 0,
-            "retry_policy": "bounded",
-            "sol_subtasks": list(decision.get("subtasks") or [])[: settings["max_subtasks_per_job"]],
-            "verified_facts": [],
-            "verified_sources": [],
-            "last_conversation_at": _now(),
-            "last_conversation_at_epoch": now_epoch,
-            "tick_index": 0,
-            "wait_notice_count": 0,
-            "awaiting_notified": True,
-            "handoff_status": "manager_queued",
-            "delivery_state": "initial_reply_sent",
-            "wa_id": phone,
-        }
-        _save_pending(state, message_id, pending)
-        _whatsapp_remember_query_context(state, conversation_id, request_text, query_policy)
-        _post_message_result(
-            config,
-            message_id,
-            {
-                "status": "completed",
-                "task_id": "",
-                "job_group_id": job_group_id,
-                "subtask_count": 0,
-                "response": reply_text,
-            },
-        )
-        _submit_function_manager_job(config, state, message_id)
+    if query_policy is None:
         return True
-    proposed_subtasks = list(decision.get("subtasks") or [])[: settings["max_subtasks_per_job"]]
-    if len(proposed_subtasks) <= 1:
-        proposed_subtasks = [
-            proposed_subtasks[0]
-            if proposed_subtasks
-            else {
-                "title": job_title,
-                "prompt": job_prompt,
-                "requires_web": bool(decision.get("requires_web")),
-                "reasoning_effort": settings["task_agent_reasoning"],
-            }
-        ]
-    job_group_id = f"wa-{uuid.uuid4().hex[:20]}"
-    created_subtasks: list[dict[str, Any]] = []
-    for index, subtask in enumerate(proposed_subtasks, start=1):
-        subtask_id = f"s{index}-{uuid.uuid4().hex[:8]}"
-        subtask_prompt = str(subtask.get("prompt") or job_prompt).strip()
-        item = {
-            "subtask_id": subtask_id,
-            "logical_subtask_id": subtask_id,
-            "title": str(subtask.get("title") or job_title).strip()[:180],
-            "prompt": subtask_prompt[:12000],
-            "requires_web": bool(subtask.get("requires_web")),
-            "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
-            "task_id": "",
-            "current_attempt": 1,
-            "attempt_task_ids": [],
-            "retry_count": 0,
-            "next_retry_at_epoch": 0,
-            "state": "running",
-        }
-        try:
-            task = _create_dual_worker_task(
-                config,
-                message=message,
-                message_id=message_id,
-                subject=subject,
-                phone=phone,
-                session=session,
-                conversation_id=conversation_id,
-                request_text=request_text,
-                job_prompt=subtask_prompt,
-                job_title=str(subtask.get("title") or job_title).strip()[:180],
-                media=media,
-                transcription=transcription,
-                phone_ai_behavior=phone_ai_behavior,
-                query_policy=query_policy,
-                job_group_id=job_group_id,
-                subtask_id=subtask_id,
-                logical_subtask_id=subtask_id,
-                attempt=1,
-                subtask_index=index,
-                subtask_total=len(proposed_subtasks),
-                requires_web=bool(subtask.get("requires_web")),
-                reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
-            )
-            task_id = str(task.get("task_id") or "")
-            item.update({"task_id": task_id, "attempt_task_ids": [task_id] if task_id else []})
-        except Exception as exc:
-            reason = str(exc)[:1000]
-            error_class, retryable = _dual_retry_classification(reason)
-            delay = _dual_retry_delay_seconds(1, reason, f"{job_group_id}:{subtask_id}:create") if retryable else 0
-            item.update(
-                {
-                    "state": "waiting_retry" if retryable else "partial",
-                    "retry_count": 1,
-                    "retry_reason": reason,
-                    "next_retry_at_epoch": time.time() + delay if retryable else 0,
-                    "next_retry_delay_seconds": delay,
-                    "auth_retry": False,
-                    "retryable": retryable,
-                    "error_class": error_class,
-                }
-            )
-        created_subtasks.append(item)
-    first_task_id = next((str(item.get("task_id") or "") for item in created_subtasks if item.get("task_id")), "")
-    is_group = len(created_subtasks) > 1 or not first_task_id
-    creation_terminal = bool(created_subtasks) and all(
-        str(item.get("state") or "") in {"partial", "canceled"} for item in created_subtasks
+    if _queue_dual_function_manager(
+        config, state, session, decision, deterministic_plan, query_policy,
+        message_id, subject, phone, conversation_id, request_text, job_prompt,
+        job_title, reply_text, media, transcription, phone_ai_behavior,
+    ):
+        return True
+    return _queue_dual_workers(
+        config, state, message, session, decision, query_policy,
+        message_id, subject, phone, conversation_id, request_text, job_prompt,
+        job_title, reply_text, media, transcription, phone_ai_behavior,
     )
-    initial_auth_retry = any(item.get("auth_retry") is True for item in created_subtasks)
-    now_epoch = time.time()
-    first_item = created_subtasks[0] if created_subtasks else {}
-    pending = {
-        "task_id": first_task_id,
-        "kind": "dual_job_group" if is_group else "dual_worker",
-        "conversation_id": conversation_id,
-        "conversation_agent_thread_id": str(decision.get("thread_id") or ""),
-        "parent_job_id": job_group_id,
-        "job_group_id": job_group_id,
-        "subtasks": created_subtasks if is_group else [],
-        "group_results": {},
-        "collected_task_ids": [],
-        "delivered_task_ids": [],
-        "results_revision": 0,
-        "job_title": job_title,
-        "subject_id": subject,
-        "username": str(session.get("username") or "").strip().lower(),
-        "client_id": str(session.get("client_id") or "").strip(),
-        "request_text": request_text,
-        "job_prompt": job_prompt,
-        "query_policy": query_policy,
-        "phone_ai_behavior": phone_ai_behavior,
-        "media": media or {},
-        "transcription": transcription or {},
-        "session_permissions": {
-            str(key): value is True
-            for key, value in dict(session.get("permissions") or {}).items()
-            if str(key or "").strip()
-        },
-        "session_is_full": bool(session.get("is_full")),
-        "created_at": _now(),
-        "created_at_epoch": now_epoch,
-        "job_state": "running" if first_task_id else ("partial" if creation_terminal else "waiting_retry"),
-        "retry_policy": "bounded",
-        "retry_count": int(first_item.get("retry_count") or 0) if not is_group else 0,
-        "next_retry_at_epoch": float(first_item.get("next_retry_at_epoch") or 0) if not is_group else 0,
-        "retry_reason": str(first_item.get("retry_reason") or "") if not is_group else "",
-        "attempt_task_ids": list(first_item.get("attempt_task_ids") or []) if not is_group else [],
-        "current_attempt": int(first_item.get("current_attempt") or 1) if not is_group else 1,
-        "subtask_id": str(first_item.get("subtask_id") or "main") if not is_group else "",
-        "logical_subtask_id": str(first_item.get("logical_subtask_id") or "main") if not is_group else "",
-        "prompt": str(first_item.get("prompt") or job_prompt)[:12000] if not is_group else "",
-        "title": str(first_item.get("title") or job_title)[:180] if not is_group else "",
-        "requires_web": bool(first_item.get("requires_web", True)) if not is_group else True,
-        "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
-        "verified_facts": [],
-        "verified_sources": [],
-        "auth_retry_active": initial_auth_retry,
-        "auth_notice_pending": initial_auth_retry,
-        "auth_notice_sent": False,
-        "last_conversation_at": _now(),
-        "last_conversation_at_epoch": now_epoch,
-        "tick_index": 0,
-        "wait_notice_count": 0,
-        "awaiting_notified": True,
-        "handoff_status": "worker_running",
-        "delivery_state": "initial_reply_sent",
-        "wa_id": phone,
-    }
-    _save_pending(state, message_id, pending)
-    _whatsapp_remember_query_context(state, conversation_id, request_text, query_policy)
-    _post_message_result(
-        config,
-        message_id,
-        {
-            "status": "completed",
-            "task_id": first_task_id,
-            "job_group_id": job_group_id,
-            "subtask_count": len(created_subtasks),
-            "response": reply_text,
-        },
-    )
-    if creation_terminal:
-        _terminate_pending_partial(
-            config,
-            state,
-            message_id,
-            pending,
-            reason=str(first_item.get("retry_reason") or "nao_foi_possivel_iniciar_a_consulta"),
-        )
-    return True
-
 
 _COMPONENT_FUNCTIONS = frozenset((
     '_whatsapp_is_job_status_probe',

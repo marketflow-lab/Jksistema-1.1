@@ -70,6 +70,19 @@ WHATSAPP_MAX_OUTBOUND_IMAGES = whatsapp_media.WHATSAPP_MAX_OUTBOUND_IMAGES
 WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
+def _question_research_delivery_state(approval: dict[str, Any], job_id: str) -> str:
+    delivery_state = str(approval.get("research_delivery_state") or "")
+    if not delivery_state and approval.get("data_sufficient") is False and job_id:
+        approval.update(
+            {
+                "research_job_id": job_id,
+                "research_delivery_state": "waiting_evidence",
+                "research_status": "legacy_incomplete",
+            }
+        )
+        return "waiting_evidence"
+    return delivery_state
+
 
 def _deliver_completed_question_research(
     config: dict[str, Any],
@@ -82,20 +95,8 @@ def _deliver_completed_question_research(
     username: str,
 ) -> bool:
     job_id = str(approval.get("research_job_id") or approval.get("codex_job_id") or "").strip()
-    delivery_state = str(approval.get("research_delivery_state") or "")
-    if not delivery_state and approval.get("data_sufficient") is False and job_id:
-        approval.update(
-            {
-                "research_job_id": job_id,
-                "research_delivery_state": "waiting_evidence",
-                "research_status": "legacy_incomplete",
-            }
-        )
-        delivery_state = "waiting_evidence"
-    if not job_id or delivery_state not in {
-        "waiting_evidence",
-        "ready",
-    }:
+    delivery_state = _question_research_delivery_state(approval, job_id)
+    if not job_id or delivery_state not in {"waiting_evidence", "ready"}:
         return False
     if str(approval.get("research_delivered_job_id") or "") == job_id:
         return False
@@ -195,165 +196,334 @@ def _deliver_completed_question_research(
     _save_state(state)
     return True
 
+def _eligible_question_bindings(config: dict[str, Any]) -> list[tuple[dict[str, Any], str, str, str]]:
+    worker = _worker_health(config)
+    bindings = worker.get("bindings") if isinstance(worker.get("bindings"), list) else []
+    eligible: list[tuple[dict[str, Any], str, str, str]] = []
+    for binding in bindings:
+        if not isinstance(binding, dict) or str(binding.get("machine_id") or "") != str(config.get("machine_id") or ""):
+            continue
+        client_id = str(binding.get("client_id") or "").strip()
+        username = str(binding.get("username") or "").strip().lower()
+        subject_id = str(binding.get("subject_id") or "").strip()
+        if not client_id or not username or not subject_id:
+            continue
+        permissions = admin_usuarios_common._carregar_permissoes_usuario(username, client_id)
+        settings = _phone_notification_settings(config, subject_id, client_id=client_id, username=username)
+        if _question_approval_allowed(permissions) and settings["send_ml_question_suggestions"]:
+            eligible.append((binding, client_id, username, subject_id))
+    return eligible
+
+def _pending_question_approval(ppv_state: Any, configs: Any, approvals: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    return next(
+        (
+            item for item in approvals
+            if isinstance(item, dict)
+            and str(item.get("status") or "pending") == "pending"
+            and str(item.get("id") or "").strip()
+            and str(item.get("resposta_sugerida") or "").strip()
+            and ppv_state._perguntas_loja_config_normalizar(
+                ppv_state._perguntas_loja_config_obter(configs, str(item.get("loja") or "").strip())
+            ).get("notificar_whatsapp_aprovacoes") is True
+        ),
+        None,
+    )
+
+def _record_blocked_question_notification(
+    config: dict[str, Any],
+    notifications: dict[str, Any],
+    notification_key: str,
+    approval_id: str,
+    subject_id: str,
+    store: str,
+    blocked_status: str,
+) -> None:
+    notification = _post_proactive(
+        config,
+        {
+            "subject_id": subject_id,
+            "fingerprint": f"ppv-template:{notification_key}",
+            "event_type": "task_awaiting_approval",
+            "severity": "medium",
+            "text": f"Nova pergunta de comprador aguardando revisao na loja {store or 'nao informada'}.",
+            "template_name": "jk_black_jhon_nova_pergunta",
+            "template_params": [store or "Loja nao informada"],
+        },
+    )
+    notification_status = str(notification.get("status") or notification.get("error") or blocked_status)
+    notifications[notification_key] = {
+        "approval_id": approval_id,
+        "subject_id": subject_id,
+        "status": notification_status,
+        "interactive_status": blocked_status,
+        "blocked": notification_status in {"template_not_approved", "waiting_free_window", "policy_recheck_required"},
+        "updated_at": _now(),
+    }
+    try:
+        _bridge_store().record_notification(
+            f"ppv:{notification_key}",
+            event_type="mercado_livre_question",
+            status=notification_status,
+            reason=blocked_status,
+            details={"approval_id": approval_id, "store": store},
+        )
+    except Exception:
+        pass
+
+def _forward_question_approval_for_binding(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    ppv_state: Any,
+    notifications: dict[str, Any],
+    client_id: str,
+    username: str,
+    subject_id: str,
+) -> None:
+    configs = ppv_state._perguntas_loja_configs_carregar(client_id)
+    approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
+    active, active_token, _item = _question_active_approval(
+        state, approvals, subject_id=subject_id, client_id=client_id, username=username,
+    )
+    if active is not None and str(active.get("status") or "pending") == "pending":
+        _deliver_completed_question_research(
+            config, state, approvals, active,
+            client_id=client_id, subject_id=subject_id, username=username,
+        )
+        return
+    if active is not None or active_token:
+        _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+    approval = _pending_question_approval(ppv_state, configs, approvals)
+    if approval is None:
+        return
+    store = str(approval.get("loja") or "").strip()
+    approval_id = str(approval.get("id") or "").strip()
+    draft = str(approval.get("resposta_sugerida") or "").strip()
+    draft_hash = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:16]
+    notification_key = hashlib.sha256(f"{client_id}|{subject_id}|{approval_id}|{draft_hash}".encode("utf-8")).hexdigest()
+    token, _token_item = _question_approval_token(
+        state, approval=approval, subject_id=subject_id, client_id=client_id, username=username,
+    )
+    existing = notifications.get(notification_key)
+    if isinstance(existing, dict) and (existing.get("interactive_sent") is True or bool(existing.get("sent_at"))):
+        _question_set_active_thread(
+            state, approval_id=approval_id, token=token,
+            subject_id=subject_id, client_id=client_id, username=username,
+        )
+        return
+    result = _post_interactive_approval(
+        config, subject_id=subject_id, fingerprint=f"ppv:{notification_key}",
+        token=token, body=_question_approval_body(approval),
+    )
+    if str(result.get("status") or "") in {"sent", "duplicate"}:
+        notifications[notification_key] = {
+            "sent_at": _now(), "interactive_sent": True, "status": "sent",
+            "approval_id": approval_id, "subject_id": subject_id,
+        }
+        _question_set_active_thread(
+            state, approval_id=approval_id, token=token,
+            subject_id=subject_id, client_id=client_id, username=username,
+        )
+        return
+    blocked_status = str(result.get("status") or result.get("error") or "interactive_blocked")
+    _record_blocked_question_notification(
+        config, notifications, notification_key, approval_id, subject_id, store, blocked_status,
+    )
+
 def _forward_question_approvals(config: dict[str, Any], state: dict[str, Any]) -> None:
     try:
         from backend.services import perguntas_pos_venda_state as ppv_state
 
-        worker = _worker_health(config)
-        bindings = worker.get("bindings") if isinstance(worker.get("bindings"), list) else []
-        eligible_bindings = []
-        for binding in bindings:
-            if not isinstance(binding, dict) or str(binding.get("machine_id") or "") != str(config.get("machine_id") or ""):
-                continue
-            client_id = str(binding.get("client_id") or "").strip()
-            username = str(binding.get("username") or "").strip().lower()
-            subject_id = str(binding.get("subject_id") or "").strip()
-            if not client_id or not username or not subject_id:
-                continue
-            permissions = admin_usuarios_common._carregar_permissoes_usuario(username, client_id)
-            phone_settings = _phone_notification_settings(
-                config,
-                subject_id,
-                client_id=client_id,
-                username=username,
-            )
-            if _question_approval_allowed(permissions) and phone_settings["send_ml_question_suggestions"]:
-                eligible_bindings.append((binding, client_id, username, subject_id))
-        if not eligible_bindings:
+        eligible = _eligible_question_bindings(config)
+        if not eligible:
             return
         notifications = state.get("question_approval_notifications") if isinstance(state.get("question_approval_notifications"), dict) else {}
-        for _binding, client_id, username, subject_id in eligible_bindings:
-            configs = ppv_state._perguntas_loja_configs_carregar(client_id)
-            approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
-            active_approval, active_token, _active_item = _question_active_approval(
-                state,
-                approvals,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
+        for _binding, client_id, username, subject_id in eligible:
+            _forward_question_approval_for_binding(
+                config, state, ppv_state, notifications, client_id, username, subject_id,
             )
-            if active_approval is not None and str(active_approval.get("status") or "pending") == "pending":
-                _deliver_completed_question_research(
-                    config,
-                    state,
-                    approvals,
-                    active_approval,
-                    client_id=client_id,
-                    subject_id=subject_id,
-                    username=username,
-                )
-                # Uma pergunta ja esta nas maos do operador. Nao envie outra
-                # enquanto ela continuar pendente.
-                continue
-            if active_approval is not None or active_token:
-                _question_clear_active_thread(
-                    state,
-                    subject_id=subject_id,
-                    client_id=client_id,
-                    username=username,
-                )
-
-            approval = next(
-                (
-                    item
-                    for item in approvals
-                    if isinstance(item, dict)
-                    and str(item.get("status") or "pending") == "pending"
-                    and str(item.get("id") or "").strip()
-                    and str(item.get("resposta_sugerida") or "").strip()
-                    and ppv_state._perguntas_loja_config_normalizar(
-                        ppv_state._perguntas_loja_config_obter(configs, str(item.get("loja") or "").strip())
-                    ).get("notificar_whatsapp_aprovacoes") is True
-                ),
-                None,
-            )
-            if approval is not None:
-                store = str(approval.get("loja") or "").strip()
-                approval_id = str(approval.get("id") or "").strip()
-                draft = str(approval.get("resposta_sugerida") or "").strip()
-                draft_hash = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:16]
-                notification_key = hashlib.sha256(f"{client_id}|{subject_id}|{approval_id}|{draft_hash}".encode("utf-8")).hexdigest()
-                token, _token_item = _question_approval_token(
-                    state,
-                    approval=approval,
-                    subject_id=subject_id,
-                    client_id=client_id,
-                    username=username,
-                )
-                existing_notification = notifications.get(notification_key)
-                if isinstance(existing_notification, dict) and (
-                    existing_notification.get("interactive_sent") is True
-                    or bool(existing_notification.get("sent_at"))
-                ):
-                    _question_set_active_thread(
-                        state,
-                        approval_id=approval_id,
-                        token=token,
-                        subject_id=subject_id,
-                        client_id=client_id,
-                        username=username,
-                    )
-                    continue
-                result = _post_interactive_approval(
-                    config,
-                    subject_id=subject_id,
-                    fingerprint=f"ppv:{notification_key}",
-                    token=token,
-                    body=_question_approval_body(approval),
-                )
-                if str(result.get("status") or "") in {"sent", "duplicate"}:
-                    notifications[notification_key] = {
-                        "sent_at": _now(),
-                        "interactive_sent": True,
-                        "status": "sent",
-                        "approval_id": approval_id,
-                        "subject_id": subject_id,
-                    }
-                    _question_set_active_thread(
-                        state,
-                        approval_id=approval_id,
-                        token=token,
-                        subject_id=subject_id,
-                        client_id=client_id,
-                        username=username,
-                    )
-                else:
-                    blocked_status = str(result.get("status") or result.get("error") or "interactive_blocked")
-                    notification = _post_proactive(
-                        config,
-                        {
-                            "subject_id": subject_id,
-                            "fingerprint": f"ppv-template:{notification_key}",
-                            "event_type": "task_awaiting_approval",
-                            "severity": "medium",
-                            "text": f"Nova pergunta de comprador aguardando revisao na loja {store or 'nao informada'}.",
-                            "template_name": "jk_black_jhon_nova_pergunta",
-                            "template_params": [store or "Loja nao informada"],
-                        },
-                    )
-                    notification_status = str(notification.get("status") or notification.get("error") or blocked_status)
-                    notifications[notification_key] = {
-                        "approval_id": approval_id,
-                        "subject_id": subject_id,
-                        "status": notification_status,
-                        "interactive_status": blocked_status,
-                        "blocked": notification_status in {"template_not_approved", "waiting_free_window", "policy_recheck_required"},
-                        "updated_at": _now(),
-                    }
-                    try:
-                        _bridge_store().record_notification(
-                            f"ppv:{notification_key}",
-                            event_type="mercado_livre_question",
-                            status=notification_status,
-                            reason=blocked_status,
-                            details={"approval_id": approval_id, "store": store},
-                        )
-                    except Exception:
-                        pass
         state["question_approval_notifications"] = notifications
         _save_state(state)
     except Exception as exc:
         RUNTIME_STATE["last_error"] = f"question_approval_notification: {str(exc)[:800]}"
+
+def _natural_question_request(
+    state: dict[str, Any],
+    message: dict[str, Any],
+    session: dict[str, Any],
+) -> Optional[dict[str, str]]:
+    if not _question_approval_allowed(session.get("permissions") or {}):
+        return None
+    subject_id = str(message.get("subject_id") or "").strip()
+    client_id = str(session.get("client_id") or "").strip()
+    username = str(session.get("username") or "").strip().lower()
+    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
+    threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
+    active_thread = threads.get(_question_thread_key(client_id, subject_id, username))
+    matching = [
+        item for item in tokens.values()
+        if isinstance(item, dict)
+        and item.get("used") is not True
+        and str(item.get("subject_id") or "") == subject_id
+        and str(item.get("client_id") or "") == client_id
+        and str(item.get("username") or "").strip().lower() == username
+    ]
+    action = _question_natural_action(message.get("text_body"))
+    if not action and any(item.get("awaiting_correction") is True for item in matching):
+        action = "suggest" if str(message.get("text_body") or "").strip() else ""
+    if not action or (not isinstance(active_thread, dict) and not matching):
+        return None
+    return {
+        "action": action,
+        "subject_id": subject_id,
+        "client_id": client_id,
+        "username": username,
+        "message_id": str(message.get("message_id") or "").strip(),
+    }
+
+def _natural_question_confirm(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    approval: dict[str, Any],
+    token: str,
+    token_item: dict[str, Any],
+    subject_id: str,
+    message_id: str,
+) -> bool:
+    fingerprint = "ppv-natural-confirm:" + hashlib.sha256(f"{subject_id}|{token}|{message_id}".encode("utf-8")).hexdigest()
+    result = _post_interactive_approval(
+        config,
+        subject_id=subject_id,
+        fingerprint=fingerprint,
+        token=token,
+        body=_question_approval_body(approval, _question_bind_token_draft(token_item, approval)),
+    )
+    _save_state(state)
+    if str(result.get("status") or "") in {"sent", "duplicate"}:
+        _post_message_result(config, message_id, {"status": "completed", "response_parts": []})
+    else:
+        _post_command_reply(
+            config, message_id,
+            "Para enviar, use somente a opcao tokenizada Aprovar e enviar. Nada foi enviado ao comprador.",
+            "BLACK JHON - CONFIRMACAO OBRIGATORIA",
+        )
+    return True
+
+def _natural_question_cancel_research(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    ppv_state: Any,
+    approvals: list[dict[str, Any]],
+    approval: dict[str, Any],
+    client_id: str,
+    message_id: str,
+) -> bool:
+    from backend.services import perguntas_pos_venda_codex as ppv_codex
+
+    job_id = str(approval.get("research_job_id") or approval.get("codex_job_id") or "").strip()
+    if job_id:
+        ppv_codex.cancel_job(client_id, job_id)
+    approval.update({"research_status": "cancelled", "research_delivery_state": "cancelled", "research_cancelled_at": _now()})
+    ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
+    _save_state(state)
+    _post_command_reply(
+        config, message_id,
+        "Pesquisa cancelada. Nenhuma resposta foi enviada ao comprador e a pergunta continua disponivel para uma nova orientacao.",
+        "BLACK JHON - PESQUISA CANCELADA",
+    )
+    return True
+
+def _natural_question_suggest(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    message: dict[str, Any],
+    approvals: list[dict[str, Any]],
+    approval: dict[str, Any],
+    token_item: dict[str, Any],
+    client_id: str,
+    subject_id: str,
+    username: str,
+    message_id: str,
+) -> bool:
+    guidance = _question_suggestion_guidance(message.get("text_body"))
+    token_item["awaiting_correction"] = False
+    regenerated = _regenerate_question_approval_response(approval, approvals, client_id, guidance=guidance)
+    token, token_item = _question_approval_token(
+        state, approval=approval, subject_id=subject_id, client_id=client_id,
+        username=username, force_new=True, user_guidance=guidance,
+    )
+    token_item["regenerated_at"] = _now()
+    _question_set_active_thread(
+        state, approval_id=str(approval.get("id") or ""), token=token,
+        subject_id=subject_id, client_id=client_id, username=username,
+    )
+    fingerprint = "ppv-natural-suggest:" + hashlib.sha256(
+        f"{subject_id}|{token}|{message_id}|{regenerated}".encode("utf-8")
+    ).hexdigest()
+    result = _post_interactive_approval(
+        config, subject_id=subject_id, fingerprint=fingerprint,
+        token=token, body=_question_approval_body(approval, regenerated),
+    )
+    _save_state(state)
+    if str(result.get("status") or "") in {"sent", "duplicate"}:
+        _post_message_result(config, message_id, {"status": "completed", "response_parts": []})
+    else:
+        _post_command_reply(
+            config, message_id,
+            "A nova resposta ficou salva, mas os botoes de decisao nao puderam ser abertos. Peça para gerar novamente.",
+            "BLACK JHON - BOTOES INDISPONIVEIS",
+        )
+    return True
+
+def _natural_question_decide(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    ppv_endpoints: Any,
+    ppv_state: Any,
+    approvals: list[dict[str, Any]],
+    approval: dict[str, Any],
+    token: str,
+    token_item: dict[str, Any],
+    action: str,
+    client_id: str,
+    subject_id: str,
+    username: str,
+    message_id: str,
+) -> bool:
+    if action == "approve":
+        from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
+
+        payload = PerguntasAprovacaoRequest(
+            approval_id=str(approval.get("id") or ""),
+            resposta=_question_bind_token_draft(token_item, approval) or None,
+        )
+        result = ppv_endpoints.ml_perguntas_aprovacoes_aprovar(payload, client_id)
+        resolved = result.get("approval") if isinstance(result, dict) and isinstance(result.get("approval"), dict) else approval
+        if str(resolved.get("status") or "sent") not in {"sent", "sent_approved", "sent_manual", "sent_manual_pos_venda"}:
+            raise RuntimeError("question_answer_not_confirmed")
+        token_item.update({"used": True, "decision": "approve", "decided_at": _now()})
+        _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+        _save_state(state)
+        _post_command_reply(
+            config, message_id,
+            "Resposta enviada ao comprador. A proxima pergunta so sera apresentada depois desta confirmacao.",
+            "BLACK JHON - RESPOSTA ENVIADA",
+        )
+        return True
+    approval["whatsapp_suggestion_rejected_at"] = _now()
+    approval["whatsapp_suggestion_rejected_by"] = username
+    ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
+    token_item.update({"used": False, "decision": "suggestion_rejected", "decided_at": _now()})
+    _question_set_active_thread(
+        state, approval_id=str(approval.get("id") or ""), token=token,
+        subject_id=subject_id, client_id=client_id, username=username,
+    )
+    _save_state(state)
+    _post_command_reply(
+        config, message_id,
+        "Sugestao rejeitada. Nenhuma resposta foi enviada e a pergunta continua ativa. Envie sua orientacao ou solicite outra sugestao.",
+        "BLACK JHON - SUGESTAO REJEITADA",
+    )
+    return True
 
 def _handle_question_natural_language(
     config: dict[str, Any],
@@ -361,226 +531,61 @@ def _handle_question_natural_language(
     message: dict[str, Any],
     session: dict[str, Any],
 ) -> bool:
-    action = _question_natural_action(message.get("text_body"))
-    if not _question_approval_allowed(session.get("permissions") or {}):
+    request = _natural_question_request(state, message, session)
+    if request is None:
         return False
-    subject_id = str(message.get("subject_id") or "").strip()
-    client_id = str(session.get("client_id") or "").strip()
-    username = str(session.get("username") or "").strip().lower()
-    message_id = str(message.get("message_id") or "").strip()
-    tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
-    threads = state.get("question_active_threads") if isinstance(state.get("question_active_threads"), dict) else {}
-    active_thread = threads.get(_question_thread_key(client_id, subject_id, username))
-    has_active_token = any(
-        isinstance(item, dict)
-        and item.get("used") is not True
-        and str(item.get("subject_id") or "") == subject_id
-        and str(item.get("client_id") or "") == client_id
-        and str(item.get("username") or "").strip().lower() == username
-        for item in tokens.values()
-    )
-    if not action:
-        awaiting_correction = any(
-            isinstance(item, dict)
-            and item.get("used") is not True
-            and item.get("awaiting_correction") is True
-            and str(item.get("subject_id") or "") == subject_id
-            and str(item.get("client_id") or "") == client_id
-            and str(item.get("username") or "").strip().lower() == username
-            for item in tokens.values()
-        )
-        action = "suggest" if awaiting_correction and str(message.get("text_body") or "").strip() else ""
-    if not action:
-        return False
-    # Verbos como "corrija" tambem aparecem em conversas comuns. So trate a
-    # frase como revisao do Mercado Livre quando este mesmo numero realmente
-    # tiver uma pergunta interativa ativa.
-    if not isinstance(active_thread, dict) and not has_active_token:
-        return False
+    action = request["action"]
+    subject_id = request["subject_id"]
+    client_id = request["client_id"]
+    username = request["username"]
+    message_id = request["message_id"]
+    token_item: dict[str, Any] = {}
     try:
-        from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
         from backend.services import perguntas_pos_venda_endpoints as ppv_endpoints
         from backend.services import perguntas_pos_venda_state as ppv_state
 
         approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
-        approval, token, token_item = _question_active_approval(
-            state,
-            approvals,
-            subject_id=subject_id,
-            client_id=client_id,
-            username=username,
+        approval, token, found_token_item = _question_active_approval(
+            state, approvals, subject_id=subject_id, client_id=client_id, username=username,
         )
         if approval is None or str(approval.get("status") or "pending") != "pending":
             return False
         if not token:
-            token, token_item = _question_approval_token(
-                state,
-                approval=approval,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
+            token, found_token_item = _question_approval_token(
+                state, approval=approval, subject_id=subject_id,
+                client_id=client_id, username=username,
             )
-        if not isinstance(token_item, dict):
+        if isinstance(found_token_item, dict):
+            token_item = found_token_item
+        else:
             tokens = state.get("question_approval_tokens") if isinstance(state.get("question_approval_tokens"), dict) else {}
             token_item = tokens.get(token) if isinstance(tokens.get(token), dict) else {}
         _question_bind_token_draft(token_item, approval)
-
         if action == "confirm_approval":
-            result = _post_interactive_approval(
-                config,
-                subject_id=subject_id,
-                fingerprint="ppv-natural-confirm:" + hashlib.sha256(
-                    f"{subject_id}|{token}|{message_id}".encode("utf-8")
-                ).hexdigest(),
-                token=token,
-                body=_question_approval_body(approval, _question_bind_token_draft(token_item, approval)),
-            )
-            _save_state(state)
-            if str(result.get("status") or "") in {"sent", "duplicate"}:
-                _post_message_result(config, message_id, {"status": "completed", "response_parts": []})
-            else:
-                _post_command_reply(
-                    config,
-                    message_id,
-                    "Para enviar, use somente a opcao tokenizada Aprovar e enviar. Nada foi enviado ao comprador.",
-                    "BLACK JHON - CONFIRMACAO OBRIGATORIA",
-                )
-            return True
-
+            return _natural_question_confirm(config, state, approval, token, token_item, subject_id, message_id)
         if action == "cancel_research":
-            from backend.services import perguntas_pos_venda_codex as ppv_codex
-
-            research_job_id = str(approval.get("research_job_id") or approval.get("codex_job_id") or "").strip()
-            if research_job_id:
-                ppv_codex.cancel_job(client_id, research_job_id)
-            approval.update(
-                {
-                    "research_status": "cancelled",
-                    "research_delivery_state": "cancelled",
-                    "research_cancelled_at": _now(),
-                }
+            return _natural_question_cancel_research(
+                config, state, ppv_state, approvals, approval, client_id, message_id,
             )
-            ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
-            _save_state(state)
-            _post_command_reply(
-                config,
-                message_id,
-                "Pesquisa cancelada. Nenhuma resposta foi enviada ao comprador e a pergunta continua disponivel para uma nova orientacao.",
-                "BLACK JHON - PESQUISA CANCELADA",
-            )
-            return True
-
         if action == "suggest":
-            guidance = _question_suggestion_guidance(message.get("text_body"))
-            token_item["awaiting_correction"] = False
-            regenerated = _regenerate_question_approval_response(
-                approval,
-                approvals,
-                client_id,
-                guidance=guidance,
+            return _natural_question_suggest(
+                config, state, message, approvals, approval, token_item,
+                client_id, subject_id, username, message_id,
             )
-            # Cada cartao precisa de um token proprio. Assim, o botao Aprovar
-            # sempre envia o texto exibido naquele cartao, mesmo que existam
-            # outras versoes da mesma pergunta na conversa.
-            token, token_item = _question_approval_token(
-                state,
-                approval=approval,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
-                force_new=True,
-                user_guidance=guidance,
-            )
-            token_item["regenerated_at"] = _now()
-            _question_set_active_thread(
-                state,
-                approval_id=str(approval.get("id") or ""),
-                token=token,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
-            )
-            result = _post_interactive_approval(
-                config,
-                subject_id=subject_id,
-                fingerprint="ppv-natural-suggest:" + hashlib.sha256(
-                    f"{subject_id}|{token}|{message_id}|{regenerated}".encode("utf-8")
-                ).hexdigest(),
-                token=token,
-                body=_question_approval_body(approval, regenerated),
-            )
-            _save_state(state)
-            if str(result.get("status") or "") in {"sent", "duplicate"}:
-                _post_message_result(config, message_id, {"status": "completed", "response_parts": []})
-            else:
-                _post_command_reply(
-                    config,
-                    message_id,
-                    "A nova resposta ficou salva, mas os botoes de decisao nao puderam ser abertos. Peça para gerar novamente.",
-                    "BLACK JHON - BOTOES INDISPONIVEIS",
-                )
-            return True
-
-        response_override = _question_bind_token_draft(token_item, approval) or None
-        request_payload = PerguntasAprovacaoRequest(
-            approval_id=str(approval.get("id") or ""),
-            resposta=response_override,
+        return _natural_question_decide(
+            config, state, ppv_endpoints, ppv_state, approvals, approval, token,
+            token_item, action, client_id, subject_id, username, message_id,
         )
-        if action == "approve":
-            result = ppv_endpoints.ml_perguntas_aprovacoes_aprovar(request_payload, client_id)
-            resolved = result.get("approval") if isinstance(result, dict) and isinstance(result.get("approval"), dict) else approval
-            if str(resolved.get("status") or "sent") not in {"sent", "sent_approved", "sent_manual", "sent_manual_pos_venda"}:
-                raise RuntimeError("question_answer_not_confirmed")
-            token_item.update({"used": True, "decision": "approve", "decided_at": _now()})
-            _question_clear_active_thread(
-                state,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=username,
-            )
-            _save_state(state)
-            _post_command_reply(
-                config,
-                message_id,
-                "Resposta enviada ao comprador. A proxima pergunta so sera apresentada depois desta confirmacao.",
-                "BLACK JHON - RESPOSTA ENVIADA",
-            )
-            return True
-
-        approval["whatsapp_suggestion_rejected_at"] = _now()
-        approval["whatsapp_suggestion_rejected_by"] = username
-        ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
-        token_item.update({"used": False, "decision": "suggestion_rejected", "decided_at": _now()})
-        _question_set_active_thread(
-            state,
-            approval_id=str(approval.get("id") or ""),
-            token=token,
-            subject_id=subject_id,
-            client_id=client_id,
-            username=username,
-        )
-        _save_state(state)
-        _post_command_reply(
-            config,
-            message_id,
-            "Sugestao rejeitada. Nenhuma resposta foi enviada e a pergunta continua ativa. Envie sua orientacao ou solicite outra sugestao.",
-            "BLACK JHON - SUGESTAO REJEITADA",
-        )
-        return True
     except _QuestionResearchPending as pending:
-        if isinstance(token_item, dict):
-            token_item.update(
-                {
-                    "used": True,
-                    "decision": "research_superseded",
-                    "research_job_id": pending.job_id,
-                    "research_started_at": _now(),
-                }
-            )
+        token_item.update({
+            "used": True,
+            "decision": "research_superseded",
+            "research_job_id": pending.job_id,
+            "research_started_at": _now(),
+        })
         _save_state(state)
         _post_command_reply(
-            config,
-            message_id,
+            config, message_id,
             "Continuo pesquisando em novas fontes ate obter evidencia tecnica suficiente. "
             "Assim que a verificacao estiver concluida, envio a nova sugestao para sua aprovacao. "
             "Nenhuma resposta foi enviada ao comprador.",
@@ -589,21 +594,165 @@ def _handle_question_natural_language(
         return True
     except HTTPException as exc:
         _post_command_reply(
-            config,
-            message_id,
-            str(exc.detail or "Nao foi possivel processar esta resposta."),
+            config, message_id, str(exc.detail or "Nao foi possivel processar esta resposta."),
             "BLACK JHON - RESPOSTA NAO ENVIADA",
         )
         return True
     except Exception as exc:
         RUNTIME_STATE["last_error"] = f"question_natural_action: {str(exc)[:800]}"
         _post_command_reply(
-            config,
-            message_id,
+            config, message_id,
             "Nao foi possivel aplicar essa instrucao agora. A pergunta atual continua pendente e nenhuma resposta foi enviada.",
             "BLACK JHON - PERGUNTA AINDA PENDENTE",
         )
         return True
+
+def _question_command_correct(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    token_item: dict[str, Any],
+    approval_id: str,
+    token: str,
+    subject_id: str,
+    client_id: str,
+    username: str,
+    message_id: str,
+) -> bool:
+    token_item.update({"awaiting_correction": True, "correction_requested_at": _now(), "correction_message_id": message_id})
+    _question_set_active_thread(
+        state, approval_id=approval_id, token=token,
+        subject_id=subject_id, client_id=client_id, username=username,
+    )
+    _save_state(state)
+    _post_command_reply(
+        config, message_id,
+        "Envie agora a orientacao para corrigir esta mesma resposta. Depois apresentarei uma nova confirmacao; nada foi enviado ao comprador.",
+        "BLACK JHON - INFORME A CORRECAO",
+    )
+    return True
+
+def _question_command_regenerate(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    approvals: list[dict[str, Any]],
+    approval: dict[str, Any],
+    token_item: dict[str, Any],
+    subject_id: str,
+    client_id: str,
+    username: str,
+    message_id: str,
+) -> bool:
+    guidance = str(token_item.get("user_guidance") or approval.get("whatsapp_user_guidance") or "").strip()[:1200]
+    regenerated = _regenerate_question_approval_response(approval, approvals, client_id, guidance=guidance)
+    token, token_item = _question_approval_token(
+        state, approval=approval, subject_id=subject_id, client_id=client_id,
+        username=username, force_new=True, user_guidance=guidance,
+    )
+    token_item["regenerated_at"] = _now()
+    fingerprint = "ppv-regen:" + hashlib.sha256(
+        f"{subject_id}|{token}|{message_id}|{regenerated}".encode("utf-8")
+    ).hexdigest()
+    result = _post_interactive_approval(
+        config, subject_id=subject_id, fingerprint=fingerprint,
+        token=token, body=_question_approval_body(approval, regenerated),
+    )
+    _save_state(state)
+    if str(result.get("status") or "") in {"sent", "duplicate"}:
+        _post_message_result(config, message_id, {"status": "completed", "response_parts": []})
+    else:
+        _post_command_reply(
+            config, message_id,
+            "A nova resposta ficou salva, mas os botoes de decisao nao puderam ser abertos. Peça para gerar novamente.",
+            "BLACK JHON - BOTOES INDISPONIVEIS",
+        )
+    return True
+
+def _question_command_approve(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    ppv_endpoints: Any,
+    approval: dict[str, Any],
+    token_item: dict[str, Any],
+    approval_id: str,
+    subject_id: str,
+    client_id: str,
+    username: str,
+    message_id: str,
+) -> bool:
+    from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
+
+    draft, idempotency_key = _question_validate_approval_send(token_item, approval, client_id=client_id)
+    payload = PerguntasAprovacaoRequest(approval_id=approval_id, resposta=draft, idempotency_key=idempotency_key)
+    audit_details = {
+        "client_id": client_id,
+        "store": str(approval.get("loja") or ""),
+        "question_id": str(token_item.get("question_id") or ""),
+        "draft_hash": str(token_item.get("draft_hash") or ""),
+        "idempotency_key": idempotency_key,
+    }
+    _bridge_store().audit(
+        "mercado_livre_answer_approval_requested",
+        message_id=message_id, subject_id=subject_id, details=audit_details,
+    )
+    result = ppv_endpoints.ml_perguntas_aprovacoes_aprovar(payload, client_id)
+    resolved = result.get("approval") if isinstance(result, dict) and isinstance(result.get("approval"), dict) else {}
+    api_status = str(resolved.get("status") or "")
+    if api_status == "answered_elsewhere":
+        token_item.update({"used": True, "decision": "answered_elsewhere", "decided_at": _now()})
+        _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+        _save_state(state)
+        _post_command_reply(
+            config, message_id,
+            "A pergunta ja foi respondida por outro fluxo e nenhuma resposta foi repetida.",
+            "BLACK JHON - JA RESOLVIDA",
+        )
+        return True
+    if api_status not in {"sent", "sent_reconciled", "sent_approved", "sent_manual", "sent_manual_pos_venda"}:
+        raise RuntimeError("question_answer_not_confirmed")
+    token_item.update({"used": True, "decision": "approve", "decided_at": _now()})
+    _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
+    _bridge_store().audit(
+        "mercado_livre_answer_sent",
+        message_id=message_id, subject_id=subject_id,
+        details={**audit_details, "api_status": api_status},
+    )
+    _save_state(state)
+    _post_command_reply(
+        config, message_id,
+        "Resposta aprovada e enviada ao comprador pelo Mercado Livre.",
+        "BLACK JHON - RESPOSTA ENVIADA",
+    )
+    return True
+
+def _question_command_reject(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    ppv_state: Any,
+    approvals: list[dict[str, Any]],
+    approval: dict[str, Any],
+    token_item: dict[str, Any],
+    approval_id: str,
+    token: str,
+    subject_id: str,
+    client_id: str,
+    username: str,
+    message_id: str,
+) -> bool:
+    approval["whatsapp_suggestion_rejected_at"] = _now()
+    approval["whatsapp_suggestion_rejected_by"] = username
+    ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
+    token_item.update({"used": False, "decision": "suggestion_rejected", "decided_at": _now()})
+    _question_set_active_thread(
+        state, approval_id=approval_id, token=token,
+        subject_id=subject_id, client_id=client_id, username=username,
+    )
+    _save_state(state)
+    _post_command_reply(
+        config, message_id,
+        "Sugestao negada. Nenhuma resposta foi enviada ao comprador e esta pergunta continua ativa. Envie sua orientacao ou escolha Gerar nova resposta.",
+        "BLACK JHON - SUGESTAO NEGADA",
+    )
+    return True
 
 def _handle_question_approval_command(
     config: dict[str, Any],
@@ -624,9 +773,9 @@ def _handle_question_approval_command(
         _post_command_reply(config, message_id, "Esta decisao expirou, ja foi usada ou pertence a outro numero.", "BLACK JHON - DECISAO INVALIDA")
         return True
     client_id = str(session.get("client_id") or "")
+    username = str(session.get("username") or "")
     approval_id = str(token_item.get("approval_id") or "")
     try:
-        from backend.schemas.perguntas_pos_venda import PerguntasAprovacaoRequest
         from backend.services import perguntas_pos_venda_endpoints as ppv_endpoints
         from backend.services import perguntas_pos_venda_state as ppv_state
 
@@ -647,172 +796,32 @@ def _handle_question_approval_command(
             return True
         _question_bind_token_draft(token_item, approval)
         if action == "correct":
-            token_item.update(
-                {
-                    "awaiting_correction": True,
-                    "correction_requested_at": _now(),
-                    "correction_message_id": message_id,
-                }
+            return _question_command_correct(
+                config, state, token_item, approval_id, token, subject_id,
+                client_id, username, message_id,
             )
-            _question_set_active_thread(
-                state,
-                approval_id=approval_id,
-                token=token,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=str(session.get("username") or ""),
-            )
-            _save_state(state)
-            _post_command_reply(
-                config,
-                message_id,
-                "Envie agora a orientacao para corrigir esta mesma resposta. Depois apresentarei uma nova confirmacao; nada foi enviado ao comprador.",
-                "BLACK JHON - INFORME A CORRECAO",
-            )
-            return True
         if action in {"regenerate", "suggest"}:
-            guidance = str(
-                token_item.get("user_guidance")
-                or approval.get("whatsapp_user_guidance")
-                or ""
-            ).strip()[:1200]
-            regenerated = _regenerate_question_approval_response(
-                approval,
-                approvals,
-                client_id,
-                guidance=guidance,
+            return _question_command_regenerate(
+                config, state, approvals, approval, token_item,
+                subject_id, client_id, username, message_id,
             )
-            token, token_item = _question_approval_token(
-                state,
-                approval=approval,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=str(session.get("username") or ""),
-                force_new=True,
-                user_guidance=guidance,
-            )
-            token_item["regenerated_at"] = _now()
-            fingerprint = "ppv-regen:" + hashlib.sha256(
-                f"{subject_id}|{token}|{message_id}|{regenerated}".encode("utf-8")
-            ).hexdigest()
-            result = _post_interactive_approval(
-                config,
-                subject_id=subject_id,
-                fingerprint=fingerprint,
-                token=token,
-                body=_question_approval_body(approval, regenerated),
-            )
-            _save_state(state)
-            if str(result.get("status") or "") in {"sent", "duplicate"}:
-                _post_message_result(config, message_id, {"status": "completed", "response_parts": []})
-            else:
-                _post_command_reply(
-                    config,
-                    message_id,
-                    "A nova resposta ficou salva, mas os botoes de decisao nao puderam ser abertos. Peça para gerar novamente.",
-                    "BLACK JHON - BOTOES INDISPONIVEIS",
-                )
-            return True
         if action == "approve":
-            draft, idempotency_key = _question_validate_approval_send(
-                token_item,
-                approval,
-                client_id=client_id,
+            return _question_command_approve(
+                config, state, ppv_endpoints, approval, token_item, approval_id,
+                subject_id, client_id, username, message_id,
             )
-            request_payload = PerguntasAprovacaoRequest(
-                approval_id=approval_id,
-                resposta=draft,
-                idempotency_key=idempotency_key,
-            )
-            _bridge_store().audit(
-                "mercado_livre_answer_approval_requested",
-                message_id=message_id,
-                subject_id=subject_id,
-                details={
-                    "client_id": client_id,
-                    "store": str(approval.get("loja") or ""),
-                    "question_id": str(token_item.get("question_id") or ""),
-                    "draft_hash": str(token_item.get("draft_hash") or ""),
-                    "idempotency_key": idempotency_key,
-                },
-            )
-            result = ppv_endpoints.ml_perguntas_aprovacoes_aprovar(request_payload, client_id)
-            resolved = result.get("approval") if isinstance(result, dict) and isinstance(result.get("approval"), dict) else {}
-            api_status = str(resolved.get("status") or "")
-            if api_status == "answered_elsewhere":
-                token_item.update({"used": True, "decision": "answered_elsewhere", "decided_at": _now()})
-                _question_clear_active_thread(
-                    state,
-                    subject_id=subject_id,
-                    client_id=client_id,
-                    username=str(session.get("username") or ""),
-                )
-                _save_state(state)
-                _post_command_reply(
-                    config,
-                    message_id,
-                    "A pergunta ja foi respondida por outro fluxo e nenhuma resposta foi repetida.",
-                    "BLACK JHON - JA RESOLVIDA",
-                )
-                return True
-            if api_status not in {"sent", "sent_reconciled", "sent_approved", "sent_manual", "sent_manual_pos_venda"}:
-                raise RuntimeError("question_answer_not_confirmed")
-            response_text = "Resposta aprovada e enviada ao comprador pelo Mercado Livre."
-            response_title = "BLACK JHON - RESPOSTA ENVIADA"
-            token_item.update({"used": True, "decision": action, "decided_at": _now()})
-            _question_clear_active_thread(
-                state,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=str(session.get("username") or ""),
-            )
-            _bridge_store().audit(
-                "mercado_livre_answer_sent",
-                message_id=message_id,
-                subject_id=subject_id,
-                details={
-                    "client_id": client_id,
-                    "store": str(approval.get("loja") or ""),
-                    "question_id": str(token_item.get("question_id") or ""),
-                    "draft_hash": str(token_item.get("draft_hash") or ""),
-                    "idempotency_key": idempotency_key,
-                    "api_status": api_status,
-                },
-            )
-        else:
-            approval["whatsapp_suggestion_rejected_at"] = _now()
-            approval["whatsapp_suggestion_rejected_by"] = str(session.get("username") or "").strip().lower()
-            ppv_state._perguntas_ia_aprovacoes_salvar(client_id, approvals)
-            token_item.update({"used": False, "decision": "suggestion_rejected", "decided_at": _now()})
-            _question_set_active_thread(
-                state,
-                approval_id=approval_id,
-                token=token,
-                subject_id=subject_id,
-                client_id=client_id,
-                username=str(session.get("username") or ""),
-            )
-            response_text = (
-                "Sugestao negada. Nenhuma resposta foi enviada ao comprador e esta pergunta continua ativa. "
-                "Envie sua orientacao ou escolha Gerar nova resposta."
-            )
-            response_title = "BLACK JHON - SUGESTAO NEGADA"
-        _save_state(state)
-        _post_command_reply(config, message_id, response_text, response_title)
+        return _question_command_reject(
+            config, state, ppv_state, approvals, approval, token_item,
+            approval_id, token, subject_id, client_id, username, message_id,
+        )
     except _QuestionResearchPending as pending:
-        if isinstance(token_item, dict):
-            token_item.update(
-                {
-                    "used": True,
-                    "decision": "research_superseded",
-                    "research_job_id": pending.job_id,
-                    "research_started_at": _now(),
-                }
-            )
+        token_item.update({
+            "used": True, "decision": "research_superseded",
+            "research_job_id": pending.job_id, "research_started_at": _now(),
+        })
         _save_state(state)
         _post_command_reply(
-            config,
-            message_id,
+            config, message_id,
             "Continuo pesquisando em novas fontes ate obter evidencia tecnica suficiente. "
             "Quando concluir, envio a nova sugestao para sua aprovacao. Nenhuma resposta foi enviada ao comprador.",
             "BLACK JHON - PESQUISA EM ANDAMENTO",
@@ -823,7 +832,6 @@ def _handle_question_approval_command(
         RUNTIME_STATE["last_error"] = f"question_approval_action: {str(exc)[:800]}"
         _post_command_reply(config, message_id, "Nao foi possivel aplicar a decisao agora. Nada foi enviado ao comprador.", "BLACK JHON - DECISAO NAO APLICADA")
     return True
-
 
 _COMPONENT_FUNCTIONS = frozenset((
     '_deliver_completed_question_research',

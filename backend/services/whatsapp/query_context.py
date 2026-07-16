@@ -186,158 +186,82 @@ def _whatsapp_inherit_query_store_context(
         policy["continuation_invalid_store"] = True
     return policy
 
-def _whatsapp_query_continuation_policy(
-    value: Any,
-    state: dict[str, Any],
-    conversation_id: str,
-    session: dict[str, Any],
+def _continuation_base_policy(
+    domains: list[str],
+    store_required: bool,
+    store: str,
+    store_mode: str,
+    scoped_stores: list[str],
+    authorized_stores: list[str],
+    providers: list[str],
+    source_policy: dict[str, Any],
 ) -> dict[str, Any]:
-    pagination_request = _whatsapp_pagination_request(value)
-    contextual_report = _whatsapp_contextual_report_request(value)
-    if not pagination_request and not contextual_report:
-        return {}
-    contexts = state.get("query_contexts") if isinstance(state.get("query_contexts"), dict) else {}
-    previous = contexts.get(conversation_id) if isinstance(contexts.get(conversation_id), dict) else {}
-    if not previous or time.time() - float(previous.get("updated_at") or 0) > WHATSAPP_QUERY_CONTEXT_TTL_SECONDS:
-        return {}
-    domains = [
-        str(item or "").strip()
-        for item in (previous.get("domains") or [])
-        if str(item or "").strip() in {"vendas", "anuncios_ml", "estoque", "mercado_full"}
-    ]
-    if not domains:
-        return {}
-    if contextual_report and not (bool(previous.get("report_mode")) or "vendas" in domains):
-        return {}
-    store = str(previous.get("store") or "").strip()
-    store_mode = str(previous.get("store_mode") or "single").strip() or "single"
-    previous_stores = [
-        str(item or "").strip()
-        for item in (previous.get("stores") or [])
-        if str(item or "").strip()
-    ]
-    store_required = bool(previous.get("store_required"))
-    providers = [str(item or "").strip() for item in (previous.get("providers") or []) if str(item or "").strip()]
-    source_policy = dict(previous.get("source_policy") or {}) if isinstance(previous.get("source_policy"), dict) else {}
-    if contextual_report:
-        providers = ["mercado_livre"]
-        source_policy["required_tools"] = ["mercado_livre_orders"]
-        source_policy["preferred_providers"] = ["mercado_livre"]
-        source_policy["force_refresh"] = True
-        source_policy["forbidden_tools"] = [
-            str(item or "").strip()
-            for item in (source_policy.get("forbidden_tools") or [])
-            if str(item or "").strip() and str(item or "").strip() != "mercado_livre_orders"
-        ]
-    authorized_stores = _whatsapp_authorized_api_stores(
-        session.get("client_id"),
-        session.get("permissions"),
-        domains,
-        providers,
-    ) if store_required else []
-    scoped_stores = [item for item in previous_stores if item in authorized_stores]
-    invalid_store = bool(
-        store_required
-        and (
-            (store_mode == "all" and not scoped_stores)
-            or (store_mode != "all" and store not in authorized_stores)
-        )
-    )
-    if invalid_store:
-        return {
-            "mode": "query_only",
-            "domains": domains,
-            "read_only": True,
-            "deny_approval": True,
-            "store_required": True,
-            "store": "",
-            "authorized_stores": authorized_stores,
-            "store_matches": [],
-            "providers": providers,
-            "source_policy": source_policy,
-            "continuation_invalid_store": True,
-        }
-    report_mode = bool(previous.get("report_mode") or contextual_report)
-    limit = max(1, min(int(previous.get("limit") or 20), 20000 if report_mode else 100))
-    if contextual_report:
-        period_start, period_end = _whatsapp_contextual_report_period(value)
-        if period_start and period_end:
-            scope_label = ", ".join(scoped_stores) if store_mode == "all" else store
-            base_request = (
-                "Relatorio completo de vendas pelo Mercado Livre"
-                + (f" da loja {scope_label}" if scope_label else "")
-                + f", no periodo de {period_start} a {period_end}."
-            )
-        else:
-            base_request = str(previous.get("base_request") or value or "").strip()[:2000]
-        result = {
-            "mode": "query_only",
-            "domains": domains,
-            "read_only": True,
-            "deny_approval": True,
-            "store_required": store_required,
-            "store": store if store_mode != "all" else "",
-            "store_mode": store_mode,
-            "authorized_stores": authorized_stores,
-            "store_matches": [store] if store_mode != "all" and store else [],
-            "providers": providers,
-            "source_policy": source_policy,
-            "inherited": True,
-            "contextual_report": True,
-            "offset": 0,
-            "provider_offsets": {},
-            "limit": 20000,
-            "report_mode": True,
-            "base_request": base_request,
-            "fresh": True,
-            "bypass_cache": True,
-        }
-        if store_mode == "all":
-            result["stores"] = scoped_stores
-        if period_start and period_end:
-            result["data_inicio"] = period_start
-            result["data_fim"] = period_end
-        return result
-    previous_offset = max(0, int(previous.get("offset") or 0))
-    provider_offsets = {
-        str(key): max(0, int(value))
-        for key, value in (previous.get("provider_offsets") or {}).items()
-        if str(key or "").strip() and value is not None
-    } if isinstance(previous.get("provider_offsets"), dict) else {}
-    if previous.get("pagination_complete") is True and not provider_offsets:
-        return {
-            "mode": "query_only",
-            "domains": domains,
-            "read_only": True,
-            "deny_approval": True,
-            "store_required": store_required,
-            "store": store,
-            "store_mode": store_mode,
-            "stores": scoped_stores if store_mode == "all" else [],
-            "authorized_stores": authorized_stores,
-            "store_matches": [store] if store else [],
-            "providers": providers,
-            "source_policy": source_policy,
-            "pagination": "complete",
-            "no_more_results": True,
-        }
-    next_offset = min(provider_offsets.values()) if provider_offsets else previous_offset + limit
     return {
         "mode": "query_only",
         "domains": domains,
         "read_only": True,
         "deny_approval": True,
         "store_required": store_required,
-        "store": store,
+        "store": store if store_mode != "all" else "",
         "store_mode": store_mode,
         "stores": scoped_stores if store_mode == "all" else [],
         "authorized_stores": authorized_stores,
-        "store_matches": [store] if store else [],
+        "store_matches": [store] if store_mode != "all" and store else [],
         "providers": providers,
         "source_policy": source_policy,
+    }
+
+
+def _contextual_report_continuation(
+    value: Any,
+    previous: dict[str, Any],
+    base: dict[str, Any],
+    store: str,
+    store_mode: str,
+    scoped_stores: list[str],
+) -> dict[str, Any]:
+    period_start, period_end = _whatsapp_contextual_report_period(value)
+    if period_start and period_end:
+        scope_label = ", ".join(scoped_stores) if store_mode == "all" else store
+        base_request = (
+            "Relatorio completo de vendas pelo Mercado Livre"
+            + (f" da loja {scope_label}" if scope_label else "")
+            + f", no periodo de {period_start} a {period_end}."
+        )
+    else:
+        base_request = str(previous.get("base_request") or value or "").strip()[:2000]
+    result = {
+        **base,
+        "inherited": True,
+        "contextual_report": True,
+        "offset": 0,
+        "provider_offsets": {},
+        "limit": 20000,
+        "report_mode": True,
+        "base_request": base_request,
+        "fresh": True,
+        "bypass_cache": True,
+    }
+    if period_start and period_end:
+        result.update({"data_inicio": period_start, "data_fim": period_end})
+    return result
+
+
+def _pagination_continuation(previous: dict[str, Any], base: dict[str, Any], report_mode: bool) -> dict[str, Any]:
+    limit = max(1, min(int(previous.get("limit") or 20), 20000 if report_mode else 100))
+    provider_offsets = {
+        str(key): max(0, int(value))
+        for key, value in (previous.get("provider_offsets") or {}).items()
+        if str(key or "").strip() and value is not None
+    } if isinstance(previous.get("provider_offsets"), dict) else {}
+    if previous.get("pagination_complete") is True and not provider_offsets:
+        return {**base, "pagination": "complete", "no_more_results": True}
+    previous_offset = max(0, int(previous.get("offset") or 0))
+    return {
+        **base,
         "pagination": "next",
         "inherited": True,
-        "offset": next_offset,
+        "offset": min(provider_offsets.values()) if provider_offsets else previous_offset + limit,
         "provider_offsets": provider_offsets,
         "limit": limit,
         "report_mode": report_mode,
@@ -348,6 +272,59 @@ def _whatsapp_query_continuation_policy(
         "item_id": str(previous.get("item_id") or "").strip().upper()[:60],
         "context_request": str(previous.get("base_request") or "").strip()[:2000],
     }
+
+
+def _whatsapp_query_continuation_policy(
+    value: Any,
+    state: dict[str, Any],
+    conversation_id: str,
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    contextual_report = _whatsapp_contextual_report_request(value)
+    if not _whatsapp_pagination_request(value) and not contextual_report:
+        return {}
+    contexts = state.get("query_contexts") if isinstance(state.get("query_contexts"), dict) else {}
+    previous = contexts.get(conversation_id) if isinstance(contexts.get(conversation_id), dict) else {}
+    if not previous or time.time() - float(previous.get("updated_at") or 0) > WHATSAPP_QUERY_CONTEXT_TTL_SECONDS:
+        return {}
+    domains = [
+        str(item or "").strip() for item in (previous.get("domains") or [])
+        if str(item or "").strip() in {"vendas", "anuncios_ml", "estoque", "mercado_full"}
+    ]
+    if not domains or (contextual_report and not (bool(previous.get("report_mode")) or "vendas" in domains)):
+        return {}
+    store = str(previous.get("store") or "").strip()
+    store_mode = str(previous.get("store_mode") or "single").strip() or "single"
+    store_required = bool(previous.get("store_required"))
+    previous_stores = [str(item or "").strip() for item in (previous.get("stores") or []) if str(item or "").strip()]
+    providers = [str(item or "").strip() for item in (previous.get("providers") or []) if str(item or "").strip()]
+    source_policy = dict(previous.get("source_policy") or {}) if isinstance(previous.get("source_policy"), dict) else {}
+    if contextual_report:
+        providers = ["mercado_livre"]
+        source_policy.update({"required_tools": ["mercado_livre_orders"], "preferred_providers": ["mercado_livre"], "force_refresh": True})
+        source_policy["forbidden_tools"] = [
+            str(item or "").strip() for item in (source_policy.get("forbidden_tools") or [])
+            if str(item or "").strip() and str(item or "").strip() != "mercado_livre_orders"
+        ]
+    authorized_stores = _whatsapp_authorized_api_stores(
+        session.get("client_id"), session.get("permissions"), domains, providers,
+    ) if store_required else []
+    scoped_stores = [item for item in previous_stores if item in authorized_stores]
+    invalid_store = store_required and (
+        (store_mode == "all" and not scoped_stores) or (store_mode != "all" and store not in authorized_stores)
+    )
+    if invalid_store:
+        return {
+            **_continuation_base_policy(domains, True, "", "single", [], authorized_stores, providers, source_policy),
+            "continuation_invalid_store": True,
+        }
+    base = _continuation_base_policy(
+        domains, store_required, store, store_mode, scoped_stores, authorized_stores, providers, source_policy,
+    )
+    report_mode = bool(previous.get("report_mode") or contextual_report)
+    if contextual_report:
+        return _contextual_report_continuation(value, previous, base, store, store_mode, scoped_stores)
+    return _pagination_continuation(previous, base, report_mode)
 
 def _whatsapp_remember_query_context(
     state: dict[str, Any],

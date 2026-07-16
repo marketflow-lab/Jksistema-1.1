@@ -71,96 +71,74 @@ WHATSAPP_PART_BODY_CHARS = whatsapp_formatting.WHATSAPP_PART_BODY_CHARS
 WHATSAPP_MAX_PARTS = whatsapp_formatting.WHATSAPP_MAX_PARTS
 
 
-def whatsapp_bridge_update_config(
-    payload: WhatsappBridgeConfigRequest,
-    request: Request,
-    authorization: Optional[str] = Header(default=None),
-) -> dict[str, Any]:
-    session = _require_full(request, authorization)
-    config = _load_config()
-    if payload.worker_url is not None:
-        config["worker_url"] = _normalize_worker_url(payload.worker_url)
+def _apply_bridge_model_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
+    simple_fields = (
+        ("worker_url", payload.worker_url, _normalize_worker_url),
+        ("business_phone", payload.business_phone, lambda value: str(value).strip()[:40]),
+        ("ai_model", payload.ai_model, _normalize_ai_model),
+        ("codex_reasoning_effort", payload.codex_reasoning_effort, _normalize_codex_reasoning_effort),
+        ("codex_reasoning_policy", payload.codex_reasoning_policy, _normalize_codex_reasoning_policy),
+        ("codex_reasoning_max", payload.codex_reasoning_max, _normalize_codex_reasoning_effort),
+        ("progress_interval_seconds", payload.progress_interval_seconds, _normalize_progress_interval),
+        ("agent_architecture", payload.agent_architecture, _normalize_agent_architecture),
+    )
+    for key, value, normalizer in simple_fields:
+        if value is not None:
+            config[key] = normalizer(value)
     if payload.bridge_token is not None and str(payload.bridge_token).strip():
         config["bridge_token"] = str(payload.bridge_token).strip()
-    if payload.business_phone is not None:
-        config["business_phone"] = str(payload.business_phone).strip()[:40]
-    if payload.ai_model is not None:
-        config["ai_model"] = _normalize_ai_model(payload.ai_model)
-    if payload.codex_reasoning_effort is not None:
-        config["codex_reasoning_effort"] = _normalize_codex_reasoning_effort(payload.codex_reasoning_effort)
-    if payload.codex_reasoning_policy is not None:
-        config["codex_reasoning_policy"] = _normalize_codex_reasoning_policy(payload.codex_reasoning_policy)
-    if payload.codex_reasoning_max is not None:
-        config["codex_reasoning_max"] = _normalize_codex_reasoning_effort(payload.codex_reasoning_max)
-    if payload.progress_interval_seconds is not None:
-        config["progress_interval_seconds"] = _normalize_progress_interval(payload.progress_interval_seconds)
     if payload.progress_explain_wait is not None:
         config["progress_explain_wait"] = bool(payload.progress_explain_wait)
-    if payload.agent_architecture is not None:
-        config["agent_architecture"] = _normalize_agent_architecture(payload.agent_architecture)
     if payload.conversation_agent_model is not None:
         config["conversation_agent_model"] = _normalize_codex_agent_model(
-            payload.conversation_agent_model, WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT
+            payload.conversation_agent_model, WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT,
         )
     if payload.conversation_agent_reasoning is not None:
         config["conversation_agent_reasoning"] = _normalize_codex_reasoning_effort(payload.conversation_agent_reasoning)
     if payload.task_agent_model is not None:
         config["task_agent_model"] = _normalize_codex_agent_model(
-            payload.task_agent_model, WHATSAPP_TASK_AGENT_MODEL_DEFAULT
+            payload.task_agent_model, WHATSAPP_TASK_AGENT_MODEL_DEFAULT,
         )
         config["ai_model"] = f"codex:{config['task_agent_model']}"
     if payload.task_agent_reasoning is not None:
         config["task_agent_reasoning"] = WHATSAPP_TASK_AGENT_REASONING_DEFAULT
-    if payload.conversation_interval_seconds is not None:
-        config["conversation_interval_seconds"] = _normalize_conversation_interval(payload.conversation_interval_seconds)
-    if payload.wait_message_after_seconds is not None:
-        config["wait_message_after_seconds"] = _normalize_capacity(
-            payload.wait_message_after_seconds, WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT, 5, 60
-        )
-    if payload.wait_message_repeat_seconds is not None:
-        config["wait_message_repeat_seconds"] = _normalize_capacity(
-            payload.wait_message_repeat_seconds, WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT, 15, 180
-        )
-    if payload.wait_message_steady_seconds is not None:
-        config["wait_message_steady_seconds"] = _normalize_capacity(
-            payload.wait_message_steady_seconds, WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT, 30, 300
-        )
-    if payload.partial_delivery_debounce_seconds is not None:
-        config["partial_delivery_debounce_seconds"] = _normalize_capacity(
-            payload.partial_delivery_debounce_seconds, WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT, 1, 10
-        )
-    if payload.job_deadline_seconds is not None:
-        config["job_deadline_seconds"] = _normalize_capacity(
-            payload.job_deadline_seconds,
-            WHATSAPP_JOB_DEADLINE_DEFAULT,
-            30,
-            WHATSAPP_REPORT_DEADLINE_SECONDS,
+
+
+def _apply_bridge_timing_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
+    timing_fields = (
+        ("conversation_interval_seconds", payload.conversation_interval_seconds, WHATSAPP_CONVERSATION_INTERVAL_DEFAULT, 10, 300),
+        ("wait_message_after_seconds", payload.wait_message_after_seconds, WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT, 5, 60),
+        ("wait_message_repeat_seconds", payload.wait_message_repeat_seconds, WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT, 15, 180),
+        ("wait_message_steady_seconds", payload.wait_message_steady_seconds, WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT, 30, 300),
+        ("partial_delivery_debounce_seconds", payload.partial_delivery_debounce_seconds, WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT, 1, 10),
+        ("job_deadline_seconds", payload.job_deadline_seconds, WHATSAPP_JOB_DEADLINE_DEFAULT, 30, WHATSAPP_REPORT_DEADLINE_SECONDS),
+    )
+    for key, value, fallback, minimum, maximum in timing_fields:
+        if value is None:
+            continue
+        config[key] = (
+            _normalize_conversation_interval(value)
+            if key == "conversation_interval_seconds"
+            else _normalize_capacity(value, fallback, minimum, maximum)
         )
     config["retry_policy"] = "bounded"
-    if payload.max_subtasks_per_job is not None:
-        config["max_subtasks_per_job"] = _normalize_capacity(
-            payload.max_subtasks_per_job, WHATSAPP_MAX_SUBTASKS_DEFAULT, 1, 6
-        )
+
+
+def _apply_bridge_capacity_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
+    capacity_fields = (
+        ("max_subtasks_per_job", payload.max_subtasks_per_job, WHATSAPP_MAX_SUBTASKS_DEFAULT, 1, 6),
+        ("conversation_worker_count", payload.conversation_worker_count, WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT, 1, 8),
+        ("conversation_runtime_pool_size", payload.conversation_runtime_pool_size, WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT, 1, 8),
+        ("max_active_task_agents_global", payload.max_active_task_agents_global, WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT, 1, 12),
+        ("function_manager_worker_count", payload.function_manager_worker_count, WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT, 1, 8),
+        ("function_manager_runtime_pool_size", payload.function_manager_runtime_pool_size, WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT, 1, 8),
+        ("max_active_task_agents_per_conversation", payload.max_active_task_agents_per_conversation, WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT, 1, 6),
+    )
+    for key, value, fallback, minimum, maximum in capacity_fields:
+        if value is not None:
+            config[key] = _normalize_capacity(value, fallback, minimum, maximum)
     if payload.progress_messages_enabled is not None:
         config["progress_messages_enabled"] = bool(payload.progress_messages_enabled)
-    if payload.conversation_worker_count is not None:
-        config["conversation_worker_count"] = _normalize_capacity(
-            payload.conversation_worker_count, WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT, 1, 8
-        )
-    if payload.conversation_runtime_pool_size is not None:
-        config["conversation_runtime_pool_size"] = _normalize_capacity(
-            payload.conversation_runtime_pool_size,
-            WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT,
-            1,
-            8,
-        )
-    if payload.max_active_task_agents_global is not None:
-        config["max_active_task_agents_global"] = _normalize_capacity(
-            payload.max_active_task_agents_global,
-            WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT,
-            1,
-            12,
-        )
     if payload.preserve_order_per_phone is False:
         raise HTTPException(status_code=400, detail="A ordem FIFO por telefone deve permanecer habilitada.")
     config["preserve_order_per_phone"] = True
@@ -168,118 +146,158 @@ def whatsapp_bridge_update_config(
         config["function_manager_enabled"] = bool(payload.function_manager_enabled)
     if payload.function_manager_required_before_sol is not None:
         config["function_manager_required_before_sol"] = bool(payload.function_manager_required_before_sol)
-    if payload.function_manager_worker_count is not None:
-        config["function_manager_worker_count"] = _normalize_capacity(
-            payload.function_manager_worker_count,
-            WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT,
-            1,
-            8,
-        )
-    if payload.function_manager_runtime_pool_size is not None:
-        config["function_manager_runtime_pool_size"] = _normalize_capacity(
-            payload.function_manager_runtime_pool_size,
-            WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT,
-            1,
-            8,
-        )
     if config.get("agent_architecture") == "dual_codex":
-        # No fluxo dual v8 nao existe atalho direto para o Sol.
         config["function_manager_enabled"] = True
         config["function_manager_required_before_sol"] = True
+
+
+def _apply_bridge_voice_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
     if payload.voice_model is not None:
         config["voice_model"] = _normalize_voice_model(payload.voice_model, whatsapp_voice.VOICE_MODEL_DEFAULT)
     if payload.voice_transcription_model is not None:
         config["voice_transcription_model"] = _normalize_voice_model(
-            payload.voice_transcription_model, whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT
+            payload.voice_transcription_model, whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT,
         )
     if payload.voice_name is not None:
         config["voice_name"] = _normalize_voice_name(payload.voice_name)
     if payload.voice_language is not None and str(payload.voice_language or "").strip().lower() not in {"pt-br", "pt_br", "pt"}:
         raise HTTPException(status_code=400, detail="A primeira versao das ligacoes usa portugues brasileiro.")
-    if payload.voice_max_call_minutes is not None:
-        config["voice_max_call_minutes"] = _normalize_voice_int(payload.voice_max_call_minutes, 30, 5, 60)
-    if payload.voice_silence_timeout_seconds is not None:
-        config["voice_silence_timeout_seconds"] = _normalize_voice_int(payload.voice_silence_timeout_seconds, 90, 30, 300)
-    if payload.voice_long_task_offer_seconds is not None:
-        config["voice_long_task_offer_seconds"] = _normalize_voice_int(payload.voice_long_task_offer_seconds, 90, 30, 300)
-    if payload.voice_max_concurrent_calls is not None:
-        config["voice_max_concurrent_calls"] = _normalize_voice_int(payload.voice_max_concurrent_calls, 3, 1, 10)
-    if payload.voice_progress_interval_seconds is not None:
-        config["voice_progress_interval_seconds"] = _normalize_voice_int(payload.voice_progress_interval_seconds, 8, 8, 30)
-    if payload.max_active_task_agents_per_conversation is not None:
-        config["max_active_task_agents_per_conversation"] = _normalize_capacity(
-            payload.max_active_task_agents_per_conversation,
-            WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT,
-            1,
-            6,
-        )
+    fields = (
+        ("voice_max_call_minutes", payload.voice_max_call_minutes, 30, 5, 60),
+        ("voice_silence_timeout_seconds", payload.voice_silence_timeout_seconds, 90, 30, 300),
+        ("voice_long_task_offer_seconds", payload.voice_long_task_offer_seconds, 90, 30, 300),
+        ("voice_max_concurrent_calls", payload.voice_max_concurrent_calls, 3, 1, 10),
+        ("voice_progress_interval_seconds", payload.voice_progress_interval_seconds, 8, 8, 30),
+    )
+    for key, value, fallback, minimum, maximum in fields:
+        if value is not None:
+            config[key] = _normalize_voice_int(value, fallback, minimum, maximum)
     if payload.orchestration_mode is not None and str(payload.orchestration_mode or "") != WHATSAPP_ORCHESTRATION_MODE_DEFAULT:
         raise HTTPException(status_code=400, detail="Modo de orquestracao do WhatsApp invalido.")
     if payload.active_task_policy is not None and str(payload.active_task_policy or "") != "steer_or_queue":
         raise HTTPException(status_code=400, detail="Politica de tarefa ativa invalida.")
+
+
+def _apply_bridge_enabled(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:
+    if payload.enabled is None:
+        return
+    if not payload.enabled:
+        config["enabled"] = False
+        config.update({"pairing_pending": False, "pairing_expires_at": 0})
+        return
+    worker = _worker_health(config)
+    whisper = _whisper_status()
+    codex = codex_console._codex_status_payload()
+    machine_bindings = [
+        item for item in (worker.get("bindings") or [])
+        if isinstance(item, dict) and str(item.get("machine_id") or "") == str(config.get("machine_id") or "")
+    ]
+    missing = []
+    if not worker.get("success"):
+        missing.append("Worker")
+    if not bool((worker.get("zero_cost") or {}).get("policy_valid")):
+        missing.append("politica de custo zero")
+    if not bool((worker.get("meta") or {}).get("configured")):
+        missing.append("Meta")
+    if not machine_bindings:
+        missing.append("numero pessoal vinculado")
+    if not whisper.get("ready"):
+        missing.append("Whisper Small")
+    if _whatsapp_ai_settings(config)["provider"] == "codex" and not codex.get("ready"):
+        missing.append("Joao")
+    if missing:
+        raise HTTPException(status_code=409, detail="Ativacao bloqueada: " + ", ".join(missing) + " ainda nao esta pronto.")
+    config["enabled"] = True
+    config.update({"pairing_pending": False, "pairing_expires_at": 0})
+
+
+def _warm_bridge_runtimes(config: dict[str, Any]) -> None:
+    if not config.get("enabled") or config.get("agent_architecture") != "dual_codex":
+        return
+    settings = _whatsapp_dual_agent_settings(config)
+    try:
+        _configure_phone_dispatcher(settings["conversation_worker_count"])
+        codex_console._codex_configure_dual_sol_limit(
+            settings["max_active_task_agents_global"], settings["max_active_task_agents_per_conversation"],
+        )
+        codex_whatsapp_agents.CONVERSATION_RUNTIME.warm(
+            settings["conversation_agent_model"], settings["task_agent_model"],
+            pool_size=settings["conversation_runtime_pool_size"],
+        )
+        codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.warm(
+            settings["conversation_agent_model"], settings["task_agent_model"],
+            pool_size=settings["function_manager_runtime_pool_size"],
+        )
+        RUNTIME_STATE["dual_agent_last_error"] = ""
+    except Exception as exc:
+        RUNTIME_STATE["dual_agent_last_error"] = str(exc)[:1000]
+        raise HTTPException(status_code=409, detail=f"Agentes Codex indisponiveis: {exc}")
+
+
+def whatsapp_bridge_update_config(
+    payload: WhatsappBridgeConfigRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    session = _require_full(request, authorization)
+    config = _load_config()
+    _apply_bridge_model_config(config, payload)
+    _apply_bridge_timing_config(config, payload)
+    _apply_bridge_capacity_config(config, payload)
+    _apply_bridge_voice_config(config, payload)
     config["client_id"] = str(session.get("client_id") or "")
     config["username"] = str(session.get("username") or "").strip().lower()
-    config["machine_id"] = str(session.get("machine_id") or config.get("machine_id") or _host_machine_id())
-    if payload.enabled is not None:
-        if payload.enabled:
-            worker = _worker_health(config)
-            whisper = _whisper_status()
-            codex = codex_console._codex_status_payload()
-            policy_valid = bool((worker.get("zero_cost") or {}).get("policy_valid"))
-            meta_ready = bool((worker.get("meta") or {}).get("configured"))
-            machine_bindings = [
-                item
-                for item in (worker.get("bindings") or [])
-                if isinstance(item, dict)
-                and str(item.get("machine_id") or "") == str(config.get("machine_id") or "")
-            ]
-            missing = []
-            if not worker.get("success"):
-                missing.append("Worker")
-            if not policy_valid:
-                missing.append("politica de custo zero")
-            if not meta_ready:
-                missing.append("Meta")
-            if not machine_bindings:
-                missing.append("numero pessoal vinculado")
-            if not whisper.get("ready"):
-                missing.append("Whisper Small")
-            if _whatsapp_ai_settings(config)["provider"] == "codex" and not codex.get("ready"):
-                missing.append("Joao")
-            if missing:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Ativacao bloqueada: " + ", ".join(missing) + " ainda nao esta pronto.",
-                )
-            config["enabled"] = True
-            config.update({"pairing_pending": False, "pairing_expires_at": 0})
-        else:
-            config["enabled"] = False
-            config.update({"pairing_pending": False, "pairing_expires_at": 0})
+    config["machine_id"] = str(
+        session.get("machine_id") or config.get("machine_id") or _host_machine_id()
+    )
+    _apply_bridge_enabled(config, payload)
     config = _save_config(config)
-    if config.get("enabled") and config.get("agent_architecture") == "dual_codex":
-        settings = _whatsapp_dual_agent_settings(config)
-        try:
-            _configure_phone_dispatcher(settings["conversation_worker_count"])
-            codex_console._codex_configure_dual_sol_limit(
-                settings["max_active_task_agents_global"],
-                settings["max_active_task_agents_per_conversation"],
-            )
-            codex_whatsapp_agents.CONVERSATION_RUNTIME.warm(
-                settings["conversation_agent_model"],
-                settings["task_agent_model"],
-                pool_size=settings["conversation_runtime_pool_size"],
-            )
-            codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.warm(
-                settings["conversation_agent_model"],
-                settings["task_agent_model"],
-                pool_size=settings["function_manager_runtime_pool_size"],
-            )
-            RUNTIME_STATE["dual_agent_last_error"] = ""
-        except Exception as exc:
-            RUNTIME_STATE["dual_agent_last_error"] = str(exc)[:1000]
-            raise HTTPException(status_code=409, detail=f"Agentes Codex indisponiveis: {exc}")
+    _warm_bridge_runtimes(config)
     return _public_status(config)
+
+def _remember_report_delivery_preferences(
+    subject_id: str,
+    previous: dict[str, Any],
+    updated: dict[str, Any],
+) -> None:
+    state = _load_state()
+    deliveries = state.get("scheduled_report_deliveries")
+    if not isinstance(deliveries, dict):
+        deliveries = {}
+    subject_deliveries = deliveries.get(subject_id)
+    if not isinstance(subject_deliveries, dict):
+        subject_deliveries = {}
+    current = datetime.now()
+    if updated["send_weekly_report"] and not previous["send_weekly_report"]:
+        subject_deliveries["weekly"] = _whatsapp_week_key(current)
+    if updated["send_monthly_report"] and not previous["send_monthly_report"]:
+        subject_deliveries["monthly"] = _whatsapp_month_key(current)
+    deliveries[subject_id] = subject_deliveries
+    state["scheduled_report_deliveries"] = deliveries
+    _save_state(state)
+
+
+def _send_registered_phone_welcome(
+    config: dict[str, Any],
+    payload: WhatsappPhoneRegistrationRequest,
+    subject_id: str,
+    machine_id: str,
+    welcome_message: str,
+) -> dict[str, Any]:
+    if not payload.send_welcome_message:
+        return {"requested": False, "success": True, "status": "not_requested"}
+    try:
+        sent = _gateway_json(
+            config,
+            "POST",
+            "/bridge/welcome",
+            {"subject_id": subject_id, "machine_id": machine_id, "text": welcome_message},
+            timeout=20,
+        )
+        return {"requested": True, **sent}
+    except Exception as exc:
+        return {"requested": True, "success": False, "status": "failed", "error": str(exc)[:500]}
+
 
 def whatsapp_bridge_update_phone_settings(
     payload: WhatsappPhoneSettingsRequest,
@@ -353,21 +371,7 @@ def whatsapp_bridge_update_phone_settings(
     config["phone_notification_settings"] = settings_by_phone
     config = _save_config(config)
 
-    state = _load_state()
-    deliveries = state.get("scheduled_report_deliveries")
-    if not isinstance(deliveries, dict):
-        deliveries = {}
-    subject_deliveries = deliveries.get(subject_id)
-    if not isinstance(subject_deliveries, dict):
-        subject_deliveries = {}
-    current = datetime.now()
-    if updated["send_weekly_report"] and not previous["send_weekly_report"]:
-        subject_deliveries["weekly"] = _whatsapp_week_key(current)
-    if updated["send_monthly_report"] and not previous["send_monthly_report"]:
-        subject_deliveries["monthly"] = _whatsapp_month_key(current)
-    deliveries[subject_id] = subject_deliveries
-    state["scheduled_report_deliveries"] = deliveries
-    _save_state(state)
+    _remember_report_delivery_preferences(subject_id, previous, updated)
     return _public_status(config, worker)
 
 def whatsapp_bridge_register_phone(
@@ -461,44 +465,10 @@ def whatsapp_bridge_register_phone(
     config["phone_notification_settings"] = settings_by_phone
     config = _save_config(config)
 
-    state = _load_state()
-    deliveries = state.get("scheduled_report_deliveries")
-    if not isinstance(deliveries, dict):
-        deliveries = {}
-    subject_deliveries = deliveries.get(subject_id)
-    if not isinstance(subject_deliveries, dict):
-        subject_deliveries = {}
-    current = datetime.now()
-    if updated["send_weekly_report"] and not previous["send_weekly_report"]:
-        subject_deliveries["weekly"] = _whatsapp_week_key(current)
-    if updated["send_monthly_report"] and not previous["send_monthly_report"]:
-        subject_deliveries["monthly"] = _whatsapp_month_key(current)
-    deliveries[subject_id] = subject_deliveries
-    state["scheduled_report_deliveries"] = deliveries
-    _save_state(state)
-
-    welcome_result: dict[str, Any] = {"requested": False, "success": True, "status": "not_requested"}
-    if payload.send_welcome_message:
-        try:
-            sent = _gateway_json(
-                config,
-                "POST",
-                "/bridge/welcome",
-                {
-                    "subject_id": subject_id,
-                    "machine_id": machine_id,
-                    "text": welcome_message,
-                },
-                timeout=20,
-            )
-            welcome_result = {"requested": True, **sent}
-        except Exception as exc:
-            welcome_result = {
-                "requested": True,
-                "success": False,
-                "status": "failed",
-                "error": str(exc)[:500],
-            }
+    _remember_report_delivery_preferences(subject_id, previous, updated)
+    welcome_result = _send_registered_phone_welcome(
+        config, payload, subject_id, machine_id, welcome_message,
+    )
 
     worker = _worker_health(config)
     return {

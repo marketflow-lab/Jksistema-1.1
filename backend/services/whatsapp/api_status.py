@@ -104,16 +104,8 @@ def _phone_dispatch_diagnostics() -> dict[str, Any]:
             "latency": _latency_diagnostics(),
         }
 
-def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    whisper = _whisper_status()
-    codex = codex_console._codex_status_payload()
-    ai_settings = _whatsapp_ai_settings(config)
-    dual_settings = _whatsapp_dual_agent_settings(config)
-    dual_runtime = codex_whatsapp_agents.CONVERSATION_RUNTIME.diagnostics()
-    function_manager_runtime = codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.diagnostics()
-    dispatcher = _phone_dispatch_diagnostics()
-    sol_capacity = codex_console._codex_dual_sol_diagnostics()
-    worker = worker if isinstance(worker, dict) else _worker_health(config) if config.get("worker_url") and config.get("bridge_token") else {"success": False, "worker": False, "error": "nao_configurado"}
+
+def _voice_public_status(config: dict[str, Any]) -> dict[str, Any]:
     voice_local = whatsapp_voice.VOICE_RUNTIME.diagnostics()
     if config.get("worker_url") and config.get("bridge_token"):
         try:
@@ -125,79 +117,161 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
     gateway_openai = voice_gateway.get("openai") if isinstance(voice_gateway.get("openai"), dict) else {}
     gateway_fingerprint = str(gateway_openai.get("key_fingerprint") or "")
     local_fingerprint = str(voice_local.get("api_key_fingerprint") or "")
-    voice_gateway_public = {
-        key: value
-        for key, value in voice_gateway.items()
-        if key not in {"calls", "heartbeats"}
-    }
+    voice_gateway_public = {key: value for key, value in voice_gateway.items() if key not in {"calls", "heartbeats"}}
     if isinstance(voice_gateway_public.get("openai"), dict):
         voice_gateway_public["openai"] = {
-            key: value
-            for key, value in voice_gateway_public["openai"].items()
-            if key != "key_fingerprint"
+            key: value for key, value in voice_gateway_public["openai"].items() if key != "key_fingerprint"
         }
     current_client_id = str(config.get("client_id") or "")
     current_username = str(config.get("username") or "").strip().lower()
-    voice_recent_calls = [
-        item
-        for item in list(voice_gateway.get("calls") or [])
+    recent_calls = [
+        item for item in list(voice_gateway.get("calls") or [])
         if isinstance(item, dict)
         and str(item.get("client_id") or "") == current_client_id
         and str(item.get("username") or "").strip().lower() == current_username
     ][:20]
-    state = _load_state()
-    try:
-        persistence = _bridge_store().diagnostics()
-    except Exception as exc:
-        persistence = {"backend": "fallback_json", "error": str(exc)[:500]}
+    return {
+        "enabled": config.get("voice_enabled") is True,
+        "ready": bool(
+            config.get("voice_enabled") is True
+            and voice_local.get("ready")
+            and voice_gateway.get("configured")
+            and gateway_fingerprint == local_fingerprint
+        ),
+        "read_only": True,
+        "transcript_retention": "transcript_only",
+        "model": str(config.get("voice_model") or whatsapp_voice.VOICE_MODEL_DEFAULT),
+        "transcription_model": str(config.get("voice_transcription_model") or whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT),
+        "name": str(config.get("voice_name") or whatsapp_voice.VOICE_NAME_DEFAULT),
+        "language": "pt-BR",
+        "max_call_minutes": int(config.get("voice_max_call_minutes") or 30),
+        "silence_timeout_seconds": int(config.get("voice_silence_timeout_seconds") or 90),
+        "long_task_offer_seconds": int(config.get("voice_long_task_offer_seconds") or 90),
+        "max_concurrent_calls": int(config.get("voice_max_concurrent_calls") or 3),
+        "progress_interval_seconds": int(config.get("voice_progress_interval_seconds") or 8),
+        "api_key_configured": bool(voice_local.get("api_key_configured")),
+        "key_match": bool(gateway_fingerprint and gateway_fingerprint == local_fingerprint),
+        "local": {key: value for key, value in voice_local.items() if key != "api_key_fingerprint"},
+        "gateway": voice_gateway_public,
+        "recent_calls": recent_calls,
+    }
+
+
+def _personal_number_status(config: dict[str, Any], worker: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    personal_numbers: list[dict[str, Any]] = []
     raw_bindings = worker.get("bindings") if isinstance(worker.get("bindings"), list) else []
-    personal_numbers = []
     for item in raw_bindings:
         if not isinstance(item, dict):
             continue
         phone_number = re.sub(r"\D", "", str(item.get("phone_number") or ""))
         suffix = (phone_number or re.sub(r"\D", "", str(item.get("phone_suffix") or "")))[-4:]
-        binding_username = str(item.get("username") or "").strip().lower()
-        binding_client_id = str(item.get("client_id") or "").strip()
+        username = str(item.get("username") or "").strip().lower()
+        client_id = str(item.get("client_id") or "").strip()
         try:
-            binding_permissions = admin_usuarios_common._carregar_permissoes_usuario(binding_username, binding_client_id)
-            binding_full_access = binding_permissions.get("full") is True
+            full_access = admin_usuarios_common._carregar_permissoes_usuario(username, client_id).get("full") is True
         except Exception:
-            binding_full_access = False
+            full_access = False
         subject_id = str(item.get("subject_id") or "").strip()
-        notification_settings = _phone_notification_settings(
-            config,
-            subject_id,
-            client_id=binding_client_id,
-            username=binding_username,
-        )
-        personal_numbers.append(
-            {
-                "subject_id": subject_id,
-                "phone_number": phone_number,
-                "phone_masked": f"•••• {suffix}" if suffix else "número vinculado",
-                "client_id": binding_client_id,
-                "username": binding_username,
-                "full_access": binding_full_access,
-                "access_label": "Acesso total com confirmação pelo WhatsApp" if binding_full_access else "Somente consultas autorizadas",
-                "last_inbound_at": int(item.get("last_inbound_at") or 0),
-                "created_at": int(item.get("created_at") or 0),
-                "this_machine": str(item.get("machine_id") or "") == str(config.get("machine_id") or ""),
-                "notification_settings": notification_settings,
-            }
-        )
-    binding_limit = max(1, min(3, int(worker.get("binding_limit_per_user") or 3)))
-    conversation_records = [
-        item
-        for item in (state.get("dual_agent_conversations") or {}).values()
-        if isinstance(item, dict)
+        personal_numbers.append({
+            "subject_id": subject_id,
+            "phone_number": phone_number,
+            "phone_masked": f"•••• {suffix}" if suffix else "número vinculado",
+            "client_id": client_id,
+            "username": username,
+            "full_access": full_access,
+            "access_label": "Acesso total com confirmação pelo WhatsApp" if full_access else "Somente consultas autorizadas",
+            "last_inbound_at": int(item.get("last_inbound_at") or 0),
+            "created_at": int(item.get("created_at") or 0),
+            "this_machine": str(item.get("machine_id") or "") == str(config.get("machine_id") or ""),
+            "notification_settings": _phone_notification_settings(
+                config, subject_id, client_id=client_id, username=username,
+            ),
+        })
+    return personal_numbers, max(1, min(3, int(worker.get("binding_limit_per_user") or 3)))
+
+
+def _conversation_context_status(state: dict[str, Any]) -> dict[str, int]:
+    records = [
+        item for item in (state.get("dual_agent_conversations") or {}).values() if isinstance(item, dict)
     ] if isinstance(state.get("dual_agent_conversations"), dict) else []
-    conversation_context_status = {
-        "conversations": len(conversation_records),
-        "with_persisted_context": sum(1 for item in conversation_records if list(item.get("recent_turns") or [])),
-        "persisted_turns": sum(len(list(item.get("recent_turns") or [])) for item in conversation_records),
+    return {
+        "conversations": len(records),
+        "with_persisted_context": sum(1 for item in records if list(item.get("recent_turns") or [])),
+        "persisted_turns": sum(len(list(item.get("recent_turns") or [])) for item in records),
         "max_turns_per_conversation": 16,
     }
+
+
+def _runtime_public_status(
+    state: dict[str, Any],
+    dispatcher: dict[str, Any],
+    sol_capacity: dict[str, Any],
+    dual_runtime: dict[str, Any],
+    conversation_context: dict[str, int],
+) -> dict[str, Any]:
+    return {
+        "running": bool(RUNTIME_STATE.get("running")),
+        "last_error": str(RUNTIME_STATE.get("last_error") or ""),
+        "last_processing_at": str(RUNTIME_STATE.get("last_processing_at") or ""),
+        "last_worker_ok_at": str(RUNTIME_STATE.get("last_worker_ok_at") or ""),
+        "typing_active": len(TYPING_PULSES),
+        "progress_active": len(PROGRESS_PULSES),
+        "typing_refresh_seconds": TYPING_REFRESH_SECONDS,
+        "typing_max_seconds": TYPING_MAX_SECONDS,
+        "typing_last_sent_at": str(RUNTIME_STATE.get("typing_last_sent_at") or ""),
+        "typing_last_error": str(RUNTIME_STATE.get("typing_last_error") or ""),
+        "progress_last_sent_at": str(RUNTIME_STATE.get("progress_last_sent_at") or ""),
+        "progress_last_error": str(RUNTIME_STATE.get("progress_last_error") or ""),
+        "dual_agent_last_error": str(RUNTIME_STATE.get("dual_agent_last_error") or dual_runtime.get("last_error") or ""),
+        "dual_agent_retries_recovered": int(RUNTIME_STATE.get("dual_agent_retries_recovered") or 0),
+        "dual_agent_conversations": len(state.get("dual_agent_conversations") or {}) if isinstance(state.get("dual_agent_conversations"), dict) else 0,
+        "conversation_context": conversation_context,
+        "bridge_heartbeat_at": str(state.get("bridge_heartbeat_at") or ""),
+        "bridge_last_error": str(state.get("bridge_last_error") or ""),
+        "pending_local_tasks": len(state.get("pending_messages") or {}) if isinstance(state.get("pending_messages"), dict) else 0,
+        "pending_weekly_visuals": len(state.get("pending_weekly_visuals") or {}) if isinstance(state.get("pending_weekly_visuals"), dict) else 0,
+        "last_weekly_visual_status": str(state.get("last_weekly_visual_status") or ""),
+        "last_weekly_visual_sent_at": str(state.get("last_weekly_visual_sent_at") or ""),
+        "poll_seconds": POLL_SECONDS,
+        "claim_limit": CLAIM_LIMIT,
+        "conversation_dispatcher": dispatcher,
+        "task_agent_capacity": sol_capacity,
+        "state_store_last_error": str(RUNTIME_STATE.get("state_store_last_error") or ""),
+        "web_fallback_circuit": dict(WEB_FALLBACK_CIRCUIT),
+    }
+
+
+def _zero_cost_public_status(worker: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "policy_valid_until": ZERO_COST_POLICY_VALID_UNTIL,
+        "fail_closed": True,
+        "free_window_minutes": 1410,
+        "templates_outside_window": int((worker.get("counts") or {}).get("templates") or 0) > 0,
+        "template_blockers": [
+            {"name": str(item.get("name") or ""), "status": str(item.get("status") or "")}
+            for item in list(worker.get("template_blockers") or []) if isinstance(item, dict)
+        ],
+    }
+
+
+def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    whisper = _whisper_status()
+    codex = codex_console._codex_status_payload()
+    ai_settings = _whatsapp_ai_settings(config)
+    dual_settings = _whatsapp_dual_agent_settings(config)
+    dual_runtime = codex_whatsapp_agents.CONVERSATION_RUNTIME.diagnostics()
+    function_manager_runtime = codex_whatsapp_agents.FUNCTION_MANAGER_RUNTIME.diagnostics()
+    dispatcher = _phone_dispatch_diagnostics()
+    sol_capacity = codex_console._codex_dual_sol_diagnostics()
+    worker = worker if isinstance(worker, dict) else _worker_health(config) if config.get("worker_url") and config.get("bridge_token") else {"success": False, "worker": False, "error": "nao_configurado"}
+    voice_status = _voice_public_status(config)
+    state = _load_state()
+    try:
+        persistence = _bridge_store().diagnostics()
+    except Exception as exc:
+        persistence = {"backend": "fallback_json", "error": str(exc)[:500]}
+    personal_numbers, binding_limit = _personal_number_status(config, worker)
+    conversation_context_status = _conversation_context_status(state)
     return {
         "success": True,
         "config_version": int(config.get("version") or 9),
@@ -249,75 +323,11 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
         "persistence": persistence,
         "whisper": whisper,
         "joao": {"ready": bool(codex.get("ready")), "enabled": bool(codex.get("enabled")), "message": codex.get("message")},
-        "voice": {
-            "enabled": config.get("voice_enabled") is True,
-            "ready": bool(
-                config.get("voice_enabled") is True
-                and voice_local.get("ready")
-                and voice_gateway.get("configured")
-                and gateway_fingerprint == local_fingerprint
-            ),
-            "read_only": True,
-            "transcript_retention": "transcript_only",
-            "model": str(config.get("voice_model") or whatsapp_voice.VOICE_MODEL_DEFAULT),
-            "transcription_model": str(config.get("voice_transcription_model") or whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT),
-            "name": str(config.get("voice_name") or whatsapp_voice.VOICE_NAME_DEFAULT),
-            "language": "pt-BR",
-            "max_call_minutes": int(config.get("voice_max_call_minutes") or 30),
-            "silence_timeout_seconds": int(config.get("voice_silence_timeout_seconds") or 90),
-            "long_task_offer_seconds": int(config.get("voice_long_task_offer_seconds") or 90),
-            "max_concurrent_calls": int(config.get("voice_max_concurrent_calls") or 3),
-            "progress_interval_seconds": int(config.get("voice_progress_interval_seconds") or 8),
-            "api_key_configured": bool(voice_local.get("api_key_configured")),
-            "key_match": bool(
-                gateway_fingerprint
-                and gateway_fingerprint == local_fingerprint
-            ),
-            "local": {key: value for key, value in voice_local.items() if key != "api_key_fingerprint"},
-            "gateway": voice_gateway_public,
-            "recent_calls": voice_recent_calls,
-        },
-        "runtime": {
-            "running": bool(RUNTIME_STATE.get("running")),
-            "last_error": str(RUNTIME_STATE.get("last_error") or ""),
-            "last_processing_at": str(RUNTIME_STATE.get("last_processing_at") or ""),
-            "last_worker_ok_at": str(RUNTIME_STATE.get("last_worker_ok_at") or ""),
-            "typing_active": len(TYPING_PULSES),
-            "progress_active": len(PROGRESS_PULSES),
-            "typing_refresh_seconds": TYPING_REFRESH_SECONDS,
-            "typing_max_seconds": TYPING_MAX_SECONDS,
-            "typing_last_sent_at": str(RUNTIME_STATE.get("typing_last_sent_at") or ""),
-            "typing_last_error": str(RUNTIME_STATE.get("typing_last_error") or ""),
-            "progress_last_sent_at": str(RUNTIME_STATE.get("progress_last_sent_at") or ""),
-            "progress_last_error": str(RUNTIME_STATE.get("progress_last_error") or ""),
-            "dual_agent_last_error": str(RUNTIME_STATE.get("dual_agent_last_error") or dual_runtime.get("last_error") or ""),
-            "dual_agent_retries_recovered": int(RUNTIME_STATE.get("dual_agent_retries_recovered") or 0),
-            "dual_agent_conversations": len(state.get("dual_agent_conversations") or {}) if isinstance(state.get("dual_agent_conversations"), dict) else 0,
-            "conversation_context": conversation_context_status,
-            "bridge_heartbeat_at": str(state.get("bridge_heartbeat_at") or ""),
-            "bridge_last_error": str(state.get("bridge_last_error") or ""),
-            "pending_local_tasks": len(state.get("pending_messages") or {}) if isinstance(state.get("pending_messages"), dict) else 0,
-            "pending_weekly_visuals": len(state.get("pending_weekly_visuals") or {}) if isinstance(state.get("pending_weekly_visuals"), dict) else 0,
-            "last_weekly_visual_status": str(state.get("last_weekly_visual_status") or ""),
-            "last_weekly_visual_sent_at": str(state.get("last_weekly_visual_sent_at") or ""),
-            "poll_seconds": POLL_SECONDS,
-            "claim_limit": CLAIM_LIMIT,
-            "conversation_dispatcher": dispatcher,
-            "task_agent_capacity": sol_capacity,
-            "state_store_last_error": str(RUNTIME_STATE.get("state_store_last_error") or ""),
-            "web_fallback_circuit": dict(WEB_FALLBACK_CIRCUIT),
-        },
-        "zero_cost": {
-            "policy_valid_until": ZERO_COST_POLICY_VALID_UNTIL,
-            "fail_closed": True,
-            "free_window_minutes": 1410,
-            "templates_outside_window": int((worker.get("counts") or {}).get("templates") or 0) > 0,
-            "template_blockers": [
-                {"name": str(item.get("name") or ""), "status": str(item.get("status") or "")}
-                for item in list(worker.get("template_blockers") or [])
-                if isinstance(item, dict)
-            ],
-        },
+        "voice": voice_status,
+        "runtime": _runtime_public_status(
+            state, dispatcher, sol_capacity, dual_runtime, conversation_context_status,
+        ),
+        "zero_cost": _zero_cost_public_status(worker),
     }
 
 def whatsapp_bridge_status(request: Request, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:

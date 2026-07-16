@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from backend.services import whatsapp_bridge
@@ -17,6 +18,18 @@ def test_bridge_and_components_respect_file_size_budgets() -> None:
         for path in PACKAGE_DIR.rglob("*.py")
         if len(path.read_text(encoding="utf-8").splitlines()) > 900
     }
+    assert oversized == {}
+
+
+def test_bridge_and_components_respect_function_size_budget() -> None:
+    oversized = {}
+    for path in (BRIDGE_PATH, *PACKAGE_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                lines = (node.end_lineno or node.lineno) - node.lineno + 1
+                if lines > 120:
+                    oversized[f"{path.name}:{node.name}"] = lines
     assert oversized == {}
 
 
