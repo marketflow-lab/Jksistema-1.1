@@ -8,6 +8,7 @@ $ProgressPreference = "SilentlyContinue"
 $pythonVersion = "3.11.9"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $scriptDir
+$packageJsonPath = Join-Path $rootDir "electron_app\package.json"
 $requirementsPath = Join-Path $rootDir "requirements.txt"
 $runtimeDir = Join-Path $rootDir "python_runtime"
 $wheelDir = Join-Path $rootDir "python_wheels"
@@ -61,6 +62,13 @@ function Test-WhisperModel([string]$Path) {
 
 if (-not (Test-Path -LiteralPath $requirementsPath -PathType Leaf)) {
     throw "Arquivo requirements.txt nao encontrado em $requirementsPath"
+}
+if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+    throw "Arquivo package.json do Electron nao encontrado em $packageJsonPath"
+}
+$appVersion = [string]((Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json).version)
+if (-not $appVersion) {
+    throw "Versao do aplicativo nao encontrada em $packageJsonPath"
 }
 
 New-Item -ItemType Directory -Force -Path $runtimeDir, $wheelDir, $prerequisitesDir, $blackJhonDir | Out-Null
@@ -144,7 +152,7 @@ if (-not (Test-WhisperModel $stagedModelDir)) {
 if (-not (Test-WhisperModel $stagedModelDir)) { throw "Whisper Small empacotado falhou na verificacao SHA256." }
 
 $buildManifest = [ordered]@{
-    version = "1.0.95"
+    version = $appVersion
     python = [ordered]@{
         file = "python-$pythonVersion-amd64.exe"
         sha256 = (Get-FileHash -LiteralPath $pythonInstaller -Algorithm SHA256).Hash.ToLowerInvariant()

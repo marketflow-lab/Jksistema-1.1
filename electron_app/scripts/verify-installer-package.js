@@ -81,6 +81,11 @@ function validateOfflineArtifacts(packageRoot, failures, sourceLayout = false) {
   for (const wheel of wheelManifest.wheels || []) validateManifestEntry(wheelDir, wheel, 'wheelhouse', failures);
 
   const runtime = readJson(runtimeManifestPath);
+  const expectedAppVersion = String(readJson(packageJsonPath).version || '').trim();
+  const runtimeVersion = String(runtime.version || '').trim();
+  if (!runtimeVersion || runtimeVersion !== expectedAppVersion) {
+    failures.push(`Versao do runtime offline divergente: esperado ${expectedAppVersion}, encontrado ${runtimeVersion || 'ausente'}`);
+  }
   validateManifestEntry(path.join(packageRoot, 'python_runtime'), runtime.python, 'Python', failures);
   const prerequisitesRoot = sourceLayout
     ? path.join(packageRoot, '.installer_runtime', 'prerequisites')
@@ -107,12 +112,12 @@ function validateOfflineResolution(packageRoot, failures) {
   }
 }
 
-function validateDeepRuntime(packageRoot, failures) {
+function validateDeepRuntime(resourcesRoot, failures) {
   if (!deepRuntime) return;
   const script = path.join(repoRoot, 'scripts', 'verify-installer-offline.ps1');
   const result = spawnSync('powershell.exe', [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
-    '-PackageRoot', packageRoot, '-BuildRoot', repoRoot,
+    '-ResourcesRoot', resourcesRoot,
   ], { encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
   if (result.status !== 0) {
     failures.push(`Smoke test offline falhou: ${(result.stderr || result.stdout || '').trim().slice(-5000)}`);
@@ -489,7 +494,13 @@ function main() {
   const offlineRoot = packagedRoot ? path.join(packagedRoot, 'local_app') : repoRoot;
   validateOfflineArtifacts(offlineRoot, failures, !packagedRoot);
   validateOfflineResolution(offlineRoot, failures);
-  if (!failures.length) validateDeepRuntime(offlineRoot, failures);
+  if (!failures.length && deepRuntime) {
+    if (!packagedRoot) {
+      failures.push('Smoke test offline profundo requer --packaged <diretorio-resources>');
+    } else {
+      validateDeepRuntime(packagedRoot, failures);
+    }
+  }
 
   if (failures.length) {
     console.error('[installer-check] FALHOU');
