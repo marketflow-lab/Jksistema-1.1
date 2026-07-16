@@ -1,5 +1,6 @@
 param(
     [string]$ResourcesRoot = "",
+    [string]$WorkBase = "",
     [switch]$KeepWorkDir
 )
 
@@ -63,12 +64,22 @@ if ([string]$runtimeManifest.python.version -ne $expectedPythonVersion -or [stri
     throw "Manifesto Python diverge de runtime-versions.json."
 }
 
-$workBase = [IO.Path]::GetFullPath((Join-Path $repoRoot ".codex_tmp"))
+$workBase = if ($WorkBase) {
+    [IO.Path]::GetFullPath($WorkBase)
+} else {
+    [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "jk-sistema-offline-smoke"))
+}
 New-Item -ItemType Directory -Force -Path $workBase | Out-Null
-$workDir = [IO.Path]::GetFullPath((Join-Path $workBase ("installer-offline-smoke-" + [guid]::NewGuid().ToString("N"))))
+$workDir = [IO.Path]::GetFullPath((Join-Path $workBase ("jk99-" + [guid]::NewGuid().ToString("N").Substring(0, 16))))
 $workPrefix = $workBase.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-if (-not $workDir.StartsWith($workPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Diretorio temporario fora do workspace: $workDir"
+if (
+    -not $workDir.StartsWith($workPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([IO.Path]::GetFullPath((Split-Path -Parent $workDir))).Equals(
+        $workBase.TrimEnd([IO.Path]::DirectorySeparatorChar),
+        [StringComparison]::OrdinalIgnoreCase
+    )
+) {
+    throw "Diretorio temporario fora da base aprovada: $workDir"
 }
 
 $targetApp = Join-Path $workDir "local_app"
@@ -78,6 +89,7 @@ $statusFile = Join-Path $infoDir "python-runtime-status.json"
 $venvDir = Join-Path $targetApp ".venv"
 $runtimeDir = Join-Path $targetApp ".python-runtime"
 New-Item -ItemType Directory -Force -Path $targetApp, $infoDir | Out-Null
+Write-Host "[offline-smoke] Area temporaria curta: $workDir"
 
 try {
     Write-Host "[offline-smoke] Provisionando runtime e .venv apenas com os recursos do pacote..."

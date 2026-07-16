@@ -45,6 +45,31 @@ def _write_json(path: Path, value):
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+def test_logger_escapa_unicode_incompativel_com_console_windows(tmp_path, monkeypatch):
+    class StrictCp1252Console:
+        encoding = "cp1252"
+
+        def __init__(self):
+            self.output = []
+
+        def write(self, value):
+            value.encode(self.encoding, errors="strict")
+            self.output.append(value)
+            return len(value)
+
+        def flush(self):
+            return None
+
+    console = StrictCp1252Console()
+    monkeypatch.setattr(provisioner.sys, "stdout", console)
+    log_path = tmp_path / "provision.log"
+
+    provisioner.ProvisionLogger(log_path).write("erro com caractere: \ufffd")
+
+    assert "\\ufffd" in "".join(console.output)
+    assert "\ufffd" in log_path.read_text(encoding="utf-8")
+
+
 def _quick_reuse_fixture(tmp_path: Path):
     source = tmp_path / "source"
     target = tmp_path / "target"

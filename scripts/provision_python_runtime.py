@@ -174,9 +174,17 @@ class ProvisionLogger:
 
     def write(self, message: str) -> None:
         line = f"[{utc_now()}] {message}"
-        print(line, flush=True)
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(line + "\n")
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            # Consoles legados do Windows podem usar cp1252 mesmo quando a saida
+            # capturada contem caracteres Unicode. Preserve o log UTF-8 e use uma
+            # representacao escapada no console, sem esconder a falha original.
+            encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+            safe_line = line.encode(encoding, errors="backslashreplace").decode(encoding)
+            print(safe_line, flush=True)
 
 
 def sha256_file(path: Path) -> str:
