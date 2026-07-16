@@ -3,9 +3,22 @@
   "version": "1.0.98",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": "24.13.0",
+    "npm": "11.6.2"
+  },
+  "scripts": {
+    "deps:verify": "node scripts/verify-dependency-locks.js",
+    "deps:python:lock": "python scripts/lock_python_dependencies.py"
+  },
   "author": "JK",
   "license": "ISC",
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-updater": "6.3.9"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "electron": "28.3.3"
   }
 }

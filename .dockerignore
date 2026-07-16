@@ -1,6 +1,8 @@
 .git
 .gitignore
 .gcloud
+.dependency-lock
+.installer_runtime
 .tmp_checks
 .venv
 .venv-1
@@ -8,6 +10,10 @@
 .vscode
 V7 - Copia - Copia - Copia
 node_modules
+python_runtime
+python_wheels
+.pytest-tmp-*
+tmp/pytest_*
 __pycache__
 *.pyc
 *.pyo

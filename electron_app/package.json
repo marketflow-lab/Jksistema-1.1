@@ -3,27 +3,33 @@
   "version": "1.0.98",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": "24.13.0",
+    "npm": "11.6.2"
+  },
   "scripts": {
-    "prestart": "npm run prepare:runtime && npm run verify:package",
+    "prestart": "npm run verify:deps && npm run prepare:runtime && npm run verify:package",
     "start": "electron .",
+    "verify:deps": "node ../scripts/verify-dependency-locks.js",
     "prepare:runtime": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare_installer_runtime.ps1",
     "verify:package": "node scripts/verify-installer-package.js",
     "verify:package:built": "node scripts/verify-installer-package.js --packaged dist-client-setup/win-unpacked/resources",
-    "predist": "npm run prepare:runtime && npm run verify:package",
+    "predist": "npm run verify:deps && npm run prepare:runtime && npm run verify:package",
     "dist": "electron-builder",
     "postdist": "npm run verify:package:built",
-    "predist:publish": "npm run prepare:runtime && npm run verify:package",
+    "predist:publish": "npm run verify:deps && npm run prepare:runtime && npm run verify:package",
     "postdist:publish": "npm run verify:package:built",
     "dist:publish": "electron-builder --publish always"
   },
   "author": "JK",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^28.0.0",
-    "electron-builder": "^24.9.1"
+    "electron": "28.3.3",
+    "electron-builder": "24.13.3"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-updater": "6.3.9"
   },
   "build": {
     "directories": {

@@ -71,9 +71,9 @@ if not defined PYTHON_EXE (
 )
 
 echo 1. Verificando dependencias...
-"%PYTHON_EXE%" -m pip install --upgrade pip setuptools wheel
+"%PYTHON_EXE%" -m pip --version
 if errorlevel 1 (
-	echo ERRO: Falha ao atualizar o pip da venv.
+	echo ERRO: pip indisponivel na venv.
 	pause
 	exit /b 1
 )
@@ -84,7 +84,9 @@ echo 1.1 Removendo pacote fitz incorreto, se existir...
 if exist "requirements.txt" (
 	"%PYTHON_EXE%" -m pip install -r requirements.txt
 ) else (
-	"%PYTHON_EXE%" -m pip install streamlit streamlit-authenticator pandas requests gspread google-auth plotly bcrypt urllib3 python-dotenv numpy beautifulsoup4 lxml openpyxl pymupdf python-barcode reportlab playwright fastapi uvicorn python-multipart selenium webdriver-manager "python-jose[cryptography]"
+	echo ERRO: requirements.txt travado nao encontrado.
+	pause
+	exit /b 1
 )
 if errorlevel 1 (
 	echo ERRO: Falha ao instalar as dependencias Python necessarias.

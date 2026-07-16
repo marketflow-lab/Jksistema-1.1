@@ -9,7 +9,7 @@ Gateway isolado para WhatsApp Cloud API, Cloudflare Workers Free, D1 e Workers K
 3. Crie o namespace Workers KV privado `jk-whatsapp-media`.
 4. Preencha o `database_id` e a versao atual da Graph API.
 5. Cadastre os secrets listados no arquivo de exemplo.
-6. Execute `npm install`, `npm test`, `npm run check` e `npm run deploy`.
+6. Execute `npm ci`, `npm test`, `npm run check` e `npm run deploy`.
 
 Na raiz do JK, `scripts/setup-whatsapp-zero-cost.ps1` automatiza D1, Workers KV com expiracao de 24 horas, secrets, deploy, teste de saude e submissao dos templates. Execute com:
 

@@ -1,7 +1,10 @@
 {
   "requiredSourceFiles": [
     "backend_api.py",
+    "requirements.in",
     "requirements.txt",
+    "scripts/lock_python_dependencies.py",
+    "scripts/verify-dependency-locks.js",
     "scripts/prepare_installer_runtime.ps1",
     "scripts/verify-installer-offline.ps1",
     ".installer_runtime/runtime-manifest.json",

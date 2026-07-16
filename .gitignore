@@ -74,6 +74,7 @@ __pycache__/
 python_runtime/
 python_wheels/
 .installer_runtime/
+.dependency-lock/
 
 # Logs
 logs/

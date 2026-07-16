@@ -3,16 +3,24 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": "24.13.0",
+    "npm": "11.6.2"
+  },
   "scripts": {
+    "check:deps": "node ../../scripts/verify-dependency-locks.js",
     "check": "tsc --noEmit",
+    "pretest": "npm run check:deps",
     "test": "vitest run",
     "dev": "wrangler dev",
+    "predeploy": "npm run check:deps && npm run check && npm test",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260710.1",
-    "typescript": "^5.8.3",
-    "vitest": "^3.2.4",
-    "wrangler": "^4.24.3"
+    "@cloudflare/workers-types": "5.20260710.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7",
+    "wrangler": "4.110.0"
   }
 }

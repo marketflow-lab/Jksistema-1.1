@@ -26,9 +26,16 @@ set "JK_APP_ROOT=%~dp0"
 set "JK_APP_ROOT=%JK_APP_ROOT:~0,-1%"
 
 :: Verifica se node_modules existe, se nÃ£o, instala
-if not exist "node_modules" (
-    echo Instalando dependencias do Electron...
-    call npm install
+set "JK_NPM_CI_REQUIRED="
+if not exist "node_modules" set "JK_NPM_CI_REQUIRED=1"
+if not defined JK_NPM_CI_REQUIRED (
+    call npm ls --depth=0 --silent >nul 2>nul
+    if errorlevel 1 set "JK_NPM_CI_REQUIRED=1"
+)
+if defined JK_NPM_CI_REQUIRED (
+    echo Sincronizando dependencias exatas do Electron...
+    call npm ci
+    if errorlevel 1 exit /b 1
 )
 
 if exist "%~dp0node_modules\electron\dist\electron.exe" (

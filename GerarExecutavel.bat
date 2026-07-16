@@ -35,7 +35,7 @@ if errorlevel 1 (
 )
 
 cd electron_app
-call npm install
+call npm ci
 call npm run dist
 if errorlevel 1 (
     echo.

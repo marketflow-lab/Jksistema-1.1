@@ -1,5 +1,10 @@
 {
   "name": "jk-favoritos-search-test-app",
   "private": true,
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": "24.13.0",
+    "npm": "11.6.2"
+  },
   "main": "../test_favoritos_search_extract_electron.js"
 }
