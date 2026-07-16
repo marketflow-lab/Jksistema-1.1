@@ -7,6 +7,9 @@ const mirror = fs.readFileSync(path.join(root, 'configuracoes.html'), 'utf8');
 const ui = fs.readFileSync(path.join(root, 'static', 'configuracoes-whatsapp.js'), 'utf8');
 const historyUi = fs.readFileSync(path.join(root, 'static', 'configuracoes-whatsapp-history.js'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge.py'), 'utf8');
+const bridgeContracts = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'contracts.py'), 'utf8');
+const bridgeFormatting = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'formatting.py'), 'utf8');
+const bridgeGateway = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp', 'gateway.py'), 'utf8');
 const voiceService = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_voice.py'), 'utf8');
 const codexConsole = fs.readFileSync(path.join(root, 'backend', 'services', 'codex_console.py'), 'utf8');
 const bridgeStore = fs.readFileSync(path.join(root, 'backend', 'services', 'whatsapp_bridge_store.py'), 'utf8');
@@ -109,8 +112,11 @@ assert(reportFiles.includes('REPORT_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024'), 'do
 assert(gateway.includes('async function messageProgress('), 'gateway progress endpoint is missing');
 assert(gateway.includes('requestedStatus === "retry"'), 'Codex runtime failures are not preserved for retry');
 assert(gateway.includes('"task_conversation"'), 'conversation-agent proactive event is not supported');
-assert(service.includes('class WhatsappPhoneSettingsRequest(BaseModel)'), 'phone settings request contract is missing');
-assert(service.includes('class WhatsappPhoneRegistrationRequest(BaseModel)'), 'direct phone registration contract is missing');
+assert(bridgeContracts.includes('class WhatsappPhoneSettingsRequest(BaseModel)'), 'phone settings request contract is missing');
+assert(bridgeContracts.includes('class WhatsappPhoneRegistrationRequest(BaseModel)'), 'direct phone registration contract is missing');
+assert(service.includes('from backend.services.whatsapp.contracts import ('), 'bridge compatibility facade is missing');
+assert(bridgeFormatting.includes('def _whatsapp_response_parts('), 'WhatsApp formatting component is missing');
+assert(bridgeGateway.includes('def gateway_request('), 'WhatsApp gateway component is missing');
 assert(service.includes('def whatsapp_bridge_update_phone_settings('), 'phone settings endpoint is missing');
 assert(service.includes('def _normalize_phone_ai_behavior('), 'per-phone AI behavior normalization is missing');
 assert(service.includes('"phone_ai_behavior": phone_ai_behavior'), 'per-phone AI behavior is not attached to WhatsApp tasks');
@@ -164,6 +170,25 @@ assert(gateway.includes('typing_indicator: { type: "text" }'), 'Meta typing payl
 assert(gateway.includes('TYPING_PULSES_DAY_LIMIT'), 'typing daily free-tier guard missing');
 assert(gateway.includes('O erro tecnico ficou registrado no JK Sistema'), 'gateway exposes raw local errors to WhatsApp');
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_bridge.py'), 'bridge missing from installer verification');
+const whatsappComponentFiles = [
+  'backend/services/whatsapp/__init__.py',
+  'backend/services/whatsapp/contracts.py',
+  'backend/services/whatsapp/formatting.py',
+  'backend/services/whatsapp/gateway.py',
+];
+for (const relativeFile of whatsappComponentFiles) {
+  assert(manifest.requiredSourceFiles.includes(relativeFile), `${relativeFile} missing from source verification`);
+  assert(manifest.requiredPackagedFiles.includes(`local_app/${relativeFile}`), `${relativeFile} missing from package verification`);
+  assert(manifest.requiredPackagedSourceParity.includes(relativeFile), `${relativeFile} missing from package parity verification`);
+}
+assert(
+  manifest.requiredSourceDirectories.some(item => item.path === 'backend/services/whatsapp' && item.minFiles >= 4),
+  'WhatsApp component source directory is not protected by installer verification',
+);
+assert(
+  manifest.requiredPackagedDirectories.some(item => item.path === 'local_app/backend/services/whatsapp' && item.minFiles >= 4),
+  'WhatsApp component packaged directory is not protected by installer verification',
+);
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_bridge_store.py'), 'SQLite bridge store missing from installer verification');
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_report_files.py'), 'report document runtime missing from installer verification');
 assert(manifest.requiredSourceFiles.includes('backend/services/whatsapp_voice.py'), 'voice runtime missing from installer verification');
