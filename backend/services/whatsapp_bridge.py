@@ -39,6 +39,7 @@ from fastapi import Header, HTTPException, Request
 from backend.schemas import IAChatAttachment, IAChatRequest
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import gateway as whatsapp_gateway
+from backend.services.whatsapp import settings as whatsapp_settings
 from backend.services.whatsapp.contracts import (
     _QuestionResearchPending,
     WhatsappAdhocMessageRequest,
@@ -107,37 +108,37 @@ QUESTION_APPROVAL_COMMAND_RE = re.compile(
 QUESTION_APPROVAL_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 STORE_SELECTION_COMMAND_RE = re.compile(r"^store_select:([A-Z2-9]{8})$", re.IGNORECASE)
 STORE_SELECTION_TOKEN_TTL_SECONDS = 10 * 60
-WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"
-WHATSAPP_CODEX_REASONING_DEFAULT = "xhigh"
-WHATSAPP_CODEX_REASONING_OPTIONS = ("low", "medium", "high", "xhigh")
-WHATSAPP_CODEX_REASONING_POLICY_DEFAULT = "adaptive"
-WHATSAPP_CODEX_REASONING_POLICIES = ("adaptive", "fixed")
-WHATSAPP_ORCHESTRATION_MODE_DEFAULT = "all_when_codex_selected"
-WHATSAPP_PROGRESS_INTERVAL_DEFAULT = 8
-WHATSAPP_AGENT_ARCHITECTURE_DEFAULT = "dual_codex"
-WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT = "gpt-5.6-luna"
-WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT = "low"
-WHATSAPP_TASK_AGENT_MODEL_DEFAULT = "gpt-5.6-sol"
-WHATSAPP_TASK_AGENT_REASONING_DEFAULT = "low"
-WHATSAPP_CODEX_SPEED_DEFAULT = "fast"
-WHATSAPP_CODEX_SERVICE_TIER_DEFAULT = "priority"
-WHATSAPP_CONVERSATION_INTERVAL_DEFAULT = 30
-WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT = 15
-WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT = 30
-WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT = 60
-WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT = 2
-WHATSAPP_JOB_DEADLINE_DEFAULT = 120
+WHATSAPP_AI_DEFAULT_MODEL = whatsapp_settings.WHATSAPP_AI_DEFAULT_MODEL
+WHATSAPP_CODEX_REASONING_DEFAULT = whatsapp_settings.WHATSAPP_CODEX_REASONING_DEFAULT
+WHATSAPP_CODEX_REASONING_OPTIONS = whatsapp_settings.WHATSAPP_CODEX_REASONING_OPTIONS
+WHATSAPP_CODEX_REASONING_POLICY_DEFAULT = whatsapp_settings.WHATSAPP_CODEX_REASONING_POLICY_DEFAULT
+WHATSAPP_CODEX_REASONING_POLICIES = whatsapp_settings.WHATSAPP_CODEX_REASONING_POLICIES
+WHATSAPP_ORCHESTRATION_MODE_DEFAULT = whatsapp_settings.WHATSAPP_ORCHESTRATION_MODE_DEFAULT
+WHATSAPP_PROGRESS_INTERVAL_DEFAULT = whatsapp_settings.WHATSAPP_PROGRESS_INTERVAL_DEFAULT
+WHATSAPP_AGENT_ARCHITECTURE_DEFAULT = whatsapp_settings.WHATSAPP_AGENT_ARCHITECTURE_DEFAULT
+WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT
+WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT
+WHATSAPP_TASK_AGENT_MODEL_DEFAULT = whatsapp_settings.WHATSAPP_TASK_AGENT_MODEL_DEFAULT
+WHATSAPP_TASK_AGENT_REASONING_DEFAULT = whatsapp_settings.WHATSAPP_TASK_AGENT_REASONING_DEFAULT
+WHATSAPP_CODEX_SPEED_DEFAULT = whatsapp_settings.WHATSAPP_CODEX_SPEED_DEFAULT
+WHATSAPP_CODEX_SERVICE_TIER_DEFAULT = whatsapp_settings.WHATSAPP_CODEX_SERVICE_TIER_DEFAULT
+WHATSAPP_CONVERSATION_INTERVAL_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_INTERVAL_DEFAULT
+WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT = whatsapp_settings.WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT
+WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT = whatsapp_settings.WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT
+WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT = whatsapp_settings.WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT
+WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT = whatsapp_settings.WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT
+WHATSAPP_JOB_DEADLINE_DEFAULT = whatsapp_settings.WHATSAPP_JOB_DEADLINE_DEFAULT
 WHATSAPP_ML_RESEARCH_DEADLINE_SECONDS = 5 * 60
 WHATSAPP_REPORT_DEADLINE_SECONDS = 10 * 60
-WHATSAPP_MAX_SUBTASKS_DEFAULT = 6
-WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT = 6
-WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT = 4
-WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT = 4
-WHATSAPP_FUNCTION_MANAGER_ENABLED_DEFAULT = True
-WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT = True
-WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT = 4
-WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT = 4
-WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT = 12
+WHATSAPP_MAX_SUBTASKS_DEFAULT = whatsapp_settings.WHATSAPP_MAX_SUBTASKS_DEFAULT
+WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT = whatsapp_settings.WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT
+WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT
+WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT = whatsapp_settings.WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT
+WHATSAPP_FUNCTION_MANAGER_ENABLED_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION_MANAGER_ENABLED_DEFAULT
+WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION_MANAGER_REQUIRED_DEFAULT
+WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT
+WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT = whatsapp_settings.WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT
+WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT = whatsapp_settings.WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT
 WHATSAPP_RETRY_DELAYS_SECONDS = (2, 5, 15)
 WHATSAPP_MAX_RETRY_ATTEMPTS = 3
 WHATSAPP_LOCAL_QUEUE_CAPACITY = 32
@@ -327,258 +328,77 @@ def _host_machine_id() -> str:
 
 
 def _normalize_ai_model(value: Any) -> str:
-    from backend.services import ia_providers
-
-    raw = str(value or WHATSAPP_AI_DEFAULT_MODEL).strip()
-    if len(raw) > 100 or not re.fullmatch(r"[A-Za-z0-9_.:/-]+", raw):
-        raise HTTPException(status_code=400, detail="Modelo de IA do WhatsApp invalido.")
-    return ia_providers._normalizar_ia_modelo_padrao(raw)
+    return whatsapp_settings.normalize_ai_model(value)
 
 
 def _normalize_codex_reasoning_effort(value: Any) -> str:
-    effort = str(value or WHATSAPP_CODEX_REASONING_DEFAULT).strip().lower()
-    if effort not in WHATSAPP_CODEX_REASONING_OPTIONS:
-        raise HTTPException(status_code=400, detail="Padrao de inteligencia do Codex invalido.")
-    return effort
+    return whatsapp_settings.normalize_codex_reasoning_effort(value)
 
 
 def _normalize_codex_reasoning_policy(value: Any) -> str:
-    policy = str(value or WHATSAPP_CODEX_REASONING_POLICY_DEFAULT).strip().lower()
-    if policy not in WHATSAPP_CODEX_REASONING_POLICIES:
-        raise HTTPException(status_code=400, detail="Politica de inteligencia do Codex invalida.")
-    return policy
+    return whatsapp_settings.normalize_codex_reasoning_policy(value)
 
 
 def _normalize_codex_agent_model(value: Any, default: str) -> str:
-    raw = str(value or default).strip()
-    if raw.lower().startswith("codex:"):
-        raw = raw.split(":", 1)[1]
-    if len(raw) > 100 or not re.fullmatch(r"[A-Za-z0-9_.-]+", raw):
-        raise HTTPException(status_code=400, detail="Modelo do agente Codex invalido.")
-    return raw
+    return whatsapp_settings.normalize_codex_agent_model(value, default)
 
 
 def _normalize_agent_architecture(value: Any) -> str:
-    architecture = str(value or WHATSAPP_AGENT_ARCHITECTURE_DEFAULT).strip().lower()
-    if architecture not in {"dual_codex", "legacy"}:
-        raise HTTPException(status_code=400, detail="Arquitetura de agentes do WhatsApp invalida.")
-    return architecture
+    return whatsapp_settings.normalize_agent_architecture(value)
 
 
 def _normalize_conversation_interval(value: Any) -> int:
-    try:
-        interval = int(value or WHATSAPP_CONVERSATION_INTERVAL_DEFAULT)
-    except (TypeError, ValueError):
-        interval = WHATSAPP_CONVERSATION_INTERVAL_DEFAULT
-    return max(10, min(interval, 300))
+    return whatsapp_settings.normalize_conversation_interval(value)
 
 
 def _normalize_capacity(value: Any, fallback: int, minimum: int, maximum: int) -> int:
-    try:
-        number = int(value if value is not None else fallback)
-    except (TypeError, ValueError):
-        number = fallback
-    return max(minimum, min(maximum, number))
+    return whatsapp_settings.normalize_capacity(value, fallback, minimum, maximum)
 
 
 def _whatsapp_dual_agent_settings(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     source = config if isinstance(config, dict) else _load_config()
-    worker_count = _normalize_capacity(
-        source.get("conversation_worker_count"), WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT, 1, 8
+    return whatsapp_settings.dual_agent_settings(
+        source,
+        report_deadline_seconds=WHATSAPP_REPORT_DEADLINE_SECONDS,
+        max_retry_attempts=WHATSAPP_MAX_RETRY_ATTEMPTS,
     )
-    runtime_pool_size = max(
-        worker_count,
-        _normalize_capacity(
-            source.get("conversation_runtime_pool_size"),
-            WHATSAPP_CONVERSATION_RUNTIME_POOL_SIZE_DEFAULT,
-            1,
-            8,
-        ),
-    )
-    manager_worker_count = _normalize_capacity(
-        source.get("function_manager_worker_count"),
-        WHATSAPP_FUNCTION_MANAGER_WORKER_COUNT_DEFAULT,
-        1,
-        8,
-    )
-    manager_pool_size = max(
-        manager_worker_count,
-        _normalize_capacity(
-            source.get("function_manager_runtime_pool_size"),
-            WHATSAPP_FUNCTION_MANAGER_RUNTIME_POOL_SIZE_DEFAULT,
-            1,
-            8,
-        ),
-    )
-    return {
-        "agent_architecture": _normalize_agent_architecture(source.get("agent_architecture")),
-        "conversation_agent_model": _normalize_codex_agent_model(
-            source.get("conversation_agent_model"), WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT
-        ),
-        "conversation_agent_reasoning": _normalize_codex_reasoning_effort(
-            source.get("conversation_agent_reasoning") or WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT
-        ),
-        "task_agent_model": _normalize_codex_agent_model(
-            source.get("task_agent_model"), WHATSAPP_TASK_AGENT_MODEL_DEFAULT
-        ),
-        # O Sol e deliberadamente fixo em low: o paralelismo e o Fast mode
-        # fornecem velocidade sem elevar silenciosamente o custo de raciocinio.
-        "task_agent_reasoning": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
-        "conversation_agent_speed": WHATSAPP_CODEX_SPEED_DEFAULT,
-        "conversation_agent_service_tier": WHATSAPP_CODEX_SERVICE_TIER_DEFAULT,
-        "task_agent_speed": WHATSAPP_CODEX_SPEED_DEFAULT,
-        "task_agent_service_tier": WHATSAPP_CODEX_SERVICE_TIER_DEFAULT,
-        "conversation_interval_seconds": _normalize_conversation_interval(
-            source.get("conversation_interval_seconds")
-        ),
-        "wait_message_after_seconds": _normalize_capacity(
-            source.get("wait_message_after_seconds"), WHATSAPP_WAIT_MESSAGE_AFTER_DEFAULT, 5, 60
-        ),
-        "wait_message_repeat_seconds": _normalize_capacity(
-            source.get("wait_message_repeat_seconds"), WHATSAPP_WAIT_MESSAGE_REPEAT_DEFAULT, 15, 180
-        ),
-        "wait_message_steady_seconds": _normalize_capacity(
-            source.get("wait_message_steady_seconds"), WHATSAPP_WAIT_MESSAGE_STEADY_DEFAULT, 30, 300
-        ),
-        "partial_delivery_debounce_seconds": _normalize_capacity(
-            source.get("partial_delivery_debounce_seconds"), WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT, 1, 10
-        ),
-        "job_deadline_seconds": _normalize_capacity(
-            source.get("job_deadline_seconds"), WHATSAPP_JOB_DEADLINE_DEFAULT, 30, WHATSAPP_REPORT_DEADLINE_SECONDS
-        ),
-        "retry_policy": "bounded",
-        "max_retry_attempts": WHATSAPP_MAX_RETRY_ATTEMPTS,
-        "max_subtasks_per_job": _normalize_capacity(
-            source.get("max_subtasks_per_job"), WHATSAPP_MAX_SUBTASKS_DEFAULT, 1, 6
-        ),
-        "progress_messages_enabled": source.get("progress_messages_enabled") is True,
-        "max_active_task_agents_per_conversation": _normalize_capacity(
-            source.get("max_active_task_agents_per_conversation"),
-            WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT,
-            1,
-            6,
-        ),
-        "conversation_worker_count": worker_count,
-        "conversation_runtime_pool_size": runtime_pool_size,
-        "max_active_task_agents_global": _normalize_capacity(
-            source.get("max_active_task_agents_global"),
-            WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT,
-            1,
-            12,
-        ),
-        "preserve_order_per_phone": True,
-        "function_manager_enabled": source.get("function_manager_enabled") is not False,
-        "function_manager_required_before_sol": source.get("function_manager_required_before_sol") is not False,
-        "function_manager_worker_count": manager_worker_count,
-        "function_manager_runtime_pool_size": manager_pool_size,
-    }
 
 
 def _normalize_progress_interval(value: Any) -> int:
-    try:
-        interval = int(value or WHATSAPP_PROGRESS_INTERVAL_DEFAULT)
-    except (TypeError, ValueError):
-        interval = WHATSAPP_PROGRESS_INTERVAL_DEFAULT
-    return max(8, min(interval, 60))
+    return whatsapp_settings.normalize_progress_interval(value)
 
 
 def _normalize_voice_model(value: Any, fallback: str) -> str:
-    model = str(value or fallback).strip()
-    if len(model) > 100 or not re.fullmatch(r"[A-Za-z0-9_.-]+", model):
-        raise HTTPException(status_code=400, detail="Modelo de voz OpenAI invalido.")
-    return model
+    return whatsapp_settings.normalize_voice_model(value, fallback)
 
 
 def _normalize_voice_name(value: Any) -> str:
-    voice = str(value or whatsapp_voice.VOICE_NAME_DEFAULT).strip().lower()
-    allowed = {"alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"}
-    if voice not in allowed:
-        raise HTTPException(status_code=400, detail="Voz Realtime invalida.")
-    return voice
+    return whatsapp_settings.normalize_voice_name(value)
 
 
 def _normalize_voice_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
-    try:
-        number = int(value or fallback)
-    except (TypeError, ValueError):
-        number = fallback
-    return max(minimum, min(maximum, number))
+    return whatsapp_settings.normalize_voice_int(value, fallback, minimum, maximum)
 
 
 def _normalize_voice_config(config: dict[str, Any]) -> dict[str, Any]:
-    value = dict(config or {})
-    value["voice_enabled"] = value.get("voice_enabled") is True
-    value["voice_model"] = _normalize_voice_model(value.get("voice_model"), whatsapp_voice.VOICE_MODEL_DEFAULT)
-    value["voice_transcription_model"] = _normalize_voice_model(
-        value.get("voice_transcription_model"), whatsapp_voice.VOICE_TRANSCRIPTION_MODEL_DEFAULT
-    )
-    value["voice_name"] = _normalize_voice_name(value.get("voice_name"))
-    value["voice_language"] = "pt-BR"
-    value["voice_max_call_minutes"] = _normalize_voice_int(value.get("voice_max_call_minutes"), 30, 5, 60)
-    value["voice_silence_timeout_seconds"] = _normalize_voice_int(value.get("voice_silence_timeout_seconds"), 90, 30, 300)
-    value["voice_long_task_offer_seconds"] = _normalize_voice_int(value.get("voice_long_task_offer_seconds"), 90, 30, 300)
-    value["voice_max_concurrent_calls"] = _normalize_voice_int(value.get("voice_max_concurrent_calls"), 3, 1, 10)
-    value["voice_progress_interval_seconds"] = _normalize_voice_int(value.get("voice_progress_interval_seconds"), 8, 8, 30)
-    value["voice_transcript_retention"] = "transcript_only"
-    value["voice_store_audio"] = False
-    value["voice_read_only"] = True
-    return value
+    return whatsapp_settings.normalize_voice_config(config)
 
 
 def _whatsapp_ai_settings(config: Optional[dict[str, Any]] = None) -> dict[str, str]:
     source = config if isinstance(config, dict) else _load_config()
-    model = _normalize_ai_model(source.get("ai_model"))
-    reasoning = _normalize_codex_reasoning_effort(source.get("codex_reasoning_effort"))
-    if model.startswith("codex:"):
-        provider = "codex"
-    elif model.startswith("vertex:"):
-        provider = "vertex"
-    elif model.startswith("gemini:"):
-        provider = "gemini"
-    elif model.startswith("deepseek-"):
-        provider = "deepseek"
-    else:
-        provider = "openai"
-    return {
-        "model": model,
-        "provider": provider,
-        "codex_reasoning_effort": reasoning,
-        "codex_reasoning_policy": _normalize_codex_reasoning_policy(source.get("codex_reasoning_policy")),
-        "codex_reasoning_max": _normalize_codex_reasoning_effort(source.get("codex_reasoning_max") or reasoning),
-    }
+    return whatsapp_settings.ai_settings(source)
 
 
 def _default_phone_notification_settings() -> dict[str, Any]:
-    return {
-        "label": "",
-        "send_ml_question_suggestions": True,
-        "send_weekly_report": False,
-        "send_monthly_report": False,
-        "ai_behavior": "",
-        "allow_voice_calls": False,
-    }
+    return whatsapp_settings.default_phone_notification_settings()
 
 
 def _normalize_phone_ai_behavior(value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "").strip()
-    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
-    return "\n".join(lines).strip()[:2000]
+    return whatsapp_settings.normalize_phone_ai_behavior(value)
 
 
 def _normalize_phone_notification_settings(value: Any) -> dict[str, Any]:
-    source = value if isinstance(value, dict) else {}
-    result = _default_phone_notification_settings()
-    result.update(
-        {
-            "label": re.sub(r"\s+", " ", str(source.get("label") or "")).strip()[:60],
-            "send_ml_question_suggestions": source.get("send_ml_question_suggestions") is not False,
-            "send_weekly_report": source.get("send_weekly_report") is True,
-            "send_monthly_report": source.get("send_monthly_report") is True,
-            "ai_behavior": _normalize_phone_ai_behavior(source.get("ai_behavior")),
-            "allow_voice_calls": source.get("allow_voice_calls") is True,
-        }
-    )
-    return result
+    return whatsapp_settings.normalize_phone_notification_settings(value)
 
 
 def _phone_notification_settings(
@@ -588,18 +408,12 @@ def _phone_notification_settings(
     client_id: Any = "",
     username: Any = "",
 ) -> dict[str, Any]:
-    subject = str(subject_id or "").strip()
-    settings_by_phone = config.get("phone_notification_settings")
-    stored = settings_by_phone.get(subject) if subject and isinstance(settings_by_phone, dict) else {}
-    result = _normalize_phone_notification_settings(stored)
-    result.update(
-        {
-            "subject_id": subject,
-            "client_id": str(client_id or (stored.get("client_id") if isinstance(stored, dict) else "") or "").strip(),
-            "username": str(username or (stored.get("username") if isinstance(stored, dict) else "") or "").strip().lower(),
-        }
+    return whatsapp_settings.phone_notification_settings(
+        config,
+        subject_id,
+        client_id=client_id,
+        username=username,
     )
-    return result
 
 
 def _default_config() -> dict[str, Any]:
