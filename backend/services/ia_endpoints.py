@@ -374,7 +374,7 @@ async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
             requests.get(f"{cfg['ollama_base_url']}/api/tags", timeout=5).raise_for_status()
             status["ollama_ok"] = True
         except Exception as exc:
-            status["ollama_error"] = str(exc)
+            status["ollama_error"] = type(exc).__name__
 
     try:
         if cfg.get("backend") == "postgres" and psycopg is not None and _ia_rag_pg_dsn():
@@ -386,7 +386,7 @@ async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
                     row = cur.fetchone() or {}
                     status["pgvector_ok"] = bool(row.get("ok"))
     except Exception as exc:
-        status["postgres_error"] = str(exc)
+        status["postgres_error"] = type(exc).__name__
 
     with IA_RAG_REINDEX_LOCK:
         status["reindex_active"] = bool(IA_RAG_REINDEX_ACTIVE.get(client_id))
@@ -395,7 +395,24 @@ async def ia_rag_status(client_id: str = Depends(get_tenant_id)):
     return status
 
 
-async def ia_rag_indexar(payload: IARagIndexRequest, client_id: str = Depends(get_tenant_id)):
+def _ia_rag_require_full_admin(request: Request, authorization: Optional[str], client_id: str) -> dict:
+    from backend.services.codex_console import _codex_require_full_admin
+
+    sessao = _codex_require_full_admin(request, authorization)
+    if str(sessao.get("client_id") or "").strip() != str(client_id or "").strip():
+        raise HTTPException(status_code=403, detail="Sessao sem acesso ao tenant solicitado.")
+    return sessao
+
+
+async def ia_rag_indexar(
+    payload: IARagIndexRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _ia_rag_require_full_admin(request, authorization, client_id)
+    if not _ia_rag_legacy_write_enabled():
+        raise HTTPException(status_code=403, detail="A gravacao no RAG legado esta desativada.")
     if not _ia_rag_ativo():
         raise HTTPException(
             status_code=503,
@@ -403,13 +420,23 @@ async def ia_rag_indexar(payload: IARagIndexRequest, client_id: str = Depends(ge
         )
     try:
         inseridos = _ia_rag_indexar_documentos(client_id, payload.documents or [])
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="A gravacao no RAG legado esta desativada.")
     except Exception as exc:
         logger.exception(f"[IA RAG] Falha ao indexar documentos: {exc}")
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail="Falha ao indexar documentos no RAG legado.")
     return {"success": True, "inseridos": inseridos}
 
 
-async def ia_rag_reindexar(payload: IARagReindexRequest = IARagReindexRequest(), client_id: str = Depends(get_tenant_id)):
+async def ia_rag_reindexar(
+    request: Request,
+    payload: IARagReindexRequest = IARagReindexRequest(),
+    authorization: Optional[str] = Header(default=None),
+    client_id: str = Depends(get_tenant_id),
+):
+    _ia_rag_require_full_admin(request, authorization, client_id)
+    if not _ia_rag_legacy_write_enabled():
+        raise HTTPException(status_code=403, detail="A gravacao no RAG legado esta desativada.")
     if not _ia_rag_ativo():
         raise HTTPException(
             status_code=503,
@@ -427,7 +454,7 @@ async def ia_rag_reindexar(payload: IARagReindexRequest = IARagReindexRequest(),
         raise
     except Exception as exc:
         logger.exception(f"[IA RAG] Falha ao iniciar reindex em background: {exc}")
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail="Falha ao iniciar reindexacao do RAG legado.")
 
 
 async def servir_imagem_ia(filename: str):

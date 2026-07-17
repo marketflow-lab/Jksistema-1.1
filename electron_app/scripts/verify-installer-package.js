@@ -39,6 +39,99 @@ function sha256File(file) {
   return hash.digest('hex');
 }
 
+function validateContextBundleAtRoot(bundleRoot, failures, label) {
+  const manifestFile = path.join(bundleRoot, 'context-bundle-manifest.json');
+  const knowledgeRoot = path.join(bundleRoot, 'docs', 'knowledge');
+  if (!fileExists(manifestFile)) {
+    failures.push(`Manifesto do Context Hub ausente ${label}: context-bundle-manifest.json`);
+    return;
+  }
+  if (!dirExists(knowledgeRoot)) {
+    failures.push(`Bundle de conhecimento ausente ${label}: docs/knowledge`);
+    return;
+  }
+
+  let contextManifest;
+  try {
+    contextManifest = readJson(manifestFile);
+  } catch (err) {
+    failures.push(`Manifesto do Context Hub invalido ${label}: ${err && err.message ? err.message : String(err)}`);
+    return;
+  }
+  if (Number(contextManifest.schema_version) !== 1) {
+    failures.push(`schema_version do Context Hub invalido ${label}`);
+  }
+  const expectedVersion = String(readJson(packageJsonPath).version || '').trim();
+  if (String(contextManifest.source_version || '').trim() !== expectedVersion) {
+    failures.push(
+      `Versao-fonte do Context Hub divergente ${label}: esperado ${expectedVersion}, encontrado ${contextManifest.source_version || 'ausente'}`
+    );
+  }
+
+  const entries = Array.isArray(contextManifest.files) ? contextManifest.files : [];
+  if (!entries.length) failures.push(`Manifesto do Context Hub sem arquivos ${label}`);
+  const declared = new Set();
+  for (const entry of entries) {
+    const rawPath = String(entry && entry.path || '');
+    const relative = toPosix(rawPath);
+    const safePath = relative
+      && rawPath === relative
+      && relative.startsWith('docs/knowledge/')
+      && path.posix.normalize(relative) === relative
+      && !relative.split('/').some(part => part === '..' || part === '.obsidian')
+      && !/(?:^|\/)(?:info|ContextVault|context_hub|SKU)(?:\/|$)/i.test(relative);
+    if (!safePath) {
+      failures.push(`Caminho proibido no manifesto do Context Hub ${label}: ${rawPath || 'ausente'}`);
+      continue;
+    }
+    if (declared.has(relative)) {
+      failures.push(`Arquivo duplicado no manifesto do Context Hub ${label}: ${relative}`);
+      continue;
+    }
+    declared.add(relative);
+    const target = path.resolve(bundleRoot, relative);
+    if (!fileExists(target)) {
+      failures.push(`Arquivo do Context Hub ausente ${label}: ${relative}`);
+      continue;
+    }
+    const expectedHash = String(entry.sha256 || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(expectedHash) || sha256File(target) !== expectedHash) {
+      failures.push(`SHA256 divergente no Context Hub ${label}: ${relative}`);
+    }
+    const expectedSize = Number(entry.size);
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || fs.statSync(target).size !== expectedSize) {
+      failures.push(`Tamanho divergente no Context Hub ${label}: ${relative}`);
+    }
+  }
+
+  const actual = walkFiles(knowledgeRoot)
+    .map(file => toPosix(path.relative(bundleRoot, file)))
+    .sort();
+  for (const relative of actual) {
+    if (!declared.has(relative)) {
+      failures.push(`Arquivo obsoleto ou nao declarado no Context Hub ${label}: ${relative}`);
+    }
+  }
+  for (const relative of declared) {
+    if (!actual.includes(relative)) {
+      failures.push(`Entrada sem arquivo no Context Hub ${label}: ${relative}`);
+    }
+  }
+  if (
+    contextManifest.file_count !== undefined
+    && Number(contextManifest.file_count) !== actual.length
+  ) {
+    failures.push(`file_count divergente no Context Hub ${label}`);
+  }
+}
+
+function validateContextBundle(failures) {
+  validateContextBundleAtRoot(repoRoot, failures, 'na fonte');
+  if (packagedRoot) {
+    validateContextBundleAtRoot(path.join(packagedRoot, 'local_app'), failures, 'no pacote');
+  }
+}
+
 function validateManifestEntry(baseDir, entry, label, failures) {
   const rel = toPosix(entry && (entry.path || entry.file || entry.name));
   const expectedHash = String(entry && entry.sha256 || '').trim().toLowerCase();
@@ -847,6 +940,7 @@ function main() {
   failIfMissingSource(manifest, failures);
   validatePackageConfig(manifest, failures);
   validateRuntimeCopyGuards(manifest, failures);
+  validateContextBundle(failures);
   validateOfflineRuntime(manifest, failures);
   validatePackagedOutput(manifest, failures);
   const offlineRoot = packagedRoot ? path.join(packagedRoot, 'local_app') : repoRoot;

@@ -25,6 +25,9 @@ LOCK_NAME = ".python-runtime-provision.lock"
 VENV_MARKER_NAME = ".jk-venv-ready.json"
 STATUS_RELATIVE_PATH = Path("info") / "python-runtime-status.json"
 VENV_BUILD_SENTINEL_RELATIVE_PATH = Path("info") / "python-runtime-venv-build.json"
+VENV_RENAME_RETRY_DELAYS = (0.5, 1.0, 2.0, 3.0, 4.0, 4.0)
+RUNTIME_COPY_RETRY_DELAYS = (0.5, 1.5)
+WINDOWS_RENAME_BUSY_ERRORS = frozenset({5, 32, 33})
 CRITICAL_IMPORTS = (
     "av",
     "fastapi",
@@ -1018,6 +1021,10 @@ def try_quick_reuse(
         # The installed runtime tree is nevertheless bound to the immutable
         # central pin on every path; otherwise a stale marker could bless a
         # modified user-writable interpreter.
+        # The running interpreter may leave harmless bytecode caches in its
+        # base runtime even with PYTHONDONTWRITEBYTECODE enabled. Normalize
+        # only those generated caches before enforcing the immutable pin.
+        _remove_installed_runtime_bytecode_caches(runtime, logger)
         installed_inventory = tree_inventory(runtime)
         if installed_inventory != spec.portable_inventory:
             raise ProvisionError(
@@ -1062,6 +1069,181 @@ def _promote_directory(staged: Path, destination: Path, parent: Path, backup: Pa
     return had_previous
 
 
+def _replace_venv_with_retry(
+    source: Path,
+    destination: Path,
+    logger: ProvisionLogger,
+    retry_delays: Sequence[float] = VENV_RENAME_RETRY_DELAYS,
+) -> None:
+    """Rename an existing venv, tolerating short-lived Windows file locks."""
+
+    delays = tuple(max(0.0, float(delay)) for delay in retry_delays)
+    total_attempts = len(delays) + 1
+    for attempt in range(1, total_attempts + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in WINDOWS_RENAME_BUSY_ERRORS:
+                raise
+            if attempt >= total_attempts:
+                logger.write(
+                    f"A .venv continuou em uso apos {total_attempts} tentativas "
+                    f"(WinError {winerror}): {source}"
+                )
+                raise ProvisionError(
+                    "venv_in_use",
+                    "Nao foi possivel atualizar o ambiente Python porque a .venv esta em uso. "
+                    "Feche testes, terminais, editores e processos Python que usam esta pasta "
+                    "e tente iniciar o JK Sistema novamente.",
+                ) from exc
+            delay = delays[attempt - 1]
+            logger.write(
+                f"A .venv esta temporariamente em uso (WinError {winerror}); "
+                f"tentativa {attempt}/{total_attempts}. Nova tentativa em {delay:.2f}s."
+            )
+            if delay:
+                time.sleep(delay)
+
+
+def _remove_installed_runtime_bytecode_caches(
+    runtime: Path, logger: ProvisionLogger
+) -> tuple[int, int]:
+    """Remove only generated ``__pycache__/*.pyc`` files from the installed runtime."""
+
+    if not runtime.is_dir() or runtime.is_symlink() or _is_reparse_point(runtime):
+        raise ProvisionError(
+            "installed_runtime_unsafe",
+            f"Runtime instalado ausente ou inseguro antes da limpeza de caches: {runtime}",
+        )
+    removed_files = 0
+    removed_bytes = 0
+    for current, directories, _files in os.walk(runtime, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for name in list(directories):
+            if name != "__pycache__":
+                continue
+            directories.remove(name)
+            cache_root = current_path / name
+            if cache_root.is_symlink() or _is_reparse_point(cache_root):
+                raise ProvisionError(
+                    "installed_runtime_unsafe",
+                    f"Cache de bytecode inseguro no runtime instalado: {cache_root}",
+                )
+            for cache_current, _cache_directories, cache_files in os.walk(
+                cache_root, topdown=False, followlinks=False
+            ):
+                cache_current_path = Path(cache_current)
+                for cache_name in cache_files:
+                    candidate = cache_current_path / cache_name
+                    if candidate.suffix.lower() != ".pyc":
+                        continue
+                    if candidate.is_symlink() or _is_reparse_point(candidate) or not candidate.is_file():
+                        raise ProvisionError(
+                            "installed_runtime_unsafe",
+                            f"Cache de bytecode inseguro no runtime instalado: {candidate}",
+                        )
+                    size = candidate.stat().st_size
+                    _safe_remove(candidate, runtime)
+                    removed_files += 1
+                    removed_bytes += size
+                try:
+                    cache_current_path.rmdir()
+                except OSError:
+                    # Preserve directories containing anything except generated
+                    # .pyc files. The mandatory inventory check below will then
+                    # reject that remaining drift instead of deleting it.
+                    pass
+    if removed_files:
+        logger.write(
+            f"Caches de bytecode removidos do runtime instalado: "
+            f"{removed_files} arquivo(s), {removed_bytes} byte(s)."
+        )
+    return removed_files, removed_bytes
+
+
+def _verify_installed_runtime_after_checks(
+    runtime: Path,
+    expected_inventory: tuple[int, int, str],
+    logger: ProvisionLogger,
+) -> tuple[int, int, str]:
+    _remove_installed_runtime_bytecode_caches(runtime, logger)
+    actual_inventory = tree_inventory(runtime)
+    if actual_inventory != expected_inventory:
+        raise ProvisionError(
+            "installed_runtime_integrity_failed",
+            "Runtime Python instalado divergiu do pin apos a validacao "
+            f"(esperado {expected_inventory}, encontrado {actual_inventory}).",
+        )
+    return actual_inventory
+
+
+def _copy_runtime_tree_with_retry(
+    source: Path,
+    staged: Path,
+    parent: Path,
+    expected_inventory: tuple[int, int, str],
+    logger: ProvisionLogger,
+    retry_delays: Sequence[float] = RUNTIME_COPY_RETRY_DELAYS,
+) -> tuple[int, int, str]:
+    """Copy the pinned runtime into a fresh stage and verify both sides.
+
+    A short-lived scanner or a concurrent Python process can alter a copied
+    tree between ``copytree`` and the integrity check. Every retry starts from
+    an empty stage and no result is accepted unless the source remained pinned
+    and the normalized destination matches the same exact inventory.
+    """
+
+    delays = tuple(max(0.0, float(delay)) for delay in retry_delays)
+    total_attempts = len(delays) + 1
+    last_detail = "nenhuma tentativa executada"
+    for attempt in range(1, total_attempts + 1):
+        try:
+            source_before = tree_inventory(source)
+            if source_before != expected_inventory:
+                last_detail = (
+                    "origem divergiu antes da copia "
+                    f"(esperado {expected_inventory}, encontrado {source_before})"
+                )
+            else:
+                _safe_remove(staged, parent)
+                logger.write(
+                    f"Copiando runtime portatil para {staged} "
+                    f"(tentativa {attempt}/{total_attempts})"
+                )
+                shutil.copytree(source, staged, copy_function=shutil.copy2)
+                _remove_installed_runtime_bytecode_caches(staged, logger)
+                source_after = tree_inventory(source)
+                staged_inventory = tree_inventory(staged)
+                if source_after == expected_inventory and staged_inventory == expected_inventory:
+                    return staged_inventory
+                last_detail = (
+                    f"origem antes={source_before}, origem depois={source_after}, "
+                    f"copia={staged_inventory}, esperado={expected_inventory}"
+                )
+        except (OSError, shutil.Error) as exc:
+            last_detail = f"{type(exc).__name__}: {exc}"
+
+        if attempt >= total_attempts:
+            logger.write(
+                f"Copia do runtime falhou apos {total_attempts} tentativas: {last_detail}"
+            )
+            raise ProvisionError(
+                "runtime_copy_failed",
+                "Copia do runtime portatil falhou na verificacao de integridade "
+                f"apos {total_attempts} tentativas. Detalhe: {last_detail}",
+            )
+
+        delay = delays[attempt - 1]
+        logger.write(
+            f"Copia do runtime nao ficou integra na tentativa {attempt}/{total_attempts}: "
+            f"{last_detail}. Nova tentativa em {delay:.2f}s."
+        )
+        if delay:
+            time.sleep(delay)
+
+
 def _restore_directory(destination: Path, backup: Path, parent: Path, had_previous: bool) -> None:
     _safe_remove(destination, parent)
     if had_previous and backup.exists():
@@ -1089,13 +1271,30 @@ def _recover_interrupted_venv(
     parent: Path,
     logger: ProvisionLogger,
 ) -> None:
+    sentinel_payload: dict[str, Any] | None = None
+    if build_sentinel.is_file():
+        try:
+            sentinel_payload = read_json(build_sentinel, code="venv_build_sentinel_invalid")
+        except ProvisionError as exc:
+            # An unreadable sentinel cannot prove that the destination was a
+            # newly-created partial environment. Preserve it conservatively.
+            logger.write(f"Sentinel da .venv invalido; ambiente existente sera preservado: {exc}")
     had_backup = backup.exists()
     _recover_interrupted_promotion(destination, backup, legacy_staged, parent)
     if not build_sentinel.is_file():
         return
+    previous_environment = (
+        sentinel_payload.get("previous_environment") if sentinel_payload is not None else None
+    )
     if not had_backup and destination.exists() and not (destination / VENV_MARKER_NAME).is_file():
-        logger.write(f"Removendo .venv incompleta deixada por execucao interrompida: {destination}")
-        _safe_remove(destination, parent)
+        if previous_environment is False:
+            logger.write(f"Removendo .venv incompleta deixada por execucao interrompida: {destination}")
+            _safe_remove(destination, parent)
+        else:
+            logger.write(
+                "Preservando .venv existente apos interrupcao anterior; "
+                "o sentinel indica ou pode indicar um ambiente preexistente."
+            )
     _safe_remove(build_sentinel, parent)
 
 
@@ -1182,18 +1381,22 @@ def provision(
             runtime_valid = False
             if runtime.is_dir():
                 try:
+                    _remove_installed_runtime_bytecode_caches(runtime, logger)
                     runtime_valid = tree_inventory(runtime) == portable_inventory
                     if runtime_valid:
                         probe_python(python_executable(runtime), spec, logger, command_timeout)
-                except ProvisionError as exc:
-                    logger.write(f"Runtime instalado sera substituido: [{exc.code}] {exc}")
+                except (OSError, ProvisionError) as exc:
+                    detail = f"[{exc.code}] {exc}" if isinstance(exc, ProvisionError) else f"[{type(exc).__name__}] {exc}"
+                    logger.write(f"Runtime instalado sera substituido: {detail}")
                     runtime_valid = False
             if not runtime_valid:
-                _safe_remove(runtime_stage, target_root)
-                logger.write(f"Copiando runtime portatil para {runtime_stage}")
-                shutil.copytree(portable_source, runtime_stage, copy_function=shutil.copy2)
-                if tree_inventory(runtime_stage) != portable_inventory:
-                    raise ProvisionError("runtime_copy_failed", "Copia do runtime portatil falhou na verificacao de integridade.")
+                _copy_runtime_tree_with_retry(
+                    portable_source,
+                    runtime_stage,
+                    target_root,
+                    portable_inventory,
+                    logger,
+                )
                 probe_python(python_executable(runtime_stage), spec, logger, command_timeout)
                 runtime_had_previous = _promote_directory(runtime_stage, runtime, target_root, runtime_backup)
                 runtime_changed = True
@@ -1202,6 +1405,7 @@ def provision(
             if not force and existing_venv_is_ready(
                 venv, marker, spec, source_root, target_root, app_version, logger, command_timeout
             ):
+                _verify_installed_runtime_after_checks(runtime, portable_inventory, logger)
                 result = {
                     "action": "reused",
                     "message": "Runtime Python e ambiente virtual ja estavam validos.",
@@ -1229,7 +1433,7 @@ def provision(
                 },
             )
             if venv_had_previous:
-                os.replace(venv, venv_backup)
+                _replace_venv_with_retry(venv, venv_backup, logger)
             venv_replacement_started = True
             logger.write(f"Criando ambiente transacional no caminho final {venv}")
             run_command(
@@ -1274,6 +1478,7 @@ def provision(
                 venv, spec, source_root, target_root, app_version, logger, command_timeout
             )
             run_console_entrypoint_checks(venv, source_root, logger, command_timeout)
+            _verify_installed_runtime_after_checks(runtime, portable_inventory, logger)
             atomic_write_json(venv / VENV_MARKER_NAME, marker)
             logger.write(f"Ambiente virtual validado no caminho final {venv}")
 

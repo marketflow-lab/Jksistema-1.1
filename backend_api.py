@@ -123,6 +123,7 @@ from backend.routers import (
     create_cadastro_router,
     create_codex_console_router,
     create_configuracoes_router,
+    create_context_hub_router,
     create_estoque_router,
     EtiquetasRouterConfig,
     create_etiquetas_router,
@@ -614,7 +615,7 @@ PERMISSION_KEYS = [
     'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
 ]
 
-VERSAO_MINIMA_APP_PADRAO = "1.0.99"
+VERSAO_MINIMA_APP_PADRAO = "1.0.100"
 
 
 def versao_minima_app_backend() -> str:
@@ -1990,6 +1991,72 @@ def get_tenant_path(client_id: str):
     return tenant_path
 
 
+# Context Hub uses the authenticated tenant at the HTTP boundary. Startup only
+# primes explicitly allowlisted tenants; every other tenant is initialized
+# lazily after a full-admin request.
+from backend.services import context_hub as _context_hub_module
+
+_CONTEXT_HUB_SURFACE = (
+    os.getenv("JK_CONTEXT_HUB_SURFACE") or "development"
+).strip().lower()
+_CONTEXT_HUB_RUNTIME_CONFIG = _context_hub_module.configure_context_hub(
+    base_dir=BASE_DIR,
+    info_root=PASTA_INFO,
+    surface=_CONTEXT_HUB_SURFACE,
+)
+app.include_router(create_context_hub_router())
+
+
+def _context_hub_clientes_iniciais() -> tuple[str, ...]:
+    raw = os.getenv("JK_CONTEXT_HUB_BOOTSTRAP_CLIENTS", "000002")
+    clients: list[str] = []
+    for value in re.split(r"[,;\s]+", raw or ""):
+        client_id = value.strip()
+        if client_id and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", client_id):
+            clients.append(client_id)
+    return tuple(dict.fromkeys(clients))
+
+
+def _context_hub_iniciar_background() -> None:
+    def _worker() -> None:
+        for client_id in _context_hub_clientes_iniciais():
+            try:
+                _context_hub_module.rebuild_context(
+                    client_id,
+                    base_dir=_CONTEXT_HUB_RUNTIME_CONFIG.base_dir,
+                    info_root=_CONTEXT_HUB_RUNTIME_CONFIG.info_root,
+                    surface=_CONTEXT_HUB_RUNTIME_CONFIG.surface,
+                    reason=(
+                        "installed_startup"
+                        if _CONTEXT_HUB_SURFACE == "installed"
+                        else "development_startup"
+                    ),
+                )
+                if _CONTEXT_HUB_SURFACE == "development":
+                    _context_hub_module.start_context_hub_watcher(
+                        client_id,
+                        base_dir=_CONTEXT_HUB_RUNTIME_CONFIG.base_dir,
+                        info_root=_CONTEXT_HUB_RUNTIME_CONFIG.info_root,
+                        surface=_CONTEXT_HUB_RUNTIME_CONFIG.surface,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Context Hub startup bloqueado para tenant %s (%s).",
+                    client_id,
+                    type(exc).__name__,
+                )
+
+    threading.Thread(
+        target=_worker,
+        name="jk-context-hub-startup",
+        daemon=True,
+    ).start()
+
+
+def _context_hub_parar_background() -> None:
+    _context_hub_module.stop_all_context_hub_watchers()
+
+
 # O Shared Sync depende de get_tenant_path e, por isso, so pode configurar o
 # runtime depois que todos os helpers de tenant estiverem definidos.
 from backend.services import shared_sync as _shared_sync_module
@@ -2357,5 +2424,10 @@ def _codex_console_recuperar_fila_background():
 
 
 # --- ARQUIVOS ESTÃƒÆ’Ã‚ÂTICOS (FRONTEND) ---
-register_startup_events(app, sys.modules[__name__], extra_handlers=(_vendas_domain.prepare_databases,))
+register_startup_events(
+    app,
+    sys.modules[__name__],
+    extra_handlers=(_vendas_domain.prepare_databases, _context_hub_iniciar_background),
+    extra_shutdown_handlers=(_context_hub_parar_background,),
+)
 mount_static_assets(app, _frontend_router_config)

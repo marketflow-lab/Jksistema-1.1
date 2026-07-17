@@ -20,7 +20,7 @@ from typing import Any
 
 
 SERVER_NAME = "jk-system-readonly"
-SERVER_VERSION = "2026.07.14"
+SERVER_VERSION = "2026.07.17-context-hub"
 MAX_RESULT_CHARS = 180_000
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:

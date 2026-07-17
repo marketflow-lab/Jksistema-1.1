@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set "JK_CONTEXT_HUB_SURFACE=development"
 TITLE JK Sistema Backend
 cd /d "%~dp0"
 
@@ -11,6 +12,24 @@ set "PYTHONNOUSERSITE=1"
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PIP_CONFIG_FILE=NUL"
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+
+REM A execucao pelo checkout deve usar exclusivamente codigo e runtime desta pasta.
+REM Isso tambem neutraliza variaveis herdadas de uma copia instalada do aplicativo.
+set "JK_APP_ROOT_DIR=%~dp0"
+set "JK_LOCAL_BACKEND_SOURCE_DIR=%~dp0"
+set "JK_LOCAL_BACKEND_DIR=%~dp0"
+set "JK_APP_VERSION="
+for /f "delims=" %%V in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$package = ConvertFrom-Json -InputObject (Get-Content -Raw -LiteralPath '%~dp0package.json'); Write-Output $package.version"') do set "JK_APP_VERSION=%%V"
+if not defined JK_APP_VERSION (
+	echo ERRO: Nao foi possivel ler a versao local em package.json.
+	pause
+	exit /b 1
+)
+REM Mantem o backend iniciado pelo BAT compativel com o perfil Firebase do Electron.
+REM Sem estas flags, o Electron reinicia um backend saudavel e encerra esta janela.
+set "JK_FIREBASE_LIVE_FEATURES=true"
+set "FIREBASE_LIVE_FEATURES=true"
+set "JK_FIREBASE_CHAT_PRESENCE_ENABLED=true"
 
 set "RUNTIME_VERSIONS_FILE=%~dp0runtime-versions.json"
 if not exist "%RUNTIME_VERSIONS_FILE%" (
@@ -55,12 +74,19 @@ echo 0. Limpando processos antigos do JK Sistema...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 	"$root = (Resolve-Path '%~dp0').Path.TrimEnd('\');" ^
 	"$rootLower = $root.ToLowerInvariant();" ^
+	"$venvPrefixLower = ((Join-Path $root '.venv').TrimEnd('\') + '\').ToLowerInvariant();" ^
+	"$runtimePrefixLower = ((Join-Path $root '.python-runtime').TrimEnd('\') + '\').ToLowerInvariant();" ^
 	"$appData = (Join-Path $env:APPDATA 'jk-sistema-desktop').ToLowerInvariant();" ^
 	"$current = $PID;" ^
-	"$procs = Get-CimInstance Win32_Process | Where-Object { $cmd = [string]$_.CommandLine; $exe = [string]$_.ExecutablePath; $name = [string]$_.Name; if ($_.ProcessId -eq $current) { $false } else { $text = ($cmd + ' ' + $exe).ToLowerInvariant(); (($name -ieq 'electron.exe') -and ($text.Contains($rootLower) -or $text.Contains($appData) -or $text.Contains('jk-sistema-desktop'))) -or ($cmd -and $cmd.ToLowerInvariant().Contains('jk_electron_launcher')) -or (($name -match 'pythonw?\.exe') -and $cmd -and (($cmd.ToLowerInvariant().Contains('uvicorn backend_api:app')) -or ($cmd.ToLowerInvariant().Contains('uvicorn promo_worker_api:app')))) } };" ^
-	"foreach ($p in $procs) { Write-Host ('   Encerrando instancia antiga: PID ' + $p.ProcessId + ' - ' + $p.Name); Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue };" ^
+	"function Test-OwnPrivatePython([object]$process) { $name = [string]$process.Name; $exe = [string]$process.ExecutablePath; if (($name -notmatch '^pythonw?\.exe$') -or -not $exe) { return $false }; $exeLower = $exe.ToLowerInvariant(); return ($exeLower.StartsWith($venvPrefixLower) -or $exeLower.StartsWith($runtimePrefixLower)) };" ^
+	"function Stop-JkProcess([object]$process, [string]$reason) { $pidToStop = [int]$process.ProcessId; Write-Host ('   Encerrando ' + $reason + ': PID ' + $pidToStop + ' - ' + $process.Name); try { Stop-Process -Id $pidToStop -Force -ErrorAction Stop } catch { if (Get-Process -Id $pidToStop -ErrorAction SilentlyContinue) { Write-Warning ('Nao foi possivel encerrar o PID ' + $pidToStop + ': ' + $_.Exception.Message) } else { Write-Host ('   PID ' + $pidToStop + ' ja estava encerrado.') }; return }; Wait-Process -Id $pidToStop -Timeout 10 -ErrorAction SilentlyContinue; if (Get-Process -Id $pidToStop -ErrorAction SilentlyContinue) { Write-Warning ('PID ' + $pidToStop + ' continua ativo apos 10 segundos.') } else { Write-Host ('   PID ' + $pidToStop + ' encerrado e confirmado.') } };" ^
+	"$allProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue);" ^
+	"$procs = @($allProcesses | Where-Object { $cmd = [string]$_.CommandLine; $exe = [string]$_.ExecutablePath; $name = [string]$_.Name; if ($_.ProcessId -eq $current) { $false } else { $text = ($cmd + ' ' + $exe).ToLowerInvariant(); (($name -ieq 'electron.exe') -and ($text.Contains($rootLower) -or $text.Contains($appData) -or $text.Contains('jk-sistema-desktop'))) -or (($cmd -and $cmd.ToLowerInvariant().Contains('jk_electron_launcher')) -and $text.Contains($rootLower)) -or (Test-OwnPrivatePython $_) } });" ^
+	"foreach ($p in $procs) { $reason = if (Test-OwnPrivatePython $p) { 'Python privado local' } else { 'instancia antiga do JK Sistema' }; Stop-JkProcess $p $reason };" ^
+	"$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { Test-OwnPrivatePython $_ });" ^
+	"foreach ($p in $remaining) { Write-Warning ('Python privado continua ativo: PID ' + $p.ProcessId + ' - ' + $p.ExecutablePath) };" ^
 	"$ports = @(8001,8011,8012);" ^
-	"foreach ($port in $ports) { Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { if ($_ -and $_ -ne $current) { Write-Host ('   Liberando porta ' + $port + ': PID ' + $_); Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } } }"
+	"foreach ($port in $ports) { $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique); foreach ($ownerPid in $owners) { if (-not $ownerPid -or $ownerPid -eq $current) { continue }; $owner = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $ownerPid) -ErrorAction SilentlyContinue; if (-not $owner) { $owner = [pscustomobject]@{ ProcessId = $ownerPid; Name = 'desconhecido' } }; Stop-JkProcess $owner ('processo na porta ' + $port) } }"
 timeout /t 2 >nul
 echo.
 

@@ -43,7 +43,7 @@ DAILY_ANALYSIS_ENABLED = False
 REPORT_FORMATS = {"html", "xlsx", "pdf"}
 DEFAULT_RANKING_LIMIT = 50
 BLING_REPORT_LIMIT = 200
-CODEX_DATA_TOOLS_VERSION = "20260714-data-tools-v18-exact-sku-events"
+CODEX_DATA_TOOLS_VERSION = "20260717-data-tools-v19-context-hub"
 CODEX_DATA_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_CONTEXT_CHAR_LIMIT") or "600000")
 CODEX_DATA_PREVIEW_CHAR_LIMIT = int(os.getenv("JK_CODEX_DATA_PREVIEW_CHAR_LIMIT") or "600000")
 CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT = int(os.getenv("JK_CODEX_SALES_RETURNS_CONTEXT_CHAR_LIMIT") or "560000")
@@ -655,6 +655,18 @@ CODEX_DATA_TOOLS: list[dict[str, Any]] = [
         "status": "consultando memoria operacional",
     },
     {
+        "id": "context_hub_search",
+        "module": "sistema",
+        "description": "Busca read-only na geracao ativa e validada do Context Hub tecnico do JK Sistema.",
+        "intent_examples": ["como funciona esta tela", "qual rota implementa isso", "arquitetura do modulo", "contexto tecnico do SKU"],
+        "executor": "context_hub.search_context",
+        "external": False,
+        "cache_ttl_seconds": 0,
+        "output_fields": ["doc_id", "chunk_id", "snippet", "score", "reference", "truth_class", "source_version", "source_hash", "generation_id"],
+        "fallbacks": [],
+        "status": "consultando Context Hub",
+    },
+    {
         "id": "program_functions_catalog",
         "module": "sistema",
         "description": "Catalogo normalizado de capacidades, rotas, telas, servicos e acoes aprovaveis do JK Sistema.",
@@ -788,6 +800,7 @@ ASSISTANT_FULL_ONLY_TOOLS = frozenset(
         "local_csv_query",
         "local_cache_query",
         "operational_memory_query",
+        "context_hub_search",
         "program_functions_catalog",
         "capability_resolve",
         "program_action_match",
@@ -1562,6 +1575,14 @@ def _assistant_tool_input_schema(tool_id: str) -> dict[str, Any]:
             "categoria": "lojas_usadas|skus_frequentes|relatorios_anteriores|decisoes|regras_comerciais|custos_pendentes|alertas_ignorados|preferencias_resposta opcional",
             "limite": 20,
         },
+        "context_hub_search": {
+            "query": "pergunta ou termos tecnicos",
+            "module": "modulo ou dominio opcional",
+            "ids": "lista opcional de IDs estaveis jk:*",
+            "source_type": "tipo de fonte opcional",
+            "environment": "development|installed opcional",
+            "limit": "1..12",
+        },
         "program_functions_catalog": {
             "mensagem": "pedido do usuario ou termo de busca",
             "modulo": "modulo opcional",
@@ -1643,6 +1664,7 @@ _ASSISTANT_SOURCE_LABELS: dict[str, str] = {
     "program_action_match": "catalogo de acoes aprovaveis",
     "capability_resolve": "catalogo de capacidades do Black Jhon",
     "operational_memory_query": "memoria operacional do Black Jhon",
+    "context_hub_search": "Context Hub tecnico do JK Sistema",
     "operational_dispatcher": "leitores operacionais do JK Sistema",
     "get_integrations_status": "status das integracoes cadastradas",
     "get_stockout_forecast": "analise de ruptura de estoque",
@@ -3317,6 +3339,8 @@ def _assistant_tool_empty_reason(tool_id: str, records: int, result: Any, plan: 
         return "Nenhuma acao operacional aprovada foi reconhecida para este pedido."
     if tool_id == "program_functions_catalog":
         return "Catalogo do programa nao retornou funcoes para o filtro informado."
+    if tool_id == "context_hub_search":
+        return "A geracao ativa do Context Hub nao retornou resultados para a consulta."
     return "Consulta read-only nao retornou registros."
 
 
@@ -3760,6 +3784,31 @@ def _assistant_execute_registry_tool(
                     "message": message,
                     "category": str(plan.get("category_filter") or ""),
                     "limit": limit_safe,
+                },
+                "result": result,
+            }
+        elif tool_id == "context_hub_search":
+            from backend.services import context_hub
+
+            filters = {
+                "module": str(plan.get("module_filter") or ""),
+                "ids": list(plan.get("context_ids") or [])[:50],
+                "source_type": str(plan.get("source_type") or ""),
+                "environment": str(plan.get("environment_filter") or ""),
+            }
+            filters = {key: value for key, value in filters.items() if value not in ("", [], None)}
+            result = context_hub.search_context(
+                client_id=client_id,
+                query=message,
+                filters=filters,
+                limit=min(limit_safe, 12),
+            )
+            raw = {
+                "function": "context_hub.search_context",
+                "arguments": {
+                    "query": message,
+                    "filters": filters,
+                    "limit": min(limit_safe, 12),
                 },
                 "result": result,
             }
@@ -4462,6 +4511,9 @@ def codex_assistant_execute_tool_call(
     if tool_id in {"program_functions_catalog", "capability_resolve"}:
         default_limit = 1000
         maximum_limit = 1000
+    elif tool_id == "context_hub_search":
+        default_limit = 12
+        maximum_limit = 12
     elif tool_id == "mercado_livre_full_stock":
         default_limit = 10000
         maximum_limit = 20000
@@ -4520,6 +4572,18 @@ def codex_assistant_execute_tool_call(
         "capability_id": str(args.get("capability_id") or args.get("capacidade_id") or "").strip(),
         "source_id": str(args.get("source_id") or args.get("fonte") or "").strip(),
         "source_type": str(args.get("tipo") or args.get("type") or "").strip(),
+        "context_ids": [
+            str(item).strip()
+            for item in (
+                args.get("ids")
+                if isinstance(args.get("ids"), list)
+                else args.get("entity_ids")
+                if isinstance(args.get("entity_ids"), list)
+                else []
+            )[:50]
+            if str(item or "").strip()
+        ],
+        "environment_filter": str(args.get("environment") or args.get("ambiente") or "").strip(),
         "sql": str(args.get("sql") or "").strip(),
         "include_routes": bool(args.get("incluir_rotas", args.get("include_routes", True))),
         "include_services": bool(args.get("incluir_servicos", args.get("include_services", True))),

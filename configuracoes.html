@@ -125,10 +125,11 @@
         }
         .tab-btn[data-tab="estoque"]::before { content: "01"; }
         .tab-btn[data-tab="ia"]::before { content: "02"; }
-        .tab-btn[data-tab="credenciais"]::before { content: "03"; }
-        .tab-btn[data-tab="usuarios"]::before { content: "04"; }
-        .tab-btn[data-tab="whatsapp"]::before { content: "05"; }
-        .tab-btn[data-tab="whatsapp-history"]::before { content: "06"; }
+        .tab-btn[data-tab="context-hub"]::before { content: "03"; }
+        .tab-btn[data-tab="credenciais"]::before { content: "04"; }
+        .tab-btn[data-tab="usuarios"]::before { content: "05"; }
+        .tab-btn[data-tab="whatsapp"]::before { content: "06"; }
+        .tab-btn[data-tab="whatsapp-history"]::before { content: "07"; }
         .tab-btn.active { background: var(--teal-soft); border-color: rgba(57, 184, 166, 0.34); color: var(--text); }
         .tabs .btn-save-top { min-height: 58px; background: var(--teal); color: #06201d; border-color: transparent; }
         .page-layout { display: grid; grid-template-columns: minmax(0, 1fr) 294px; gap: 16px; align-items: start; }
@@ -269,6 +270,29 @@
             white-space: nowrap;
         }
         .api-key-status.empty { background: var(--amber-soft); color: #f4d291; border-color: rgba(217, 164, 65, 0.28); }
+        .context-hub-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 16px; }
+        .context-hub-metric { min-width: 0; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; padding: 11px; display: grid; gap: 5px; }
+        .context-hub-metric span { color: var(--muted); font-size: 0.76rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+        .context-hub-metric strong { overflow-wrap: anywhere; font-size: 0.92rem; }
+        .context-hub-layout { display: grid; grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.4fr); gap: 14px; padding: 16px; }
+        .context-hub-section { min-width: 0; border: 1px solid var(--line-soft); border-radius: 8px; background: #121619; padding: 12px; display: grid; gap: 10px; align-content: start; }
+        .context-hub-section h3 { font-size: 0.98rem; }
+        .context-hub-list { display: grid; gap: 7px; max-height: 360px; overflow: auto; }
+        .context-hub-generation { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; text-align: left; background: #171d20; }
+        .context-hub-generation:hover, .context-hub-generation[aria-current="true"] { border-color: rgba(57, 184, 166, 0.48); background: var(--teal-soft); }
+        .context-hub-generation span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .context-hub-generation small { color: var(--muted); }
+        .context-hub-findings { display: grid; gap: 7px; padding: 0 16px 16px; }
+        .context-hub-finding { border-left: 3px solid var(--amber); border-radius: 6px; background: var(--amber-soft); padding: 8px 10px; color: #f4d291; font-size: 0.82rem; line-height: 1.4; }
+        .context-hub-finding.error { border-color: var(--red); background: rgba(220, 106, 95, 0.14); color: #ffd0cc; }
+        .context-hub-result { border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; padding: 10px; display: grid; gap: 5px; }
+        .context-hub-result strong, .context-hub-result code { overflow-wrap: anywhere; }
+        .context-hub-result code { color: #9bd1ff; font-size: 0.75rem; }
+        .context-hub-result p { color: var(--muted); white-space: pre-wrap; line-height: 1.4; font-size: 0.84rem; }
+        .context-hub-detail { margin: 0; max-height: 260px; overflow: auto; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Consolas, monospace; }
+        .context-hub-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .context-hub-toolbar .check-item { flex: 1 1 220px; }
+        .context-hub-toolbar button { flex: 0 0 auto; }
         .wa-config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 16px; }
         .wa-health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
         .wa-health-item { padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: #101315; font-size: 0.8rem; }
@@ -339,7 +363,7 @@
         }
         @media (max-width: 900px) {
             .container { width: min(100% - 20px, 760px); padding-top: 8px; }
-            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout, .wa-config-grid, .wa-health-grid, .wa-history-layout, .wa-voice-fields { grid-template-columns: 1fr; }
+            .header, .tabs, .row, .grid-2, .ia-grid, .api-key-grid, .checkbox-grid, .users-layout, .wa-config-grid, .wa-health-grid, .wa-history-layout, .wa-voice-fields, .context-hub-grid, .context-hub-layout { grid-template-columns: 1fr; }
             .tabs { position: static; }
             .header > div:last-child { justify-content: stretch; }
             .header > div:last-child .back-btn { flex: 1 1 calc(50% - 8px); }
@@ -362,6 +386,7 @@
     <div class="tabs" role="tablist" aria-label="Áreas de configuração">
         <button class="tab-btn active" data-tab="estoque">Estoque</button>
         <button id="tabIaBtn" class="tab-btn hidden" data-tab="ia">IA por função</button>
+        <button id="tabContextHubBtn" class="tab-btn hidden" data-tab="context-hub" role="tab" aria-controls="tab-context-hub" aria-selected="false">Contexto IA</button>
         <button id="tabCredenciaisBtn" class="tab-btn hidden" data-tab="credenciais">Credenciais</button>
         <button id="tabUsuariosBtn" class="tab-btn hidden" data-tab="usuarios">Usuários</button>
         <button id="tabWhatsappBtn" class="tab-btn hidden" data-tab="whatsapp">WhatsApp — Black John</button>
@@ -485,6 +510,72 @@
                             <pre id="agentGuidancePreview" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;margin:0;color:var(--muted);font:12px/1.45 ui-monospace,Consolas,monospace;"></pre>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div id="tab-context-hub" class="tab-panel" role="tabpanel" aria-labelledby="tabContextHubBtn">
+                <div id="cardContextHub" class="card hidden">
+                    <div class="card-head">
+                        <div>
+                            <h2>Context Hub e Obsidian</h2>
+                            <div class="hint">Contexto técnico versionado, isolado por cliente e publicado somente depois das validações de segurança.</div>
+                        </div>
+                        <div class="context-hub-toolbar">
+                            <button id="btnContextHubOpen" class="btn-refresh" type="button">Abrir no Obsidian</button>
+                            <button id="btnContextHubRefresh" class="btn-refresh" type="button">Atualizar</button>
+                        </div>
+                    </div>
+                    <div id="contextHubStatus" class="status loading" role="status" aria-live="polite">Abra a aba para carregar o estado atual.</div>
+                    <div class="context-hub-grid" aria-label="Resumo do Context Hub">
+                        <div class="context-hub-metric"><span>Estado</span><strong id="contextHubState">—</strong></div>
+                        <div class="context-hub-metric"><span>Superfície</span><strong id="contextHubSurface">—</strong></div>
+                        <div class="context-hub-metric"><span>Versão-fonte</span><strong id="contextHubSourceVersion">—</strong></div>
+                        <div class="context-hub-metric"><span>Geração ativa</span><strong id="contextHubActiveGeneration">—</strong></div>
+                    </div>
+                    <div class="context-hub-grid" aria-label="Mudanças da próxima geração">
+                        <div class="context-hub-metric"><span>Adicionados</span><strong id="contextHubDiffAdded">0</strong></div>
+                        <div class="context-hub-metric"><span>Atualizados</span><strong id="contextHubDiffUpdated">0</strong></div>
+                        <div class="context-hub-metric"><span>Removidos</span><strong id="contextHubDiffRemoved">0</strong></div>
+                        <div class="context-hub-metric"><span>Bloqueios</span><strong id="contextHubBlockerCount">0</strong></div>
+                    </div>
+                    <div id="contextHubFindings" class="context-hub-findings" aria-label="Achados de validação"></div>
+                    <div class="context-hub-layout">
+                        <section class="context-hub-section" aria-labelledby="contextHubSettingsTitle">
+                            <h3 id="contextHubSettingsTitle">Automação</h3>
+                            <label class="check-item"><input id="contextHubAutoPublish" type="checkbox"><span>Publicar automaticamente quando não houver bloqueios</span></label>
+                            <label class="check-item"><input id="contextHubPaused" type="checkbox"><span>Pausar varreduras e publicações automáticas</span></label>
+                            <div class="actions" style="margin:0;">
+                                <button id="btnContextHubSaveSettings" class="btn-save" type="button">Salvar automação</button>
+                                <button id="btnContextHubRebuild" class="btn-warning" type="button">Reconstruir contexto</button>
+                            </div>
+                            <div id="contextHubSettingsStatus" class="status" role="status" aria-live="polite"></div>
+                        </section>
+                        <section class="context-hub-section" aria-labelledby="contextHubGenerationsTitle">
+                            <div class="card-head" style="padding:0 0 10px;background:none;">
+                                <div><h3 id="contextHubGenerationsTitle">Gerações</h3><div class="hint">Selecione uma geração para revisar e publicar ou restaurar.</div></div>
+                                <button id="btnContextHubRefreshGenerations" class="btn-refresh" type="button">Recarregar</button>
+                            </div>
+                            <div id="contextHubGenerations" class="context-hub-list"><div class="hint">Nenhuma geração carregada.</div></div>
+                            <pre id="contextHubGenerationDetail" class="context-hub-detail" aria-live="polite">Selecione uma geração.</pre>
+                            <div class="actions" style="margin:0;">
+                                <button id="btnContextHubPublish" class="btn-save hidden" type="button">Publicar selecionada</button>
+                                <button id="btnContextHubRollback" class="btn-warning hidden" type="button">Restaurar selecionada</button>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+
+                <div id="cardContextHubSearch" class="card hidden">
+                    <div class="card-head"><div><h2>Busca de teste</h2><div class="hint">Consulta somente leitura na geração ativa, com no máximo 12 resultados.</div></div></div>
+                    <form id="contextHubSearchForm" class="row" role="search">
+                        <div>
+                            <label class="label" for="contextHubSearchQuery">Termo ou pergunta</label>
+                            <input id="contextHubSearchQuery" type="text" minlength="2" maxlength="500" autocomplete="off" placeholder="Ex.: qual API atualiza o estoque?">
+                        </div>
+                        <button id="btnContextHubSearch" class="btn-save" type="submit">Buscar no contexto</button>
+                    </form>
+                    <div id="contextHubSearchStatus" class="status" role="status" aria-live="polite"></div>
+                    <div id="contextHubSearchResults" class="context-hub-findings" aria-label="Resultados da busca"></div>
                 </div>
             </div>
 
@@ -792,8 +883,11 @@
         btn.addEventListener('click', () => {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab-btn[role="tab"]').forEach(b => b.setAttribute('aria-selected', 'false'));
             btn.classList.add('active');
+            if (btn.getAttribute('role') === 'tab') btn.setAttribute('aria-selected', 'true');
             document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+            if (btn.dataset.tab === 'context-hub') carregarContextHub();
         });
     });
 
@@ -849,6 +943,7 @@
     const statusEl = document.getElementById('status');
 
     const tabIaBtn = document.getElementById('tabIaBtn');
+    const tabContextHubBtn = document.getElementById('tabContextHubBtn');
     const tabCredenciaisBtn = document.getElementById('tabCredenciaisBtn');
     const tabUsuariosBtn = document.getElementById('tabUsuariosBtn');
     const cardAdminUsuarios = document.getElementById('cardAdminUsuarios');
@@ -856,6 +951,25 @@
     const userEmptyState = document.getElementById('userEmptyState');
     const userDetailPanel = document.getElementById('userDetailPanel');
     const userStatus = document.getElementById('userStatus');
+
+    const cardContextHub = document.getElementById('cardContextHub');
+    const cardContextHubSearch = document.getElementById('cardContextHubSearch');
+    const contextHubStatus = document.getElementById('contextHubStatus');
+    const contextHubSettingsStatus = document.getElementById('contextHubSettingsStatus');
+    const contextHubSearchStatus = document.getElementById('contextHubSearchStatus');
+    const contextHubGenerations = document.getElementById('contextHubGenerations');
+    const contextHubGenerationDetail = document.getElementById('contextHubGenerationDetail');
+    const contextHubFindings = document.getElementById('contextHubFindings');
+    const contextHubSearchResults = document.getElementById('contextHubSearchResults');
+    const contextHubAutoPublish = document.getElementById('contextHubAutoPublish');
+    const contextHubPaused = document.getElementById('contextHubPaused');
+    const contextHubSearchQuery = document.getElementById('contextHubSearchQuery');
+    const btnContextHubPublish = document.getElementById('btnContextHubPublish');
+    const btnContextHubRollback = document.getElementById('btnContextHubRollback');
+    let contextHubLoaded = false;
+    let contextHubLoading = false;
+    let contextHubActiveGenerationId = '';
+    let contextHubSelectedGeneration = null;
 
     function normalizarIaModo(valor) {
         return String(valor || '').trim() === 'agente' ? 'agente' : 'modelo';
@@ -905,12 +1019,15 @@
 
     if (canManageUsers) {
         tabIaBtn.classList.remove('hidden');
+        tabContextHubBtn.classList.remove('hidden');
         tabCredenciaisBtn.classList.remove('hidden');
         tabUsuariosBtn.classList.remove('hidden');
         cardAdminUsuarios.classList.remove('hidden');
         cardIaPadrao.classList.remove('hidden');
         cardIaCredenciais.classList.remove('hidden');
         cardAgentGuidance.classList.remove('hidden');
+        cardContextHub.classList.remove('hidden');
+        cardContextHubSearch.classList.remove('hidden');
     }
 
     function setStatus(texto, tipo = '') {
@@ -922,6 +1039,383 @@
         if (!agentGuidanceStatus) return;
         agentGuidanceStatus.className = 'status' + (tipo ? ` ${tipo}` : '');
         agentGuidanceStatus.textContent = texto || '';
+    }
+
+    function setContextHubStatus(element, text, type = '') {
+        if (!element) return;
+        element.className = 'status' + (type ? ` ${type}` : '');
+        element.textContent = String(text || '');
+    }
+
+    function setContextHubText(id, value, fallback = '—') {
+        const element = document.getElementById(id);
+        if (element) element.textContent = String(value ?? '').trim() || fallback;
+    }
+
+    async function contextHubRequest(pathname, options = {}) {
+        if (!canManageUsers) throw new Error('Apenas administradores full podem acessar o Context Hub.');
+        const requestOptions = { cache: 'no-store', ...options };
+        requestOptions.headers = obterAuthHeaders({
+            ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+            ...(options.headers || {})
+        });
+        const response = await fetch(pathname, requestOptions);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const message = response.status === 403
+                ? 'Apenas administradores full podem executar esta operação.'
+                : (data.detail || data.message || `Falha no Context Hub (HTTP ${response.status}).`);
+            throw new Error(message);
+        }
+        return data && typeof data === 'object' ? data : {};
+    }
+
+    function contextHubGenerationId(generation) {
+        if (generation && typeof generation === 'object') {
+            return String(generation.generation_id || generation.id || '').trim();
+        }
+        return String(generation || '').trim();
+    }
+
+    function contextHubGenerationStatus(generation) {
+        return String(generation && (generation.status || generation.state) || '').trim().toLowerCase();
+    }
+
+    function contextHubCount(source, ...keys) {
+        for (const key of keys) {
+            const number = Number(source && source[key]);
+            if (Number.isFinite(number)) return number;
+        }
+        return 0;
+    }
+
+    function contextHubFindingsFrom(status) {
+        const validation = status && status.validation && typeof status.validation === 'object' ? status.validation : {};
+        const candidates = [
+            { items: status?.blockers, defaultSeverity: 'blocker' },
+            { items: status?.findings, defaultSeverity: 'warning' },
+            { items: validation.blockers, defaultSeverity: 'blocker' },
+            { items: validation.findings, defaultSeverity: 'warning' }
+        ];
+        const findings = [];
+        const seen = new Set();
+        candidates.forEach(candidate => {
+            if (!Array.isArray(candidate.items)) return;
+            candidate.items.forEach(item => {
+                if (findings.length >= 50) return;
+                if (typeof item === 'string') {
+                    const message = item.slice(0, 500);
+                    const key = `${candidate.defaultSeverity}:${message}`;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    findings.push({
+                        severity: candidate.defaultSeverity,
+                        message,
+                        blocking: candidate.defaultSeverity === 'blocker'
+                    });
+                    return;
+                }
+                if (!item || typeof item !== 'object') return;
+                const message = String(item.message || item.summary || item.code || '').trim();
+                if (!message) return;
+                const severity = String(item.severity || item.level || candidate.defaultSeverity).toLowerCase();
+                const key = `${severity}:${message}`;
+                if (seen.has(key)) return;
+                seen.add(key);
+                findings.push({
+                    severity,
+                    message: message.slice(0, 500),
+                    blocking: /error|critical|block/i.test(severity)
+                });
+            });
+        });
+        return findings;
+    }
+
+    function renderContextHubFindings(findings) {
+        contextHubFindings.replaceChildren();
+        if (!findings.length) {
+            const empty = document.createElement('div');
+            empty.className = 'status success';
+            empty.textContent = 'Nenhum bloqueio de validação encontrado.';
+            contextHubFindings.appendChild(empty);
+            return;
+        }
+        findings.forEach(finding => {
+            const row = document.createElement('div');
+            row.className = 'context-hub-finding' + (finding.blocking ? ' error' : '');
+            row.textContent = finding.message;
+            contextHubFindings.appendChild(row);
+        });
+    }
+
+    function renderContextHubStatus(data) {
+        const status = data.context_hub && typeof data.context_hub === 'object' ? data.context_hub : data;
+        const activeGeneration = status.active_generation || status.generation || null;
+        const diff = status.diff && typeof status.diff === 'object' ? status.diff : {};
+        const settings = status.settings && typeof status.settings === 'object' ? status.settings : {};
+        const findings = contextHubFindingsFrom(status);
+        const blockers = findings.filter(finding => finding.blocking);
+        contextHubActiveGenerationId = contextHubGenerationId(activeGeneration);
+
+        setContextHubText('contextHubState', status.state || status.status || 'indisponível');
+        setContextHubText('contextHubSurface', status.surface || status.environment);
+        setContextHubText('contextHubSourceVersion', status.source_version || status.version);
+        setContextHubText('contextHubActiveGeneration', contextHubActiveGenerationId || 'Nenhuma');
+        setContextHubText('contextHubDiffAdded', contextHubCount(diff, 'added', 'documents_added'), '0');
+        setContextHubText('contextHubDiffUpdated', contextHubCount(diff, 'updated', 'changed', 'documents_updated'), '0');
+        setContextHubText('contextHubDiffRemoved', contextHubCount(diff, 'removed', 'documents_removed'), '0');
+        setContextHubText('contextHubBlockerCount', blockers.length, '0');
+        contextHubAutoPublish.checked = settings.auto_publish_enabled === true;
+        contextHubPaused.checked = settings.paused === true;
+        renderContextHubFindings(findings);
+
+        const state = String(status.state || status.status || '').toLowerCase();
+        setContextHubStatus(
+            contextHubStatus,
+            blockers.length
+                ? `${blockers.length} bloqueio(s) impedem a próxima publicação.`
+                : (findings.length
+                    ? `${findings.length} aviso(s) para revisão; nenhum bloqueia a publicação.`
+                    : (state ? `Context Hub ${state}.` : 'Context Hub carregado.')),
+            blockers.length ? 'error' : (findings.length ? '' : 'success')
+        );
+    }
+
+    function contextHubGenerationSummary(generation) {
+        const diff = generation?.diff && typeof generation.diff === 'object' ? generation.diff : {};
+        return [
+            `ID: ${contextHubGenerationId(generation) || '—'}`,
+            `Estado: ${contextHubGenerationStatus(generation) || '—'}`,
+            `Versão-fonte: ${String(generation?.source_version || generation?.version || '—')}`,
+            `Criada em: ${String(generation?.created_at || generation?.generated_at || '—')}`,
+            `Documentos: ${contextHubCount(generation, 'document_count', 'documents_count', 'documents')}`,
+            `Chunks: ${contextHubCount(generation, 'chunk_count', 'chunks_count', 'chunks')}`,
+            `Diff: +${contextHubCount(diff, 'added', 'documents_added')} / ~${contextHubCount(diff, 'updated', 'changed', 'documents_updated')} / -${contextHubCount(diff, 'removed', 'documents_removed')}`
+        ].join('\n');
+    }
+
+    function updateContextHubGenerationActions() {
+        const id = contextHubGenerationId(contextHubSelectedGeneration);
+        const state = contextHubGenerationStatus(contextHubSelectedGeneration);
+        btnContextHubPublish.classList.toggle('hidden', !id || state !== 'ready');
+        btnContextHubRollback.classList.toggle(
+            'hidden',
+            !id || id === contextHubActiveGenerationId || !['active', 'superseded'].includes(state)
+        );
+    }
+
+    async function selecionarContextHubGeneration(generation) {
+        const id = contextHubGenerationId(generation);
+        if (!id) return;
+        contextHubSelectedGeneration = generation;
+        contextHubGenerations.querySelectorAll('.context-hub-generation').forEach(button => {
+            button.setAttribute('aria-current', button.dataset.generationId === id ? 'true' : 'false');
+        });
+        contextHubGenerationDetail.textContent = 'Carregando detalhes...';
+        updateContextHubGenerationActions();
+        try {
+            const details = await contextHubRequest(`/api/admin/context-hub/generations/${encodeURIComponent(id)}`);
+            contextHubSelectedGeneration = details.generation || details;
+            contextHubGenerationDetail.textContent = contextHubGenerationSummary(contextHubSelectedGeneration);
+            updateContextHubGenerationActions();
+        } catch (err) {
+            contextHubGenerationDetail.textContent = err.message || String(err);
+        }
+    }
+
+    function renderContextHubGenerations(items) {
+        contextHubGenerations.replaceChildren();
+        const generations = Array.isArray(items) ? items : [];
+        if (!generations.length) {
+            const empty = document.createElement('div');
+            empty.className = 'hint';
+            empty.textContent = 'Nenhuma geração disponível.';
+            contextHubGenerations.appendChild(empty);
+            contextHubSelectedGeneration = null;
+            contextHubGenerationDetail.textContent = 'Nenhuma geração selecionada.';
+            updateContextHubGenerationActions();
+            return;
+        }
+        generations.forEach(generation => {
+            const id = contextHubGenerationId(generation);
+            if (!id) return;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'context-hub-generation';
+            button.dataset.generationId = id;
+            button.setAttribute('aria-current', id === contextHubActiveGenerationId ? 'true' : 'false');
+            const label = document.createElement('span');
+            label.textContent = id;
+            const state = document.createElement('small');
+            state.textContent = contextHubGenerationStatus(generation) || 'sem estado';
+            button.append(label, state);
+            button.addEventListener('click', () => selecionarContextHubGeneration(generation));
+            contextHubGenerations.appendChild(button);
+        });
+    }
+
+    async function carregarContextHubGenerations() {
+        if (!canManageUsers) return;
+        contextHubGenerations.replaceChildren();
+        const loading = document.createElement('div');
+        loading.className = 'hint';
+        loading.textContent = 'Carregando gerações...';
+        contextHubGenerations.appendChild(loading);
+        try {
+            const data = await contextHubRequest('/api/admin/context-hub/generations');
+            renderContextHubGenerations(data.generations || data.items || []);
+        } catch (err) {
+            contextHubGenerations.replaceChildren();
+            const error = document.createElement('div');
+            error.className = 'status error';
+            error.textContent = err.message || String(err);
+            contextHubGenerations.appendChild(error);
+        }
+    }
+
+    async function carregarContextHub(force = false) {
+        if (!canManageUsers || contextHubLoading || (contextHubLoaded && !force)) return;
+        contextHubLoading = true;
+        setContextHubStatus(contextHubStatus, 'Carregando Context Hub...', 'loading');
+        try {
+            const data = await contextHubRequest('/api/admin/context-hub/status');
+            renderContextHubStatus(data);
+            contextHubLoaded = true;
+            await carregarContextHubGenerations();
+        } catch (err) {
+            setContextHubStatus(contextHubStatus, err.message || String(err), 'error');
+        } finally {
+            contextHubLoading = false;
+        }
+    }
+
+    async function salvarContextHubSettings() {
+        setContextHubStatus(contextHubSettingsStatus, 'Salvando automação...', 'loading');
+        try {
+            await contextHubRequest('/api/admin/context-hub/settings', {
+                method: 'PUT',
+                body: JSON.stringify({
+                    auto_publish_enabled: contextHubAutoPublish.checked,
+                    paused: contextHubPaused.checked
+                })
+            });
+            setContextHubStatus(contextHubSettingsStatus, 'Automação atualizada.', 'success');
+            contextHubLoaded = false;
+            await carregarContextHub(true);
+        } catch (err) {
+            setContextHubStatus(contextHubSettingsStatus, err.message || String(err), 'error');
+        }
+    }
+
+    async function reconstruirContextHub() {
+        if (!window.confirm('Reconstruir todo o contexto autorizado agora? A geração ativa será preservada se houver falha.')) return;
+        setContextHubStatus(contextHubSettingsStatus, 'Solicitando reconstrução...', 'loading');
+        try {
+            const data = await contextHubRequest('/api/admin/context-hub/rebuild', {
+                method: 'POST',
+                body: JSON.stringify({ reason: 'manual_admin' })
+            });
+            setContextHubStatus(
+                contextHubSettingsStatus,
+                data.message || 'Reconstrução iniciada. Atualize o status para acompanhar.',
+                'success'
+            );
+            contextHubLoaded = false;
+            await carregarContextHub(true);
+        } catch (err) {
+            setContextHubStatus(contextHubSettingsStatus, err.message || String(err), 'error');
+        }
+    }
+
+    async function executarAcaoContextHubGeneration(action) {
+        const id = contextHubGenerationId(contextHubSelectedGeneration);
+        if (!id) return;
+        const label = action === 'publish' ? 'publicar' : 'restaurar';
+        if (!window.confirm(`Deseja ${label} a geração ${id}?`)) return;
+        contextHubGenerationDetail.textContent = `${label === 'publicar' ? 'Publicando' : 'Restaurando'} geração...`;
+        try {
+            await contextHubRequest(
+                `/api/admin/context-hub/generations/${encodeURIComponent(id)}/${action === 'publish' ? 'publish' : 'rollback'}`,
+                { method: 'POST', body: JSON.stringify({}) }
+            );
+            contextHubLoaded = false;
+            await carregarContextHub(true);
+        } catch (err) {
+            contextHubGenerationDetail.textContent = err.message || String(err);
+        }
+    }
+
+    async function abrirContextHubNoObsidian() {
+        setContextHubStatus(contextHubSettingsStatus, 'Abrindo Context Vault...', 'loading');
+        try {
+            if (!window.electronAPI || typeof window.electronAPI.openContextVault !== 'function') {
+                throw new Error('Esta função está disponível apenas no aplicativo desktop atualizado.');
+            }
+            const token = typeof obterToken === 'function' ? obterToken() : '';
+            const result = await window.electronAPI.openContextVault(token || '');
+            setContextHubStatus(
+                contextHubSettingsStatus,
+                result?.method === 'folder' ? 'Vault aberto no Explorador.' : 'Vault enviado ao Obsidian.',
+                'success'
+            );
+        } catch (err) {
+            setContextHubStatus(contextHubSettingsStatus, err.message || String(err), 'error');
+        }
+    }
+
+    function renderContextHubSearchResults(items) {
+        contextHubSearchResults.replaceChildren();
+        const results = Array.isArray(items) ? items.slice(0, 12) : [];
+        if (!results.length) {
+            const empty = document.createElement('div');
+            empty.className = 'status';
+            empty.textContent = 'Nenhum trecho encontrado na geração ativa.';
+            contextHubSearchResults.appendChild(empty);
+            return;
+        }
+        results.forEach(item => {
+            const card = document.createElement('article');
+            card.className = 'context-hub-result';
+            const title = document.createElement('strong');
+            title.textContent = String(item.doc_id || item.id || 'Documento');
+            const reference = document.createElement('code');
+            reference.textContent = String(item.reference || item.source_ref || item.chunk_id || '');
+            const snippet = document.createElement('p');
+            snippet.textContent = String(item.snippet || item.text || '').slice(0, 1600);
+            const meta = document.createElement('small');
+            meta.className = 'small';
+            meta.textContent = [
+                item.truth_class ? `verdade: ${item.truth_class}` : '',
+                item.source_version ? `versão: ${item.source_version}` : '',
+                Number.isFinite(Number(item.score)) ? `score: ${Number(item.score).toFixed(3)}` : ''
+            ].filter(Boolean).join(' • ');
+            card.append(title, reference, snippet, meta);
+            contextHubSearchResults.appendChild(card);
+        });
+    }
+
+    async function buscarContextHub(event) {
+        event?.preventDefault();
+        const query = String(contextHubSearchQuery.value || '').trim();
+        if (query.length < 2) {
+            setContextHubStatus(contextHubSearchStatus, 'Digite pelo menos 2 caracteres.', 'error');
+            contextHubSearchQuery.focus();
+            return;
+        }
+        setContextHubStatus(contextHubSearchStatus, 'Buscando na geração ativa...', 'loading');
+        contextHubSearchResults.replaceChildren();
+        try {
+            const data = await contextHubRequest('/api/admin/context-hub/search', {
+                method: 'POST',
+                body: JSON.stringify({ query, limit: 12 })
+            });
+            const results = data.results || data.items || [];
+            renderContextHubSearchResults(results);
+            setContextHubStatus(contextHubSearchStatus, `${Math.min(results.length, 12)} resultado(s).`, 'success');
+        } catch (err) {
+            setContextHubStatus(contextHubSearchStatus, err.message || String(err), 'error');
+        }
     }
 
     function renderAgentGuidance(items) {
@@ -1639,6 +2133,14 @@
     btnAgentGuidanceReload?.addEventListener('click', carregarAgentGuidance);
     btnAgentGuidanceSimulate?.addEventListener('click', simularAgentGuidance);
     btnAgentGuidanceSave?.addEventListener('click', salvarAgentGuidance);
+    document.getElementById('btnContextHubRefresh')?.addEventListener('click', () => carregarContextHub(true));
+    document.getElementById('btnContextHubOpen')?.addEventListener('click', abrirContextHubNoObsidian);
+    document.getElementById('btnContextHubSaveSettings')?.addEventListener('click', salvarContextHubSettings);
+    document.getElementById('btnContextHubRebuild')?.addEventListener('click', reconstruirContextHub);
+    document.getElementById('btnContextHubRefreshGenerations')?.addEventListener('click', carregarContextHubGenerations);
+    document.getElementById('contextHubSearchForm')?.addEventListener('submit', buscarContextHub);
+    btnContextHubPublish?.addEventListener('click', () => executarAcaoContextHubGeneration('publish'));
+    btnContextHubRollback?.addEventListener('click', () => executarAcaoContextHubGeneration('rollback'));
 
     renderPermissionGrid();
     limparFormularioUsuario(false);

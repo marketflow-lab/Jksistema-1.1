@@ -66,13 +66,20 @@ def _shared_sync_machine_push_scope(sessao: dict, scope: str, machine_id: str = 
         skip_if_remote_hash_matches=skip_if_remote_hash_matches,
     )
 
-def _shared_sync_machine_pull_scope(sessao: dict, scope: str) -> dict:
+def _shared_sync_machine_pull_scope(sessao: dict, scope: str, *, force: bool = False) -> dict:
     bundle_id = _shared_sync_machine_doc_id(sessao.get("client_id"), sessao.get("username"), scope)
     meta = _shared_sync_remote_meta_by_id(bundle_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Nenhum backup remoto encontrado para esse compartilhamento.")
     state_scope = _shared_sync_machine_state_scope(scope)
-    if _shared_sync_pull_already_current(sessao.get("client_id"), sessao.get("username") or "", state_scope, meta):
+    # A importacao manual vem depois de uma previa confirmada pelo usuario e
+    # precisa reaplicar o snapshot. O estado historico pode dizer que o hash ja
+    # foi recebido mesmo quando o arquivo local foi removido, substituido ou
+    # gravado em outra copia do app. O skip continua valido apenas para rotinas
+    # automaticas/idempotentes que nao foram explicitamente solicitadas.
+    if not force and _shared_sync_pull_already_current(
+        sessao.get("client_id"), sessao.get("username") or "", state_scope, meta,
+    ):
         return _shared_sync_pull_skip_payload(scope, meta)
     bundle, meta = _shared_sync_obter_bundle_por_id(bundle_id, meta)
     scope_config = {"share_between_users": bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped"))}

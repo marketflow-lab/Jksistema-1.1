@@ -1,6 +1,6 @@
 {
   "name": "jk-sistema-desktop",
-  "version": "1.0.99",
+  "version": "1.0.100",
   "description": "Cliente desktop para JK Sistema",
   "main": "main.js",
   "packageManager": "npm@11.6.2",
@@ -84,6 +84,8 @@
           "!ml_questions_gemini/**/__pycache__/**",
           "!ml_questions_gemini/**/*.pyc",
           "firebase-presence.env",
+          "context-bundle-manifest.json",
+          "docs/knowledge/**",
           "static/**",
           "img/**",
           "python_runtime/**",

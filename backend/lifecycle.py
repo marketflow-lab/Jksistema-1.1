@@ -37,6 +37,7 @@ def register_startup_events(
     legacy_module: ModuleType,
     *,
     extra_handlers: Iterable[Callable[[], None]] = (),
+    extra_shutdown_handlers: Iterable[Callable[[], None]] = (),
 ) -> None:
     router = getattr(app, "router", None)
     add_event_handler = getattr(router, "add_event_handler", None)
@@ -49,3 +50,5 @@ def register_startup_events(
         add_event_handler("shutdown", getattr(legacy_module, spec.endpoint_name))
     for handler in extra_handlers:
         add_event_handler("startup", handler)
+    for handler in extra_shutdown_handlers:
+        add_event_handler("shutdown", handler)

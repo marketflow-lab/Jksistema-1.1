@@ -180,9 +180,7 @@ def _shared_sync_merge_anuncios_ml_usuario(
     for rel, data in fontes:
         lower = os.path.basename(str(rel or "")).lower()
         target_rel = _shared_sync_target_rel_usuario("anuncios_ml", username, rel)
-        target_abs = os.path.abspath(os.path.join(tenant_abs, target_rel))
-        if not target_abs.startswith(tenant_abs + os.sep):
-            raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+        target_abs = _shared_sync_resolve_tenant_path(tenant_abs, target_rel)
         _shared_sync_backup_target(tenant_abs, backup_dir, target_rel, target_abs)
         payload = _shared_sync_json_from_bytes(data, rel)
         if lower.startswith("favoritos_anuncios_ignorados_"):
@@ -224,9 +222,7 @@ def _shared_sync_aplicar_user_scoped_share(
             "shared_source_count": len(fontes),
         }
     target_rel = _shared_sync_target_rel_usuario(scope, username)
-    target_abs = os.path.abspath(os.path.join(tenant_abs, target_rel))
-    if not target_abs.startswith(tenant_abs + os.sep):
-        raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+    target_abs = _shared_sync_resolve_tenant_path(tenant_abs, target_rel)
     _shared_sync_backup_target(tenant_abs, backup_dir, target_rel, target_abs)
     if scope == "favoritos_historico":
         _shared_sync_merge_historico_usuario(client_id, username, fontes)

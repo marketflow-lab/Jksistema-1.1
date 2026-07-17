@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import concurrent.futures
+import fnmatch
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ from typing import Any, Optional
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
-READONLY_SOURCES_VERSION = "20260713-readonly-sources-v2-live-questions"
+READONLY_SOURCES_VERSION = "20260717-readonly-sources-v3-generic-off"
 MAX_DISCOVERY_FILES = int(os.getenv("JK_CODEX_READONLY_MAX_DISCOVERY_FILES") or "1200")
 MAX_TEXT_BYTES = int(os.getenv("JK_CODEX_READONLY_MAX_TEXT_BYTES") or str(512 * 1024))
 DEFAULT_LIMIT = 50
@@ -28,8 +29,19 @@ SEARCH_STOPWORDS = {
     "bling", "local", "locais", "fonte", "fontes", "consulta", "consultar", "busca", "buscar",
 }
 SENSITIVE_KEY_RE = re.compile(
-    r"(token|access_token|refresh_token|secret|client_secret|api_key|apikey|senha|password|cookie|authorization|jwt)",
+    r"(token|access_token|refresh_token|secret|client_secret|api_key|apikey|senha|password|cookie|authorization|jwt|"
+    r"e-?mail|telefone|phone|celular|whatsapp|cpf|cnpj|endere[cç]o|address|buyer|comprador)",
     re.I,
+)
+PII_VALUE_PATTERNS = (
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.I),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(
+        r"(?i)\b(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|password|senha)\b\s*[:=]\s*[\"']?[^\s\"']{8,}"
+    ),
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I),
+    re.compile(r"(?<!\d)(?:\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})(?!\d)"),
+    re.compile(r"(?<!\d)(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}(?!\d)"),
 )
 SYNC_HINT_RE = re.compile(r"(sync|sincron|shared|state|status|erro|error|log|auditoria|job|worker|progress)", re.I)
 CACHE_HINT_RE = re.compile(r"(cache|historico|state|favoritos|ia_|web_cache|ml_|mercado|bling|integracoes)", re.I)
@@ -48,6 +60,38 @@ QUESTION_ALLOWED_STATUSES = {
     "DELETED",
     "UNDER_REVIEW",
 }
+
+# Generic discovery is intentionally narrower than the dedicated, permission-aware
+# business tools. These paths can contain credentials, buyer data, private AI
+# conversations, or mutable operational state and must never become ad-hoc Codex
+# sources merely because a supported extension was found.
+DISCOVERY_BLOCKED_DIR_NAMES = {
+    ".obsidian",
+    "contextvault",
+    "context_hub",
+    "codex_assistant",
+    "ia_conversas",
+    "credenciais",
+    "credentials",
+    "secrets",
+    "tokens",
+}
+DISCOVERY_BLOCKED_FILE_NAMES = {
+    "ia_rag_local.db",
+    "ia_rag_local.db-shm",
+    "ia_rag_local.db-wal",
+    "context_hub.db",
+    "context_hub.sqlite",
+    "lojas_config.json",
+    "integracoes.json",
+    "configuracoes_globais.json",
+    "shared_sync_config.json",
+}
+DISCOVERY_SENSITIVE_NAME_RE = re.compile(
+    r"(?:^|[_.-])(config|configuration|credential|credencial|secret|token|oauth|jwt|api[_-]?key|password|senha)(?:[_.-]|$)",
+    re.I,
+)
+DISCOVERY_OPERATIONAL_DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 
 
 def configure_codex_readonly_sources_runtime(runtime_module=None):
@@ -167,6 +211,15 @@ def _risk_for_path(path: Path) -> str:
 
 
 def _redact(value: Any, key: str = "") -> Any:
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key == "buyer_question_history" and isinstance(value, list):
+        return [_redact(item) for item in value[:200]]
+    if (
+        normalized_key.endswith("_count")
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        return value
     if key and SENSITIVE_KEY_RE.search(str(key)):
         text = str(value or "")
         if not text:
@@ -177,9 +230,46 @@ def _redact(value: Any, key: str = "") -> Any:
         return {str(k): _redact(v, str(k)) for k, v in value.items()}
     if isinstance(value, list):
         return [_redact(item) for item in value[:200]]
-    if isinstance(value, str) and len(value) > 4000:
-        return value[:4000] + "...[truncated]"
+    if isinstance(value, str):
+        text = value
+        for pattern in PII_VALUE_PATTERNS:
+            text = pattern.sub("[redacted:pii]", text)
+        if len(text) > 4000:
+            return text[:4000] + "...[truncated]"
+        return text
     return value
+
+
+def _generic_discovery_enabled() -> bool:
+    return str(os.getenv("JK_CODEX_READONLY_GENERIC_DISCOVERY_ENABLED") or "").strip().lower() in {
+        "1", "true", "yes", "sim", "on",
+    }
+
+
+def _generic_discovery_allowlist() -> tuple[str, ...]:
+    raw = str(os.getenv("JK_CODEX_READONLY_DISCOVERY_ALLOWLIST") or "")
+    patterns: list[str] = []
+    for item in re.split(r"[;,\r\n]+", raw):
+        pattern = str(item or "").strip().replace("\\", "/").lstrip("/")
+        normalized = os.path.normpath(pattern).replace("\\", "/") if pattern else ""
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or normalized.startswith("../")
+            or os.path.isabs(normalized)
+        ):
+            continue
+        if normalized not in patterns:
+            patterns.append(normalized)
+    return tuple(patterns[:200])
+
+
+def _generic_discovery_path_allowlisted(path: Path, root: Path) -> bool:
+    patterns = _generic_discovery_allowlist()
+    if not patterns:
+        return False
+    rel = _rel(path, root).replace("\\", "/").lower()
+    return any(fnmatch.fnmatchcase(rel, pattern.lower()) for pattern in patterns)
 
 
 def _safe_int(value: Any, default: int = DEFAULT_LIMIT, minimum: int = 1, maximum: int = 500) -> int:
@@ -273,21 +363,56 @@ def _csv_schema(path: Path) -> dict[str, Any]:
             return {"error": str(exc)[:300], "columns": []}
 
 
+def _discovery_path_forbidden(path: Path, root: Path) -> bool:
+    try:
+        resolved_root = root.resolve()
+        resolved = path.resolve()
+        if not _is_inside(resolved, resolved_root):
+            return True
+        relative = resolved.relative_to(resolved_root)
+    except Exception:
+        return True
+
+    parts = [str(part or "").strip().lower() for part in relative.parts]
+    if any(part in DISCOVERY_BLOCKED_DIR_NAMES for part in parts[:-1]):
+        return True
+    if any(part.startswith(".") for part in parts[:-1]):
+        return True
+
+    name = str(path.name or "").strip().lower()
+    if name in DISCOVERY_BLOCKED_FILE_NAMES:
+        return True
+    if path.suffix.lower() in DISCOVERY_OPERATIONAL_DB_SUFFIXES:
+        return True
+    if name.endswith((".db-wal", ".db-shm", ".sqlite-wal", ".sqlite-shm")):
+        return True
+    if DISCOVERY_SENSITIVE_NAME_RE.search(name):
+        return True
+    return False
+
+
 def _discover_files(client_id: str) -> list[Path]:
+    if not _generic_discovery_enabled():
+        return []
     root = _tenant_dir(client_id)
     if not root.exists():
         return []
     files: list[Path] = []
-    allowed = {".db", ".sqlite", ".sqlite3", ".csv", ".json", ".jsonl", ".txt", ".log", ".md"}
+    allowed = {".csv", ".json", ".jsonl", ".txt", ".log", ".md"}
     for path in root.rglob("*"):
         if len(files) >= MAX_DISCOVERY_FILES:
             break
         try:
             if not path.is_file() or path.suffix.lower() not in allowed:
                 continue
-            if "__pycache__" in path.parts:
+            if "__pycache__" in path.parts or _discovery_path_forbidden(path, root):
                 continue
-            files.append(path.resolve())
+            resolved = path.resolve()
+            if not _is_inside(resolved, root):
+                continue
+            if not _generic_discovery_path_allowlisted(resolved, root):
+                continue
+            files.append(resolved)
         except Exception:
             continue
     return files
@@ -354,6 +479,8 @@ def discover_data_sources(
     return {
         "success": True,
         "version": READONLY_SOURCES_VERSION,
+        "generic_discovery_enabled": _generic_discovery_enabled(),
+        "generic_discovery_allowlist_count": len(_generic_discovery_allowlist()),
         "client_id": str(client_id or ""),
         "sources": filtered[:limit_safe],
         "total_sources": len(sources),

@@ -1,0 +1,418 @@
+{
+  "18-REFIL": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "18-REFIL refil bomba combustivel motor eletrico funcionamento",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Identidade ambigua: sem veiculo ou codigo do fabricante, pressao, vazao e OEM nao podem ser atribuidos ao SKU.",
+    "resultados": [
+      {
+        "titulo": "Continental Aftermarket - Bombas de combustivel",
+        "url": "https://www.continental-aftermarket.com/br-pt/produtos/mercado-de-reposi%C3%A7%C3%A3o/inje%C3%A7%C3%A3o-eletr%C3%B4nica",
+        "trecho": "A eletrobomba usa motor eletrico e bomba para gerar pressao e vazao; valvulas limitam e retem a pressao. Fonte da funcao geral, nao da aplicacao deste SKU."
+      },
+      {
+        "titulo": "Bosch Aftermarket - Alimentacao de combustivel",
+        "url": "https://www.boschaftermarket.com/pt/pt/pe%C3%A7as/produtos/alimenta%C3%A7%C3%A3o-de-combust%C3%ADvel/",
+        "trecho": "A bomba eletrica envia combustivel do tanque ao motor na quantidade e pressao adequadas. Nao confirma medidas ou aplicacao do SKU."
+      }
+    ]
+  },
+  "372": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "53366451 CL9952 conector gargalo mangueira superior radiador Freemont Journey",
+    "consultado_em": "2026-07-17T12:00:00-03:00",
+    "observacao": "A foto confirma o conector plastico com gargalo lateral, dois bocais principais, bico de retorno e pino de posicionamento. 53366451 e a referencia do gargalo; CL9952 e o equivalente comercial plastico. DM-0192 e alternativa em aluminio. MG1695 e Dorman 902-305 foram descartados por geometria diferente.",
+    "resultados": [
+      {
+        "titulo": "Betti Autopecas - gargalo da mangueira superior 53366451",
+        "url": "https://www.bettiautopecas.com.br/conexoes/gargalo-da-mangueira-superior-freemont-2-4-gasolina-53366451",
+        "trecho": "Identifica o numero original 53366451 para o gargalo da mangueira superior e informa aplicacao em Fiat Freemont 2.4 gasolina e Dodge Journey 2.7 V6."
+      },
+      {
+        "titulo": "Fera Autopecas - conexao da mangueira do radiador CL9952",
+        "url": "https://www.ferautopecas.com.br/motor/refrigeracao/flange-conexao-mangueira-radiador-freemont-journey-durango-chrysler-300c-grand-cherokee-2-4-2-7-3-6",
+        "trecho": "A referencia CL9952 tem a mesma configuracao visual e lista Freemont 2.4 2011-2017, Journey 2.7 2009-2012, Journey 3.6 2011-2018, Durango 3.6 2011-2016, Chrysler 300C 3.6 2011-2016 e Grand Cherokee 3.6 2010-2017."
+      },
+      {
+        "titulo": "Dhemes - conector da mangueira superior DM-0192",
+        "url": "https://dhemes.com.br/produtos/prod-conexoes/",
+        "trecho": "O fabricante identifica DM-0192 como conector da mangueira superior do radiador para Freemont 2.4 16V; e uma alternativa metalica, condicionada a conferencia de formato e diametros."
+      },
+      {
+        "titulo": "Dorman - gargalo 902-305",
+        "url": "https://www.dormanproducts.com/p-16640-902-305.aspx",
+        "trecho": "Referencia descartada: a pagina oficial limita 902-305 a Dodge Dakota 2000-2004 e Durango 2000-2003, e a geometria das imagens difere da peca do SKU 372."
+      }
+    ]
+  },
+  "393-2": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "anel de vedacao borracha 50 mm",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Identidade ambigua: 50 mm pode indicar anel de esgoto, flange ou O-ring; falta aplicacao e material para confirmar.",
+    "resultados": [
+      {
+        "titulo": "Tigre - Anel de Borracha Serie R",
+        "url": "https://www.tigre.com.br/produto/anel-de-borracha-serie-r",
+        "trecho": "Exemplo do fabricante para anel de vedacao predial Serie R; so se aplica se a identidade real for essa familia."
+      },
+      {
+        "titulo": "Plenobras - Anel de vedacao 50 mm ABF para flange",
+        "url": "https://www.plenobras.com.br/675f969f903424ada02be5d9/anel-borracha-vedacao-50-mm-abf-para-flange",
+        "trecho": "Alternativa de identidade: anel de borracha classe ABF, bitola 50 mm, especifico para flange."
+      }
+    ]
+  },
+  "394-2": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "abracadeira mangueira 45 mm especificacao",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "A medida cabe em varias familias e faixas; tipo construtivo, material e faixa de aperto exata precisam ser conferidos.",
+    "resultados": [
+      {
+        "titulo": "Masterduct - ficha Master-Grip",
+        "url": "https://www.masterduct.com.br/detalhes-do-produto/folha-de-dados/abracadeira/abracadeira-master-grip-aparafusavel-pt_BR.pdf",
+        "trecho": "Ficha tecnica apresenta versao DN 45/50 e faixa de abracamento 45-65 mm; e uma familia comparavel, nao confirmacao do SKU."
+      },
+      {
+        "titulo": "Wurth - abracadeira inox 9x40-60 mm W4",
+        "url": "https://www.wurth.es/abrazadera-inox-sin-fin-9x40-60mm-w4",
+        "trecho": "Abracadeira sem-fim DIN 3017-1, inox W4, faixa 40-60 mm; a mangueira de 45 mm cabe nessa faixa."
+      }
+    ]
+  },
+  "4-2": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "manopla cambio Ford Transit 2008 2013 6 marchas 6C1R7217KA",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Identidade confirmada com alta confianca para Ford Transit; referencia OEM 6C1R7217KA.",
+    "resultados": [
+      {
+        "titulo": "Lachautomotive - Manopla Transit 6C1R7217KA",
+        "url": "https://www.lachautomotive.com.br/interior-do-veiculo/manopla-do-cambio/manopla-da-alavanca-de-cambio-transit-2008-2013-6c1r7217ka",
+        "trecho": "Peca original Ford para Transit 2008-2011 2.4 Puma Diesel e 2012-2013 2.2 Duratorq Diesel."
+      },
+      {
+        "titulo": "MercadoCar - Manopla Ford Transit",
+        "url": "https://mercadocar.com.br/manopla-da-alavanca-de-cambio-ford-transit-ford-6c1r7217ka",
+        "trecho": "Confirma a referencia Ford 6C1R7217KA e aplicacao na Transit."
+      }
+    ]
+  },
+  "458-K": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "71121-T9A-T00 Honda City grade friso",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "71121-T9A-T00 e a base da grade. O friso superior usa outro codigo; conferir o segundo componente do kit.",
+    "resultados": [
+      {
+        "titulo": "FPI Auto Parts - catalogo Honda City 2014",
+        "url": "https://download.fpiautoparts.com/fpi_update/catalog-model/HONDA/HONDA%20CITY%202014.pdf",
+        "trecho": "O catalogo associa a grade Honda City 2014-2016 ao OEM 71121-T9A-T00."
+      },
+      {
+        "titulo": "JDM Yamato - grade Honda Grace GM4",
+        "url": "https://jdmyamato.com/products/nhp002125",
+        "trecho": "Separa 71121-T9A-T00 como base da grade e 71122-T9P-J00 como moldura superior."
+      }
+    ]
+  },
+  "475": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "ZD2802 24V 160RPM gearmotor",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Resultado exato para ZD2802 nao confirma 24 V/160 rpm. Especificacoes encontradas nessa tensao e rotacao pertencem ao modelo comparavel 100404824.",
+    "resultados": [
+      {
+        "titulo": "Alibaba - motor ZD2802",
+        "url": "https://www.alibaba.com/search/page?SearchScene=imageTextSearch&productId=1601592356964",
+        "trecho": "Resultado cita ZD2802 como motoredutor DC associado a 100501912/100501924; a especificacao exata nao esta clara."
+      },
+      {
+        "titulo": "VR Motores - Imobras 100404824",
+        "url": "https://www.vrmotores.com.br/produtos/motor-imobras10040482424vcc-ech160-rpm/",
+        "trecho": "Modelo comparavel 24 V, cerca de 160 rpm e reversivel; nao atribuir seus valores ao ZD2802 sem conferir a etiqueta."
+      }
+    ]
+  },
+  "480": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "ZD2560R-12V 40RPM gearmotor",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Nenhuma fonte confiavel confirmou ZD2560R. Os resultados sao comparativos genericos e nao comprovam torque, corrente ou medidas.",
+    "resultados": [
+      {
+        "titulo": "Mercado Livre - motoredutor 12 V 40 rpm generico",
+        "url": "https://www.mercadolivre.com.br/motor-com-reducao-dc-12v-40rpm-alto-torque-motor-12v-40-rpm/up/MLBU1767836427",
+        "trecho": "Exemplo generico de motoredutor 12 V/40 rpm; o modelo nao e ZD2560R."
+      }
+    ]
+  },
+  "481": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "ZD2560R-12V 20RPM gearmotor",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Nenhuma fonte confiavel confirmou ZD2560R. Os resultados sao comparativos e nao prova tecnica do SKU.",
+    "resultados": [
+      {
+        "titulo": "Loja do Inventor - motor DC 12 V/20 rpm",
+        "url": "https://www.lojadoinventor.com.br/motor-dc-c-caixa-de-reducao/motor-com-caixa-de-reducao-dc-12v-20rpm",
+        "trecho": "Motoredutor DC 12 V/20 rpm para automacao e robotica; e um modelo diferente."
+      },
+      {
+        "titulo": "Imobras - desenho tecnico 100402412",
+        "url": "https://www.imobras.ind.br/site-2017/ajax/action.produto-download?id=39&idArquivo=1",
+        "trecho": "Ficha de modelo comparavel 100402412, 20 rpm, 12 V e reversivel; nao confirma ZD2560R."
+      }
+    ]
+  },
+  "482": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "ZD2560R-12V 60RPM motoredutor",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "O modelo exato ZD2560R nao foi confirmado; torque, dimensoes, corrente e eixo exigem foto ou etiqueta.",
+    "resultados": [
+      {
+        "titulo": "Tomson Electronics - Gear Motor 12V 60RPM",
+        "url": "https://www.tomsonelectronics.com/products/gear-motor-12v-60rpm-metal-gear",
+        "trecho": "Motoredutor comparavel de 12 V e cerca de 60 rpm, com engrenagens metalicas; nao confirma ZD2560R."
+      },
+      {
+        "titulo": "Cytron - 12V 60RPM Planetary DC Geared Motor",
+        "url": "https://www.cytron.io/p-12v-60rpm-6.7kgfcm-32mm-planetary-dc-geared-motor-with-encoder",
+        "trecho": "Referencia comparavel de 12 V/60 rpm, planetaria e com encoder; construcao diferente."
+      }
+    ]
+  },
+  "521": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "80A121081S Audi coolant overflow hose OEM",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "O codigo 80A121081S foi confirmado como referencia genuina Audi para mangueira/tubo do sistema de expansao do arrefecimento; conferir aplicacao pelo VIN.",
+    "resultados": [
+      {
+        "titulo": "Audi USA - Engine Coolant Overflow Hose OEM 80A121081S",
+        "url": "https://parts.audiusa.com/p/Audi__Q5/Engine-Coolant-Overflow-Hose/70141142/80A121081S.html",
+        "trecho": "Catalogo oficial Audi identifica OEM: 80A121081S como mangueira do reservatorio/expansao do liquido de arrefecimento para Q5; validar a versao pelo VIN."
+      },
+      {
+        "titulo": "FCP Euro - Genuine Audi 80A121081S",
+        "url": "https://www.fcpeuro.com/products/audi-coolant-reservoir-hose-genuine-audi-80a121081s",
+        "trecho": "Varejo tecnico confirma a peca genuina Audi 80A121081S como mangueira do reservatorio de arrefecimento."
+      }
+    ]
+  },
+  "484-1": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "484-1 cadeira de escritorio preta",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Sem marca, modelo, foto, EAN ou anuncio, nao foi possivel determinar material, medidas, capacidade ou mecanismo.",
+    "resultados": []
+  },
+  "D104-48": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "D104-48 chainring 104 BCD 48T",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "A categoria 104 BCD/48 dentes foi confirmada, mas nao o codigo comercial D104-48.",
+    "resultados": [
+      {
+        "titulo": "Deckas - 104 BCD Chainring 32-52T",
+        "url": "https://deckaschainrings.com/deckas-104bcd-chainring-oval-for-mtb-bike-32-34-36-42-48-50-52t/",
+        "trecho": "Pagina especializada lista coroa 104 BCD em variantes que incluem 48T."
+      },
+      {
+        "titulo": "Bike24 - Alugear 104 BCD 4-Bolt",
+        "url": "https://www.bike24.com/p2500394.html",
+        "trecho": "Coroa de quatro parafusos; a variante 48T e referencia tecnica proxima, nao confirmacao do SKU."
+      }
+    ]
+  },
+  "SHOPEE-107": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "manopla cromada Gol Voyage Saveiro G5 G6 preta",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Aplicacao e funcao tem boa correspondencia, mas as fontes nao comprovam que a peca seja Volkswagen genuina.",
+    "resultados": [
+      {
+        "titulo": "Comercio Automotivo - Bola de cambio G5/G6",
+        "url": "https://www.comercioautomotivo.com.br/bola-de-cambio-manopla-gol-voyage-saveiro-g5-g6-fox-mascara-cromada-0060052-auto-quality",
+        "trecho": "Manopla preta em poliuretano, mascara cromada, cinco marchas, re para frente e instalacao por pressao."
+      },
+      {
+        "titulo": "Jocar - Manopla NAT Gol/Saveiro/Voyage G5/G6",
+        "url": "https://www.jocar.com.br/produto/155119-manopla-do-cambio-nat-gol-saveiro-voyage-g5-g6-fox-2015-em-diante-preta-100522/",
+        "trecho": "Peca alternativa preta de reposicao; nao comprova origem OEM."
+      }
+    ]
+  },
+  "SHOPEE-124": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "aparelho anti latido ultrassonico pet",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Existem variantes automaticas, de tomada e portateis; frequencia, alcance e alimentacao dependem da identificacao da versao.",
+    "resultados": [
+      {
+        "titulo": "PetSafe - manual do sistema ultrassonico anti-latido",
+        "url": "https://www.petsafe.net/media/downloads/400-1015-13-2.pdf",
+        "trecho": "Exemplo automatico: microfone detecta latidos, emite ultrassom por dois segundos e deve ficar proximo ao cao."
+      },
+      {
+        "titulo": "Petlove - Sistema Ultrassonico Antilatido Indoor",
+        "url": "https://www.petlove.com.br/sistema-ultrassonico-anti-latido-indoor---amicus-3107135/p",
+        "trecho": "Dispositivo de mesa sem coleira, com disparo automatico ou manual e bateria de 9 V; confirmar se e a mesma variante."
+      }
+    ]
+  },
+  "SHOPEE-250-K": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "986903V000 986803V000 Hyundai Azera",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Os OEM sao do lavador de farol esquerdo/direito; catalogos chamam de conjunto de bico e varejistas tambem anunciam como tampas. Confirmar conteudo e VIN.",
+    "resultados": [
+      {
+        "titulo": "PartSouq - Nozzle Assy Headlamp Washer LH 986803V000",
+        "url": "https://partsouq.com/en/search/all?q=986803V000",
+        "trecho": "Catalogo identifica 986803V000 como conjunto do bico lavador de farol esquerdo."
+      },
+      {
+        "titulo": "PartSouq - Nozzle Assy Headlamp Washer RH 986903V000",
+        "url": "https://partsouq.com/en/search/all?q=986903V000",
+        "trecho": "Catalogo identifica 986903V000 como conjunto do bico lavador de farol direito."
+      }
+    ]
+  },
+  "SHOPEE-374-1": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "grade inferior farol milha BMW E90 LCI 2009 2012",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Forte correspondencia para grades inferiores laterais do parachoque padrao; o lado precisa ser confirmado.",
+    "resultados": [
+      {
+        "titulo": "BMW 51117198901 - grade esquerda",
+        "url": "https://www.bmwpartsdeal.com/parts/bmw-partially_open_grid_left-51117198901.html",
+        "trecho": "Grade parcialmente aberta esquerda para versoes E90/E91 2009-2012."
+      },
+      {
+        "titulo": "BMW 51117198902 - grade direita",
+        "url": "https://www.bmwpartsdeal.com/parts/bmw-partially_open_grid_right-51117198902.html",
+        "trecho": "Grade parcialmente aberta direita para versoes E90/E91 2009-2012."
+      }
+    ]
+  },
+  "SHOPEE-374-2": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "grade inferior milha BMW E90 LCI 2009 2012",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "A descricao nao informa lado nem tipo de parachoque. O OEM 51117891395 so vale para grade esquerda M Sport.",
+    "resultados": [
+      {
+        "titulo": "BMW - M Sport Lower Front Left Grille 51117891395",
+        "url": "https://shop.bmw.co.uk/product/genuine-m-sport-lower-front-left-bumper-trim-grille-51-11-7-891-395",
+        "trecho": "Fonte oficial BMW para grade inferior esquerda E90 LCI, somente com pacote M Sport/M Aerodynamics."
+      },
+      {
+        "titulo": "BimmerWorld - E90 LCI M Sport Lower Left Grille",
+        "url": "https://www.bimmerworld.com/Body-Aero/Grilles/Front-Bumper-Left-Lower-Grill-E90-E91-LCI-M-Sport-51117891395.html",
+        "trecho": "Confirma aplicacao E90 2009-2011/E91 2009-2012 com parachoque M Sport; lado esquerdo."
+      }
+    ]
+  },
+  "SHOPEE-377-2": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "luz subaquatica 27 LED 12V 24V barco lancha iate",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Familia confirmada; conferir cor e se o SKU representa unidade ou kit.",
+    "resultados": [
+      {
+        "titulo": "Kit 2 Luz Subaquatica 27 LED 12V/24V",
+        "url": "https://produto.mercadolivre.com.br/MLB-1747764827-kit-2-luz-subaquatica-27-led-12v-24v-barco-lancha-iate-_JM",
+        "trecho": "Modelo LS-27L, IP68, DC 10-30 V, 5,4 W, inox 316, 27 LEDs e feixe de 120 graus; confirmar variante e quantidade."
+      }
+    ]
+  },
+  "SHOPEE-377-4": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "luz subaquatica 27 LED 12V 24V barco lancha iate",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Mesma familia do SHOPEE-377-2; provavelmente outra cor ou composicao. Confirmar a variacao.",
+    "resultados": [
+      {
+        "titulo": "Luz Subaquatica 27 LED 12V/24V",
+        "url": "https://produto.mercadolivre.com.br/MLB-1747764827-kit-2-luz-subaquatica-27-led-12v-24v-barco-lancha-iate-_JM",
+        "trecho": "Familia LS-27L, IP68, DC 10-30 V e opcoes de cor; confirmar se o SKU e unidade ou kit."
+      }
+    ]
+  },
+  "SHOPEE-411": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "carburador Honda Biz 100 Dream C100 Sundown Web 100 1998 2005",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Biz 100 1998-2005 aparece de modo consistente; os anos de Dream C100 e Sundown Web 100 variam entre as fontes.",
+    "resultados": [
+      {
+        "titulo": "Carburador Biz 100 Dream C100 Web 100",
+        "url": "https://produto.mercadolivre.com.br/MLB-3191322616-carburador-completo-honda-biz-100-dream-c100-web-100-_JM",
+        "trecho": "Carburador de uma boca e um cilindro para Biz 100, Dream C100 e Web 100; recomenda instalacao profissional."
+      },
+      {
+        "titulo": "PitStop - Carburador Vini 90.20840034",
+        "url": "https://www.pitstop.com.br/carburador-completo-honda-biz-100-c-100-98-05-dream-100-web-100-vini-cod--90-20840034-1198286/p",
+        "trecho": "Aplica Biz 100 1998-2005, Honda Dream e Sundown Web 100; os anos nao sao identicos para todos os modelos."
+      }
+    ]
+  },
+  "SHOPEE-458-1": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "grade dianteira Honda City 2015 2017 codigo 94797 OEM",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "O codigo 94797 nao foi confirmado como OEM. Fontes de concessionaria apontam 71121-T9L-M00 para a base da grade.",
+    "resultados": [
+      {
+        "titulo": "Estilo Honda - Base Grade Dianteira City 2015-2017",
+        "url": "https://loja.estilohonda.com.br/para-choque/grelha-da-frente/base-grade-dianteira-honda-city-2015-2017-original-71121t9lm00",
+        "trecho": "Concessionaria informa OEM 71121-T9L-M00 para a base original do City 2015-2017."
+      },
+      {
+        "titulo": "Etakai - Base da Grade Dianteira Honda City",
+        "url": "https://www.etakai.com.br/base-grade-dianteira-1-1-166858-p987876",
+        "trecho": "Peca genuina em plastico, OEM 71121T9LM00, para City DX, LX, EX e EXL 2015-2017."
+      }
+    ]
+  },
+  "SHOPEE-459": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "filtro regulador separador agua oleo compressor 1/4 AFR AFC 2000",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "As especificacoes so valem se a etiqueta confirmar AFR-2000/AFC2000; produtos genericos 1/4 variam.",
+    "resultados": [
+      {
+        "titulo": "Eurotechniker - Filtro Regulador AFR-2000 1/4",
+        "url": "https://eurotechniker.com.br/produtos/filtro-regulador-afr-2000/",
+        "trecho": "Familia para tratamento de ar, conexao 1/4, filtragem 40 micrometros e dreno semiautomatico; confirmar o modelo."
+      },
+      {
+        "titulo": "JXPC - AFC2000 Filter-Regulator-Lubricator",
+        "url": "https://www.jxpc-pneumatic.com/product/info/1840.html",
+        "trecho": "Conjunto 1/4 que filtra agua/particulas, regula pressao e lubrifica; so aplicavel se a etiqueta for AFC2000."
+      }
+    ]
+  },
+  "SHOPEE-46": {
+    "provedor": "pesquisa_curada_web",
+    "consulta": "sensor TPMS Captiva Camaro Cruze Malibu 2007 OEM 315 MHz",
+    "consultado_em": "2026-07-16T12:30:00+00:00",
+    "observacao": "Evidencia forte para GM 13598771/315 MHz, mas compatibilidade muda por ano e mercado; validar VIN, frequencia e sensor antigo.",
+    "resultados": [
+      {
+        "titulo": "Chevrolet Nova - Sensor TPMS genuino GM 13598771",
+        "url": "https://loja.chevroletnova.com.br/sensortpmspressaodospneuscombicocaptiva-malibupecasgenuinasgm1359877135700/p",
+        "trecho": "Peca genuina Chevrolet 13598771; aplicacao declarada para Captiva 2008-2017 e Malibu 2010-2013."
+      },
+      {
+        "titulo": "TPMS.com - Chevrolet OE Schrader 13598771 315 MHz",
+        "url": "https://www.tpms.com/Chevrolet-OE-Schrader-TPMS-Sensor-13598771-315MHz-p/s0153-chevrolet.htm",
+        "trecho": "Sensor Schrader original Chevrolet 315 MHz, referencias 13586335/13598771; conferir aplicacao por ano."
+      }
+    ]
+  }
+}

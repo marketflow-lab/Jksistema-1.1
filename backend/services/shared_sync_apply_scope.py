@@ -73,6 +73,8 @@ def _shared_sync_aplicar_pacote(
             raise HTTPException(status_code=400, detail="Backup remoto pertence a outro escopo.")
         for item in manifest.get("files") or []:
             rel = _shared_sync_relativo_seguro((item or {}).get("relative_path"))
+            if _shared_sync_path_permanently_excluded(rel):
+                raise HTTPException(status_code=400, detail="Arquivo permanentemente excluido do Shared Sync.")
             if not _shared_sync_scope_match(scope, rel):
                 raise HTTPException(status_code=400, detail=f"Arquivo fora do escopo: {rel}")
             member = "files/" + rel
@@ -89,7 +91,7 @@ def _shared_sync_aplicar_pacote(
                     raise HTTPException(status_code=502, detail=f"lojas_config.json remoto invalido: {exc}")
                 if not isinstance(lojas, list):
                     raise HTTPException(status_code=502, detail="lojas_config.json remoto nao contem uma lista.")
-                target_abs = os.path.abspath(os.path.join(tenant_abs, rel))
+                target_abs = _shared_sync_resolve_tenant_path(tenant_abs, rel)
                 _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
                 from backend.services.integracoes import salvar_lojas
                 salvar_lojas(client_id, lojas, permitir_reducao_confirmada=True)
@@ -109,9 +111,7 @@ def _shared_sync_aplicar_pacote(
             if share_between_users:
                 user_scoped_fontes.append((rel, data))
                 continue
-            target_abs = os.path.abspath(os.path.join(tenant_abs, rel))
-            if not target_abs.startswith(tenant_abs + os.sep):
-                raise HTTPException(status_code=400, detail="Backup contem destino invalido.")
+            target_abs = _shared_sync_resolve_tenant_path(tenant_abs, rel)
             _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
             os.makedirs(os.path.dirname(target_abs), exist_ok=True)
             with open(target_abs, "wb") as f:
@@ -120,9 +120,7 @@ def _shared_sync_aplicar_pacote(
     for rel, data in legacy_favoritos_fontes:
         destino_username = _shared_sync_favoritos_historico_legacy_json_username(rel) or username
         target_rel = _shared_sync_target_rel_usuario(scope, destino_username, rel)
-        target_abs = os.path.abspath(os.path.join(tenant_abs, target_rel))
-        if not target_abs.startswith(tenant_abs + os.sep):
-            raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+        target_abs = _shared_sync_resolve_tenant_path(tenant_abs, target_rel)
         _shared_sync_backup_target(tenant_abs, backup_dir, target_rel, target_abs)
         _shared_sync_merge_historico_usuario(client_id, destino_username, [(rel, data)])
         escritos.append(target_rel)

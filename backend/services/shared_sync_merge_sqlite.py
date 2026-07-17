@@ -270,9 +270,7 @@ def _shared_sync_aplicar_user_share_add_only(
     added = 0
     details = []
     for rel, data in fontes:
-        target_abs = os.path.abspath(os.path.join(tenant_abs, rel))
-        if not target_abs.startswith(tenant_abs + os.sep):
-            raise HTTPException(status_code=400, detail="Destino de usuario invalido.")
+        target_abs = _shared_sync_resolve_tenant_path(tenant_abs, rel)
         lower = rel.lower()
         if scope == "cadastro" and lower.endswith(".csv"):
             _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)

@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dockRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-dock-in-app', payload || {}, authToken || ''),
     hideRustDeskInApp: (payload, authToken) => ipcRenderer.invoke('rustdesk-hide-in-app', payload || {}, authToken || ''),
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
+    openContextVault: (authToken) => ipcRenderer.invoke(
+        'context-vault-open',
+        typeof authToken === 'string' ? authToken : ''
+    ),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
     ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     getBrowserExtensionSettings: () => ipcRenderer.invoke('get-browser-extension-settings'),

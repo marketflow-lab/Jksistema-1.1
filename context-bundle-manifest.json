@@ -1,0 +1,31 @@
+{
+  "files": [
+    {
+      "path": "docs/knowledge/README.md",
+      "sha256": "c29e6c98e709aea8d9ba28f9f9dc5ccb9d88c09475d7bd91cf6d1aa6520419ee",
+      "size": 1122
+    },
+    {
+      "path": "docs/knowledge/security-policy.md",
+      "sha256": "586d9611ebde78da0a040722bf8aa1c372d8a2866f80c1f44cd8f30ddac99710",
+      "size": 890
+    },
+    {
+      "path": "docs/knowledge/templates/curated-note.md",
+      "sha256": "01c890f2c0f2536c834ebbb7d7511f1baac47b599d12612524650c5a58c35ffc",
+      "size": 512
+    },
+    {
+      "path": "docs/knowledge/templates/generated-note.md",
+      "sha256": "fac3a57f8f2ae724add50a74ac2ceda754a64e19ae427b2a6f49faeac5635b74",
+      "size": 443
+    },
+    {
+      "path": "docs/knowledge/vault-structure.md",
+      "sha256": "588be6c8651e398a98d35d8b0e304a39424c2129f271c7b6a9549f6933598e26",
+      "size": 534
+    }
+  ],
+  "schema_version": 1,
+  "source_version": "1.0.100"
+}

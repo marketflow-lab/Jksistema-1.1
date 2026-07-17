@@ -103,10 +103,79 @@ def _ia_rag_ativo() -> bool:
     return _ia_rag_backend_efetivo() == "local" or bool(_ia_rag_pg_dsn())
 
 
+def _ia_rag_env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(str(name or "").strip())
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+
+def _ia_rag_legacy_read_enabled() -> bool:
+    """Legacy retrieval is opt-in while Context Hub owns trusted retrieval."""
+    return _ia_rag_env_bool("IA_RAG_LEGACY_READ_ENABLED", default=False)
+
+
+def _ia_rag_legacy_write_enabled() -> bool:
+    """Legacy indexing is opt-in and additionally protected by full-admin routes."""
+    return _ia_rag_env_bool("IA_RAG_LEGACY_WRITE_ENABLED", default=False)
+
+
+def _ia_rag_legacy_generic_scan_enabled() -> bool:
+    """Generic recursive JSON/CSV/SQLite ingestion stays disabled by default."""
+    return _ia_rag_env_bool("IA_RAG_LEGACY_GENERIC_SCAN_ENABLED", default=False)
+
+
+_IA_RAG_LEGACY_DLP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.I)),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b")),
+    (
+        "assigned_secret",
+        re.compile(
+            r"(?i)\b(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|password|senha)\b\s*[:=]\s*[\"']?[^\s\"']{8,}"
+        ),
+    ),
+    ("email", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)),
+    ("cpf_cnpj", re.compile(r"(?<!\d)(?:\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})(?!\d)")),
+    ("phone", re.compile(r"(?<!\d)(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}(?!\d)")),
+    ("address", re.compile(r"\b(?:rua|avenida|av\.|travessa|alameda|rodovia)\s+[^\n,]{2,80},?\s+\d{1,6}\b", re.I)),
+)
+_IA_RAG_LEGACY_DLP_METADATA_KEY_RE = re.compile(
+    r"(?:token|secret|api[_-]?key|senha|password|jwt|oauth|email|telefone|phone|cpf|cnpj|endere[cç]o|address|buyer|comprador)",
+    re.I,
+)
+
+
+def _ia_rag_legacy_dlp_codes(documento: IARagDocumento) -> list[str]:
+    values = [str(documento.title or ""), str(documento.source or ""), str(documento.content or "")]
+    try:
+        metadata_text = json.dumps(documento.metadata or {}, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        metadata_text = ""
+    values.append(metadata_text)
+    combined = "\n".join(values)
+    codes = {code for code, pattern in _IA_RAG_LEGACY_DLP_PATTERNS if pattern.search(combined)}
+
+    def scan_keys(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if _IA_RAG_LEGACY_DLP_METADATA_KEY_RE.search(str(key or "")):
+                    codes.add("sensitive_metadata")
+                scan_keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                scan_keys(child)
+
+    scan_keys(documento.metadata or {})
+    return sorted(codes)
+
+
 def _ia_rag_config() -> dict:
     backend = _ia_rag_backend_efetivo()
     return {
         "enabled": _ia_rag_ativo(),
+        "legacy_read_enabled": _ia_rag_legacy_read_enabled(),
+        "legacy_write_enabled": _ia_rag_legacy_write_enabled(),
+        "legacy_generic_scan_enabled": _ia_rag_legacy_generic_scan_enabled(),
         "backend": backend,
         "backend_configurado": _ia_rag_backend_configurado(),
         "postgres_configurado": bool(_ia_rag_pg_dsn()),
@@ -284,7 +353,7 @@ def _ia_rag_local_text_boost(query_terms: list[str], row: sqlite3.Row) -> float:
 def _ia_rag_local_status(client_id: str) -> dict:
     db_path = _ia_rag_local_db_path(client_id)
     status = {
-        "local_db_path": db_path,
+        "local_db_name": os.path.basename(db_path),
         "local_db_exists": os.path.exists(db_path),
         "local_db_mb": 0.0,
         "local_documentos": 0,
@@ -302,7 +371,7 @@ def _ia_rag_local_status(client_id: str) -> dict:
             status["local_documentos"] = int(row["total"] if row else 0)
             status["local_ok"] = True
     except Exception as exc:
-        status["local_error"] = str(exc)
+        status["local_error"] = type(exc).__name__
     return status
 
 
@@ -529,12 +598,21 @@ def _ia_rag_garantir_schema(conn, dimensao: int) -> bool:
 
 
 def _ia_rag_indexar_documentos(client_id: str, documentos: list[IARagDocumento]) -> int:
+    if not _ia_rag_legacy_write_enabled():
+        raise PermissionError("A gravacao no RAG legado esta desativada.")
     if not documentos:
         return 0
 
     docs_validos = [doc for doc in documentos if str(doc.content or "").strip()]
     if not docs_validos:
         return 0
+    dlp_codes = sorted({code for doc in docs_validos for code in _ia_rag_legacy_dlp_codes(doc)})
+    if dlp_codes:
+        raise ValueError(
+            "Documento bloqueado pela politica DLP do RAG legado (codigos: "
+            + ", ".join(dlp_codes)
+            + ")."
+        )
 
     if _ia_rag_backend_efetivo() == "local":
         dim = _ia_rag_local_dim()
@@ -789,6 +867,8 @@ def _ia_rag_busca_textual(query: str, client_id: str, top_k: Optional[int] = Non
 
 
 def _ia_rag_contexto(query: str, client_id: str) -> str:
+    if not _ia_rag_legacy_read_enabled():
+        return ""
     if bool(IA_RAG_REINDEX_ACTIVE.get(client_id)):
         return ""
 
@@ -1518,11 +1598,14 @@ def _ia_rag_docs_app(client_id: str) -> list[IARagDocumento]:
     docs.extend(_ia_rag_docs_csv_cadastro(client_id))
     docs.extend(_ia_rag_docs_csv_estoque(client_id))
     docs.extend(_ia_rag_docs_db_vendas(client_id))
-    docs.extend(_ia_rag_docs_dados_completos(client_id))
+    if _ia_rag_legacy_generic_scan_enabled():
+        docs.extend(_ia_rag_docs_dados_completos(client_id))
     return docs
 
 
 def _ia_rag_reindexar_app(client_id: str, force: bool = True) -> dict:
+    if not _ia_rag_legacy_write_enabled():
+        raise HTTPException(status_code=403, detail="A gravacao no RAG legado esta desativada.")
     if not _ia_rag_ativo():
         raise HTTPException(
             status_code=503,
@@ -1576,13 +1659,17 @@ def _ia_rag_iniciar_reindex_async(client_id: str, force: bool = True) -> dict:
                     "result": resultado,
                 }
         except Exception as exc:
-            logger.exception(f"[IA RAG] Falha no reindex async ({client_id}): {exc}")
+            logger.error(
+                "[IA RAG] Falha no reindex async (%s): %s",
+                client_id,
+                type(exc).__name__,
+            )
             with IA_RAG_REINDEX_LOCK:
                 IA_RAG_REINDEX_META[client_id] = {
                     **dict(IA_RAG_REINDEX_META.get(client_id) or {}),
                     "status": "error",
                     "finished_at": datetime.utcnow().isoformat(),
-                    "last_error": str(exc),
+                    "last_error": type(exc).__name__,
                     "result": None,
                 }
         finally:

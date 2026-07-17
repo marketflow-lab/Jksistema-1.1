@@ -139,6 +139,51 @@ def _shared_sync_relativo_seguro(rel_path: str) -> str:
     return norm
 
 
+def _shared_sync_path_permanently_excluded(rel_path: str) -> bool:
+    """Runtime knowledge and Obsidian state are never Shared Sync payloads."""
+    try:
+        rel = _shared_sync_relativo_seguro(rel_path).lower()
+    except HTTPException:
+        return True
+    parts = [part for part in rel.split("/") if part]
+    return any(part in {"contextvault", "context_hub", ".obsidian"} for part in parts)
+
+
+def _shared_sync_resolve_tenant_path(tenant_root: str, rel_path: str) -> str:
+    """Resolve a tenant path without crossing symlinks, junctions or reparse targets."""
+    rel = _shared_sync_relativo_seguro(rel_path)
+    if _shared_sync_path_permanently_excluded(rel):
+        raise HTTPException(status_code=400, detail="Caminho permanentemente excluido do Shared Sync.")
+
+    root_abs = os.path.abspath(str(tenant_root or ""))
+    root_real = os.path.realpath(root_abs)
+    if os.path.normcase(os.path.normpath(root_abs)) != os.path.normcase(os.path.normpath(root_real)):
+        raise HTTPException(
+            status_code=400,
+            detail="Links simbolicos e junctions nao sao aceitos como raiz do tenant no Shared Sync.",
+        )
+    candidate_abs = os.path.abspath(os.path.join(root_abs, rel.replace("/", os.sep)))
+    expected_real = os.path.abspath(os.path.join(root_real, rel.replace("/", os.sep)))
+    candidate_real = os.path.realpath(candidate_abs)
+    try:
+        lexical_inside = os.path.commonpath([root_abs, candidate_abs]) == root_abs
+        resolved_inside = os.path.commonpath([root_real, candidate_real]) == root_real
+    except (ValueError, OSError):
+        lexical_inside = False
+        resolved_inside = False
+    if not lexical_inside or not resolved_inside:
+        raise HTTPException(status_code=400, detail="Caminho fora do tenant no Shared Sync.")
+    if os.path.normcase(candidate_real) != os.path.normcase(expected_real):
+        raise HTTPException(status_code=400, detail="Links simbolicos e junctions nao sao aceitos no Shared Sync.")
+    try:
+        resolved_rel = os.path.relpath(candidate_real, root_real).replace("\\", "/")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Caminho fora do tenant no Shared Sync.")
+    if _shared_sync_path_permanently_excluded(resolved_rel):
+        raise HTTPException(status_code=400, detail="Caminho permanentemente excluido do Shared Sync.")
+    return candidate_abs
+
+
 def _shared_sync_sha256_file(path: str) -> str:
     sha = hashlib.sha256()
     with open(path, "rb") as f:
@@ -166,6 +211,7 @@ SHARED_SYNC_SCOPES = {
             "cadastro_produtos_meta.json",
             "cadastro_produtos_fotos/**",
             "cadastro_fotos/**",
+            "SKU/**",
             "produtos_compilado.csv",
         ],
         "user_scoped": False,

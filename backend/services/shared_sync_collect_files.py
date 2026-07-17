@@ -60,6 +60,8 @@ def _shared_sync_user_scoped_rels(scope: str, username: str) -> list[str]:
 def _shared_sync_scope_match(scope: str, rel_path: str) -> bool:
     info = SHARED_SYNC_SCOPES.get(scope) or {}
     rel = _shared_sync_relativo_seguro(rel_path).lower()
+    if _shared_sync_path_permanently_excluded(rel):
+        return False
     for pattern in info.get("patterns") or []:
         pat = str(pattern or "").replace("\\", "/").strip().lower()
         if not pat:
@@ -140,11 +142,21 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
     if user_only and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")):
         user_scoped_rels = set(_shared_sync_user_scoped_rels(scope, username))
 
-    for root, dirs, files in os.walk(tenant_abs):
-        dirs[:] = [
-            d for d in dirs
-            if d not in {"__pycache__", "_drive_restore_backup", "_shared_sync_backups"} and not d.startswith(".")
-        ]
+    for root, dirs, files in os.walk(tenant_abs, followlinks=False):
+        safe_dirs = []
+        for directory in dirs:
+            rel_dir = os.path.relpath(os.path.join(root, directory), tenant_abs).replace("\\", "/")
+            if directory in {"__pycache__", "_drive_restore_backup", "_shared_sync_backups"} or directory.startswith("."):
+                continue
+            try:
+                safe_dir = _shared_sync_resolve_tenant_path(tenant_abs, rel_dir)
+                if not os.path.isdir(safe_dir):
+                    continue
+            except HTTPException:
+                warnings.append(f"{rel_dir} ignorado: caminho inseguro para sincronizacao.")
+                continue
+            safe_dirs.append(directory)
+        dirs[:] = safe_dirs
         for filename in files:
             lower = filename.lower()
             if lower.startswith(("drive_sync_state_", "shared_sync_config")):
@@ -154,10 +166,14 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             ext = os.path.splitext(filename)[1].lower()
             if ext not in SHARED_SYNC_ALLOWED_EXTENSIONS:
                 continue
-            abs_path = os.path.abspath(os.path.join(root, filename))
-            if not abs_path.startswith(tenant_abs + os.sep):
+            rel = os.path.relpath(os.path.join(root, filename), tenant_abs).replace("\\", "/")
+            try:
+                abs_path = _shared_sync_resolve_tenant_path(tenant_abs, rel)
+            except HTTPException:
+                warnings.append(f"{rel} ignorado: caminho inseguro para sincronizacao.")
                 continue
-            rel = os.path.relpath(abs_path, tenant_abs).replace("\\", "/")
+            if _shared_sync_path_permanently_excluded(rel):
+                continue
             if user_scoped_rels and rel not in user_scoped_rels:
                 continue
             if not _shared_sync_scope_match(scope, rel):

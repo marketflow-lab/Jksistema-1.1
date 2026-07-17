@@ -8,13 +8,18 @@ import zipfile
 import pytest
 from fastapi import HTTPException
 
-from backend.schemas.shared_sync import SharedSyncUserLinkCreateRequest
+from backend.schemas.shared_sync import SharedSyncRunRequest, SharedSyncUserLinkCreateRequest
 from backend.services import shared_sync  # configura o facade e injeta dependências entre módulos
 from backend.services import integracoes
 from backend.services import shared_sync_apply_scope
+from backend.services import shared_sync_common
 from backend.services import shared_sync_bundle
 from backend.services import shared_sync_collect_files
 from backend.services import shared_sync_config
+from backend.services import shared_sync_machine
+from backend.services import shared_sync_machine_endpoints
+from backend.services import shared_sync_merge_sqlite
+from backend.services import shared_sync_merge_user_data
 from backend.services import shared_sync_operations
 from backend.services import shared_sync_remote
 from backend.services import shared_sync_user_endpoints
@@ -102,6 +107,163 @@ def test_coleta_integracoes_exclui_temporarios_oauth(tmp_path, monkeypatch):
     assert "integracoes.json" in names
     assert "temp_integracao.json" not in names
     assert "oauth_state.json" not in names
+
+
+def test_coleta_cadastro_inclui_dossies_sku(tmp_path, monkeypatch):
+    tenant = tmp_path / "000002"
+    dossier_dir = tenant / "SKU"
+    dossier_dir.mkdir(parents=True)
+    (tenant / "cadastro_produtos.csv").write_text("sku,descricao\n001,Produto\n", encoding="utf-8")
+    (dossier_dir / "001.json").write_text('{"sku":"001"}', encoding="utf-8")
+    monkeypatch.setattr(shared_sync_collect_files, "get_tenant_path", lambda _client_id: str(tenant), raising=False)
+
+    entries, _ = shared_sync_collect_files._shared_sync_coletar_arquivos(
+        "000002", "cadastro", username="operador", user_only=True,
+    )
+
+    names = {item["relative_path"] for item in entries}
+    assert "cadastro_produtos.csv" in names
+    assert "SKU/001.json" in names
+
+
+def test_context_hub_e_obsidian_sao_excluidos_permanentemente(tmp_path, monkeypatch):
+    tenant = tmp_path / "000002"
+    (tenant / "ContextVault" / "70_Gerado").mkdir(parents=True)
+    (tenant / "ContextVault" / "70_Gerado" / "mapa.json").write_text("{}", encoding="utf-8")
+    (tenant / "ContextVault" / ".obsidian").mkdir(parents=True)
+    (tenant / "ContextVault" / ".obsidian" / "app.json").write_text("{}", encoding="utf-8")
+    (tenant / "context_hub").mkdir(parents=True)
+    (tenant / "context_hub" / "generation.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(shared_sync_collect_files, "get_tenant_path", lambda _client_id: str(tenant), raising=False)
+
+    for rel in (
+        "ContextVault/70_Gerado/mapa.json",
+        "ContextVault/.obsidian/app.json",
+        "context_hub/generation.json",
+    ):
+        assert shared_sync_collect_files._shared_sync_scope_match("cadastro", rel) is False
+
+    entries, _ = shared_sync_collect_files._shared_sync_coletar_arquivos(
+        "000002", "cadastro", username="operador", user_only=True,
+    )
+    assert entries == []
+
+
+def test_shared_sync_rejeita_symlink_ou_junction_fora_do_tenant(tmp_path, monkeypatch):
+    tenant = tmp_path / "000002"
+    external = tmp_path / "external"
+    tenant.mkdir()
+    external.mkdir()
+    (external / "001.json").write_text('{"sku":"001"}', encoding="utf-8")
+    linked = tenant / "SKU"
+    try:
+        linked.symlink_to(external, target_is_directory=True)
+    except OSError:
+        pytest.skip("ambiente sem permissao para criar junction/symlink")
+    monkeypatch.setattr(shared_sync_collect_files, "get_tenant_path", lambda _client_id: str(tenant), raising=False)
+
+    entries, warnings = shared_sync_collect_files._shared_sync_coletar_arquivos(
+        "000002", "cadastro", username="operador", user_only=True,
+    )
+
+    assert entries == []
+    assert any("caminho inseguro" in warning for warning in warnings)
+
+
+def test_shared_sync_rejeita_destino_sob_junction(tmp_path):
+    tenant = tmp_path / "000002"
+    external = tmp_path / "external"
+    tenant.mkdir()
+    external.mkdir()
+    linked = tenant / "SKU"
+    try:
+        linked.symlink_to(external, target_is_directory=True)
+    except OSError:
+        pytest.skip("ambiente sem permissao para criar junction/symlink")
+
+    with pytest.raises(HTTPException) as exc:
+        shared_sync_collect_files._shared_sync_resolve_tenant_path(str(tenant), "SKU/001.json")
+    assert exc.value.status_code == 400
+
+
+def test_shared_sync_rejeita_realpath_divergente_sem_depender_de_privilegio(monkeypatch, tmp_path):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    original_realpath = shared_sync_common.os.path.realpath
+    candidate = tenant / "SKU" / "001.json"
+    external = tmp_path / "external" / "001.json"
+
+    def fake_realpath(value):
+        absolute = shared_sync_common.os.path.abspath(value)
+        if shared_sync_common.os.path.normcase(absolute) == shared_sync_common.os.path.normcase(str(candidate)):
+            return str(external)
+        return original_realpath(value)
+
+    monkeypatch.setattr(shared_sync_common.os.path, "realpath", fake_realpath)
+
+    with pytest.raises(HTTPException) as exc:
+        shared_sync_common._shared_sync_resolve_tenant_path(str(tenant), "SKU/001.json")
+    assert exc.value.status_code == 400
+
+
+def test_shared_sync_rejeita_raiz_tenant_redirecionada(monkeypatch, tmp_path):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    external = tmp_path / "external"
+    original_realpath = shared_sync_common.os.path.realpath
+
+    def fake_realpath(value):
+        absolute = shared_sync_common.os.path.abspath(value)
+        if shared_sync_common.os.path.normcase(absolute) == shared_sync_common.os.path.normcase(str(tenant)):
+            return str(external)
+        return original_realpath(value)
+
+    monkeypatch.setattr(shared_sync_common.os.path, "realpath", fake_realpath)
+
+    with pytest.raises(HTTPException) as exc:
+        shared_sync_common._shared_sync_resolve_tenant_path(str(tenant), "SKU/001.json")
+    assert exc.value.status_code == 400
+
+
+def test_user_share_merge_resolve_todos_os_destinos(monkeypatch, tmp_path):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    calls = []
+
+    def resolver(root, rel):
+        calls.append((root, rel))
+        return str(tenant / rel)
+
+    monkeypatch.setattr(shared_sync_merge_sqlite, "_shared_sync_resolve_tenant_path", resolver, raising=False)
+    result = shared_sync_merge_sqlite._shared_sync_aplicar_user_share_add_only(
+        "000002", "vendas", "destino", [("vendas_sync_state.json", b"{}")],
+        str(tenant), str(tenant / "backup"),
+    )
+
+    assert calls == [(str(tenant), "vendas_sync_state.json")]
+    assert result["file_count"] == 0
+
+
+def test_share_between_users_bloqueia_antes_de_mesclar(monkeypatch, tmp_path):
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+
+    def bloquear(_root, _rel):
+        raise HTTPException(status_code=400, detail="destino inseguro")
+
+    monkeypatch.setattr(shared_sync_merge_user_data, "_shared_sync_resolve_tenant_path", bloquear, raising=False)
+    monkeypatch.setattr(
+        shared_sync_merge_user_data,
+        "_shared_sync_target_rel_usuario",
+        lambda _scope, _username: "favoritos_historico_destino.db",
+        raising=False,
+    )
+
+    with pytest.raises(HTTPException, match="destino inseguro"):
+        shared_sync_merge_user_data._shared_sync_aplicar_user_scoped_share(
+            "000002", "favoritos_historico", "destino", [("historico.json", b"{}")],
+            str(tenant), str(tenant / "backup"),
+        )
 
 
 def test_vinculo_nasce_ativo_sem_admin_e_sem_aceite(monkeypatch):
@@ -226,6 +388,122 @@ def test_importacao_manual_substitui_integracoes_pelo_snapshot_confirmado(tmp_pa
     assert saved[0]["integracoes"]["bling"]["access_token"] == "novo"
     assert saved[0]["integracoes"]["bling"]["refresh_token"] == "refresh"
     assert saved[0]["integracoes"]["mercadoturbo"]["token"] == "turbo"
+
+
+def test_importacao_manual_de_maquina_reaplica_snapshot_mesmo_com_estado_ja_atual(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    meta = {
+        "snapshot_hash": "snapshot-remoto",
+        "updated_at": "2026-07-17T13:35:22Z",
+        "updated_by": "origem",
+        "machine_id": "pc:origem",
+    }
+    aplicacoes = []
+    atualizacoes = []
+
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: True)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_por_id",
+        lambda _bundle_id, _meta: (b"pacote-confirmado", dict(meta)),
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_aplicar_pacote",
+        lambda *args, **kwargs: aplicacoes.append((args, kwargs)) or {
+            "file_count": 1,
+            "backup_dir": "backup/lojas",
+        },
+    )
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_state_update",
+        lambda *args, **kwargs: atualizacoes.append((args, kwargs)),
+    )
+
+    result = shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao, "lojas_integracoes", force=True,
+    )
+
+    assert result["success"] is True
+    assert result["file_count"] == 1
+    assert result.get("skipped") is not True
+    assert len(aplicacoes) == 1
+    assert len(atualizacoes) == 1
+
+
+def test_importacao_automatica_de_maquina_ainda_pode_pular_snapshot_ja_atual(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    meta = {"snapshot_hash": "snapshot-remoto"}
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_doc_id", lambda *args: "bundle-lojas")
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_remote_meta_by_id", lambda _bundle_id: dict(meta))
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_pull_already_current", lambda *args: True)
+    monkeypatch.setattr(
+        shared_sync_machine,
+        "_shared_sync_obter_bundle_por_id",
+        lambda *args: pytest.fail("o pacote automatico ja atual nao deveria ser baixado"),
+    )
+
+    result = shared_sync_machine._shared_sync_machine_pull_scope(sessao, "lojas_integracoes")
+
+    assert result["skipped"] is True
+    assert result["reason"] == "already_current"
+
+
+def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    chamadas = []
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_resolver_scopes",
+        lambda *args, **kwargs: ["lojas_integracoes"],
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_bundle_ids",
+        lambda *args: {"lojas_integracoes": "bundle-lojas"},
+    )
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_require_operation", lambda *args, **kwargs: {"id": "op"})
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_pull_scope",
+        lambda _sessao, scope, *, force=False: chamadas.append((scope, force)) or {
+            "scope": scope,
+            "success": True,
+            "file_count": 1,
+        },
+    )
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_audit", lambda *args, **kwargs: None)
+
+    result = shared_sync_machine_endpoints.shared_sync_machine_pull(
+        SharedSyncRunRequest(scopes=["lojas_integracoes"], operation_id="op"),
+        authorization="Bearer teste",
+        client_id="000002",
+    )
+
+    assert result["success"] is True
+    assert chamadas == [("lojas_integracoes", True)]
+
+
+def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
+    admin = open("static/admin_usuarios.html", "r", encoding="utf-8-sig").read()
+    integracoes_html = open("static/integracoes.html", "r", encoding="utf-8-sig").read()
+
+    assert 'id="machineSyncProgressOverlay"' in admin
+    assert admin.count("atualizarBalaoSincronizacaoMaquinas(") >= 5
+    assert "Preparando o envio dos dados" in admin
+    assert "Recebendo e aplicando os dados" in admin
+    assert "atualizarBalaoSincronizacaoMaquinas(false);" in admin
+    assert "await recarregarLojasAposSincronizacao(scopes);" in admin
+    assert "ignorado porque o histórico indicava que já estava atualizado" in admin
+    assert 'id="sharedSyncScreenOverlay"' in integracoes_html
+    assert "window.jkIntegracoesSetSyncProgress" in integracoes_html
+    assert "window.jkIntegracoesReloadStores" in integracoes_html
+    assert admin == open("admin_usuarios.html", "r", encoding="utf-8-sig").read()
+    assert integracoes_html == open("integracoes.html", "r", encoding="utf-8-sig").read()
 
 
 def test_auditoria_nao_grava_segredos(tmp_path, monkeypatch):
@@ -434,10 +712,10 @@ def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
     assert tombstones[-1]["store_id"] == lojas[0]["store_id"]
 
 
-def test_versoes_fonte_e_electron_estao_alinhadas_em_1_0_99():
+def test_versoes_fonte_e_electron_estao_alinhadas_em_1_0_100():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.99"
-    assert electron_package["version"] == "1.0.99"
-    assert 'VERSAO_MINIMA_APP_PADRAO = "1.0.99"' in backend_source
+    assert root_package["version"] == "1.0.100"
+    assert electron_package["version"] == "1.0.100"
+    assert 'VERSAO_MINIMA_APP_PADRAO = "1.0.100"' in backend_source

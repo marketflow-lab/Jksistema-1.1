@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('auto-update-status', listener);
     },
     getMachineInfo: () => ipcRenderer.invoke('get-machine-info'),
+    openContextVault: (authToken) => ipcRenderer.invoke(
+        'context-vault-open',
+        typeof authToken === 'string' ? authToken : ''
+    ),
     getBrowserSessionPartition: () => ipcRenderer.invoke('get-browser-session-partition'),
     ensureBrowserExtensions: () => ipcRenderer.invoke('ensure-browser-extensions'),
     getAvantProStorageStatus: () => ipcRenderer.invoke('avantpro-storage-status'),

@@ -579,6 +579,53 @@
             height: 100%;
             transition: width 180ms ease;
         }
+        .machine-sync-progress-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            display: none;
+            place-items: center;
+            padding: 20px;
+            background: rgba(3, 9, 18, 0.64);
+            backdrop-filter: blur(3px);
+        }
+        .machine-sync-progress-overlay.is-active { display: grid; }
+        .machine-sync-progress-balloon {
+            width: min(440px, calc(100vw - 40px));
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 18px 20px;
+            border: 1px solid rgba(79, 172, 254, 0.58);
+            border-radius: 18px;
+            background: rgba(8, 19, 35, 0.98);
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.56), 0 0 32px rgba(79, 172, 254, 0.22);
+            color: var(--text);
+        }
+        .machine-sync-progress-spinner {
+            width: 34px;
+            height: 34px;
+            flex: 0 0 34px;
+            border: 4px solid rgba(79, 172, 254, 0.22);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: machine-sync-spin 0.82s linear infinite;
+        }
+        .machine-sync-progress-title {
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 850;
+        }
+        .machine-sync-progress-message {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        @keyframes machine-sync-spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            .machine-sync-progress-spinner { animation-duration: 1.8s; }
+        }
         @media (max-width: 720px) {
             .user-share-status-balloon {
                 left: 12px;
@@ -641,6 +688,15 @@
     </style>
 </head>
 <body>
+<div id="machineSyncProgressOverlay" class="machine-sync-progress-overlay" role="status" aria-live="polite" aria-busy="true" hidden>
+    <div class="machine-sync-progress-balloon">
+        <span class="machine-sync-progress-spinner" aria-hidden="true"></span>
+        <div>
+            <div class="machine-sync-progress-title">Sincronização em andamento</div>
+            <div id="machineSyncProgressMessage" class="machine-sync-progress-message">Preparando os dados...</div>
+        </div>
+    </div>
+</div>
 <div class="wrap">
     <div class="topbar">
         <div>
@@ -933,6 +989,49 @@
     let userShareProcessoAtual = null;
     let hiddenPermissionsState = { full: false, configuracoes: false };
     let secaoAtual = modoCompartilharEmbutido ? 'compartilhar' : (usuarioPodeVerPresenca ? 'visao-geral' : 'compartilhar');
+
+    function atualizarBalaoSincronizacaoMaquinas(ativo, mensagem) {
+        const texto = String(mensagem || 'Processando a sincronização...');
+        try {
+            if (
+                modoCompartilharEmbutido
+                && window.parent
+                && window.parent !== window
+                && typeof window.parent.jkIntegracoesSetSyncProgress === 'function'
+            ) {
+                window.parent.jkIntegracoesSetSyncProgress(!!ativo, texto);
+                const local = document.getElementById('machineSyncProgressOverlay');
+                if (local) {
+                    local.classList.remove('is-active');
+                    local.hidden = true;
+                }
+                return;
+            }
+        } catch (_error) {
+            // Se o contêiner não estiver acessível, o balão local mantém o feedback.
+        }
+        const overlay = document.getElementById('machineSyncProgressOverlay');
+        const message = document.getElementById('machineSyncProgressMessage');
+        if (!overlay) return;
+        if (message) message.textContent = texto;
+        overlay.hidden = !ativo;
+        overlay.classList.toggle('is-active', !!ativo);
+    }
+
+    async function recarregarLojasAposSincronizacao(scopes) {
+        if (!Array.isArray(scopes) || !scopes.includes('lojas_integracoes')) return;
+        try {
+            if (
+                window.parent
+                && window.parent !== window
+                && typeof window.parent.jkIntegracoesReloadStores === 'function'
+            ) {
+                await window.parent.jkIntegracoesReloadStores();
+            }
+        } catch (error) {
+            console.warn('As lojas foram importadas, mas a lista não pôde ser recarregada automaticamente:', error);
+        }
+    }
 
     function labelPermissao(key) {
         const map = {
@@ -1658,6 +1757,12 @@
             const nome = (scopesGlobais[item.scope] && scopesGlobais[item.scope].label)
                 || (scopesUsuarios[item.scope] && scopesUsuarios[item.scope].label)
                 || item.scope;
+            if (item.skipped) {
+                const motivo = item.reason === 'already_current'
+                    ? 'ignorado porque o histórico indicava que já estava atualizado'
+                    : `ignorado${item.reason ? ` (${item.reason})` : ''}`;
+                return `${nome}: ${motivo}`;
+            }
             return `${nome}: ${item.file_count || 0} arquivo(s)`;
         }).join(' | ');
     }
@@ -2397,21 +2502,34 @@
     }
 
     async function executarSincronizacaoMinhasMaquinas(direcao) {
-        const salvou = await salvarSincronizacaoMinhasMaquinas(true);
-        if (!salvou) return;
-        const scopes = scopesSelecionadosSincronizacaoMinhasMaquinas();
-        if (!scopes.length) {
-            setStatus('Selecione pelo menos um dado para sincronizar.', true);
-            return;
-        }
-        const endpoint = direcao === 'push' ? '/api/shared-sync/machine-sync/push' : '/api/shared-sync/machine-sync/pull';
-        setStatus(direcao === 'push' ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
+        const enviando = direcao === 'push';
+        atualizarBalaoSincronizacaoMaquinas(
+            true,
+            enviando ? 'Preparando o envio dos dados...' : 'Preparando o recebimento dos dados...'
+        );
         try {
+            const salvou = await salvarSincronizacaoMinhasMaquinas(true);
+            if (!salvou) return;
+            const scopes = scopesSelecionadosSincronizacaoMinhasMaquinas();
+            if (!scopes.length) {
+                setStatus('Selecione pelo menos um dado para sincronizar.', true);
+                return;
+            }
+            const endpoint = enviando ? '/api/shared-sync/machine-sync/push' : '/api/shared-sync/machine-sync/pull';
+            setStatus(enviando ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
+            atualizarBalaoSincronizacaoMaquinas(
+                true,
+                enviando ? 'Conferindo o que será enviado...' : 'Conferindo o que será recebido...'
+            );
             const operationId = await criarPreviaSincronizacaoManual('/api/shared-sync/machine-sync/preview', direcao, scopes);
             if (!operationId) {
                 setStatus('Operação cancelada. Nenhum dado local foi alterado.');
                 return;
             }
+            atualizarBalaoSincronizacaoMaquinas(
+                true,
+                enviando ? 'Enviando os dados para o Firebase...' : 'Recebendo e aplicando os dados nesta máquina...'
+            );
             const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -2419,11 +2537,20 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
-            if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
+            atualizarBalaoSincronizacaoMaquinas(
+                true,
+                enviando ? 'Finalizando o envio...' : 'Atualizando as lojas e a tela...'
+            );
+            if (!enviando) {
+                await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
+                await recarregarLojasAposSincronizacao(scopes);
+            }
             await carregarSincronizacaoMinhasMaquinas();
-            setStatus((direcao === 'push' ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
+            setStatus((enviando ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));
         } catch (error) {
             setStatus(error.message || 'Erro ao sincronizar minhas máquinas.', true);
+        } finally {
+            atualizarBalaoSincronizacaoMaquinas(false);
         }
     }
 

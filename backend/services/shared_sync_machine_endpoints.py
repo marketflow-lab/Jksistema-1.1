@@ -119,7 +119,10 @@ def shared_sync_machine_pull(
         payload.operation_id, sessao, kind="machine", resource_id="self",
         direction="pull", scopes=scopes, bundle_ids=bundle_ids,
     )
-    results = [_shared_sync_machine_pull_scope(sessao, scope) for scope in scopes]
+    # O clique em "Importar agora" e uma ordem manual confirmada por previa.
+    # Nao confie apenas no hash historico: o arquivo local pode ter sumido ou
+    # divergido depois da ultima sincronizacao.
+    results = [_shared_sync_machine_pull_scope(sessao, scope, force=True) for scope in scopes]
     _shared_sync_audit(sessao, record=operation, results=results)
     return {"success": True, "direction": "machine-pull", "results": results}
 

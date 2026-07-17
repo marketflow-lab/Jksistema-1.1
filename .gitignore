@@ -123,3 +123,5 @@ electron_app/dist-client-setup.zip
 electron_app/dist-private/
 dist-private/
 *.blockmap
+.venv.blocked-backup-*/
+relatorios/

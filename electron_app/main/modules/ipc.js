@@ -117,6 +117,98 @@ function isEmbeddedMlBrowserWebContentsIpc(contents) {
     );
 }
 
+var contextVaultSecurityModule = require(path.join(
+    __dirname,
+    'electron_app',
+    'main',
+    'modules',
+    'context-vault-security.js'
+));
+
+function assertTrustedContextVaultIpcSender(event) {
+    const sender = event && event.sender;
+    let senderUrl = '';
+    try { senderUrl = sender && !sender.isDestroyed() ? sender.getURL() : ''; } catch (_err) {}
+    try {
+        const parsed = new URL(senderUrl);
+        const hostAllowed = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+        const portAllowed = String(parsed.port || '') === String(JK_LOCAL_BACKEND_PORT);
+        const pageAllowed = /\/(?:static\/)?configuracoes\.html$/i.test(parsed.pathname || '');
+        if (parsed.protocol === 'http:' && hostAllowed && portAllowed && pageAllowed) return;
+    } catch (_err) {}
+    logElectronLifecycle('context-vault-ipc-sender-blocked', { senderUrl });
+    throw new Error('Origem IPC nao autorizada para abrir o Context Vault.');
+}
+
+function getLocalBackendJson(pathname, authToken = '', timeoutMs = 18000) {
+    return new Promise((resolve) => {
+        const token = String(authToken || '').trim();
+        if (!token || token.length > 16384) {
+            resolve({ success: false, status: 401, message: 'Sessao administrativa ausente ou invalida.' });
+            return;
+        }
+        const headers = {
+            'Accept': 'application/json',
+            'Authorization': token.toLowerCase().startsWith('bearer ') ? token : `Bearer ${token}`
+        };
+        const req = http.request({
+            hostname: '127.0.0.1',
+            port: JK_LOCAL_BACKEND_PORT,
+            path: pathname,
+            method: 'GET',
+            headers,
+            timeout: timeoutMs
+        }, (res) => {
+            let text = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => {
+                if (text.length < 1024 * 1024) text += chunk;
+            });
+            res.on('end', () => {
+                let data = {};
+                try { data = text ? JSON.parse(text) : {}; } catch (_err) {}
+                const ok = res.statusCode >= 200 && res.statusCode < 300;
+                resolve(ok
+                    ? { success: true, status: res.statusCode, data }
+                    : {
+                        success: false,
+                        status: res.statusCode,
+                        message: data.detail || data.message || `Backend retornou HTTP ${res.statusCode}.`
+                    });
+            });
+        });
+        req.on('timeout', () => {
+            req.destroy();
+            resolve({ success: false, message: 'Tempo esgotado ao validar o Context Vault.' });
+        });
+        req.on('error', (err) => {
+            resolve({ success: false, message: err && err.message ? err.message : String(err) });
+        });
+        req.end();
+    });
+}
+
+async function openContextVaultForAdmin(event, authToken = '') {
+    assertTrustedContextVaultIpcSender(event);
+    const status = await getLocalBackendJson('/api/admin/context-hub/status', authToken);
+    if (!status.success) {
+        throw new Error(status.status === 403
+            ? 'Apenas administradores full podem abrir o Context Vault.'
+            : (status.message || 'Nao foi possivel validar a permissao administrativa.'));
+    }
+    const clientId = status.data && status.data.client_id;
+    const result = await contextVaultSecurityModule.openAuthorizedContextVault({
+        runtimeDir: getLocalBackendRuntimeDir(),
+        clientId,
+        shell
+    });
+    logElectronLifecycle('context-vault-opened', {
+        clientId: String(clientId || ''),
+        method: result.method
+    });
+    return result;
+}
+
 function assertTrustedFavoritosIpcSender(event, channel = 'favoritos') {
     const sender = event && event.sender;
     const trusted = !!(
@@ -834,6 +926,9 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('get-machine-info', () => {
         return getMachineInfo();
+    });
+    ipcMain.handle('context-vault-open', async (event, authToken = '') => {
+        return await openContextVaultForAdmin(event, authToken);
     });
     ipcMain.handle('check-for-updates', async () => {
         return await checkForUpdates(true);

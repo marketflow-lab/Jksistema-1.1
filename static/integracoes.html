@@ -44,9 +44,56 @@
         .status.disconnected { background-color: #dc3545; color: white; }
         .delete-btn { background: #dc3545; font-size: 10px; padding: 2px 6px; }
         .hidden { display: none; }
+        .shared-sync-screen-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: none;
+            place-items: center;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.68);
+            backdrop-filter: blur(3px);
+        }
+        .shared-sync-screen-overlay.is-active { display: grid; }
+        .shared-sync-screen-balloon {
+            width: min(440px, calc(100vw - 40px));
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 18px 20px;
+            border: 1px solid rgba(79, 172, 254, 0.62);
+            border-radius: 18px;
+            background: rgba(19, 30, 48, 0.98);
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62), 0 0 32px rgba(79, 172, 254, 0.24);
+        }
+        .shared-sync-screen-spinner {
+            width: 36px;
+            height: 36px;
+            flex: 0 0 36px;
+            border: 4px solid rgba(79, 172, 254, 0.22);
+            border-top-color: #4facfe;
+            border-radius: 50%;
+            animation: shared-sync-screen-spin 0.82s linear infinite;
+        }
+        .shared-sync-screen-title { color: #fff; font-size: 16px; font-weight: 800; }
+        .shared-sync-screen-message { margin-top: 4px; color: #bed1e8; font-size: 13px; line-height: 1.4; }
+        @keyframes shared-sync-screen-spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            .shared-sync-screen-spinner { animation-duration: 1.8s; }
+        }
     </style>
 </head>
 <body>
+
+    <div id="sharedSyncScreenOverlay" class="shared-sync-screen-overlay" role="status" aria-live="polite" aria-busy="true" hidden>
+        <div class="shared-sync-screen-balloon">
+            <span class="shared-sync-screen-spinner" aria-hidden="true"></span>
+            <div>
+                <div class="shared-sync-screen-title">Sincronização em andamento</div>
+                <div id="sharedSyncScreenMessage" class="shared-sync-screen-message">Preparando os dados...</div>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         <div class="sidebar">
@@ -160,6 +207,26 @@
             
             let stores = [];
             let selectedStore = null;
+
+            window.jkIntegracoesSetSyncProgress = (ativo, mensagem) => {
+                const overlay = document.getElementById('sharedSyncScreenOverlay');
+                const message = document.getElementById('sharedSyncScreenMessage');
+                if (!overlay) return;
+                if (message) message.textContent = String(mensagem || 'Processando a sincronização...');
+                overlay.hidden = !ativo;
+                overlay.classList.toggle('is-active', !!ativo);
+            };
+
+            window.jkIntegracoesReloadStores = async () => {
+                const nomeSelecionado = selectedStore && selectedStore.nome ? selectedStore.nome : '';
+                await loadStores();
+                if (nomeSelecionado && stores.some(store => store.nome === nomeSelecionado)) {
+                    await selectStore(nomeSelecionado);
+                } else if (nomeSelecionado) {
+                    await selectStore(null);
+                }
+                return stores.length;
+            };
 
             async function apiFetch(url, options = {}) {
                 const userDataStr = localStorage.getItem('user_data');
@@ -571,6 +638,7 @@
                 } catch (error) {
                     console.error('Erro ao carregar lojas:', error);
                     storeList.innerHTML = '<li>Erro ao carregar lojas.</li>';
+                    throw error;
                 }
             }
             
@@ -590,7 +658,7 @@
                 if (tabParam === 'compartilhar') activateMainTab('compartilhar');
             }
 
-            loadStores();
+            void loadStores().catch(() => {});
             checkUrlParams();
         });
     </script>
