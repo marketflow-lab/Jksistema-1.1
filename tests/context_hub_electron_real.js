@@ -13,6 +13,7 @@ const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jk-context-hub-electr
 const env = {
   ...process.env,
   JK_APP_ROOT_DIR: repoRoot,
+  JK_LOCAL_BACKEND_DIR: repoRoot,
   JK_LOCAL_BACKEND_SOURCE_DIR: repoRoot,
   JK_APP_URL: 'http://127.0.0.1:9/context-hub-test-only',
   JK_ELECTRON_USER_DATA_DIR: userDataDir,

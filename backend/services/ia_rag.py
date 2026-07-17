@@ -125,6 +125,11 @@ def _ia_rag_legacy_generic_scan_enabled() -> bool:
     return _ia_rag_env_bool("IA_RAG_LEGACY_GENERIC_SCAN_ENABLED", default=False)
 
 
+def _ia_rag_legacy_force_replace_enabled() -> bool:
+    """Destructive replacement needs an independent emergency opt-in."""
+    return _ia_rag_env_bool("IA_RAG_LEGACY_FORCE_REPLACE_ENABLED", default=False)
+
+
 _IA_RAG_LEGACY_DLP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.I)),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b")),
@@ -176,6 +181,7 @@ def _ia_rag_config() -> dict:
         "legacy_read_enabled": _ia_rag_legacy_read_enabled(),
         "legacy_write_enabled": _ia_rag_legacy_write_enabled(),
         "legacy_generic_scan_enabled": _ia_rag_legacy_generic_scan_enabled(),
+        "legacy_force_replace_enabled": _ia_rag_legacy_force_replace_enabled(),
         "backend": backend,
         "backend_configurado": _ia_rag_backend_configurado(),
         "postgres_configurado": bool(_ia_rag_pg_dsn()),
@@ -1603,15 +1609,27 @@ def _ia_rag_docs_app(client_id: str) -> list[IARagDocumento]:
     return docs
 
 
-def _ia_rag_reindexar_app(client_id: str, force: bool = True) -> dict:
+def _ia_rag_reindexar_app(client_id: str, force: bool = False) -> dict:
     if not _ia_rag_legacy_write_enabled():
         raise HTTPException(status_code=403, detail="A gravacao no RAG legado esta desativada.")
+    if force and not _ia_rag_legacy_force_replace_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="A substituicao destrutiva do RAG legado esta desativada.",
+        )
     if not _ia_rag_ativo():
         raise HTTPException(
             status_code=503,
             detail="RAG nao configurado. Defina IA_RAG_ENABLED=true e IA_VECTOR_DATABASE_URL no .env."
         )
     docs = _ia_rag_docs_app(client_id)
+    dlp_codes = sorted({code for doc in docs for code in _ia_rag_legacy_dlp_codes(doc)})
+    if dlp_codes:
+        raise ValueError(
+            "Documento bloqueado pela politica DLP do RAG legado (codigos: "
+            + ", ".join(dlp_codes)
+            + ")."
+        )
     removidos = _ia_rag_limpar_fontes(client_id, "jkdata:") if force else 0
     if not force:
         existentes = _ia_rag_fontes_existentes(client_id, "jkdata:")
@@ -1626,7 +1644,7 @@ def _ia_rag_reindexar_app(client_id: str, force: bool = True) -> dict:
     }
 
 
-def _ia_rag_iniciar_reindex_async(client_id: str, force: bool = True) -> dict:
+def _ia_rag_iniciar_reindex_async(client_id: str, force: bool = False) -> dict:
     with IA_RAG_REINDEX_LOCK:
         if bool(IA_RAG_REINDEX_ACTIVE.get(client_id)):
             meta = dict(IA_RAG_REINDEX_META.get(client_id) or {})

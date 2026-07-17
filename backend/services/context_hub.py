@@ -66,8 +66,27 @@ VAULT_DIRECTORIES = (
     "90_Arquivo",
 )
 
-_SAFE_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_SAFE_CLIENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _SAFE_REASON_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+_WINDOWS_RESERVED_NAMES = {
+    "aux",
+    "con",
+    "conin$",
+    "conout$",
+    "nul",
+    "prn",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
+CONTEXT_BUNDLE_REQUIRED_PATHS = frozenset(
+    {
+        "docs/knowledge/README.md",
+        "docs/knowledge/security-policy.md",
+        "docs/knowledge/vault-structure.md",
+        "docs/knowledge/templates/curated-note.md",
+        "docs/knowledge/templates/generated-note.md",
+    }
+)
 _VOLATILE_INVENTORY_KEYS = {
     "generated_at",
     "generation_time",
@@ -117,6 +136,13 @@ class ContextHubPaths:
     journal_path: Path
 
 
+@dataclass(frozen=True)
+class _InfoRootSnapshot:
+    absolute: Path
+    resolved: Path
+    identity: Optional[tuple[int, int, int]]
+
+
 _CONFIG_LOCK = threading.RLock()
 _RUNTIME_CONFIG: Optional[ContextHubRuntimeConfig] = None
 _TENANT_LOCKS_GUARD = threading.Lock()
@@ -164,13 +190,10 @@ def configure_context_hub(
     if not raw_info.is_absolute():
         raw_info = base / raw_info
     raw_info = raw_info.absolute()
-    if raw_info.exists() and _is_link_or_junction(raw_info):
-        raise ContextHubValidationError(
-            "Links simbolicos ou junctions nao sao aceitos como raiz info do Context Hub."
-        )
+    info_snapshot = _snapshot_info_root(raw_info)
     configured = ContextHubRuntimeConfig(
         base_dir=base,
-        info_root=raw_info.resolve(),
+        info_root=info_snapshot.resolved,
         surface=_normalize_surface(surface or os.getenv("JK_CONTEXT_HUB_SURFACE") or "development"),
     )
     with _CONFIG_LOCK:
@@ -187,7 +210,7 @@ def _runtime_config(
     if base_dir is not None or info_root is not None or surface is not None:
         current = _RUNTIME_CONFIG or configure_context_hub()
         base = Path(base_dir).resolve() if base_dir is not None else current.base_dir
-        info = Path(info_root).resolve() if info_root is not None else current.info_root
+        info = Path(info_root).expanduser().absolute() if info_root is not None else current.info_root
         return ContextHubRuntimeConfig(base, info, _normalize_surface(surface or current.surface))
     with _CONFIG_LOCK:
         current = _RUNTIME_CONFIG
@@ -212,6 +235,45 @@ def _is_link_or_junction(path: Path) -> bool:
         return True
 
 
+def _snapshot_info_root(root: Path) -> _InfoRootSnapshot:
+    """Capture a stable, non-redirected info root for one path operation."""
+
+    absolute = root.expanduser().absolute()
+
+    def capture() -> tuple[Path, Optional[tuple[int, int, int]]]:
+        try:
+            resolved = absolute.resolve(strict=False)
+            if _is_link_or_junction(absolute):
+                raise ContextHubValidationError(
+                    "Links simbolicos ou junctions nao sao aceitos como raiz info do Context Hub."
+                )
+            try:
+                stat = os.lstat(absolute)
+            except FileNotFoundError:
+                identity = None
+            else:
+                identity = (int(stat.st_dev), int(stat.st_ino), int(stat.st_mode))
+            return resolved, identity
+        except ContextHubValidationError:
+            raise
+        except OSError as error:
+            raise ContextHubValidationError(
+                "Nao foi possivel validar a raiz info do Context Hub."
+            ) from error
+
+    resolved_before, identity_before = capture()
+    resolved_after, identity_after = capture()
+    if resolved_before != resolved_after or identity_before != identity_after:
+        raise ContextHubValidationError(
+            "A raiz info do Context Hub foi alterada durante a validacao."
+        )
+    if resolved_after != absolute:
+        raise ContextHubValidationError(
+            "A raiz info do Context Hub nao pode ser redirecionada."
+        )
+    return _InfoRootSnapshot(absolute=absolute, resolved=resolved_after, identity=identity_after)
+
+
 def _assert_path_chain_safe(path: Path, root: Path) -> None:
     root_resolved = root.resolve()
     candidate = path.absolute()
@@ -229,8 +291,18 @@ def _assert_path_chain_safe(path: Path, root: Path) -> None:
 
 
 def _normalize_client_id(client_id: object) -> str:
-    normalized = str(client_id or "").strip()
-    if not normalized or normalized in {".", ".."} or not _SAFE_CLIENT_ID_RE.fullmatch(normalized):
+    raw = str(client_id or "")
+    normalized = raw.strip()
+    reserved_stem = normalized.split(".", 1)[0].lower()
+    if (
+        not normalized
+        or raw != normalized
+        or normalized.endswith((".", " "))
+        or normalized != normalized.lower()
+        or normalized in {".", ".."}
+        or reserved_stem in _WINDOWS_RESERVED_NAMES
+        or not _SAFE_CLIENT_ID_RE.fullmatch(normalized)
+    ):
         raise ContextHubValidationError("Identificador de cliente invalido para o Context Hub.")
     return normalized
 
@@ -242,13 +314,19 @@ def _tenant_paths(
 ) -> ContextHubPaths:
     client = _normalize_client_id(client_id)
     config = _runtime_config(info_root=info_root)
-    root = config.info_root.absolute()
+    root_snapshot = _snapshot_info_root(config.info_root)
+    root = root_snapshot.absolute
     tenant = root / client
     _assert_path_chain_safe(tenant, root)
     vault = tenant / "ContextVault"
     internal = tenant / "context_hub"
     for candidate in (vault, internal):
         _assert_path_chain_safe(candidate, root)
+    final_root_snapshot = _snapshot_info_root(config.info_root)
+    if final_root_snapshot != root_snapshot:
+        raise ContextHubValidationError(
+            "A raiz info do Context Hub foi alterada durante a operacao."
+        )
     return ContextHubPaths(
         client_id=client,
         info_root=root,
@@ -270,10 +348,24 @@ def _write_text_atomic(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8", newline="\n")
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
         with contextlib.suppress(FileNotFoundError):
             temporary.unlink()
+
+
+def _replace_with_retry(source: Path | str, target: Path | str, *, attempts: int = 12) -> None:
+    """Preserve atomic replacement while tolerating short Windows file locks."""
+
+    maximum_attempts = max(1, int(attempts))
+    for attempt in range(maximum_attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= maximum_attempts:
+                raise
+            time.sleep(min(0.25, 0.02 * (2 ** min(attempt, 4))))
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -564,21 +656,53 @@ def _recover_publish_journal(paths: ContextHubPaths) -> None:
     temporary = paths.vault_dir / f".context_hub_publish_{generation_id}"
     backup = paths.vault_dir / f".context_hub_backup_{generation_id}"
     state = str(journal.get("state") or "")
+    if state not in {"prepared", "old_moved", "new_active"}:
+        raise ContextHubValidationError("Estado do journal de publicacao invalido; publicacao bloqueada.")
+    previous_generation_id = str(journal.get("previous_generation_id") or "")
+    if previous_generation_id and not re.fullmatch(r"[a-f0-9]{32}", previous_generation_id):
+        raise ContextHubValidationError("Journal de publicacao invalido; publicacao bloqueada.")
+    raw_had_previous = journal.get("had_previous")
+    if raw_had_previous is not None and not isinstance(raw_had_previous, bool):
+        raise ContextHubValidationError("Journal de publicacao invalido; publicacao bloqueada.")
     active_id = None
     with _connect(paths) as connection:
         row = connection.execute(
             "SELECT generation_id FROM context_hub_active_generation WHERE singleton_id=1"
         ).fetchone()
         active_id = str(row["generation_id"] or "") if row else ""
+    if previous_generation_id and active_id not in {previous_generation_id, generation_id}:
+        raise ContextHubValidationError("Geracao ativa divergiu do journal; publicacao bloqueada.")
+    had_previous = (
+        raw_had_previous
+        if isinstance(raw_had_previous, bool)
+        else bool(previous_generation_id or (active_id and active_id != generation_id) or backup.exists())
+    )
     if state == "new_active" and active_id == generation_id:
         _safe_remove_tree(backup, paths.vault_dir)
         _safe_remove_tree(temporary, paths.vault_dir)
         paths.journal_path.unlink(missing_ok=True)
         return
-    if state in {"old_moved", "new_active"} and backup.exists():
+
+    # Antes do CAS do banco, qualquer arvore nova deve ser abortada e a
+    # geracao indicada pelo ponteiro ativo deve continuar visivel.  O estado
+    # `prepared` tambem pode ter backup: existe uma janela entre mover a arvore
+    # antiga e persistir `old_moved`.
+    if backup.exists():
         if paths.generated_dir.exists():
             _safe_remove_tree(paths.generated_dir, paths.vault_dir)
-        os.replace(backup, paths.generated_dir)
+        _replace_with_retry(backup, paths.generated_dir)
+    elif had_previous:
+        if state != "prepared" or not paths.generated_dir.exists():
+            raise ContextHubValidationError(
+                "Backup da geracao ativa indisponivel; recuperacao bloqueada."
+            )
+        # prepared + arvore presente + sem backup: o movimento ainda nao
+        # aconteceu; a arvore atual ja e a anterior e deve ser preservada.
+    elif paths.generated_dir.exists():
+        # Primeira publicacao interrompida antes do CAS: nao existe geracao
+        # anterior no banco, portanto uma arvore nova parcial nao pode ficar
+        # exposta como ativa.
+        _safe_remove_tree(paths.generated_dir, paths.vault_dir)
     _safe_remove_tree(temporary, paths.vault_dir)
     paths.journal_path.unlink(missing_ok=True)
 
@@ -600,7 +724,16 @@ def _finding(
     }
     if source_ref:
         safe_ref = str(source_ref).replace("\\", "/")
-        if len(safe_ref) <= 300 and ".." not in Path(safe_ref).parts and not Path(safe_ref).is_absolute():
+        # A source reference is useful for remediation, but it is untrusted
+        # metadata too.  Never copy a filename/path containing PII or a secret
+        # into a finding: findings are persisted and may also reach logs/UI.
+        if (
+            len(safe_ref) <= 300
+            and not any(character in safe_ref for character in "\r\n\x00")
+            and ".." not in Path(safe_ref).parts
+            and not Path(safe_ref).is_absolute()
+            and not _dlp_categories(safe_ref)
+        ):
             payload["source_ref"] = safe_ref
     return payload
 
@@ -715,8 +848,18 @@ _DLP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "credential",
         re.compile(
-            r"(?i)\b(?:access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|api[_ -]?key|password|senha)\b"
-            r"\s*(?:=|:)\s*[\"']?(?!redacted\b|redigido\b|masked\b|\*{3,}\b|<[^>]+>)[A-Za-z0-9_./+\-=]{12,}"
+            r"(?ix)\b(?:"
+            r"access[_ -]?token|refresh[_ -]?token|oauth[_ -]?token|auth[_ -]?token|"
+            r"token|client[_ -]?secret|api[_ -]?key|password|senha"
+            r")\b[\"']?\s*(?:=|:)\s*[\"']?"
+            r"(?!redacted\b|redigido\b|masked\b|none\b|null\b|false\b|\*{3,}|<[^>]+>)"
+            r"[^\s\"'<>]{6,}"
+            r"|\b(?:authorization\b[\"']?\s*(?:=|:)\s*[\"']?)?"
+            r"bearer\s+(?!redacted\b|redigido\b|masked\b|\*{3,}|<[^>]+>)"
+            r"[A-Za-z0-9._~+/=-]{12,}"
+            r"|\boauth\b[\"']?\s*(?:=|:)\s*[\"']?"
+            r"(?!redacted\b|redigido\b|masked\b|none\b|null\b|false\b|\*{3,}|<[^>]+>)"
+            r"[^\s\"'<>]{6,}"
         ),
     ),
     ("buyer_data", re.compile(r"(?i)\b(?:comprador|buyer|recipient|destinatario)\b\s*(?:=|:)\s*[^\s#][^\n]{2,}")),
@@ -736,7 +879,11 @@ _DLP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         # are common SKU/OEM identifiers and must not be classified as phones.
         re.compile(
             r"(?<!\d)(?:(?:\+?55[\s.-]+)?\([1-9]\d\)[\s.-]*9?\d{4}[\s.-]+\d{4}"
-            r"|(?:\+?55[\s.-]+)?[1-9]\d[\s.-]+9?\d{4}[\s.-]+\d{4})(?!\d)"
+            r"|(?:\+?55[\s.-]+)?[1-9]\d[\s.-]+9?\d{4}[\s.-]+\d{4}"
+            # Compact numbers are ambiguous with SKU/OEM identifiers, so they
+            # are PII only when an explicit phone field labels the value.
+            r"|(?i:\b(?:telefone|phone|celular|whatsapp|fone)\b[\"']?\s*(?:=|:)\s*[\"']?"
+            r"(?:\+?55)?[1-9]\d9?\d{8}))(?!\d)"
         ),
     ),
 )
@@ -772,7 +919,17 @@ def _valid_cnpj(digits: str) -> bool:
 
 def _dlp_categories(content: str) -> set[str]:
     categories = {category for category, pattern in _DLP_PATTERNS if pattern.search(content)}
-    for raw in re.findall(r"(?<!\d)(?:\d[.\-/ ]?){11,14}(?!\d)", content):
+    # A bare 11/14 digit value can legitimately be an OEM/SKU.  Accept only a
+    # labelled compact document number or the conventional punctuated form.
+    document_numbers = re.findall(
+        r"(?ix)(?:"
+        r"\b(?:cpf|cnpj)\b[\"']?\s*(?:=|:)\s*[\"']?(\d{14}|\d{11})(?!\d)"
+        r"|(?<!\d)(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})(?!\d)"
+        r")",
+        content,
+    )
+    for compact, formatted in document_numbers:
+        raw = compact or formatted
         digits = re.sub(r"\D", "", raw)
         if _valid_cpf(digits):
             categories.add("cpf")
@@ -792,14 +949,43 @@ def scan_dlp(content: object, *, source_ref: str = "") -> list[dict[str, Any]]:
 
 
 def _dlp_document_text(metadata: Mapping[str, Any], body: str) -> str:
-    """Build the DLP surface without hashes, IDs, timestamps or source refs."""
+    """Build a complete, deterministic DLP surface for body and metadata.
 
-    editorial = [body]
-    for key in ("title", "module", "description"):
-        value = metadata.get(key)
-        if isinstance(value, str):
-            editorial.append(value)
-    return "\n".join(editorial)
+    IDs, source references and nested/custom frontmatter are untrusted inputs,
+    just like the Markdown body.  Flattening labelled values also lets the DLP
+    distinguish a compact phone field from a numeric SKU/OEM identifier.
+    """
+
+    surface = [str(body or "")]
+    visited: set[int] = set()
+
+    def append_value(value: Any, label: str = "") -> None:
+        if isinstance(value, Mapping):
+            identity = id(value)
+            if identity in visited:
+                return
+            visited.add(identity)
+            for raw_key in sorted(value, key=lambda item: str(item)):
+                key = str(raw_key)
+                surface.append(key)
+                append_value(value[raw_key], key)
+            return
+        if isinstance(value, (list, tuple, set, frozenset)):
+            identity = id(value)
+            if identity in visited:
+                return
+            visited.add(identity)
+            items = value
+            if isinstance(value, (set, frozenset)):
+                items = sorted(value, key=lambda item: str(item))
+            for item in items:
+                append_value(item, label)
+            return
+        text = str(value or "")
+        surface.append(f"{label}: {text}" if label else text)
+
+    append_value(metadata)
+    return "\n".join(surface)
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
@@ -1031,9 +1217,18 @@ def _load_context_bundle(
         return [], [_finding("context_bundle_manifest_contract_invalid", category="bundle")], []
     if manifest.get("schema_version") != 1 or not isinstance(manifest.get("files"), list):
         return [], [_finding("context_bundle_manifest_schema_unsupported", category="bundle")], []
+    if not manifest["files"]:
+        return [], [_finding("context_bundle_manifest_empty", category="bundle")], []
     manifest_version = str(manifest.get("source_version") or "").strip()
     if manifest_version != expected_source_version:
         return [], [_finding("context_bundle_version_mismatch", category="bundle")], []
+    declared_paths = {
+        str(entry.get("path") or "").replace("\\", "/")
+        for entry in manifest["files"]
+        if isinstance(entry, dict)
+    }
+    if not CONTEXT_BUNDLE_REQUIRED_PATHS.issubset(declared_paths):
+        return [], [_finding("context_bundle_required_entries_missing", category="bundle")], []
     try:
         knowledge_resolved = knowledge_root.resolve(strict=True)
         _assert_path_chain_safe(knowledge_resolved, config.base_dir)
@@ -1464,7 +1659,7 @@ def _write_generation_snapshot(
         target = temporary_root / relative_path
         _assert_path_chain_safe(target, temporary_root)
         _write_text_atomic(target, content)
-    os.replace(temporary_root, final_root)
+    _replace_with_retry(temporary_root, final_root)
     return final_root
 
 
@@ -1771,29 +1966,41 @@ def _copy_publish_candidate(paths: ContextHubPaths, generation_id: str) -> tuple
     return temporary, backup
 
 
-def _swap_generated_directory(paths: ContextHubPaths, generation_id: str) -> tuple[Path, Path]:
+def _swap_generated_directory(
+    paths: ContextHubPaths,
+    generation_id: str,
+    *,
+    previous_generation_id: Optional[str],
+) -> tuple[Path, Path]:
     temporary, backup = _copy_publish_candidate(paths, generation_id)
+    had_previous = paths.generated_dir.exists()
+    journal_base = {
+        "generation_id": generation_id,
+        "previous_generation_id": str(previous_generation_id or ""),
+        "had_previous": had_previous,
+        "created_at": _utc_now(),
+    }
     _write_json_atomic(
         paths.journal_path,
-        {"generation_id": generation_id, "state": "prepared", "created_at": _utc_now()},
+        journal_base | {"state": "prepared"},
     )
     try:
         if paths.generated_dir.exists():
-            os.replace(paths.generated_dir, backup)
+            _replace_with_retry(paths.generated_dir, backup)
         _write_json_atomic(
             paths.journal_path,
-            {"generation_id": generation_id, "state": "old_moved", "created_at": _utc_now()},
+            journal_base | {"state": "old_moved"},
         )
-        os.replace(temporary, paths.generated_dir)
+        _replace_with_retry(temporary, paths.generated_dir)
         _write_json_atomic(
             paths.journal_path,
-            {"generation_id": generation_id, "state": "new_active", "created_at": _utc_now()},
+            journal_base | {"state": "new_active"},
         )
         return temporary, backup
     except Exception:
         if backup.exists():
             _safe_remove_tree(paths.generated_dir, paths.vault_dir)
-            os.replace(backup, paths.generated_dir)
+            _replace_with_retry(backup, paths.generated_dir)
         _safe_remove_tree(temporary, paths.vault_dir)
         paths.journal_path.unlink(missing_ok=True)
         raise
@@ -1802,7 +2009,7 @@ def _swap_generated_directory(paths: ContextHubPaths, generation_id: str) -> tup
 def _restore_swapped_directory(paths: ContextHubPaths, temporary: Path, backup: Path) -> None:
     if backup.exists():
         _safe_remove_tree(paths.generated_dir, paths.vault_dir)
-        os.replace(backup, paths.generated_dir)
+        _replace_with_retry(backup, paths.generated_dir)
     _safe_remove_tree(temporary, paths.vault_dir)
     paths.journal_path.unlink(missing_ok=True)
 
@@ -1835,7 +2042,11 @@ def _publish_generation_locked(
     if expected != current:
         raise ContextHubConflictError("A geracao ativa mudou; reconstrua antes de publicar.")
 
-    temporary, backup = _swap_generated_directory(paths, generation_id)
+    temporary, backup = _swap_generated_directory(
+        paths,
+        generation_id,
+        previous_generation_id=current,
+    )
     now = _utc_now()
     try:
         with _connect(paths) as connection:
@@ -2113,31 +2324,39 @@ def get_status(
     bootstrap_context_hub(client_id, info_root=config.info_root, surface=config.surface)
     paths = _tenant_paths(client_id, info_root=config.info_root)
     with _connect(paths) as connection:
-        active_id = _active_generation_id(connection)
-        active = connection.execute(
-            "SELECT * FROM context_hub_generations WHERE generation_id=?", (active_id,)
-        ).fetchone() if active_id else None
-        latest = connection.execute(
-            "SELECT * FROM context_hub_generations ORDER BY created_at DESC, rowid DESC LIMIT 1"
-        ).fetchone()
-        diff_target_id = (
-            str(latest["generation_id"])
-            if latest and str(latest["status"]) in {"ready", "active", "superseded"}
-            else active_id
-        )
-        active_hashes = _generation_document_hashes(connection, active_id)
-        target_hashes = _generation_document_hashes(connection, diff_target_id)
-        counts = connection.execute(
-            """
-            SELECT COUNT(DISTINCT d.doc_id) AS documents, COUNT(c.chunk_id) AS chunks
-            FROM context_hub_documents d
-            LEFT JOIN context_hub_chunks c
-              ON c.generation_id=d.generation_id AND c.doc_id=d.doc_id
-            WHERE d.generation_id=?
-            """,
-            (active_id,),
-        ).fetchone() if active_id else {"documents": 0, "chunks": 0}
-        settings_row = connection.execute("SELECT * FROM context_hub_settings WHERE singleton_id=1").fetchone()
+        connection.execute("BEGIN")
+        try:
+            active_id = _active_generation_id(connection)
+            active = connection.execute(
+                "SELECT * FROM context_hub_generations WHERE generation_id=?", (active_id,)
+            ).fetchone() if active_id else None
+            latest = connection.execute(
+                "SELECT * FROM context_hub_generations ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+            diff_target_id = (
+                str(latest["generation_id"])
+                if latest and str(latest["status"]) in {"ready", "active", "superseded"}
+                else active_id
+            )
+            active_hashes = _generation_document_hashes(connection, active_id)
+            target_hashes = _generation_document_hashes(connection, diff_target_id)
+            counts = connection.execute(
+                """
+                SELECT COUNT(DISTINCT d.doc_id) AS documents, COUNT(c.chunk_id) AS chunks
+                FROM context_hub_documents d
+                LEFT JOIN context_hub_chunks c
+                  ON c.generation_id=d.generation_id AND c.doc_id=d.doc_id
+                WHERE d.generation_id=?
+                """,
+                (active_id,),
+            ).fetchone() if active_id else {"documents": 0, "chunks": 0}
+            settings_row = connection.execute(
+                "SELECT * FROM context_hub_settings WHERE singleton_id=1"
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
     settings = _settings_from_row(settings_row, config.surface)
     watcher_key = str(paths.internal_dir).lower()
     with _WATCHERS_GUARD:

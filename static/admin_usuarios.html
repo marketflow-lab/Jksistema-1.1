@@ -1019,17 +1019,24 @@
     }
 
     async function recarregarLojasAposSincronizacao(scopes) {
-        if (!Array.isArray(scopes) || !scopes.includes('lojas_integracoes')) return;
+        if (!Array.isArray(scopes) || !scopes.includes('lojas_integracoes')) return null;
         try {
             if (
                 window.parent
                 && window.parent !== window
                 && typeof window.parent.jkIntegracoesReloadStores === 'function'
             ) {
-                await window.parent.jkIntegracoesReloadStores();
+                return Number(await window.parent.jkIntegracoesReloadStores());
             }
+            const resp = await fetch('/api/lojas', { headers: obterAuthHeaders(), cache: 'no-store' });
+            const data = await resp.json().catch(() => null);
+            if (!resp.ok || !Array.isArray(data)) {
+                throw new Error((data && (data.detail || data.message)) || 'Não foi possível conferir as lojas importadas.');
+            }
+            return data.length;
         } catch (error) {
             console.warn('As lojas foram importadas, mas a lista não pôde ser recarregada automaticamente:', error);
+            throw error;
         }
     }
 
@@ -1763,7 +1770,10 @@
                     : `ignorado${item.reason ? ` (${item.reason})` : ''}`;
                 return `${nome}: ${motivo}`;
             }
-            return `${nome}: ${item.file_count || 0} arquivo(s)`;
+            const lojas = item.scope === 'lojas_integracoes'
+                ? `, ${Number(item.stores_count || 0)} loja(s)`
+                : '';
+            return `${nome}: ${item.file_count || 0} arquivo(s)${lojas}`;
         }).join(' | ');
     }
 
@@ -2493,12 +2503,13 @@
         const resumo = [
             `${Number(total.inclusions || 0)} inclusão(ões)`,
             `${Number(total.changes || 0)} alteração(ões)`,
-            `${Number(total.deletions || 0)} exclusão(ões)`,
+            `${Number(total.deletions || 0)} arquivo(s) presente(s) apenas no destino`,
             `${Number(total.disconnects || 0)} desconexão(ões)`,
-            `${Number(total.credentials || 0)} credencial(is)`
+            `${Number(total.credentials || 0)} credencial(is)`,
+            `${Number(total.stores || 0)} loja(s) no snapshot`
         ].join(', ');
         const acao = direcao === 'pull' ? 'Importar agora' : 'Enviar agora';
-        return confirm(`Prévia: ${resumo}.\n\n${acao}?`) ? data.operation_id : '';
+        return confirm(`Prévia: ${resumo}.\n\n"Presente apenas no destino" é uma comparação de arquivos e não significa exclusão de lojas. O snapshot anterior é preservado.\n\n${acao}?`) ? data.operation_id : '';
     }
 
     async function executarSincronizacaoMinhasMaquinas(direcao) {
@@ -2537,13 +2548,29 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
+            const resultados = Array.isArray(data.results) ? data.results : [];
+            const scopesConcluidos = new Set(resultados.filter(item => item && item.success !== false).map(item => String(item.scope || '')));
+            const scopesAusentes = scopes.filter(scope => !scopesConcluidos.has(String(scope)));
+            if (scopesAusentes.length) {
+                throw new Error(`A sincronização não confirmou: ${scopesAusentes.join(', ')}.`);
+            }
             atualizarBalaoSincronizacaoMaquinas(
                 true,
                 enviando ? 'Finalizando o envio...' : 'Atualizando as lojas e a tela...'
             );
             if (!enviando) {
                 await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
-                await recarregarLojasAposSincronizacao(scopes);
+                const lojasCarregadas = await recarregarLojasAposSincronizacao(scopes);
+                if (scopes.includes('lojas_integracoes')) {
+                    const resultadoLojas = resultados.find(item => item && item.scope === 'lojas_integracoes');
+                    const lojasAplicadas = Number(resultadoLojas && resultadoLojas.stores_count);
+                    if (!Number.isInteger(lojasAplicadas) || lojasAplicadas < 0) {
+                        throw new Error('O backend não confirmou quantas lojas foram importadas.');
+                    }
+                    if (Number.isInteger(lojasCarregadas) && lojasCarregadas !== lojasAplicadas) {
+                        throw new Error(`A importação aplicou ${lojasAplicadas} loja(s), mas a tela carregou ${lojasCarregadas}. Atualize e tente novamente.`);
+                    }
+                }
             }
             await carregarSincronizacaoMinhasMaquinas();
             setStatus((enviando ? 'Dados enviados. ' : 'Dados importados. ') + resumoResultadosSync(data.results));

@@ -148,13 +148,17 @@ def test_simulated_load_of_ten_phones_uses_four_workers(monkeypatch):
     maximum = 0
     processed: set[str] = set()
     lock = threading.Lock()
+    four_started = threading.Event()
+    release = threading.Event()
 
     def process(_config_value, _state, message):
         nonlocal active, maximum
         with lock:
             active += 1
             maximum = max(maximum, active)
-        time.sleep(0.05)
+            if maximum == 4:
+                four_started.set()
+        release.wait(2)
         with lock:
             processed.add(str(message["message_id"]))
             active -= 1
@@ -179,6 +183,10 @@ def test_simulated_load_of_ten_phones_uses_four_workers(monkeypatch):
             message=message,
             message_id=message["message_id"],
         )
+    try:
+        assert four_started.wait(1.0), "dispatcher nao iniciou os quatro workers"
+    finally:
+        release.set()
     _wait_dispatcher()
     assert processed == {f"load-{index}" for index in range(10)}
     assert maximum == 4

@@ -369,20 +369,37 @@ function dirExists(dir) {
 function walkFiles(dir) {
   const out = [];
   if (!dirExists(dir)) return out;
+  const rootStat = fs.lstatSync(dir);
+  if (rootStat.isSymbolicLink()) {
+    throw new Error(`Link/reparse point proibido durante verificacao: ${dir}`);
+  }
   const stack = [dir];
   while (stack.length) {
     const current = stack.pop();
-    let entries = [];
+    let entries;
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch (err) {
-      if (err && (err.code === 'EACCES' || err.code === 'EPERM')) continue;
-      throw err;
+      throw new Error(
+        `Diretorio ilegivel durante verificacao fail-closed: ${current} (${err && err.code ? err.code : 'erro'})`,
+      );
     }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile()) out.push(full);
+      let stat;
+      try {
+        stat = fs.lstatSync(full);
+      } catch (err) {
+        throw new Error(
+          `Entrada ilegivel durante verificacao fail-closed: ${full} (${err && err.code ? err.code : 'erro'})`,
+        );
+      }
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Link/reparse point proibido durante verificacao: ${full}`);
+      }
+      if (stat.isDirectory()) stack.push(full);
+      else if (stat.isFile()) out.push(full);
+      else throw new Error(`Entrada nao regular durante verificacao: ${full}`);
     }
   }
   return out;

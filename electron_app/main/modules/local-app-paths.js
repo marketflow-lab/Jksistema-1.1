@@ -69,7 +69,14 @@ if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function')
     app.setAppUserModelId('com.jksistema.cliente');
 }
 
-const JK_LOCAL_BACKEND_PORT = 8001;
+const JK_CONTEXT_HUB_ELECTRON_TEST_PORT = String(process.env.JK_CONTEXT_HUB_ELECTRON_TEST_PORT || '').trim();
+const JK_LOCAL_BACKEND_PORT = (
+    /^(1|true|yes)$/i.test(String(process.env.JK_ALLOW_MULTIPLE_INSTANCES_FOR_TESTS || ''))
+    && /^\d{2,5}$/.test(JK_CONTEXT_HUB_ELECTRON_TEST_PORT)
+    && Number(JK_CONTEXT_HUB_ELECTRON_TEST_PORT) <= 65535
+)
+    ? Number(JK_CONTEXT_HUB_ELECTRON_TEST_PORT)
+    : 8001;
 const JK_PROMO_WORKER_PORT = 8011;
 const JK_DEFAULT_APP_URL = `http://127.0.0.1:${JK_LOCAL_BACKEND_PORT}/frontend_index.html`;
 const JK_LOCAL_BACKEND_DIR_NAME = 'local_app';

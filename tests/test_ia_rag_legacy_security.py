@@ -13,6 +13,7 @@ def test_legacy_rag_flags_are_disabled_by_default(monkeypatch):
         "IA_RAG_LEGACY_READ_ENABLED",
         "IA_RAG_LEGACY_WRITE_ENABLED",
         "IA_RAG_LEGACY_GENERIC_SCAN_ENABLED",
+        "IA_RAG_LEGACY_FORCE_REPLACE_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(ia_rag, "psycopg", None, raising=False)
@@ -22,6 +23,7 @@ def test_legacy_rag_flags_are_disabled_by_default(monkeypatch):
     assert config["legacy_read_enabled"] is False
     assert config["legacy_write_enabled"] is False
     assert config["legacy_generic_scan_enabled"] is False
+    assert config["legacy_force_replace_enabled"] is False
 
 
 def test_legacy_context_does_not_search_when_read_is_disabled(monkeypatch):
@@ -76,6 +78,44 @@ def test_generic_recursive_scan_requires_separate_opt_in(monkeypatch):
     )
 
     assert ia_rag._ia_rag_docs_app("000002") == []
+
+
+def test_force_replacement_requires_independent_opt_in(monkeypatch):
+    monkeypatch.setenv("IA_RAG_LEGACY_WRITE_ENABLED", "true")
+    monkeypatch.delenv("IA_RAG_LEGACY_FORCE_REPLACE_ENABLED", raising=False)
+    monkeypatch.setattr(ia_rag, "_ia_rag_ativo", lambda: True)
+    monkeypatch.setattr(
+        ia_rag,
+        "_ia_rag_docs_app",
+        lambda _client: pytest.fail("force bloqueado nao deve sequer varrer documentos"),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        ia_rag._ia_rag_reindexar_app("000002", force=True)
+
+    assert exc.value.status_code == 403
+
+
+def test_force_dlp_preflight_runs_before_removing_active_corpus(monkeypatch):
+    monkeypatch.setenv("IA_RAG_LEGACY_WRITE_ENABLED", "true")
+    monkeypatch.setenv("IA_RAG_LEGACY_FORCE_REPLACE_ENABLED", "true")
+    monkeypatch.setattr(ia_rag, "_ia_rag_ativo", lambda: True)
+    document = IARagDocumento(
+        source="jkdata:test",
+        title="teste",
+        content="access_token=segredo-que-nao-pode-vazar",
+    )
+    monkeypatch.setattr(ia_rag, "_ia_rag_docs_app", lambda _client: [document])
+    monkeypatch.setattr(
+        ia_rag,
+        "_ia_rag_limpar_fontes",
+        lambda *_args, **_kwargs: pytest.fail("corpus ativo nao pode ser removido apos bloqueio DLP"),
+    )
+
+    with pytest.raises(ValueError) as exc:
+        ia_rag._ia_rag_reindexar_app("000002", force=True)
+
+    assert "segredo-que-nao-pode-vazar" not in str(exc.value)
 
 
 def test_local_status_never_exposes_absolute_database_path(monkeypatch, tmp_path):

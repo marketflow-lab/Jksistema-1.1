@@ -63,7 +63,7 @@ class IARagIndexRequest(BaseModel):
 
 
 class IARagReindexRequest(BaseModel):
-    force: bool = True
+    force: bool = False
 
 
 class IASalvarConversaRequest(BaseModel):

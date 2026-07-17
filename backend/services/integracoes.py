@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Callable
@@ -149,13 +150,27 @@ def _integracoes_escrever_lojas_config_atomico(caminho: str, lojas: list) -> Non
             json.dump(lojas, f, indent=4, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, caminho)
+        _integracoes_replace_with_retry(tmp_path, caminho)
     finally:
         if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+def _integracoes_replace_with_retry(source: str, target: str, *, attempts: int = 12) -> None:
+    """Retry only transient Windows access denials without weakening atomicity."""
+
+    maximum_attempts = max(1, int(attempts))
+    for attempt in range(maximum_attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= maximum_attempts:
+                raise
+            time.sleep(min(0.25, 0.02 * (2 ** min(attempt, 4))))
 
 
 def _integracoes_salvar_backup_imediato(caminho: str) -> None:

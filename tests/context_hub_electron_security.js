@@ -102,6 +102,21 @@ async function main() {
     assert.match(ipc, /getLocalBackendJson\('\/api\/admin\/context-hub\/status', authToken\)/);
     assert.match(ipc, /clientId = status\.data && status\.data\.client_id/);
     assert.doesNotMatch(ipc, /context-vault-open'[\s\S]{0,180}\b(?:path|vaultPath)\b/i);
+    const senderGuardStart = ipc.indexOf('function assertTrustedContextVaultIpcSender(event)');
+    const senderGuardEnd = ipc.indexOf('\nfunction getLocalBackendJson(', senderGuardStart);
+    assert.ok(senderGuardStart >= 0 && senderGuardEnd > senderGuardStart, 'guarda IPC deve estar isolavel');
+    const senderGuard = ipc.slice(senderGuardStart, senderGuardEnd);
+    assert.match(senderGuard, /const senderFrame = event && event\.senderFrame/);
+    assert.match(senderGuard, /senderFrame && senderFrame\.url/);
+    assert.match(senderGuard, /sender === mainWebContents/);
+    assert.match(senderGuard, /contextVaultFrameBelongsToSender\(senderFrame, sender\)/);
+    assert.match(senderGuard, /isAllowedContextVaultFrameUrl\(frameUrl\)/);
+    assert.doesNotMatch(senderGuard, /sender\.getURL\s*\(/, 'guarda nao deve confiar na URL do WebContents pai');
+    assert.match(ipc, /parsed\.protocol === 'http:'/);
+    assert.match(ipc, /parsed\.protocol === 'file:'/);
+    assert.match(ipc, /path\.join\(getAppRootDir\(\), 'static', 'configuracoes\.html'\)/);
+    assert.match(ipc, /const topFrame = senderFrame\.top/);
+    assert.match(ipc, /const mainFrame = sender\.mainFrame/);
 
     const backendRuntime = read('electron_app/main/modules/backend.js');
     assert.match(backendRuntime, /JK_CONTEXT_HUB_SURFACE=installed/);
@@ -139,6 +154,10 @@ async function main() {
     assert.match(verifier, /Arquivo obsoleto ou nao declarado no Context Hub/);
     assert.match(verifier, /SHA256 divergente no Context Hub/);
     assert.match(verifier, /validateContextBundle\(failures\)/);
+    assert.match(verifier, /fs\.lstatSync\(full\)/);
+    assert.match(verifier, /stat\.isSymbolicLink\(\)/);
+    assert.match(verifier, /fail-closed/);
+    assert.doesNotMatch(verifier, /EACCES'\s*\|\|[^\n]+continue/);
 
     const contextManifest = JSON.parse(read('context-bundle-manifest.json'));
     assert.strictEqual(contextManifest.schema_version, 1);

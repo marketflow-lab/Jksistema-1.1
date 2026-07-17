@@ -26,22 +26,33 @@ def _write(path: Path, content: str) -> None:
 
 
 def _write_bundle(base: Path, *, version: str = "1.0.99", content: str = "# Operacao\n\nConhecimento tecnico seguro.\n") -> Path:
-    document = base / "docs" / "knowledge" / "operacao.md"
-    _write(document, content)
-    data = document.read_bytes()
-    manifest = {
-        "files": [
+    relative_documents = {
+        "docs/knowledge/README.md": "# Context Hub\n\nConhecimento versionado seguro.\n",
+        "docs/knowledge/security-policy.md": "# Seguranca\n\nPolitica tecnica segura.\n",
+        "docs/knowledge/vault-structure.md": "# Estrutura\n\nEstrutura persistente segura.\n",
+        "docs/knowledge/templates/curated-note.md": "# Nota curada\n\nModelo editorial seguro.\n",
+        "docs/knowledge/templates/generated-note.md": "# Nota gerada\n\nModelo gerenciado seguro.\n",
+        "docs/knowledge/operacao.md": content,
+    }
+    files = []
+    for relative, document_content in sorted(relative_documents.items()):
+        document = base / relative
+        _write(document, document_content)
+        data = document.read_bytes()
+        files.append(
             {
-                "path": "docs/knowledge/operacao.md",
+                "path": relative,
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data),
             }
-        ],
+        )
+    manifest = {
+        "files": files,
         "schema_version": 1,
         "source_version": version,
     }
     _write(base / "context-bundle-manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
-    return document
+    return base / "docs" / "knowledge" / "operacao.md"
 
 
 def _entity(
@@ -137,6 +148,27 @@ def test_bootstrap_creates_persistent_vault_without_workspace(hub_env) -> None:
         context_hub.bootstrap_context_hub("../outro")
 
 
+@pytest.mark.parametrize(
+    "client_id",
+    [
+        "Cliente",
+        "cliente.",
+        "cliente ",
+        "000002 ",
+        "con",
+        "con.txt",
+        "aux.json",
+        "com1",
+        "lpt9.log",
+    ],
+)
+def test_client_id_rejects_windows_collisions(client_id: str) -> None:
+    with pytest.raises(context_hub.ContextHubValidationError):
+        context_hub._normalize_client_id(client_id)
+
+    assert context_hub._normalize_client_id("000002") == "000002"
+
+
 def test_bootstrap_preserves_existing_obsidian_configuration(hub_env) -> None:
     _base, info, _adapter = hub_env
     obsidian = info / "000002" / "ContextVault" / ".obsidian"
@@ -187,22 +219,137 @@ def test_configured_info_root_cannot_be_a_junction(
         )
 
 
+def test_configured_info_root_is_revalidated_for_every_tenant_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = tmp_path / "app"
+    info = tmp_path / "info"
+    base.mkdir()
+    info.mkdir()
+    context_hub.configure_context_hub(base_dir=base, info_root=info, surface="development")
+    real_is_link = context_hub._is_link_or_junction
+
+    monkeypatch.setattr(
+        context_hub,
+        "_is_link_or_junction",
+        lambda path: Path(path).absolute() == info.absolute() or real_is_link(path),
+    )
+
+    with pytest.raises(context_hub.ContextHubValidationError, match="raiz info"):
+        context_hub._tenant_paths("000002")
+
+
 def test_dlp_blocks_categories_without_match_and_allows_hashes_and_oem() -> None:
     sha = "b3d19e4c864d4c0a1179e5a29af92f5bb76b7e130cb98f18df6a8c80f7607894"
-    allowed = f"source_hash: {sha}\nOEM 12345678901\nSKU 11987654321"
+    allowed = (
+        f"source_hash: {sha}\n"
+        "OEM 52998224725\nSKU 11222333000181\n"
+        "Codigo compacto 31999991234\n"
+        "token: redacted\nAuthorization: Bearer <redacted>"
+    )
     assert context_hub.scan_dlp(allowed) == []
 
     blocked = context_hub.scan_dlp(
-        "Contato: pessoa@example.com\nTelefone: (31) 99999-1234\n"
-        "Rua das Flores, 123 - CEP 12345-678\naccess_token: abcdefghijklmnop",
+        "Contato: pessoa@example.com\nTelefone: 31999991234\n"
+        "Rua das Flores, 123 - CEP 12345-678\naccess_token: abcdefghijklmnop\n"
+        "Authorization: Bearer bearer-value-1234\nOAuth: oauth-value-1234\n"
+        "token: generic-value-1234\nCPF: 52998224725\nCNPJ: 11222333000181",
         source_ref="nota.md",
     )
-    assert {row["category"] for row in blocked} == {"address", "credential", "email", "phone"}
+    assert {row["category"] for row in blocked} == {
+        "address",
+        "cnpj",
+        "cpf",
+        "credential",
+        "email",
+        "phone",
+    }
     serialized = json.dumps(blocked)
     assert "pessoa@example.com" not in serialized
     assert "abcdefghijklmnop" not in serialized
     assert "99999" not in serialized
     assert "Flores" not in serialized
+
+
+def test_atomic_replace_retries_transient_permission_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.txt"
+    target = tmp_path / "target.txt"
+    source.write_text("novo", encoding="utf-8")
+    target.write_text("antigo", encoding="utf-8")
+    real_replace = context_hub.os.replace
+    calls = 0
+
+    def transient_replace(source_path, target_path):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError(5, "bloqueio transitorio")
+        return real_replace(source_path, target_path)
+
+    monkeypatch.setattr(context_hub.os, "replace", transient_replace)
+
+    context_hub._replace_with_retry(source, target, attempts=3)
+
+    assert calls == 3
+    assert target.read_text(encoding="utf-8") == "novo"
+
+
+def test_dlp_scans_all_nested_metadata_and_omits_sensitive_source_ref() -> None:
+    metadata = {
+        "id": "jk:note:pessoa@example.com",
+        "source_refs": ["80_Curadoria/contato-pessoa@example.com.md"],
+        "nested": {
+            "credentials": [{"token": "nested-token-value"}],
+            "contact": {"phone": "31999991234"},
+        },
+    }
+
+    blocked = context_hub.scan_dlp(
+        context_hub._dlp_document_text(metadata, "Corpo editorial seguro."),
+        source_ref="80_Curadoria/pessoa@example.com.md",
+    )
+
+    assert {row["category"] for row in blocked} == {"credential", "email", "phone"}
+    assert all("source_ref" not in row for row in blocked)
+    serialized = json.dumps(blocked)
+    assert "pessoa@example.com" not in serialized
+    assert "nested-token-value" not in serialized
+    assert "31999991234" not in serialized
+
+
+def test_dlp_sensitive_metadata_never_reaches_generation_database(hub_env) -> None:
+    _base, info, adapter = hub_env
+    active = context_hub.rebuild_context("000002")
+    adapter.entities = [
+        _entity(
+            "jk:domain:seguro",
+            source_ref="backend/pessoa@example.com.py",
+        )
+    ]
+    adapter.entities[0]["metadata"] = {
+        "auth": {"token": "metadata-secret-value"},
+        "contact": {"phone": "31999991234"},
+    }
+
+    failed = context_hub.rebuild_context("000002", force=True)
+
+    assert active["status"] == "active"
+    assert failed["status"] == "failed"
+    assert context_hub.get_status("000002")["active_generation"]["generation_id"] == active["generation_id"]
+    serialized = json.dumps(failed)
+    assert "pessoa@example.com" not in serialized
+    assert "metadata-secret-value" not in serialized
+    assert "31999991234" not in serialized
+    internal = info / "000002" / "context_hub"
+    for database_part in internal.glob("context_hub.db*"):
+        contents = database_part.read_bytes()
+        assert b"pessoa@example.com" not in contents
+        assert b"metadata-secret-value" not in contents
+        assert b"31999991234" not in contents
 
 
 def test_file_lock_only_removes_its_own_token(hub_env) -> None:
@@ -311,6 +458,40 @@ def test_status_reports_document_diff_for_a_ready_generation(hub_env) -> None:
     assert status["diff"]["removed"] == 0
 
 
+def test_status_reads_database_from_one_snapshot(hub_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    _base, info, _adapter = hub_env
+    active = context_hub.rebuild_context("000002")
+    database = info / "000002" / "context_hub" / "context_hub.db"
+    real_active_generation_id = context_hub._active_generation_id
+    mutation_done = False
+
+    def mutate_after_pointer_read(connection: sqlite3.Connection):
+        nonlocal mutation_done
+        generation_id = real_active_generation_id(connection)
+        if generation_id and not mutation_done:
+            mutation_done = True
+            with sqlite3.connect(database, timeout=5, isolation_level=None) as writer:
+                writer.execute(
+                    "UPDATE context_hub_generations SET source_version=? WHERE generation_id=?",
+                    ("changed-after-snapshot", generation_id),
+                )
+        return generation_id
+
+    monkeypatch.setattr(context_hub, "_active_generation_id", mutate_after_pointer_read)
+
+    status = context_hub.get_status("000002")
+
+    assert mutation_done is True
+    assert status["active_generation"]["generation_id"] == active["generation_id"]
+    assert status["source_version"] == "1.0.99"
+    with sqlite3.connect(database) as verifier:
+        stored_version = verifier.execute(
+            "SELECT source_version FROM context_hub_generations WHERE generation_id=?",
+            (active["generation_id"],),
+        ).fetchone()[0]
+    assert stored_version == "changed-after-snapshot"
+
+
 def test_single_sku_change_reuses_unrelated_documents(hub_env) -> None:
     _base, _info, adapter = hub_env
     adapter.sku_map_only = True
@@ -404,6 +585,72 @@ def test_manual_publish_rollback_cas_and_failed_swap_restore(hub_env, monkeypatc
     after_failure = next((info / "000002" / "ContextVault" / "70_Gerado").rglob("*.md")).read_text(encoding="utf-8")
     assert after_failure == before_failure
     assert context_hub.get_status("000002")["active_generation"]["generation_id"] == third["generation_id"]
+
+
+def test_recovery_restores_backup_when_crash_happens_before_old_moved_journal(hub_env) -> None:
+    _base, info, adapter = hub_env
+    active = context_hub.rebuild_context("000002")
+    paths = context_hub._tenant_paths("000002", info_root=info)
+    before = {
+        path.relative_to(paths.generated_dir).as_posix(): path.read_bytes()
+        for path in paths.generated_dir.rglob("*")
+        if path.is_file()
+    }
+
+    adapter.entities = [_entity("jk:domain:test", title="Candidata", content="Nova candidata")]
+    context_hub.update_settings("000002", auto_publish_enabled=False)
+    candidate = context_hub.rebuild_context("000002")
+    temporary, backup = context_hub._copy_publish_candidate(paths, candidate["generation_id"])
+    context_hub._write_json_atomic(
+        paths.journal_path,
+        {
+            "generation_id": candidate["generation_id"],
+            "previous_generation_id": active["generation_id"],
+            "had_previous": True,
+            "state": "prepared",
+            "created_at": "2026-07-17T00:00:00+00:00",
+        },
+    )
+    os.replace(paths.generated_dir, backup)
+
+    context_hub._recover_publish_journal(paths)
+
+    after = {
+        path.relative_to(paths.generated_dir).as_posix(): path.read_bytes()
+        for path in paths.generated_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert not temporary.exists()
+    assert not backup.exists()
+    assert not paths.journal_path.exists()
+    assert context_hub.get_status("000002")["active_generation"]["generation_id"] == active["generation_id"]
+
+
+def test_recovery_fails_closed_when_previous_backup_is_missing(hub_env) -> None:
+    _base, info, adapter = hub_env
+    active = context_hub.rebuild_context("000002")
+    paths = context_hub._tenant_paths("000002", info_root=info)
+    adapter.entities = [_entity("jk:domain:test", title="Candidata", content="Nova candidata")]
+    context_hub.update_settings("000002", auto_publish_enabled=False)
+    candidate = context_hub.rebuild_context("000002")
+    temporary, _backup = context_hub._copy_publish_candidate(paths, candidate["generation_id"])
+    context_hub._write_json_atomic(
+        paths.journal_path,
+        {
+            "generation_id": candidate["generation_id"],
+            "previous_generation_id": active["generation_id"],
+            "had_previous": True,
+            "state": "old_moved",
+            "created_at": "2026-07-17T00:00:00+00:00",
+        },
+    )
+
+    with pytest.raises(context_hub.ContextHubValidationError, match="Backup"):
+        context_hub._recover_publish_journal(paths)
+
+    assert temporary.exists()
+    assert paths.journal_path.exists()
 
 
 def test_curated_note_requires_explicit_publication(hub_env) -> None:
@@ -501,6 +748,49 @@ def test_bundle_is_fail_closed_and_ignores_unlisted_overlay(hub_env) -> None:
     mismatch = context_hub.rebuild_context("000002")
     assert mismatch["status"] == "failed"
     assert any(row["code"] == "context_bundle_version_mismatch" for row in mismatch["findings"])
+
+
+def test_bundle_rejects_empty_manifest_and_missing_required_entries(hub_env) -> None:
+    base, _info, _adapter = hub_env
+    active = context_hub.rebuild_context("000002")
+    manifest_path = base / "context-bundle-manifest.json"
+
+    _write(
+        manifest_path,
+        json.dumps({"files": [], "schema_version": 1, "source_version": "1.0.99"}),
+    )
+    empty = context_hub.rebuild_context("000002", force=True)
+
+    assert empty["status"] == "failed"
+    assert any(row["code"] == "context_bundle_manifest_empty" for row in empty["findings"])
+    assert context_hub.get_status("000002")["active_generation"]["generation_id"] == active["generation_id"]
+
+    document = base / "docs" / "knowledge" / "operacao.md"
+    data = document.read_bytes()
+    _write(
+        manifest_path,
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "path": "docs/knowledge/operacao.md",
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size": len(data),
+                    }
+                ],
+                "schema_version": 1,
+                "source_version": "1.0.99",
+            }
+        ),
+    )
+    missing = context_hub.rebuild_context("000002", force=True)
+
+    assert missing["status"] == "failed"
+    assert any(
+        row["code"] == "context_bundle_required_entries_missing"
+        for row in missing["findings"]
+    )
+    assert context_hub.get_status("000002")["active_generation"]["generation_id"] == active["generation_id"]
 
 
 def test_watcher_fingerprint_uses_pruned_allowlist(tmp_path: Path) -> None:

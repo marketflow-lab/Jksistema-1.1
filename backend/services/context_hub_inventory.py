@@ -1937,7 +1937,34 @@ def _with_graph_navigation(
     navigation = "\n".join(
         f"- {_obsidian_wikilink(path, label)}" for path, label in sorted(unique.items())
     )
-    return content.rstrip() + "\n\n## Navegacao no grafo\n\n" + navigation
+    # A navegacao vem primeiro para continuar integra mesmo quando uma fonte
+    # agregada atingir o limite defensivo de tamanho do corpo.
+    body = content.strip()
+    prefix = "## Navegacao no grafo\n\n" + navigation
+    return prefix + ("\n\n" + body if body else "")
+
+
+def _paginate_markdown_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    maximum_chars: int = 60_000,
+) -> list[list[Mapping[str, Any]]]:
+    """Divide mapas extensos sem cortar uma entidade ou um link Markdown."""
+
+    pages: list[list[Mapping[str, Any]]] = []
+    current: list[Mapping[str, Any]] = []
+    current_size = 0
+    for row in rows:
+        line_size = len(f"- `{row.get('id', '')}` - {row.get('title', '')}\n")
+        if current and current_size + line_size > maximum_chars:
+            pages.append(current)
+            current = []
+            current_size = 0
+        current.append(row)
+        current_size += line_size
+    if current:
+        pages.append(current)
+    return pages
 
 
 def render_context_entity_markdown(
@@ -2146,13 +2173,53 @@ def render_context_inventory_markdown(
         selected = [row for row in rows if row.get("kind") == kind]
         if not selected:
             continue
-        content = "\n".join(f"- `{row['id']}` - {row['title']}" for row in selected)
         navigation = [(index_path, "Inventario do Programa")]
         navigation.extend(
             (domain_paths[domain], f"Dominio {domain}")
             for domain in sorted({str(row.get("domain") or "") for row in selected})
             if domain in domain_paths
         )
+        if kind == "test":
+            pages = _paginate_markdown_rows(selected)
+            page_links: list[tuple[str, str]] = []
+            for page_number, page_rows in enumerate(pages, start=1):
+                page_path = f"70_Gerado/Operacao/Testes/Parte-{page_number:03d}.md"
+                page_title = f"Mapa de Testes - Parte {page_number:03d}"
+                page_links.append((page_path, page_title))
+                page_content = "\n".join(
+                    f"- `{row['id']}` - {row['title']}" for row in page_rows
+                )
+                page_navigation = [
+                    (index_path, "Inventario do Programa"),
+                    (output_path, "Mapa de Testes"),
+                ]
+                page_navigation.extend(
+                    (domain_paths[domain], f"Dominio {domain}")
+                    for domain in sorted({str(row.get("domain") or "") for row in page_rows})
+                    if domain in domain_paths
+                )
+                page_content = _with_graph_navigation(page_content, page_navigation)
+                page_aggregate = _aggregate_entity(
+                    entity_id=f"{entity_id}:part-{page_number:03d}",
+                    kind="map",
+                    domain="sistema",
+                    title=page_title,
+                    rows=page_rows,
+                    inventory=inventory,
+                    content=page_content,
+                )
+                output[page_path] = render_context_entity_markdown(
+                    page_aggregate,
+                    source_version=source_version,
+                    generated_at=generated_at,
+                )
+            navigation.extend(page_links)
+            content = (
+                f"Mapa paginado para preservar integralmente {len(selected)} testes.\n\n"
+                f"- paginas: {len(pages)}"
+            )
+        else:
+            content = "\n".join(f"- `{row['id']}` - {row['title']}" for row in selected)
         content = _with_graph_navigation(content, navigation)
         aggregate = _aggregate_entity(
             entity_id=entity_id,

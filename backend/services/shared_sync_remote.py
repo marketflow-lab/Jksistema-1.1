@@ -145,6 +145,11 @@ def _shared_sync_push_scope(
         known_keys=known_keys,
         sanitize_user_share_oauth=sanitize_user_share_oauth,
     )
+    stores_count = 0
+    if scope == "lojas_integracoes":
+        from backend.services.shared_sync_merge_integracoes import _shared_sync_lojas_config_from_bundle
+
+        stores_count = len(_shared_sync_lojas_config_from_bundle(bundle))
     bundle_id = str(bundle_id or _shared_sync_doc_id(client_id, scope)).strip()
     if skip_if_remote_hash_matches:
         remote_meta = _shared_sync_remote_meta_by_id(bundle_id) or {}
@@ -159,6 +164,7 @@ def _shared_sync_push_scope(
                 "skipped": True,
                 "reason": "already_current",
                 "file_count": manifest.get("file_count") or 0,
+                "stores_count": stores_count,
                 "item_count": manifest.get("item_count") or 0,
                 "item_keys": manifest.get("item_keys") or [],
                 "chunk_count": int(remote_meta.get("chunk_count") or 0),
@@ -233,6 +239,7 @@ def _shared_sync_push_scope(
         "updated_by": sessao.get("username") or "",
         "machine_id": str(machine_id or "").strip(),
         "file_count": manifest.get("file_count") or 0,
+        "stores_count": stores_count,
         "delta": bool(manifest.get("delta")),
         "item_count": manifest.get("item_count") or 0,
         "bundle_bytes": len(encrypted_bundle),
@@ -262,6 +269,7 @@ def _shared_sync_push_scope(
         "direction": "push",
         "id": bundle_id,
         "file_count": meta["file_count"],
+        "stores_count": meta["stores_count"],
         "item_count": meta["item_count"],
         "item_keys": list(manifest.get("item_keys") or []),
         "delta": meta["delta"],

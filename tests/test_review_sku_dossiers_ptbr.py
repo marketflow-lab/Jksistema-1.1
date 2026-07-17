@@ -670,7 +670,7 @@ def test_researched_skus_use_non_bling_codes_and_show_vehicle_years(
     assert dossier["revisão"]["pendências"] == []
 
 
-def test_sku_372_publishes_only_safe_connector_details_and_no_mixed_oem_codes():
+def test_sku_372_publishes_only_safe_connector_details_and_keeps_oem_blank():
     dossier = reviewer._build_clean_dossier(
         {
             "sku": "372",
@@ -705,12 +705,13 @@ def test_sku_372_publishes_only_safe_connector_details_and_no_mixed_oem_codes():
         "Configuração: duas conexões principais estriadas para mangueira.",
         "Possui gargalo lateral para tampa pressurizada, bico fino de retorno ao reservatório de expansão e pino moldado de posicionamento.",
         "Conteúdo identificado: conector/gargalo sem tampa e sem abraçadeiras.",
-        "Código de referência do gargalo: 53366451.",
-        "Referência comercial equivalente em plástico: CL9952.",
+        "Referência comercial compatível: 53366451.",
+        "Referência comercial da peça plástica: CL9952.",
         "Alternativa de reparo em alumínio: DM-0192; conferir o desenho e os diâmetros antes da substituição.",
     ]
     assert dossier["medidas_do_produto"]["itens"] == []
-    assert dossier["oem"]["códigos"] == ["53366451"]
+    assert dossier["oem"]["status"] == ""
+    assert dossier["oem"]["códigos"] == []
     assert dossier["aplicação"]["veículos_compatíveis"]["itens"] == [
         {
             "marca": "Chrysler",

@@ -262,6 +262,38 @@ def test_markdown_graph_uses_resolvable_obsidian_wikilinks(tmp_path: Path) -> No
     assert {f"{target}.md" for target in targets}.issubset(rendered)
 
 
+def test_large_test_map_is_paginated_without_truncating_entities(tmp_path: Path) -> None:
+    base, info = _build_fixture(tmp_path)
+    inventory = build_context_inventory(str(base), str(info), "000002", "checkout")
+    template = next(row for row in inventory["entities"] if row["kind"] == "test")
+    expected_ids: list[str] = []
+    for index in range(1_200):
+        test_id = f"jk:test:tests/test_bulk_{index:04d}.py#test_contract_{index:04d}"
+        expected_ids.append(test_id)
+        inventory["entities"].append(
+            {
+                **template,
+                "id": test_id,
+                "title": f"Contrato extenso {index:04d} " + ("validacao " * 18),
+                "source_refs": [f"tests/test_bulk_{index:04d}.py"],
+                "source_hash": hashlib.sha256(test_id.encode("utf-8")).hexdigest(),
+            }
+        )
+
+    rendered = render_context_inventory_markdown(inventory, generated_at="2026-07-17T12:00:00Z")
+    test_pages = {
+        path: content
+        for path, content in rendered.items()
+        if path.startswith("70_Gerado/Operacao/Testes/Parte-")
+    }
+    combined = "\n".join(test_pages.values())
+
+    assert len(test_pages) > 1
+    assert all("[[70_Gerado/Operacao/Testes|Mapa de Testes]]" in content for content in test_pages.values())
+    assert all(combined.count(f"- `{test_id}` - ") == 1 for test_id in expected_ids)
+    assert all(not content.rstrip().endswith("`") for content in test_pages.values())
+
+
 def test_entity_renderer_rejects_incomplete_entity() -> None:
     with pytest.raises(ValueError, match="entidade incompleta"):
         render_context_entity_markdown({"id": "jk:invalid"})

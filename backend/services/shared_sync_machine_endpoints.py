@@ -123,6 +123,23 @@ def shared_sync_machine_pull(
     # Nao confie apenas no hash historico: o arquivo local pode ter sumido ou
     # divergido depois da ultima sincronizacao.
     results = [_shared_sync_machine_pull_scope(sessao, scope, force=True) for scope in scopes]
+    if "lojas_integracoes" in scopes:
+        lojas_esperadas = int(((operation.get("totals") or {}).get("stores")) or 0)
+        resultado_lojas = next(
+            (item for item in results if str((item or {}).get("scope") or "") == "lojas_integracoes"),
+            None,
+        )
+        if not isinstance(resultado_lojas, dict):
+            raise HTTPException(status_code=502, detail="A importacao nao retornou o resultado de Lojas e integracoes.")
+        lojas_aplicadas = int(resultado_lojas.get("stores_count") or 0)
+        if lojas_aplicadas != lojas_esperadas:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "A importacao de Lojas e integracoes ficou incompleta: "
+                    f"o snapshot continha {lojas_esperadas} loja(s), mas {lojas_aplicadas} foram aplicadas."
+                ),
+            )
     _shared_sync_audit(sessao, record=operation, results=results)
     return {"success": True, "direction": "machine-pull", "results": results}
 

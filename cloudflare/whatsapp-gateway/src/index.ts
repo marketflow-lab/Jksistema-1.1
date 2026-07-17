@@ -58,7 +58,7 @@ type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const GATEWAY_PROTOCOL_VERSION = 1;
-const GATEWAY_BUILD_VERSION = "1.0.100";
+const GATEWAY_BUILD_VERSION = "1.0.101";
 const MAX_BINDINGS_PER_USER = 3;
 const OUTBOUND_IMAGE_ARTIFACT_TYPES = new Set(["product_photo", "report_chart"]);
 const OUTBOUND_DOCUMENT_MIMES: Record<string, string> = {

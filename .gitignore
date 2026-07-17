@@ -86,6 +86,7 @@ python_wheels/
 .dependency-lock/
 .dependency-lock-test/
 .test-runtime/
+.test-tmp/
 
 # Logs
 logs/

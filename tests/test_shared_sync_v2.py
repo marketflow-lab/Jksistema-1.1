@@ -383,6 +383,7 @@ def test_importacao_manual_substitui_integracoes_pelo_snapshot_confirmado(tmp_pa
     )
     saved = json.loads((info / "000002" / "lojas_config.json").read_text(encoding="utf-8"))
     assert result["file_count"] == 1
+    assert result["stores_count"] == 1
     assert [item["nome"] for item in saved] == ["Nova"]
     assert saved[0]["store_id"] == "store-estavel"
     assert saved[0]["integracoes"]["bling"]["access_token"] == "novo"
@@ -488,6 +489,47 @@ def test_endpoint_de_importacao_manual_forca_reaplicacao(monkeypatch):
     assert chamadas == [("lojas_integracoes", True)]
 
 
+def test_endpoint_rejeita_importacao_com_quantidade_de_lojas_divergente(monkeypatch):
+    sessao = {"username": "operador", "client_id": "000002"}
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: sessao)
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_resolver_scopes",
+        lambda *args, **kwargs: ["lojas_integracoes"],
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_bundle_ids",
+        lambda *args: {"lojas_integracoes": "bundle-lojas"},
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_require_operation",
+        lambda *args, **kwargs: {"id": "op", "totals": {"stores": 4}},
+    )
+    monkeypatch.setattr(
+        shared_sync_machine_endpoints,
+        "_shared_sync_machine_pull_scope",
+        lambda *args, **kwargs: {
+            "scope": "lojas_integracoes",
+            "success": True,
+            "file_count": 1,
+            "stores_count": 3,
+        },
+    )
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_audit", lambda *args, **kwargs: None)
+
+    with pytest.raises(HTTPException) as exc:
+        shared_sync_machine_endpoints.shared_sync_machine_pull(
+            SharedSyncRunRequest(scopes=["lojas_integracoes"], operation_id="op"),
+            authorization="Bearer teste",
+            client_id="000002",
+        )
+
+    assert exc.value.status_code == 502
+    assert "snapshot continha 4 loja(s), mas 3 foram aplicadas" in exc.value.detail
+
+
 def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
     admin = open("static/admin_usuarios.html", "r", encoding="utf-8-sig").read()
     integracoes_html = open("static/integracoes.html", "r", encoding="utf-8-sig").read()
@@ -502,6 +544,10 @@ def test_tela_de_sincronizacao_exibe_balao_central_e_recarrega_lojas():
     assert 'id="sharedSyncScreenOverlay"' in integracoes_html
     assert "window.jkIntegracoesSetSyncProgress" in integracoes_html
     assert "window.jkIntegracoesReloadStores" in integracoes_html
+    assert "loja(s) no snapshot" in admin
+    assert "não significa exclusão de lojas" in admin
+    assert "O backend não confirmou quantas lojas foram importadas" in admin
+    assert "throw error;" in admin
     assert admin == open("admin_usuarios.html", "r", encoding="utf-8-sig").read()
     assert integracoes_html == open("integracoes.html", "r", encoding="utf-8-sig").read()
 
@@ -589,6 +635,79 @@ class _FakeFirestore:
 
     def collection(self, name):
         return self.collections.setdefault(name, _FakeCollection())
+
+
+def test_envio_e_importacao_entre_duas_maquinas_transfere_todas_as_lojas(tmp_path, monkeypatch):
+    origem = tmp_path / "maquina-origem"
+    destino = tmp_path / "maquina-destino"
+    ativo = {"root": origem}
+
+    def tenant_path(client_id):
+        path = ativo["root"] / "info" / str(client_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    lojas_origem = [
+        {
+            "nome": nome,
+            "store_id": f"store-{indice}",
+            "integracoes": {
+                "mercadolivre": {
+                    "access_token": f"token-{indice}",
+                    "refresh_token": f"refresh-{indice}",
+                    "connected": True,
+                }
+            },
+        }
+        for indice, nome in enumerate(("JK Peças", "Uai Mineirinho", "Carlos José", "Deckas"), start=1)
+    ]
+    lojas_destino = [{"nome": "Loja antiga do destino", "integracoes": {}}]
+    origem_path = origem / "info" / "000002"
+    destino_path = destino / "info" / "000002"
+    origem_path.mkdir(parents=True)
+    destino_path.mkdir(parents=True)
+    (origem_path / "lojas_config.json").write_text(json.dumps(lojas_origem), encoding="utf-8")
+    (destino_path / "lojas_config.json").write_text(json.dumps(lojas_destino), encoding="utf-8")
+
+    integracoes.configure_integracoes_context(
+        pasta_info=str(tmp_path / "info"),
+        get_tenant_path=tenant_path,
+        normalizar_integracao_conectada=lambda _servico, dados: dados,
+    )
+    monkeypatch.setattr(shared_sync_collect_files, "get_tenant_path", tenant_path, raising=False)
+    monkeypatch.setattr(shared_sync_apply_scope, "get_tenant_path", tenant_path, raising=False)
+
+    db = _FakeFirestore()
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_firestore_required", lambda: db)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_db", lambda: db, raising=False)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_deve_usar", lambda: True, raising=False)
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_collection_name", lambda: "shared_sync")
+    monkeypatch.setattr(shared_sync_remote, "_firebase_shared_sync_chunks_collection_name", lambda: "shared_sync_chunks")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_encryption_secret", lambda: b"segredo-e2e-entre-maquinas")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_update", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shared_sync_machine, "_shared_sync_state_update", lambda *args, **kwargs: None)
+
+    sessao = {"username": "operador", "client_id": "000002"}
+    enviado = shared_sync_machine._shared_sync_machine_push_scope(
+        sessao,
+        "lojas_integracoes",
+        "pc:origem",
+    )
+    assert enviado["success"] is True
+    assert enviado["stores_count"] == 4
+
+    ativo["root"] = destino
+    recebido = shared_sync_machine._shared_sync_machine_pull_scope(
+        sessao,
+        "lojas_integracoes",
+        force=True,
+    )
+
+    lojas_recebidas = json.loads((destino_path / "lojas_config.json").read_text(encoding="utf-8"))
+    assert recebido["success"] is True
+    assert recebido["stores_count"] == 4
+    assert [loja["nome"] for loja in lojas_recebidas] == [loja["nome"] for loja in lojas_origem]
+    assert lojas_recebidas[0]["integracoes"]["mercadolivre"]["access_token"] == "token-1"
 
 
 def _configure_remote_push_for_test(monkeypatch, db, bundle):
@@ -691,6 +810,29 @@ def test_escritas_concorrentes_de_lojas_permanecem_json_atomico(tmp_path):
     assert isinstance(json.loads(backup.read_text(encoding="utf-8")), list)
 
 
+def test_escrita_atomica_de_lojas_repete_bloqueio_transitorio(tmp_path, monkeypatch):
+    destino = tmp_path / "lojas_config.json"
+    real_replace = integracoes.os.replace
+    calls = 0
+
+    def transient_replace(source, target):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError(5, "bloqueio transitorio")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(integracoes.os, "replace", transient_replace)
+
+    integracoes._integracoes_escrever_lojas_config_atomico(
+        str(destino),
+        [{"nome": "Loja segura", "integracoes": {}}],
+    )
+
+    assert calls == 3
+    assert json.loads(destino.read_text(encoding="utf-8"))[0]["nome"] == "Loja segura"
+
+
 def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
     info = tmp_path / "info"
 
@@ -712,10 +854,10 @@ def test_desconexao_cria_tombstone_sem_remover_registro(tmp_path):
     assert tombstones[-1]["store_id"] == lojas[0]["store_id"]
 
 
-def test_versoes_fonte_e_electron_estao_alinhadas_em_1_0_100():
+def test_versoes_fonte_e_electron_estao_alinhadas_em_1_0_101():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.100"
-    assert electron_package["version"] == "1.0.100"
-    assert 'VERSAO_MINIMA_APP_PADRAO = "1.0.100"' in backend_source
+    assert root_package["version"] == "1.0.101"
+    assert electron_package["version"] == "1.0.101"
+    assert 'VERSAO_MINIMA_APP_PADRAO = "1.0.101"' in backend_source

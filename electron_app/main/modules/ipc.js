@@ -125,18 +125,85 @@ var contextVaultSecurityModule = require(path.join(
     'context-vault-security.js'
 ));
 
+function normalizeContextVaultFilePath(value) {
+    const normalized = path.normalize(path.resolve(String(value || '')));
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function isAllowedContextVaultFrameUrl(frameUrl) {
+    const raw = String(frameUrl || '').trim();
+    if (!raw) return false;
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol === 'http:') {
+            const hostAllowed = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+            const portAllowed = String(parsed.port || '') === String(JK_LOCAL_BACKEND_PORT);
+            const pageAllowed = /\/(?:static\/)?configuracoes\.html$/i.test(parsed.pathname || '');
+            return hostAllowed && portAllowed && pageAllowed;
+        }
+        if (parsed.protocol === 'file:') {
+            const { fileURLToPath } = require('url');
+            const requestedPath = normalizeContextVaultFilePath(fileURLToPath(parsed));
+            const allowedPaths = [
+                path.join(getAppRootDir(), 'configuracoes.html'),
+                path.join(getAppRootDir(), 'static', 'configuracoes.html')
+            ].map(normalizeContextVaultFilePath);
+            return allowedPaths.includes(requestedPath);
+        }
+    } catch (_err) {}
+    return false;
+}
+
+function contextVaultFrameBelongsToSender(senderFrame, sender) {
+    if (!senderFrame || !sender) return false;
+    try {
+        if (typeof senderFrame.isDestroyed === 'function' && senderFrame.isDestroyed()) return false;
+        const topFrame = senderFrame.top;
+        const mainFrame = sender.mainFrame;
+        if (!topFrame || !mainFrame) return false;
+        if (topFrame === mainFrame) return true;
+        return Number.isInteger(topFrame.processId)
+            && Number.isInteger(topFrame.routingId)
+            && topFrame.processId === mainFrame.processId
+            && topFrame.routingId === mainFrame.routingId;
+    } catch (_err) {
+        return false;
+    }
+}
+
+function contextVaultFrameUrlForLog(frameUrl) {
+    try {
+        const parsed = new URL(String(frameUrl || ''));
+        return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+    } catch (_err) {
+        return '';
+    }
+}
+
 function assertTrustedContextVaultIpcSender(event) {
     const sender = event && event.sender;
-    let senderUrl = '';
-    try { senderUrl = sender && !sender.isDestroyed() ? sender.getURL() : ''; } catch (_err) {}
-    try {
-        const parsed = new URL(senderUrl);
-        const hostAllowed = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
-        const portAllowed = String(parsed.port || '') === String(JK_LOCAL_BACKEND_PORT);
-        const pageAllowed = /\/(?:static\/)?configuracoes\.html$/i.test(parsed.pathname || '');
-        if (parsed.protocol === 'http:' && hostAllowed && portAllowed && pageAllowed) return;
-    } catch (_err) {}
-    logElectronLifecycle('context-vault-ipc-sender-blocked', { senderUrl });
+    const senderFrame = event && event.senderFrame;
+    let frameUrl = '';
+    try { frameUrl = String(senderFrame && senderFrame.url || ''); } catch (_err) {}
+    const mainWebContents = mainWindow
+        && !mainWindow.isDestroyed()
+        && mainWindow.webContents
+        && !mainWindow.webContents.isDestroyed()
+        ? mainWindow.webContents
+        : null;
+    const trusted = !!(
+        sender
+        && mainWebContents
+        && sender === mainWebContents
+        && contextVaultFrameBelongsToSender(senderFrame, sender)
+        && isAllowedContextVaultFrameUrl(frameUrl)
+    );
+    if (trusted) return;
+    logElectronLifecycle('context-vault-ipc-sender-blocked', {
+        frameUrl: contextVaultFrameUrlForLog(frameUrl),
+        mainWebContents: !!mainWebContents,
+        senderMatchesMain: !!(sender && mainWebContents && sender === mainWebContents)
+    });
     throw new Error('Origem IPC nao autorizada para abrir o Context Vault.');
 }
 

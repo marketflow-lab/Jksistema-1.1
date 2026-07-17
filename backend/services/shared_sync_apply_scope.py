@@ -61,6 +61,7 @@ def _shared_sync_aplicar_pacote(
     tenant_abs = os.path.abspath(tenant_path)
     backup_dir = os.path.join(tenant_abs, "_shared_sync_backups", f"{scope}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     escritos = []
+    lojas_aplicadas: Optional[int] = None
     user_scoped_fontes: list[tuple[str, bytes]] = []
     user_share_fontes: list[tuple[str, bytes]] = []
     legacy_favoritos_fontes: list[tuple[str, bytes]] = []
@@ -95,6 +96,7 @@ def _shared_sync_aplicar_pacote(
                 _shared_sync_backup_target(tenant_abs, backup_dir, rel, target_abs)
                 from backend.services.integracoes import salvar_lojas
                 salvar_lojas(client_id, lojas, permitir_reducao_confirmada=True)
+                lojas_aplicadas = len(lojas)
                 escritos.append(rel)
                 continue
             if (
@@ -132,10 +134,16 @@ def _shared_sync_aplicar_pacote(
         escritos.extend(resultado_share.get("files") or [])
     if escritos:
         _shared_sync_prune_local_backups(tenant_abs)
+    if scope == "lojas_integracoes" and lojas_aplicadas is None:
+        raise HTTPException(
+            status_code=502,
+            detail="O snapshot remoto de Lojas e integracoes nao contem lojas_config.json.",
+        )
     return {
         "file_count": len(escritos),
         "files": escritos[:250],
         "backup_dir": backup_dir if escritos else "",
+        "stores_count": lojas_aplicadas if lojas_aplicadas is not None else 0,
     }
 
 def _shared_sync_pull_scope(client_id: str, scope: str, sessao: dict, machine_id: str = "", scope_config: Optional[dict] = None) -> dict:
